@@ -4,13 +4,21 @@ import { IntercomClient } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import type { IntercomConfig } from "./config.ts";
-import type { Lifecycle } from "./lifecycle.ts";
-import type { TopicOwner } from "./topics.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import type { IntercomTopics } from "./topics.ts";
 import type { Message, SessionInfo, TopicChange } from "./types.ts";
 import { asError, errorMessage } from "./validation.ts";
 import { formatTargetOptions, resolveSessionTarget } from "./session-targets.ts";
 
 export type ConnectionReason = "startup" | "background" | "tool" | "overlay" | "peer-awareness";
+type Lifecycle = Readonly<
+  Pick<
+    IntercomLifecycle,
+    "currentSessionId" | "generation" | "health" | "identity" | "live" | "registration" | "status"
+  >
+>;
+type TopicOwner = Readonly<Pick<IntercomTopics, "disconnected" | "presence" | "refresh">>;
+
 interface ConnectionHooks {
   readonly restoring: () => Promise<void> | undefined;
   readonly pendingAsks: () => number;
@@ -240,6 +248,10 @@ export class IntercomConnection {
       if (this.client === next) {
         this.client = null;
       }
+      // A failed topic snapshot can leave a registered socket alive; the attempt still owns it.
+      await next.disconnect().catch((cleanupError: unknown) => {
+        console.error("Intercom failed connection cleanup:", cleanupError);
+      });
       throw asError(error);
     }
   }
@@ -301,7 +313,6 @@ export class IntercomConnection {
     }
   }
 }
-export type Connection = Readonly<IntercomConnection>;
 export async function resolveConnectedTarget(
   active: IntercomTransport,
   name: string,

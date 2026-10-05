@@ -16,7 +16,6 @@ interface TopicRecord {
   readonly notifiedRevision?: number;
 }
 /** Snapshot-oriented consumer contract; the topic owner retains its map implementations. */
-export type TopicOwner = Readonly<Omit<IntercomTopics, "published" | "subscriptions">>;
 const TOPIC_ENTRY = "intercom-topic";
 function isTopicRecord(value: unknown): value is TopicRecord {
   return (

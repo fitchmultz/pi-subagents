@@ -5,14 +5,23 @@ import { getPiAgentDir } from "./agent-dir.ts";
 import { isRecord, isUnknownArray } from "./validation.ts";
 
 export interface IntercomConfig {
+  /** Toggle owned agents, or open peer messaging when the agent view is unavailable. */
   readonly shortcut: KeyId;
+  /** Broker command used to spawn the broker process (for example, Node or Bun). */
   readonly brokerCommand: string;
+  /** Arguments passed to the broker command before the broker script path. */
   readonly brokerArgs: readonly string[];
+  /** Require confirmation before non-reply sends from interactive sessions. */
   readonly confirmSend: boolean;
+  /** Optional custom status suffix shown after automatic lifecycle status. */
   readonly status?: string;
+  /** Show reply hint in incoming messages (default: true). */
   readonly replyHint: boolean;
+  /** Ordinary ask reply timeout, in milliseconds (default: 120000 = 2 minutes). */
   readonly askTimeoutMs: number;
+  /** Broker delivery acknowledgement timeout, in milliseconds (default: 8000). */
   readonly sendTimeoutMs: number;
+  /** Session list response timeout, in milliseconds (default: 5000). */
   readonly listTimeoutMs: number;
 }
 const defaults: IntercomConfig = {

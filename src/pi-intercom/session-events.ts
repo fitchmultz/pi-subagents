@@ -1,28 +1,71 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Lifecycle } from "./lifecycle.ts";
-import type { Connection } from "./connection.ts";
-import type { InboundDeliveryHandle } from "./inbound-delivery.ts";
-import type { Journal } from "./inbound-journal.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import type { IntercomConnection } from "./connection.ts";
+import type { InboundDeliveryOwner } from "./inbound-delivery.ts";
+import type { InboundJournal } from "./inbound-journal.ts";
 import { isDurableSupervisorQuestion, type ReplyTracker } from "./reply-tracker.ts";
-import type { ReplyWaitHandle } from "./reply-wait.ts";
-import type { TopicOwner } from "./topics.ts";
+import type { ReplyWait } from "./reply-wait.ts";
+import type { IntercomTopics } from "./topics.ts";
 import type { SubagentEventBridges } from "./subagent-events.ts";
 import type { IntercomSupervisor } from "./supervisor.ts";
 import type { PeerAwareness } from "./peer-awareness.ts";
 import { RECIPIENT_TURN_FAILED_ATTACHMENT } from "./runtime-types.ts";
 import { getAssistantErrorMessage, inboundIdFromCustomMessage } from "./message-format.ts";
 import { restoreLazyTools } from "../shared/lazy-tools.ts";
+// The native lifecycle orchestrator explicitly owns these transitions, not other owner operations.
+type Lifecycle = Readonly<
+  Pick<
+    IntercomLifecycle,
+    | "agentSettled"
+    | "agentStart"
+    | "clear"
+    | "currentSessionId"
+    | "generation"
+    | "identity"
+    | "invalidate"
+    | "live"
+    | "selectModel"
+    | "start"
+    | "status"
+    | "toolEnd"
+    | "toolStart"
+  >
+>;
+type Connection = Readonly<
+  Pick<
+    IntercomConnection,
+    "active" | "clearTimers" | "shutdown" | "start" | "syncIdentity" | "syncStatus"
+  >
+>;
+type Journal = Readonly<
+  Pick<
+    InboundJournal,
+    "clearNative" | "consume" | "reconcileConsumed" | "reconcileTools" | "reset" | "retire"
+  >
+>;
+type ReplyWaitHandle = Readonly<Pick<ReplyWait, "reject">>;
+type InboundDeliveryHandle = Readonly<
+  Pick<
+    InboundDeliveryOwner,
+    "clearTimer" | "drain" | "flush" | "redeliver" | "reset" | "schedule" | "start"
+  >
+>;
+type TopicOwner = Readonly<Pick<IntercomTopics, "start">>;
+type Replies = Readonly<
+  Pick<ReplyTracker, "beginTurn" | "currentTurn" | "endAgent" | "endTurn" | "reset">
+>;
+
 interface SessionOwners {
   readonly lifecycle: Lifecycle;
   readonly connection: Connection;
   readonly delivery: InboundDeliveryHandle;
   readonly journal: Journal;
-  readonly replies: Readonly<ReplyTracker>;
+  readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
   readonly topics: TopicOwner;
-  readonly bridges: Readonly<SubagentEventBridges>;
-  readonly supervisor: Readonly<IntercomSupervisor> | null;
-  readonly awareness: Readonly<PeerAwareness> | null;
+  readonly bridges: Readonly<Pick<SubagentEventBridges, "start" | "stop" | "drain">>;
+  readonly supervisor: Readonly<Pick<IntercomSupervisor, "drain">> | null;
+  readonly awareness: Readonly<Pick<PeerAwareness, "reset" | "beforeStart">> | null;
 }
 /** Native phase ordering is centralized here; each resource is cleaned by its owner. */
 export class IntercomSessionEvents {

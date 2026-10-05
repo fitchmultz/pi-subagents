@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Lifecycle } from "./lifecycle.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
 import { isDurableSupervisorQuestion, type ReplyTracker } from "./reply-tracker.ts";
 import {
   INBOUND_CHECKPOINT_TYPE,
@@ -19,6 +19,11 @@ import { isRecord } from "./validation.ts";
 import { activateTools } from "../shared/lazy-tools.ts";
 
 /** Owns durable delivery stages, receipts and completion tombstones. */
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "currentSessionId" | "live">>;
+type Replies = Readonly<
+  Pick<ReplyTracker, "expireSender" | "listPending" | "markReplied" | "recordIncomingMessage">
+>;
+
 export class InboundJournal {
   private readonly pending = new Map<string, PendingInboundMessage>();
   private readonly native = new Set<string>();
@@ -27,8 +32,8 @@ export class InboundJournal {
   private reconciledLeaf: string | null = null;
   private readonly pi: ExtensionAPI;
   private readonly lifecycle: Lifecycle;
-  private readonly replies: Readonly<ReplyTracker>;
-  constructor(pi: ExtensionAPI, lifecycle: Lifecycle, replies: Readonly<ReplyTracker>) {
+  private readonly replies: Replies;
+  constructor(pi: ExtensionAPI, lifecycle: Lifecycle, replies: Replies) {
     this.pi = pi;
     this.lifecycle = lifecycle;
     this.replies = replies;
@@ -343,4 +348,3 @@ export class InboundJournal {
     this.reconciledLeaf = leaf;
   }
 }
-export type Journal = Readonly<InboundJournal>;

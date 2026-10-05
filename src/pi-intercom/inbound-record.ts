@@ -6,7 +6,7 @@ import type {
   SubagentCompletion,
   RequestedDelivery,
 } from "./runtime-types.ts";
-import { isRecord, isUnknownArray } from "./validation.ts";
+import { finiteNumber, isRecord, isUnknownArray } from "./validation.ts";
 export function requestedDelivery(message: Message): RequestedDelivery {
   if (message.passive === true || message.delivery === "passive") {
     return "passive";
@@ -70,13 +70,42 @@ function isCompletion(
     value.children.every(isCompletedChild)
   );
 }
+function isLocalJournalMessage(value: unknown): value is Message {
+  if (!isRecord(value) || !isRecord(value.content)) {
+    return false;
+  }
+  // Local result/control messages keep arbitrary output text, unlike broker trust-boundary input.
+  // localEntry writes only these required fields; reject malformed optional protocol metadata.
+  return (
+    typeof value.id === "string" &&
+    finiteNumber(value.timestamp) &&
+    typeof value.content.text === "string" &&
+    value.content.attachments === undefined &&
+    [
+      "replyTo",
+      "expectsReply",
+      "human",
+      "topic",
+      "delivery",
+      "queueMode",
+      "threadId",
+      "passive",
+    ].every((key) => value[key] === undefined)
+  );
+}
+function isJournalMessage(value: unknown, sender: string): value is Message {
+  return sender === "subagent-result" || sender === "subagent-control"
+    ? isLocalJournalMessage(value)
+    : isMessage(value);
+}
 export function isInboundEntry(value: unknown): value is InboundMessageEntry {
   if (!isRecord(value) || !isRecord(value.from) || typeof value.from.id !== "string") {
     return false;
   }
+  const sender = value.from.id;
   return (
     isSessionRegistration(value.from) &&
-    isMessage(value.message) &&
+    isJournalMessage(value.message, sender) &&
     typeof value.bodyText === "string" &&
     (value.replyCommand === undefined || typeof value.replyCommand === "string") &&
     (value.subagentCompletion === undefined || isCompletion(value.subagentCompletion))

@@ -1,12 +1,21 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Lifecycle } from "./lifecycle.ts";
-import { resolveConnectedTarget, type Connection } from "./connection.ts";
-import type { InboundDeliveryHandle } from "./inbound-delivery.ts";
-import type { Journal } from "./inbound-journal.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import { resolveConnectedTarget, type IntercomConnection } from "./connection.ts";
+import type { InboundDeliveryOwner } from "./inbound-delivery.ts";
+import type { InboundJournal } from "./inbound-journal.ts";
 import type { IntercomSessionScope, SubagentCompletion } from "./runtime-types.ts";
 import { isCompletedChild } from "./inbound-record.ts";
 import { isRecord, isUnknownArray, errorMessage } from "./validation.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
+type Lifecycle = Readonly<
+  Pick<IntercomLifecycle, "generation" | "live" | "runtimeStarted" | "targetMatches">
+>;
+type Connection = Readonly<
+  Pick<IntercomConnection, "active" | "ensure" | "isConnecting" | "syncStatus">
+>;
+type InboundDeliveryHandle = Readonly<Pick<InboundDeliveryOwner, "local" | "restoring">>;
+type Journal = Readonly<Pick<InboundJournal, "remove" | "retire">>;
+
 interface RelayPayload {
   readonly to: string;
   readonly message: string;
@@ -217,7 +226,10 @@ export class SubagentEventBridges {
       pi.events.on("intercom:open", () => {
         const ctx = this.lifecycle.live();
         if (ctx?.mode === "tui") {
-          this.own(() => open(ctx, "all"));
+          // Native custom UI owns this user-lived promise; bounded relay shutdown must not join it.
+          open(ctx, "all").catch((error: unknown) => {
+            console.error("Intercom overlay failed:", error);
+          });
         }
       }),
       pi.events.on("subagent:intercom-identity-request", (payload) => {

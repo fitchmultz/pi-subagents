@@ -181,4 +181,3 @@ export class IntercomLifecycle {
     );
   }
 }
-export type Lifecycle = Readonly<IntercomLifecycle>;

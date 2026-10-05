@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomTransport } from "./transport.ts";
-import type { Journal } from "./inbound-journal.ts";
+import type { InboundJournal } from "./inbound-journal.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import type { IntercomSessionScope, ToolResultLike } from "./runtime-types.ts";
 import { formatSessionListSections, sessionsForScope } from "./ui/session-format.ts";
@@ -8,10 +8,13 @@ import { formatSessionTarget } from "./session-targets.ts";
 import { pendingAskPreview } from "./message-format.ts";
 import { toolError, toolText } from "./tool-arguments.ts";
 import { errorMessage } from "./validation.ts";
+type Journal = Readonly<Pick<InboundJournal, "entries" | "reconcileConsumed">>;
+type Replies = Readonly<Pick<ReplyTracker, "listPending">>;
+
 export class IntercomInspection {
   private readonly journal: Journal;
-  private readonly replies: Readonly<ReplyTracker>;
-  constructor(journal: Journal, replies: Readonly<ReplyTracker>) {
+  private readonly replies: Replies;
+  constructor(journal: Journal, replies: Replies) {
     this.journal = journal;
     this.replies = replies;
   }

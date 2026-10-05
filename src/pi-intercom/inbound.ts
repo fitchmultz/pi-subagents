@@ -1,23 +1,35 @@
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomConfig } from "./config.ts";
-import type { Lifecycle } from "./lifecycle.ts";
-import type { Journal } from "./inbound-journal.ts";
-import type { InboundDeliveryHandle } from "./inbound-delivery.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import type { InboundJournal } from "./inbound-journal.ts";
+import type { InboundDeliveryOwner } from "./inbound-delivery.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
-import type { ReplyWaitHandle } from "./reply-wait.ts";
-import type { Connection } from "./connection.ts";
-import type { TopicOwner } from "./topics.ts";
+import type { ReplyWait } from "./reply-wait.ts";
+import type { IntercomConnection } from "./connection.ts";
+import type { IntercomTopics } from "./topics.ts";
 import type { ChildOrchestratorMetadata, InboundMessageEntry } from "./runtime-types.ts";
 import type { Message, SessionInfo } from "./types.ts";
 import { requestedDelivery, isBlockingSupervisorMessage } from "./inbound-record.ts";
 import { formatAttachments } from "./message-format.ts";
 import { readQuestionOwner } from "../runs/shared/supervisor-questions.ts";
 
+type Lifecycle = Readonly<
+  Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "markActivity">
+>;
+type Journal = Readonly<Pick<InboundJournal, "discardObsolete" | "get" | "remember">>;
+type InboundDeliveryHandle = Readonly<
+  Pick<InboundDeliveryOwner, "batching" | "detach" | "queue" | "restoring" | "send">
+>;
+type ReplyWaitHandle = Readonly<Pick<ReplyWait, "receive">>;
+type Connection = Readonly<Pick<IntercomConnection, "active" | "syncStatus">>;
+type TopicOwner = Readonly<Pick<IntercomTopics, "receive">>;
+type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "recordIncomingMessage">>;
+
 interface InboundOwners {
   readonly journal: Journal;
   readonly delivery: InboundDeliveryHandle;
-  readonly replies: Readonly<ReplyTracker>;
+  readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
   readonly connection: Connection;
   readonly topics: TopicOwner;

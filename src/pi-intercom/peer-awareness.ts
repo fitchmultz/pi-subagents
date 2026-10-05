@@ -1,6 +1,6 @@
 import type { BeforeAgentStartEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Connection } from "./connection.ts";
-import type { Lifecycle } from "./lifecycle.ts";
+import type { IntercomConnection } from "./connection.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { IntercomTransport } from "./transport.ts";
 import { isBrokerRunning } from "./broker/spawn.ts";
 import { settleWithin } from "./async.ts";
@@ -12,6 +12,11 @@ interface AwarenessAttempt {
   readonly deadline: number;
 }
 /** Pins one byte-stable hint after seeing peers; fleet churn never rewrites it. */
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "generation" | "live">>;
+type Connection = Readonly<
+  Pick<IntercomConnection, "active" | "clearStartup" | "ensure" | "scheduleStartup">
+>;
+
 export class PeerAwareness {
   private pinned = false;
   private readonly connection: Connection;

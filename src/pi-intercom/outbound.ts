@@ -2,17 +2,21 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
-import { resolveConnectedTarget, resolvePeerHealth, type Connection } from "./connection.ts";
+import {
+  resolveConnectedTarget,
+  resolvePeerHealth,
+  type IntercomConnection,
+} from "./connection.ts";
 import type { IntercomConfig } from "./config.ts";
-import type { Lifecycle } from "./lifecycle.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
-import type { ReplyWaitHandle } from "./reply-wait.ts";
+import type { ReplyWait } from "./reply-wait.ts";
 import {
   RECIPIENT_TURN_FAILED_ATTACHMENT,
   type IntercomToolParams,
   type ToolResultLike,
 } from "./runtime-types.ts";
-import type { Message } from "./types.ts";
+import type { Message, SessionInfo } from "./types.ts";
 import { errorMessage } from "./validation.ts";
 import { formatAttachments } from "./message-format.ts";
 import {
@@ -23,11 +27,16 @@ import {
 } from "./tool-results.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
 
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
+type Connection = Readonly<Pick<IntercomConnection, "syncStatus">>;
+type ReplyWaitHandle = Readonly<Pick<ReplyWait, "transact" | "waiting">>;
+type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "resolveReplyTarget">>;
+
 interface OutboundOwners {
   readonly pi: ExtensionAPI;
   readonly lifecycle: Lifecycle;
   readonly connection: Connection;
-  readonly replies: Readonly<ReplyTracker>;
+  readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
 }
 export class IntercomOutbound {
@@ -245,11 +254,6 @@ export class IntercomOutbound {
   private isCancelled(signal: AbortSignal | undefined): boolean {
     return signal?.aborted === true;
   }
-  private cancelled(signal: AbortSignal | undefined): void {
-    if (signal?.aborted === true) {
-      throw new Error("Cancelled");
-    }
-  }
   private async sendBusy(
     active: IntercomTransport,
     request: {
@@ -272,6 +276,27 @@ export class IntercomOutbound {
     request.record(result);
     return this.busyAsk(request.to, result);
   }
+  private async prepareAsk(
+    active: IntercomTransport,
+    to: string,
+    signal: AbortSignal | undefined,
+  ): Promise<
+    | { readonly target: string; readonly health: SessionInfo | null }
+    | { readonly error: ToolResultLike }
+  > {
+    const target = (await resolveConnectedTarget(active, to)) ?? to;
+    if (this.isCancelled(signal)) {
+      return { error: toolError("Cancelled") };
+    }
+    if (target === active.sessionId) {
+      return { error: toolError("Cannot message the current session") };
+    }
+    const health = await resolvePeerHealth(active, target);
+    if (this.isCancelled(signal)) {
+      return { error: toolError("Cancelled") };
+    }
+    return { target, health };
+  }
   async ask(
     active: IntercomTransport,
     params: IntercomToolParams,
@@ -289,13 +314,11 @@ export class IntercomOutbound {
     }
     let questionId: string | undefined;
     try {
-      const target = (await resolveConnectedTarget(active, to)) ?? to;
-      this.cancelled(signal);
-      if (target === active.sessionId) {
-        return toolError("Cannot message the current session");
+      const prepared = await this.prepareAsk(active, to, signal);
+      if ("error" in prepared) {
+        return prepared.error;
       }
-      const health = await resolvePeerHealth(active, target);
-      this.cancelled(signal);
+      const { target, health } = prepared;
       questionId = randomUUID();
       const options = sendOptions(params);
       const record = (result: SendResult) => {

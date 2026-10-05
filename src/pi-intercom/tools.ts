@@ -1,19 +1,22 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomTransport } from "./transport.ts";
-import type { Connection } from "./connection.ts";
+import type { IntercomConnection } from "./connection.ts";
 import type { IntercomOutbound } from "./outbound.ts";
 import type { IntercomTopicActions } from "./topic-actions.ts";
-import type { TopicOwner } from "./topics.ts";
+import type { IntercomTopics } from "./topics.ts";
 import type { IntercomInspection } from "./inspection.ts";
 import type { IntercomToolParams, ToolResultLike } from "./runtime-types.ts";
 import { validateIntercomArguments, toolError, toolText } from "./tool-arguments.ts";
 import { errorMessage } from "./validation.ts";
+type Connection = Readonly<Pick<IntercomConnection, "ensure" | "syncIdentity">>;
+type TopicOwner = Readonly<Pick<IntercomTopics, "disconnected" | "inspect">>;
+
 interface ToolOwners {
   readonly connection: Connection;
-  readonly outbound: Readonly<IntercomOutbound>;
-  readonly topicActions: Readonly<IntercomTopicActions>;
+  readonly outbound: Readonly<Pick<IntercomOutbound, "send" | "ask" | "reply">>;
+  readonly topicActions: Readonly<Pick<IntercomTopicActions, "execute">>;
   readonly topics: TopicOwner;
-  readonly inspection: Readonly<IntercomInspection>;
+  readonly inspection: Readonly<Pick<IntercomInspection, "list" | "status" | "pending">>;
 }
 export class IntercomTools {
   private readonly owners: ToolOwners;

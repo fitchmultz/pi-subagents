@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomTransport } from "../transport.ts";
-import type { Lifecycle } from "../lifecycle.ts";
-import type { Connection } from "../connection.ts";
-import type { TopicOwner } from "../topics.ts";
+import type { IntercomLifecycle } from "../lifecycle.ts";
+import type { IntercomConnection } from "../connection.ts";
+import type { IntercomTopics } from "../topics.ts";
 import type { SessionInfo } from "../types.ts";
 import { TOPICS_UNAVAILABLE, type IntercomSessionScope } from "../runtime-types.ts";
 import { errorMessage } from "../validation.ts";
@@ -10,6 +10,10 @@ import { targetDisplayName } from "../session-targets.ts";
 import { sessionsForScope } from "./session-format.ts";
 import { SessionListOverlay } from "./session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./compose.ts";
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "generation" | "live" | "notify">>;
+type Connection = Readonly<Pick<IntercomConnection, "ensure" | "syncIdentity">>;
+type TopicOwner = Readonly<Pick<IntercomTopics, "disconnected" | "open" | "refresh">>;
+
 interface OverlayOwners {
   readonly pi: ExtensionAPI;
   readonly lifecycle: Lifecycle;

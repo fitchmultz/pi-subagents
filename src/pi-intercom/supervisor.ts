@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReadonlyInput } from "../shared/types/inputs.ts";
 import type { Message, SendResult } from "./types.ts";
-import type { Lifecycle } from "./lifecycle.ts";
-import { resolveConnectedTarget, type Connection } from "./connection.ts";
-import type { ReplyWaitHandle } from "./reply-wait.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import { resolveConnectedTarget, type IntercomConnection } from "./connection.ts";
+import type { ReplyWait } from "./reply-wait.ts";
 import type {
   ChildOrchestratorMetadata,
   ContactSupervisorToolParams,
@@ -26,6 +26,12 @@ import {
   type SupervisorQuestion,
 } from "../runs/shared/supervisor-questions.ts";
 import { formatRunAction } from "../shared/status-format.ts";
+
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "identity" | "markActivity">>;
+type Connection = Readonly<Pick<IntercomConnection, "ensure" | "syncIdentity" | "syncStatus">>;
+type ReplyWaitHandle = Readonly<
+  Pick<ReplyWait, "clearRetry" | "isWaitingFor" | "retarget" | "retry" | "wait" | "waiting">
+>;
 
 interface SupervisorOwners {
   readonly pi: ExtensionAPI;

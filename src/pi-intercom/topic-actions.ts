@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomTransport } from "./transport.ts";
-import type { Connection } from "./connection.ts";
-import type { Lifecycle } from "./lifecycle.ts";
-import type { TopicOwner } from "./topics.ts";
+import type { IntercomConnection } from "./connection.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import type { IntercomTopics } from "./topics.ts";
 import {
   TOPICS_UNAVAILABLE,
   type IntercomToolParams,
@@ -17,6 +17,15 @@ import {
   type TopicUpdate,
 } from "./types.ts";
 import { toolError, toolText } from "./tool-arguments.ts";
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "generation" | "live">>;
+type Connection = Readonly<Pick<IntercomConnection, "clearTopicSyncError" | "topicSyncError">>;
+type TopicOwner = Readonly<
+  Pick<
+    IntercomTopics,
+    "disconnected" | "inspect" | "presence" | "publish" | "refresh" | "subscribe" | "unsubscribe"
+  >
+>;
+
 interface TopicOwners {
   readonly pi: ExtensionAPI;
   readonly lifecycle: Lifecycle;

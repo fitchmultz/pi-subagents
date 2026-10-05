@@ -3,7 +3,7 @@ import type { ReadonlyInput } from "../shared/types/inputs.ts";
 import type { Message } from "./types.ts";
 import type { IntercomClient, SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
-import type { Lifecycle } from "./lifecycle.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
 import { RECIPIENT_TURN_FAILED_ATTACHMENT } from "./runtime-types.ts";
 import { asError } from "./validation.ts";
 import { AskDeliveryError } from "./tool-results.ts";
@@ -13,6 +13,8 @@ import {
   saveQuestionAnswer,
   type SupervisorQuestion,
 } from "../runs/shared/supervisor-questions.ts";
+
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "live" | "markActivity">>;
 
 interface ReplyWaiter {
   readonly from: string;
@@ -243,4 +245,3 @@ export class ReplyWait {
     }
   }
 }
-export type ReplyWaitHandle = Readonly<ReplyWait>;

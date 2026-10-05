@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Lifecycle } from "./lifecycle.ts";
-import type { Journal } from "./inbound-journal.ts";
+import type { IntercomLifecycle } from "./lifecycle.ts";
+import type { InboundJournal } from "./inbound-journal.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import type {
   InboundDelivery,
@@ -15,8 +15,39 @@ import { activateTools } from "../shared/lazy-tools.ts";
 import { runCooperatively } from "../shared/cooperative.ts";
 import { listSupervisorQuestionsAsync } from "../runs/shared/supervisor-questions.ts";
 
+type Lifecycle = Readonly<
+  Pick<
+    IntercomLifecycle,
+    "currentSessionId" | "generation" | "isIdle" | "live" | "runtimeStarted" | "toolCount"
+  >
+>;
+type Journal = Readonly<
+  Pick<
+    InboundJournal,
+    | "discardObsolete"
+    | "freshRuntime"
+    | "get"
+    | "hasSeen"
+    | "markNative"
+    | "owns"
+    | "queued"
+    | "reconcileConsumed"
+    | "reconcileTools"
+    | "reload"
+    | "remember"
+    | "rememberCompletion"
+    | "reset"
+    | "restore"
+    | "size"
+    | "unconsumed"
+  >
+>;
+type Replies = Readonly<
+  Pick<ReplyTracker, "hasReplyContext" | "markReplied" | "queueTurnContext" | "reset">
+>;
+
 interface DeliveryHooks {
-  readonly replies: Readonly<ReplyTracker>;
+  readonly replies: Replies;
   readonly syncStatus: () => void;
 }
 /** Owns cooperative inbound batches, restoration and the flush timer. */
@@ -417,4 +448,3 @@ export class InboundDeliveryOwner {
     }
   }
 }
-export type InboundDeliveryHandle = Readonly<InboundDeliveryOwner>;

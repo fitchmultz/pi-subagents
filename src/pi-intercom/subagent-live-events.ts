@@ -29,7 +29,7 @@ interface LiveEventDeps {
     client?: IntercomTransport,
   ) => boolean;
   readonly getLivenessCheck: () => () => boolean;
-  readonly own?: (operation: () => Promise<void>) => void;
+  readonly own: (operation: () => Promise<void>) => void;
 }
 interface LivePayload {
   readonly requestId: string;
@@ -224,22 +224,13 @@ async function answerHealth(payload: unknown, deps: LiveEventDeps): Promise<void
     );
   }
 }
-function own(deps: LiveEventDeps, operation: () => Promise<void>): void {
-  if (deps.own) {
-    deps.own(operation);
-    return;
-  }
-  operation().catch((error: unknown) => {
-    console.error("Intercom live event failed:", error);
-  });
-}
 export function registerSubagentLiveEventHandlers(deps: LiveEventDeps): (() => void)[] {
   return [
     deps.events.on("subagent:live-intercom", (payload) => {
-      own(deps, () => relayLive(payload, deps));
+      deps.own(() => relayLive(payload, deps));
     }),
     deps.events.on("subagent:intercom-health-request", (payload) => {
-      own(deps, () => answerHealth(payload, deps));
+      deps.own(() => answerHealth(payload, deps));
     }),
   ];
 }
