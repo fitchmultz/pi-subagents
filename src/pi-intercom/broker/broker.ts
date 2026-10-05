@@ -9,8 +9,6 @@ import { brokerPidRecord } from "./pid.ts";
 import {
   compactTopicMessage,
   isSessionRegistration,
-  isTopicSubscription,
-  isTopicUpdate,
   normalizeMessage,
   normalizeSessionInfo,
   type SessionInfo,
@@ -21,34 +19,37 @@ import {
   type TopicUpdate,
 } from "../types.ts";
 
+import { errorMessage, isRecord, type UnknownRecord } from "../../shared/unknown.ts";
+import {
+  messageSender,
+  snapshotFrames,
+  prepareTopicChange,
+  publicationMessage,
+  deliveryAcknowledgement,
+  shouldReplaceDelivery,
+} from "./snapshots.ts";
+
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
-
 const REPLACE_DELIVERY_DELAY_MS = 1500;
 
 interface ConnectedSession {
-  socket: net.Socket;
+  readonly socket: net.Socket;
   info: SessionInfo;
-  topicFrames: boolean;
-}
-
-function messageSender(info: SessionInfo): SessionInfo {
-  const { topics: _topics, subscriptions: _subscriptions, ...identity } = info;
-  return identity;
+  readonly topicFrames: boolean;
 }
 
 interface PendingReplaceDelivery {
-  from: SessionInfo;
-  fromId: string;
-  toId: string;
-  message: Message;
-  timer: NodeJS.Timeout;
+  readonly fromId: string;
+  readonly toId: string;
+  readonly message: Message;
+  readonly timer: NodeJS.Timeout;
 }
 
 class IntercomBroker {
-  private sessions = new Map<string, ConnectedSession>();
-  private pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
-  private server: net.Server;
+  private readonly sessions = new Map<string, ConnectedSession>();
+  private readonly pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
+  private readonly server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private readonly socketPath: string;
 
@@ -96,12 +97,8 @@ class IntercomBroker {
     socket.on("data", reader);
 
     socket.on("close", () => {
-      if (sessionId) {
-        this.sessions.delete(sessionId);
-        this.clearPendingReplaceDeliveries(sessionId);
-        this.broadcast({ type: "session_left", sessionId }, sessionId);
-
-        this.scheduleShutdownCheck();
+      if (sessionId !== null) {
+        this.removeSession(sessionId);
       }
     });
 
@@ -130,396 +127,226 @@ class IntercomBroker {
     currentId: string | null,
     setId: (id: string | null) => void,
   ): void {
-    if (
-      typeof msg !== "object" ||
-      msg === null ||
-      !("type" in msg) ||
-      typeof msg.type !== "string"
-    ) {
+    if (!isRecord(msg) || typeof msg.type !== "string") {
       throw new Error("Invalid client message");
     }
-
-    const clientMessage = msg as { type: string } & Record<string, unknown>;
-
-    if (currentId === null && clientMessage.type !== "register") {
-      throw new Error(`Received ${clientMessage.type} before register`);
+    if (currentId === null && msg.type !== "register") {
+      throw new Error(`Received ${msg.type} before register`);
     }
-
     if (currentId !== null) {
       this.touchActivity(currentId, false);
     }
-
-    switch (clientMessage.type) {
-      case "register": {
-        if (!isSessionRegistration(clientMessage.session)) {
-          throw new Error("Invalid register message");
-        }
-
-        if (currentId) {
-          throw new Error("Received duplicate register message");
-        }
-
-        const requestedId =
-          typeof clientMessage.requestedId === "string" &&
-          /^[a-zA-Z0-9_-]{8,80}$/.test(clientMessage.requestedId)
-            ? clientMessage.requestedId
-            : undefined;
-        const id = requestedId && !this.sessions.has(requestedId) ? requestedId : randomUUID();
-        const now = Date.now();
-        const info: SessionInfo = {
-          ...clientMessage.session,
-          id,
-          lastSeen: clientMessage.session.lastSeen ?? now,
-        };
-        this.snapshotFrames(randomUUID(), [info], true);
-        const topicFrames = clientMessage.topicFrames === true;
-        this.sessions.set(id, { socket, info, topicFrames });
-        setId(id);
-
-        if (this.shutdownTimer) {
-          clearTimeout(this.shutdownTimer);
-          this.shutdownTimer = null;
-        }
-
-        writeMessage(socket, {
-          type: "registered",
-          sessionId: id,
-          ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
-        });
-        break;
+    if (msg.type === "register") {
+      if (currentId !== null) {
+        throw new Error("Received duplicate register message");
       }
-
-      case "unregister": {
-        if (currentId === null) {
-          throw new Error("Received unregister before register");
-        }
-        const sessionId = currentId;
-        this.sessions.delete(sessionId);
-        this.clearPendingReplaceDeliveries(sessionId);
-        this.broadcast({ type: "session_left", sessionId }, sessionId);
+      this.register(socket, msg, setId);
+      return;
+    }
+    if (currentId === null) {
+      throw new Error("Sender session not found");
+    }
+    switch (msg.type) {
+      case "unregister":
+        this.removeSession(currentId);
         setId(null);
-        this.scheduleShutdownCheck();
         break;
-      }
-
-      case "list": {
-        if (typeof clientMessage.requestId !== "string") {
-          throw new Error("Invalid list message");
-        }
-
-        const requestId = clientMessage.requestId;
-        try {
-          const session = currentId && this.sessions.get(currentId);
-          if (!session) {
-            throw new Error("Sender session not found");
-          }
-          let nextInfo = session.info;
-          let publication: TopicUpdate | undefined;
-          const change = clientMessage.change as
-            | { action?: unknown; topic?: unknown; subscription?: unknown }
-            | undefined;
-          if (change !== undefined) {
-            if (!session.topicFrames || !change || typeof change !== "object") {
-              throw new Error("Topic snapshots unavailable for this client");
-            }
-            const topics = new Map(
-              (session.info.topics ?? []).map((topic) => [topic.topic, topic]),
-            );
-            const subscriptions = new Map(
-              (session.info.subscriptions ?? []).map((entry) => [entry.topic, entry]),
-            );
-            if (
-              (change.action === "publish" || change.action === "restore") &&
-              isTopicUpdate(change.topic)
-            ) {
-              if (
-                !change.topic.text.trim() ||
-                (change.topic.event === "release" &&
-                  (!change.topic.resource || change.topic.ownership !== "released"))
-              ) {
-                throw new Error("Invalid topic publication");
-              }
-              const update = {
-                ...change.topic,
-                ...(change.action === "publish"
-                  ? {
-                      revision:
-                        Math.max(
-                          topics.get(change.topic.topic)?.revision ?? 0,
-                          change.topic.revision - 1,
-                        ) + 1,
-                    }
-                  : {}),
-              };
-              if (!isTopicUpdate(update)) {
-                throw new Error("Invalid topic revision");
-              }
-              if (
-                change.action === "publish" ||
-                (topics.get(update.topic)?.revision ?? 0) < update.revision
-              ) {
-                topics.set(update.topic, update);
-              }
-              if (change.action === "publish") {
-                publication = update;
-              }
-            } else if (
-              (change.action === "subscribe" || change.action === "restore") &&
-              isTopicSubscription(change.subscription)
-            ) {
-              subscriptions.set(change.subscription.topic, change.subscription);
-            } else if (change.action === "unsubscribe" && typeof change.topic === "string") {
-              subscriptions.delete(change.topic);
-            } else {
-              throw new Error("Invalid topic change");
-            }
-            nextInfo = {
-              ...session.info,
-              topics: [...topics.values()],
-              subscriptions: [...subscriptions.values()],
-            };
-          }
-          if (publication) {
-            nextInfo = { ...nextInfo, lastIntercomActivity: Date.now() };
-          }
-          const from = messageSender(nextInfo);
-          const deliveries: Array<{ to: string; message: Message }> = [];
-          if (publication) {
-            for (const target of this.sessions.values()) {
-              const subscription = target.info.subscriptions?.find(
-                (entry) => entry.topic === publication!.topic,
-              );
-              if (target.info.id === currentId || !subscription) {
-                continue;
-              }
-              const urgent =
-                publication.event === "blocker" ||
-                publication.event === "decision" ||
-                (publication.event === "release" && subscription.awaitRelease);
-              const message: Message = {
-                id: randomUUID(),
-                timestamp: Date.now(),
-                topic: publication,
-                content: { text: publication.text },
-                delivery: urgent ? "steer" : "queue",
-                ...(urgent ? {} : { queueMode: "replace", threadId: `topic:${publication.topic}` }),
-              };
-              const error = this.validateDeliveryPayload(from, message, target.topicFrames);
-              if (error) {
-                throw new Error(error);
-              }
-              deliveries.push({ to: target.info.id, message });
-            }
-          }
-          const infos = [...this.sessions.values()].map((entry) =>
-            entry === session ? nextInfo : entry.info,
-          );
-          // Validate every required frame before replacing the broker's usable state.
-          if (change?.action === "restore") {
-            this.snapshotFrames(requestId, [nextInfo], true);
-          }
-          const frames = this.snapshotFrames(
-            requestId,
-            change?.action === "restore" ? [] : infos,
-            clientMessage.stream === true,
-          );
-          session.info = nextInfo;
-          const receipts: SessionSnapshot["receipts"] = deliveries.map(({ to, message }) => ({
-            to,
-            ...this.sendToSession(currentId!, to, from, message),
-          }));
-          const last = frames.pop()!;
-          for (const frame of frames) {
-            writeMessage(socket, frame);
-          }
-          for (const receipt of receipts) {
-            writeMessage(socket, {
-              type: "sessions",
-              requestId,
-              sessions: [],
-              receipts: [receipt],
-              more: true,
-            });
-          }
-          writeMessage(socket, last);
-        } catch (error) {
-          writeMessage(socket, {
-            type: "sessions",
-            requestId,
-            sessions: [],
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+      case "list":
+        this.list(socket, msg, currentId);
         break;
-      }
-
-      case "send": {
-        const message = normalizeMessage(clientMessage.message);
-        const messageId = message?.id ?? "unknown";
-
-        if (typeof clientMessage.to !== "string" || !message) {
-          writeMessage(socket, {
-            type: "delivery_failed",
-            messageId,
-            reason: "Invalid message format",
-          });
-          break;
-        }
-
-        if (currentId === null) {
-          writeMessage(socket, {
-            type: "delivery_failed",
-            messageId: message.id,
-            reason: "Sender session not found",
-          });
-          break;
-        }
-
-        const targets = this.findSessions(clientMessage.to);
-        if (targets.length === 1) {
-          const fromSession = this.sessions.get(currentId);
-          if (!fromSession) {
-            writeMessage(socket, {
-              type: "delivery_failed",
-              messageId: message.id,
-              reason: "Sender session not found",
-            });
-            break;
-          }
-          this.touchActivity(currentId, true);
-          const receipt = this.sendToSession(
-            currentId,
-            targets[0].info.id,
-            messageSender(fromSession.info),
-            message,
-          );
-          writeMessage(socket, {
-            type: receipt.accepted
-              ? receipt.queued
-                ? "delivery_queued"
-                : "delivered"
-              : "delivery_failed",
-            messageId: message.id,
-            ...(receipt.reason ? { reason: receipt.reason } : {}),
-          });
-          break;
-        }
-
-        if (targets.length > 1) {
-          writeMessage(socket, {
-            type: "delivery_failed",
-            messageId: message.id,
-            reason: `Multiple sessions named \"${clientMessage.to}\" are connected. Use the session ID instead.`,
-          });
-          break;
-        }
-
-        writeMessage(socket, {
-          type: "delivery_failed",
-          messageId: message.id,
-          reason: "Session not found",
-        });
+      case "send":
+        this.send(socket, msg, currentId);
         break;
-      }
-
-      case "presence": {
-        if (currentId === null) {
-          throw new Error("Received presence before register");
-        }
-        const session = this.sessions.get(currentId);
-        if (session) {
-          const nextInfo = normalizeSessionInfo({
-            ...session.info,
-            ...(clientMessage.name !== undefined ? { name: clientMessage.name } : {}),
-            ...(clientMessage.status !== undefined ? { status: clientMessage.status } : {}),
-            ...(clientMessage.model !== undefined ? { model: clientMessage.model } : {}),
-            ...(clientMessage.pendingAsks !== undefined
-              ? { pendingAsks: clientMessage.pendingAsks }
-              : {}),
-            ...(clientMessage.acceptsAsks !== undefined
-              ? { acceptsAsks: clientMessage.acceptsAsks }
-              : {}),
-            ...(clientMessage.lastIntercomActivity !== undefined
-              ? { lastIntercomActivity: clientMessage.lastIntercomActivity }
-              : {}),
-            ...(clientMessage.subscriptions !== undefined
-              ? { subscriptions: clientMessage.subscriptions }
-              : {}),
-            ...(clientMessage.topics !== undefined ? { topics: clientMessage.topics } : {}),
-            lastSeen: Date.now(),
-          });
-          if (!nextInfo) {
-            throw new Error("Invalid presence update");
-          }
-          this.snapshotFrames(randomUUID(), [nextInfo], true);
-          session.info = nextInfo;
-        }
+      case "presence":
+        this.presence(msg, currentId);
         break;
-      }
-
       default:
-        throw new Error(`Unknown client message type: ${clientMessage.type}`);
+        throw new Error(`Unknown client message type: ${msg.type}`);
     }
   }
 
-  private snapshotFrames(
-    requestId: string,
-    infos: SessionInfo[],
-    stream: boolean,
-  ): BrokerMessage[] {
-    // Older clients have no topic UI or multipart reader; keep their original identity-only list.
-    if (!stream) {
-      const frame: BrokerMessage = {
-        type: "sessions",
-        requestId,
-        sessions: infos.map(messageSender),
-      };
-      const error = validateIntercomMessageSize(frame);
-      if (error) {
-        throw error;
-      }
-      return [frame];
+  private register(socket: net.Socket, msg: UnknownRecord, setId: (id: string) => void): void {
+    if (!isSessionRegistration(msg.session)) {
+      throw new Error("Invalid register message");
     }
-    // ponytail: one record per frame; pack records only if measured socket overhead warrants it.
-    const frames: BrokerMessage[] = [];
-    for (const info of infos) {
-      frames.push({
+    const requestedId =
+      typeof msg.requestedId === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(msg.requestedId)
+        ? msg.requestedId
+        : undefined;
+    const id =
+      requestedId !== undefined && !this.sessions.has(requestedId) ? requestedId : randomUUID();
+    const info: SessionInfo = { ...msg.session, id, lastSeen: msg.session.lastSeen ?? Date.now() };
+    snapshotFrames(randomUUID(), [info], true);
+    const topicFrames = msg.topicFrames === true;
+    this.sessions.set(id, { socket, info, topicFrames });
+    setId(id);
+    if (this.shutdownTimer) {
+      clearTimeout(this.shutdownTimer);
+      this.shutdownTimer = null;
+    }
+    writeMessage(socket, {
+      type: "registered",
+      sessionId: id,
+      ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
+    });
+  }
+
+  private removeSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    this.clearPendingReplaceDeliveries(sessionId);
+    this.broadcast({ type: "session_left", sessionId }, sessionId);
+    this.scheduleShutdownCheck();
+  }
+
+  private planPublications(
+    fromId: string,
+    from: SessionInfo,
+    publication?: TopicUpdate,
+  ): Array<{ to: string; message: Message }> {
+    const deliveries: Array<{ to: string; message: Message }> = [];
+    if (!publication) {
+      return deliveries;
+    }
+    for (const target of this.sessions.values()) {
+      const subscription = target.info.subscriptions?.find(
+        (entry) => entry.topic === publication.topic,
+      );
+      if (target.info.id === fromId || !subscription) {
+        continue;
+      }
+      const message = publicationMessage(publication, subscription.awaitRelease === true);
+      const error = this.validateDeliveryPayload(from, message, target.topicFrames);
+      if (error !== null) {
+        throw new Error(error);
+      }
+      deliveries.push({ to: target.info.id, message });
+    }
+    return deliveries;
+  }
+
+  private list(socket: net.Socket, msg: UnknownRecord, currentId: string): void {
+    if (typeof msg.requestId !== "string") {
+      throw new Error("Invalid list message");
+    }
+    const requestId = msg.requestId;
+    try {
+      const session = this.sessions.get(currentId);
+      if (!session) {
+        throw new Error("Sender session not found");
+      }
+      const prepared = prepareTopicChange(session.info, msg.change, session.topicFrames);
+      const nextInfo = prepared.info;
+      const from = messageSender(nextInfo);
+      const deliveries = this.planPublications(currentId, from, prepared.publication);
+      const restore = prepared.restore;
+      const infos = [...this.sessions.values()].map((entry) =>
+        entry === session ? nextInfo : entry.info,
+      );
+      // Validate every frame before committing state or delivering publications.
+      if (restore) {
+        snapshotFrames(requestId, [nextInfo], true);
+      }
+      const frames = snapshotFrames(requestId, restore ? [] : infos, msg.stream === true);
+      const last = frames.pop();
+      if (!last) {
+        throw new Error("Missing final snapshot frame");
+      }
+      session.info = nextInfo;
+      const receipts: Array<SessionSnapshot["receipts"][number]> = [];
+      for (const { to, message } of deliveries) {
+        receipts.push({ to, ...this.sendToSession(currentId, to, from, message) });
+      }
+      for (const frame of frames) {
+        writeMessage(socket, frame);
+      }
+      for (const receipt of receipts) {
+        writeMessage(socket, {
+          type: "sessions",
+          requestId,
+          sessions: [],
+          receipts: [receipt],
+          more: true,
+        });
+      }
+      writeMessage(socket, last);
+    } catch (error) {
+      writeMessage(socket, {
         type: "sessions",
         requestId,
-        sessions: [
-          {
-            ...messageSender(info),
-            ...(info.topics ? { topics: [] } : {}),
-            ...(info.subscriptions ? { subscriptions: [] } : {}),
-          },
-        ],
-        more: true,
+        sessions: [],
+        error: errorMessage(error),
       });
-      for (const topic of info.topics ?? []) {
-        frames.push({
-          type: "sessions",
-          requestId,
-          sessions: [{ id: info.id, topics: [topic] }],
-          more: true,
+    }
+  }
+
+  private send(socket: net.Socket, msg: UnknownRecord, currentId: string): void {
+    const message = normalizeMessage(msg.message);
+    if (typeof msg.to !== "string" || !message) {
+      writeMessage(socket, {
+        type: "delivery_failed",
+        messageId: message?.id ?? "unknown",
+        reason: "Invalid message format",
+      });
+      return;
+    }
+    const targets = this.findSessions(msg.to);
+    const target = targets[0];
+    if (targets.length === 1) {
+      const fromSession = this.sessions.get(currentId);
+      if (!fromSession) {
+        writeMessage(socket, {
+          type: "delivery_failed",
+          messageId: message.id,
+          reason: "Sender session not found",
         });
+        return;
       }
-      for (const subscription of info.subscriptions ?? []) {
-        frames.push({
-          type: "sessions",
-          requestId,
-          sessions: [{ id: info.id, subscriptions: [subscription] }],
-          more: true,
-        });
+      this.touchActivity(currentId, true);
+      const receipt = this.sendToSession(
+        currentId,
+        target.info.id,
+        messageSender(fromSession.info),
+        message,
+      );
+      writeMessage(socket, deliveryAcknowledgement(receipt));
+      return;
+    }
+    writeMessage(socket, {
+      type: "delivery_failed",
+      messageId: message.id,
+      reason:
+        targets.length > 1
+          ? `Multiple sessions named "${msg.to}" are connected. Use the session ID instead.`
+          : "Session not found",
+    });
+  }
+
+  private presence(msg: UnknownRecord, currentId: string): void {
+    const session = this.sessions.get(currentId);
+    if (!session) {
+      return;
+    }
+    const update: Record<string, unknown> = { ...session.info, lastSeen: Date.now() };
+    for (const key of [
+      "name",
+      "status",
+      "model",
+      "pendingAsks",
+      "acceptsAsks",
+      "lastIntercomActivity",
+      "subscriptions",
+      "topics",
+    ]) {
+      if (msg[key] !== undefined) {
+        update[key] = msg[key];
       }
     }
-    frames.push({ type: "sessions", requestId, sessions: [], more: false });
-    for (const frame of frames) {
-      const error = validateIntercomMessageSize(frame);
-      if (error) {
-        throw error;
-      }
+    const nextInfo = normalizeSessionInfo(update);
+    if (!nextInfo) {
+      throw new Error("Invalid presence update");
     }
-    return frames;
+    snapshotFrames(randomUUID(), [nextInfo], true);
+    session.info = nextInfo;
   }
 
   private sendToSession(
@@ -537,18 +364,16 @@ class IntercomBroker {
         reason: "Recipient disconnected before delivery",
       };
     }
-    const status = target.info.status ?? "";
-    const idle = status === "idle" || status.startsWith("idle ");
-    if (
-      message.delivery === "queue" &&
-      message.queueMode === "replace" &&
-      message.threadId &&
-      (message.expectsReply || (idle && target.info.acceptsAsks !== false))
-    ) {
+    if (shouldReplaceDelivery(message, target.info)) {
       return this.queueReplaceDelivery(fromId, toId, from, message);
     }
     const reason = this.deliverMessage(toId, from, message);
-    return { id: message.id, accepted: !reason, delivered: !reason, ...(reason ? { reason } : {}) };
+    return {
+      id: message.id,
+      accepted: reason === null,
+      delivered: reason === null,
+      ...(reason !== null ? { reason } : {}),
+    };
   }
 
   /** Update liveness/intercom-activity timestamps for a connected session. */
@@ -558,10 +383,11 @@ class IntercomBroker {
       return;
     }
     const now = Date.now();
-    session.info.lastSeen = now;
-    if (comms) {
-      session.info.lastIntercomActivity = now;
-    }
+    session.info = {
+      ...session.info,
+      lastSeen: now,
+      ...(comms ? { lastIntercomActivity: now } : {}),
+    };
   }
 
   private replaceKey(fromId: string, toId: string, threadId: string): string {
@@ -579,7 +405,7 @@ class IntercomBroker {
       message,
       this.sessions.get(toId)?.topicFrames === true,
     );
-    if (validationError) {
+    if (validationError !== null) {
       return { id: message.id, accepted: false, delivered: false, reason: validationError };
     }
     const key = this.replaceKey(fromId, toId, message.threadId ?? "");
@@ -591,8 +417,8 @@ class IntercomBroker {
       this.pendingReplaceDeliveries.delete(key);
       this.deliverMessage(toId, from, message);
     }, REPLACE_DELIVERY_DELAY_MS);
-    timer.unref?.();
-    this.pendingReplaceDeliveries.set(key, { from, fromId, toId, message, timer });
+    timer.unref();
+    this.pendingReplaceDeliveries.set(key, { fromId, toId, message, timer });
     return {
       id: message.id,
       accepted: true,
@@ -606,7 +432,7 @@ class IntercomBroker {
     for (const [key, pending] of this.pendingReplaceDeliveries) {
       if (
         pending.toId === sessionId ||
-        (pending.fromId === sessionId && pending.message.expectsReply)
+        (pending.fromId === sessionId && pending.message.expectsReply === true)
       ) {
         clearTimeout(pending.timer);
         this.pendingReplaceDeliveries.delete(key);
@@ -639,7 +465,7 @@ class IntercomBroker {
       return "Recipient disconnected before delivery";
     }
     const validationError = this.validateDeliveryPayload(from, message, target.topicFrames);
-    if (validationError) {
+    if (validationError !== null) {
       return validationError;
     }
     this.touchActivity(toId, true);
@@ -651,7 +477,7 @@ class IntercomBroker {
       });
       return null;
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return error instanceof Error ? error.message : errorMessage(error);
     }
   }
 

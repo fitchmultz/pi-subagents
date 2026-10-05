@@ -7,6 +7,7 @@ import net from "net";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
 import { isBrokerPidReused } from "./pid.ts";
+import { errorMessage, hasErrorCode } from "../../shared/unknown.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -14,10 +15,12 @@ const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
 const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
-function usesLegacyTsxDefault(brokerCommand: string, brokerArgs: string[]): boolean {
+function usesLegacyTsxDefault(brokerCommand: string, brokerArgs: readonly string[]): boolean {
   return (
     brokerCommand === "npx" &&
     brokerArgs.length === 2 &&
@@ -29,7 +32,7 @@ function usesLegacyTsxDefault(brokerCommand: string, brokerArgs: string[]): bool
 export function getBrokerLaunchSpec(
   brokerPath: string,
   brokerCommand: string,
-  brokerArgs: string[],
+  brokerArgs: readonly string[],
 ): { command: string; args: string[] } {
   if (usesLegacyTsxDefault(brokerCommand, brokerArgs)) {
     return {
@@ -59,12 +62,12 @@ export function getBrokerSpawnOptions(): {
 }
 
 function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
+  return error instanceof Error ? error : new Error(errorMessage(error));
 }
 
 export async function spawnBrokerIfNeeded(
   brokerCommand: string,
-  brokerArgs: string[],
+  brokerArgs: readonly string[],
 ): Promise<void> {
   await mkdir(INTERCOM_DIR, { recursive: true });
 
@@ -98,14 +101,14 @@ export async function spawnBrokerIfNeeded(
         child.off("exit", onExit);
       };
 
-      const onError = (error: Error) => {
+      const onError = (error: Readonly<Error>) => {
         cleanup();
         reject(new Error(`Failed to spawn intercom broker: ${error.message}`, { cause: error }));
       };
 
       const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
         cleanup();
-        if (signal) {
+        if (signal !== null) {
           reject(new Error(`Intercom broker exited before startup with signal ${signal}`));
           return;
         }
@@ -114,16 +117,15 @@ export async function spawnBrokerIfNeeded(
 
       child.once("error", onError);
       child.once("exit", onExit);
-      waitForBroker().then(
-        () => {
+      waitForBroker()
+        .then(() => {
           cleanup();
           resolve();
-        },
-        (error) => {
+        })
+        .catch((error: unknown) => {
           cleanup();
           reject(toError(error));
-        },
-      );
+        });
     });
   } finally {
     releaseSpawnLock();
@@ -151,7 +153,7 @@ function readLivePid(): number | null {
   try {
     process.kill(pid, 0);
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM" ? pid : null;
+    return hasErrorCode(error, "EPERM") ? pid : null;
   }
   return isBrokerPidReused(pid, raw) ? null : pid;
 }
@@ -193,7 +195,7 @@ function checkOneSocket(brokerSocket: string): Promise<boolean> {
     socket.on("connect", onConnect);
     socket.on("error", onError);
     const timeout = setTimeout(() => finish(false), 1000);
-    timeout.unref?.();
+    timeout.unref();
   });
 }
 
@@ -204,15 +206,11 @@ function acquireSpawnLock(): boolean {
       writeFileSync(BROKER_SPAWN_LOCK, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
       return true;
     } catch (error) {
-      if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
+      if (!hasErrorCode(error, "EEXIST")) {
         throw error;
       }
       if (isSpawnLockStale()) {
-        try {
-          unlinkSync(BROKER_SPAWN_LOCK);
-        } catch {
-          // If we can't delete the stale lock, retry a few times before giving up
-        }
+        releaseSpawnLock();
         continue;
       }
       return false;
@@ -261,9 +259,13 @@ function releaseSpawnLock(): void {
 async function waitForBroker(timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    // Each probe must finish before the next to avoid parallel socket attempts.
+    // oxlint-disable-next-line no-await-in-loop
     if (await checkSocketConnectable()) {
       return;
     }
+    // Polling waits between probes rather than starting an unbounded batch.
+    // oxlint-disable-next-line no-await-in-loop
     await sleep(100);
   }
   throw new Error("Broker failed to start within timeout");

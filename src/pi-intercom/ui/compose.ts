@@ -13,79 +13,73 @@ import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { IntercomClient } from "../broker/client.ts";
 import type { SessionInfo } from "../types.ts";
 
-const BRACKETED_PASTE_START = "\x1b[200~";
-const BRACKETED_PASTE_END = "\x1b[201~";
-const MAX_PASTE_CHARS = 1_000_000;
-const INCOMPLETE_PASTE_IDLE_MS = 200;
-const PASTE_RENDER_TAIL_CHARS = 8192;
+import { ComposePaste, printableInput, PASTE_RENDER_TAIL_CHARS } from "./compose-paste.ts";
+import { errorMessage } from "../../shared/unknown.ts";
 
 export interface ComposeResult {
-  sent: boolean;
-  messageId?: string;
-  text?: string;
-  expectsReply?: boolean;
+  readonly sent: boolean;
+  readonly messageId?: string;
+  readonly text?: string;
+  readonly expectsReply?: boolean;
+}
+
+export interface ComposeOptions {
+  readonly keybindings: KeybindingsManager;
+  readonly target: SessionInfo;
+  readonly targetLabel: string;
+  readonly client: { readonly send: IntercomClient["send"] };
+  readonly done: (result: ComposeResult) => void;
 }
 
 export class ComposeOverlay extends Container {
-  private tui: TUI;
-  private theme: Theme;
-  private keybindings: KeybindingsManager;
-  private target: SessionInfo;
-  private targetLabel: string;
-  private client: IntercomClient;
-  private done: (result: ComposeResult) => void;
+  private readonly tui: TUI;
+  private readonly theme: Theme;
+  private readonly options: ComposeOptions;
+  private readonly paste: ComposePaste;
   private inputBuffer: string = "";
   private mode: "send" | "ask" = "send";
   private completed = false;
   private sending: boolean = false;
   private error: string | null = null;
-  private pasteBuffer: string | null = null;
-  private pasteStartPrefix = "";
-  private pasteIdleTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    tui: TUI,
-    theme: Theme,
-    keybindings: KeybindingsManager,
-    target: SessionInfo,
-    targetLabel: string,
-    client: IntercomClient,
-    done: (result: ComposeResult) => void,
-  ) {
+  constructor(tui: TUI, theme: Theme, options: ComposeOptions) {
     super();
     this.tui = tui;
     this.theme = theme;
-    this.keybindings = keybindings;
-    this.target = target;
-    this.targetLabel = targetLabel;
-    this.client = client;
-    this.done = done;
+    this.options = options;
+    this.paste = new ComposePaste({
+      flush: (text) => {
+        if (this.completed) {
+          return;
+        }
+        this.inputBuffer += text;
+        this.error = null;
+        this.tui.requestRender();
+      },
+      escape: (prefix) => {
+        if (this.options.keybindings.matches(prefix, "tui.select.cancel")) {
+          this.finish({ sent: false });
+        }
+      },
+      render: () => this.tui.requestRender(),
+    });
   }
 
   dispose(): void {
     this.completed = true;
-    if (this.pasteIdleTimer) {
-      clearTimeout(this.pasteIdleTimer);
-    }
-    this.pasteIdleTimer = null;
+    this.paste.dispose();
   }
 
-  handleMouse(event: TuiMouseEvent) {
+  handleMouse(event: Readonly<TuiMouseEvent>): ReturnType<Container["handleMouse"]> {
     const width = Math.min(event.width, 72);
-    if (
-      this.sending ||
-      this.completed ||
-      this.pasteBuffer !== null ||
-      this.pasteStartPrefix ||
-      event.x >= width
-    ) {
+    if (this.sending || this.completed || this.paste.busy || event.x >= width) {
       return;
     }
     return super.handleMouse({ ...event, width });
   }
 
   private act(action: "close" | "mode" | "send"): void {
-    if (this.sending || this.completed || this.pasteBuffer !== null || this.pasteStartPrefix) {
+    if (this.sending || this.completed || this.paste.busy) {
       return;
     }
     if (action === "close") {
@@ -93,8 +87,15 @@ export class ComposeOverlay extends Container {
     } else if (action === "mode") {
       this.mode = this.mode === "send" ? "ask" : "send";
       this.error = null;
-    } else if (this.inputBuffer.trim()) {
-      void this.sendMessage();
+    } else if (this.inputBuffer.trim().length > 0) {
+      this.sendMessage().catch((error: unknown) => {
+        if (this.completed) {
+          return;
+        }
+        this.error = errorMessage(error);
+        this.sending = false;
+        this.tui.requestRender();
+      });
     }
     this.tui.requestRender();
   }
@@ -104,136 +105,58 @@ export class ComposeOverlay extends Container {
       return;
     }
     this.dispose();
-    this.done(result);
+    this.options.done(result);
   }
 
-  private scheduleIncompletePasteFlush(): void {
-    if (this.pasteIdleTimer) {
-      clearTimeout(this.pasteIdleTimer);
-    }
-    this.pasteIdleTimer = setTimeout(() => {
-      this.pasteIdleTimer = null;
-      if (this.pasteBuffer === null || this.completed) {
-        return;
-      }
-      const data = this.pasteBuffer.replace(/\r\n?/g, "\n");
-      this.pasteBuffer = null;
-      const printable = [...data]
-        .filter((character) => character >= " " || character === "\n" || character === "\t")
-        .join("");
-      if (printable) {
-        this.inputBuffer += printable;
-      }
-      this.error = null;
-      this.tui.requestRender();
-    }, INCOMPLETE_PASTE_IDLE_MS);
-    this.pasteIdleTimer.unref?.();
-  }
-
-  handleInput(data: string): void {
-    if (this.sending || this.completed || !data) {
+  handleInput(input: string): void {
+    if (this.sending || this.completed || input.length === 0) {
       return;
     }
-
-    let pasted = false;
-    if (this.pasteBuffer !== null) {
-      this.pasteBuffer += data;
-      const end = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
-      if (end === -1 && this.pasteBuffer.length <= MAX_PASTE_CHARS) {
-        this.scheduleIncompletePasteFlush();
-        this.tui.requestRender();
-        return;
-      }
-      data =
-        end === -1
-          ? this.pasteBuffer
-          : this.pasteBuffer.slice(0, end) +
-            this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
-      this.pasteBuffer = null;
-      if (this.pasteIdleTimer) {
-        clearTimeout(this.pasteIdleTimer);
-      }
-      this.pasteIdleTimer = null;
-      data = data.replace(/\r\n?/g, "\n");
-      pasted = true;
-    } else {
-      if (this.pasteStartPrefix) {
-        if (this.pasteIdleTimer) {
-          clearTimeout(this.pasteIdleTimer);
-        }
-        this.pasteIdleTimer = null;
-        data = this.pasteStartPrefix + data;
-        this.pasteStartPrefix = "";
-      }
-      if (data !== BRACKETED_PASTE_START && BRACKETED_PASTE_START.startsWith(data)) {
-        this.pasteStartPrefix = data;
-        this.pasteIdleTimer = setTimeout(() => {
-          this.pasteIdleTimer = null;
-          const pendingPrefix = this.pasteStartPrefix;
-          this.pasteStartPrefix = "";
-          if (
-            pendingPrefix === "\x1b" &&
-            this.keybindings.matches(pendingPrefix, "tui.select.cancel")
-          ) {
-            this.finish({ sent: false });
-          }
-        }, INCOMPLETE_PASTE_IDLE_MS);
-        this.pasteIdleTimer.unref?.();
-        return;
-      }
-    }
-    if (!pasted && data.startsWith(BRACKETED_PASTE_START)) {
-      const body = data.slice(BRACKETED_PASTE_START.length);
-      const end = body.indexOf(BRACKETED_PASTE_END);
-      if (end === -1 && body.length <= MAX_PASTE_CHARS) {
-        this.pasteBuffer = body;
-        this.scheduleIncompletePasteFlush();
-        this.tui.requestRender();
-        return;
-      }
-      data = end === -1 ? body : body.slice(0, end) + body.slice(end + BRACKETED_PASTE_END.length);
-      data = data.replace(/\r\n?/g, "\n");
-      pasted = true;
-    }
-    if (!pasted && data.includes(BRACKETED_PASTE_END)) {
-      data = data.replaceAll(BRACKETED_PASTE_END, "");
-    }
-    if (!data) {
+    const normalized = this.paste.consume(input);
+    if (!normalized || normalized.text.length === 0) {
       return;
     }
+    const { text: data, pasted } = normalized;
 
-    if (!pasted && this.keybindings.matches(data, "tui.select.cancel")) {
-      this.act("close");
+    if (!pasted && this.handleEditorKey(data)) {
       return;
     }
-
-    if (!pasted && data === "\t") {
-      this.act("mode");
-      return;
-    }
-
-    if (!pasted && this.keybindings.matches(data, "tui.select.confirm")) {
-      this.act("send");
-      return;
-    }
-
-    if (!pasted && data.startsWith("\x1b")) {
-      return;
-    }
-
-    if (!pasted && this.keybindings.matches(data, "tui.editor.deleteCharBackward")) {
-      this.inputBuffer = [...this.inputBuffer].slice(0, -1).join("");
-      this.error = null;
-      this.tui.requestRender();
-      return;
-    }
-
-    const printable = [...data].filter((c) => c >= " " || c === "\n" || c === "\t").join("");
-    if (printable) {
+    const printable = printableInput(data);
+    if (printable.length > 0) {
       this.inputBuffer += printable;
       this.error = null;
       this.tui.requestRender();
     }
+  }
+
+  private handleEditorKey(data: string): boolean {
+    const keybindings = this.options.keybindings;
+    if (keybindings.matches(data, "tui.select.cancel")) {
+      this.act("close");
+      return true;
+    }
+    if (data === "\t") {
+      this.act("mode");
+      return true;
+    }
+    if (keybindings.matches(data, "tui.select.confirm")) {
+      this.act("send");
+      return true;
+    }
+    if (data.startsWith("\x1b")) {
+      return true;
+    }
+    if (keybindings.matches(data, "tui.editor.deleteCharBackward")) {
+      const graphemes = Array.from(
+        new Intl.Segmenter().segment(this.inputBuffer),
+        (part) => part.segment,
+      );
+      this.inputBuffer = graphemes.slice(0, -1).join("");
+      this.error = null;
+      this.tui.requestRender();
+      return true;
+    }
+    return false;
   }
 
   private async sendMessage(): Promise<void> {
@@ -244,10 +167,13 @@ export class ComposeOverlay extends Container {
     try {
       const expectsReply = this.mode === "ask";
       const text = this.inputBuffer;
-      const result = await this.client.send(this.target.id, {
+      const result = await this.options.client.send(this.options.target.id, {
         text,
         expectsReply,
       });
+      if (this.completed) {
+        return;
+      }
 
       if (!result.accepted) {
         this.error =
@@ -264,46 +190,41 @@ export class ComposeOverlay extends Container {
         expectsReply,
       });
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      if (this.completed) {
+        return;
+      }
+      this.error = errorMessage(error);
       this.sending = false;
       this.tui.requestRender();
     }
   }
 
-  private renderInputLines(
-    row: (text?: string) => string,
-    lines: string[],
-    contentWidth: number,
-  ): void {
-    const pendingPaste =
-      this.pasteBuffer === null
-        ? ""
-        : [...this.pasteBuffer.slice(-PASTE_RENDER_TAIL_CHARS)]
-            .filter((character) => character >= " " || character === "\n" || character === "\t")
-            .join("");
+  private renderInputLines(row: (text?: string) => string, contentWidth: number): string[] {
+    const pendingPaste = this.paste.preview;
     const rawLines = `${this.inputBuffer.slice(-PASTE_RENDER_TAIL_CHARS)}${pendingPaste}`.split(
       "\n",
     );
     const visibleLines = rawLines.slice(-8);
-    visibleLines.forEach((line, index) => {
+    return visibleLines.map((line, index) => {
       const isLast = index === visibleLines.length - 1;
       const prefix = index === 0 ? " > " : "   ";
+      let visibleLine = line;
       if (isLast) {
-        const graphemes = [...line];
+        const graphemes = Array.from(new Intl.Segmenter().segment(line), (part) => part.segment);
         const budget = Math.max(1, contentWidth - prefix.length - 1);
         let used = 0;
         let start = graphemes.length;
         while (start > 0) {
-          const width = visibleWidth(graphemes[start - 1]!);
+          const width = visibleWidth(graphemes[start - 1] ?? "");
           if (used + width > budget) {
             break;
           }
           used += width;
           start--;
         }
-        line = graphemes.slice(start).join("");
+        visibleLine = graphemes.slice(start).join("");
       }
-      lines.push(row(`${prefix}${line}${isLast ? "█" : ""}`));
+      return row(`${prefix}${visibleLine}${isLast ? "█" : ""}`);
     });
   }
 
@@ -315,26 +236,27 @@ export class ComposeOverlay extends Container {
     const innerWidth = Math.min(width, 72);
     const contentWidth = Math.max(1, innerWidth - 2);
     const send = [
-      this.keybindings.getKeys("tui.select.confirm").join("/"),
+      this.options.keybindings.getKeys("tui.select.confirm").join("/"),
       this.mode === "ask" ? "Request reply" : "Send",
     ]
       .filter(Boolean)
       .join(": ");
     const mode = `Tab: ${this.mode === "ask" ? "Send mode" : "Request-reply mode"}`;
-    const close = [this.keybindings.getKeys("tui.select.cancel").join("/"), "Close"]
+    const close = [this.options.keybindings.getKeys("tui.select.cancel").join("/"), "Close"]
       .filter(Boolean)
       .join(": ");
-    const footer = this.sending
-      ? ["Sending…"]
-      : this.pasteBuffer !== null || this.pasteStartPrefix
-        ? ["Pasting…"]
-        : [
-            { text: send, run: () => this.act("send") },
-            " • ",
-            { text: mode, run: () => this.act("mode") },
-            " • ",
-            { text: close, run: () => this.act("close") },
-          ];
+    let footer: Parameters<typeof actionHints>[0] = [
+      { text: send, run: () => this.act("send") },
+      " • ",
+      { text: mode, run: () => this.act("mode") },
+      " • ",
+      { text: close, run: () => this.act("close") },
+    ];
+    if (this.sending) {
+      footer = ["Sending…"];
+    } else if (this.paste.busy) {
+      footer = ["Pasting…"];
+    }
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
       const clipped = truncateToWidth(text, contentWidth, "…", true);
@@ -346,24 +268,29 @@ export class ComposeOverlay extends Container {
     lines.push(
       row(
         this.theme.bold(
-          ` ${this.mode === "ask" ? "Request reply" : "Send"} to: ${this.targetLabel}`,
+          ` ${this.mode === "ask" ? "Request reply" : "Send"} to: ${this.options.targetLabel}`,
         ),
       ),
     );
     lines.push(
-      row(this.theme.fg("dim", ` Native session cwd: ${this.target.cwd} • ${this.target.model}`)),
+      row(
+        this.theme.fg(
+          "dim",
+          ` Native session cwd: ${this.options.target.cwd} • ${this.options.target.model}`,
+        ),
+      ),
     );
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
     lines.push(row());
 
     if (this.sending) {
       lines.push(row(this.theme.fg("dim", " Sending...")));
-    } else if (this.error) {
+    } else if (this.error !== null) {
       lines.push(row(this.theme.fg("error", ` Error: ${this.error}`)));
       lines.push(row());
-      this.renderInputLines(row, lines, contentWidth);
+      lines.push(...this.renderInputLines(row, contentWidth));
     } else {
-      this.renderInputLines(row, lines, contentWidth);
+      lines.push(...this.renderInputLines(row, contentWidth));
     }
 
     lines.push(row());

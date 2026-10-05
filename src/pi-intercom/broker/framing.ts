@@ -1,4 +1,5 @@
 import type { Socket } from "net";
+import { errorMessage } from "../../shared/unknown.ts";
 
 export const MAX_FRAME_SIZE_BYTES = 1024 * 1024;
 
@@ -36,8 +37,8 @@ export function writeMessage(socket: Socket, msg: unknown): void {
  */
 export function createMessageReader(
   onMessage: (msg: unknown) => void,
-  onError: (error: Error) => void,
-) {
+  onError: (error: Readonly<Error>) => void,
+): (data: Buffer) => void {
   let buffer = Buffer.alloc(0);
 
   return (data: Buffer) => {
@@ -64,7 +65,7 @@ export function createMessageReader(
       try {
         msg = JSON.parse(payload.toString("utf-8"));
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         onError(new Error(`Failed to parse intercom message: ${message}`, { cause: error }));
         return;
       }
@@ -72,7 +73,7 @@ export function createMessageReader(
       try {
         onMessage(msg);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         onError(new Error(`Failed to handle intercom message: ${message}`, { cause: error }));
         return;
       }

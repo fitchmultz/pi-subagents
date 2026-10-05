@@ -5,6 +5,39 @@ import { closeSync, openSync, readFileSync, readlinkSync } from "node:fs";
 const IDENTITY =
   /^linux-v1 ([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}) (pid:\[\d+\]) (time:\[\d+\]) (\d+)$/;
 
+function processIdentity(base: string, pid: number): string | undefined {
+  const stat = readFileSync(`${base}/stat`, "utf8");
+  // comm can contain spaces, newlines and ')'; fields after its final ')' are fixed.
+  if (!stat.startsWith(`${pid} (`)) {
+    return;
+  }
+  const startTicks = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .split(/\s+/)
+    .at(19);
+  if (startTicks === undefined) {
+    return;
+  }
+  const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  const pidNamespace = readlinkSync(`${base}/ns/pid`);
+  // Linux applies the reader's time-namespace offset to stat.starttime.
+  const timeNamespace = readlinkSync("/proc/self/ns/time");
+  const identity = `linux-v1 ${bootId} ${pidNamespace} ${timeNamespace} ${startTicks}`;
+  return IDENTITY.test(identity) ? identity : undefined;
+}
+
+function threadGroupLeader(status: string, pid: number): number | undefined {
+  const tgid = Number(/^Tgid:[ \t]+(\d+)$/m.exec(status)?.[1]);
+  if (
+    !Number.isSafeInteger(tgid) ||
+    tgid <= 0 ||
+    Number(/^Pid:[ \t]+(\d+)$/m.exec(status)?.[1]) !== pid
+  ) {
+    return;
+  }
+  return tgid;
+}
+
 export function readLinuxProcess(pid: number): { tgid: number; identity?: string } | undefined {
   if (process.platform !== "linux") {
     return undefined;
@@ -21,30 +54,16 @@ export function readLinuxProcess(pid: number): { tgid: number; identity?: string
     fd = openSync(`/proc/${pid}`, "r");
     const base = `/proc/self/fd/${fd}`;
     const status = readFileSync(`${base}/status`, "utf8");
-    const tgid = Number(/^Tgid:[ \t]+(\d+)$/m.exec(status)?.[1]);
-    if (
-      !Number.isSafeInteger(tgid) ||
-      tgid <= 0 ||
-      Number(/^Pid:[ \t]+(\d+)$/m.exec(status)?.[1]) !== pid
-    ) {
-      return undefined;
+    const tgid = threadGroupLeader(status, pid);
+    if (tgid === undefined) {
+      return;
     }
     // Node writes process.pid (the thread-group leader), never a worker TID.
     if (tgid !== pid) {
       return { tgid };
     }
-    const stat = readFileSync(`${base}/stat`, "utf8");
-    // comm can contain spaces, newlines and ')'; fields after its final ')' are fixed.
-    if (!stat.startsWith(`${pid} (`)) {
-      return undefined;
-    }
-    const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19];
-    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    const pidNamespace = readlinkSync(`${base}/ns/pid`);
-    // Linux applies the *reader's* time-namespace offset to stat.starttime.
-    const timeNamespace = readlinkSync("/proc/self/ns/time");
-    const identity = `linux-v1 ${bootId} ${pidNamespace} ${timeNamespace} ${startTicks}`;
-    return IDENTITY.test(identity) ? { tgid, identity } : undefined;
+    const identity = processIdentity(base, pid);
+    return identity !== undefined ? { tgid, identity } : undefined;
   } catch {
     // Unavailable procfs, permissions or incomplete observations prove nothing.
     return undefined;
@@ -57,7 +76,7 @@ export function readLinuxProcess(pid: number): { tgid: number; identity?: string
 
 export function brokerPidRecord(): string {
   const identity = readLinuxProcess(process.pid)?.identity;
-  return `${process.pid}\n${identity ? `${identity}\n` : ""}`;
+  return `${process.pid}\n${identity !== undefined ? `${identity}\n` : ""}`;
 }
 
 export function isBrokerPidReused(pid: number, record: string): boolean {
