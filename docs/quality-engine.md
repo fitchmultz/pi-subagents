@@ -132,7 +132,8 @@ This is an input-contract check, not proof of callback purity or runtime freezin
   permission. The existing any-member matcher remains unchanged for other rules.
 - Conditional SDK types can erase an owned alias from the resolved type. The
   readonly rule recovers a nongeneric alias from the actual parameter or property
-  annotation only when that annotation resolves to the analyzed type. It follows
+  annotation only when that annotation resolves to the analyzed type (or that
+  exact type plus implicit `undefined` for an optional property). It follows
   import/re-export and alias chains, checking each declaration's real name and
   origin with the qualified matcher. It does not grant name-only or generic
   annotation permissions. Annotated unions and intersections check each part,

@@ -1,8 +1,8 @@
 diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-index 1590568..777056f 100644
+index e3f055c..7118476 100644
 --- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 +++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-@@ -258,7 +258,13 @@ func isTypeReadonlyObject(
+@@ -301,7 +301,13 @@ func isTypeReadonlyObject(
  			continue
  		}
  
@@ -17,7 +17,7 @@ index 1590568..777056f 100644
  			return readonlynessMutable
  		}
  	}
-@@ -293,7 +299,19 @@ func isTypeReadonlyRecurser(
+@@ -336,7 +342,19 @@ func isTypeReadonlyRecurser(
  ) readonlyness {
  	seenTypes[t] = struct{}{}
  
@@ -38,7 +38,7 @@ index 1590568..777056f 100644
  		return readonlynessReadonly
  	}
  
-@@ -309,33 +327,6 @@ func isTypeReadonlyRecurser(
+@@ -352,33 +370,6 @@ func isTypeReadonlyRecurser(
  		return readonlynessReadonly
  	}
  
@@ -72,7 +72,7 @@ index 1590568..777056f 100644
  	if !utils.IsObjectType(t) {
  		return readonlynessReadonly
  	}
-@@ -357,13 +348,80 @@ func isTypeReadonlyRecurser(
+@@ -400,13 +391,89 @@ func isTypeReadonlyRecurser(
  	return readonlynessReadonly
  }
  
@@ -84,6 +84,15 @@ index 1590568..777056f 100644
 +	opts readonlynessOptions,
 +	seenTypes map[*checker.Type]struct{},
 +) readonlyness {
++	if annotation != nil && utils.IsUnionType(t) {
++		annotatedType := checker.Checker_getTypeFromTypeNode(typeChecker, annotation)
++		if utils.Some(t.Types(), func(part *checker.Type) bool { return part == annotatedType }) &&
++			utils.Every(t.Types(), func(part *checker.Type) bool {
++				return part == annotatedType || utils.IsTypeUndefinedType(part)
++			}) {
++			return isTypeReadonlyAnnotated(program, typeChecker, annotatedType, annotation, opts, seenTypes)
++		}
++	}
 +	visited := map[*ast.Node]struct{}{}
 +	for annotation != nil && checker.Checker_getTypeFromTypeNode(typeChecker, annotation) == t {
 +		annotation = ast.SkipTypeParentheses(annotation)
@@ -154,7 +163,7 @@ index 1590568..777056f 100644
  }
  
  func isLiteralOrTaggablePrimitiveLike(t *checker.Type) bool {
-@@ -461,7 +519,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
+@@ -504,7 +571,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
  					continue
  				}
  
