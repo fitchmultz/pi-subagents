@@ -3,12 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AgentConfig,
-  AgentScope,
-  SystemPromptMode,
-  ChainConfig,
-} from "../shared/types/config.ts";
+import type { AgentConfig, AgentScope, ChainConfig } from "../shared/types/config.ts";
 export type {
   AgentConfig,
   AgentScope,
@@ -49,15 +44,11 @@ import { mergeAgentsForScope } from "./agent-selection.ts";
 import { errorMessage } from "./config-values.ts";
 export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
 
-export function defaultSystemPromptMode(_name: string): SystemPromptMode {
-  return "append";
-}
-export function defaultInheritProjectContext(_name: string): boolean {
-  return true;
-}
-export function defaultInheritSkills(): boolean {
-  return true;
-}
+export {
+  defaultSystemPromptMode,
+  defaultInheritProjectContext,
+  defaultInheritSkills,
+} from "./agent-defaults.ts";
 
 const BUILTIN_AGENTS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

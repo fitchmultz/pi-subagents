@@ -10,6 +10,11 @@ import {
   type AgentDiscoveryDiagnostic,
 } from "./discovery-paths.ts";
 import { csvItems, splitToolList, errorMessage } from "./config-values.ts";
+import {
+  defaultSystemPromptMode,
+  defaultInheritProjectContext,
+  defaultInheritSkills,
+} from "./agent-defaults.ts";
 
 type Frontmatter = Readonly<Partial<Record<string, string>>>;
 const reportedDiagnostics = new Map<string, { filePath: string; error: string }>();
@@ -120,6 +125,7 @@ function optionalBoolean(value: string | undefined): boolean | undefined {
 
 function contextFields(
   frontmatter: Frontmatter,
+  name: string,
 ): Pick<
   AgentConfig,
   | "systemPromptMode"
@@ -129,10 +135,15 @@ function contextFields(
   | "completionGuard"
 > {
   const defaultContext = frontmatter.defaultContext;
+  const systemPromptMode = frontmatter.systemPromptMode;
   return {
-    systemPromptMode: frontmatter.systemPromptMode === "replace" ? "replace" : "append",
-    inheritProjectContext: frontmatter.inheritProjectContext !== "false",
-    inheritSkills: frontmatter.inheritSkills !== "false",
+    systemPromptMode:
+      systemPromptMode === "append" || systemPromptMode === "replace"
+        ? systemPromptMode
+        : defaultSystemPromptMode(name),
+    inheritProjectContext:
+      optionalBoolean(frontmatter.inheritProjectContext) ?? defaultInheritProjectContext(name),
+    inheritSkills: optionalBoolean(frontmatter.inheritSkills) ?? defaultInheritSkills(),
     defaultContext:
       defaultContext === "fresh" || defaultContext === "fork" ? defaultContext : undefined,
     completionGuard: optionalBoolean(frontmatter.completionGuard),
@@ -208,7 +219,7 @@ function loadDefinition(filePath: string, source: AgentSource): AgentConfig | un
   }
   return {
     ...definitionFields(frontmatter),
-    ...contextFields(frontmatter),
+    ...contextFields(frontmatter, localName),
     name: buildRuntimeName(localName, parsedPackage.packageName),
     localName,
     packageName: parsedPackage.packageName,

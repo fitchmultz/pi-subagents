@@ -2,12 +2,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig, ChainConfig } from "../shared/types/config.ts";
 import type { SubagentExecutionResult } from "../shared/types.ts";
+import { discoverAgentsAll } from "./agents.ts";
 import {
-  discoverAgentsAll,
   defaultSystemPromptMode,
   defaultInheritProjectContext,
   defaultInheritSkills,
-} from "./agents.ts";
+} from "./agent-defaults.ts";
 import { serializeAgent } from "./agent-serializer.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
