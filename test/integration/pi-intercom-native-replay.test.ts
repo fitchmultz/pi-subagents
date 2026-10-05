@@ -2399,6 +2399,7 @@ test("native context omits previously delivered idle attention for a finished ch
       runId,
       agent: "worker",
       index: 0,
+      message: "Worker is waiting for attention while its sibling runs",
     },
     noticeText: "PREVIOUS_IDLE_NOTICE",
   });

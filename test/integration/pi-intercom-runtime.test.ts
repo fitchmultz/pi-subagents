@@ -7,7 +7,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { createRequire } from "node:module";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import type { Readable } from "node:stream";
 import {
@@ -106,10 +106,9 @@ process.on("exit", () => {
   rmSync(sharedHomeDir, { recursive: true, force: true });
 });
 
-type BrokerProcess = ChildProcessByStdio<null, Readable, Readable>;
-const activeBrokers = new Set<BrokerProcess>();
+const activeBrokers = new Set<ChildProcess>();
 
-function signalBroker(broker: BrokerProcess, signal: NodeJS.Signals): void {
+function signalBroker(broker: ChildProcess, signal: NodeJS.Signals): void {
   if (broker.pid !== undefined && broker.pid > 0) {
     try {
       process.kill(-broker.pid, signal);
@@ -173,7 +172,9 @@ function unrefStream(stream: Readable): void {
   }
 }
 
-function detachBrokerFromTestRunner(broker: BrokerProcess): void {
+function detachBrokerFromTestRunner(broker: ChildProcess): void {
+  assertDefined(broker.stdout);
+  assertDefined(broker.stderr);
   unrefStream(broker.stdout);
   unrefStream(broker.stderr);
   broker.unref();
@@ -197,7 +198,9 @@ function brokerSocketConnectable(): Promise<boolean> {
   });
 }
 
-async function waitForBrokerReady(broker: BrokerProcess): Promise<void> {
+async function waitForBrokerReady(broker: ChildProcess): Promise<void> {
+  const stdout = broker.stdout;
+  assertDefined(stdout);
   await new Promise<void>((resolve, reject) => {
     const poll = setInterval(() => {
       brokerSocketConnectable()
@@ -235,11 +238,11 @@ async function waitForBrokerReady(broker: BrokerProcess): Promise<void> {
     const cleanup = () => {
       clearInterval(poll);
       clearTimeout(timeout);
-      broker.stdout.off("data", onStdout);
+      stdout.off("data", onStdout);
       broker.off("exit", onExit);
     };
 
-    broker.stdout.on("data", onStdout);
+    stdout.on("data", onStdout);
     broker.once("exit", onExit);
   });
 }
@@ -664,7 +667,7 @@ async function setupBroker() {
   }
 }
 
-async function stopBroker(broker: BrokerProcess): Promise<void> {
+async function stopBroker(broker: ChildProcess): Promise<void> {
   activeBrokers.delete(broker);
   if (broker.exitCode !== null || broker.signalCode !== null) {
     return;
