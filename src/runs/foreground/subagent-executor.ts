@@ -1,11 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveExecutionCwd } from "../../shared/execution-cwd.ts";
 import { errorMessage } from "../../shared/unknown.ts";
 import { ownedRunStatusResult, resolveOwnedRun } from "../shared/run-records.ts";
-import type {
-  SubagentExecutionResult,
-  SubagentExecutionUpdateCallback,
-} from "../../shared/types.ts";
+import type { SubagentExecutionResult } from "../../shared/types.ts";
 import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 import { nestedResolutionScopeForExecutor, resolveRequestedCwd } from "./execution-routing.ts";
 import { cancelSupervisorInput, projectSupervisorQuestions } from "./question-control.ts";
@@ -17,15 +13,8 @@ export type { SubagentParamsLike } from "./subagent-params.ts";
 export { normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "./subagent-params.ts";
 export { writeAsyncInterruptRequest } from "./foreground-control.ts";
 
-type ExecuteSubagent = (
-  id: string,
-  params: SubagentParamsLike,
-  signal: AbortSignal | undefined,
-  onUpdate: SubagentExecutionUpdateCallback | undefined,
-  ctx: ExtensionContext,
-  executionCwd?: string,
-) => Promise<SubagentExecutionResult>;
-interface Invocation extends Omit<ExecutionInvocation, "invocationCwd"> {
+export interface SubagentExecutionRequest extends Omit<ExecutionInvocation, "invocationCwd"> {
+  readonly toolCallId: string;
   readonly executionCwd?: string;
 }
 interface WaitTarget {
@@ -98,7 +87,7 @@ class ForegroundExecutor {
     this.management = new ManagementActions(deps);
     this.launch = new InvocationExecution(deps);
   }
-  async execute(call: Invocation): Promise<SubagentExecutionResult> {
+  async execute(call: SubagentExecutionRequest): Promise<SubagentExecutionResult> {
     const waiting = waitsForReceipt(call.params);
     const before = waiting ? new Set(this.deps.state.ownedRuns?.keys()) : undefined;
     const result = await this.invoke(call);
@@ -111,7 +100,7 @@ class ForegroundExecutor {
     }
     return this.projectAction(result, call);
   }
-  private async invoke(call: Invocation): Promise<SubagentExecutionResult> {
+  private async invoke(call: SubagentExecutionRequest): Promise<SubagentExecutionResult> {
     const needsCwd = needsExecutionCwd(call.params);
     const cwd = needsCwd
       ? (call.executionCwd ?? resolveExecutionCwd(this.deps.pi, call.ctx))
@@ -137,7 +126,7 @@ class ForegroundExecutor {
     });
   }
   private waitForReceipt(
-    call: Invocation,
+    call: SubagentExecutionRequest,
     target: WaitTarget,
     before: Readonly<ReadonlySet<string>> | undefined,
   ): Promise<SubagentExecutionResult> {
@@ -156,7 +145,7 @@ class ForegroundExecutor {
   }
   private projectAction(
     result: SubagentExecutionResult,
-    call: Invocation,
+    call: SubagentExecutionRequest,
   ): SubagentExecutionResult {
     const { params, ctx } = call;
     if (params.action === "interrupt") {
@@ -208,10 +197,9 @@ export function createSubagentExecutor(
   // This factory transfers the actual session mutation owner to the native executor and its domain owners.
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   deps: ExecutorDeps,
-): { execute: ExecuteSubagent } {
+): { execute: (request: SubagentExecutionRequest) => Promise<SubagentExecutionResult> } {
   const owner = new ForegroundExecutor(deps);
   return {
-    execute: async (_id, params, signal, onUpdate, ctx, executionCwd) =>
-      owner.execute({ params, signal, onUpdate, ctx, executionCwd }),
+    execute: async (request) => owner.execute(request),
   };
 }
