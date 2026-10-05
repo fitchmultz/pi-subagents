@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { importSelectedNative } from "../../src/shared/native-import.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, before, describe, it } from "node:test";
 import {
@@ -44,16 +45,12 @@ import {
 const sdkRoot =
   process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ??
   path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
-assert.equal(
-  fs.realpathSync(sdkRoot),
-  fs.realpathSync(
-    path.dirname(
-      path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))),
-    ),
-  ),
-  "selected host must match the installed SDK graph",
+const { SessionManager } = await importSelectedNative(
+  import.meta.url,
+  "@earendil-works/pi-coding-agent",
+  pathToFileURL(path.join(sdkRoot, "dist/index.js")).href,
+  () => import("@earendil-works/pi-coding-agent"),
 );
-const { SessionManager } = await import("@earendil-works/pi-coding-agent");
 import { createSubagentState, readResult, readStatusFile } from "../support/background-fixtures.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
 const nativeRoot = createTempDir("mixed-sdk-");

@@ -1,4 +1,5 @@
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { importSelectedNative } from "../../src/shared/native-import.ts";
 import { assertDefined, textAt, record, text } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
@@ -43,26 +44,22 @@ const defined1420_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.
 assertDefined(defined1420_0);
 const sdkRoot = process.env.PI_PARENT_USAGE_TEST_SDK ?? path.dirname(defined1420_0);
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
-const installedPackage = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
-assertDefined(installedPackage);
-assert.equal(
-  path.resolve(sdkRoot),
-  path.resolve(path.dirname(installedPackage)),
-  "selected host must match the installed SDK graph",
+const sdk = await importSelectedNative(
+  import.meta.url,
+  "@earendil-works/pi-coding-agent",
+  sdkEntry.href,
+  () => import("@earendil-works/pi-coding-agent"),
 );
-const sdk = await import("@earendil-works/pi-coding-agent");
 const defined1674_0 = findPackageJSON("@earendil-works/pi-ai", sdkEntry);
 assertDefined(defined1674_0);
 const aiRoot = path.dirname(defined1674_0);
-const installedAiPackage = findPackageJSON("@earendil-works/pi-ai", import.meta.url);
-assertDefined(installedAiPackage);
-assert.equal(
-  path.resolve(aiRoot),
-  path.resolve(path.dirname(installedAiPackage)),
-  "selected host must match the installed AI graph",
-);
 const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } =
-  await import("@earendil-works/pi-ai");
+  await importSelectedNative(
+    import.meta.url,
+    "@earendil-works/pi-ai",
+    pathToFileURL(path.join(aiRoot, "dist/index.js")).href,
+    () => import("@earendil-works/pi-ai"),
+  );
 const usage = {
   input: 10,
   output: 20,

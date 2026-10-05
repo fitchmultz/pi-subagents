@@ -639,9 +639,9 @@ describe("fork context execution wiring", () => {
       const ctx = makeCtx(manager);
       if (testCase.availableModel) {
         const model = testCase.availableModel;
-        ctx.modelRegistry.getAvailable = () => [
+        mock.method(ctx.modelRegistry, "getAvailable", () => [
           fauxProvider({ provider: model.provider, models: [{ id: model.id }] }).getModel(),
-        ];
+        ]);
       }
       // Each scenario owns shared fixture state; complete it before starting the next one.
       // oxlint-disable-next-line no-await-in-loop
@@ -703,7 +703,7 @@ describe("fork context execution wiring", () => {
         provider: "anthropic",
         models: [{ id: "claude-sonnet-4-6" }],
       }).getModel();
-      ctx.modelRegistry.getAvailable = () => [anthropic];
+      mock.method(ctx.modelRegistry, "getAvailable", () => [anthropic]);
       ctx.ui.custom = customInteraction(["m", "\r", "\r"]);
       // Each scenario owns shared fixture state; complete it before starting the next one.
       // oxlint-disable-next-line no-await-in-loop
@@ -743,9 +743,9 @@ describe("fork context execution wiring", () => {
     }));
 
     const ctx = makeCtx(manager);
-    ctx.modelRegistry.getAvailable = () => {
+    mock.method(ctx.modelRegistry, "getAvailable", () => {
       throw new Error("model registry unavailable");
-    };
+    });
 
     const result = await executor.execute({
       toolCallId: "id",
