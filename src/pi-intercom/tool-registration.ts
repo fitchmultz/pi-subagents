@@ -12,6 +12,9 @@ import {
   renderIntercomCall,
   renderIntercomResult,
 } from "./ui/tool-renderers.ts";
+type MessagingTool = Readonly<Pick<IntercomTools, "execute">>;
+type SupervisorTool = Readonly<Pick<IntercomSupervisor, "execute">>;
+
 function nativeResult(result: ToolResultLike): {
   content: { type: "text"; text: string }[];
   details: Readonly<Record<string, unknown>> | undefined;
@@ -20,7 +23,7 @@ function nativeResult(result: ToolResultLike): {
   const success = throwIfToolError(result);
   return { content: [...success.content], details: success.details, isError: false };
 }
-function registerContact(pi: ExtensionAPI, supervisor: Readonly<IntercomSupervisor>): void {
+function registerContact(pi: ExtensionAPI, supervisor: SupervisorTool): void {
   pi.registerTool({
     name: "contact_supervisor",
     label: "Contact Supervisor",
@@ -68,7 +71,7 @@ function registerLoader(pi: ExtensionAPI): void {
     },
   });
 }
-function registerMessaging(pi: ExtensionAPI, tools: Readonly<IntercomTools>): void {
+function registerMessaging(pi: ExtensionAPI, tools: MessagingTool): void {
   pi.registerTool({
     name: "intercom",
     defaultActive: false,
@@ -107,8 +110,8 @@ Usage:
 }
 export function registerIntercomTools(
   pi: ExtensionAPI,
-  tools: Readonly<IntercomTools>,
-  supervisor: Readonly<IntercomSupervisor> | null,
+  tools: MessagingTool,
+  supervisor: SupervisorTool | null,
 ): void {
   if (supervisor) {
     registerContact(pi, supervisor);
