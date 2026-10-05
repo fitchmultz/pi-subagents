@@ -77,13 +77,19 @@ function nonemptyModel(
   return result?.model !== undefined && result.model.length > 0;
 }
 
+function indexedModel(
+  results: readonly DelegationResultItem[],
+  index: number | undefined,
+): string | undefined {
+  // Negative progress indexes are absent, not Array.at offsets into the last child.
+  return index !== undefined && index >= 0 ? results.at(index)?.model : undefined;
+}
+
 function progressModel(result: DelegationResult, entry: DelegationProgress): string | undefined {
   const results = result.details?.results ?? [];
-  if (entry.index !== undefined && entry.index >= 0) {
-    const model = results.at(entry.index)?.model;
-    if (model !== undefined) {
-      return model;
-    }
+  const model = indexedModel(results, entry.index);
+  if (model !== undefined) {
+    return model;
   }
   if (entry.agent !== undefined && entry.agent.length > 0) {
     const byAgent = results.find((item) => item.agent === entry.agent && item.model !== undefined);
