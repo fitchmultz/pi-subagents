@@ -6,7 +6,8 @@ import { historyDirectory, openHistoryDatabase } from "./database.ts";
 import { createHistorySchema, HISTORY_SCHEMA_VERSION } from "./schema.ts";
 import { hash } from "./text.ts";
 import { HistoryIndexError } from "./types.ts";
-import { object, errorCode, errorMessage } from "./values.ts";
+import { object, errorMessage } from "./values.ts";
+import { hasErrorCode } from "../shared/unknown.ts";
 
 function manifestFile(manifest: string): string | undefined {
   try {
@@ -16,7 +17,7 @@ function manifestFile(manifest: string): string | undefined {
       return saved.file;
     }
   } catch (error) {
-    if (errorCode(error) !== "ENOENT" && !(error instanceof SyntaxError)) {
+    if (!hasErrorCode(error, "ENOENT") && !(error instanceof SyntaxError)) {
       throw error;
     }
   }

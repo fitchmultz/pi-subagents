@@ -19,7 +19,7 @@ import {
   type Request,
 } from "./types.ts";
 import { requirePiPackageRoot } from "../runs/shared/pi-spawn.ts";
-import { isObject } from "./values.ts";
+import { isRecord } from "../shared/unknown.ts";
 import {
   parseRunPage,
   parsePage,
@@ -350,7 +350,7 @@ export class SubagentHistoryIndex {
       if (value === null) {
         return null;
       }
-      if (!isObject(value)) {
+      if (!isRecord(value)) {
         throw new HistoryIndexError("INVALID", "Invalid history detail response.");
       }
       return value;

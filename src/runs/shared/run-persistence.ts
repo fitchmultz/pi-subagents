@@ -8,7 +8,6 @@ import { compactForegroundResult, getSingleResultOutput } from "../../shared/uti
 import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
 import { readAsyncResultFile } from "../background/async-result-file.ts";
 import { formatRunIdAmbiguity } from "./run-id-ambiguity.ts";
-import { workflowAgentNodes } from "./workflow-graph.ts";
 import {
   compactOwnerResult,
   getRunMetadataDir,
@@ -22,7 +21,6 @@ import type {
   ReadonlySingleResult,
   ReadonlyAsyncResultChild,
   SubagentState,
-  WorkflowGraphSnapshot,
 } from "../../shared/types.ts";
 import type { OwnedRunReadState } from "./owned-run-read-state.ts";
 import { setOwnedRun } from "./run-state-owner.ts";
@@ -180,28 +178,4 @@ export function saveForegroundRun(input: {
   };
   writeAtomicJson(path.join(getRunMetadataDir(input.runId), "foreground.json"), run);
   return run;
-}
-
-export function workflowChildren(
-  children: OwnedRun["children"],
-  graph: WorkflowGraphSnapshot | undefined,
-): OwnedRun["children"] {
-  if (
-    !graph ||
-    (graph.mode !== "chain" && !children.some((child) => (child.workflowNodeId ?? "") !== ""))
-  ) {
-    return children;
-  }
-  const result: OwnedRun["children"][number][] = [];
-  for (const [index, node] of workflowAgentNodes(graph).entries()) {
-    const declared = children.find((child) => child.workflowNodeId === node.id);
-    result.push({
-      ...declared,
-      index,
-      workflowNodeId: node.id,
-      agent: node.agent ?? declared?.agent ?? "unknown",
-      ...(node.itemKey !== undefined ? { label: node.label } : {}),
-    });
-  }
-  return result;
 }

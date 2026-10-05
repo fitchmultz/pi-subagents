@@ -17,7 +17,7 @@ import { stamp } from "./source-file.ts";
 import { SourceWatches } from "./source-watches.ts";
 import { projectRun, compactView, unknownRun } from "./run-projection.ts";
 import { number, text, nullableText } from "./rows.ts";
-import { errorCode } from "./values.ts";
+import { hasErrorCode } from "../shared/unknown.ts";
 import { hasText } from "./text.ts";
 import { selectCanonicalResult } from "./canonical-selection.ts";
 
@@ -339,7 +339,7 @@ export class HistoryWorker {
       }, 50);
     } else if (error instanceof HistoryIndexError && error.code === "SOURCE_CHANGED") {
       this.dirtySources.set(id, true);
-    } else if (errorCode(error) === "ENOENT") {
+    } else if (hasErrorCode(error, "ENOENT")) {
       this.requireStore().resetSource(id, "missing", "Linked native conversation is missing.");
     } else {
       this.requireStore().run(

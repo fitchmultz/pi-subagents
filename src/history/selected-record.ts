@@ -5,7 +5,8 @@ import { HistoryIndexError } from "./types.ts";
 import type { EntryRow, SourceRow } from "./rows.ts";
 import { identity } from "./source-file.ts";
 import { previewLimits, previewProjection } from "./preview.ts";
-import { parseObject, isObject, errorCode } from "./values.ts";
+import { parseObject } from "./values.ts";
+import { isRecord, hasErrorCode } from "../shared/unknown.ts";
 
 function validateHeader(fd: number, source: SourceRow): void {
   const hash = createHash("sha256");
@@ -65,7 +66,7 @@ function readBody(
       }
       parser.write(decoder.decode());
       const projected = parser.finish();
-      if (!isObject(projected)) {
+      if (!isRecord(projected)) {
         throw new HistoryIndexError("SOURCE_CHANGED", "Selected record is not an object.");
       }
       return projected;
@@ -121,7 +122,7 @@ export function validateRecord(
     // Physical validation wins over full JSON/UTF-8 decode errors if the file changed during reading.
     return body.finish();
   } catch (error) {
-    if (errorCode(error) === "ENOENT") {
+    if (hasErrorCode(error, "ENOENT")) {
       throw new HistoryIndexError("SOURCE_CHANGED", "Selected conversation is missing.");
     }
     if (error instanceof RangeError) {

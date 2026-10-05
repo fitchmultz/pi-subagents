@@ -2,15 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AsyncRunRecord } from "../background/async-resume.ts";
 import { readAsyncResultFile } from "../background/async-result-file.ts";
-import { getRunMetadataDir, saveAsyncRunResult, saveRunStatus } from "./supervisor-questions.ts";
+import { getRunMetadataDir, saveAsyncRunResult } from "./supervisor-questions.ts";
 import {
   RESULTS_DIR,
   type OwnedRun,
   type ReadonlyAsyncStatus,
   type ReadonlyAsyncResultChild,
 } from "../../shared/types.ts";
-import { savedWorkflowNodes } from "./owned-run-observation.ts";
-import { workflowChildren } from "./run-persistence.ts";
+import { savedWorkflowNodes, workflowChildren } from "./workflow-graph.ts";
 import { recoverLegacyTerminalOutput } from "./legacy-output-recovery.ts";
 
 type StatusStep = NonNullable<ReadonlyAsyncStatus["steps"]>[number];
@@ -137,9 +136,6 @@ export function recoveredAsyncRun(
   const asyncDir = location.asyncDir;
   if (!status || asyncDir === null || asyncDir === "") {
     return undefined;
-  }
-  if (!durable && !["running", "queued"].includes(status.state)) {
-    saveRunStatus(status.runId, status);
   }
   return {
     ...old,

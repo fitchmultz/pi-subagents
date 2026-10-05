@@ -3,7 +3,6 @@ import { listOwnedRunQuestions } from "./supervisor-questions.ts";
 import type { ManagementRunState, OwnedRun, OwnedRunView } from "../../shared/types.ts";
 import type { OwnedRunReadState } from "./owned-run-read-state.ts";
 import { RunObservation, type OwnedRunViewOptions } from "./owned-run-observation.ts";
-export { savedWorkflowNodes, type OwnedRunViewOptions } from "./owned-run-observation.ts";
 
 function runAttention(run: OwnedRun, state: ManagementRunState, pendingInput: boolean): string[] {
   return [
@@ -42,27 +41,25 @@ export function ownedRunView(
   const run = state.ownedRuns?.get(requestedRun.runId) ?? requestedRun;
   const observed = new RunObservation(run, state, options);
   const children = observed.indices.map((index) => observed.child(index));
-  const live = observed.live(children);
-  const error = observed.error();
-  const executionState = observed.executionState(children, live, error);
   const pendingInput =
     options.pendingInput ??
     listOwnedRunQuestions(run.ownerSessionId, run.runId).some(
       (question) => question.state === "awaiting_input" || question.state === "answer_pending",
     );
+  const summary = observed.summary(children, pendingInput);
   const resultPath = observed.result ? observed.resultPath : undefined;
   return {
     ...run,
-    state: executionState,
+    state: summary.state,
     children,
-    attention: runAttention(run, executionState, pendingInput),
-    canInterrupt: observed.canInterrupt(live, pendingInput),
-    updatedAt: observed.updatedAt(),
+    attention: runAttention(run, summary.state, pendingInput),
+    canInterrupt: summary.canInterrupt,
+    updatedAt: summary.updatedAt,
     continuations: options.includeContinuations === false ? [] : continuations(run, state),
     ...(resultPath !== undefined ? { resultPath } : {}),
     ...(!observed.result && observed.foreground
       ? { resultPath: path.join(observed.root, "foreground.json") }
       : {}),
-    diagnosis: observed.diagnosis(executionState, error),
+    diagnosis: summary.diagnosis,
   };
 }

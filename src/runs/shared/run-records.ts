@@ -6,8 +6,8 @@ export {
   rememberOwnedRun,
   resolveOwnedRun,
   saveForegroundRun,
-  workflowChildren,
 } from "./run-persistence.ts";
+export { workflowChildren } from "./workflow-graph.ts";
 export {
   restoreOwnedRuns,
   restoreOwnedRunsAsync,

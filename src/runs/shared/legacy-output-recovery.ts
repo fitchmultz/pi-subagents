@@ -99,7 +99,7 @@ function successfulStructuredResult(
     result !== undefined &&
     result.toolCallId === call.id &&
     result.toolName === "structured_output" &&
-    (result.isError === undefined || result.isError === false)
+    result.isError === false
   );
 }
 

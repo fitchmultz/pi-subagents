@@ -1,7 +1,7 @@
 import { HistoryIndexError } from "./types.ts";
 
 import { isRecord } from "../shared/unknown.ts";
-export { isRecord as isObject, errorMessage } from "../shared/unknown.ts";
+export { errorMessage } from "../shared/unknown.ts";
 export function object(value: unknown): Readonly<Record<string, unknown>> {
   return isRecord(value) ? value : {};
 }
@@ -18,9 +18,6 @@ export function parseObject(text: string): Readonly<Record<string, unknown>> {
     throw new HistoryIndexError("INVALID", "Expected a JSON object.");
   }
   return value;
-}
-export function errorCode(error: unknown): unknown {
-  return object(error).code;
 }
 export function at(value: unknown, keys: readonly (string | number)[]): unknown {
   let current = value;

@@ -24,6 +24,7 @@ import {
   migrateSupervisorQuestionSteps,
   readRunJson,
   saveQuestionOwner,
+  saveRunStatus,
 } from "./supervisor-questions.ts";
 import {
   ASYNC_DIR,
@@ -32,6 +33,7 @@ import {
   type ReadonlyInput,
   type OwnedRun,
   type SubagentState,
+  type SubagentRunMode,
 } from "../../shared/types.ts";
 import { OWNED_RUN_ENTRY, rememberOwnedRun, saveForegroundRun } from "./run-persistence.ts";
 import {
@@ -46,6 +48,12 @@ import { recoveredAsyncRun, repairLegacyAsyncResult } from "./legacy-async-recov
 type Invocation = ReadonlyInput<SubagentParamsLike>;
 type Calls = Readonly<ReadonlyMap<string, Invocation>>;
 type Discovery = { readonly steps: () => Generator<void, AsyncRunRecord[]> };
+interface LegacyReceipt {
+  readonly entry: SessionEntry;
+  readonly details: ReadonlyDetails;
+  readonly runId: string;
+  readonly mode: SubagentRunMode;
+}
 
 function receiptDetails(entry: SessionEntry): ReadonlyDetails | undefined {
   try {
@@ -105,11 +113,20 @@ function* restoreDeclaredRuns(
   }
 }
 
+function legacyReceipt(entry: SessionEntry): LegacyReceipt | undefined {
+  const details = receiptDetails(entry);
+  const runId = details?.runId ?? details?.asyncId;
+  if (details && details.mode !== "management" && runId !== undefined && runId !== "") {
+    return { entry, details, runId, mode: details.mode };
+  }
+  return undefined;
+}
+
 function* recoveredReceipts(
   ctx: ExtensionContext,
   entries: readonly SessionEntry[],
-): Generator<void, SessionEntry[]> {
-  const receipts: SessionEntry[] = [];
+): Generator<void, LegacyReceipt[]> {
+  const receipts: LegacyReceipt[] = [];
   for (const entry of entries) {
     yield;
     const tool =
@@ -121,8 +138,12 @@ function* recoveredReceipts(
       continue;
     }
     const receipt = ctx.sessionManager.getEntry(entry.id);
-    if (receipt) {
-      receipts.push(receipt);
+    if (!receipt) {
+      continue;
+    }
+    const validated = legacyReceipt(receipt);
+    if (validated) {
+      receipts.push(validated);
     }
   }
   return receipts;
@@ -171,10 +192,6 @@ function inheritedReceipts(ctx: ExtensionContext): Readonly<ReadonlySet<string>>
   return fs.existsSync(parent) ? new Set(snapshotNativeUsage(parent)) : undefined;
 }
 
-function receiptRunId(details: ReadonlyDetails | undefined): string | undefined {
-  return details?.runId ?? details?.asyncId;
-}
-
 function legacyChildren(
   details: ReadonlyDetails,
   request: Invocation | undefined,
@@ -205,16 +222,8 @@ function invocationCwd(ctx: ExtensionContext, request: Invocation | undefined): 
   return cwd !== undefined && cwd !== "" ? path.resolve(ctx.cwd, cwd) : ctx.cwd;
 }
 
-function legacyRun(
-  ctx: ExtensionContext,
-  entry: SessionEntry,
-  details: ReadonlyDetails,
-  calls: Calls,
-): OwnedRun {
-  const runId = receiptRunId(details);
-  if (runId === undefined || runId === "" || details.mode === "management") {
-    throw new Error("Legacy receipt has no execution identity.");
-  }
+function legacyRun(ctx: ExtensionContext, receipt: LegacyReceipt, calls: Calls): OwnedRun {
+  const { entry, details, runId, mode } = receipt;
   const request =
     entry.type === "message" && entry.message.role === "toolResult"
       ? calls.get(entry.message.toolCallId)
@@ -223,7 +232,7 @@ function legacyRun(
     runId,
     ownerSessionId: ctx.sessionManager.getSessionId(),
     ...legacyLineage(details, runId),
-    mode: details.mode,
+    mode,
     cwd: invocationCwd(ctx, request),
     task: details.results.at(0)?.task ?? request?.task ?? "Recovered delegated run",
     startedAt: Date.parse(entry.timestamp),
@@ -276,39 +285,30 @@ function* restoreLegacyReceipts(
   entries: readonly SessionEntry[],
 ): Generator<void> {
   const receipts = yield* recoveredReceipts(ctx, entries);
-  const needsCalls = receipts.some((entry) => {
-    const details = receiptDetails(entry);
-    return details !== undefined && state.ownedRuns?.has(receiptRunId(details) ?? "") !== true;
-  });
+  const needsCalls = receipts.some((receipt) => state.ownedRuns?.has(receipt.runId) !== true);
   const calls = needsCalls ? yield* legacyCalls(ctx, entries) : new Map<string, Invocation>();
   const inherited = inheritedReceipts(ctx);
-  for (const entry of receipts) {
+  for (const receipt of receipts) {
     yield;
-    if (!inherited || inherited.has(entry.id)) {
+    if (
+      !inherited ||
+      inherited.has(receipt.entry.id) ||
+      state.ownedRuns?.has(receipt.runId) === true
+    ) {
       continue;
     }
-    recoverLegacyReceipt(state, ctx, entry, calls);
+    recoverLegacyReceipt(state, ctx, receipt, calls);
   }
 }
 
 function recoverLegacyReceipt(
   state: SubagentState,
   ctx: ExtensionContext,
-  entry: SessionEntry,
+  receipt: LegacyReceipt,
   calls: Calls,
 ): void {
-  const details = receiptDetails(entry);
-  const runId = receiptRunId(details);
-  if (
-    !details ||
-    runId === undefined ||
-    runId === "" ||
-    details.mode === "management" ||
-    state.ownedRuns?.has(runId) === true
-  ) {
-    return;
-  }
-  const run = legacyRun(ctx, entry, details, calls);
+  const { details, runId } = receipt;
+  const run = legacyRun(ctx, receipt, calls);
   let recovered = run;
   try {
     recovered = nativeLaunchCwd(run, details);
@@ -325,6 +325,13 @@ function recoverLegacyReceipt(
   }
 }
 
+function repairLegacyAsyncStatus(record: Readonly<AsyncRunRecord>): void {
+  const status = record.status;
+  if (!record.durable && status && !["running", "queued"].includes(status.state)) {
+    saveRunStatus(status.runId, status);
+  }
+}
+
 function* discoverOwnedAsync(
   state: SubagentState,
   ctx: ExtensionContext,
@@ -338,6 +345,8 @@ function* discoverOwnedAsync(
       const old = record.status ? state.ownedRuns?.get(record.status.runId) : undefined;
       const run = recoveredAsyncRun(record, old, owner);
       if (run) {
+        // Legacy terminal status is durable before the owner publishes its recovered handle.
+        repairLegacyAsyncStatus(record);
         rememberOwnedRun(state, run);
         repairLegacyAsyncResult(record);
       }

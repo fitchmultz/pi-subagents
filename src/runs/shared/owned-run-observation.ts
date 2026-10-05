@@ -5,7 +5,8 @@ import { isDurableRun, readAsyncResultFile } from "../background/async-result-fi
 import { parseAsyncStatus, parseForegroundResumeRun } from "../background/run-schemas.ts";
 import { exactAsyncRunLocation } from "../background/async-resume.ts";
 import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
-import { workflowAgentNodes } from "./workflow-graph.ts";
+import { savedWorkflowNodes, workflowChildren } from "./workflow-graph.ts";
+import { normalizedState, projectOwnedChild, type ChildEvidence } from "./owned-child-evidence.ts";
 import {
   getRunMetadataDir,
   questionProcessAlive,
@@ -26,7 +27,6 @@ import {
   type WorkflowGraphNode,
 } from "../../shared/types.ts";
 import { isRecord } from "../../shared/unknown.ts";
-import { workflowChildren } from "./run-persistence.ts";
 import type { OwnedRunReadState } from "./owned-run-read-state.ts";
 
 export interface OwnedRunViewOptions {
@@ -35,33 +35,6 @@ export interface OwnedRunViewOptions {
   readonly readConfiguration?: false;
   readonly reconcile?: boolean;
 }
-
-export function savedWorkflowNodes(
-  status: ReadonlyAsyncStatus | null | undefined,
-): readonly WorkflowGraphNode[] | undefined {
-  if (!status?.workflowGraph || status.workflowGraph.runId !== status.runId) {
-    return;
-  }
-  const nodes = workflowAgentNodes(status.workflowGraph);
-  if (
-    nodes.length !== status.steps?.length ||
-    new Set(nodes.map((node) => node.id)).size !== nodes.length
-  ) {
-    return;
-  }
-  if (
-    nodes.some(
-      (node, index) =>
-        node.id === "" ||
-        ((node.agent ?? "") !== "" && node.agent !== status.steps?.[index]?.agent),
-    )
-  ) {
-    return;
-  }
-  return nodes;
-}
-
-import { normalizedState, projectOwnedChild, type ChildEvidence } from "./owned-child-evidence.ts";
 
 function processAlive(pid: number | undefined): boolean {
   return pid !== undefined && Number.isSafeInteger(pid) && pid > 0 && questionProcessAlive({ pid });
@@ -252,8 +225,8 @@ export class RunObservation {
     return this.run.children.find((child) => child.sessionFile === session);
   }
 
-  private terminalState(): string | undefined {
-    return this.result?.terminalState;
+  private parentLive(): boolean {
+    return processAlive(this.status?.pid ?? this.run.pid);
   }
   private evidence(index: number): ChildEvidence {
     const boundSession = this.sessions.get(index);
@@ -262,7 +235,7 @@ export class RunObservation {
     const fg = this.foreground?.children.find((child) => child.index === index);
     const bg = this.result?.results?.[index];
     const step = this.status?.steps?.[index];
-    const parentLive = processAlive(this.status?.pid ?? this.run.pid);
+    const parentLive = this.parentLive();
     const { live, pending } = childLiveness({ contract, step, fg, bg, parentLive });
     return {
       boundSession,
@@ -274,7 +247,7 @@ export class RunObservation {
       sessionFile: boundSession ?? declared?.sessionFile,
       live,
       pending,
-      terminalState: this.terminalState(),
+      terminalState: this.result?.terminalState,
     };
   }
 
@@ -294,7 +267,7 @@ export class RunObservation {
     return projectOwnedChild(this.run, index, evidence, this.identityUnavailable(evidence));
   }
 
-  live(children: OwnedRunView["children"]): boolean {
+  private live(children: OwnedRunView["children"]): boolean {
     return (
       children.some((child) => child.state === "live") ||
       (!this.result &&
@@ -302,7 +275,7 @@ export class RunObservation {
         processAlive(this.status?.pid ?? this.run.pid))
     );
   }
-  error(): string | undefined {
+  private error(): string | undefined {
     return (
       this.result?.error ??
       this.foreground?.error ??
@@ -313,7 +286,7 @@ export class RunObservation {
     );
   }
 
-  executionState(
+  private executionState(
     children: OwnedRunView["children"],
     live: boolean,
     error: string | undefined,
@@ -352,13 +325,13 @@ export class RunObservation {
       "Completion is unconfirmed. Saved sessions are context, not proof of successful execution."
     );
   }
-  canInterrupt(live: boolean, pending: boolean): boolean {
+  private canInterrupt(live: boolean, pending: boolean): boolean {
     return (
       pending ||
       (live && this.savedStatus?.state === "running" && this.savedStatus.runId === this.run.runId)
     );
   }
-  updatedAt(): number {
+  private updatedAt(): number {
     return (
       this.result?.timestamp ??
       this.status?.lastUpdate ??
@@ -366,7 +339,21 @@ export class RunObservation {
       this.run.startedAt
     );
   }
-  diagnosis(state: ManagementRunState, error: string | undefined): string | undefined {
+  summary(
+    children: OwnedRunView["children"],
+    pendingInput: boolean,
+  ): Pick<OwnedRunView, "state" | "canInterrupt" | "updatedAt" | "diagnosis"> {
+    const live = this.live(children);
+    const error = this.error();
+    const state = this.executionState(children, live, error);
+    return {
+      state,
+      canInterrupt: this.canInterrupt(live, pendingInput),
+      updatedAt: this.updatedAt(),
+      diagnosis: this.diagnosis(state, error),
+    };
+  }
+  private diagnosis(state: ManagementRunState, error: string | undefined): string | undefined {
     if ((error ?? "") !== "") {
       return error;
     }

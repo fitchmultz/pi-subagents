@@ -12,6 +12,8 @@ import type {
   WorkflowGraphNode,
   WorkflowGraphSnapshot,
   WorkflowNodeStatus,
+  OwnedRun,
+  ReadonlyAsyncStatus,
 } from "../../shared/types.ts";
 
 /** Pending fanouts keep their own slot until their actual children are known. */
@@ -31,6 +33,56 @@ export function workflowAgentNodes(
     }
     return node.children ?? [node];
   });
+}
+
+export function workflowChildren(
+  children: OwnedRun["children"],
+  graph: WorkflowGraphSnapshot | undefined,
+): OwnedRun["children"] {
+  if (
+    !graph ||
+    (graph.mode !== "chain" && !children.some((child) => (child.workflowNodeId ?? "") !== ""))
+  ) {
+    return children;
+  }
+  const result: OwnedRun["children"][number][] = [];
+  for (const [index, node] of workflowAgentNodes(graph).entries()) {
+    const declared = children.find((child) => child.workflowNodeId === node.id);
+    result.push({
+      ...declared,
+      index,
+      workflowNodeId: node.id,
+      agent: node.agent ?? declared?.agent ?? "unknown",
+      ...(node.itemKey !== undefined ? { label: node.label } : {}),
+    });
+  }
+  return result;
+}
+
+/** Admit saved node identity only when it agrees with the actual child slots. */
+export function savedWorkflowNodes(
+  status: ReadonlyAsyncStatus | null | undefined,
+): readonly WorkflowGraphNode[] | undefined {
+  if (!status?.workflowGraph || status.workflowGraph.runId !== status.runId) {
+    return;
+  }
+  const nodes = workflowAgentNodes(status.workflowGraph);
+  if (
+    nodes.length !== status.steps?.length ||
+    new Set(nodes.map((node) => node.id)).size !== nodes.length
+  ) {
+    return;
+  }
+  if (
+    nodes.some(
+      (node, index) =>
+        node.id === "" ||
+        ((node.agent ?? "") !== "" && node.agent !== status.steps?.[index]?.agent),
+    )
+  ) {
+    return;
+  }
+  return nodes;
 }
 
 export interface WorkflowGraphBuildInput {
