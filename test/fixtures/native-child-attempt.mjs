@@ -79,37 +79,54 @@ export default function (pi) {
       },
     ],
   };
+  function initialResponse() {
+    if (scenario === "public-output") {
+      return fauxAssistantMessage(
+        fauxToolCall("structured_output", {
+          value: { items: config.items ?? ["public payload"] },
+        }),
+        { stopReason: "toolUse" },
+      );
+    }
+    return fauxAssistantMessage(textReport(scenario === "blocked" ? blocked : report));
+  }
+  function reviewResponse() {
+    if (scenario === "repair") {
+      return submit(rejected, "rejected");
+    }
+    if (["stale", "missing-then-repair"].includes(scenario)) {
+      return fauxAssistantMessage("Forgot to submit current report");
+    }
+    if (scenario === "retry") {
+      return fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "503 overloaded; native fixture",
+      });
+    }
+    return submit(report, "reviewed");
+  }
+  function repairResponse() {
+    if (repairStaged) {
+      return fauxAssistantMessage(
+        fauxToolCall("bash", { command: "git rm --cached -- staged.txt" }),
+        { stopReason: "toolUse" },
+      );
+    }
+    if (scenario === "stale-after-report") {
+      return fauxAssistantMessage("Later activity without a current report");
+    }
+    if (scenario === "final-error") {
+      return fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "Fixture final provider failure",
+      });
+    }
+    return submit(report, "repaired");
+  }
   const responses = [
-    scenario === "public-output"
-      ? fauxAssistantMessage(
-          fauxToolCall("structured_output", {
-            value: { items: config.items ?? ["public payload"] },
-          }),
-          { stopReason: "toolUse" },
-        )
-      : fauxAssistantMessage(textReport(scenario === "blocked" ? blocked : report)),
-    scenario === "repair"
-      ? submit(rejected, "rejected")
-      : ["stale", "missing-then-repair"].includes(scenario)
-        ? fauxAssistantMessage("Forgot to submit current report")
-        : scenario === "retry"
-          ? fauxAssistantMessage("", {
-              stopReason: "error",
-              errorMessage: "503 overloaded; native fixture",
-            })
-          : submit(report, "reviewed"),
-    repairStaged
-      ? fauxAssistantMessage(fauxToolCall("bash", { command: "git rm --cached -- staged.txt" }), {
-          stopReason: "toolUse",
-        })
-      : scenario === "stale-after-report"
-        ? fauxAssistantMessage("Later activity without a current report")
-        : scenario === "final-error"
-          ? fauxAssistantMessage("", {
-              stopReason: "error",
-              errorMessage: "Fixture final provider failure",
-            })
-          : submit(report, "repaired"),
+    initialResponse(),
+    reviewResponse(),
+    repairResponse(),
     ...(repairStaged ? [submit(report, "unstaged", "Repaired answer")] : []),
   ];
   if (scenario === "question-initial") {

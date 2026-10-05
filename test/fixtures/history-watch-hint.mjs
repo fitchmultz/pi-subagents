@@ -41,7 +41,11 @@ globalThis.setImmediate = function (callback, ...args) {
     return immediate(callback, ...args);
   }
   pumps.push(() => immediate(callback, ...args));
-  return { unref() {} };
+  return {
+    unref() {
+      // Parked pumps own no native timer handle to unref; drain starts the real immediate later.
+    },
+  };
 };
 process.on("message", (message) => {
   if (message.watchHint === "deliver") {

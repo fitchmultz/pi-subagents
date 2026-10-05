@@ -147,12 +147,13 @@ export async function runNativeReport(args, fixture) {
   const plain = ai.fauxAssistantMessage("Coordination acknowledged; no new task report.");
   const first = Promise.withResolvers(),
     release = Promise.withResolvers();
-  const initial =
-    scenario === "unsubmitted"
-      ? ai.fauxAssistantMessage(report)
-      : scenario === "child-file"
-        ? work()
-        : submit(report);
+  function initialResponse() {
+    if (scenario === "unsubmitted") {
+      return ai.fauxAssistantMessage(report);
+    }
+    return scenario === "child-file" ? work() : submit(report);
+  }
+  const initial = initialResponse();
   const tails = {
     resubmit: [submit(laterReport)],
     "not-satisfied": [submit(laterReport)],
@@ -207,42 +208,45 @@ export async function runNativeReport(args, fixture) {
       },
     ],
   };
-  faux.setResponses(
-    [
-      ...(nativeConfig
-        ? [
-            async () => {
-              if (fixture.initialDelay) {
-                await new Promise((resolve) => setTimeout(resolve, fixture.initialDelay));
-              }
-              return nativeConfig.publicOutput
-                ? ai.fauxAssistantMessage(
-                    [
-                      ...(fixture.publicOutput
-                        ? [{ type: "text", text: fixture.initialReport }]
-                        : []),
-                      ai.fauxToolCall("structured_output", {
-                        value: fixture.publicOutput ?? { items: ["original payload"] },
-                      }),
-                    ],
-                    { stopReason: "toolUse" },
-                  )
-                : ai.fauxAssistantMessage(fixture.initialReport);
-            },
-          ]
-        : []),
-      async () => {
-        first.resolve();
-        await release.promise;
-        return initial;
-      },
-      ...(tails[scenario] ?? [plain]),
-      ...(fixture.retry ? [submit(report)] : []),
-    ].map((response) => async (...args) => {
-      receipt.providerCwds.push(session.sessionManager.getCwd());
-      return typeof response === "function" ? response(...args) : response;
-    }),
-  );
+  function configureResponses() {
+    faux.setResponses(
+      [
+        ...(nativeConfig
+          ? [
+              async () => {
+                if (fixture.initialDelay) {
+                  await new Promise((resolve) => setTimeout(resolve, fixture.initialDelay));
+                }
+                return nativeConfig.publicOutput
+                  ? ai.fauxAssistantMessage(
+                      [
+                        ...(fixture.publicOutput
+                          ? [{ type: "text", text: fixture.initialReport }]
+                          : []),
+                        ai.fauxToolCall("structured_output", {
+                          value: fixture.publicOutput ?? { items: ["original payload"] },
+                        }),
+                      ],
+                      { stopReason: "toolUse" },
+                    )
+                  : ai.fauxAssistantMessage(fixture.initialReport);
+              },
+            ]
+          : []),
+        async () => {
+          first.resolve();
+          await release.promise;
+          return initial;
+        },
+        ...(tails[scenario] ?? [plain]),
+        ...(fixture.retry ? [submit(report)] : []),
+      ].map((response) => async (...providerArgs) => {
+        receipt.providerCwds.push(session.sessionManager.getCwd());
+        return typeof response === "function" ? response(...providerArgs) : response;
+      }),
+    );
+  }
+  configureResponses();
   session.subscribe((event) => {
     if (event.type === "message_end") {
       receipt.messages.push(event.message);
@@ -285,6 +289,22 @@ export async function runNativeReport(args, fixture) {
     if (!enteredReview) {
       return;
     }
+    await coordinateReview();
+    release.resolve();
+    await pending;
+    await session.waitForIdle();
+    captureResult();
+    assert.deepEqual(receipt.extensionErrors, []);
+    assert.equal(receipt.networkRequests, 0);
+  } finally {
+    release.resolve();
+    await session.abort();
+    session.dispose();
+    receipt.providerCalls = faux.state.callCount;
+    save();
+  }
+
+  async function coordinateReview() {
     if (scenario === "user-failed-work") {
       await session.steer("New task instruction: run another fixture validation.");
     } else if (
@@ -312,9 +332,9 @@ export async function runNativeReport(args, fixture) {
           : { deliverAs: scenario === "follow-up" ? "followUp" : "steer" },
       );
     }
-    release.resolve();
-    await pending;
-    await session.waitForIdle();
+  }
+
+  function captureResult() {
     if (capturePath && scenario === "capture-mismatch") {
       fs.writeFileSync(capturePath, JSON.stringify(typed(laterReport)));
     }
@@ -328,13 +348,5 @@ export async function runNativeReport(args, fixture) {
       capturePath && fs.existsSync(capturePath)
         ? JSON.parse(fs.readFileSync(capturePath, "utf8"))
         : undefined;
-    assert.deepEqual(receipt.extensionErrors, []);
-    assert.equal(receipt.networkRequests, 0);
-  } finally {
-    release.resolve();
-    await session.abort();
-    session.dispose();
-    receipt.providerCalls = faux.state.callCount;
-    save();
   }
 }

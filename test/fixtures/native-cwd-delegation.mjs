@@ -15,7 +15,9 @@ for (const [name, dir] of Object.entries(dirs)) {
   fs.writeFileSync(path.join(dir, "sentinel.txt"), name);
 }
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
 }
 Object.assign(process.env, {
   HOME: root,
@@ -173,6 +175,8 @@ async function run(params, script, expected) {
     const deadline = Date.now() + 30_000;
     while (!fs.existsSync(resultPath)) {
       assert.ok(Date.now() < deadline, `No durable continuation result: ${resultPath}`);
+      // Read the continuation owner's durable result only after publication.
+      // oxlint-disable-next-line no-await-in-loop
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     const final = JSON.parse(fs.readFileSync(resultPath, "utf8"));
@@ -196,6 +200,18 @@ async function run(params, script, expected) {
   });
   return { result, observed };
 }
+function stopRemainingChild(pid) {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    // A completed child may exit between its status read and this signal.
+    if (error.code !== "ESRCH") {
+      console.error(`Fixture child cleanup failed: ${error.message}`);
+      process.exitCode = 1;
+    }
+  }
+}
+
 try {
   await session.agent.state.tools
     .find(({ name }) => name === "change_dir")
@@ -254,11 +270,12 @@ try {
   bus.emit("pi-change-working-dir:resolve-execution-cwd", resolution);
   assert.equal(resolution.result.cwd, dirs.B);
   let errorQueries = 0;
+  // This external event's contract requires its listener to populate the caller's request.result.
   const unsubscribe = bus.on("pi-change-working-dir:resolve-execution-cwd", (request) => {
     errorQueries++;
     request.result = { cwd: dirs.B, error: "Directory fixture unavailable" };
   });
-  const beforeFailure = fs.readdirSync(root).filter((name) => /^child-/.test(name)).length;
+  const beforeFailure = fs.readdirSync(root).filter((name) => name.startsWith("child-")).length;
   await assert.rejects(
     executor.execute(
       "fail",
@@ -269,7 +286,10 @@ try {
     ),
     /Directory fixture unavailable/,
   );
-  assert.equal(fs.readdirSync(root).filter((name) => /^child-/.test(name)).length, beforeFailure);
+  assert.equal(
+    fs.readdirSync(root).filter((name) => name.startsWith("child-")).length,
+    beforeFailure,
+  );
   assert.equal(errorQueries, 1);
   await executor.execute("status", { action: "status", id: originalId }, undefined, undefined, ctx);
   await executor.execute(
@@ -351,6 +371,8 @@ try {
     process.env.PI_CWD_FIXTURE_OUTPUT = output;
     process.env.PI_CWD_FIXTURE_SCRIPT = JSON.stringify([read]);
     const before = slashResolves;
+    // Slash commands share mutable selected cwd and one native session; run them in order.
+    // oxlint-disable-next-line no-await-in-loop
     await session.prompt(`/${command}`);
     assert.ok(fs.existsSync(output), `No child launched for /${command}`);
     const observed = JSON.parse(fs.readFileSync(output, "utf8"));
@@ -387,16 +409,14 @@ try {
     ),
   );
 } finally {
-  for (const run of state.ownedRuns.values()) {
-    const status = path.join(getRunMetadataDir(run.runId), "status.json");
+  for (const ownedRun of state.ownedRuns.values()) {
+    const status = path.join(getRunMetadataDir(ownedRun.runId), "status.json");
     if (!fs.existsSync(status)) {
       continue;
     }
     const { pid, state: outcome } = JSON.parse(fs.readFileSync(status, "utf8"));
     if (pid && outcome === "running") {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {}
+      stopRemainingChild(pid);
     }
   }
   slashBridge.dispose();

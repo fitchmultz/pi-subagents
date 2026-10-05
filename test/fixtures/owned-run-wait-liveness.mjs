@@ -86,19 +86,24 @@ if (outcome === "background") {
     deps: { pi, state },
     ctx: makeMinimalCtx(cwd),
     signal: controller.signal,
-  }).then((result) => {
-    assert.equal(result.details.wait.status, outcome);
-    if (outcome === "completed") {
-      assert.match(result.content[0].text, /DURABLE-RESULT/);
-    }
-    assert.equal(
-      fs.existsSync(path.join(asyncDir, "control-request.json")),
-      false,
-      "ending this wait must not stop existing work",
-    );
-    process.exitCode = 0;
-    console.log(outcome);
-  });
+  })
+    .then((result) => {
+      assert.equal(result.details.wait.status, outcome);
+      if (outcome === "completed") {
+        assert.match(result.content[0].text, /DURABLE-RESULT/);
+      }
+      assert.equal(
+        fs.existsSync(path.join(asyncDir, "control-request.json")),
+        false,
+        "ending this wait must not stop existing work",
+      );
+      process.exitCode = 0;
+      console.log(outcome);
+    })
+    .catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
 }
 // No forced exit or timer cleanup: natural process exit also proves that settling
 // the foreground wait releases its reference while the background poller stays unref'ed.

@@ -26,11 +26,10 @@ const task = args
   .filter((arg) => arg.startsWith("Task: ") || arg.startsWith("@"))
   .map((arg) => (arg.startsWith("@") ? fs.readFileSync(arg.slice(1), "utf8") : arg))
   .join("\n");
-const prompt = args.includes("--system-prompt")
-  ? fs.readFileSync(value("--system-prompt"), "utf8")
-  : args.includes("--append-system-prompt")
-    ? fs.readFileSync(value("--append-system-prompt"), "utf8")
-    : "";
+const promptFlag = ["--system-prompt", "--append-system-prompt"].find((flag) =>
+  args.includes(flag),
+);
+const prompt = promptFlag ? fs.readFileSync(value(promptFlag), "utf8") : "";
 const record = {
   pid: process.pid,
   cwd: process.cwd(),
@@ -57,6 +56,15 @@ const callName = `call-${Date.now()}-${randomUUID()}.json`;
 const temporaryCall = path.join(process.env.OWNERSHIP_PROBE_DIR, `.${callName}.tmp`);
 fs.writeFileSync(temporaryCall, JSON.stringify(record));
 fs.renameSync(temporaryCall, path.join(process.env.OWNERSHIP_PROBE_DIR, callName));
+function recalledOutput() {
+  if (!task.includes("RECALL_TOKEN")) {
+    return "FIRST_SESSION_TOKEN";
+  }
+  return previous.includes("FIRST_SESSION_TOKEN")
+    ? "RECALLED FIRST_SESSION_TOKEN"
+    : "TOKEN_MISSING";
+}
+
 const report = {
   criteriaSatisfied: [
     {
@@ -128,11 +136,7 @@ if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
   });
   const answer = task.includes("Supervisor answer to question")
     ? "ANSWER_RECEIVED"
-    : task.includes("RECALL_TOKEN")
-      ? previous.includes("FIRST_SESSION_TOKEN")
-        ? "RECALLED FIRST_SESSION_TOKEN"
-        : "TOKEN_MISSING"
-      : "FIRST_SESSION_TOKEN";
+    : recalledOutput();
   faux.setResponses([
     async () => {
       if (task.includes("CREATE_QUESTION")) {
@@ -195,7 +199,7 @@ if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
     },
     timestamp: Date.now(),
   });
-  async function submitStructuredOutput(value) {
+  async function submitStructuredOutput(payload) {
     const { default: register } = await import(
       pathToFileURL(
         path.join(process.env.OWNERSHIP_REPO, "dist/runs/shared/subagent-prompt-runtime.js"),
@@ -203,10 +207,12 @@ if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
     );
     let tool;
     register({
-      on() {},
-      registerTool(value) {
-        if (value.name === "structured_output") {
-          tool = value;
+      on() {
+        // This adapter invokes only tool registration; it never dispatches native lifecycle events.
+      },
+      registerTool(definition) {
+        if (definition.name === "structured_output") {
+          tool = definition;
         }
       },
     });
@@ -216,10 +222,10 @@ if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
     const id = randomUUID();
     const message = {
       ...assistant("", "toolUse"),
-      content: [{ type: "toolCall", id, name: tool.name, arguments: { value } }],
+      content: [{ type: "toolCall", id, name: tool.name, arguments: { value: payload } }],
     };
     session.appendMessage(message);
-    const result = await tool.execute(id, { value });
+    const result = await tool.execute(id, { value: payload });
     const toolResult = {
       role: "toolResult",
       toolCallId: id,
@@ -239,6 +245,8 @@ if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
       if (Date.now() > end) {
         throw new Error("Controlled wait gate was not released.");
       }
+      // Preserve the saved-session checkpoint until the parent explicitly releases this child.
+      // oxlint-disable-next-line no-await-in-loop
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
@@ -263,11 +271,7 @@ if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
       message: "Choose a stable answer.",
     });
   }
-  let output = task.includes("RECALL_TOKEN")
-    ? previous.includes("FIRST_SESSION_TOKEN")
-      ? "RECALLED FIRST_SESSION_TOKEN"
-      : "TOKEN_MISSING"
-    : "FIRST_SESSION_TOKEN";
+  let output = recalledOutput();
   const workflowResponse = task.match(/WORKFLOW_RESPONSE:([^\n]+)/)?.[1];
   if (workflowResponse) {
     const response = JSON.parse(workflowResponse);

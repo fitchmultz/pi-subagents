@@ -21,6 +21,13 @@ const cwd = process.cwd();
 const buildScript = join(cwd, "scripts", "build.mjs");
 const tscBin = (root) => join(root, "node_modules", "typescript", "bin", "tsc");
 
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(
+    "Usage: node scripts/prepare.mjs\n\nBuild source installs using the local compiler or a temporary pinned TypeScript install.\nTemporary compilers are removed on success or failure; host peers are not installed.\nExample: npm run prepare\nExit codes: 0 build passed; 1 compiler setup or build failed.",
+  );
+  process.exit(0);
+}
+
 // No shell: process.execPath runs scripts and npm's cli.js directly, which is safe for
 // paths containing spaces on every platform (shell:true concatenates args unescaped).
 async function runNode(args) {

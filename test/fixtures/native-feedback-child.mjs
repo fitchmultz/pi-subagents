@@ -67,6 +67,8 @@ modelRuntime.registerNativeProvider(
                   receipt.waitingForStreamRelease = true;
                   save();
                   while (!fs.existsSync(releasePath)) {
+                    // Hold the real provider stream until release, retaining abort handling.
+                    // oxlint-disable-next-line no-await-in-loop
                     await sleep(10, undefined, { signal: options?.signal });
                   }
                 }
@@ -117,6 +119,8 @@ const loader = new sdk.DefaultResourceLoader({
           const deadline = Date.now() + 15_000;
           while (!fs.existsSync(releasePath)) {
             assert.ok(Date.now() < deadline, "Native fixture tool was not released");
+            // The parent must observe native tool readiness before publishing release.
+            // oxlint-disable-next-line no-await-in-loop
             await sleep(10);
           }
           return {

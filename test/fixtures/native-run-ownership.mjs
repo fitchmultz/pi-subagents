@@ -125,6 +125,8 @@ const wait = async (predicate, label) => {
     if (Date.now() > deadline) {
       throw new Error(`Timeout: ${label}`);
     }
+    // Poll the native owner's published checkpoint before proceeding to its dependent transition.
+    // oxlint-disable-next-line no-await-in-loop
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 };
@@ -470,9 +472,13 @@ async function runJourney() {
   const launchSnapshots = [];
   for (const afterReload of [false, true]) {
     if (afterReload) {
+      // Reload this saved native parent before inspecting the same child launch snapshot.
+      // oxlint-disable-next-line no-await-in-loop
       await session.reload();
     }
     for (const id of [launchGroupId, launchContinuationId]) {
+      // Inspect each handle against the just-reloaded native owner, in checkpoint order.
+      // oxlint-disable-next-line no-await-in-loop
       const run = (await inspect(id)).details.run;
       const child = run.children[0];
       launchSnapshots.push({
@@ -733,10 +739,14 @@ async function runJourney() {
       async: false,
       output: false,
     });
-  } catch {}
+  } catch {
+    // Permanent failure may throw at the tool boundary; its durable failed run is inspected below.
+  }
   const batch = [];
   for (let index = 0; index < 52; index += 4) {
     batch.push(
+      // Limit native child resources to four at once while generating the >50-run history case.
+      // oxlint-disable-next-line no-await-in-loop
       ...(await Promise.all(
         Array.from({ length: 4 }, (_, child) =>
           invoke("delegate", {
@@ -750,9 +760,8 @@ async function runJourney() {
     );
   }
   assert.equal((await inspect(originalId)).details.run.state, "completed");
-  let failedId;
   const listed = await invoke("agent_runs", { action: "list", limit: 100 });
-  failedId = listed.details.runs.find((run) => run.state === "failed")?.runId;
+  const failedId = listed.details.runs.find((run) => run.state === "failed")?.runId;
   assert.ok(failedId);
   const onePage = await invoke("agent_runs", { action: "list", limit: 1 });
   assert.ok(onePage.details.runs[0].attention.length);
@@ -865,6 +874,8 @@ async function runJourney() {
       path.join(getRunMetadataDir(id), name),
     );
     const before = metadata.map((file) => fs.readFileSync(file));
+    // Both foreign inspections must finish before comparing owner journal bytes.
+    // oxlint-disable-next-line no-await-in-loop
     const foreignInspection = await inspect(id);
     assert.equal(foreignInspection.isError, undefined);
     assert.equal(foreignInspection.details.managementControl.state, "completed");
@@ -951,6 +962,8 @@ async function runJourney() {
     [questionId, "accepted"],
     [answered.details.asyncId, "needs_changes"],
   ]) {
+    // Persist review decisions in order before the cold parent reads the same journal.
+    // oxlint-disable-next-line no-await-in-loop
     const reviewed = await invoke("agent_runs", { action: "review", id, decision });
     coldRuns.push(runSnapshot(reviewed.details.run));
   }
@@ -1100,7 +1113,7 @@ async function runLegacyAsync() {
     });
   }
   fs.copyFileSync(ownerFile, path.join(root, "legacy-parent-before.jsonl"));
-  const legacy = (evidence.legacyAsync = {
+  const legacy = {
     route,
     runId,
     ownerFile,
@@ -1110,7 +1123,8 @@ async function runLegacyAsync() {
     status,
     result: route === "status-session" ? null : result,
     nonOwners: [],
-  });
+  };
+  evidence.legacyAsync = legacy;
   check(
     "legacy fixture uses persisted native sessions and the .35 saved-file async identity without .36 metadata",
     () => {
@@ -1345,10 +1359,14 @@ async function runWorkflowOutcomes() {
       const name = `${background ? "background" : "foreground"}-${scenario.name}`;
       const beforeCalls = calls().length,
         beforeNotices = notifications.length;
-      const beforeRuns =
-        scenario.name === "before-launch-rejected"
-          ? (await invoke("agent_runs", { action: "list" })).details.runList.total
-          : undefined;
+      let beforeRuns;
+      if (scenario.name === "before-launch-rejected") {
+        // Capture ownership before executing this invalid plan in the shared session.
+        // oxlint-disable-next-line no-await-in-loop
+        beforeRuns = (await invoke("agent_runs", { action: "list" })).details.runList.total;
+      }
+      // Each case mutates the same parent journal and notification collectors; complete it first.
+      // oxlint-disable-next-line no-await-in-loop
       const result = await execute({
         chain: scenario.chain,
         task: name,
@@ -1366,6 +1384,8 @@ async function runWorkflowOutcomes() {
           assert.equal(notifications.length, beforeNotices);
         });
         assert.equal(
+          // Verify no owner was created by the invalid plan before the next case starts.
+          // oxlint-disable-next-line no-await-in-loop
           (await invoke("agent_runs", { action: "list" })).details.runList.total,
           beforeRuns,
         );
@@ -1373,17 +1393,24 @@ async function runWorkflowOutcomes() {
         continue;
       }
       assert.ok(id, `${name}: native owning executor must return its run handle`);
+      // The owner must publish terminal evidence before assertions or reload.
+      // oxlint-disable-next-line no-await-in-loop
       const terminal = await completed(id);
-      if (background)
+      if (background) {
+        // Confirm completion consumption before advancing this native lifecycle case.
+        // oxlint-disable-next-line no-await-in-loop
         await wait(
           () => completions.some((message) => message.runId === id),
           `${name} acknowledged completion`,
         );
-      else
+      } else {
+        // Confirm completion consumption before advancing this native lifecycle case.
+        // oxlint-disable-next-line no-await-in-loop
         await wait(
           () => !fs.existsSync(path.join(runtimeDir, "async-subagent-results", `${id}.json`)),
           `${name} consumed completion`,
         );
+      }
       const childCalls = calls().slice(beforeCalls);
       const emitted = notifications.filter((message) => message.runId === id);
       const receipt = {
@@ -1403,13 +1430,18 @@ async function runWorkflowOutcomes() {
       });
       verify(`${name}: only required child processes execute`, () => {
         assert.equal(childCalls.length, scenario.expected.length);
-        if (!scenario.error) assert.match(childCalls[1].task, /Use \[\]/);
+        if (!scenario.error) {
+          assert.match(childCalls[1].task, /Use \[\]/);
+        }
       });
       verify(`${name}: collection publication follows workflow validation`, () => {
         if (scenario.error) {
           assert.equal(terminal.outputs?.reviews, undefined);
-          if (result.details.asyncId) assert.equal(terminal.success, false);
-          else assert.equal(result.isError, true);
+          if (result.details.asyncId) {
+            assert.equal(terminal.success, false);
+          } else {
+            assert.equal(result.isError, true);
+          }
         } else {
           assert.deepEqual(terminal.outputs.reviews.structured, []);
           assert.equal(terminal.workflowGraph.nodes[1].status, "completed");
@@ -1424,7 +1456,9 @@ async function runWorkflowOutcomes() {
             background ? 1 : 0,
             "only a background result gets a completion notification",
           );
-          if (!emitted.length) return;
+          if (!emitted.length) {
+            return;
+          }
           const notification = emitted[0];
           assert.equal(notification.status, scenario.error ? "failed" : "completed");
           assert.deepEqual(
@@ -1433,22 +1467,36 @@ async function runWorkflowOutcomes() {
               .map((child) => child.summary),
             scenario.expected,
           );
-          if (scenario.error) assert.match(notification.message, scenario.error);
+          if (scenario.error) {
+            assert.match(notification.message, scenario.error);
+          }
         },
       );
       for (const checkpoint of ["before reload", "after reload", "after reopen"]) {
-        if (checkpoint === "after reload") await session.reload();
+        if (checkpoint === "after reload") {
+          // Reload completes before inspecting the same handle at this checkpoint.
+          // oxlint-disable-next-line no-await-in-loop
+          await session.reload();
+        }
         if (checkpoint === "after reopen") {
+          // Finish teardown before reopening the saved native journal.
+          // oxlint-disable-next-line no-await-in-loop
           await close();
+          // Reopening must finish before inspecting the recovered owner.
+          // oxlint-disable-next-line no-await-in-loop
           await open(parentFile);
         }
+        // Each checkpoint observes this case's completed reload/reopen, not a concurrent case.
+        // oxlint-disable-next-line no-await-in-loop
         const inspection = await inspect(id);
         const run = inspection.details.run;
+        // Await the same native owner's list before comparing it with inspection.
+        // oxlint-disable-next-line no-await-in-loop
         const list = (await invoke("agent_runs", { action: "list", limit: 100 })).details.runs.find(
           (entry) => entry.runId === id,
         );
         receipt.inspections.push({ checkpoint, inspection, list });
-        if (result.details.asyncId)
+        if (result.details.asyncId) {
           verify(`${name}: saved async summaries survive ${checkpoint}`, () => {
             const asyncDir = result.details.asyncDir;
             const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
@@ -1465,13 +1513,15 @@ async function runWorkflowOutcomes() {
               summary,
             );
           });
-        if (result.details.asyncId && !scenario.error)
+        }
+        if (result.details.asyncId && !scenario.error) {
           verify(`${name}: empty fanout retains logical progress ${checkpoint}`, () => {
             const text = inspection.content.map((part) => part.text).join("\n");
             const last = scenario.chain.length;
             assert.ok(text.includes(`Progress: step ${last}/${last}`), text);
             assert.ok(text.includes(`Step ${last}/${last}: probe complete`), text);
           });
+        }
         verify(`${name}: inspect/list outcome and attention ${checkpoint}`, () => {
           const expected = scenario.error ? "failed" : "completed";
           assert.equal(run.state, expected);
@@ -1510,7 +1560,7 @@ async function runWorkflowOutcomes() {
                   ),
               ),
             );
-            if (child.result.structuredOutput !== undefined)
+            if (child.result.structuredOutput !== undefined) {
               assert.ok(
                 messages.some(
                   (message) =>
@@ -1519,13 +1569,16 @@ async function runWorkflowOutcomes() {
                     message.isError === false,
                 ),
               );
+            }
           }
         });
         verify(`${name}: terminal views exclude unexpanded declared children ${checkpoint}`, () => {
           const expectedCount = scenario.expected.length;
           assert.equal(run.children.length, expectedCount);
           assert.ok(run.children.every((child) => child.state !== "unknown"));
-          if (scenario.error && !background) assert.match(run.diagnosis, scenario.error);
+          if (scenario.error && !background) {
+            assert.match(run.diagnosis, scenario.error);
+          }
         });
       }
       verify(`${name}: reload does not relaunch children or redeliver completion`, () => {
@@ -1554,6 +1607,8 @@ async function runColdParent() {
   await open(parentFile);
   const before = calls().length;
   for (const expected of prior.coldParent.runs) {
+    // Inspect saved handles without launching work, before testing cold continuation.
+    // oxlint-disable-next-line no-await-in-loop
     assert.deepEqual(runSnapshot((await inspect(expected.runId)).details.run), expected);
   }
   assert.equal(
@@ -1615,6 +1670,16 @@ async function runColdParent() {
     "cold-process continuation reuses the saved child conversation, provider/thinking and acceptance, with a new review outcome and linked lineage",
   );
 }
+function evidenceFilename() {
+  if (coldParent) {
+    return "cold-evidence.json";
+  }
+  if (phase === "workflow-outcomes") {
+    return "workflow-evidence.json";
+  }
+  return phase.startsWith("legacy-async-") ? "legacy-evidence.json" : "evidence.json";
+}
+
 try {
   if (coldParent) {
     await runColdParent();
@@ -1632,18 +1697,6 @@ try {
   process.exitCode = 1;
 } finally {
   await close();
-  fs.writeFileSync(
-    path.join(
-      root,
-      coldParent
-        ? "cold-evidence.json"
-        : phase === "workflow-outcomes"
-          ? "workflow-evidence.json"
-          : phase.startsWith("legacy-async-")
-            ? "legacy-evidence.json"
-            : "evidence.json",
-    ),
-    JSON.stringify(evidence, null, 2),
-  );
+  fs.writeFileSync(path.join(root, evidenceFilename()), JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify(evidence, null, 2));
 }

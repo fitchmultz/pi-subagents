@@ -28,6 +28,8 @@ while (!fs.existsSync(path.join(root, "release-child"))) {
   if (Date.now() > deadline) {
     throw new Error("The native async fixture child was never released.");
   }
+  // The parent publishes release only after observing this native child checkpoint.
+  // oxlint-disable-next-line no-await-in-loop
   await delay(20);
 }
 const message = {

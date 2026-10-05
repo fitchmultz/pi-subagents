@@ -24,6 +24,13 @@ const RENAME_RETRY_MS = 50;
 // Use the current Node binary without a shell, including install paths with spaces.
 const tscPath = process.argv[2] ?? join(process.cwd(), "node_modules", "typescript", "bin", "tsc");
 
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(
+    "Usage: node scripts/build.mjs [compiler-path]\n\nCompile into PID-owned staging, stamp the package version/content hash, then publish dist.\nA failed compiler preserves existing dist. Concurrent publishers retain the winning tree.\nExample: npm run build\nExit codes: 0 published or concurrent winner retained; 1 compile/publish failed.",
+  );
+  process.exit(0);
+}
+
 async function discardStaging(path) {
   try {
     await rm(path, RM_OPTIONS);
@@ -63,6 +70,8 @@ async function reapStrandedStaging(cwd) {
     if (ownerPid === process.pid || !isOwnerGone(ownerPid)) {
       continue;
     }
+    // Reap abandoned trees sequentially to bound filesystem removal pressure.
+    // oxlint-disable-next-line no-await-in-loop
     await discardStaging(join(cwd, entry.name));
   }
 }
@@ -80,22 +89,7 @@ async function compileToStaging(cwd, stagingDir) {
     if (stderr) {
       process.stderr.write(stderr);
     }
-    const stamp = "extension/build-info.js";
-    const hash = createHash("sha256");
-    for (const file of (await readdir(stagingDir, { recursive: true }))
-      .filter((file) => file.endsWith(".js") && file !== stamp)
-      .sort()) {
-      hash
-        .update(file)
-        .update("\0")
-        .update(await readFile(join(stagingDir, file)))
-        .update("\0");
-    }
-    const { version } = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
-    await writeFile(
-      join(stagingDir, stamp),
-      `export const EXTENSION_BUILD = Object.freeze(${JSON.stringify({ version, sha256: hash.digest("hex") })});\n`,
-    );
+    await stampBuild(cwd, stagingDir);
   } catch (error) {
     if (error?.stdout) {
       process.stdout.write(error.stdout);
@@ -108,30 +102,55 @@ async function compileToStaging(cwd, stagingDir) {
   }
 }
 
+async function stampBuild(cwd, stagingDir) {
+  const stamp = "extension/build-info.js";
+  const hash = createHash("sha256");
+  const files = (await readdir(stagingDir, { recursive: true }))
+    .filter((entry) => entry.endsWith(".js") && entry !== stamp)
+    .sort();
+  for (const file of files) {
+    // Hash sorted path/content pairs in order without buffering the whole emitted tree.
+    // oxlint-disable-next-line no-await-in-loop
+    const content = await readFile(join(stagingDir, file));
+    hash.update(file).update("\0").update(content).update("\0");
+  }
+  const { version } = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+  await writeFile(
+    join(stagingDir, stamp),
+    `export const EXTENSION_BUILD = Object.freeze(${JSON.stringify({ version, sha256: hash.digest("hex") })});\n`,
+  );
+}
+
+async function tryPublish(stagingDir, distDir, retry) {
+  try {
+    await rename(stagingDir, distDir);
+    return true;
+  } catch (error) {
+    // A bare directory is not proof that a concurrent publisher finished.
+    if (await hasPublishedDist(distDir)) {
+      console.warn(
+        "dist/ was published by a concurrent build; discarding this build's staging tree.",
+      );
+      return true;
+    }
+    if (!existsSync(stagingDir) || retry >= RENAME_RETRY_LIMIT) {
+      throw error;
+    }
+    await delay(RENAME_RETRY_MS);
+    return false;
+  }
+}
+
 async function publishStaging(stagingDir, distDir) {
   try {
     // A failed dist removal must fail loudly; keep it outside the retry loop.
     // Remove dist exactly once so retries never delete a concurrent winner.
     await rm(distDir, RM_OPTIONS);
     for (let retry = 0; ; retry++) {
-      try {
-        await rename(stagingDir, distDir);
+      // Each retry must observe publication before another rename can race it.
+      // oxlint-disable-next-line no-await-in-loop
+      if (await tryPublish(stagingDir, distDir, retry)) {
         return;
-      } catch (error) {
-        // A completed staged build is non-empty; a bare directory is not proof
-        // that a concurrent publisher won the race.
-        if (await hasPublishedDist(distDir)) {
-          console.warn(
-            "dist/ was published by a concurrent build; discarding this build's staging tree.",
-          );
-          return;
-        }
-        // At most 50 retries (~2.5s) keep persistent filesystem errors bounded.
-        if (existsSync(stagingDir) && retry < RENAME_RETRY_LIMIT) {
-          await delay(RENAME_RETRY_MS);
-          continue;
-        }
-        throw error;
       }
     }
   } finally {

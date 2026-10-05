@@ -76,6 +76,8 @@ const waitFor = async (predicate, label) => {
   const deadline = Date.now() + 15_000;
   while (!predicate()) {
     assert.ok(Date.now() < deadline, `Timeout: ${label}`);
+    // Recheck actual native progress/publication before asserting a dependent transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 };
@@ -91,12 +93,14 @@ const text = (result) =>
     .map((part) => part.text)
     .join("\n");
 const unwrap = (value) => value.replace(/\s/g, "");
-const header = (card, mode) =>
+const header = (card, displayMode) =>
   card
     .split("\n")
     .map((line) => line.trim())
     .find((line) =>
-      new RegExp(`^(?:failed|paused|detached|warning|ok|✗|■|✓) ${mode}(?:[ ·]|$)`).test(line),
+      new RegExp(`^(?:failed|paused|detached|warning|ok|✗|■|✓) ${displayMode}(?:[ ·]|$)`).test(
+        line,
+      ),
     );
 const failureReason = "MIXED_BAD: required evidence was rejected";
 const faux = fauxProvider({ api: "native-tool-result-fixture" });
@@ -194,7 +198,9 @@ async function open() {
   // Keep the real native event-to-card path, without starting a terminal or taking keyboard ownership.
   mode.isInitialized = true;
   mode.workingVisible = false;
-  mode.ui.requestRender = () => {};
+  mode.ui.requestRender = () => {
+    // Keep native event-to-card composition without owning a terminal or redraw scheduler.
+  };
   mode.subscribeToAgent();
   session.subscribe((event) => {
     if (event.toolCallId !== current?.id) {
@@ -219,6 +225,7 @@ async function open() {
   });
 }
 
+// receipt is mutable fixture-owned observation output; native persisted messages remain authoritative.
 async function invoke(receipt, name, args, stop) {
   const id = receipt.name;
   current = { id, stop, ready: false };
@@ -361,6 +368,19 @@ function verifyNative(receipt, verify, expectedError) {
   });
 }
 
+function workflowOutcome(failed, stop) {
+  if (failed) {
+    return "failed";
+  }
+  return stop === "detach" ? "completed" : "paused";
+}
+function successfulHeader(stop, compact) {
+  if (compact) {
+    return stop === "interrupt" ? /^■/ : /^✓/;
+  }
+  return stop === "interrupt" ? /^paused/ : /^ok/;
+}
+
 async function workflow(shape, stop, failed = true) {
   await check(`${shape}-${stop}-${failed ? "mixed" : "pure"}`, async (receipt, verify) => {
     receipt.mixed = failed;
@@ -425,23 +445,25 @@ async function workflow(shape, stop, failed = true) {
             concurrency: 1,
             failFast: false,
           };
-    const result = await invoke(
-      receipt,
-      single ? "delegate" : "subagent",
-      {
-        ...(single
-          ? tasks[0]
-          : shape === "parallel"
-            ? { tasks, concurrency: 1 }
-            : {
-                chain: [prefix, group, { agent: "probe", task: "MIXED_DOWNSTREAM", output: false }],
-              }),
+    function workflowArgs() {
+      let selection;
+      if (single) {
+        selection = tasks[0];
+      } else if (shape === "parallel") {
+        selection = { tasks, concurrency: 1 };
+      } else {
+        selection = {
+          chain: [prefix, group, { agent: "probe", task: "MIXED_DOWNSTREAM", output: false }],
+        };
+      }
+      return {
+        ...selection,
         async: false,
         context: "fresh",
         ...(!single ? { artifacts: false } : {}),
-      },
-      stop,
-    );
+      };
+    }
+    const result = await invoke(receipt, single ? "delegate" : "subagent", workflowArgs(), stop);
     if (stop === "detach") {
       verifyNative(receipt, verify, false);
       verify("released native wait is truthful and keeps its exact owner handle", () => {
@@ -510,8 +532,9 @@ async function workflow(shape, stop, failed = true) {
           progress.filter((child) => child.status === "running").map((child) => child.index),
           [2],
         );
-        for (const view of [receipt.liveCollapsed, receipt.liveExpanded])
+        for (const view of [receipt.liveCollapsed, receipt.liveExpanded]) {
           assert.match(view, /chain.*parallel group: 1 agent running/);
+        }
       });
     }
     verify(
@@ -567,27 +590,30 @@ async function workflow(shape, stop, failed = true) {
           assert.equal(d.results[waitIndex + 1].interrupted, true);
         }
         if (prefixCount) {
-          assert.equal(d.results[0].finalOutput, "PREFIX_EVIDENCE");
-          assert.deepEqual(
-            d.workflowGraph.nodes.map((node) => node.status),
-            [
-              "completed",
-              failed ? "failed" : stop === "detach" ? "completed" : "paused",
-              stop === "detach" && !failed ? "completed" : "paused",
-            ],
-          );
-          assert.deepEqual(d.outputs.targets.structured, { items: tokens });
-          assert.equal(d.outputs.targets.text, JSON.stringify({ items: tokens }));
-          if (shape === "static-chain") {
-            assert.equal(d.outputs.evidence.text, "SUCCESSFUL_SIBLING_EVIDENCE");
-          } else if (stop === "detach" && !failed) {
-            assert.equal(d.outputs.collected.structured.length, tokens.length);
-          } else {
-            assert.equal(d.outputs.collected, undefined);
-          }
+          verifyGraph(d);
         }
       },
     );
+    function verifyGraph(d) {
+      assert.equal(d.results[0].finalOutput, "PREFIX_EVIDENCE");
+      assert.deepEqual(
+        d.workflowGraph.nodes.map((node) => node.status),
+        [
+          "completed",
+          workflowOutcome(failed, stop),
+          stop === "detach" && !failed ? "completed" : "paused",
+        ],
+      );
+      assert.deepEqual(d.outputs.targets.structured, { items: tokens });
+      assert.equal(d.outputs.targets.text, JSON.stringify({ items: tokens }));
+      if (shape === "static-chain") {
+        assert.equal(d.outputs.evidence.text, "SUCCESSFUL_SIBLING_EVIDENCE");
+      } else if (stop === "detach" && !failed) {
+        assert.equal(d.outputs.collected.structured.length, tokens.length);
+      } else {
+        assert.equal(d.outputs.collected, undefined);
+      }
+    }
     verify(
       "native final card renders retained sibling/prefix and graph rather than the text-only error",
       () => {
@@ -622,12 +648,15 @@ async function workflow(shape, stop, failed = true) {
       },
     );
     verify("native headers agree with the final owner outcome", () => {
-      const mode = single ? "probe" : prefixCount ? "chain" : "parallel";
-      const compact = header(receipt.collapsed, mode),
-        expanded = header(receipt.expanded, mode);
+      let displayMode = prefixCount ? "chain" : "parallel";
+      if (single) {
+        displayMode = "probe";
+      }
+      const compact = header(receipt.collapsed, displayMode),
+        expanded = header(receipt.expanded, displayMode);
       assert.ok(compact && expanded, `${receipt.collapsed}\n${receipt.expanded}`);
-      assert.match(compact, failed ? /^✗/ : stop === "interrupt" ? /^■/ : /^✓/);
-      assert.match(expanded, failed ? /^failed/ : stop === "interrupt" ? /^paused/ : /^ok/);
+      assert.match(compact, failed ? /^✗/ : successfulHeader(stop, true));
+      assert.match(expanded, failed ? /^failed/ : successfulHeader(stop, false));
       assert.doesNotMatch(compact, /agents? running/);
       if (!failed) {
         assert.doesNotMatch(`${compact}\n${expanded}`, /failed|warning/);
@@ -686,10 +715,17 @@ try {
     );
   });
   for (const shape of ["parallel", "static-chain", "dynamic-chain"]) {
-    for (const stop of ["interrupt", "detach"])
-      for (const failed of [true, false]) await workflow(shape, stop, failed);
+    for (const stop of ["interrupt", "detach"]) {
+      for (const failed of [true, false]) {
+        // Scenarios share native session/TUI state and a controlled child queue.
+        // oxlint-disable-next-line no-await-in-loop
+        await workflow(shape, stop, failed);
+      }
+    }
   }
   for (const stop of ["interrupt", "detach"]) {
+    // Reset and settle the native session before the next interruption scenario.
+    // oxlint-disable-next-line no-await-in-loop
     await workflow("single", stop, false);
   }
   await check("static-preflight-failure", async (receipt, verify) => {
@@ -727,6 +763,8 @@ try {
     });
   });
   for (const rejected of [true, false]) {
+    // Collection cases share the mock child queue and native card composition.
+    // oxlint-disable-next-line no-await-in-loop
     await check(
       `dynamic-collect-${rejected ? "schema-failure" : "success"}`,
       async (receipt, verify) => {
@@ -815,7 +853,9 @@ try {
                   (call) => !call.expandedArgs.at(-1).includes("COLLECT_DOWNSTREAM"),
                 ),
               );
-            } else assert.equal(result.details.outputs.reviews.structured.length, 1);
+            } else {
+              assert.equal(result.details.outputs.reviews.structured.length, 1);
+            }
           },
         );
         verify(
@@ -828,7 +868,9 @@ try {
                 assert.match(view, /Collected output validation failed/);
                 assert.ok(unwrap(view).includes(unwrap(text(result))));
                 assert.ok(unwrap(view).includes(result.details.runId));
-              } else assert.match(view, /COLLECT_DOWNSTREAM_EVIDENCE/);
+              } else {
+                assert.match(view, /COLLECT_DOWNSTREAM_EVIDENCE/);
+              }
             }
             const expected = rejected
               ? "failed chain · step 2/3 · parallel group: 1/1 succeeded"
@@ -887,6 +929,8 @@ try {
     });
   });
   for (const action of ["continue", "answer"]) {
+    // Continuation/answer cases reuse saved child evidence and one native owner.
+    // oxlint-disable-next-line no-await-in-loop
     await check(`agent-runs-${action}`, async (receipt, verify) => {
       const previous = evidence.cases.find((entry) => entry.name === "normal-success").result;
       const id = previous.details.runId;
@@ -977,6 +1021,8 @@ try {
         /Operation aborted/,
       ],
     ]) {
+      // Native exception controls must settle before resetting their shared child queue.
+      // oxlint-disable-next-line no-await-in-loop
       await check(name, async (receipt, verify) => {
         await invoke(receipt, tool, args);
         verifyNative(receipt, verify, true);

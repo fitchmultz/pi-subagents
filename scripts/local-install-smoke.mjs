@@ -16,7 +16,9 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 function isolatedEnv(home) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PI_SUBAGENT_")) delete env[key];
+    if (key.startsWith("PI_SUBAGENT_")) {
+      delete env[key];
+    }
   }
   return {
     ...env,

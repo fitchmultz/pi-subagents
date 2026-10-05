@@ -20,7 +20,6 @@ import { hostCli, hostRoot } from "./compat-host.mjs";
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 process.env.PI_PACKAGE_DIR = hostRoot;
-let productionRoot;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -75,7 +74,7 @@ function assertNotPackedFile(files, path) {
   }
 }
 
-productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
+const productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
 const packDir = join(productionRoot, "pack");
 mkdirSync(packDir);
 const packOutput = runOrFail("npm", ["pack", "--json", "--pack-destination", packDir]);
@@ -148,21 +147,22 @@ if (packageJson.pi?.prompts !== undefined) {
 }
 
 for (const entrypoint of ["../dist/extension/index.js", "../dist/pi-intercom/index.js"]) {
+  // Load each entry against the selected native host before production install verification.
+  // oxlint-disable-next-line no-await-in-loop
   const extensionModule = await import(new URL(entrypoint, import.meta.url));
   if (typeof extensionModule.default !== "function") {
     fail(`${entrypoint} did not load a default registration function`);
   }
 }
 
-let productionImportError;
-try {
+function installProduction(packed) {
   const installDir = join(productionRoot, "install");
   mkdirSync(installDir);
   writeFileSync(
     join(installDir, "package.json"),
     JSON.stringify({ private: true, type: "module" }),
   );
-  const filename = pack.filename;
+  const filename = packed.filename;
   if (typeof filename !== "string") {
     throw new Error("npm pack did not report a tarball filename");
   }
@@ -189,6 +189,10 @@ try {
       throw new Error(`runtime-only package shadows host-provided ${name}`);
     }
   }
+  return gitPackageRoot;
+}
+
+async function verifyProductionRuntime(gitPackageRoot) {
   const hostTypebox = await import(
     pathToFileURL(createRequire(join(hostRoot, "dist/index.js")).resolve("typebox")).href
   );
@@ -239,7 +243,9 @@ try {
       throw new Error(`dist buildPiArgs emitted a missing --extension path: ${extensionPath}`);
     }
   }
+}
 
+async function verifyNativeChild(gitPackageRoot) {
   const home = join(productionRoot, "native-home");
   const asyncDir = join(home, "run");
   mkdirSync(asyncDir, { recursive: true });
@@ -267,6 +273,35 @@ export default function (pi) {
 	});
 }`,
   );
+  const nativeEnv = nativeEnvironment(home);
+  const configPath = join(home, "config.json");
+  const resultPath = join(home, "result.json");
+  writeNativeConfig({ home, asyncDir, resultPath, sessionFile, observer, configPath });
+  run(
+    process.execPath,
+    [
+      join(gitPackageRoot, "dist/runs/background/subagent-runner-launcher.js"),
+      join(gitPackageRoot, "dist/runs/background/subagent-runner.js"),
+      configPath,
+    ],
+    home,
+    nativeEnv,
+  );
+  verifyNativeResult(resultPath, marker, sessionFile);
+  console.log(
+    "[package-smoke] packed detached Node runner completed a controlled native Pi startup (no model call)",
+  );
+  process.stdout.write(
+    run(
+      process.execPath,
+      [join(process.cwd(), "scripts/native-package-smoke.mjs"), gitPackageRoot],
+      home,
+      { ...nativeEnv, PI_PACKAGE_DIR: hostRoot },
+    ),
+  );
+}
+
+function nativeEnvironment(home) {
   const nativeEnv = {
     ...process.env,
     HOME: home,
@@ -274,11 +309,11 @@ export default function (pi) {
     PI_OFFLINE: "1",
   };
   for (const key of Object.keys(nativeEnv)) {
-    if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key))
+    if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) {
       delete nativeEnv[key];
+    }
   }
   nativeEnv.PI_SUBAGENT_TEMP_ROOT = join(home, "pi-subagents-runtime");
-  const piPackageRoot = hostRoot;
   const bin = join(home, "bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${hostCli}" "$@"\n`, {
@@ -287,8 +322,10 @@ export default function (pi) {
   // A wrapper-only PATH also covers managed installs whose shim is not a symlink.
   nativeEnv.PATH = `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`;
   delete nativeEnv.PI_PACKAGE_DIR;
-  const configPath = join(home, "config.json");
-  const resultPath = join(home, "result.json");
+  return nativeEnv;
+}
+
+function writeNativeConfig({ home, asyncDir, resultPath, sessionFile, observer, configPath }) {
   writeFileSync(
     configPath,
     JSON.stringify({
@@ -296,7 +333,7 @@ export default function (pi) {
       cwd: home,
       asyncDir,
       resultPath,
-      piPackageRoot,
+      piPackageRoot: hostRoot,
       placeholder: "{previous}",
       resultMode: "single",
       sessionDir: home,
@@ -313,22 +350,19 @@ export default function (pi) {
       ],
     }),
   );
-  run(
-    process.execPath,
-    [
-      join(gitPackageRoot, "dist/runs/background/subagent-runner-launcher.js"),
-      join(gitPackageRoot, "dist/runs/background/subagent-runner.js"),
-      configPath,
-    ],
-    home,
-    nativeEnv,
-  );
+}
+
+function verifyNativeResult(resultPath, marker, sessionFile) {
   const result = JSON.parse(readFileSync(resultPath, "utf8"));
   if (result.success !== true || result.results?.[0]?.output !== "PACKED_NATIVE_COMPLETE") {
     throw new Error(
       `Packed detached runner did not complete its controlled native Pi child: ${JSON.stringify({ nativeStarted: existsSync(marker), children: result.results?.map(({ exitCode, error, output }) => ({ exitCode, error, output })) })}`,
     );
   }
+  verifyNativeSession(marker, sessionFile);
+}
+
+function verifyNativeSession(marker, sessionFile) {
   const observed = JSON.parse(readFileSync(marker, "utf8"));
   if (observed.sessionFile !== sessionFile) {
     throw new Error("Packed child did not bind the requested native Pi session");
@@ -340,17 +374,13 @@ export default function (pi) {
   ) {
     throw new Error("Packed child must select the native faux model without invoking it");
   }
-  console.log(
-    "[package-smoke] packed detached Node runner completed a controlled native Pi startup (no model call)",
-  );
-  process.stdout.write(
-    run(
-      process.execPath,
-      [join(process.cwd(), "scripts/native-package-smoke.mjs"), gitPackageRoot],
-      home,
-      { ...nativeEnv, PI_PACKAGE_DIR: hostRoot },
-    ),
-  );
+}
+
+let productionImportError;
+try {
+  const gitPackageRoot = installProduction(pack);
+  await verifyProductionRuntime(gitPackageRoot);
+  await verifyNativeChild(gitPackageRoot);
 } catch (error) {
   productionImportError = error;
 } finally {

@@ -9,7 +9,9 @@ import { randomUUID } from "node:crypto";
 const [mode, root, repo, sdkRoot] = process.argv.slice(2);
 assert.ok(["queue", "reopen", "again"].includes(mode));
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
 }
 Object.assign(process.env, {
   HOME: path.join(root, "home"),
@@ -73,6 +75,7 @@ const loader = new sdk.DefaultResourceLoader({
   extensionFactories: [
     (pi) => {
       const send = pi.sendMessage.bind(pi);
+      // Observe actual native notification calls and forward them; pi is this factory's SDK boundary.
       pi.sendMessage = (message, options) => {
         if (message.customType === "subagent-notify") {
           sent.push(message);
@@ -119,6 +122,8 @@ const until = async (predicate, reason) => {
   const deadline = performance.now() + 7000;
   while (!predicate()) {
     assert.ok(performance.now() < deadline, reason);
+    // Observe native queue/publication progress before checking the next checkpoint.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(10);
   }
 };

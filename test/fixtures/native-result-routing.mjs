@@ -70,6 +70,8 @@ const wait = async (predicate, label) => {
   const deadline = Date.now() + 20_000;
   while (!predicate()) {
     assert.ok(Date.now() < deadline, `Timeout: ${label}`);
+    // Recheck the native owner publication after yielding; concurrent polls prove no readiness.
+    // oxlint-disable-next-line no-await-in-loop
     await sleep(20);
   }
 };
@@ -85,7 +87,7 @@ for (const channel of [
 }
 const events = (channel) =>
   evidence.events.filter((event) => event.channel === channel).map((event) => event.payload);
-const resultPath = (run) => path.join(RESULTS_DIR, `${run.id}.json`);
+const resultPath = (ownedRun) => path.join(RESULTS_DIR, `${ownedRun.id}.json`);
 const calls = () =>
   fs
     .readdirSync(callsDir)
@@ -125,13 +127,18 @@ const errorsFor = (run) =>
     );
 const release = (run) => fs.writeFileSync(path.join(callsDir, `release_${run.name}`), "release");
 
+function openManager() {
+  if (phase === "seed") {
+    return sdk.SessionManager.create(cwd, path.join(root, "sessions"));
+  }
+  if (phase === "foreign") {
+    return sdk.SessionManager.forkFrom(seed.sessionFile, cwd, path.join(root, "forks"));
+  }
+  return sdk.SessionManager.open(seed.sessionFile);
+}
+
 async function open() {
-  const sessionManager =
-    phase === "seed"
-      ? sdk.SessionManager.create(cwd, path.join(root, "sessions"))
-      : phase === "foreign"
-        ? sdk.SessionManager.forkFrom(seed.sessionFile, cwd, path.join(root, "forks"))
-        : sdk.SessionManager.open(seed.sessionFile);
+  const sessionManager = openManager();
   const settingsManager = sdk.SettingsManager.inMemory({
     retry: { enabled: false },
     compaction: { enabled: false },
@@ -271,8 +278,9 @@ async function verifyResult(run, grouped) {
         );
         assert.equal(acks.length, 1);
         assert.equal(acks[0].delivered, grouped);
-        if (grouped) assert.deepEqual(errorsFor(run), []);
-        else {
+        if (grouped) {
+          assert.deepEqual(errorsFor(run), []);
+        } else {
           assert.equal(errorsFor(run).length, 1);
           assert.equal(errorsFor(run)[0].data.to, seed.intercomTarget);
           assert.match(errorsFor(run)[0].data.error, /Failed to spawn intercom broker:.*ENOENT/);
@@ -294,6 +302,8 @@ try {
     evidence.runs = [];
     for (const name of ["foreign", "repaired", "fallback"]) {
       const output = `NATIVE_DELIVERY_${name.toUpperCase()}`;
+      // Seed saved receipts in launch order before the cold-parent process exits.
+      // oxlint-disable-next-line no-await-in-loop
       const launch = await invoke("delegate", {
         agent: "probe",
         task: `WAIT_GATE:release_${name}\nWORKFLOW_RESPONSE:${JSON.stringify({ text: output })}`,
@@ -317,7 +327,7 @@ try {
       "native parent owns three running children before its process exits; old runtime identity is recorded at launch",
     );
   } else if (phase === "foreign") {
-    const run = seed.runs.find((run) => run.name === "foreign");
+    const run = seed.runs.find((ownedRun) => ownedRun.name === "foreign");
     const identityQueries = events("subagent:intercom-identity-request").length;
     release(run);
     await wait(() => fs.existsSync(resultPath(run)), "foreign owner's real result file");
@@ -353,12 +363,12 @@ try {
     assert.notEqual(evidence.pid, seed.pid);
     assert.equal(evidence.sessionId, seed.sessionId);
     assert.equal(evidence.sessionFile, seed.sessionFile);
-    const run = seed.runs.find((run) => run.name === phase);
+    const run = seed.runs.find((ownedRun) => ownedRun.name === phase);
     if (phase === "resume") {
       assert.ok(evidence.intercomTarget);
       assert.notEqual(evidence.intercomTarget, seed.intercomTarget);
-      await verifyResult(seed.runs.find((run) => run.name === "foreign"));
-      const repaired = seed.runs.find((run) => run.name === "repaired");
+      await verifyResult(seed.runs.find((ownedRun) => ownedRun.name === "foreign"));
+      const repaired = seed.runs.find((ownedRun) => ownedRun.name === "repaired");
       release(repaired);
       await verifyResult(repaired, true);
     } else {

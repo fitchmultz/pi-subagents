@@ -47,6 +47,34 @@ const save = (path, value) => {
   renameSync(temporary, path);
 };
 
+function scenarioState() {
+  if (scenario === "success") {
+    return "complete";
+  }
+  return scenario === "async-failure" ? "failed" : "running";
+}
+function promptKind(prompt) {
+  const markers = [
+    ["intercom tool", "intercom"],
+    ["action profiles", "list"],
+    ["Set async true", "async"],
+    ["parallel mode", "parallel"],
+    ["chain mode", "chain"],
+    ["outputMode", "output"],
+    ["acceptance criteria", "acceptance"],
+  ];
+  return markers.find(([marker]) => prompt.includes(marker))?.[1] ?? "foreground";
+}
+function promptTool(kind) {
+  if (kind === "intercom") {
+    return "intercom";
+  }
+  if (kind === "list") {
+    return "agent_runs";
+  }
+  return ["foreground", "async"].includes(kind) ? "delegate" : "subagent";
+}
+
 if (["launcher", "runner", "child", "broker"].includes(role)) {
   record("started");
   process.on("SIGTERM", () => {
@@ -68,10 +96,11 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       updatedAt: Date.now(),
     });
     while (!existsSync(join(evidence, "child-ready"))) {
+      // Child/broker readiness is published before the parent may emit its wire result.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
-    const state =
-      scenario === "success" ? "complete" : scenario === "async-failure" ? "failed" : "running";
+    const state = scenarioState();
     writeFileSync(join(asyncDir, "output-0.log"), "real-pi-smoke async ok\n");
     save(join(asyncDir, "status.json"), {
       runId,
@@ -111,7 +140,9 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     mkdirSync(join(agentDir, "intercom"), { recursive: true });
     writeFileSync(join(agentDir, "intercom", "broker.pid"), brokerPidRecord());
   }
-  setInterval(() => {}, 1000);
+  setInterval(() => {
+    // Keep the controlled process alive so smoke cleanup must signal and reap it.
+  }, 1000);
 } else if (role === "install") {
   save(join(evidence, "install.json"), { repo: args[1], root });
 } else if (role === "list") {
@@ -133,21 +164,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   );
 } else {
   const prompt = args.at(-1);
-  const kind = prompt.includes("intercom tool")
-    ? "intercom"
-    : prompt.includes("action profiles")
-      ? "list"
-      : prompt.includes("Set async true")
-        ? "async"
-        : prompt.includes("parallel mode")
-          ? "parallel"
-          : prompt.includes("chain mode")
-            ? "chain"
-            : prompt.includes("outputMode")
-              ? "output"
-              : prompt.includes("acceptance criteria")
-                ? "acceptance"
-                : "foreground";
+  const kind = promptKind(prompt);
   record("prompt", { kind });
   mkdirSync(sessions, { recursive: true });
   if (!existsSync(sessionFile)) {
@@ -156,6 +173,8 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   if (kind === "intercom") {
     launch("broker").unref();
     while (!existsSync(join(evidence, "broker-ready"))) {
+      // Child/broker readiness is published before the parent may emit its wire result.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
   }
@@ -170,6 +189,8 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       `${JSON.stringify({ type: "custom", customType: "subagent-run", data: { runId, ownerSessionId: sessionId, source: "async", pid: launcher.pid, asyncDir } })}\n`,
     );
     while (!existsSync(join(evidence, "runner-ready"))) {
+      // Child/broker readiness is published before the parent may emit its wire result.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     save(join(evidence, "parent-ready"), resourcesPresent());
@@ -180,8 +201,12 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       process.exit(19);
     }
     if (["timeout", "startup-timeout", "SIGINT", "SIGTERM"].includes(scenario)) {
-      setInterval(() => {}, 1000);
-      await new Promise(() => {});
+      setInterval(() => {
+        // Keep the controlled process alive so smoke cleanup must signal and reap it.
+      }, 1000);
+      await new Promise(() => {
+        // Deliberately never settle: the smoke controller must cancel or time out this parent.
+      });
     }
   }
   if (kind === "output") {
@@ -196,14 +221,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     content: [{ type: "text", text }],
   };
   appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message })}\n`);
-  const toolName =
-    kind === "intercom"
-      ? "intercom"
-      : kind === "list"
-        ? "agent_runs"
-        : ["foreground", "async"].includes(kind)
-          ? "delegate"
-          : "subagent";
+  const toolName = promptTool(kind);
   for (const event of [
     { type: "tool_execution_start", toolName },
     { type: "tool_execution_end", toolName, isError: false },

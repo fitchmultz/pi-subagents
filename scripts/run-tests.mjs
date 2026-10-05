@@ -83,16 +83,14 @@ function sanitizedEnv() {
       delete env[key];
     }
   }
+  // Harness startup instrumentation changes child stderr, hiding otherwise-empty transport failures.
+  // Tests must observe the selected host's normal diagnostics, not the outer Pi's debug mode.
+  delete env.PI_TIMING;
   return env;
 }
 
-function runNodeTest(label, imports, files, timeoutMs, concurrency) {
-  const args = [
-    ...imports.flatMap((specifier) => ["--import", specifier]),
-    ...(concurrency ? [`--test-concurrency=${concurrency}`] : []),
-    "--test",
-    ...files,
-  ];
+function runNodeTest(label, files, timeoutMs, concurrency) {
+  const args = [...(concurrency ? [`--test-concurrency=${concurrency}`] : []), "--test", ...files];
   const startedAt = Date.now();
   const tempRoot = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
   const env = sanitizedEnv();
@@ -138,11 +136,10 @@ function runNodeTest(label, imports, files, timeoutMs, concurrency) {
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
 const unit = () =>
-  runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs ?? DEFAULT_TIMEOUT_MS.unit);
+  runNodeTest("unit tests", testFiles("test/unit"), timeoutMs ?? DEFAULT_TIMEOUT_MS.unit);
 const integration = () =>
   runNodeTest(
     "integration tests",
-    [],
     testFiles("test/integration"),
     timeoutMs ?? DEFAULT_TIMEOUT_MS.integration,
     Math.min(4, Math.max(1, availableParallelism() - 1)),

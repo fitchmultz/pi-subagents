@@ -55,12 +55,16 @@ const loader = new DefaultResourceLoader({
 });
 await loader.reload();
 assert.deepEqual(loader.getExtensions().errors, []);
-const sessionManager =
-  mode === "fork"
-    ? SessionManager.forkFrom(sourceSession, directory, path.join(directory, "sessions"))
-    : mode === "resume"
-      ? SessionManager.open(sourceSession)
-      : SessionManager.create(directory, path.join(directory, "sessions"));
+function openSession() {
+  if (mode === "fork") {
+    return SessionManager.forkFrom(sourceSession, directory, path.join(directory, "sessions"));
+  }
+  if (mode === "resume") {
+    return SessionManager.open(sourceSession);
+  }
+  return SessionManager.create(directory, path.join(directory, "sessions"));
+}
+const sessionManager = openSession();
 const { session } = await createAgentSession({
   cwd: directory,
   agentDir: process.env.PI_CODING_AGENT_DIR,
@@ -136,11 +140,15 @@ if (mode === "seed") {
   await session.prompt("Hold an unfinished provider request");
 } else {
   const deadline = Date.now() + 5_000;
+  // Each summary awaits a real broker response before deciding whether native delivery settled.
+  // oxlint-disable-next-line no-await-in-loop
   while (!(await summary()).status.includes("Pending inbound messages: 0") || !session.isIdle) {
     assert.ok(
       Date.now() < deadline,
       "restored native delivery finishes without waking passive messages",
     );
+    // Native delivery consumes its queue between polls; do not race concurrent status calls.
+    // oxlint-disable-next-line no-await-in-loop
     await sleep(5);
   }
   await session.waitForIdle();

@@ -18,6 +18,8 @@ async function waitForFile(file) {
     if (Date.now() >= deadline) {
       fail("Timed out waiting for mock response release.");
     }
+    // Poll the parent's release/call publication between event-loop turns.
+    // oxlint-disable-next-line no-await-in-loop
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
@@ -52,6 +54,10 @@ function responseMatchesArgs(response, args) {
   return needles.every((needle) => typeof needle === "string" && haystack.includes(needle));
 }
 
+function isQueueRace(error, codes) {
+  return error && typeof error === "object" && "code" in error && codes.includes(error.code);
+}
+
 function claimNextResponse(dir, args) {
   for (const fileName of listPendingFiles(dir)) {
     const sourcePath = path.join(dir, fileName);
@@ -59,7 +65,7 @@ function claimNextResponse(dir, args) {
     try {
       response = JSON.parse(fs.readFileSync(sourcePath, "utf-8"));
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      if (isQueueRace(error, ["ENOENT"])) {
         continue;
       }
       throw error;
@@ -72,11 +78,8 @@ function claimNextResponse(dir, args) {
       fs.renameSync(sourcePath, targetPath);
       return response;
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error) {
-        const code = error.code;
-        if (code === "ENOENT" || code === "EEXIST") {
-          continue;
-        }
+      if (isQueueRace(error, ["ENOENT", "EEXIST"])) {
+        continue;
       }
       throw error;
     }
@@ -84,10 +87,10 @@ function claimNextResponse(dir, args) {
 
   const defaultPath = path.join(dir, "default-response.json");
   if (!fs.existsSync(defaultPath)) {
-    return undefined;
+    return;
   }
-  const defaultResponse = JSON.parse(fs.readFileSync(defaultPath, "utf-8"));
-  return responseMatchesArgs(defaultResponse, args) ? defaultResponse : undefined;
+  const fallback = JSON.parse(fs.readFileSync(defaultPath, "utf-8"));
+  return responseMatchesArgs(fallback, args) ? fallback : undefined;
 }
 
 function defaultAssistantMessage(output) {
@@ -201,67 +204,84 @@ async function writeResponseEntries(entries, jsonMode, args) {
     args.some((arg) => expandedArg(arg).includes("## Acceptance Finalization"));
   let sawProviderError = false;
   for (const entry of entries) {
-    if (entry?.type === "message_end") {
-      const textPart = entry.message?.content?.find?.((part) => part?.type === "text");
-      const isProviderError = Boolean(
-        entry.message?.errorMessage || entry.message?.stopReason === "error",
-      );
-      if (isProviderError) {
-        sawProviderError = true;
-      }
-      if (
-        !isProviderError &&
-        textPart &&
-        typeof textPart.text === "string" &&
-        (!sawProviderError || textPart.text.trim())
-      ) {
-        textPart.text = withAcceptanceReport(textPart.text, args);
-      }
-    }
-    if (
-      jsonMode &&
-      reportFinalization &&
-      entry?.message?.role === "assistant" &&
-      entry.message.stopReason === "stop" &&
-      !entry.message.errorMessage
-    ) {
-      const report = extractPlainText(entry);
-      if (report.trim()) {
-        const toolCallId = `mock-report-${process.pid}-${Math.random().toString(16).slice(2)}`;
-        const block = report.match(/```acceptance-report\s*\n([\s\S]*?)```/i);
-        let typedReport;
-        try {
-          typedReport = JSON.parse(block?.[1] ?? "");
-        } catch {
-          typedReport = {};
-        }
-        const value = {
-          answer: report.replace(/\n?```acceptance-report\s*\n[\s\S]*?```\s*$/i, "").trimEnd(),
-          report: typedReport,
-        };
-        await writeJsonlLine({
-          ...entry,
-          message: {
-            ...entry.message,
-            stopReason: "toolUse",
-            content: [
-              { type: "toolCall", id: toolCallId, name: "structured_output", arguments: { value } },
-            ],
-          },
-        });
-        await maybeWriteStructuredOutput({ structuredOutput: value }, true, toolCallId);
-        continue;
-      }
+    sawProviderError = prepareAcceptanceEntry(entry, args, sawProviderError);
+    // Emit each JSONL record in order, including any structured-output tool-result records.
+    // oxlint-disable-next-line no-await-in-loop
+    if (await writeFinalizationEntry(entry, jsonMode && reportFinalization)) {
+      continue;
     }
     if (jsonMode) {
+      // Wire order and stdout backpressure are part of the mock transport contract.
+      // oxlint-disable-next-line no-await-in-loop
       await writeJsonlLine(entry);
       continue;
     }
     const text = extractPlainText(entry);
     if (text) {
+      // Preserve assistant text order and wait for stdout drain before the next record.
+      // oxlint-disable-next-line no-await-in-loop
       await writeStdout(`${text}\n`);
     }
   }
+}
+
+function prepareAcceptanceEntry(entry, args, sawProviderError) {
+  if (entry?.type !== "message_end") {
+    return sawProviderError;
+  }
+  const textPart = entry.message?.content?.find?.((part) => part?.type === "text");
+  const isProviderError = Boolean(
+    entry.message?.errorMessage || entry.message?.stopReason === "error",
+  );
+  const providerFailed = sawProviderError || isProviderError;
+  if (
+    !isProviderError &&
+    textPart &&
+    typeof textPart.text === "string" &&
+    (!providerFailed || textPart.text.trim())
+  ) {
+    textPart.text = withAcceptanceReport(textPart.text, args);
+  }
+  return providerFailed;
+}
+
+async function writeFinalizationEntry(entry, enabled) {
+  if (
+    !enabled ||
+    entry?.message?.role !== "assistant" ||
+    entry.message.stopReason !== "stop" ||
+    entry.message.errorMessage
+  ) {
+    return false;
+  }
+  const report = extractPlainText(entry);
+  if (!report.trim()) {
+    return false;
+  }
+  const toolCallId = `mock-report-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const block = report.match(/```acceptance-report\s*\n([\s\S]*?)```/i);
+  let typedReport;
+  try {
+    typedReport = JSON.parse(block?.[1] ?? "");
+  } catch {
+    typedReport = {};
+  }
+  const value = {
+    answer: report.replace(/\n?```acceptance-report\s*\n[\s\S]*?```\s*$/i, "").trimEnd(),
+    report: typedReport,
+  };
+  await writeJsonlLine({
+    ...entry,
+    message: {
+      ...entry.message,
+      stopReason: "toolUse",
+      content: [
+        { type: "toolCall", id: toolCallId, name: "structured_output", arguments: { value } },
+      ],
+    },
+  });
+  await maybeWriteStructuredOutput({ structuredOutput: value }, true, toolCallId);
+  return true;
 }
 
 async function maybeWriteStructuredOutput(response, jsonMode, toolCallId) {
@@ -313,6 +333,19 @@ async function main() {
   const jsonMode = isJsonMode(args);
   const response = claimNextResponse(queueDir, args) ?? defaultResponse();
   writeSessionFile(args);
+  recordCall(args, response);
+  await waitForCalls(response.waitForCalls);
+  await waitForFile(response.waitForFile);
+  await prepareResponse(response);
+  await emitResponse(response, jsonMode, args);
+  await maybeWriteStructuredOutput(response, jsonMode);
+  if (jsonMode && !response.nativeReport) {
+    await writeJsonlLine({ type: "agent_settled" });
+  }
+  await finishResponse(response);
+}
+
+function recordCall(args, response) {
   const callRecord = {
     args,
     expandedArgs: args.map(expandedArg),
@@ -333,45 +366,62 @@ async function main() {
   const tempCallPath = path.join(queueDir, `.tmp-${path.basename(callPath)}`);
   fs.writeFileSync(tempCallPath, JSON.stringify(callRecord), "utf-8");
   fs.renameSync(tempCallPath, callPath);
-  if (response.waitForCalls) {
+}
+
+async function waitForCalls(count) {
+  if (count) {
     const deadline = Date.now() + 5000;
-    while (
-      fs.readdirSync(queueDir).filter((name) => name.startsWith("call-")).length <
-      response.waitForCalls
-    ) {
+    while (fs.readdirSync(queueDir).filter((name) => name.startsWith("call-")).length < count) {
       if (Date.now() >= deadline) {
         fail("Timed out waiting for sibling mock calls.");
       }
+      // Poll the parent's release/call publication between event-loop turns.
+      // oxlint-disable-next-line no-await-in-loop
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
+}
 
-  await waitForFile(response.waitForFile);
-
+async function prepareResponse(response) {
   if (response.ignoreSignals === true) {
-    process.on("SIGINT", () => {});
-    process.on("SIGTERM", () => {});
+    const ignoreSignal = () => {
+      // Simulate a resistant child; the owning process-tree timeout must escalate to SIGKILL.
+    };
+    process.on("SIGINT", ignoreSignal);
+    process.on("SIGTERM", ignoreSignal);
   }
   if (typeof response.delay === "number" && response.delay > 0) {
     await new Promise((resolve) => setTimeout(resolve, response.delay));
   }
+}
 
+async function emitSteps(steps, jsonMode, args) {
+  for (const step of steps) {
+    // Steps are an ordered stream script: release/delay precedes that step's wire records.
+    // oxlint-disable-next-line no-await-in-loop
+    await waitForFile(step.waitForFile);
+    if (typeof step?.delay === "number" && step.delay > 0) {
+      // Preserve configured wire timing, not concurrent step scheduling.
+      // oxlint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, step.delay));
+    }
+    if (Array.isArray(step?.jsonl) && step.jsonl.length > 0) {
+      // Emit one step fully, including backpressure, before starting the next.
+      // oxlint-disable-next-line no-await-in-loop
+      await writeResponseEntries(step.jsonl, jsonMode, args);
+    }
+    if (typeof step?.stderr === "string" && step.stderr.length > 0) {
+      process.stderr.write(step.stderr);
+    }
+  }
+}
+
+async function emitResponse(response, jsonMode, args) {
   if (response.nativeReport) {
     const { runNativeReport } = await import("../fixtures/native-acceptance-report.mjs");
     await runNativeReport(args, response.nativeReport);
   } else if (Array.isArray(response.steps) && response.steps.length > 0) {
-    for (const step of response.steps) {
-      await waitForFile(step.waitForFile);
-      if (typeof step?.delay === "number" && step.delay > 0) {
-        await new Promise((resolve) => setTimeout(resolve, step.delay));
-      }
-      if (Array.isArray(step?.jsonl) && step.jsonl.length > 0) {
-        await writeResponseEntries(step.jsonl, jsonMode, args);
-      }
-      if (typeof step?.stderr === "string" && step.stderr.length > 0) {
-        process.stderr.write(step.stderr);
-      }
-    }
+    await emitSteps(response.steps, jsonMode, args);
   } else if (Array.isArray(response.jsonl) && response.jsonl.length > 0) {
     await writeResponseEntries(response.jsonl, jsonMode, args);
   } else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
@@ -392,11 +442,9 @@ async function main() {
       await writeStdout(`${output}\n`);
     }
   }
-  await maybeWriteStructuredOutput(response, jsonMode);
-  if (jsonMode && !response.nativeReport) {
-    await writeJsonlLine({ type: "agent_settled" });
-  }
+}
 
+async function finishResponse(response) {
   if (typeof response.stderr === "string" && response.stderr.length > 0) {
     process.stderr.write(response.stderr);
   }
@@ -404,7 +452,12 @@ async function main() {
   if (typeof response.spawnSignalResistantDescendantPidFile === "string") {
     const descendant = spawn(
       process.execPath,
-      ["-e", "process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],
+      [
+        "-e",
+        `const ignoreSignal = () => { /* Resist termination so the owner must escalate. */ };
+process.on('SIGINT', ignoreSignal); process.on('SIGTERM', ignoreSignal);
+setInterval(() => { /* Keep this controlled descendant alive until reaped. */ }, 1000);`,
+      ],
       { stdio: ["ignore", "inherit", "inherit"] },
     );
     fs.writeFileSync(

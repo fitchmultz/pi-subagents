@@ -9,10 +9,23 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { hostCli, hostIndex, hostRoot } from "./compat-host.mjs";
 
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(
+    "Usage: node scripts/native-package-smoke.mjs [package-root]\n\nVerify the selected host SDK and compiled extensions, private broker, lazy tools, CLI startup and shutdown without model calls.\nExample: node scripts/native-package-smoke.mjs .\nExit codes: 0 passed; 1 native load, tool, CLI or shutdown failure.",
+  );
+  process.exit(0);
+}
+
 const packageRoot = resolve(process.argv[2] ?? ".");
 const root = mkdtempSync(join(tmpdir(), "ps-native-"));
 const agentDir = join(root, "agent");
 mkdirSync(agentDir);
+// This smoke owns a fresh parent SDK session, not the invoking harness's child role.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
+}
 Object.assign(process.env, {
   HOME: root,
   USERPROFILE: root,
@@ -41,6 +54,8 @@ let session;
 try {
   for (let i = 0; !brokerLog.includes("Intercom broker started"); i++) {
     assert.ok(i < 100 && broker.exitCode === null, brokerLog || "Private broker did not start");
+    // Wait for actual private broker startup before SDK registration; bound each readiness poll.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(50);
   }
   const settingsManager = sdk.SettingsManager.inMemory({

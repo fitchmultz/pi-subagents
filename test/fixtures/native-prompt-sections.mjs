@@ -15,7 +15,9 @@ const root = fs.mkdtempSync(
   path.join(process.env.PI_PROMPT_TEST_EVIDENCE_DIR ?? os.tmpdir(), "pi-prompt-sections-"),
 );
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
 }
 Object.assign(process.env, {
   HOME: root,
@@ -51,6 +53,8 @@ globalThis.fetch = async () => {
 };
 after(async () => {
   for (const session of sessions) {
+    // Sessions share one broker and global fixture environment; teardown must complete in order.
+    // oxlint-disable-next-line no-await-in-loop
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     session.dispose();
   }
@@ -105,6 +109,24 @@ async function make({
     pi.on("before_agent_start", (event) => ({
       systemPrompt: `${event.systemPrompt}\nOPAQUE FULL OVERRIDE`,
     }));
+  function inheritedResources() {
+    return {
+      appendSystemPromptOverride: () => [
+        profile,
+        '<skill name="explicit">SELECTED SKILL BODY</skill>',
+      ],
+      agentsFilesOverride: () => ({
+        agentsFiles: inherited ? [{ path: "/fixture/AGENTS.md", content: "PROJECT POLICY" }] : [],
+      }),
+      skillsOverride: () => ({ skills: inherited ? skills : [], diagnostics: [] }),
+      extensionFactories: [
+        ...(full && !fullAfter ? [fullWriter] : []),
+        ...(child ? [childRuntime] : []),
+        ...(peer ? [intercom] : []),
+        ...(fullAfter ? [fullWriter] : []),
+      ],
+    };
+  }
   const loader = new sdk.DefaultResourceLoader({
     cwd: root,
     agentDir: process.env.PI_CODING_AGENT_DIR,
@@ -115,20 +137,7 @@ async function make({
     noThemes: true,
     noPromptTemplates: true,
     systemPromptOverride: () => replacement,
-    appendSystemPromptOverride: () => [
-      profile,
-      '<skill name="explicit">SELECTED SKILL BODY</skill>',
-    ],
-    agentsFilesOverride: () => ({
-      agentsFiles: inherited ? [{ path: "/fixture/AGENTS.md", content: "PROJECT POLICY" }] : [],
-    }),
-    skillsOverride: () => ({ skills: inherited ? skills : [], diagnostics: [] }),
-    extensionFactories: [
-      ...(full && !fullAfter ? [fullWriter] : []),
-      ...(child ? [childRuntime] : []),
-      ...(peer ? [intercom] : []),
-      ...(fullAfter ? [fullWriter] : []),
-    ],
+    ...inheritedResources(),
   });
   await loader.reload();
   assert.deepEqual(loader.getExtensions().errors, []);
@@ -173,6 +182,8 @@ async function run(instance, text = "ASSIGNED TASK") {
   for (const context of instance.captures.slice(instance.payloads.length)) {
     let payload;
     // Use the real Responses payload builder and stop before transport dispatch.
+    // Build provider payloads in capture order while retaining the network tripwire.
+    // oxlint-disable-next-line no-await-in-loop
     await responses
       .stream({ ...instance.model, baseUrl: "https://invalid.invalid/v1" }, context, {
         apiKey: "fixture",
@@ -378,6 +389,8 @@ test("authorized fanout children retain their own nested calls and results throu
 
 test("opaque full writers before and after child sections keep provider-visible instructions", async () => {
   for (const fullAfter of [false, true]) {
+    // Capture each native instance's environment before the next scenario changes it.
+    // oxlint-disable-next-line no-await-in-loop
     const child = await run(await make({ full: true, fullAfter }));
     assert.match(currentPrompt(child), /OPAQUE FULL OVERRIDE/);
     assert.match(currentPrompt(child), /PROJECT POLICY/);
@@ -406,17 +419,27 @@ test("intercom uses a stable provider-visible section and preserves earlier opaq
     const deadline = Date.now() + 5_000;
     while (!log.includes("Intercom broker started")) {
       assert.ok(Date.now() < deadline, log);
+      // Yield between readiness queries so native broker/session startup can progress.
+      // oxlint-disable-next-line no-await-in-loop
       await sleep(10);
     }
     await client.connect({ name: "prompt-peer", cwd: root, model: "fixture" });
     for (const full of [false, true]) {
+      // Native sessions share the broker and global inheritance controls.
+      // oxlint-disable-next-line no-await-in-loop
       const instance = await make({ child: false, peer: true, full });
       const brokerId = `pi-${createHash("sha256").update(instance.session.sessionId).digest("hex").slice(0, 32)}`;
       const connectedBy = Date.now() + 5_000;
+      // Prove registration via acknowledged broker queries, not elapsed time.
+      // oxlint-disable-next-line no-await-in-loop
       while (!(await client.listSessions()).some((peer) => peer.id === brokerId)) {
         assert.ok(Date.now() < connectedBy, "native intercom registration");
+        // Yield between readiness queries so native broker/session startup can progress.
+        // oxlint-disable-next-line no-await-in-loop
         await sleep(10);
       }
+      // The second turn must retain the first turn's provider-visible prompt.
+      // oxlint-disable-next-line no-await-in-loop
       await run(instance);
       assert.match(currentPrompt(instance), /<intercom_peers>\nOther Pi sessions may be connected/);
       assert.equal(currentPrompt(instance).includes("OPAQUE FULL OVERRIDE"), full);
@@ -427,6 +450,8 @@ test("intercom uses a stable provider-visible section and preserves earlier opaq
           return ai.fauxAssistantMessage("done");
         },
       ]);
+      // Reuse this native session before moving to the next override scenario.
+      // oxlint-disable-next-line no-await-in-loop
       await run(instance, "SECOND TURN");
       assert.equal(currentPrompt(instance, 1), currentPrompt(instance));
       save(`intercom-${full ? "opaque" : "sections"}`, instance);
@@ -434,6 +459,8 @@ test("intercom uses a stable provider-visible section and preserves earlier opaq
   } finally {
     await client.disconnect();
     for (const session of sessions) {
+      // Sessions share one broker and global fixture environment; teardown must complete in order.
+      // oxlint-disable-next-line no-await-in-loop
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     }
     if (broker.exitCode === null) {

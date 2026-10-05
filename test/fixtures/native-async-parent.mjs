@@ -15,7 +15,9 @@ for (const dir of [cwd, agentDir, path.join(cwd, ".pi/agents"), path.join(root, 
   fs.mkdirSync(dir, { recursive: true });
 }
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
 }
 Object.assign(process.env, {
   HOME: root,
@@ -154,6 +156,8 @@ const until = async (predicate, reason) => {
   const deadline = Date.now() + 20_000;
   while (!predicate()) {
     assert.ok(Date.now() < deadline, reason);
+    // Poll readiness after the native owner has had another event-loop turn.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 };
