@@ -11,7 +11,7 @@ import type {
   ResolvedAcceptanceGate,
 } from "../../shared/types.ts";
 
-const DEFAULT_FINALIZATION_MAX_TURNS = 3;
+export const DEFAULT_FINALIZATION_MAX_TURNS = 3;
 const MAX_FINALIZATION_TURNS = 10;
 
 const VALID_EVIDENCE = new Set<AcceptanceEvidenceKind>([

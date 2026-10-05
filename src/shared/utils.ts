@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { errorMessage, hasErrorCode, isRecord } from "./unknown.ts";
 import type { ReadonlyAsyncStatus } from "./types.ts";
 import { parseAsyncStatus } from "../runs/background/run-schemas.ts";
+import { normalizeLegacyStatusAcceptance } from "../runs/background/legacy-status-acceptance.ts";
 
 // ============================================================================
 // File System Utilities
@@ -97,7 +98,7 @@ export function readStatus(asyncDir: string): ReadonlyAsyncStatus | null {
   let status: ReadonlyAsyncStatus;
   try {
     const parsed: unknown = JSON.parse(content);
-    status = parseStatusForDisplay(parsed);
+    status = parseStatusForDisplay(normalizeLegacyStatusAcceptance(parsed));
   } catch (error) {
     throw new Error(`Failed to parse async status file '${statusPath}': ${errorMessage(error)}`, {
       cause: error,

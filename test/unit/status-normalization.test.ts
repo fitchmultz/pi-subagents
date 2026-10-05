@@ -1,6 +1,10 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
+import { readStatus } from "../../src/shared/utils.ts";
 import {
   flatToLogicalStepIndex,
   normalizeParallelGroups,
@@ -8,6 +12,101 @@ import {
 import { sanitizeNestedPath } from "../../src/runs/shared/nested-path.ts";
 
 describe("persisted run metadata normalization", () => {
+  it("readStatus restores only the legacy finalization default without rewriting persisted evidence", () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), "pi-subagents-legacy-status-"));
+    const criterion = {
+      id: "criterion-1",
+      must: "Keep original acceptance",
+      evidence: [],
+      severity: "required",
+    };
+    const effectiveAcceptance = {
+      level: "checked",
+      explicit: true,
+      inferredReason: ["explicit acceptance contract"],
+      criteria: [criterion],
+      evidence: [],
+      verify: [],
+      stopRules: ["Do not publish"],
+    };
+    const acceptance = {
+      status: "rejected",
+      explicit: true,
+      effectiveAcceptance,
+      inferredReason: ["explicit acceptance contract"],
+      criteria: [criterion],
+      runtimeChecks: [],
+      verifyRuns: [],
+    };
+    const status = {
+      runId: "legacy-acceptance",
+      mode: "single",
+      state: "complete",
+      startedAt: 1,
+      cwd: "/original-owner",
+      steps: [{ agent: "worker", status: "complete", acceptance }],
+    };
+    const file = path.join(dir, "status.json");
+    try {
+      const original = JSON.stringify(status);
+      fs.writeFileSync(file, original);
+      const parsed = readStatus(dir);
+      assert.ok(parsed);
+      assert.equal(parsed.cwd, "/original-owner");
+      assert.deepEqual(parsed.steps?.[0]?.acceptance, {
+        ...acceptance,
+        effectiveAcceptance: {
+          ...effectiveAcceptance,
+          finalization: { mode: "self-review-loop", maxTurns: 3 },
+        },
+      });
+      assert.equal(readStatus(dir), parsed, "normalized snapshots retain cache identity");
+      assert.equal(fs.readFileSync(file, "utf-8"), original);
+
+      for (const invalid of [
+        { ...status, runtimeVersion: 2 },
+        { ...status, runtimeVersion: 3 },
+        { ...status, cwd: 42 },
+        {
+          ...status,
+          steps: [
+            {
+              agent: "worker",
+              status: "complete",
+              acceptance: { ...acceptance, criteria: undefined },
+            },
+          ],
+        },
+        ...[
+          { finalization: null },
+          { finalization: { mode: "self-review-loop", maxTurns: "3" } },
+          { stopRules: [42] },
+          { criteria: [{ ...criterion, severity: "optional" }] },
+        ].map((fields) =>
+          Object.assign({}, status, {
+            steps: [
+              {
+                agent: "worker",
+                status: "complete",
+                acceptance: {
+                  ...acceptance,
+                  effectiveAcceptance: Object.assign({}, effectiveAcceptance, fields),
+                },
+              },
+            ],
+          }),
+        ),
+      ]) {
+        const bytes = JSON.stringify(invalid);
+        fs.writeFileSync(file, bytes);
+        assert.throws(() => readStatus(dir), /Failed to parse async status file/);
+        assert.equal(fs.readFileSync(file, "utf-8"), bytes);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps only nonnegative integer nested step indexes", () => {
     assert.deepEqual(
       sanitizeNestedPath([

@@ -1005,8 +1005,15 @@ describe("intercom result delivery cutover", () => {
 
   it("nested resume inherits the acceptance contract persisted by its async child", async () => {
     const acceptedReport = `done\n\`\`\`acceptance-report\n${JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "done" }], residualRisks: [] })}\n\`\`\``;
-    mockPi.onCall({ output: acceptedReport });
-    mockPi.onCall({ output: acceptedReport });
+    const receiptPath = path.join(tempDir, "nested-native-receipt.json");
+    mockPi.onCall({
+      nativeReport: {
+        scenario: "single",
+        initialReport: "nested initial output",
+        report: acceptedReport,
+        receiptPath,
+      },
+    });
     const rootRunId = `nested-root-${Date.now().toString(36)}`;
     const nestedRunId = `nested-resume-${Date.now().toString(36)}`;
     const asyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", rootRunId, nestedRunId);
@@ -1048,7 +1055,15 @@ describe("intercom result delivery cutover", () => {
               agent: "worker",
               status: "complete",
               sessionFile,
-              acceptance: { effectiveAcceptance },
+              acceptance: {
+                status: "checked",
+                explicit: true,
+                effectiveAcceptance,
+                inferredReason: effectiveAcceptance.inferredReason,
+                criteria: effectiveAcceptance.criteria,
+                runtimeChecks: [],
+                verifyRuns: [],
+              },
             },
           ],
         }),
@@ -1129,10 +1144,20 @@ describe("intercom result delivery cutover", () => {
       const savedResult = record(records(payload.results)[0]);
       const savedAcceptance = record(savedResult.acceptance);
       const savedEffectiveAcceptance = record(savedAcceptance.effectiveAcceptance);
+      assert.equal(payload.success, true);
+      assert.equal(savedAcceptance.status, "checked");
       assert.equal(
         record(records(savedEffectiveAcceptance.criteria)[0]).must,
         "Nested inherited criterion",
       );
+      assert.deepEqual(savedEffectiveAcceptance.stopRules, ["Do not publish"]);
+      assert.equal(record(savedEffectiveAcceptance.finalization).maxTurns, 1);
+      assert.equal(mockPi.callCount(), 1);
+      const receipt = json(fs.readFileSync(receiptPath, "utf-8"));
+      assert.equal(receipt.providerCalls, 2);
+      assert.equal(fs.realpathSync(requireText(receipt.sessionFile)), fs.realpathSync(sessionFile));
+      assert.equal(receipt.networkRequests, 0);
+      assert.deepEqual(receipt.extensionErrors, []);
     } finally {
       fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
       fs.rmSync(asyncDir, { recursive: true, force: true });
@@ -2064,8 +2089,16 @@ describe("intercom result delivery cutover", () => {
   });
 
   it("malformed persisted acceptance resumes with defaults instead of a TypeError", async () => {
-    mockPi.onCall({ output: "malformed-recovery initial output" });
-    mockPi.onCall({ output: "malformed-recovery self-review output" });
+    const receiptPath = path.join(tempDir, "legacy-native-receipt.json");
+    mockPi.onCall({
+      nativeReport: {
+        scenario: "single",
+        initialReport: "malformed-recovery initial output",
+        report:
+          'malformed-recovery self-review output\n```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied","evidence":"recovered"}]}\n```',
+        receiptPath,
+      },
+    });
     const runId = `resume-malformed-acceptance-${Date.now()}`;
     const asyncDir = path.join(ASYNC_DIR, runId);
     const sessionFile = path.join(tempDir, "malformed-child-session.jsonl");
@@ -2108,6 +2141,15 @@ describe("intercom result delivery cutover", () => {
                     verify: [],
                     stopRules: [],
                   },
+                  inferredReason: ["explicit acceptance contract"],
+                  criteria: [
+                    {
+                      id: "criterion-1",
+                      must: "Recovered criterion",
+                      evidence: [],
+                      severity: "required",
+                    },
+                  ],
                   runtimeChecks: [],
                   verifyRuns: [],
                 },
@@ -2143,7 +2185,15 @@ describe("intercom result delivery cutover", () => {
         record(records(savedEffectiveAcceptance.criteria)[0]).must,
         "Recovered criterion",
       );
+      assert.equal(payload.success, true);
+      assert.equal(savedAcceptance.status, "checked");
       assert.equal(record(savedEffectiveAcceptance.finalization).maxTurns, 3);
+      assert.equal(mockPi.callCount(), 1);
+      const receipt = json(fs.readFileSync(receiptPath, "utf-8"));
+      assert.equal(receipt.providerCalls, 2);
+      assert.equal(fs.realpathSync(requireText(receipt.sessionFile)), fs.realpathSync(sessionFile));
+      assert.equal(receipt.networkRequests, 0);
+      assert.deepEqual(receipt.extensionErrors, []);
     } finally {
       fs.rmSync(asyncDir, { recursive: true, force: true });
     }
