@@ -103,6 +103,7 @@
     "node": ">=24.21.0"
   },
   "dependencies": {
-    "stream-json": "3.7.0"
+    "stream-json": "3.7.0",
+    "type-fest": "5.10.0"
   }
 }
