@@ -22,13 +22,14 @@ export interface PromptTemplateBridgeEvents {
 interface PromptTemplateBridgeOptions<Ctx extends { readonly cwd?: string }> {
   readonly events: PromptTemplateBridgeEvents;
   readonly getContext: () => Ctx | null;
-  readonly execute: (
-    requestId: string,
-    request: DelegationRequest,
-    signal: AbortSignal,
-    ctx: Ctx,
-    onUpdate: (result: DelegationResult) => void,
-  ) => Promise<DelegationResult>;
+  readonly execute: (invocation: PromptTemplateExecution<Ctx>) => Promise<DelegationResult>;
+}
+
+interface PromptTemplateExecution<Ctx extends { readonly cwd?: string }> {
+  readonly request: DelegationRequest;
+  readonly signal?: AbortSignal;
+  readonly ctx: Ctx;
+  readonly onUpdate?: (result: DelegationResult) => void;
 }
 
 class PromptTemplateBridge<Ctx extends { readonly cwd?: string }> {
@@ -112,18 +113,17 @@ class PromptTemplateBridge<Ctx extends { readonly cwd?: string }> {
 
   private async execute(request: DelegationRequest, signal: AbortSignal, ctx: Ctx): Promise<void> {
     try {
-      const result = await this.options.execute(
-        request.requestId,
+      const result = await this.options.execute({
         request,
         signal,
         ctx,
-        (update) => {
+        onUpdate: (update) => {
           const payload = delegationUpdate(request.requestId, update);
           if (payload) {
             this.options.events.emit(PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT, payload);
           }
         },
-      );
+      });
       this.options.events.emit(
         PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
         delegationResponse(request, result),
