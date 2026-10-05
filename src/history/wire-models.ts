@@ -1,5 +1,4 @@
-import * as Type from "typebox";
-import { Check } from "typebox/value";
+import { Type, Check } from "../shared/native-typebox.ts";
 import {
   HistoryIndexError,
   type HistoryEntry,
