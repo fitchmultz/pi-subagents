@@ -48,6 +48,85 @@ async function owned(index: SubagentHistoryIndex, runs: OwnedRun[], extra: Parti
 }
 const code = (value: string) => (error: any) => error.code === value;
 
+test("an already observed native watch hint preserves completed degraded history without queuing another ingest", { timeout: 10_000 }, async (t) => {
+	const f = fixture(t), directory = path.join(f.root, "native-source");
+	fs.mkdirSync(directory);
+	const file = f.file("native-source/delayed-watch.jsonl", [header(), message("first", "originalword")]);
+	const worker = fork(new URL("../../src/history/worker.ts", import.meta.url), [f.agentDir, file], {
+		execArgv: ["--import", new URL("../fixtures/history-watch-hint.mjs", import.meta.url).href],
+		env: { ...process.env, PI_CODING_AGENT_DIR: f.agentDir }, stdio: ["ignore", "ignore", "inherit", "ipc"],
+	});
+	const exited = once(worker, "exit");
+	t.after(async () => { if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL"); await exited; });
+	let sequence = 0;
+	const requests = new Map<number, { resolve: (value: any) => void; reject: (error: any) => void }>();
+	const observed = new Set<string>(), waiting = new Map<string, () => void>();
+	const directories: string[] = [];
+	worker.on("message", (response: any) => {
+		if (response.watchDirectory) { directories.push(response.watchDirectory); return; }
+		if (response.watchHint) { observed.add(response.watchHint); waiting.get(response.watchHint)?.(); waiting.delete(response.watchHint); return; }
+		const request = requests.get(response.id);
+		if (!request) return;
+		requests.delete(response.id);
+		if (response.error) request.reject(response.error); else request.resolve(response.value);
+	});
+	const hint = (name: string) => observed.has(name) ? Promise.resolve() : new Promise<void>((resolve) => waiting.set(name, resolve));
+	const request = (method: string, input: object = {}) => new Promise<any>((resolve, reject) => {
+		const id = ++sequence; requests.set(id, { resolve, reject }); worker.send({ id, method, input });
+	});
+	try {
+		await request("setOwner", { ownerSessionId: "parent", runs: [run("delayed-watch", file)] }); await request("refresh");
+		fs.appendFileSync(file, '{broken "secret-no-log"}\n' + lines([message("later", "afterbroken")]));
+		await hint("observed");
+		await assert.rejects(request("refresh", { runId: "delayed-watch" }), code("DEGRADED"));
+		const before = await request("historyPage", { runId: "delayed-watch", index: 0 });
+		assert.equal(before.sourceState, "degraded"); assert.equal(before.freshness.state, "degraded");
+		worker.send({ watchHint: "deliver" }); await hint("delivered");
+		const after = await request("historyPage", { runId: "delayed-watch", index: 0 });
+		assert.deepEqual(after.entries.map((entry: any) => entry.id), ["first", "later"]);
+		assert.equal(after.sourceState, "degraded");
+		assert.equal(after.freshness.state, "degraded", "an unchanged native hint cannot turn acknowledged indexing into pending work");
+		assert.equal(after.freshness.pending, 0);
+		observed.clear();
+		fs.appendFileSync(file, lines([message("newest", "genuine new publication")]));
+		await hint("observed");
+		worker.send({ watchHint: "deliver" }); await hint("delivered");
+		const changed = await request("historyPage", { runId: "delayed-watch", index: 0 });
+		assert.equal(changed.freshness.state, "catching-up", "a genuinely changed source still queues work");
+		assert.ok(changed.freshness.pending > 0);
+		worker.send({ watchHint: "drain" });
+		await assert.rejects(request("refresh", { runId: "delayed-watch" }), code("DEGRADED"));
+		const reconciled = await request("historyPage", { runId: "delayed-watch", index: 0 });
+		assert.deepEqual(reconciled.entries.map((entry: any) => entry.id), ["first", "later", "newest"]);
+		assert.equal(reconciled.freshness.state, "degraded");
+		observed.clear();
+		fs.rmSync(directory, { recursive: true }); fs.mkdirSync(directory);
+		fs.writeFileSync(file, lines([header(), message("replacement", "recreated source")]));
+		await hint("observed");
+		worker.send({ watchHint: "deliver" }); await hint("delivered");
+		worker.send({ watchHint: "drain" });
+		const ready = async (id: string) => {
+			const deadline = Date.now() + 3000;
+			for (;;) {
+				const page = await request("historyPage", { runId: "delayed-watch", index: 0 });
+				if (page.sourceState === "current" && !page.freshness.pending && page.entries.at(-1)?.id === id) return;
+				assert.ok(Date.now() < deadline, `native watch publishes ${id} after source-parent recreation`);
+			}
+		};
+		await ready("replacement");
+		const physical = fs.statSync(directory, { bigint: true }), currentDirectory = `${physical.dev}:${physical.ino}`;
+		t.diagnostic(`Physical directory ${currentDirectory}; native registrations ${directories.join(",")}`);
+		worker.send({ watchHint: "automatic" }); await hint("automatic");
+		fs.appendFileSync(file, lines([message("replacement-append", "second native publication after recreation")]));
+		await ready("replacement-append");
+		assert.ok(directories.includes(currentDirectory), "native readiness includes a watch on the recreated physical source parent");
+	} finally {
+		worker.send({ watchHint: "drain" });
+		await request("status");
+		worker.disconnect(); assert.deepEqual(await exited, [0, null]);
+	}
+});
+
 test("owned compact run ordering, filtering and seek pagination do not adopt orphan files or walk sources on warm queries", async (t) => {
 	const f = fixture(t);
 	const views = [seed(f, "run-z", "completed", ["unreviewed"], 200), seed(f, "run-b", "failed", ["failed"], 300), seed(f, "run-a", "failed", ["failed"], 300), seed(f, "run-input", "completed", ["awaiting_input"], 1), seed(f, "run-live", "live", [], 600), seed(f, "run-accepted", "completed", [], 900, "other")];
