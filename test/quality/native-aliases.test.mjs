@@ -6,7 +6,7 @@ await test("erased SDK aliases retain declaration identity through readonly and 
   const dir = fixture();
   try {
     const alias =
-      'import type {ToolResultMessage} from "@earendil-works/pi-ai"; export type RecordedToolResult=ToolResultMessage;';
+      'import type {ToolResultMessage,AssistantMessage} from "@earendil-works/pi-ai"; export type RecordedToolResult=ToolResultMessage; export type UnionRecorded=ToolResultMessage | AssistantMessage;';
     put(dir, "owned/history-display.ts", alias);
     put(dir, "foreign/history-display.ts", alias);
     put(
@@ -27,10 +27,10 @@ await test("erased SDK aliases retain declaration identity through readonly and 
     put(
       dir,
       "main.ts",
-      `import type {ToolResultMessage} from "@earendil-works/pi-ai";
-import type {RecordedToolResult,RecordedToolResult as Renamed} from "./owned/history-display.js";
+      `import type {ToolResultMessage,AssistantMessage} from "@earendil-works/pi-ai";
+import type {RecordedToolResult,RecordedToolResult as Renamed,UnionRecorded} from "./owned/history-display.js";
 import type * as Native from "./owned/history-display.js";
-import type {RecordedToolResult as Foreign} from "./foreign/history-display.js";
+import type {RecordedToolResult as Foreign,UnionRecorded as ForeignUnion} from "./foreign/history-display.js";
 import type {RecordedToolResult as Packaged} from "quality-foreign-result";
 import type {Routed} from "./reexport.js";
 export function approved(value:RecordedToolResult){return value;}
@@ -58,10 +58,24 @@ export function optionalHistory(value:readonly Readonly<Pick<{result?:RecordedTo
 export function optionalMutable(value:{readonly result?:RecordedToolResult; readonly app?:{values:string[]}}){return value;}
 export function optionalParameter(value?:RecordedToolResult){return value;}
 export function optionalForeign(value:{readonly result?:Foreign}){return value;}
+export function optionalUnion(value:{readonly message?:UnionRecorded}){return value;}
+export function requiredUnion(value:{readonly message:UnionRecorded}){return value;}
+export function mappedUnion(value:readonly Readonly<Pick<{message?:UnionRecorded},"message">>[]){return value;}
+export function unionMutable(value:{readonly message?:UnionRecorded; readonly state:string[]}){return value;}
+export function unapprovedUnion(value:{readonly message?:ToolResultMessage | AssistantMessage}){return value;}
+{type UnionRecorded=ToolResultMessage | AssistantMessage; function unionShadow(value:{readonly message?:UnionRecorded}){return value;}}
+export function foreignUnion(value:{readonly message?:ForeignUnion}){return value;}
+export function mixedMutableUnion(value:{readonly message?:UnionRecorded | {readonly payload:string[]}}){return value;}
+export function optionalMutableUnionAttachment(value:{readonly message?:UnionRecorded & {readonly values:string[]}}){return value;}
+export function optionalReadonlyUnionAttachment(value:{readonly message?:UnionRecorded & {readonly tag:string}}){return value;}
+type UnionCopy=UnionRecorded;
+export function copiedUnion(value:{readonly message?:UnionCopy}){return value;}
+type MutableUnionCopy=UnionRecorded & {readonly payload:string[]};
+export function mutableUnionCopy(value:{readonly message?:MutableUnionCopy}){return value;}
 `,
     );
     const rule = "typescript/prefer-readonly-parameter-types";
-    const findings = (path) =>
+    const findings = (path, names = ["RecordedToolResult", "UnionRecorded"]) =>
       lint(dir, [rule], ["main.ts"], {
         overrides: [],
         rules: {
@@ -69,7 +83,7 @@ export function optionalForeign(value:{readonly result?:Foreign}){return value;}
             "error",
             {
               ...config.rules[rule][1],
-              allow: [{ from: "file", path, name: ["RecordedToolResult"] }],
+              allow: [{ from: "file", path, name: names }],
             },
           ],
         },
@@ -77,11 +91,24 @@ export function optionalForeign(value:{readonly result?:Foreign}){return value;}
     const expected = (lines) => lines.map((line) => ({ rule, file: "main.ts", line }));
     assert.deepEqual(
       findings("./owned/history-display.ts"),
-      expected([11, 12, 13, 14, 15, 17, 19, 23, 25, 29, 31]),
+      expected([11, 12, 13, 14, 15, 17, 19, 23, 25, 29, 31, 35, 36, 37, 38, 39, 40, 45]),
     );
     assert.deepEqual(
       findings("./foreign/history-display.ts"),
-      expected([7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 23, 24, 25, 26, 27, 28, 29, 30]),
+      expected([
+        7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34,
+        35, 36, 37, 39, 40, 41, 43, 45,
+      ]),
+    );
+    assert.deepEqual(
+      findings("./owned/history-display.ts", ["UnionRecorded"]).filter((entry) => entry.line >= 32),
+      expected([35, 36, 37, 38, 39, 40, 45]),
+    );
+    assert.deepEqual(
+      findings("./foreign/history-display.ts", ["UnionRecorded"]).filter(
+        (entry) => entry.line >= 32,
+      ),
+      expected([32, 33, 34, 35, 36, 37, 39, 40, 41, 43, 45]),
     );
     const compiled = compiler(dir);
     assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
