@@ -17,12 +17,7 @@ function firstGrapheme(text: string): string {
   return Array.from(text.trimStart())[0] ?? "";
 }
 
-function withTerminalWidth<T>(
-  columns: number,
-  // This callable has no mutable properties; T is the callback's real result.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
-  fn: () => T,
-): T {
+function withTerminalWidth<T>(columns: number, fn: () => T): T {
   const original = process.stdout.columns;
   Object.defineProperty(process.stdout, "columns", {
     value: columns,

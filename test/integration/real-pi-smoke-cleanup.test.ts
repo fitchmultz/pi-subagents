@@ -49,6 +49,110 @@ async function until(check: () => boolean, timeoutMs = 15_000) {
   }
 }
 
+function startSmoke(
+  root: string,
+  auth: string,
+  bin: string,
+  scenario: string,
+  keepTemp: boolean,
+): ChildProcess {
+  return spawn(
+    process.execPath,
+    [
+      script,
+      scenario === "success" ? "--llm-full" : "--llm",
+      ...(keepTemp ? ["--keep-temp"] : []),
+      "--timeout-ms",
+      scenario === "success" || scenario === "startup-failure" || scenario.startsWith("SIG")
+        ? "10000"
+        : "1000",
+    ],
+    {
+      cwd: repo,
+      env: {
+        HOME: join(root, "home"),
+        TMPDIR: join(root, "tmp"),
+        PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+        PI_REAL_SMOKE_AUTH_AGENT_DIR: auth,
+        PI_REAL_SMOKE_MODEL: "fixture/smoke",
+        PI_OFFLINE: "1",
+        PI_TELEMETRY: "0",
+        SMOKE_CLEANUP_EVIDENCE: root,
+        SMOKE_CLEANUP_SCENARIO: scenario,
+      },
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+}
+async function cleanupSmoke(
+  root: string,
+  auth: string,
+  smokeRoot: string | undefined,
+  output: string,
+  children: readonly (ChildProcess | undefined)[],
+): Promise<void> {
+  writeFileSync(join(root, "controller.private.log"), output, { mode: 0o600 });
+  // A failing historical script may leak; retire only this test's fixtures before deleting their files.
+  const pids = new Set(
+    eventsAt(root)
+      .filter((event) => event.event === "started")
+      .map((event) => event.pid),
+  );
+  for (const child of children) {
+    if (child?.pid !== undefined && child.pid !== 0 && !Number.isNaN(child.pid)) {
+      pids.add(child.pid);
+    }
+  }
+  for (const pid of pids) {
+    trySignalChildTree(processRef(pid), "SIGKILL");
+  }
+  await until(() => [...pids].every((pid) => !isChildTreeAlive(processRef(pid))));
+  rmSync(auth, { recursive: true, force: true });
+  if (smokeRoot !== undefined && smokeRoot.length > 0) {
+    for (const fileName of ["auth.json", "models.json"]) {
+      rmSync(join(smokeRoot, "pi-agent", fileName), { force: true });
+    }
+  }
+  if ((process.env.PI_REAL_SMOKE_TEST_ROOT ?? "").length === 0) {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+function assertSmokeResult(
+  root: string,
+  scenario: string,
+  code: number | null,
+  output: string,
+): void {
+  for (const ownedEvent of eventsAt(root).filter((item) =>
+    ["stopping", "exiting", "finalizing"].includes(item.event),
+  )) {
+    assert.equal(
+      ownedEvent.auth === true && ownedEvent.models === true && ownedEvent.artifacts === true,
+      true,
+      `${ownedEvent.role} lost resources before ${ownedEvent.event}`,
+    );
+  }
+  if (scenario === "success") {
+    assert.equal(code, 0, output);
+    assert.ok(
+      eventsAt(root).some((item) => item.event === "finalizing"),
+      "terminal status must not cut off final runner writes",
+    );
+    assert.deepEqual(
+      eventsAt(root)
+        .filter((item) => item.event === "prompt")
+        .map((item) => item.kind),
+      ["intercom", "list", "foreground", "async", "parallel", "chain", "output", "acceptance"],
+    );
+  } else {
+    assert.notEqual(code, 0, "failure/cancellation must not report success");
+    if (scenario === "timeout" || scenario === "startup-timeout") {
+      assert.match(output, /timed out after 1000ms/);
+    }
+  }
+}
+
 // The same test runs unchanged against the original and repaired scripts via PI_REAL_SMOKE_TEST_SCRIPT.
 test(
   "real smoke stops its owned detached processes before deleting credentials and artifacts",
@@ -78,8 +182,8 @@ test(
         for (const directory of [auth, bin, join(root, "tmp"), join(root, "home")]) {
           mkdirSync(directory, { recursive: true });
         }
-        for (const name of ["auth.json", "models.json"]) {
-          writeFileSync(join(auth, name), '{"fixture":"not-a-credential"}\n', { mode: 0o600 });
+        for (const fileName of ["auth.json", "models.json"]) {
+          writeFileSync(join(auth, fileName), '{"fixture":"not-a-credential"}\n', { mode: 0o600 });
         }
         writeFileSync(
           join(bin, "pi"),
@@ -88,8 +192,7 @@ test(
         );
         let controller: ChildProcess | undefined;
         let output = "";
-        let closed = false;
-        let code: number | null = null;
+        const completion: { closed: boolean; code: number | null } = { closed: false, code: null };
         let smokeRoot: string | undefined;
         let prematureRemoval = false;
         const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -98,49 +201,24 @@ test(
           env: {},
         });
         try {
-          controller = spawn(
-            process.execPath,
-            [
-              script,
-              scenario === "success" ? "--llm-full" : "--llm",
-              ...(name === "success-clean" ? [] : ["--keep-temp"]),
-              "--timeout-ms",
-              scenario === "success" || scenario === "startup-failure" || scenario.startsWith("SIG")
-                ? "10000"
-                : "1000",
-            ],
-            {
-              cwd: repo,
-              env: {
-                HOME: join(root, "home"),
-                TMPDIR: join(root, "tmp"),
-                PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-                PI_REAL_SMOKE_AUTH_AGENT_DIR: auth,
-                PI_REAL_SMOKE_MODEL: "fixture/smoke",
-                PI_OFFLINE: "1",
-                PI_TELEMETRY: "0",
-                SMOKE_CLEANUP_EVIDENCE: root,
-                SMOKE_CLEANUP_SCENARIO: scenario,
-              },
-              detached: true,
-              stdio: ["ignore", "pipe", "pipe"],
-            },
-          );
+          controller = startSmoke(root, auth, bin, scenario, name !== "success-clean");
           const defined4438_0 = controller.stdout;
           assertDefined(defined4438_0);
-          defined4438_0.on("data", (chunk) => {
-            output += chunk;
+          defined4438_0.setEncoding("utf8");
+          defined4438_0.on("data", (chunk: unknown) => {
+            output += text(chunk);
           });
           const defined4534_0 = controller.stderr;
           assertDefined(defined4534_0);
-          defined4534_0.on("data", (chunk) => {
-            output += chunk;
+          defined4534_0.setEncoding("utf8");
+          defined4534_0.on("data", (chunk: unknown) => {
+            output += text(chunk);
           });
           controller.on("close", (exitCode) => {
-            code = exitCode;
-            closed = true;
+            completion.code = exitCode;
+            completion.closed = true;
           });
-          await until(() => existsSync(join(root, "parent-ready")) || closed);
+          await until(() => existsSync(join(root, "parent-ready")) || completion.closed);
           assert.ok(
             existsSync(join(root, "parent-ready")),
             "fixture must reach detached launch, not merely fail startup",
@@ -159,11 +237,11 @@ test(
             ready.auth === true && ready.models === true,
             "dummy credentials were copied before the failure",
           );
-          if (scenario.startsWith("SIG")) {
-            controller.kill(scenario as NodeJS.Signals);
+          if (scenario === "SIGINT" || scenario === "SIGTERM") {
+            controller.kill(scenario);
             await delay(20);
-            if (!closed) {
-              controller.kill(scenario as NodeJS.Signals);
+            if (!completion.closed) {
+              controller.kill(scenario);
             }
           }
           await until(() => {
@@ -174,7 +252,7 @@ test(
             ) {
               prematureRemoval = true;
             }
-            return closed;
+            return completion.closed;
           });
           const owned = eventsAt(root).filter((event) => event.event === "started");
           const liveAtExit = owned
@@ -217,71 +295,9 @@ test(
             isChildTreeAlive(bystander),
             "cleanup must leave a process outside this smoke untouched",
           );
-          for (const event of eventsAt(root).filter((event) =>
-            ["stopping", "exiting", "finalizing"].includes(event.event),
-          )) {
-            assert.equal(
-              event.auth === true && event.models === true && event.artifacts,
-              true,
-              `${event.role} lost resources before ${event.event}`,
-            );
-          }
-          if (scenario === "success") {
-            assert.equal(code, 0, output);
-            assert.ok(
-              eventsAt(root).some((event) => event.event === "finalizing"),
-              "terminal status must not cut off final runner writes",
-            );
-            assert.deepEqual(
-              eventsAt(root)
-                .filter((event) => event.event === "prompt")
-                .map((event) => event.kind),
-              [
-                "intercom",
-                "list",
-                "foreground",
-                "async",
-                "parallel",
-                "chain",
-                "output",
-                "acceptance",
-              ],
-            );
-          } else {
-            assert.notEqual(code, 0, "failure/cancellation must not report success");
-            if (scenario === "timeout" || scenario === "startup-timeout") {
-              assert.match(output, /timed out after 1000ms/);
-            }
-          }
+          assertSmokeResult(root, scenario, completion.code, output);
         } finally {
-          writeFileSync(join(root, "controller.private.log"), output, { mode: 0o600 });
-          // RED deliberately leaks; the test still retires only its own fixtures before removing its files.
-          const pids = new Set(
-            eventsAt(root)
-              .filter((event) => event.event === "started")
-              .map((event) => event.pid),
-          );
-          for (const child of [controller, bystander]) {
-            if ((child?.pid ?? 0) !== 0 && !Number.isNaN(child?.pid)) {
-              assertDefined(child);
-              assertDefined(child.pid);
-              pids.add(child.pid);
-            }
-          }
-          for (const pid of pids) {
-            trySignalChildTree(processRef(pid), "SIGKILL");
-          }
-          await until(() => [...pids].every((pid) => !isChildTreeAlive(processRef(pid))));
-          rmSync(auth, { recursive: true, force: true });
-          if ((smokeRoot ?? "").length > 0) {
-            for (const name of ["auth.json", "models.json"]) {
-              assertDefined(smokeRoot);
-              rmSync(join(smokeRoot, "pi-agent", name), { force: true });
-            }
-          }
-          if (!((process.env.PI_REAL_SMOKE_TEST_ROOT ?? "").length > 0)) {
-            rmSync(root, { recursive: true, force: true });
-          }
+          await cleanupSmoke(root, auth, smokeRoot, output, [controller, bystander]);
         }
       });
     }

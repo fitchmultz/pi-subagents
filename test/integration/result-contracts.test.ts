@@ -755,8 +755,9 @@ describe("result contracts", () => {
       ({ results, outputs, workflowGraph: graph } = payload);
       assert.equal(payload.state, "failed");
     }
-    assert.equal(outputs?.evidence?.text, "Preserved sibling evidence");
-    assert.equal(outputs?.failed, undefined);
+    assertDefined(outputs);
+    assert.equal(outputs.evidence.text, "Preserved sibling evidence");
+    assert.equal(outputs.failed, undefined);
     assert.equal(results.length, 2);
     assertDefined(results[0].artifactPaths);
     assertDefined(results[0].artifactPaths.outputPath);
@@ -908,7 +909,7 @@ describe("result contracts", () => {
     assert.equal(fs.existsSync(survived), false);
     assert.equal(mock.callCount(), 2);
     assert.equal(results[1].exitCode, -1);
-    assert.ok(!results[1].interrupted);
+    assert.notEqual(results[1].interrupted, true);
     assertDefined(results[1].error);
     assert.match(results[1].error, /Interrupted due to fail-fast/);
     assertDefined(results[1].artifactPaths);
@@ -982,7 +983,7 @@ describe("result contracts", () => {
       const offset = dynamic ? 1 : 0;
       assert.equal(mock.callCount(), offset + 2);
       assert.equal(results[offset + 1].exitCode, -1);
-      assert.ok(!results[offset + 1].interrupted, "fail-fast is not a user pause");
+      assert.notEqual(results[offset + 1].interrupted, true, "fail-fast is not a user pause");
       assertDefined(results[offset + 1].error);
       assert.match(stringValue(results[offset + 1].error), /Interrupted due to fail-fast/);
       assert.equal(results[offset + 2].exitCode, -1);
@@ -1049,7 +1050,7 @@ describe("result contracts", () => {
         assert.equal(recordedCalls.length, 2);
       }
       assert.match(stringValue(recordedCalls[0].expandedArgs.at(-1)), /^Task: List items$/);
-      if (recordedCalls[1]) {
+      if (recordedCalls.length > 1) {
         assert.match(stringValue(recordedCalls[1].expandedArgs.at(-1)), /^Task: Review a(?:\n|$)/);
       }
       for (const call of recordedCalls) {

@@ -610,7 +610,7 @@ describe("background native acceptance report boundary", () => {
       result.structuredOutput,
     );
     assertDefined(result.structuredOutputSchemaPath);
-    assert.ok(
+    assertDefined(
       record(
         record(parseJson(fs.readFileSync(result.structuredOutputSchemaPath, "utf8"))).properties,
       ).items,
@@ -678,19 +678,19 @@ describe("background native acceptance report boundary", () => {
 
   it("updates the public payload without replacing a child-written output file", async () => {
     const repaired = { items: ["A", "B"] };
-    const handoff = "Child-authored handoff remains authoritative.\n";
+    const fileHandoff = "Child-authored handoff remains authoritative.\n";
     const { result, artifact, outputPath } = await run("child-file", {
       publicSchema: true,
       publicOutput: { items: ["A"] },
       finalAnswer: repaired,
       outputMode: "file-only",
-      handoff,
+      handoff: fileHandoff,
     });
     assert.equal(result.exitCode, 0, result.error);
     assert.deepEqual(result.structuredOutput, repaired);
     const defined22800_0 = outputPath;
     assertDefined(defined22800_0);
-    assert.equal(fs.readFileSync(defined22800_0, "utf8"), handoff);
-    assert.equal(artifact, handoff.trimEnd());
+    assert.equal(fs.readFileSync(defined22800_0, "utf8"), fileHandoff);
+    assert.equal(artifact, fileHandoff.trimEnd());
   });
 });

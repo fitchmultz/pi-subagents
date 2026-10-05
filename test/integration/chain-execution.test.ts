@@ -1,4 +1,4 @@
-import type { SubagentState } from "../../src/shared/types.ts";
+import { type SubagentState, RESULTS_DIR, type ChainStep } from "../../src/shared/types.ts";
 import { createSubagentState } from "../support/background-fixtures.ts";
 import { textAt, assertDefined } from "../support/assertions.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
@@ -9,7 +9,6 @@ import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
-import { RESULTS_DIR, type ChainStep } from "../../src/shared/types.ts";
 import {
   createEventBus,
   createNativeSessionFixture,

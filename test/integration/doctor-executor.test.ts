@@ -273,6 +273,7 @@ describe("doctor action executor routing", () => {
     events.on("pi-change-working-dir:resolve-execution-cwd", (request) => {
       assertRecord(request);
       resolutions++;
+      // The native working-directory protocol returns its synchronous result by mutating this request.
       request.result = { cwd: current };
     });
     events.on("subagent:intercom-health-request", (request) => {

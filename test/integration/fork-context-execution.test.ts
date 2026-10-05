@@ -8,6 +8,7 @@ import { fauxProvider } from "@earendil-works/pi-ai";
 import { customInteraction } from "../support/custom-interaction.ts";
 import {
   type SubagentExecutionResult,
+  type ReadonlyInput,
   INTERCOM_DETACH_REQUEST_EVENT,
 } from "../../src/shared/types.ts";
 
@@ -16,6 +17,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgents } from "../../src/agents/agents.ts";
+import type { ExecutorDeps } from "../../src/runs/foreground/subagent-params.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { readAsyncResultFile } from "../../src/runs/background/async-result-file.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
@@ -31,7 +33,7 @@ import {
   removeTempDir,
 } from "../support/helpers.ts";
 
-type ProgressUpdate = SubagentExecutionResult;
+type ProgressUpdate = ReadonlyInput<SubagentExecutionResult>;
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
@@ -105,7 +107,7 @@ describe("fork context execution wiring", () => {
     return makeExecutorWithConfig({});
   }
 
-  function makeExecutorWithConfig(config: Record<string, unknown>) {
+  function makeExecutorWithConfig(config: Readonly<Record<string, unknown>>) {
     return makeExecutorWithDiscoverAgents(
       () => ({
         agents: [
@@ -132,23 +134,15 @@ describe("fork context execution wiring", () => {
   }
 
   function makeExecutorWithDiscoverAgents(
-    discoverAgentsImpl: typeof discoverAgents,
-    config: Record<string, unknown> = {},
+    discoverAgentsImpl: ExecutorDeps["discoverAgents"],
+    config: Readonly<Record<string, unknown>> = {},
   ) {
-    let sessionName: string | undefined;
     const eventsApi = createEventBus();
     return Object.assign(
       createSubagentExecutor({
         pi: {
           ...native.pi,
           events: eventsApi,
-          getSessionName: () => sessionName,
-          setSessionName: (name: string) => {
-            sessionName = name;
-          },
-          sendMessage: () => {
-            /* The fixture does not need sendMessage side effects. */
-          },
         },
         state: makeState(tempDir),
         config,
@@ -1227,8 +1221,9 @@ describe("fork context execution wiring", () => {
     const workerArgs = callArgsForTaskContaining("Write after reviews");
     const reviewSession = reviewArgs.at(reviewArgs.indexOf("--session") + 1);
     const workerSession = workerArgs.at(workerArgs.indexOf("--session") + 1);
+    assertDefined(reviewSession);
     assert.ok(
-      reviewSession?.endsWith(path.join("run-1", "session.jsonl")) === true,
+      reviewSession.endsWith(path.join("run-1", "session.jsonl")),
       `expected fresh dynamic child session, got ${reviewSession}`,
     );
     assertDefined(workerSession);
@@ -1538,7 +1533,7 @@ describe("fork context execution wiring", () => {
         },
         signal: new AbortController().signal,
         onUpdate: (update: ProgressUpdate) => {
-          const progress = update.details?.progress ?? [];
+          const progress = update.details.progress ?? [];
           const running = progress.filter((entry) => entry.status === "running").length;
           maxRunning = Math.max(maxRunning, running);
           if (running === testCase.expectedMaxRunning) {
@@ -1596,7 +1591,7 @@ describe("fork context execution wiring", () => {
           return;
         }
         if (
-          !(update.details?.progress?.some((entry) => entry.currentTool === "intercom") === true)
+          !(update.details.progress?.some((entry) => entry.currentTool === "intercom") === true)
         ) {
           return;
         }
@@ -1665,7 +1660,7 @@ describe("fork context execution wiring", () => {
       onUpdate: (update: ProgressUpdate) => {
         if (
           detachEmitted ||
-          !(update.details?.progress?.some((entry) => entry.currentTool === "intercom") === true)
+          !(update.details.progress?.some((entry) => entry.currentTool === "intercom") === true)
         ) {
           return;
         }
@@ -1693,7 +1688,7 @@ describe("fork context execution wiring", () => {
     assertDefined(saved.results);
     assert.equal(
       saved.results.some(
-        (child) => child.exitCode === 1 && child.error?.includes("sibling exploded"),
+        (child) => child.exitCode === 1 && child.error?.includes("sibling exploded") === true,
       ),
       true,
     );

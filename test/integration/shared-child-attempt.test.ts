@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { test } from "node:test";
-import sinon from "sinon";
+import { stub } from "sinon";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveEffectiveAcceptance } from "../../src/runs/shared/acceptance.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
@@ -670,9 +670,9 @@ test("native message references and finalization scans scale with new messages r
     fs.rmSync(boundaries, { force: true });
     let comparisons = 0,
       filtered = 0;
-    const prototype: Pick<unknown[], "find" | "filter"> = Array.prototype;
+    const prototype: Pick<ReadonlyArray<unknown>, "find" | "filter"> = Array.prototype;
     const find = prototype.find;
-    const findMock = sinon.stub(prototype, "find").callsFake(function (
+    const findMock = stub(prototype, "find").callsFake(function (
       this: readonly unknown[],
       predicate: (value: unknown, index: number, elements: readonly unknown[]) => unknown,
       thisArg?: unknown,
@@ -682,31 +682,33 @@ test("native message references and finalization scans scale with new messages r
         isRecord(observation) &&
         typeof observation.start === "number" &&
         observation.kind === "message_end";
-      const result: unknown = Reflect.apply(find, this, [
+      const result = find.call(
+        this,
         (item: unknown, index: number, elements: readonly unknown[]) => {
           if (matching) {
             comparisons++;
           }
           return predicate.call(thisArg, item, index, elements);
         },
-      ]);
+      );
       return result;
     });
     const filter = prototype.filter;
-    const filterMock = sinon.stub(prototype, "filter").callsFake(function (
+    const filterMock = stub(prototype, "filter").callsFake(function (
       this: readonly unknown[],
       predicate: (value: unknown, index: number, elements: readonly unknown[]) => unknown,
       thisArg?: unknown,
     ) {
       const messages = this[0];
-      const result: unknown = Reflect.apply(filter, this, [
+      const result = filter.call(
+        this,
         (item: unknown, index: number, elements: readonly unknown[]) => {
           if (isRecord(messages) && typeof messages.role === "string") {
             filtered++;
           }
           return predicate.call(thisArg, item, index, elements);
         },
-      ]);
+      );
       return result;
     });
     let result: Awaited<ReturnType<typeof runChildAttempt>>;

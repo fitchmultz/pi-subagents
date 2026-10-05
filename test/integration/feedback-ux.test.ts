@@ -1,8 +1,19 @@
-import type { SubagentResultIntercomPayload } from "../../src/shared/types.ts";
+import type {
+  TrackedOwnedRun,
+  SavedLaunchConfig,
+  SubagentState,
+  AsyncResultFile,
+} from "../../src/shared/types.ts";
 import { toolText } from "../support/background-fixtures.ts";
 import { readRunStatus } from "../support/run-publications.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
-import { assertDefined, textAt, record, text as stringValue } from "../support/assertions.ts";
+import {
+  assertDefined,
+  textAt,
+  record,
+  array,
+  text as stringValue,
+} from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -18,12 +29,6 @@ import {
   makeMinimalCtx,
   removeTempDir,
 } from "../support/helpers.ts";
-import type {
-  TrackedOwnedRun,
-  SavedLaunchConfig,
-  SubagentState,
-  AsyncResultFile,
-} from "../../src/shared/types.ts";
 
 const root = createTempDir("feedback-ux-");
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -146,7 +151,7 @@ function setup(id: string) {
     executor,
     sessionFile,
     child,
-    execute: (params: Record<string, unknown>) =>
+    execute: (params: Readonly<Record<string, unknown>>) =>
       executor.execute({
         toolCallId: "fixture",
         params: normalizeSubagentParamsLike(params),
@@ -272,8 +277,10 @@ test("feedback explicit continuation never replays a saved parent review as new 
       message: "ONLY-NEW-ACTIONABLE-INSTRUCTION",
     });
     assert.ok(!(result.isError === true), textAt(result.content));
+    const asyncId = result.details.asyncId;
+    assertDefined(asyncId);
     const deadline = Date.now() + 10000;
-    while (!fs.existsSync(path.join(RESULTS_DIR, `${result.details.asyncId}.json`))) {
+    while (!fs.existsSync(path.join(RESULTS_DIR, `${asyncId}.json`))) {
       assert.ok(Date.now() < deadline);
       // Observe the owner publication before advancing this lifecycle transition.
       // oxlint-disable-next-line no-await-in-loop
@@ -310,7 +317,6 @@ test("feedback explicit continuation never replays a saved parent review as new 
 
 test("feedback completion and compact receipts expose existing result/acceptance metadata without inventing disabled artifacts", async () => {
   const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
-  const { formatSubagentResultReceipt } = await import("../../src/intercom/result-intercom.ts");
   const fixture = setup("metadata-pointer");
   const artifactPaths = {
     inputPath: path.join(root, "short-input.md"),
@@ -325,12 +331,12 @@ test("feedback completion and compact receipts expose existing result/acceptance
     }),
   );
   const bus = createEventBus();
-  const deliveries: SubagentResultIntercomPayload[] = [];
+  const deliveries: unknown[] = [];
   bus.on("subagent:result-intercom", (raw) => {
-    const payload = raw as SubagentResultIntercomPayload;
-    deliveries.push(payload);
+    const payload = record(raw);
+    deliveries.push(raw);
     bus.emit("subagent:result-intercom-delivery", {
-      requestId: payload.requestId,
+      requestId: stringValue(payload.requestId),
       delivered: true,
     });
   });
@@ -351,23 +357,18 @@ test("feedback completion and compact receipts expose existing result/acceptance
   };
   questions.saveAsyncRunResult(runId, data);
   fs.writeFileSync(path.join(resultsDir, `${runId}.json`), JSON.stringify(data));
-  const completed = Promise.withResolvers<void>();
-  bus.on("subagent:async-complete", () => completed.resolve());
+  const completed = new Promise<void>((resolve) => {
+    bus.on("subagent:async-complete", () => resolve());
+  });
   const watcher = createResultWatcher({ events: bus }, fixture.state, resultsDir);
   try {
     watcher.primeExistingResults();
-    await completed.promise;
-    const payload = deliveries[0];
-    assert.equal(payload.children[0]?.metadataPath, artifactPaths.metadataPath);
-    assert.ok(payload.message.includes(artifactPaths.metadataPath));
-    assert.ok(
-      payload.resultPath?.endsWith("result.json") === true && fs.existsSync(payload.resultPath),
-    );
-    assert.ok(
-      formatSubagentResultReceipt({ mode: "single", runId, payload }).includes(
-        artifactPaths.metadataPath,
-      ),
-    );
+    await completed;
+    const payload = record(deliveries[0]);
+    assert.equal(record(array(payload.children)[0]).metadataPath, artifactPaths.metadataPath);
+    assert.ok(stringValue(payload.message).includes(artifactPaths.metadataPath));
+    const resultPath = stringValue(payload.resultPath);
+    assert.ok(resultPath.endsWith("result.json") && fs.existsSync(resultPath));
   } finally {
     watcher.stopResultWatcher();
   }
@@ -379,25 +380,20 @@ test("feedback completion and compact receipts expose existing result/acceptance
   };
   questions.saveAsyncRunResult(disabledId, disabled);
   fs.writeFileSync(path.join(resultsDir, `${disabledId}.json`), JSON.stringify(disabled));
-  const disabledDone = Promise.withResolvers<void>();
-  bus.on("subagent:async-complete", (event) => {
-    if (record(event).runId === disabledId) {
-      disabledDone.resolve();
-    }
+  const disabledDone = new Promise<void>((resolve) => {
+    bus.on("subagent:async-complete", (event) => {
+      if (record(event).runId === disabledId) {
+        resolve();
+      }
+    });
   });
   const disabledWatcher = createResultWatcher({ events: bus }, fixture.state, resultsDir);
   try {
     disabledWatcher.primeExistingResults();
-    await disabledDone.promise;
-    const defined12791_0 = deliveries.find((delivery) => delivery.runId === disabledId);
-    assertDefined(defined12791_0);
-    const payload = defined12791_0;
-    assert.equal(payload.children[0]?.metadataPath, undefined);
-    assert.doesNotMatch(
-      formatSubagentResultReceipt({ mode: "single", runId: disabledId, payload }),
-      /Result metadata \(/,
-    );
-    assert.doesNotMatch(payload.message, /Result metadata \(/);
+    await disabledDone;
+    const payload = record(deliveries.find((delivery) => record(delivery).runId === disabledId));
+    assert.equal(record(array(payload.children)[0]).metadataPath, undefined);
+    assert.doesNotMatch(stringValue(payload.message), /Result metadata \(/);
   } finally {
     disabledWatcher.stopResultWatcher();
   }

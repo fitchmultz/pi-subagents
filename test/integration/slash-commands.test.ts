@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
+import { setImmediate as nextDispatch } from "node:timers/promises";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -22,6 +23,7 @@ import {
   removeTempDir,
   createEventBus,
   makeAgent,
+  makeMinimalCtx,
 } from "../support/helpers.ts";
 
 import { validateExecutionInput } from "../../src/runs/foreground/execution-input.ts";
@@ -36,6 +38,7 @@ const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 type RegisteredSlashCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 
 import { registerSlashCommands } from "../../src/slash/slash-commands.ts";
+import { registerSlashSubagentBridge } from "../../src/slash/slash-bridge.ts";
 import {
   clearSlashSnapshots,
   getSlashRenderableSnapshot,
@@ -112,10 +115,10 @@ function createCommandContext(
     hasUI: overrides.hasUI ?? false,
     ui: {
       ...base.ui,
-      notify: overrides.notify ?? base.ui.notify,
-      setStatus: overrides.setStatus ?? base.ui.setStatus,
-      getToolsExpanded: overrides.getToolsExpanded ?? base.ui.getToolsExpanded,
-      setToolsExpanded: overrides.setToolsExpanded ?? base.ui.setToolsExpanded,
+      notify: overrides.notify ?? base.ui.notify.bind(base.ui),
+      setStatus: overrides.setStatus ?? base.ui.setStatus.bind(base.ui),
+      getToolsExpanded: overrides.getToolsExpanded ?? base.ui.getToolsExpanded.bind(base.ui),
+      setToolsExpanded: overrides.setToolsExpanded ?? base.ui.setToolsExpanded.bind(base.ui),
     },
   };
 }
@@ -197,6 +200,81 @@ async function captureSlashCommandParams(
 }
 
 describe("slash command custom message delivery", () => {
+  it("native bridge correlates malformed task and chain errors without starting or executing them", async () => {
+    const events = createEventBus();
+    const replies: Readonly<Record<string, unknown>>[] = [];
+    const started: string[] = [];
+    let executed = 0;
+    const barrier = new Promise<void>((resolve) => {
+      events.on(SLASH_SUBAGENT_RESPONSE_EVENT, (raw) => {
+        const reply = record(raw);
+        replies.push(reply);
+        if (reply.requestId === "dispatch-barrier") {
+          resolve();
+        }
+      });
+    });
+    events.on(SLASH_SUBAGENT_STARTED_EVENT, (raw) => {
+      started.push(stringValue(record(raw).requestId));
+    });
+    const bridge = registerSlashSubagentBridge({
+      events,
+      getContext: () => makeMinimalCtx(nativeRoot),
+      execute: async () => {
+        executed++;
+        throw new Error("Fixture executor failure");
+      },
+    });
+    try {
+      events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
+        requestId: "malformed-tasks",
+        params: { tasks: "wrong" },
+      });
+      events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
+        requestId: "malformed-chain",
+        params: { chain: [{}] },
+      });
+      events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
+        requestId: "dispatch-barrier",
+        params: { agent: "worker", task: "valid request" },
+      });
+      await barrier;
+      await nextDispatch();
+      assert.deepEqual(
+        replies
+          .map((reply) => stringValue(reply.requestId))
+          .sort((left, right) => left.localeCompare(right)),
+        ["dispatch-barrier", "malformed-chain", "malformed-tasks"],
+      );
+      const tasks = replies.find((reply) => reply.requestId === "malformed-tasks");
+      const chain = replies.find((reply) => reply.requestId === "malformed-chain");
+      assertDefined(tasks);
+      assertDefined(chain);
+      assert.equal(tasks.isError, true);
+      assert.equal(chain.isError, true);
+      assert.match(
+        stringValue(tasks.errorText),
+        /tasks must be an array of task objects with an agent/,
+      );
+      assert.match(
+        stringValue(chain.errorText),
+        /chain must contain valid sequential, parallel, or dynamic fanout steps/,
+      );
+      assert.match(
+        stringValue(record(array(record(tasks.result).content)[0]).text),
+        /tasks must be an array/,
+      );
+      assert.match(
+        stringValue(record(array(record(chain.result).content)[0]).text),
+        /chain must contain valid/,
+      );
+      assert.equal(executed, 1);
+      assert.deepEqual(started, ["dispatch-barrier"]);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
   beforeEach(() => {
     clearSlashSnapshots();
   });

@@ -1,4 +1,4 @@
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertDefined, textAt, record, text } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
@@ -21,7 +21,6 @@ import {
   type UsageContribution,
   type Usage,
 } from "../../src/shared/types.ts";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerParentUsage } from "../../src/runs/shared/parent-usage.ts";
 import { readNativeUsage, snapshotNativeUsage } from "../../src/runs/shared/native-usage.ts";
 import registerSubagents from "../../src/extension/index.ts";
@@ -370,7 +369,7 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
       Object.assign(process.env, env);
     }
     await h.close(original.session);
-    let directUsage: Usage | undefined;
+    const direct: { usage: Usage | undefined } = { usage: undefined };
     const parent = await h.open(savedParentFile, {
       tool: advanced ? "subagent" : "agent_runs",
       register(pi) {
@@ -396,7 +395,7 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
                   exitCode: 0,
                   output: "Direct child completed",
                   sessionFile: childFile,
-                  usage: directUsage,
+                  usage: direct.usage,
                 },
               ],
             });
@@ -407,7 +406,7 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
     });
     let delivered = false;
     const reply = setInterval(() => {
-      const request = readNestedControlRequests(route)[0];
+      const request = readNestedControlRequests(route).at(0);
       if (!request || delivered) {
         return;
       }
@@ -477,7 +476,8 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
     await child.wait({}, {});
     const nativeUsage = readNativeUsage(childFile, baseline);
     assertDefined(nativeUsage);
-    directUsage = nativeUsage[0];
+    const directUsage = nativeUsage[0];
+    direct.usage = directUsage;
     assertDefined(directUsage);
     assert.equal(directUsage.cost, 10);
     assertDefined(directUsage.contributions);

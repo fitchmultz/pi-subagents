@@ -217,7 +217,7 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
         completion: {
           runId,
           key: `id:${runId}:historical-digest`,
-          ...(receiptOwner
+          ...(receiptOwner !== undefined
             ? { ownerSessionId: receiptOwner === "current" ? ownerSessionId : "another-parent" }
             : {}),
         },
@@ -259,7 +259,9 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
         sent.push(notification);
       },
     };
-    pi.events.on("subagent:async-complete", (event) => completed.push(event));
+    pi.events.on("subagent:async-complete", (event) => {
+      completed.push(event);
+    });
     const completion = createCompletionDelivery(pi, state, registerParentUsage(pi, ["subagent"]));
     try {
       completion.start();
@@ -275,7 +277,9 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
         );
         // Observe the owner publication before advancing this lifecycle transition.
         // oxlint-disable-next-line no-await-in-loop
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 5);
+        });
       }
       if (receiptOwner === "foreign") {
         const defined10531_0 = state.ownedRuns.get(runId);

@@ -1,4 +1,4 @@
-import type { SubagentState } from "../../src/shared/types.ts";
+import { type SubagentState, RESULTS_DIR } from "../../src/shared/types.ts";
 import { createSubagentState } from "../support/background-fixtures.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
 import { assertDefined, textAt } from "../support/assertions.ts";
@@ -20,7 +20,6 @@ import {
   SUBAGENT_PARENT_RUN_ID_ENV,
 } from "../../src/runs/shared/pi-args.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { RESULTS_DIR } from "../../src/shared/types.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 
 import {
@@ -270,11 +269,12 @@ describe("single owner execution", () => {
       const defined8915_0 = readLastCall().env;
       assertDefined(defined8915_0);
       const env = defined8915_0;
-      assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], allowed ? "1" : "0");
-      assert.equal(env[SUBAGENT_PARENT_RUN_ID_ENV], allowed ? result.details.runId : "");
-      assert.equal(env[SUBAGENT_PARENT_CHILD_INDEX_ENV], allowed ? "0" : "");
+      const allowFanout = allowed !== false;
+      assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], allowFanout ? "1" : "0");
+      assert.equal(env[SUBAGENT_PARENT_RUN_ID_ENV], allowFanout ? result.details.runId : "");
+      assert.equal(env[SUBAGENT_PARENT_CHILD_INDEX_ENV], allowFanout ? "0" : "");
       for (const key of [SUBAGENT_PARENT_EVENT_SINK_ENV, SUBAGENT_PARENT_CONTROL_INBOX_ENV]) {
-        assert.equal(Boolean(env[key]), Boolean(allowed));
+        assert.equal(Boolean(env[key]), allowFanout);
       }
     });
   }

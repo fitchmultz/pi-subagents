@@ -89,7 +89,8 @@ describe("isParallelStep", () => {
 
 describe("normalizeSkillInput", () => {
   it("returns undefined for undefined input", () => {
-    assert.equal(normalizeSkillInput(undefined), undefined);
+    const missingSkillInput = undefined;
+    assert.equal(normalizeSkillInput(missingSkillInput), undefined);
   });
 
   it("returns undefined for true (use default)", () => {

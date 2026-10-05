@@ -15,6 +15,10 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { readSavedOutput } from "../../src/history/canonical-result.ts";
+import { HistoryStore, hash } from "../../src/history/store.ts";
+import { SourceIngest } from "../../src/history/ingest.ts";
+import { entryRow } from "../../src/history/rows.ts";
+import { validateRecord } from "../../src/history/selected-record.ts";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -319,9 +323,9 @@ test(
       const ready = async (id: string) => {
         const deadline = Date.now() + 3000;
         for (;;) {
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const page = parseHistoryPage(
+            // Observe the worker publication before retrying this lifecycle check.
+            // oxlint-disable-next-line no-await-in-loop
             await request("historyPage", { runId: "delayed-watch", index: 0 }),
           );
           if (
@@ -992,6 +996,60 @@ test("conversation metadata spans unloaded pages and matches the exact sanitized
       .unreadAfter,
     false,
   );
+});
+
+test("a published native record replaced by malformed same-size bytes reports SOURCE_CHANGED and closes its descriptor", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "history-selected-race-"));
+  const file = path.join(root, "native.jsonl");
+  const prefix = lines([header()]);
+  const nativeRecord = lines([message("selected", "Retained native content")]);
+  fs.writeFileSync(file, prefix + nativeRecord);
+  const store = new HistoryStore(root, "owner");
+  t.after(() => {
+    store.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const id = hash(file);
+  store.run("INSERT INTO sources(id,path) VALUES (?,?)", id, file);
+  const source = store.source(id);
+  assertDefined(source);
+  const ingest = new SourceIngest(store, source, true);
+  while (!ingest.step()) {
+    // Select only after actual incremental ingestion has published the native row.
+  }
+  const row = entryRow(store.require("SELECT * FROM entries WHERE published=1"));
+  const indexedSource = store.source(id);
+  assertDefined(indexedSource);
+  assert.equal(row.end, Buffer.byteLength(prefix + nativeRecord));
+  const originalRead = fs.readSync;
+  let selectedFd: number | undefined;
+  let mutated = false;
+  t.mock.method(
+    fs,
+    "readSync",
+    (fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => {
+      if (!mutated && position === row.start) {
+        mutated = true;
+        selectedFd = fd;
+        fs.writeFileSync(
+          file,
+          prefix + "broken".padEnd(Buffer.byteLength(nativeRecord) - 1, "x") + "\n",
+        );
+      }
+      return originalRead(fd, buffer, offset, length, position);
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => validateRecord(indexedSource, row, true), code("SOURCE_CHANGED"));
+    assert.equal(mutated, true);
+    const closedFd = selectedFd;
+    assertDefined(closedFd);
+    assert.throws(() => fs.fstatSync(closedFd), code("EBADF"));
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
 
 test("selected canonical result details select sparse child indices, retain full reports and refuse oversized output", async (t) => {
@@ -1723,9 +1781,9 @@ test("background catch-up leaves parent/query progress responsive and hard cance
   );
   await observedTask("Recreated shared source parent");
   const recreatedSourceDeadline = Date.now() + 10_000;
-  // Observe the owner publication before advancing this lifecycle transition.
-  // oxlint-disable-next-line no-await-in-loop
   while (
+    // Observe the owner publication before retrying this lifecycle check.
+    // oxlint-disable-next-line no-await-in-loop
     (await f.index.historyPage({ runId: "shared-native", index: 0 })).entries[0]?.id !==
     "replacement"
   ) {

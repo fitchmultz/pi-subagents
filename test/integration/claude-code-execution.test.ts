@@ -1,4 +1,9 @@
-import type { SubagentState } from "../../src/shared/types.ts";
+import {
+  type SubagentState,
+  ASYNC_DIR,
+  RESULTS_DIR,
+  getAsyncConfigPath,
+} from "../../src/shared/types.ts";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import { createSubagentState } from "../support/background-fixtures.ts";
 import { readClaudeCall } from "../support/child-process-receipts.ts";
@@ -11,7 +16,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
-import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath } from "../../src/shared/types.ts";
 import {
   getRunMetadataDir,
   questionProcessAlive,

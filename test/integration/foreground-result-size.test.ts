@@ -32,13 +32,6 @@ function makeExecutor(cwd: string) {
     pi: {
       ...native.pi,
       events: createEventBus(),
-      getSessionName: () => {
-        /* The fixture does not need getSessionName side effects. */
-      },
-      setSessionName: () => {
-        /* The fixture does not need setSessionName side effects. */
-        /* No persisted session name in this direct executor fixture. */
-      },
     },
     state: makeState(cwd),
     config: {},
