@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
+import type { AsyncStatus } from "../../src/shared/types.ts";
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-temp-root-test-"));
 process.env.PI_SUBAGENT_TEMP_ROOT = TEST_ROOT;
@@ -29,10 +30,18 @@ function makeRoute(rootRunId: string, old: boolean): string {
   return routeRoot;
 }
 
-function makeRun(id: string, state: string, old: boolean): void {
+function makeRun(id: string, state: AsyncStatus["state"], old: boolean): void {
   const dir = path.join(ASYNC_DIR, id);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ state }));
+  fs.writeFileSync(
+    path.join(dir, "status.json"),
+    JSON.stringify({
+      runId: id,
+      mode: "single",
+      state,
+      startedAt: OLD.getTime(),
+    } satisfies AsyncStatus),
+  );
   if (old) {
     fs.utimesSync(dir, OLD, OLD);
   }

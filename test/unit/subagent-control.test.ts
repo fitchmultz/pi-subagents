@@ -93,8 +93,8 @@ describe("subagent control attention state", () => {
     const custom = resolveControlConfig(undefined, {
       needsAttentionAfterMs: 1234,
       failedToolAttemptsBeforeAttention: 4,
-      notifyOn: ["needs_attention", "nope" as never],
-      notifyChannels: ["event", "intercom", "bad" as never],
+      notifyOn: ["needs_attention", "nope"],
+      notifyChannels: ["event", "intercom", "bad"],
     });
     assert.equal(custom.needsAttentionAfterMs, 1234);
     assert.equal(custom.failedToolAttemptsBeforeAttention, 4);
@@ -104,8 +104,8 @@ describe("subagent control attention state", () => {
 
   it("falls back to defaults for invalid non-empty notification arrays", () => {
     const custom = resolveControlConfig(undefined, {
-      notifyOn: ["bogus" as never],
-      notifyChannels: ["bogus" as never],
+      notifyOn: ["bogus"],
+      notifyChannels: ["bogus"],
     });
     assert.deepEqual(custom.notifyOn, ["needs_attention"]);
     assert.deepEqual(custom.notifyChannels, ["event", "async", "intercom"]);
