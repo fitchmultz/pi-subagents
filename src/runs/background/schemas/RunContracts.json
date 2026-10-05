@@ -34,14 +34,7 @@
           "$ref": "#/definitions/SubagentRunMode"
         },
         "state": {
-          "enum": [
-            "blocked",
-            "complete",
-            "failed",
-            "paused",
-            "queued",
-            "running"
-          ],
+          "enum": ["blocked", "complete", "failed", "paused", "queued", "running"],
           "type": "string"
         },
         "activityState": {
@@ -114,12 +107,7 @@
           "$ref": "#/definitions/ChainOutputMap"
         }
       },
-      "required": [
-        "mode",
-        "runId",
-        "startedAt",
-        "state"
-      ]
+      "required": ["mode", "runId", "startedAt", "state"]
     },
     "AsyncResultFile": {
       "type": "object",
@@ -257,13 +245,7 @@
           }
         }
       },
-      "required": [
-        "children",
-        "cwd",
-        "mode",
-        "runId",
-        "updatedAt"
-      ]
+      "required": ["children", "cwd", "mode", "runId", "updatedAt"]
     },
     "OwnedRun": {
       "description": "Persisted ownership record; mutation belongs to the live tracker, not readers of this snapshot.",
@@ -279,10 +261,7 @@
           "type": "string"
         },
         "source": {
-          "enum": [
-            "async",
-            "foreground"
-          ],
+          "enum": ["async", "foreground"],
           "type": "string"
         },
         "mode": {
@@ -336,10 +315,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "agent",
-              "index"
-            ]
+            "required": ["agent", "index"]
           }
         },
         "review": {
@@ -352,19 +328,11 @@
               "type": "string"
             },
             "state": {
-              "enum": [
-                "dropped",
-                "journaled",
-                "pending",
-                "queued"
-              ],
+              "enum": ["dropped", "journaled", "pending", "queued"],
               "type": "string"
             },
             "channel": {
-              "enum": [
-                "intercom",
-                "notification"
-              ],
+              "enum": ["intercom", "notification"],
               "type": "string"
             },
             "queuedAt": {
@@ -374,29 +342,20 @@
               "type": "string"
             }
           },
-          "required": [
-            "id",
-            "state"
-          ]
+          "required": ["id", "state"]
         },
         "accounting": {
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete",
-                "pending"
-              ],
+              "enum": ["complete", "incomplete", "pending"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "delivery": {
           "type": "object",
@@ -414,10 +373,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "intercomDelivered",
-            "notifiedAt"
-          ]
+          "required": ["intercomDelivered", "notifiedAt"]
         },
         "legacy": {
           "type": "boolean"
@@ -516,11 +472,7 @@
           "type": "string"
         },
         "reason": {
-          "enum": [
-            "completion_guard",
-            "idle",
-            "tool_failures"
-          ],
+          "enum": ["completion_guard", "idle", "tool_failures"],
           "type": "string"
         },
         "turns": {
@@ -554,30 +506,17 @@
               "type": "string"
             },
             "state": {
-              "enum": [
-                "answer_pending",
-                "awaiting_input"
-              ],
+              "enum": ["answer_pending", "awaiting_input"],
               "type": "string"
             },
             "answer": {
               "type": "string"
             }
           },
-          "required": [
-            "questionId",
-            "state"
-          ]
+          "required": ["questionId", "state"]
         }
       },
-      "required": [
-        "agent",
-        "message",
-        "runId",
-        "to",
-        "ts",
-        "type"
-      ]
+      "required": ["agent", "message", "runId", "to", "ts", "type"]
     },
     "SupervisorRunContract": {
       "type": "object",
@@ -593,10 +532,7 @@
           "type": "string"
         },
         "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
+          "type": ["null", "string"]
         },
         "terminalEntryId": {
           "type": "string"
@@ -629,19 +565,14 @@
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete"
-              ],
+              "enum": ["complete", "incomplete"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "auditPath": {
           "type": "string"
@@ -736,10 +667,7 @@
           "type": "number"
         },
         "reason": {
-          "enum": [
-            "interview_request",
-            "need_decision"
-          ],
+          "enum": ["interview_request", "need_decision"],
           "type": "string"
         },
         "message": {
@@ -757,10 +685,7 @@
           "type": "string"
         },
         "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
+          "type": ["null", "string"]
         },
         "terminalEntryId": {
           "type": "string"
@@ -793,19 +718,14 @@
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete"
-              ],
+              "enum": ["complete", "incomplete"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "auditPath": {
           "type": "string"
@@ -884,19 +804,13 @@
           "type": "string"
         }
       },
-      "required": [
-        "answeredAt",
-        "message"
-      ]
+      "required": ["answeredAt", "message"]
     },
     "QuestionDelivery": {
       "type": "object",
       "properties": {
         "kind": {
-          "enum": [
-            "live",
-            "revive"
-          ],
+          "enum": ["live", "revive"],
           "type": "string"
         },
         "runId": {
@@ -906,22 +820,13 @@
           "type": "number"
         }
       },
-      "required": [
-        "deliveredAt",
-        "kind",
-        "runId"
-      ]
+      "required": ["deliveredAt", "kind", "runId"]
     },
     "SupervisorQuestionView": {
       "type": "object",
       "properties": {
         "state": {
-          "enum": [
-            "answer_pending",
-            "answered",
-            "awaiting_input",
-            "cancelled"
-          ],
+          "enum": ["answer_pending", "answered", "awaiting_input", "cancelled"],
           "type": "string"
         },
         "answer": {
@@ -943,11 +848,7 @@
               "type": "number"
             }
           },
-          "required": [
-            "pid",
-            "runId",
-            "startedAt"
-          ]
+          "required": ["pid", "runId", "startedAt"]
         },
         "questionId": {
           "type": "string"
@@ -986,10 +887,7 @@
           "type": "number"
         },
         "reason": {
-          "enum": [
-            "interview_request",
-            "need_decision"
-          ],
+          "enum": ["interview_request", "need_decision"],
           "type": "string"
         },
         "message": {
@@ -1007,10 +905,7 @@
           "type": "string"
         },
         "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
+          "type": ["null", "string"]
         },
         "terminalEntryId": {
           "type": "string"
@@ -1043,19 +938,14 @@
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete"
-              ],
+              "enum": ["complete", "incomplete"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "auditPath": {
           "type": "string"
@@ -1121,12 +1011,538 @@
         "state"
       ]
     },
+    "HistoryRunRow": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorQuestionView"
+          }
+        },
+        "matchedChildIndexes": {
+          "description": "Children satisfying the combined filters, before run pagination.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "index": {
+                    "type": "number"
+                  },
+                  "workflowNodeId": {
+                    "type": "string"
+                  },
+                  "task": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "sessionFile": {
+                    "type": "string"
+                  }
+                },
+                "required": ["agent", "index"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "$ref": "#/definitions/ManagementRunState"
+                  },
+                  "result": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/Omit%3C_ReadonlyObjectDeep%3CSingleResult%3E%2C%22artifactPaths%22%3E"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "artifactPaths": {
+                            "$ref": "#/definitions/Partial"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "launch": {
+                    "$ref": "#/definitions/SavedLaunchConfig"
+                  },
+                  "configuration": {
+                    "enum": ["legacy-partial", "saved"],
+                    "type": "string"
+                  },
+                  "missingSession": {
+                    "type": "boolean"
+                  },
+                  "identityUnavailable": {
+                    "type": "boolean"
+                  },
+                  "modelSelection": {
+                    "$ref": "#/definitions/Pick"
+                  },
+                  "activity": {
+                    "$ref": "#/definitions/Partial_2"
+                  }
+                },
+                "required": ["configuration", "state"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "savedConfiguration": {
+                    "$ref": "#/definitions/HistoryConfiguration"
+                  },
+                  "nativeConfiguration": {
+                    "$ref": "#/definitions/HistoryConfiguration"
+                  },
+                  "humanAction": {
+                    "type": "string"
+                  },
+                  "acceptanceStatus": {
+                    "$ref": "#/definitions/AcceptanceLedgerStatus"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "continuations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "predecessorRunId": {
+                "type": "string"
+              },
+              "predecessorIndex": {
+                "type": "number"
+              }
+            },
+            "required": ["predecessorRunId", "runId"]
+          }
+        },
+        "resultPath": {
+          "type": "string"
+        },
+        "canInterrupt": {
+          "type": "boolean"
+        },
+        "diagnosis": {
+          "type": "string"
+        },
+        "recoveryError": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "ownerSessionId": {
+          "type": "string"
+        },
+        "source": {
+          "enum": ["async", "foreground"],
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubagentRunMode"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "rootRunId": {
+          "type": "string"
+        },
+        "predecessorRunId": {
+          "type": "string"
+        },
+        "predecessorIndex": {
+          "type": "number"
+        },
+        "asyncDir": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "review": {
+          "$ref": "#/definitions/ParentRunReview"
+        },
+        "completion": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "state": {
+              "enum": ["dropped", "journaled", "pending", "queued"],
+              "type": "string"
+            },
+            "channel": {
+              "enum": ["intercom", "notification"],
+              "type": "string"
+            },
+            "queuedAt": {
+              "type": "number"
+            },
+            "entryId": {
+              "type": "string"
+            }
+          },
+          "required": ["id", "state"]
+        },
+        "accounting": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": ["complete", "incomplete", "pending"],
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": ["state"]
+        },
+        "delivery": {
+          "type": "object",
+          "properties": {
+            "notifiedAt": {
+              "type": "number"
+            },
+            "intercomDelivered": {
+              "type": "boolean"
+            },
+            "completionId": {
+              "type": "string"
+            },
+            "entryId": {
+              "type": "string"
+            }
+          },
+          "required": ["intercomDelivered", "notifiedAt"]
+        },
+        "legacy": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attention",
+        "canInterrupt",
+        "children",
+        "continuations",
+        "cwd",
+        "mode",
+        "ownerSessionId",
+        "rootRunId",
+        "runId",
+        "source",
+        "startedAt",
+        "state",
+        "task",
+        "updatedAt"
+      ]
+    },
+    "HistoryRunPage": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HistoryRunRow"
+          }
+        },
+        "total": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "nextOffset": {
+          "type": "number"
+        },
+        "nextCursor": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        },
+        "freshness": {
+          "$ref": "#/definitions/HistoryFreshness"
+        }
+      },
+      "required": ["freshness", "indexedAt", "offset", "rows", "total", "version"]
+    },
+    "HistoryPage": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HistoryEntry"
+          }
+        },
+        "count": {
+          "type": "number"
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "previousBefore": {
+          "type": "number"
+        },
+        "previousCursor": {
+          "type": "string"
+        },
+        "nextAfter": {
+          "type": "number"
+        },
+        "sourceId": {
+          "type": ["null", "string"]
+        },
+        "generation": {
+          "type": ["null", "number"]
+        },
+        "sessionId": {
+          "type": ["null", "string"]
+        },
+        "sourceState": {
+          "type": "string"
+        },
+        "configuration": {
+          "$ref": "#/definitions/HistoryConfiguration_1"
+        },
+        "deliveredMessages": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "latestEntryId": {
+          "type": ["null", "string"]
+        },
+        "unreadAfter": {
+          "type": "boolean"
+        },
+        "terminalSequence": {
+          "type": "number"
+        },
+        "finalResultId": {
+          "description": "Canonical answer match, not a truncated-preview comparison.",
+          "type": "string"
+        },
+        "unavailable": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        },
+        "freshness": {
+          "$ref": "#/definitions/HistoryFreshness"
+        }
+      },
+      "required": [
+        "configuration",
+        "count",
+        "deliveredMessages",
+        "entries",
+        "freshness",
+        "generation",
+        "hasMore",
+        "indexedAt",
+        "latestEntryId",
+        "sessionId",
+        "sourceId",
+        "sourceState",
+        "version"
+      ]
+    },
+    "HistorySearchPage": {
+      "type": "object",
+      "properties": {
+        "matches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HistorySearchMatch"
+          }
+        },
+        "nextCursor": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        },
+        "freshness": {
+          "$ref": "#/definitions/HistoryFreshness"
+        }
+      },
+      "required": ["freshness", "indexedAt", "matches", "version"]
+    },
+    "HistoryIndexStatus": {
+      "type": "object",
+      "properties": {
+        "databaseFile": {
+          "type": "string"
+        },
+        "physicalSources": {
+          "type": "number"
+        },
+        "publishedEntries": {
+          "type": "number"
+        },
+        "operations": {
+          "type": "object",
+          "properties": {
+            "sourceChecks": {
+              "type": "number"
+            },
+            "sourceOpens": {
+              "type": "number"
+            },
+            "sourceBytesRead": {
+              "type": "number"
+            },
+            "runProjections": {
+              "type": "number"
+            },
+            "queries": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "queries",
+            "runProjections",
+            "sourceBytesRead",
+            "sourceChecks",
+            "sourceOpens"
+          ]
+        },
+        "version": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        },
+        "freshness": {
+          "$ref": "#/definitions/HistoryFreshness"
+        }
+      },
+      "required": [
+        "databaseFile",
+        "freshness",
+        "indexedAt",
+        "operations",
+        "physicalSources",
+        "publishedEntries",
+        "version"
+      ]
+    },
+    "HistoryEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "nativeId": {
+          "description": "Missing in older journals; id then identifies the physical byte range.",
+          "type": ["null", "string"]
+        },
+        "parentId": {
+          "type": ["null", "string"]
+        },
+        "sequence": {
+          "type": "number"
+        },
+        "timestamp": {
+          "type": ["null", "number"]
+        },
+        "type": {
+          "type": "string"
+        },
+        "ref": {
+          "$ref": "#/definitions/HistoryByteRef"
+        },
+        "entry": {
+          "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E",
+          "description": "Bounded previews; untrusted detail values require narrowing at their consumer."
+        }
+      },
+      "required": ["entry", "id", "nativeId", "parentId", "ref", "sequence", "timestamp", "type"]
+    },
+    "HistoryResult": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "finalResultId": {
+          "type": "string"
+        }
+      },
+      "required": ["text", "timestamp"]
+    },
     "SubagentRunMode": {
-      "enum": [
-        "chain",
-        "parallel",
-        "single"
-      ],
+      "enum": ["chain", "parallel", "single"],
       "type": "string"
     },
     "ActivityState": {
@@ -1146,11 +1562,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "count",
-        "start",
-        "stepIndex"
-      ]
+      "required": ["count", "start", "stepIndex"]
     },
     "WorkflowGraphSnapshot": {
       "$ref": "#/definitions/WorkflowGraphSnapshot_1"
@@ -1162,11 +1574,7 @@
           "type": "string"
         },
         "mode": {
-          "enum": [
-            "chain",
-            "parallel",
-            "single"
-          ],
+          "enum": ["chain", "parallel", "single"],
           "type": "string"
         },
         "phases": {
@@ -1184,10 +1592,7 @@
                 }
               }
             },
-            "required": [
-              "nodeIds",
-              "title"
-            ]
+            "required": ["nodeIds", "title"]
           }
         },
         "nodes": {
@@ -1200,12 +1605,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "mode",
-        "nodes",
-        "phases",
-        "runId"
-      ]
+      "required": ["mode", "nodes", "phases", "runId"]
     },
     "WorkflowGraphNode": {
       "type": "object",
@@ -1214,12 +1614,7 @@
           "type": "string"
         },
         "kind": {
-          "enum": [
-            "agent",
-            "dynamic-parallel-group",
-            "parallel-group",
-            "step"
-          ],
+          "enum": ["agent", "dynamic-parallel-group", "parallel-group", "step"],
           "type": "string"
         },
         "agent": {
@@ -1265,11 +1660,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "itemName",
-            "sourceOutput",
-            "sourcePath"
-          ]
+          "required": ["itemName", "sourceOutput", "sourcePath"]
         },
         "itemKey": {
           "type": "string"
@@ -1287,12 +1678,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "kind",
-        "label",
-        "status"
-      ]
+      "required": ["id", "kind", "label", "status"]
     },
     "WorkflowNodeStatus": {
       "enum": [
@@ -1399,11 +1785,7 @@
                   "type": "number"
                 }
               },
-              "required": [
-                "args",
-                "endMs",
-                "tool"
-              ]
+              "required": ["args", "endMs", "tool"]
             }
           },
           "recentOutput": {
@@ -1428,10 +1810,7 @@
             "type": "number"
           },
           "exitCode": {
-            "type": [
-              "null",
-              "number"
-            ]
+            "type": ["null", "number"]
           },
           "agentProcessExit": {
             "$ref": "#/definitions/AgentProcessExit"
@@ -1483,10 +1862,7 @@
             "$ref": "#/definitions/ResourceLimitExceeded"
           }
         },
-        "required": [
-          "agent",
-          "status"
-        ]
+        "required": ["agent", "status"]
       }
     },
     "NestedRunSummary": {
@@ -1630,45 +2006,22 @@
                 "type": "string"
               }
             },
-            "required": [
-              "runId"
-            ]
+            "required": ["runId"]
           }
         }
       },
-      "required": [
-        "depth",
-        "id",
-        "parentRunId",
-        "path",
-        "state"
-      ]
+      "required": ["depth", "id", "parentRunId", "path", "state"]
     },
     "NestedOwnerState": {
-      "enum": [
-        "gone",
-        "live",
-        "unknown"
-      ],
+      "enum": ["gone", "live", "unknown"],
       "type": "string"
     },
     "SubagentRunMode_1": {
-      "enum": [
-        "chain",
-        "parallel",
-        "single"
-      ],
+      "enum": ["chain", "parallel", "single"],
       "type": "string"
     },
     "NestedRunState": {
-      "enum": [
-        "blocked",
-        "complete",
-        "failed",
-        "paused",
-        "queued",
-        "running"
-      ],
+      "enum": ["blocked", "complete", "failed", "paused", "queued", "running"],
       "type": "string"
     },
     "NestedStepSummary": {
@@ -1730,10 +2083,7 @@
           }
         }
       },
-      "required": [
-        "agent",
-        "status"
-      ]
+      "required": ["agent", "status"]
     },
     "TokenUsage": {
       "$ref": "#/definitions/TokenUsage_1"
@@ -1751,11 +2101,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "input",
-        "output",
-        "total"
-      ]
+      "required": ["input", "output", "total"]
     },
     "AgentProcessExit": {
       "$ref": "#/definitions/AgentProcessExit_1"
@@ -1767,10 +2113,7 @@
           "type": "number"
         },
         "code": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "signal": {
           "anyOf": [
@@ -1825,11 +2168,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "at",
-        "code",
-        "signal"
-      ]
+      "required": ["at", "code", "signal"]
     },
     "ModelAttempt": {
       "type": "object",
@@ -1838,19 +2177,14 @@
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete"
-              ],
+              "enum": ["complete", "incomplete"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "model": {
           "type": "string"
@@ -1859,10 +2193,7 @@
           "type": "boolean"
         },
         "exitCode": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "error": {
           "type": "string"
@@ -1871,10 +2202,7 @@
           "$ref": "#/definitions/Usage"
         }
       },
-      "required": [
-        "model",
-        "success"
-      ]
+      "required": ["model", "success"]
     },
     "Usage": {
       "$ref": "#/definitions/Usage_1"
@@ -1907,14 +2235,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "cacheRead",
-        "cacheWrite",
-        "cost",
-        "input",
-        "output",
-        "turns"
-      ]
+      "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "turns"]
     },
     "UsageContribution": {
       "type": "object",
@@ -1933,10 +2254,7 @@
           "$ref": "#/definitions/ObservedUsage"
         }
       },
-      "required": [
-        "id",
-        "usage"
-      ]
+      "required": ["id", "usage"]
     },
     "ObservedUsage": {
       "description": "Observations from native journals and external runners are not necessarily complete SDK messages.",
@@ -2110,20 +2428,14 @@
           "type": "object",
           "properties": {
             "mode": {
-              "enum": [
-                "none",
-                "self-review-loop"
-              ],
+              "enum": ["none", "self-review-loop"],
               "type": "string"
             },
             "maxTurns": {
               "type": "number"
             }
           },
-          "required": [
-            "maxTurns",
-            "mode"
-          ]
+          "required": ["maxTurns", "mode"]
         }
       },
       "required": [
@@ -2139,12 +2451,7 @@
     },
     "AcceptanceProvenanceLevel": {
       "description": "Acceptance configuration and recorded evidence, independent of execution and verification code.",
-      "enum": [
-        "attested",
-        "checked",
-        "none",
-        "verified"
-      ],
+      "enum": ["attested", "checked", "none", "verified"],
       "type": "string"
     },
     "ResolvedAcceptanceGate": {
@@ -2163,19 +2470,11 @@
           }
         },
         "severity": {
-          "enum": [
-            "recommended",
-            "required"
-          ],
+          "enum": ["recommended", "required"],
           "type": "string"
         }
       },
-      "required": [
-        "evidence",
-        "id",
-        "must",
-        "severity"
-      ]
+      "required": ["evidence", "id", "must", "severity"]
     },
     "AcceptanceEvidenceKind": {
       "enum": [
@@ -2213,10 +2512,7 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "command",
-        "id"
-      ]
+      "required": ["command", "id"]
     },
     "Readonly": {
       "$ref": "#/definitions/Record%3Cstring%2Cstring%3E"
@@ -2239,12 +2535,7 @@
                 "type": "string"
               },
               "status": {
-                "enum": [
-                  "blocked",
-                  "not-applicable",
-                  "not-satisfied",
-                  "satisfied"
-                ],
+                "enum": ["blocked", "not-applicable", "not-satisfied", "satisfied"],
                 "type": "string"
               },
               "evidence": {
@@ -2254,10 +2545,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "evidence",
-              "status"
-            ]
+            "required": ["evidence", "status"]
           }
         },
         "changedFiles": {
@@ -2281,22 +2569,14 @@
                 "type": "string"
               },
               "result": {
-                "enum": [
-                  "failed",
-                  "not-run",
-                  "passed"
-                ],
+                "enum": ["failed", "not-run", "passed"],
                 "type": "string"
               },
               "summary": {
                 "type": "string"
               }
             },
-            "required": [
-              "command",
-              "result",
-              "summary"
-            ]
+            "required": ["command", "result", "summary"]
           }
         },
         "validationOutput": {
@@ -2354,19 +2634,10 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "message",
-        "status"
-      ]
+      "required": ["id", "message", "status"]
     },
     "AcceptanceRuntimeCheckStatus": {
-      "enum": [
-        "blocked",
-        "failed",
-        "not-applicable",
-        "passed"
-      ],
+      "enum": ["blocked", "failed", "not-applicable", "passed"],
       "type": "string"
     },
     "AcceptanceVerifyResult": {
@@ -2382,18 +2653,10 @@
           "type": "string"
         },
         "exitCode": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "status": {
-          "enum": [
-            "allowed-failure",
-            "failed",
-            "passed",
-            "timed-out"
-          ],
+          "enum": ["allowed-failure", "failed", "passed", "timed-out"],
           "type": "string"
         },
         "stdout": {
@@ -2406,13 +2669,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "command",
-        "durationMs",
-        "exitCode",
-        "id",
-        "status"
-      ]
+      "required": ["command", "durationMs", "exitCode", "id", "status"]
     },
     "AcceptanceFinalizationLedger": {
       "$ref": "#/definitions/AcceptanceFinalizationLedger_1"
@@ -2425,12 +2682,7 @@
           "const": "self-review-loop"
         },
         "status": {
-          "enum": [
-            "blocked",
-            "completed",
-            "failed",
-            "not-run"
-          ],
+          "enum": ["blocked", "completed", "failed", "not-run"],
           "type": "string"
         },
         "maxTurns": {
@@ -2443,12 +2695,7 @@
           }
         }
       },
-      "required": [
-        "maxTurns",
-        "mode",
-        "status",
-        "turns"
-      ]
+      "required": ["maxTurns", "mode", "status", "turns"]
     },
     "AcceptanceFinalizationTurn": {
       "type": "object",
@@ -2490,13 +2737,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "prompt",
-        "runtimeChecks",
-        "status",
-        "turn",
-        "verifyRuns"
-      ]
+      "required": ["prompt", "runtimeChecks", "status", "turn", "verifyRuns"]
     },
     "ResourceLimitExceeded": {
       "$ref": "#/definitions/ResourceLimitExceeded_1"
@@ -2505,10 +2746,7 @@
       "type": "object",
       "properties": {
         "kind": {
-          "enum": [
-            "maxExecutionTimeMs",
-            "maxTokens"
-          ],
+          "enum": ["maxExecutionTimeMs", "maxTokens"],
           "type": "string"
         },
         "limit": {
@@ -2521,11 +2759,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "kind",
-        "limit",
-        "message"
-      ]
+      "required": ["kind", "limit", "message"]
     },
     "ChainOutputMap": {
       "$ref": "#/definitions/Record%3Cstring%2CChainOutputMapEntry%3E"
@@ -2563,10 +2797,7 @@
           "$ref": "#/definitions/AgentProcessExit"
         },
         "exitCode": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "output": {
           "type": "string"
@@ -2637,28 +2868,20 @@
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete"
-              ],
+              "enum": ["complete", "incomplete"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "nativeSessionId": {
           "type": "string"
         },
         "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
+          "type": ["null", "string"]
         },
         "terminalEntryId": {
           "type": "string"
@@ -2715,11 +2938,7 @@
               "type": "string"
             },
             "action": {
-              "enum": [
-                "already-missing",
-                "deleted",
-                "skipped"
-              ],
+              "enum": ["already-missing", "deleted", "skipped"],
               "type": "string"
             },
             "reason": {
@@ -2729,10 +2948,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "action",
-            "path"
-          ]
+          "required": ["action", "path"]
         }
       }
     },
@@ -2837,11 +3053,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "durationMs",
-        "tokens",
-        "toolCount"
-      ]
+      "required": ["durationMs", "tokens", "toolCount"]
     },
     "Array_1": {
       "type": "array",
@@ -2863,11 +3075,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "args",
-        "endMs",
-        "tool"
-      ]
+      "required": ["args", "endMs", "tool"]
     },
     "ToolCallSummary": {
       "type": "object",
@@ -2879,10 +3087,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "expandedText",
-        "text"
-      ]
+      "required": ["expandedText", "text"]
     },
     "TruncationResult": {
       "$ref": "#/definitions/TruncationResult_1"
@@ -2906,16 +3111,10 @@
           "type": "string"
         }
       },
-      "required": [
-        "text",
-        "truncated"
-      ]
+      "required": ["text", "truncated"]
     },
     "OutputMode": {
-      "enum": [
-        "file-only",
-        "inline"
-      ],
+      "enum": ["file-only", "inline"],
       "type": "string"
     },
     "SavedOutputReference": {
@@ -2937,12 +3136,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "bytes",
-        "lines",
-        "message",
-        "path"
-      ]
+      "required": ["bytes", "lines", "message", "path"]
     },
     "ForegroundResumeChild": {
       "description": "Live continuation owner, retained after foreground detachment.",
@@ -2973,21 +3167,10 @@
           "$ref": "#/definitions/SingleResult"
         }
       },
-      "required": [
-        "agent",
-        "index",
-        "status"
-      ]
+      "required": ["agent", "index", "status"]
     },
     "SubagentResultStatus": {
-      "enum": [
-        "blocked",
-        "completed",
-        "detached",
-        "failed",
-        "paused",
-        "timed-out"
-      ],
+      "enum": ["blocked", "completed", "detached", "failed", "paused", "timed-out"],
       "type": "string"
     },
     "ResolvedAcceptanceConfig_1": {
@@ -3005,28 +3188,20 @@
           "type": "object",
           "properties": {
             "state": {
-              "enum": [
-                "complete",
-                "incomplete"
-              ],
+              "enum": ["complete", "incomplete"],
               "type": "string"
             },
             "error": {
               "type": "string"
             }
           },
-          "required": [
-            "state"
-          ]
+          "required": ["state"]
         },
         "nativeSessionId": {
           "type": "string"
         },
         "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
+          "type": ["null", "string"]
         },
         "terminalEntryId": {
           "type": "string"
@@ -3158,11 +3333,7 @@
               "type": "string"
             },
             "action": {
-              "enum": [
-                "already-missing",
-                "deleted",
-                "skipped"
-              ],
+              "enum": ["already-missing", "deleted", "skipped"],
               "type": "string"
             },
             "reason": {
@@ -3172,10 +3343,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "action",
-            "path"
-          ]
+          "required": ["action", "path"]
         },
         "structuredOutput": {},
         "structuredOutputPath": {
@@ -3188,12 +3356,7 @@
           "$ref": "#/definitions/AcceptanceLedger"
         }
       },
-      "required": [
-        "agent",
-        "exitCode",
-        "task",
-        "usage"
-      ]
+      "required": ["agent", "exitCode", "task", "usage"]
     },
     "ObservedMessage": {
       "anyOf": [
@@ -3240,10 +3403,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "content",
-                "role"
-              ]
+              "required": ["content", "role"]
             }
           ]
         },
@@ -3282,12 +3442,7 @@
                 },
                 "details": {}
               },
-              "required": [
-                "content",
-                "role",
-                "toolCallId",
-                "toolName"
-              ]
+              "required": ["content", "role", "toolCallId", "toolName"]
             }
           ]
         },
@@ -3300,10 +3455,7 @@
               "type": "object",
               "properties": {
                 "role": {
-                  "enum": [
-                    "system",
-                    "user"
-                  ],
+                  "enum": ["system", "user"],
                   "type": "string"
                 },
                 "content": {
@@ -3320,10 +3472,7 @@
                   ]
                 }
               },
-              "required": [
-                "content",
-                "role"
-              ]
+              "required": ["content", "role"]
             }
           ]
         }
@@ -3353,10 +3502,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "text",
-            "type"
-          ]
+          "required": ["text", "type"]
         },
         {
           "type": "object",
@@ -3375,10 +3521,7 @@
               "type": "boolean"
             }
           },
-          "required": [
-            "thinking",
-            "type"
-          ]
+          "required": ["thinking", "type"]
         },
         {
           "type": "object",
@@ -3394,11 +3537,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "data",
-            "mimeType",
-            "type"
-          ]
+          "required": ["data", "mimeType", "type"]
         },
         {
           "type": "object",
@@ -3423,12 +3562,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "arguments",
-            "id",
-            "name",
-            "type"
-          ]
+          "required": ["arguments", "id", "name", "type"]
         }
       ]
     },
@@ -3567,11 +3701,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "args",
-          "endMs",
-          "tool"
-        ]
+        "required": ["args", "endMs", "tool"]
       }
     },
     "ArtifactPaths": {
@@ -3590,11 +3720,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "inputPath",
-        "metadataPath",
-        "outputPath"
-      ]
+      "required": ["inputPath", "metadataPath", "outputPath"]
     },
     "ParentRunReview": {
       "$ref": "#/definitions/ParentRunReview_1"
@@ -3603,10 +3729,7 @@
       "type": "object",
       "properties": {
         "decision": {
-          "enum": [
-            "accepted",
-            "needs_changes"
-          ],
+          "enum": ["accepted", "needs_changes"],
           "type": "string"
         },
         "message": {
@@ -3616,10 +3739,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "decision",
-        "reviewedAt"
-      ]
+      "required": ["decision", "reviewedAt"]
     },
     "NestedRouteInfo": {
       "$ref": "#/definitions/NestedRouteInfo_1"
@@ -3640,12 +3760,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "capabilityToken",
-        "controlInbox",
-        "eventSink",
-        "rootRunId"
-      ]
+      "required": ["capabilityToken", "controlInbox", "eventSink", "rootRunId"]
     },
     "ReadonlySingleResult": {
       "$ref": "#/definitions/_ReadonlyObjectDeep",
@@ -3663,10 +3778,7 @@
           "type": "string"
         },
         "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
+          "type": ["null", "string"]
         },
         "terminalEntryId": {
           "type": "string"
@@ -3819,31 +3931,21 @@
           "$ref": "#/definitions/AcceptanceLedger_2"
         }
       },
-      "required": [
-        "agent",
-        "exitCode",
-        "task",
-        "usage"
-      ]
+      "required": ["agent", "exitCode", "task", "usage"]
     },
     "__type_2": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
         "state": {
-          "enum": [
-            "complete",
-            "incomplete"
-          ],
+          "enum": ["complete", "incomplete"],
           "type": "string"
         },
         "error": {
           "type": "string"
         }
       },
-      "required": [
-        "state"
-      ]
+      "required": ["state"]
     },
     "_ReadonlyObjectDeep_1": {
       "$ref": "#/definitions/__type_2"
@@ -3860,10 +3962,7 @@
           "type": "number"
         },
         "code": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "signal": {
           "anyOf": [
@@ -3918,11 +4017,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "at",
-        "code",
-        "signal"
-      ]
+      "required": ["at", "code", "signal"]
     },
     "_ReadonlyObjectDeep_2": {
       "$ref": "#/definitions/__type_3"
@@ -3936,10 +4031,7 @@
       "type": "object",
       "properties": {
         "kind": {
-          "enum": [
-            "maxExecutionTimeMs",
-            "maxTokens"
-          ],
+          "enum": ["maxExecutionTimeMs", "maxTokens"],
           "type": "string"
         },
         "limit": {
@@ -3952,11 +4044,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "kind",
-        "limit",
-        "message"
-      ]
+      "required": ["kind", "limit", "message"]
     },
     "_ReadonlyObjectDeep_3": {
       "$ref": "#/definitions/__type_4"
@@ -4020,10 +4108,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "content",
-        "role"
-      ]
+      "required": ["content", "role"]
     },
     "__type_6": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -4040,10 +4125,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "text",
-        "type"
-      ]
+      "required": ["text", "type"]
     },
     "_ReadonlyObjectDeep_5": {
       "$ref": "#/definitions/__type_6"
@@ -4066,10 +4148,7 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "thinking",
-        "type"
-      ]
+      "required": ["thinking", "type"]
     },
     "_ReadonlyObjectDeep_6": {
       "$ref": "#/definitions/__type_7"
@@ -4089,11 +4168,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "data",
-        "mimeType",
-        "type"
-      ]
+      "required": ["data", "mimeType", "type"]
     },
     "_ReadonlyObjectDeep_7": {
       "$ref": "#/definitions/__type_8"
@@ -4122,12 +4197,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "arguments",
-        "id",
-        "name",
-        "type"
-      ]
+      "required": ["arguments", "id", "name", "type"]
     },
     "__type_10": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -4255,12 +4325,7 @@
         },
         "details": {}
       },
-      "required": [
-        "content",
-        "role",
-        "toolCallId",
-        "toolName"
-      ]
+      "required": ["content", "role", "toolCallId", "toolName"]
     },
     "_ReadonlyObjectDeep_11": {
       "$ref": "#/definitions/__type_13"
@@ -4273,10 +4338,7 @@
           "type": "number"
         },
         "role": {
-          "enum": [
-            "system",
-            "user"
-          ],
+          "enum": ["system", "user"],
           "type": "string"
         },
         "content": {
@@ -4310,10 +4372,7 @@
           ]
         }
       },
-      "required": [
-        "content",
-        "role"
-      ]
+      "required": ["content", "role"]
     },
     "_ReadonlyObjectDeep_12": {
       "$ref": "#/definitions/__type_14"
@@ -4347,14 +4406,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "cacheRead",
-        "cacheWrite",
-        "cost",
-        "input",
-        "output",
-        "turns"
-      ]
+      "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "turns"]
     },
     "_ReadonlyObjectDeep<UsageContribution>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -4374,10 +4426,7 @@
           "$ref": "#/definitions/ObservedUsage_3"
         }
       },
-      "required": [
-        "id",
-        "usage"
-      ]
+      "required": ["id", "usage"]
     },
     "ObservedUsage_3": {
       "$ref": "#/definitions/__type_11"
@@ -4400,10 +4449,7 @@
           "type": "boolean"
         },
         "exitCode": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "error": {
           "type": "string"
@@ -4412,29 +4458,21 @@
           "$ref": "#/definitions/Usage_3"
         }
       },
-      "required": [
-        "model",
-        "success"
-      ]
+      "required": ["model", "success"]
     },
     "__type_16": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
         "state": {
-          "enum": [
-            "complete",
-            "incomplete"
-          ],
+          "enum": ["complete", "incomplete"],
           "type": "string"
         },
         "error": {
           "type": "string"
         }
       },
-      "required": [
-        "state"
-      ]
+      "required": ["state"]
     },
     "_ReadonlyObjectDeep_13": {
       "$ref": "#/definitions/__type_16"
@@ -4475,11 +4513,7 @@
           "type": "string"
         },
         "reason": {
-          "enum": [
-            "completion_guard",
-            "idle",
-            "tool_failures"
-          ],
+          "enum": ["completion_guard", "idle", "tool_failures"],
           "type": "string"
         },
         "turns": {
@@ -4511,14 +4545,7 @@
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         }
       },
-      "required": [
-        "agent",
-        "message",
-        "runId",
-        "to",
-        "ts",
-        "type"
-      ]
+      "required": ["agent", "message", "runId", "to", "ts", "type"]
     },
     "__type_17": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -4528,20 +4555,14 @@
           "type": "string"
         },
         "state": {
-          "enum": [
-            "answer_pending",
-            "awaiting_input"
-          ],
+          "enum": ["answer_pending", "awaiting_input"],
           "type": "string"
         },
         "answer": {
           "type": "string"
         }
       },
-      "required": [
-        "questionId",
-        "state"
-      ]
+      "required": ["questionId", "state"]
     },
     "_ReadonlyObjectDeep_15": {
       "$ref": "#/definitions/__type_17"
@@ -4749,11 +4770,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "durationMs",
-        "tokens",
-        "toolCount"
-      ]
+      "required": ["durationMs", "tokens", "toolCount"]
     },
     "Array_4": {
       "type": "array",
@@ -4775,11 +4792,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "args",
-        "endMs",
-        "tool"
-      ]
+      "required": ["args", "endMs", "tool"]
     },
     "_ReadonlyObjectDeep_17": {
       "$ref": "#/definitions/__type_19"
@@ -4795,10 +4808,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "expandedText",
-        "text"
-      ]
+      "required": ["expandedText", "text"]
     },
     "ArtifactPaths_2": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_18",
@@ -4818,11 +4828,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "inputPath",
-        "metadataPath",
-        "outputPath"
-      ]
+      "required": ["inputPath", "metadataPath", "outputPath"]
     },
     "_ReadonlyObjectDeep_18": {
       "$ref": "#/definitions/__type_20"
@@ -4851,10 +4857,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "text",
-        "truncated"
-      ]
+      "required": ["text", "truncated"]
     },
     "_ReadonlyObjectDeep_19": {
       "$ref": "#/definitions/__type_21"
@@ -4880,12 +4883,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "bytes",
-        "lines",
-        "message",
-        "path"
-      ]
+      "required": ["bytes", "lines", "message", "path"]
     },
     "_ReadonlyObjectDeep_20": {
       "$ref": "#/definitions/__type_22"
@@ -4898,11 +4896,7 @@
           "type": "string"
         },
         "action": {
-          "enum": [
-            "already-missing",
-            "deleted",
-            "skipped"
-          ],
+          "enum": ["already-missing", "deleted", "skipped"],
           "type": "string"
         },
         "reason": {
@@ -4912,10 +4906,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "action",
-        "path"
-      ]
+      "required": ["action", "path"]
     },
     "_ReadonlyObjectDeep_21": {
       "$ref": "#/definitions/__type_23"
@@ -5063,19 +5054,11 @@
           }
         },
         "severity": {
-          "enum": [
-            "recommended",
-            "required"
-          ],
+          "enum": ["recommended", "required"],
           "type": "string"
         }
       },
-      "required": [
-        "evidence",
-        "id",
-        "must",
-        "severity"
-      ]
+      "required": ["evidence", "id", "must", "severity"]
     },
     "_ReadonlyObjectDeep<AcceptanceVerifyCommand>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -5100,10 +5083,7 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "command",
-        "id"
-      ]
+      "required": ["command", "id"]
     },
     "Readonly_2": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_23",
@@ -5121,20 +5101,14 @@
       "type": "object",
       "properties": {
         "mode": {
-          "enum": [
-            "none",
-            "self-review-loop"
-          ],
+          "enum": ["none", "self-review-loop"],
           "type": "string"
         },
         "maxTurns": {
           "type": "number"
         }
       },
-      "required": [
-        "maxTurns",
-        "mode"
-      ]
+      "required": ["maxTurns", "mode"]
     },
     "ResolvedAcceptanceConfig_2": {
       "$ref": "#/definitions/__type_25"
@@ -5219,12 +5193,7 @@
           "type": "string"
         },
         "status": {
-          "enum": [
-            "blocked",
-            "not-applicable",
-            "not-satisfied",
-            "satisfied"
-          ],
+          "enum": ["blocked", "not-applicable", "not-satisfied", "satisfied"],
           "type": "string"
         },
         "evidence": {
@@ -5234,10 +5203,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "evidence",
-        "status"
-      ]
+      "required": ["evidence", "status"]
     },
     "_ReadonlyObjectDeep<{readonlycommand:string;readonlyresult:\"passed\"|\"failed\"|\"not-run\";readonlysummary:string;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -5247,22 +5213,14 @@
           "type": "string"
         },
         "result": {
-          "enum": [
-            "failed",
-            "not-run",
-            "passed"
-          ],
+          "enum": ["failed", "not-run", "passed"],
           "type": "string"
         },
         "summary": {
           "type": "string"
         }
       },
-      "required": [
-        "command",
-        "result",
-        "summary"
-      ]
+      "required": ["command", "result", "summary"]
     },
     "_ReadonlyObjectDeep_25": {
       "$ref": "#/definitions/__type_10"
@@ -5284,11 +5242,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "message",
-        "status"
-      ]
+      "required": ["id", "message", "status"]
     },
     "_ReadonlyObjectDeep<AcceptanceVerifyResult>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -5304,18 +5258,10 @@
           "type": "string"
         },
         "exitCode": {
-          "type": [
-            "null",
-            "number"
-          ]
+          "type": ["null", "number"]
         },
         "status": {
-          "enum": [
-            "allowed-failure",
-            "failed",
-            "passed",
-            "timed-out"
-          ],
+          "enum": ["allowed-failure", "failed", "passed", "timed-out"],
           "type": "string"
         },
         "stdout": {
@@ -5328,13 +5274,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "command",
-        "durationMs",
-        "exitCode",
-        "id",
-        "status"
-      ]
+      "required": ["command", "durationMs", "exitCode", "id", "status"]
     },
     "AcceptanceFinalizationLedger_2": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_26",
@@ -5349,12 +5289,7 @@
           "const": "self-review-loop"
         },
         "status": {
-          "enum": [
-            "blocked",
-            "completed",
-            "failed",
-            "not-run"
-          ],
+          "enum": ["blocked", "completed", "failed", "not-run"],
           "type": "string"
         },
         "maxTurns": {
@@ -5367,12 +5302,7 @@
           }
         }
       },
-      "required": [
-        "maxTurns",
-        "mode",
-        "status",
-        "turns"
-      ]
+      "required": ["maxTurns", "mode", "status", "turns"]
     },
     "_ReadonlyObjectDeep<AcceptanceFinalizationTurn>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -5415,13 +5345,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "prompt",
-        "runtimeChecks",
-        "status",
-        "turn",
-        "verifyRuns"
-      ]
+      "required": ["prompt", "runtimeChecks", "status", "turn", "verifyRuns"]
     },
     "_ReadonlyObjectDeep_26": {
       "$ref": "#/definitions/__type_28"
@@ -5484,10 +5408,7 @@
           "type": "string"
         },
         "context": {
-          "enum": [
-            "fork",
-            "fresh"
-          ],
+          "enum": ["fork", "fresh"],
           "type": "string"
         },
         "output": {
@@ -5670,33 +5591,19 @@
       ]
     },
     "SystemPromptMode": {
-      "enum": [
-        "append",
-        "replace"
-      ],
+      "enum": ["append", "replace"],
       "type": "string"
     },
     "AgentDefaultContext": {
-      "enum": [
-        "fork",
-        "fresh"
-      ],
+      "enum": ["fork", "fresh"],
       "type": "string"
     },
     "AgentSource": {
-      "enum": [
-        "builtin",
-        "package",
-        "project",
-        "user"
-      ],
+      "enum": ["builtin", "package", "project", "user"],
       "type": "string"
     },
     "OutputMode_1": {
-      "enum": [
-        "file-only",
-        "inline"
-      ],
+      "enum": ["file-only", "inline"],
       "type": "string"
     },
     "ResolvedControlConfig": {
@@ -5737,19 +5644,11 @@
       ]
     },
     "ControlNotificationChannel": {
-      "enum": [
-        "async",
-        "event",
-        "intercom"
-      ],
+      "enum": ["async", "event", "intercom"],
       "type": "string"
     },
     "ChildProjectTrustPolicy": {
-      "enum": [
-        "approve",
-        "inherit",
-        "no-approve"
-      ],
+      "enum": ["approve", "inherit", "no-approve"],
       "type": "string"
     },
     "Pick": {
@@ -5778,6 +5677,349 @@
     },
     "QuestionDelivery_1": {
       "$ref": "#/definitions/QuestionDelivery"
+    },
+    "ManagementRunState": {
+      "enum": ["blocked", "completed", "failed", "live", "paused", "unknown"],
+      "type": "string"
+    },
+    "Omit<_ReadonlyObjectDeep<SingleResult>,\"artifactPaths\">": {
+      "type": "object",
+      "properties": {
+        "detached": {
+          "type": "boolean"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "error": {
+          "type": "string"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "accounting": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_1",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "nativeSessionId": {
+          "type": "string"
+        },
+        "terminalLeafId": {
+          "type": ["null", "string"]
+        },
+        "terminalEntryId": {
+          "type": "string"
+        },
+        "auditPath": {
+          "type": "string"
+        },
+        "fullOutputPath": {
+          "type": "string"
+        },
+        "initialOutputPath": {
+          "type": "string"
+        },
+        "auditSaveError": {
+          "type": "string"
+        },
+        "agentProcessExit": {
+          "$ref": "#/definitions/AgentProcessExit_2"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "detachedReason": {
+          "type": "string"
+        },
+        "interrupted": {
+          "type": "boolean"
+        },
+        "timedOut": {
+          "type": "boolean"
+        },
+        "resourceLimitExceeded": {
+          "$ref": "#/definitions/ResourceLimitExceeded_2"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_4",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_11",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_12",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              }
+            ]
+          }
+        },
+        "usage": {
+          "$ref": "#/definitions/Usage_2"
+        },
+        "attemptedModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "modelAttempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CModelAttempt%3E"
+          }
+        },
+        "controlEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CControlEvent%3E"
+          }
+        },
+        "skillsWarning": {
+          "type": "string"
+        },
+        "progress": {
+          "$ref": "#/definitions/AgentProgress_2"
+        },
+        "progressSummary": {
+          "$ref": "#/definitions/ProgressSummary_2"
+        },
+        "toolCalls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CToolCallSummary%3E"
+          }
+        },
+        "truncation": {
+          "$ref": "#/definitions/TruncationResult_2"
+        },
+        "finalOutput": {
+          "type": "string"
+        },
+        "initialOutput": {
+          "type": "string"
+        },
+        "outputMode": {
+          "$ref": "#/definitions/OutputMode"
+        },
+        "savedOutputPath": {
+          "type": "string"
+        },
+        "outputReference": {
+          "$ref": "#/definitions/SavedOutputReference_2"
+        },
+        "outputSaveError": {
+          "type": "string"
+        },
+        "outputCleanup": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_21",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "structuredOutput": {},
+        "structuredOutputPath": {
+          "type": "string"
+        },
+        "structuredOutputSchemaPath": {
+          "type": "string"
+        },
+        "acceptance": {
+          "$ref": "#/definitions/AcceptanceLedger_2"
+        }
+      },
+      "required": ["agent", "exitCode", "task", "usage"]
+    },
+    "Partial_2": {
+      "$ref": "#/definitions/Partial_3"
+    },
+    "__type_30": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "blocked",
+            "complete",
+            "completed",
+            "detached",
+            "failed",
+            "paused",
+            "pending",
+            "running",
+            "timed-out"
+          ],
+          "type": "string"
+        },
+        "lastActivityAt": {
+          "type": "number"
+        },
+        "currentTool": {
+          "type": "string"
+        },
+        "currentToolArgs": {
+          "type": "string"
+        },
+        "currentPath": {
+          "type": "string"
+        },
+        "streamingText": {
+          "type": "string"
+        },
+        "recentOutput": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Partial_3": {
+      "$ref": "#/definitions/__type_30"
+    },
+    "HistoryConfiguration": {
+      "$ref": "#/definitions/HistoryConfiguration_1"
+    },
+    "HistoryConfiguration_1": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelRecordedAt": {
+          "type": "number"
+        }
+      }
+    },
+    "HistoryFreshness": {
+      "type": "object",
+      "properties": {
+        "authoritative": {
+          "description": "Browse observations only; never proof of completion, ownership, or receipt absence.",
+          "type": "boolean",
+          "const": false
+        },
+        "state": {
+          "enum": ["catching-up", "current", "degraded"],
+          "type": "string"
+        },
+        "pending": {
+          "type": "number"
+        },
+        "errors": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        }
+      },
+      "required": ["authoritative", "errors", "indexedAt", "pending", "state"]
+    },
+    "HistoryByteRef": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "number"
+        },
+        "start": {
+          "type": "number"
+        },
+        "end": {
+          "type": "number"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": ["digest", "end", "generation", "sourceId", "start"]
+    },
+    "HistorySearchMatch": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "nativeId": {
+          "type": ["null", "string"]
+        },
+        "sessionId": {
+          "type": ["null", "string"]
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": ["null", "number"]
+        },
+        "ref": {
+          "$ref": "#/definitions/HistoryByteRef"
+        },
+        "preview": {
+          "description": "Indexed excerpt, not an authoritative/validated full record.",
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        },
+        "textStart": {
+          "type": "number"
+        },
+        "textEnd": {
+          "type": "number"
+        },
+        "score": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "agent",
+        "entryId",
+        "field",
+        "id",
+        "index",
+        "nativeId",
+        "preview",
+        "ref",
+        "runId",
+        "score",
+        "sessionFile",
+        "sessionId",
+        "textEnd",
+        "textStart",
+        "timestamp"
+      ]
     }
   }
 }
