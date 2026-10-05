@@ -44,19 +44,20 @@ export class ConversationSelection {
     }
     return { handled: true, focus: true };
   }
-  select(delta: number, height: number): void {
+  select(delta: number, height: number): boolean {
     const current = this.cards.lines.findIndex((row) => row.id === this.id);
     const visible =
       current < 0 ? this.cards.lines.findIndex((row) => row.end > this.scroll.scrollTop) : current;
     const index = Math.max(0, Math.min(this.cards.lines.length - 1, visible + delta));
     const row = this.cards.lines.at(index);
     if (!row) {
-      return;
+      return false;
     }
     this.id = row.id;
     if (row.start < this.scroll.scrollTop || row.start >= this.scroll.scrollTop + height) {
       this.scroll.scrollTo(row.start, { disableFollow: true });
     }
+    return true;
   }
   expand(): void {
     this.toolsExpanded = !this.toolsExpanded;

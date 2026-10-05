@@ -302,16 +302,18 @@ export class AgentConversation extends Container {
       this.viewport.restoreAnchor = this.viewport.anchor();
       return { handled: true };
     }
-    this.viewport.restoreAnchor = this.viewport.anchor();
+    const anchor = this.viewport.anchor();
     const result = this.selection.mouse(event, this.details.detail !== undefined);
     if (result?.focus === true) {
+      this.viewport.restoreAnchor = anchor;
       this.editorFocus = false;
     }
     return result;
   }
   private select(delta: number): void {
-    this.selection.select(delta, this.viewport.height);
-    this.viewport.restoreAnchor = this.viewport.anchor();
+    if (this.selection.select(delta, this.viewport.height)) {
+      this.viewport.restoreAnchor = this.viewport.anchor();
+    }
   }
   private actions(): void {
     const choices = conversationChoices(this.task, {
