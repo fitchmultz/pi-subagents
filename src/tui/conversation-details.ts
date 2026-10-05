@@ -1,7 +1,14 @@
-import { hasText } from "./text-values.ts";
+import { hasText, errorText } from "./text-values.ts";
 import type { TUI } from "@earendil-works/pi-tui";
 import { readableText, type AgentHistoryItem } from "./agent-history.ts";
-import type { AgentTask, AgentVisit, Anchor } from "./view-model.ts";
+import type { AgentTask, AgentVisit, Anchor, Quote } from "./view-model.ts";
+function quote(item: AgentHistoryItem): Quote {
+  const parts =
+    item.call || item.result
+      ? [item.diff, item.details ?? item.text]
+      : [item.text, item.diff, item.details];
+  return { title: item.title, text: parts.filter(Boolean).join("\n\n") };
+}
 interface DetailEffects {
   readonly task: () => AgentTask | undefined;
   readonly visit: () => AgentVisit;
@@ -12,11 +19,11 @@ interface DetailEffects {
   readonly closeMenu: () => void;
   readonly restore: (anchor: Anchor | undefined) => void;
   readonly toStart: () => void;
+  readonly toEnd: () => void;
   readonly changed: () => void;
   readonly back: () => void;
   readonly changes: () => Promise<AgentHistoryItem | undefined>;
 }
-
 export class ConversationDetails {
   detail?: AgentHistoryItem;
   detailError?: string;
@@ -31,12 +38,15 @@ export class ConversationDetails {
     this.tui = tui;
     this.effects = effects;
   }
-
-  async inspect(item: AgentHistoryItem): Promise<void> {
-    const request = ++this.detailRequest,
-      runId = this.effects.task()?.run.runId;
+  private active(request: number): boolean {
+    return !this.closed && request === this.detailRequest;
+  }
+  private sameAttempt(request: number, runId: string | undefined): boolean {
+    return this.active(request) && this.effects.task()?.run.runId === runId;
+  }
+  private begin(item: AgentHistoryItem): void {
     this.conversationAnchor = this.effects.following() ? undefined : this.effects.anchor();
-    this.loadingDetail = Boolean(item.load);
+    this.loadingDetail = item.load !== undefined;
     this.detailError = undefined;
     this.detail = item.load
       ? {
@@ -52,22 +62,25 @@ export class ConversationDetails {
     this.effects.toStart();
     this.effects.restore({ id: item.id, line: 0 });
     this.tui.requestRender();
+  }
+  async inspectSelected(): Promise<void> {
+    const item = this.effects.selected();
+    if (item) {
+      await this.inspect(item);
+    }
+  }
+  async inspect(item: AgentHistoryItem): Promise<void> {
+    const request = ++this.detailRequest,
+      runId = this.effects.task()?.run.runId;
+    this.begin(item);
     try {
       const detail = item.load ? await item.load() : item;
-      if (
-        !this.closed &&
-        request === this.detailRequest &&
-        this.effects.task()?.run.runId === runId
-      ) {
+      if (this.sameAttempt(request, runId)) {
         this.detail = detail;
       }
     } catch (error) {
-      if (
-        !this.closed &&
-        request === this.detailRequest &&
-        this.effects.task()?.run.runId === runId
-      ) {
-        this.detailError = readableText(error instanceof Error ? error.message : String(error));
+      if (this.sameAttempt(request, runId)) {
+        this.detailError = readableText(errorText(error));
         this.detail = {
           id: item.id,
           kind: "notice",
@@ -77,12 +90,42 @@ export class ConversationDetails {
         };
       }
     }
-    if (!this.closed && request === this.detailRequest) {
+    if (this.active(request)) {
       this.loadingDetail = false;
       this.tui.requestRender();
     }
   }
-
+  private replyAnchor(): Anchor | undefined {
+    if (this.detail) {
+      return this.conversationAnchor;
+    }
+    return this.effects.following() ? undefined : this.effects.anchor();
+  }
+  private async quoteItem(item: AgentHistoryItem): Promise<AgentHistoryItem | undefined> {
+    if (!item.load || this.detail) {
+      return item;
+    }
+    const request = ++this.detailRequest,
+      runId = this.effects.task()?.run.runId;
+    this.loadingDetail = true;
+    this.effects.compose(true);
+    this.tui.requestRender();
+    try {
+      const full = await item.load();
+      return this.sameAttempt(request, runId) ? full : undefined;
+    } catch (error) {
+      if (this.active(request)) {
+        this.effects.visit().notice = `Quoted context unavailable; draft kept. ${readableText(errorText(error))}`;
+        this.effects.changed();
+      }
+      return;
+    } finally {
+      if (this.active(request)) {
+        this.loadingDetail = false;
+        this.tui.requestRender();
+      }
+    }
+  }
   async reply(): Promise<void> {
     if (this.loadingDetail) {
       return;
@@ -93,53 +136,19 @@ export class ConversationDetails {
       this.effects.changed();
       return;
     }
-    let item = this.effects.selected();
+    const selected = this.effects.selected();
+    if (!selected) {
+      return;
+    }
+    const anchor = this.replyAnchor();
+    let item: AgentHistoryItem | undefined = selected;
+    if (selected.load && !this.detail) {
+      item = await this.quoteItem(selected);
+    }
     if (!item) {
       return;
     }
-    const anchor = this.detail
-      ? this.conversationAnchor
-      : this.effects.following()
-        ? undefined
-        : this.effects.anchor();
-    if (item.load && !this.detail) {
-      const request = ++this.detailRequest,
-        runId = this.effects.task()?.run.runId;
-      this.loadingDetail = true;
-      this.effects.compose(true);
-
-      this.tui.requestRender();
-      try {
-        item = await item.load();
-        if (
-          this.closed ||
-          request !== this.detailRequest ||
-          this.effects.task()?.run.runId !== runId
-        ) {
-          return;
-        }
-      } catch (error) {
-        if (!this.closed && request === this.detailRequest) {
-          this.effects.visit().notice = `Quoted context unavailable; draft kept. ${readableText(error instanceof Error ? error.message : String(error))}`;
-          this.effects.changed();
-        }
-        return;
-      } finally {
-        if (!this.closed && request === this.detailRequest) {
-          this.loadingDetail = false;
-          this.tui.requestRender();
-        }
-      }
-    }
-    this.effects.visit().quote = {
-      title: item.title,
-      text: (item.call || item.result
-        ? [item.diff, item.details ?? item.text]
-        : [item.text, item.diff, item.details]
-      )
-        .filter(Boolean)
-        .join("\n\n"),
-    };
+    this.effects.visit().quote = quote(item);
     this.detailRequest++;
     this.detail = undefined;
     this.effects.closeMenu();
@@ -156,26 +165,39 @@ export class ConversationDetails {
     this.pendingDetail = true;
     try {
       const item = await this.effects.changes();
-      if (
-        !this.closed &&
-        request === this.detailRequest &&
-        this.effects.task()?.run.runId === runId &&
-        item
-      ) {
+      if (item && this.sameAttempt(request, runId)) {
         await this.inspect(item);
         this.tui.requestRender();
       }
     } catch (error) {
-      if (
-        !this.closed &&
-        request === this.detailRequest &&
-        this.effects.task()?.run.runId === runId
-      ) {
-        this.effects.visit().notice = `Changes unavailable: ${String(error)}`;
+      if (this.sameAttempt(request, runId)) {
+        this.effects.visit().notice = `Changes unavailable: ${errorText(error)}`;
       }
     } finally {
       this.pendingDetail = false;
     }
+  }
+  close(): boolean {
+    if (!this.detail) {
+      return false;
+    }
+    this.detailRequest++;
+    this.loadingDetail = false;
+    this.detail = undefined;
+    this.effects.compose(true);
+    this.effects.restore(this.conversationAnchor);
+    if (!this.conversationAnchor) {
+      this.effects.toEnd();
+    }
+    return true;
+  }
+  unquote(): void {
+    if (this.loadingDetail && !this.detail) {
+      this.detailRequest++;
+      this.loadingDetail = false;
+    }
+    this.effects.visit().quote = undefined;
+    this.effects.changed();
   }
   dispose(): void {
     this.closed = true;

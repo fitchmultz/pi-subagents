@@ -1,8 +1,11 @@
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 export function readableText(value: unknown): string {
-  return stripTerminalSequences(
-    typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? ""),
-  );
+  if (typeof value === "string") {
+    return stripTerminalSequences(value);
+  }
+  // JSON.stringify can return undefined for omitted native values despite its declared string result.
+  const serialized: unknown = JSON.stringify(value, null, 2);
+  return stripTerminalSequences(typeof serialized === "string" ? serialized : "");
 }
 export function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

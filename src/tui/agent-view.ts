@@ -1,4 +1,4 @@
-import { hasText, nonemptyText } from "./text-values.ts";
+import { hasText, errorText } from "./text-values.ts";
 import { isRecord } from "./history-text.ts";
 import { directionRenderer, type DirectionDetails } from "./direction-message.ts";
 import { restoredView } from "./view-persistence.ts";
@@ -7,13 +7,8 @@ import { AgentBrowser } from "./agent-browser.ts";
 import { ViewSession } from "./view-session.ts";
 import { AgentTaskStore } from "./task-store.ts";
 import { AgentDock } from "./agent-dock.ts";
-import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  type Container,
-  type Component,
-  type OverlayOptions,
-  type TUI,
-} from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Container, Component, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import { loadConfig as loadIntercomConfig } from "../pi-intercom/config.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import {
@@ -23,8 +18,8 @@ import {
   type HistoryPageInput,
   type HistoryRunPage,
 } from "../shared/types.ts";
-import { type AgentHistoryItem } from "./agent-history.ts";
-import { type AgentTask, type AgentVisit, type ExecuteControl } from "./view-model.ts";
+import type { AgentHistoryItem } from "./agent-history.ts";
+import type { AgentTask, AgentVisit, ExecuteControl } from "./view-model.ts";
 import { AgentConversation } from "./agent-conversation.ts";
 import { AgentPicker } from "./agent-picker.ts";
 
@@ -139,10 +134,7 @@ export class AgentViewController {
   }
   private reportFailure(error: unknown): void {
     if (this.live()) {
-      this.session.ctx?.ui.notify(
-        `Agents: ${error instanceof Error ? error.message : String(error)}`,
-        "error",
-      );
+      this.session.ctx?.ui.notify(`Agents: ${errorText(error)}`, "error");
     }
   }
 
@@ -195,7 +187,7 @@ export class AgentViewController {
         return;
       }
       request.handled = true;
-      void this.open();
+      this.defer(this.open());
     });
     ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
       this.render = () => tui.requestRender();
@@ -210,7 +202,7 @@ export class AgentViewController {
         below: () => this.componentsBelowWidget(tui) ?? [],
         shortcut: this.shortcut,
         live: () => this.live(),
-        unpin: () => this.pin(undefined),
+        unpin: () => this.pin(),
         open: (key) => {
           this.open(key).catch((error: unknown) => this.reportFailure(error));
         },
@@ -218,22 +210,32 @@ export class AgentViewController {
       this.widget = dock.component;
       return dock.component;
     });
-    void this.refresh();
+    this.defer(this.refresh());
     this.timer = setInterval(() => {
-      if (
-        !hasText(this.browser.listError) &&
-        (this.overlay ||
-          nonemptyText(this.store.pinned) ||
-          this.store.dockTasks.some((task) => task.child.state === "live" || task.question) ||
-          this.store.tasks.some((task) => this.store.visits.get(task.key)?.outbox.length))
-      ) {
+      if (this.shouldRefresh()) {
         this.render?.();
-        void this.refresh();
+        this.defer(this.refresh());
       }
     }, 500);
-    this.timer.unref?.();
+    this.timer.unref();
   }
 
+  private defer(operation: Promise<void>): void {
+    operation.catch((error: unknown) => this.reportFailure(error));
+  }
+  private shouldRefresh(): boolean {
+    if (hasText(this.browser.listError)) {
+      return false;
+    }
+    return (
+      this.overlay !== undefined ||
+      hasText(this.store.pinned) ||
+      this.store.dockTasks.some(
+        (task) => task.child.state === "live" || task.question !== undefined,
+      ) ||
+      this.store.tasks.some((task) => (this.store.visits.get(task.key)?.outbox.length ?? 0) > 0)
+    );
+  }
   private live(generation = this.session.generation): boolean {
     return this.session.live(generation);
   }
@@ -251,7 +253,7 @@ export class AgentViewController {
       clearTimeout(this.saveTimer);
     }
     this.saveTimer = setTimeout(() => this.save(), 300);
-    this.saveTimer.unref?.();
+    this.saveTimer.unref();
     this.render?.();
   }
 
@@ -264,7 +266,7 @@ export class AgentViewController {
       return;
     }
     const saved = {
-      ownerSessionId: this.session.ctx!.sessionManager.getSessionId(),
+      ownerSessionId: this.session.context().sessionManager.getSessionId(),
       visits: [...this.store.visits],
       pinned: this.store.pinned,
     };
@@ -276,7 +278,7 @@ export class AgentViewController {
     this.lastSaved = serialized;
   }
 
-  pin(key: string | undefined): void {
+  pin(key?: string): void {
     this.store.pinned = key;
     this.save();
     this.render?.();
@@ -316,14 +318,8 @@ export class AgentViewController {
     return Math.max(1, tui.terminal.rows - dock - 1);
   }
 
-  async open(key?: string, ctx = this.session.ctx): Promise<void> {
-    if (!ctx || !isTuiContext(ctx)) {
-      return;
-    }
-    if (
-      !this.session.ctx ||
-      this.session.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()
-    ) {
+  private prepareOpen(ctx: ExtensionContext, key: string | undefined): number | undefined {
+    if (this.session.ctx?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) {
       this.start(ctx);
     }
     if (!this.live()) {
@@ -335,74 +331,99 @@ export class AgentViewController {
       );
       return;
     }
-    const generation = this.session.generation;
+    return this.session.generation;
+  }
+  private defaultSelection(key: string | undefined): string | undefined {
+    if (key !== undefined) {
+      return key;
+    }
+    return this.browser.listFilter.length === 0 &&
+      this.store.tasks.length === 1 &&
+      this.browser.listPage?.total === 1
+      ? this.store.tasks.at(0)?.key
+      : undefined;
+  }
+  private showOverlay(
+    ctx: ExtensionContext,
+    selected: string | undefined,
+  ): Promise<string | undefined> {
+    let height: (() => number) | undefined;
+    const overlayOptions: OverlayOptions = {
+      width: "96%",
+      margin: 1,
+      anchor: "center",
+      get maxHeight() {
+        return height?.();
+      },
+    };
+    return ctx.ui.custom<string | undefined>(
+      (tui, theme, keys, done) => {
+        height = () => this.availableHeight(tui);
+        if (tui.mode === "fullscreen") {
+          overlayOptions.anchor = "top-center";
+        }
+        this.closeOverlay = (next) => done(next);
+        this.overlay =
+          hasText(selected) && this.task(selected)
+            ? new AgentConversation(tui, theme, { controller: this, key: selected, done, keys })
+            : new AgentPicker(tui, theme, this, done);
+        return this.overlay;
+      },
+      { overlay: true, overlayOptions },
+    );
+  }
+  private finishOverlay(): void {
+    this.overlay = undefined;
+    this.store.releaseSelected();
+    this.closeOverlay = undefined;
+    this.save();
+    this.defer(this.refresh());
+  }
+  private routeOverlay(result: string | undefined): { readonly selected?: string } | undefined {
+    if (result === "peers") {
+      this.pi.events.emit("intercom:open", {});
+      return;
+    }
+    if (!hasText(result)) {
+      return;
+    }
+    return { selected: result === "picker" ? undefined : result };
+  }
+  async open(key?: string, ctx = this.session.ctx): Promise<void> {
+    if (!ctx || !isTuiContext(ctx)) {
+      return;
+    }
+    await this.openContext(ctx, key);
+  }
+  private async openContext(ctx: ExtensionContext, key: string | undefined): Promise<void> {
+    const generation = this.prepareOpen(ctx, key);
+    if (generation === undefined) {
+      return;
+    }
     if (!this.browser.listPage) {
       await this.refresh(true);
     }
     if (!this.live(generation)) {
       return;
     }
-    let selected =
-      key ??
-      (this.browser.listFilter.length === 0 &&
-      this.store.tasks.length === 1 &&
-      this.browser.listPage?.total === 1
-        ? this.store.tasks[0].key
-        : undefined);
+    let selected = this.defaultSelection(key);
     while (this.live(generation)) {
       this.store.selectedKey = selected;
       if (hasText(selected)) {
         this.refreshSelected(selected);
       }
-      let height: (() => number) | undefined;
-      const overlayOptions: OverlayOptions = {
-        width: "96%",
-        margin: 1,
-        anchor: "center",
-        get maxHeight() {
-          return height?.();
-        },
-      };
-      const result = await ctx.ui.custom<string | undefined>(
-        (tui, theme, keys, done) => {
-          height = () => this.availableHeight(tui);
-          if (tui.mode === "fullscreen") {
-            overlayOptions.anchor = "top-center";
-          }
-          this.closeOverlay = (next) => done(next);
-          this.overlay =
-            hasText(selected) && this.task(selected)
-              ? new AgentConversation(tui, theme, { controller: this, key: selected, done, keys })
-              : new AgentPicker(tui, theme, this, done);
-          return this.overlay;
-        },
-        { overlay: true, overlayOptions },
-      );
+      // Only one native overlay owns focus at a time; each selection must close before its successor opens.
+      // oxlint-disable-next-line no-await-in-loop
+      const result = await this.showOverlay(ctx, selected);
       if (!this.live(generation)) {
         return;
       }
-      this.overlay = undefined;
-      for (const task of [...this.store.tasks, ...this.store.dockTasks]) {
-        if (task.key === this.store.selectedKey) {
-          task.history = [];
-          task.historyIds = [];
-          task.page = undefined;
-          task.finalId = undefined;
-          task.historyLoading = false;
-        }
-      }
-      this.store.selectedKey = undefined;
-      this.closeOverlay = undefined;
-      this.save();
-      void this.refresh();
-      if (result === "peers") {
-        this.pi.events.emit("intercom:open", {});
+      this.finishOverlay();
+      const next = this.routeOverlay(result);
+      if (!next) {
         return;
       }
-      if (!hasText(result)) {
-        return;
-      }
-      selected = result === "picker" ? undefined : result;
+      selected = next.selected;
     }
   }
 
@@ -427,7 +448,8 @@ export class AgentViewController {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
     }
-    this.timer = this.saveTimer = undefined;
+    this.timer = undefined;
+    this.saveTimer = undefined;
     this.render = undefined;
     this.widget = undefined;
     this.session.ctx = undefined;

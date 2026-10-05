@@ -37,6 +37,24 @@ export interface AgentHistory {
   };
   readonly unavailable?: string;
 }
+function inlineAssistantError(message: AssistantMessage | HistoryAssistantPreview): boolean {
+  return (
+    !message.content.some((part) => part.type === "toolCall") &&
+    ["error", "aborted"].includes(message.stopReason ?? "")
+  );
+}
+function messageModel(message: AssistantMessage | HistoryAssistantPreview): string | undefined {
+  if (!hasText(message.model)) {
+    return;
+  }
+  return hasText(message.provider) ? `${message.provider}/${message.model}` : message.model;
+}
+function customTitle(human: boolean, from: unknown, customType: string): string {
+  if (human) {
+    return "User · delivered to conversation";
+  }
+  return typeof from === "string" && from.length > 0 ? `From ${from}` : customType;
+}
 function resultDisplay(
   result: RecordedToolResult,
   call?: ToolCall,
@@ -108,11 +126,7 @@ class NativeHistoryBuilder {
               messageId: human && typeof message === "string" ? message : undefined,
             },
             () => ({
-              title: human
-                ? "User · delivered to conversation"
-                : typeof from === "string" && from.length > 0
-                  ? `From ${from}`
-                  : entry.customType,
+              title: customTitle(human, from, entry.customType),
               text: contentText(body ?? entry.content),
             }),
           ),
@@ -202,34 +216,17 @@ class NativeHistoryBuilder {
     message: AssistantMessage | HistoryAssistantPreview,
     native?: AssistantMessage,
   ): void {
-    const model = hasText(message.model)
-      ? hasText(message.provider)
-        ? `${message.provider}/${message.model}`
-        : message.model
-      : undefined;
+    const model = messageModel(message);
     const ids = message.content.flatMap((part, index) =>
       (part.type === "text" && part.text.length > 0) ||
       (part.type === "thinking" && part.thinking.length > 0)
         ? [`${entryId}:${index}`]
         : [],
     );
-    const first = ids[0];
+    const first = ids.at(0);
     if (first !== undefined) {
       this.items.push(
-        lazyItem(
-          {
-            id: first,
-            timestamp,
-            entryIds: ids,
-            kind: message.content.some((part) => part.type === "text" && part.text.length > 0)
-              ? "assistant"
-              : "thinking",
-            assistant: native,
-            previewAssistant: native ? undefined : message,
-            model,
-          },
-          () => ({ title: "Agent", text: contentText(message.content) }),
-        ),
+        assistantGroup(message, { id: first, timestamp, entryIds: ids, model, native }),
       );
     }
     for (const [index, part] of message.content.entries()) {
@@ -242,11 +239,7 @@ class NativeHistoryBuilder {
     }
     if (message.errorMessage !== undefined && message.errorMessage.length > 0) {
       const id = `${entryId}:error`;
-      if (
-        ids.length > 0 &&
-        !message.content.some((part) => part.type === "toolCall") &&
-        ["error", "aborted"].includes(message.stopReason ?? "")
-      ) {
+      if (ids.length > 0 && inlineAssistantError(message)) {
         ids.push(id);
         this.entryIds.push(id);
       } else {
@@ -284,6 +277,46 @@ class NativeHistoryBuilder {
     this.calls.set(call.id, pair);
   }
 }
+function assistantGroup(
+  message: AssistantMessage | HistoryAssistantPreview,
+  facts: {
+    readonly id: string;
+    readonly timestamp: number;
+    readonly entryIds: readonly string[];
+    readonly model?: string;
+    readonly native?: AssistantMessage;
+  },
+): AgentHistoryItem {
+  return lazyItem(
+    {
+      id: facts.id,
+      timestamp: facts.timestamp,
+      entryIds: facts.entryIds,
+      kind: message.content.some((part) => part.type === "text" && part.text.length > 0)
+        ? "assistant"
+        : "thinking",
+      assistant: facts.native,
+      previewAssistant: facts.native ? undefined : message,
+      model: facts.model,
+    },
+    () => ({ title: "Agent", text: contentText(message.content) }),
+  );
+}
+function finalResultMap(items: readonly AgentHistoryItem[]): Map<string, string> {
+  const results = new Map<string, string>();
+  for (const item of items) {
+    if (item.kind !== "assistant") {
+      continue;
+    }
+    results.set(stripAcceptanceReport(item.text).trim(), item.id);
+    for (const part of item.assistant?.content ?? []) {
+      if (part.type === "text") {
+        results.set(stripAcceptanceReport(readableText(part.text)).trim(), item.id);
+      }
+    }
+  }
+  return results;
+}
 export function displayHistory(entries: readonly DisplayEntry[]): AgentHistory {
   const builder = new NativeHistoryBuilder();
   for (const entry of entries) {
@@ -294,17 +327,7 @@ export function displayHistory(entries: readonly DisplayEntry[]): AgentHistory {
     items: builder.items,
     entryIds: builder.entryIds,
     findFinalResult(text) {
-      if (!finalResults) {
-        finalResults = new Map();
-        for (const item of builder.items.filter((item) => item.kind === "assistant")) {
-          finalResults.set(stripAcceptanceReport(item.text).trim(), item.id);
-          for (const part of item.assistant?.content ?? []) {
-            if (part.type === "text") {
-              finalResults.set(stripAcceptanceReport(readableText(part.text)).trim(), item.id);
-            }
-          }
-        }
-      }
+      finalResults ??= finalResultMap(builder.items);
       return finalResults.get(text);
     },
   };

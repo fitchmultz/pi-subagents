@@ -1,9 +1,13 @@
-import { hasText } from "./text-values.ts";
+import { errorText } from "./text-values.ts";
+import {
+  historyStatus,
+  pageNotices,
+  taskNotices,
+  outgoingHistory,
+} from "./conversation-notices.ts";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { HistoryPageInput } from "../shared/types.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
-import { acceptanceHumanAction } from "../runs/shared/acceptance.ts";
-import { formatAgentProcessExit } from "../shared/status-format.ts";
 import { withFinalResult, type AgentHistoryItem, type AgentHistory } from "./agent-history.ts";
 import { UNAVAILABLE_ASSIGNMENT, type AgentVisit } from "./view-model.ts";
 import type { ConversationController, HistorySelection } from "./view-ports.ts";
@@ -55,65 +59,88 @@ export class ConversationHistory {
       paging.before === undefined && paging.after === undefined && paging.cursor === undefined;
     this.tui.requestRender();
     try {
-      const selected = await this.controller.historyPage(this.key, paging, anchor);
-      if (!selected || !this.active(request)) {
-        return;
-      }
-      const result = await this.initialReportPage(selected, request);
-      if (!result || !this.active(request)) {
-        return;
-      }
-      if (result.readThroughSequence !== undefined) {
-        this.source.readSequence(result.readThroughSequence);
-      }
-      this.latestPage = result.latestPage;
-      const history = await this.savedReport(result.history, request);
-      if (history && this.active(request)) {
-        this.applyPage(history, result);
-      }
+      await this.resolvePage(paging, anchor, request);
     } catch (error) {
       if (this.active(request)) {
-        this.pageError = `History unavailable: ${error instanceof Error ? error.message : String(error)}. F5 retries the selected run.`;
+        this.pageError = `History unavailable: ${errorText(error)}. F5 retries the selected run.`;
       }
     } finally {
-      if (this.active(request)) {
-        this.loadingPage = false;
-        const current = this.controller.task(this.key);
-        if (current) {
-          current.historyLoading = false;
-        }
-        this.tui.requestRender();
-      }
+      this.finishPage(request);
     }
   }
 
+  private finishPage(request: number): void {
+    if (!this.active(request)) {
+      return;
+    }
+    this.loadingPage = false;
+    const current = this.controller.task(this.key);
+    if (current) {
+      current.historyLoading = false;
+    }
+    this.tui.requestRender();
+  }
+  private async resolvePage(
+    paging: Pick<HistoryPageInput, "before" | "after" | "cursor">,
+    anchor: string | null | undefined,
+    request: number,
+  ): Promise<void> {
+    const selected = await this.controller.historyPage(this.key, paging, anchor);
+    if (!selected || !this.active(request)) {
+      return;
+    }
+    const result = await this.initialReportPage(selected, request);
+    if (!result || !this.active(request)) {
+      return;
+    }
+    if (result.readThroughSequence !== undefined) {
+      this.source.readSequence(result.readThroughSequence);
+    }
+    this.latestPage = result.latestPage;
+    const history = await this.savedReport(result.history, request);
+    if (history && this.active(request)) {
+      this.applyPage(history, result);
+    }
+  }
+  private needsInitialReport(result: HistorySelection): boolean {
+    const task = this.controller.task(this.key),
+      visit = this.source.initialVisit();
+    if (
+      !task ||
+      !this.source.initialPosition() ||
+      visit.readThrough !== undefined ||
+      visit.anchor ||
+      task.child.state === "live"
+    ) {
+      return false;
+    }
+    const finalId = result.history.finalId;
+    return finalId !== undefined && !result.history.entryIds.includes(finalId);
+  }
   private async initialReportPage(
     result: HistorySelection,
     request: number,
   ): Promise<HistorySelection | undefined> {
-    const task = this.controller.task(this.key),
-      visit = this.source.initialVisit();
-    if (!task) {
+    if (!this.controller.task(this.key)) {
       return;
     }
-    const finalId = result.history.finalId;
-    if (
-      !this.source.initialPosition() ||
-      visit.readThrough !== undefined ||
-      visit.anchor ||
-      task.child.state === "live" ||
-      finalId === undefined ||
-      result.history.entryIds.includes(finalId)
-    ) {
+    if (!this.needsInitialReport(result)) {
       return result;
     }
-    const report = await this.controller.historyPage(this.key, {}, finalId);
+    const report = await this.controller.historyPage(this.key, {}, result.history.finalId);
     if (!this.active(request) || !this.controller.task(this.key)) {
       return;
     }
     return report ?? result;
   }
 
+  private includeReport(history: AgentHistory): boolean {
+    return (
+      this.source.initialPosition() ||
+      this.latestPage ||
+      (history.finalId !== undefined && history.entryIds.includes(history.finalId))
+    );
+  }
   private async savedReport(
     history: AgentHistory,
     request: number,
@@ -122,9 +149,9 @@ export class ConversationHistory {
     if (!task) {
       return;
     }
-    const showsFinal = history.finalId !== undefined && history.entryIds.includes(history.finalId);
+    const includeReport = this.includeReport(history);
     if (
-      !(this.source.initialPosition() || this.latestPage || showsFinal) ||
+      !includeReport ||
       task.child.state === "live" ||
       !task.child.result ||
       getSingleResultOutput(task.child.result).length === 0
@@ -206,110 +233,14 @@ export class ConversationHistory {
     if (detail) {
       return [detail];
     }
-    const page = task.page;
-    const status =
-      this.pageError ??
-      (this.loadingPage && !task.page
-        ? "Loading conversation…"
-        : page?.freshness.state === "catching-up"
-          ? "Catching up · partial history"
-          : page?.freshness.state === "degraded"
-            ? "Some saved history unavailable · F5 retry"
-            : undefined);
-    const items = [
+    const status = this.pageError ?? historyStatus(task.page, this.loadingPage);
+    return [
       this.assignment(),
-      ...(hasText(status)
-        ? [
-            {
-              id: "history-loading",
-              kind: "notice" as const,
-              title: status,
-              text: "",
-              timestamp: 0,
-            },
-          ]
-        : []),
-      ...(page && page.count > page.entries.length
-        ? [
-            {
-              id: "history-page",
-              kind: "notice" as const,
-              title: `History · ${page.entries.length} of ${page.count} native records${this.latestPage ? " · latest" : ""}`,
-              text: "F2 Actions → Earlier history / Later history / Latest. Full details validates the selected native record.",
-              timestamp: 0,
-            },
-          ]
-        : []),
-      ...(!(task.child.identityUnavailable === true) && task.child.state !== "live"
-        ? [
-            {
-              id: "process-exit",
-              kind: "notice" as const,
-              title: `Agent: ${task.child.state}`,
-              text: formatAgentProcessExit(task.child.result?.agentProcessExit),
-              timestamp: task.run.updatedAt,
-            },
-          ]
-        : []),
+      ...pageNotices(task, status, this.latestPage),
       ...task.history,
+      ...taskNotices(task),
+      ...this.controller.visit(this.key).outbox.map(outgoingHistory),
     ];
-    const humanAction =
-      task.child.humanAction ?? acceptanceHumanAction(task.child.result?.acceptance);
-    if (hasText(humanAction) && !(task.child.identityUnavailable === true)) {
-      items.push({
-        id: "human-action",
-        kind: "notice",
-        title: "Needs your action — acceptance incomplete",
-        text: humanAction,
-        timestamp: task.run.updatedAt,
-      });
-    }
-    if (hasText(task.unavailable) && !(task.child.identityUnavailable === true)) {
-      items.push({
-        id: "unavailable",
-        kind: "notice",
-        title: "Conversation unavailable",
-        text: task.unavailable,
-        timestamp: 0,
-      });
-    }
-    if (task.question) {
-      items.push({
-        id: `question:${task.question.questionId}`,
-        kind: "notice",
-        title: "Waiting for your answer",
-        text: task.question.message,
-        timestamp: task.question.createdAt,
-      });
-    }
-    if (
-      !(task.child.identityUnavailable === true) &&
-      task.child.state === "live" &&
-      hasText(task.child.activity?.streamingText)
-    ) {
-      items.push({
-        id: `live:${task.run.runId}`,
-        kind: "assistant",
-        title: "Agent · writing",
-        text: task.child.activity.streamingText,
-        timestamp: task.child.activity.lastActivityAt ?? 0,
-      });
-    }
-    for (const sent of this.controller.visit(this.key).outbox) {
-      items.push({
-        id: `outgoing:${sent.id}`,
-        kind: "user",
-        title:
-          sent.status === "sending"
-            ? "You · sending"
-            : sent.status === "waiting"
-              ? "You · waiting for the child / tool boundary"
-              : "You · delivery unconfirmed",
-        text: `${sent.text}${sent.quote ? `\n\nRegarding ${sent.quote.title}:\n${sent.quote.text}` : ""}${hasText(sent.reason) ? `\n\n${sent.reason}` : ""}`,
-        timestamp: sent.at,
-      });
-    }
-    return items;
   }
   dispose(): void {
     this.closed = true;

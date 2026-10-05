@@ -1,4 +1,4 @@
-import { hasText } from "./text-values.ts";
+import { hasText, errorText } from "./text-values.ts";
 import { DynamicBorder, getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
   Box,
@@ -16,8 +16,8 @@ import {
 import { readableText } from "./agent-history.ts";
 import { actionHints } from "./action-hints.ts";
 import type { PickerController } from "./view-ports.ts";
-import { taskSummary, short, activity, primaryKey } from "./view-model.ts";
-
+import { short, activity, primaryKey } from "./view-model.ts";
+import { pickerPage, type PickerPage } from "./picker-page.ts";
 export class AgentPicker extends Container {
   private list?: SelectList;
   private itemKeys: string[] = [];
@@ -25,6 +25,7 @@ export class AgentPicker extends Container {
   private readonly search: Input;
   private signature = "";
   private wasPending = false;
+  private retryError?: string;
   private hasFocus = false;
   private readonly tui: TUI;
   private readonly theme: Theme;
@@ -53,208 +54,186 @@ export class AgentPicker extends Container {
   refresh(): void {
     this.tui.requestRender();
   }
-  render(width: number): string[] {
-    const height = this.controller.availableHeight(this.tui),
-      innerWidth = Math.max(1, width - 2);
-    const query = this.search.getValue();
-    const tasks = this.controller.tasks.filter((task) =>
-      this.controller.listPage?.rows.some((run) => run.runId === task.run.runId),
-    );
-    const items = tasks.map((task) => {
-      const { status, badge } = taskSummary(task);
-      return {
-        value: task.key,
-        label: `${task.child.agent} · ${task.label}`,
-        description: status + badge,
-      };
-    });
-    if (this.controller.listPage?.offset) {
-      items.push({ value: "previous-page", label: "Previous agents", description: "PgUp" });
-    }
-    if (this.controller.listPage?.nextOffset !== undefined) {
-      items.push({ value: "next-page", label: "More agents", description: "PgDn" });
-    }
-    items.push({ value: "retry", label: "Refresh / retry history", description: "F5" });
-    if (!hasText(query)) {
-      items.push({
-        value: "peers",
-        label: "Other connected sessions",
-        description: "All projects",
-      });
-    }
-    const labelWidth = Math.min(
-      Math.max(0, ...items.map((item) => visibleWidth(item.label))),
-      Math.max(40, Math.floor(innerWidth / 2)),
-    );
-    for (const [index, task] of tasks.entries()) {
-      const item = items[index],
-        modelWidth = innerWidth - labelWidth - visibleWidth(item.description) - 7;
-      if (modelWidth >= 16) {
-        item.description += ` · ${short(task.model.summary, modelWidth)}`;
+  private retry(): void {
+    this.retryError = undefined;
+    this.controller.retry().catch((error: unknown) => {
+      if (!this.closed) {
+        this.retryError = errorText(error);
+        this.tui.requestRender();
       }
-    }
-    this.itemKeys = items.map((item) => item.value);
-    const selected =
-      this.controller.listPending || this.wasPending
-        ? undefined
-        : this.list?.getSelectedItem()?.value;
-    this.wasPending = this.controller.listPending;
-    const selectedIndex = Math.max(
-      0,
-      items.findIndex((item) => item.value === selected),
+    });
+  }
+  private header(page: PickerPage, width: number, compact: boolean): Container {
+    const header = new Container(),
+      list = this.controller.listPage;
+    header.addChild(
+      new Text(
+        this.theme.fg(
+          "accent",
+          this.theme.bold(
+            truncateToWidth(
+              `Agents · ${list?.total ?? "…"} owned runs · page ${Math.floor((list?.offset ?? 0) / 50) + 1}`,
+              width,
+            ),
+          ),
+        ),
+        0,
+        0,
+      ),
     );
-    const task = this.controller.task(items[selectedIndex]?.value ?? "");
-    const status =
-      this.controller.listError ??
-      (this.controller.listPage?.freshness.state === "catching-up"
-        ? "Catching up · partial results"
-        : this.controller.listPage?.freshness.state === "degraded"
-          ? "Some history unavailable · F5 retry"
-          : this.controller.listLoading
-            ? "Loading…"
-            : "");
-    const signature = JSON.stringify([
-      items,
-      query,
-      width,
-      height,
-      status,
-      this.controller.listPage?.total,
-      items[selectedIndex]?.value,
-      task && activity(task),
-      task?.model,
-      task?.child.task,
-      task?.run.runId,
-    ]);
-    if (signature !== this.signature) {
-      const compact = height < 16;
-      const header = new Container();
+    header.addChild(this.search);
+    const status = this.retryError ?? page.status;
+    if (hasText(status)) {
       header.addChild(
         new Text(
           this.theme.fg(
-            "accent",
-            this.theme.bold(
-              truncateToWidth(
-                `Agents · ${this.controller.listPage?.total ?? "…"} owned runs · page ${Math.floor((this.controller.listPage?.offset ?? 0) / 50) + 1}`,
-                innerWidth,
-              ),
-            ),
+            hasText(this.controller.listError) || this.retryError !== undefined ? "warning" : "dim",
+            truncateToWidth(status, width),
           ),
           0,
           0,
         ),
       );
-      header.addChild(this.search);
-      if (hasText(status)) {
-        header.addChild(
-          new Text(
-            this.theme.fg(
-              hasText(this.controller.listError) ? "warning" : "dim",
-              truncateToWidth(status, innerWidth),
-            ),
-            0,
-            0,
+    }
+    if (!compact) {
+      header.addChild(new Spacer(1));
+    }
+    return header;
+  }
+  private controls(width: number, compact: boolean): ReturnType<typeof actionHints> {
+    const up = primaryKey("tui.select.up"),
+      down = primaryKey("tui.select.down");
+    const choose = [
+      { text: up, run: () => this.act("up") },
+      hasText(up) && hasText(down) ? "/" : "",
+      { text: `${down}${compact ? "" : " Choose"}`, run: () => this.act("down") },
+    ];
+    const open = {
+      text: `${primaryKey("tui.select.confirm")}${compact ? "" : " Open"}`.trim(),
+      run: () => this.act("open"),
+    };
+    const back = {
+      text: `${primaryKey("tui.select.cancel")}${compact ? "" : " Back"}`.trim(),
+      run: () => this.act("back"),
+    };
+    const filter = { text: "Type to filter", run: () => this.act("filter") };
+    if (compact) {
+      return actionHints([...choose, " · ", open, " · ", back], (text) =>
+        this.theme.fg("dim", text),
+      );
+    }
+    const controls =
+      width < 60
+        ? [...choose, " · ", open, "\n", back, " · ", filter]
+        : [filter, " · ", ...choose, " · ", open, " · ", back];
+    return actionHints(controls, (text) => this.theme.fg("dim", text));
+  }
+  private footer(page: PickerPage, width: number, compact: boolean): Container {
+    const footer = new Container();
+    if (!compact) {
+      footer.addChild(new Spacer(1));
+    }
+    const task = page.task;
+    if (task && !compact) {
+      footer.addChild(
+        new Text(
+          this.theme.fg(
+            "muted",
+            short(`${task.child.agent} · ${activity(task)} · ${task.run.runId.slice(0, 8)}`, width),
           ),
-        );
-      }
-      if (!compact) {
-        header.addChild(new Spacer(1));
-      }
-      const footer = new Container();
-      if (!compact) {
-        footer.addChild(new Spacer(1));
-      }
-      if (task && !compact) {
-        footer.addChild(
-          new Text(
-            this.theme.fg(
-              "muted",
-              short(
-                `${task.child.agent} · ${activity(task)} · ${task.run.runId.slice(0, 8)}`,
-                innerWidth,
-              ),
-            ),
-            0,
-            0,
-          ),
-        );
-        footer.addChild(
-          new Text(this.theme.fg("dim", short(task.model.summary, innerWidth)), 0, 0),
-        );
-        const assignment = new Text(
-          readableText(task.child.task ?? "Original assignment unavailable."),
           0,
           0,
-        ).render(innerWidth);
-        footer.addChild(new Text(assignment.slice(0, 3).join("\n"), 0, 0));
-      }
-      const up = primaryKey("tui.select.up"),
-        down = primaryKey("tui.select.down");
-      const choose = [
-        { text: up, run: () => this.act("up") },
-        hasText(up) && hasText(down) ? "/" : "",
-        { text: `${down}${compact ? "" : " Choose"}`, run: () => this.act("down") },
-      ];
-      const open = {
-        text: `${primaryKey("tui.select.confirm")}${compact ? "" : " Open"}`.trim(),
-        run: () => this.act("open"),
-      };
-      const back = {
-        text: `${primaryKey("tui.select.cancel")}${compact ? "" : " Back"}`.trim(),
-        run: () => this.act("back"),
-      };
-      const filter = { text: "Type to filter", run: () => this.act("filter") };
-      const controls = compact
-        ? [...choose, " · ", open, " · ", back]
-        : width < 60
-          ? [...choose, " · ", open, "\n", back, " · ", filter]
-          : [filter, " · ", ...choose, " · ", open, " · ", back];
-      footer.addChild(actionHints(controls, (text) => this.theme.fg("dim", text)));
-      const visible = Math.max(
-        1,
-        height - 3 - header.render(innerWidth).length - footer.render(innerWidth).length,
+        ),
       );
-      // Native SelectList needs more than ten cells to show its description column.
-      const descriptionWidth =
-        innerWidth > 40
-          ? Math.max(11, ...items.map((item) => visibleWidth(item.description ?? "")))
-          : 0;
-      const primaryWidth = Math.max(1, innerWidth - descriptionWidth - (descriptionWidth ? 4 : 2));
-      this.list = new SelectList(items, visible, getSelectListTheme(), {
-        minPrimaryColumnWidth: Math.min(24, primaryWidth),
-        maxPrimaryColumnWidth: primaryWidth,
-        truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth),
-      });
-      this.list.setSelectedIndex(selectedIndex);
-      this.list.onSelect = (item) => {
-        if (this.controller.listPending && !["retry", "peers"].includes(item.value)) {
-          return;
-        }
-        if (item.value === "next-page" || item.value === "previous-page") {
-          this.controller.pageTasks(item.value === "next-page" ? "later" : "earlier");
-        } else if (item.value === "retry") {
-          void this.controller.retry();
-        } else {
-          this.done(item.value);
-        }
-      };
-      this.list.onCancel = () => this.act("back");
-      const body = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
-      body.addChild(header);
-      body.addChild(
-        (items.length ?? 0) > 0
-          ? this.list
-          : new Text(
-              hasText(query) ? "No matching agents." : "No agents owned by this session yet.",
-              0,
-              0,
-            ),
-      );
-      body.addChild(footer);
-      this.clear();
-      this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
-      this.addChild(body);
-      this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
+      footer.addChild(new Text(this.theme.fg("dim", short(task.model.summary, width)), 0, 0));
+      const assignment = new Text(
+        readableText(task.child.task ?? "Original assignment unavailable."),
+        0,
+        0,
+      ).render(width);
+      footer.addChild(new Text(assignment.slice(0, 3).join("\n"), 0, 0));
+    }
+    footer.addChild(this.controls(width + 2, compact));
+    return footer;
+  }
+  private select(value: string): void {
+    if (this.controller.listPending && !["retry", "peers"].includes(value)) {
+      return;
+    }
+    if (value === "next-page" || value === "previous-page") {
+      this.controller.pageTasks(value === "next-page" ? "later" : "earlier");
+    } else if (value === "retry") {
+      this.retry();
+    } else {
+      this.done(value);
+    }
+  }
+  private selectList(page: PickerPage, width: number, visible: number): SelectList {
+    // Native SelectList needs more than ten cells to show its description column.
+    const descriptionWidth =
+      width > 40
+        ? Math.max(11, ...page.items.map((item) => visibleWidth(item.description ?? "")))
+        : 0;
+    const primaryWidth = Math.max(1, width - descriptionWidth - (descriptionWidth > 0 ? 4 : 2));
+    const list = new SelectList([...page.items], visible, getSelectListTheme(), {
+      minPrimaryColumnWidth: Math.min(24, primaryWidth),
+      maxPrimaryColumnWidth: primaryWidth,
+      truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth),
+    });
+    list.setSelectedIndex(page.selectedIndex);
+    list.onSelect = (item) => this.select(item.value);
+    list.onCancel = () => this.act("back");
+    return list;
+  }
+  private layout(page: PickerPage, width: number, height: number): void {
+    const innerWidth = Math.max(1, width - 2),
+      compact = height < 16;
+    const header = this.header(page, innerWidth, compact),
+      footer = this.footer(page, innerWidth, compact);
+    const visible = Math.max(
+      1,
+      height - 3 - header.render(innerWidth).length - footer.render(innerWidth).length,
+    );
+    this.list = this.selectList(page, innerWidth, visible);
+    const body = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
+    body.addChild(header);
+    body.addChild(this.list);
+    body.addChild(footer);
+    this.clear();
+    this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
+    this.addChild(body);
+    this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
+  }
+  private pageSignature(page: PickerPage, query: string, width: number, height: number): string {
+    const task = page.task;
+    return JSON.stringify([
+      page.items,
+      query,
+      width,
+      height,
+      page.status,
+      this.retryError,
+      this.controller.listPage?.total,
+      page.items.at(page.selectedIndex)?.value,
+      task && activity(task),
+      task?.model,
+      task?.child.task,
+      task?.run.runId,
+    ]);
+  }
+  render(width: number): string[] {
+    const height = this.controller.availableHeight(this.tui),
+      query = this.search.getValue();
+    const selected =
+      this.controller.listPending || this.wasPending
+        ? undefined
+        : this.list?.getSelectedItem()?.value;
+    this.wasPending = this.controller.listPending;
+    const page = pickerPage(this.controller, query, Math.max(1, width - 2), selected);
+    this.itemKeys = page.items.map((item) => item.value);
+    const signature = this.pageSignature(page, query, width, height);
+    if (signature !== this.signature) {
+      this.layout(page, width, height);
       this.signature = signature;
     }
     return super.render(width);
@@ -263,44 +242,44 @@ export class AgentPicker extends Container {
     this.signature = "";
     super.invalidate();
   }
-  syncDraft(): void {}
+  syncDraft(): void {
+    /* The picker has no conversation draft editor. */
+  }
+  private move(delta: number): void {
+    if (this.itemKeys.length === 0) {
+      return;
+    }
+    const index = this.itemKeys.indexOf(this.list?.getSelectedItem()?.value ?? "");
+    this.list?.setSelectedIndex((index + delta + this.itemKeys.length) % this.itemKeys.length);
+  }
   private act(action: "up" | "down" | "open" | "back" | "filter"): void {
     if (this.closed) {
       return;
     }
-    if (action === "back") {
-      this.done();
-    } else if (action === "filter") {
-      this.tui.setFocus(this);
-    } else if (action === "open") {
-      const item = this.list?.getSelectedItem();
-      if (item) {
-        this.list?.onSelect?.(item);
+    switch (action) {
+      case "back":
+        this.done();
+        break;
+      case "filter":
+        this.tui.setFocus(this);
+        break;
+      case "open": {
+        const item = this.list?.getSelectedItem();
+        if (item) {
+          this.select(item.value);
+        }
+        break;
       }
-    } else if ((this.itemKeys.length ?? 0) > 0) {
-      const index = this.itemKeys.indexOf(this.list?.getSelectedItem()?.value ?? "");
-      this.list?.setSelectedIndex(
-        (index + (action === "up" ? -1 : 1) + this.itemKeys.length) % this.itemKeys.length,
-      );
+      case "up":
+        this.move(-1);
+        break;
+      case "down":
+        this.move(1);
+        break;
     }
     this.tui.requestRender();
   }
-  handleInput(data: string): void {
-    if (this.closed) {
-      return;
-    }
-    if (matchesKey(data, this.controller.shortcut)) {
-      this.done();
-      return;
-    }
-    if (matchesKey(data, "pageDown") || matchesKey(data, "pageUp")) {
-      this.controller.pageTasks(matchesKey(data, "pageDown") ? "later" : "earlier");
-      return;
-    }
-    if (matchesKey(data, "f5")) {
-      void this.controller.retry();
-      return;
-    }
+  private listInput(data: string): void {
     const keys = getKeybindings();
     if (keys.matches(data, "tui.select.cancel")) {
       this.act("back");
@@ -320,6 +299,24 @@ export class AgentPicker extends Container {
       }
       this.controller.filterTasks(this.search.getValue());
     }
+  }
+  handleInput(data: string): void {
+    if (this.closed) {
+      return;
+    }
+    if (matchesKey(data, this.controller.shortcut)) {
+      this.done();
+      return;
+    }
+    if (matchesKey(data, "pageDown") || matchesKey(data, "pageUp")) {
+      this.controller.pageTasks(matchesKey(data, "pageDown") ? "later" : "earlier");
+      return;
+    }
+    if (matchesKey(data, "f5")) {
+      this.retry();
+      return;
+    }
+    this.listInput(data);
     this.tui.requestRender();
   }
   dispose(): void {

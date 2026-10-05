@@ -48,18 +48,19 @@ async function pairedEntries(
   }
   for (const entry of page.entries) {
     for (const pair of toolPairs(entry)) {
-      // Pair page-local tools in reading order; requests share the bounded history process.
-      // oxlint-disable-next-line no-await-in-loop
-      const paired =
-        tools.get(pair.toolCallId)?.[pair.kind] ??
-        (await index.entry({
+      let paired: HistoryEntry | null | undefined = tools.get(pair.toolCallId)?.[pair.kind];
+      if (!paired) {
+        // Pair page-local tools in reading order; requests share the bounded history process.
+        // oxlint-disable-next-line no-await-in-loop
+        paired = await index.entry({
           runId: input.runId,
           index: input.index,
           ...pair,
           terminalEntryId: input.terminalEntryId,
           endedAt: input.endedAt,
           signal: input.signal,
-        }));
+        });
+      }
       if (paired && inBoundary(paired, page, input)) {
         entries.set(paired.id, paired);
       }
@@ -125,7 +126,7 @@ export async function indexedHistory(
     .filter((item) =>
       (item.entryIds ?? [item.id]).some((id) => visible.has(id.split(":")[0] ?? "")),
     )
-    .map((item) => ({ ...item, load: () => fullItem(index, input, entries, item) }));
+    .map((item) => detailLoader(item, () => fullItem(index, input, entries, item)));
   return {
     history: {
       ...history,
@@ -138,4 +139,11 @@ export async function indexedHistory(
     },
     page,
   };
+}
+
+function detailLoader(
+  item: AgentHistoryItem,
+  load: () => Promise<AgentHistoryItem>,
+): AgentHistoryItem {
+  return { ...item, load };
 }

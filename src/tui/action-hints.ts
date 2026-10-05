@@ -123,7 +123,7 @@ export function actionHints(
         for (const [row, line] of lines.entries()) {
           const visible = stripTerminalSequences(line).trimEnd();
           const shown = clipped
-            ? visible.slice(0, Math.max(0, visible.length - (ellipsis?.length ?? 0)))
+            ? visible.slice(0, Math.max(0, visible.length - ellipsis.length))
             : visible;
           const from = source.indexOf(shown, offset);
           if (shown.length === 0 || from < 0) {

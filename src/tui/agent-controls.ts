@@ -16,10 +16,16 @@ import {
   type OutgoingMessage,
   type ExecuteControl,
 } from "./view-model.ts";
-import { AgentTaskStore } from "./task-store.ts";
-import { ViewSession } from "./view-session.ts";
+import type { AgentTaskStore } from "./task-store.ts";
+import type { ViewSession } from "./view-session.ts";
 import { hasText, errorText } from "./text-values.ts";
 const DIRECTION_MESSAGE = "subagent-human-direction";
+function trackedDiff(diff: string, code: number): string | undefined {
+  if (code !== 0) {
+    return;
+  }
+  return hasText(diff) ? diff : "No tracked changes.";
+}
 interface ControlEffects {
   readonly execute: ExecuteControl;
   readonly changed: () => void;
@@ -36,25 +42,28 @@ type SendGate =
   | { readonly kind: "send" }
   | { readonly kind: "ignore" }
   | { readonly kind: "notice"; readonly notice: NonNullable<AgentVisit["notice"]> };
+function savedSessionUnavailable(task: Readonly<AgentTask>): boolean {
+  return task.child.missingSession === true || !hasText(task.child.sessionFile);
+}
+function missingProfile(task: Readonly<AgentTask>, explicit: boolean): boolean {
+  return explicit && task.child.state !== "live" && !task.child.launch;
+}
 function inactiveGate(task: Readonly<AgentTask>, explicit: boolean): SendGate {
   const liveQuestion = task.question !== undefined && questionProcessAlive(task.question);
-  if (task.child.state !== "live" && !liveQuestion && !explicit) {
+  const inactive = task.child.state !== "live";
+  if (inactive && !liveQuestion && !explicit) {
     return {
       kind: "notice",
       notice: { continue: task.child.state === "blocked" ? "blocked" : "finished" },
     };
   }
-  if (
-    !liveQuestion &&
-    task.child.state !== "live" &&
-    (task.child.missingSession === true || !hasText(task.child.sessionFile))
-  ) {
+  if (!liveQuestion && inactive && savedSessionUnavailable(task)) {
     return {
       kind: "notice",
       notice: "The saved conversation is unavailable. No agent was started; your draft is kept.",
     };
   }
-  if (explicit && task.child.state !== "live" && !task.child.launch) {
+  if (missingProfile(task, explicit)) {
     return {
       kind: "notice",
       notice: `This older run has no saved profile. Inspect it, then use agent_runs continue with agent: ${JSON.stringify(task.child.agent)} to explicitly choose the current profile. Your draft is kept.`,
@@ -134,6 +143,19 @@ export class AgentControls {
       { triggerTurn: false },
     );
   }
+  private acceptSend(
+    key: string,
+    task: Readonly<AgentTask>,
+    text: string,
+    explicit: boolean,
+  ): boolean {
+    const gate = sendGate(task, this.store.visit(key), text, explicit);
+    if (gate.kind === "notice") {
+      this.store.visit(key).notice = gate.notice;
+      this.effects.changed();
+    }
+    return gate.kind === "send";
+  }
   async send(key: string, text: string, continueExplicitly = false): Promise<void> {
     if (!hasText(text.trim()) || !this.ready(key)) {
       return;
@@ -145,12 +167,7 @@ export class AgentControls {
     if (!task) {
       return;
     }
-    const gate = sendGate(task, visit, text, continueExplicitly);
-    if (gate.kind !== "send") {
-      if (gate.kind === "notice") {
-        visit.notice = gate.notice;
-        this.effects.changed();
-      }
+    if (!this.acceptSend(key, task, text, continueExplicitly)) {
       return;
     }
     const draft = { draft: visit.draft, quote: visit.quote, text };
@@ -254,7 +271,7 @@ export class AgentControls {
     if (!this.session.live(generation)) {
       return;
     }
-    const accepted = receipt.accepted === true || receipt.delivered === true;
+    const accepted = receipt.accepted === true || receipt.delivered;
     sent.status = accepted ? "waiting" : "unconfirmed";
     sent.reason = receipt.reason;
     if (accepted) {
@@ -328,7 +345,7 @@ export class AgentControls {
       title: `Working tree changes · ${cwd}`,
       timestamp: Date.now(),
       text: "This is the working tree, not a claim that this child made every change. Untracked files are not included; inspect write/tool results for their full content.",
-      diff: result.code === 0 ? (hasText(diff) ? diff : "No tracked changes.") : undefined,
+      diff: trackedDiff(diff, result.code),
       details: result.code === 0 ? undefined : readableText(result.stderr),
     };
   }

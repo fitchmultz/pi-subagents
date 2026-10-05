@@ -184,7 +184,8 @@ export class AgentTaskStore {
     }
     return tasks;
   }
-  private retainDrafts(tasks: Map<string, AgentTask>, rows: readonly HistoryRunRow[]): void {
+  private retainedTasks(rows: readonly HistoryRunRow[]): Map<string, AgentTask> {
+    const tasks = this.latestTasks(rows);
     for (const [key, visit] of this.visits) {
       const empty =
         !hasText(visit.draft) && !visit.quote && visit.outbox.length === 0 && this.pinned !== key;
@@ -196,10 +197,10 @@ export class AgentTaskStore {
         tasks.set(key, this.unavailableTask(key, row));
       }
     }
+    return tasks;
   }
   browsePage(rows: readonly HistoryRunRow[]): void {
-    const tasks = this.latestTasks(rows);
-    this.retainDrafts(tasks, rows);
+    const tasks = this.retainedTasks(rows);
     for (const key of [this.selectedKey, this.pinned]) {
       if (!hasText(key)) {
         continue;
@@ -325,11 +326,25 @@ export class AgentTaskStore {
       candidate.key === task.key ? task : candidate,
     );
   }
+  releaseSelected(): void {
+    for (const task of [...this.tasks, ...this.dockTasks]) {
+      if (task.key === this.selectedKey) {
+        task.history = [];
+        task.historyIds = [];
+        task.page = undefined;
+        task.finalId = undefined;
+        task.historyLoading = false;
+      }
+    }
+    this.selectedKey = undefined;
+  }
+  private rootForKey(key: string, current: Readonly<AgentTask> | undefined): string | undefined {
+    return current?.run.rootRunId ?? this.state.ownedRuns?.get(key.split(":")[0] ?? "")?.rootRunId;
+  }
   /** Browse SQLite is not authority: recheck this lineage before sending or stopping. */
   refreshSelected(key: string, ownerSessionId: string | undefined): void {
     const current = this.task(key),
-      root =
-        current?.run.rootRunId ?? this.state.ownedRuns?.get(key.split(":")[0] ?? "")?.rootRunId;
+      root = this.rootForKey(key, current);
     if (!hasText(root)) {
       return;
     }

@@ -74,6 +74,9 @@ export class ConversationViewport implements Component {
     const initial = this.source.initialVisit;
     const unread = firstUnread(task.historyIds, initial.readThrough);
     this.restoreAnchor = unread !== undefined ? { id: unread, line: 0 } : initial.anchor;
+    this.restoreFinal(task);
+  }
+  private restoreFinal(task: Readonly<AgentTask>): void {
     if (!this.restoreAnchor && task.finalId !== undefined) {
       this.restoreAnchor = { id: task.finalId, line: 0 };
       // The finished report is the starting point; earlier activity stays available above it.
@@ -97,7 +100,7 @@ export class ConversationViewport implements Component {
     this.restoreAnchor = undefined;
   }
   private visibleRead(
-    task: ReadonlyInput<AgentTask>,
+    task: Readonly<AgentTask>,
   ): { id: string; index: number; sequence: number } | undefined {
     const seen = new Set(
       this.cards.lines
@@ -117,18 +120,14 @@ export class ConversationViewport implements Component {
     const sequence = task.page?.entries.find((record) => record.id === nativeId)?.sequence;
     return sequence === undefined ? undefined : { id, index, sequence };
   }
-  private recordRead(): void {
-    if (this.source.detail() || this.source.loading() || this.initialPosition) {
+  private advanceRead(task: Readonly<AgentTask> | undefined): void {
+    if (!task) {
       return;
     }
-    const task = this.source.task(),
-      visit = this.source.visit();
-    visit.anchor = this.scroll.isFollowingEnd ? undefined : this.anchor();
-    const read = task && this.visibleRead(task);
+    const visit = this.source.visit(),
+      read = this.visibleRead(task);
     const priorIndex =
-      typeof visit.readThrough === "string"
-        ? (task?.historyIds.indexOf(visit.readThrough) ?? -1)
-        : -1;
+      typeof visit.readThrough === "string" ? task.historyIds.indexOf(visit.readThrough) : -1;
     if (
       read &&
       (read.sequence > this.readSequence ||
@@ -137,6 +136,15 @@ export class ConversationViewport implements Component {
       visit.readThrough = read.id;
       this.readSequence = read.sequence;
     }
+  }
+  private recordRead(): void {
+    if (this.source.detail() || this.source.loading() || this.initialPosition) {
+      return;
+    }
+    const task = this.source.task(),
+      visit = this.source.visit();
+    visit.anchor = this.scroll.isFollowingEnd ? undefined : this.anchor();
+    this.advanceRead(task);
     visit.readThrough ??= null;
     if (this.scroll.isFollowingEnd) {
       visit.seenActivityAt = task?.child.activity?.lastActivityAt ?? Date.now();

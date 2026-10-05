@@ -148,7 +148,7 @@ export class HistoryCards {
   clear(): void {
     this.components.clear();
   }
-  dispatch(id: string, event: TuiMouseEvent): void {
+  dispatch(id: string, event: Readonly<TuiMouseEvent>): void {
     this.components.get(id)?.component.handleMouse?.(event);
   }
   private prune(items: readonly AgentHistoryItem[]): void {
@@ -257,39 +257,55 @@ export class HistoryCards {
     c.addChild(new UserMessageComponent(item.text, getMarkdownTheme(), 1));
     return c;
   }
+  private nativeTool(item: AgentHistoryItem): ToolExecutionComponent | undefined {
+    const fallback = {
+      renderCall: () =>
+        new Text(this.theme.fg("toolTitle", this.theme.bold(readableText(item.title))), 0, 0),
+    };
+    const options = { compactView: true, showImages: false };
+    if (item.call) {
+      const call = item.call;
+      return new ToolExecutionComponent(
+        call.name,
+        call.id,
+        call.arguments,
+        options,
+        this.toolDefinitions.get(call.name) ?? fallback,
+        this.tui,
+        this.cwd(),
+      );
+    }
+    if (item.result) {
+      const result = item.result;
+      return new ToolExecutionComponent(
+        result.toolName,
+        result.toolCallId,
+        {},
+        options,
+        fallback,
+        this.tui,
+        this.cwd(),
+      );
+    }
+    return;
+  }
   private tool(
     item: AgentHistoryItem,
     presentation: { readonly expanded: boolean; readonly detail: boolean },
   ): Component {
     const c = new Container(),
-      call = item.call,
-      result = item.result;
-    if (!call && !result) {
+      result = item.result,
+      tool = this.nativeTool(item);
+    if (!tool) {
       return c;
     }
-    const name = call?.name ?? result?.toolName ?? "";
-    const definition = call ? this.toolDefinitions.get(name) : undefined;
-    const fallback = {
-      renderCall: () =>
-        new Text(this.theme.fg("toolTitle", this.theme.bold(readableText(item.title))), 0, 0),
-    };
-    const toolOptions = { compactView: true, showImages: false };
-    const tool = new ToolExecutionComponent(
-      name,
-      call?.id ?? result?.toolCallId ?? "",
-      call?.arguments ?? {},
-      toolOptions,
-      definition ?? fallback,
-      this.tui,
-      this.cwd(),
-    );
     // Saved data only: execution/args-complete hooks would invent timing or re-read today's files.
     if (result) {
       tool.updateResult(result);
     }
     tool.setExpanded(presentation.expanded);
     c.addChild(tool);
-    if (presentation.detail && hasText(item.diff) && call?.name !== "edit") {
+    if (presentation.detail && hasText(item.diff) && item.call?.name !== "edit") {
       c.addChild(new Text(renderDiff(item.diff), 0, 0));
     }
     if (!result) {

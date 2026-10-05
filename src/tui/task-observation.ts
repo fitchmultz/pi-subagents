@@ -5,7 +5,7 @@ import type {
   ReadonlyInput,
 } from "../shared/types.ts";
 import { agentTaskLabel, type AgentTask, type AgentVisit } from "./view-model.ts";
-type Child = HistoryRunRow["children"][number];
+type Child = ReadonlyInput<HistoryRunRow["children"][number]>;
 type Task = Readonly<AgentTask>;
 export function selectedChild(child: Child, prior: Task, updatedAt: number): Child {
   return {
@@ -32,13 +32,16 @@ export function observedLabel(child: Child, prior: Task | undefined, sameAttempt
 export function cachedHistory(
   prior: Task | undefined,
 ): Pick<AgentTask, "history" | "historyIds" | "page" | "historyLoading" | "finalId" | "replied"> {
+  if (!prior) {
+    return { history: [], historyIds: [], historyLoading: false, replied: false };
+  }
   return {
-    history: prior?.history ?? [],
-    historyIds: prior?.historyIds ?? [],
-    page: prior?.page,
-    historyLoading: prior?.historyLoading ?? false,
-    finalId: prior?.finalId,
-    replied: prior?.replied ?? false,
+    history: prior.history,
+    historyIds: prior.historyIds,
+    page: prior.page,
+    historyLoading: prior.historyLoading,
+    finalId: prior.finalId,
+    replied: prior.replied,
   };
 }
 export function observedConfiguration(

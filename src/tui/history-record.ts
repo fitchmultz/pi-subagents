@@ -167,27 +167,41 @@ function isStopReason(value: string): value is AssistantMessage["stopReason"] {
     value === "deferred"
   );
 }
-function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage | undefined {
-  if (
-    typeof value.toolCallId !== "string" ||
-    typeof value.toolName !== "string" ||
-    typeof value.isError !== "boolean" ||
-    typeof value.timestamp !== "number" ||
-    !Array.isArray(value.content)
-  ) {
+const toolResultFields = Type.Object({
+  toolCallId: Type.String(),
+  toolName: Type.String(),
+  isError: Type.Boolean(),
+  timestamp: Type.Number(),
+});
+function toolResultContent(value: unknown): ToolResultMessage["content"] | undefined {
+  if (!Array.isArray(value)) {
     return;
   }
   const content: ToolResultMessage["content"] = [];
-  for (const part of value.content) {
-    if (Check(text, part)) {
+  for (const part of value) {
+    if (Check(text, part) || Check(image, part)) {
       content.push({ ...part });
-    } else if (Check(image, part)) {
-      content.push({ ...part });
+    } else if (
+      isRecord(part) &&
+      part.type === "image" &&
+      part.data === undefined &&
+      typeof part.mimeType === "string"
+    ) {
+      // Indexed previews intentionally omit image bytes. This display-only adapter tells native cards an image exists; it is never persisted or treated as a validated full record.
+      content.push({ type: "image", data: "", mimeType: part.mimeType });
     } else {
       return;
     }
   }
-  if (value.details !== undefined && !isJson(value.details)) {
+  return content;
+}
+function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage | undefined {
+  const content = toolResultContent(value.content),
+    details = value.details;
+  if (!Check(toolResultFields, value)) {
+    return;
+  }
+  if (!content || (details !== undefined && !isJson(details))) {
     return;
   }
   return {
@@ -197,7 +211,7 @@ function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage
     isError: value.isError,
     timestamp: value.timestamp,
     content,
-    details: value.details,
+    details,
   };
 }
 function assistantPreview(
@@ -226,39 +240,52 @@ function assistantPreview(
     errorMessage: typeof value.errorMessage === "string" ? value.errorMessage : undefined,
   };
 }
+function bashMessage(
+  value: Readonly<Record<string, unknown>>,
+): Extract<HistoryNativeMessage, { role: "bashExecution" }> | undefined {
+  if (typeof value.command !== "string" || typeof value.output !== "string") {
+    return;
+  }
+  return {
+    role: "bashExecution",
+    command: value.command,
+    output: value.output,
+    exitCode: typeof value.exitCode === "number" ? value.exitCode : undefined,
+    cancelled: value.cancelled === true,
+    truncated: value.truncated === true,
+    timestamp: typeof value.timestamp === "number" ? value.timestamp : 0,
+  };
+}
 function observedMessage(
   value: unknown,
 ): Extract<DisplayEntry, { type: "message" }>["message"] | undefined {
   if (!isRecord(value)) {
     return;
   }
-  if (value.role === "assistant") {
-    return assistant(value) ?? assistantPreview(value);
+  switch (value.role) {
+    case "assistant":
+      return assistant(value) ?? assistantPreview(value);
+    case "toolResult":
+      return toolResult(value);
+    case "user":
+      return { role: "user", content: value.content };
+    case "bashExecution":
+      return bashMessage(value);
+    default:
+      return;
   }
-  if (value.role === "toolResult") {
-    return toolResult(value);
-  }
-  if (value.role === "user") {
-    return { role: "user", content: value.content };
-  }
-  if (
-    value.role === "bashExecution" &&
-    typeof value.command === "string" &&
-    typeof value.output === "string"
-  ) {
-    return {
-      role: "bashExecution",
-      command: value.command,
-      output: value.output,
-      exitCode: typeof value.exitCode === "number" ? value.exitCode : undefined,
-      cancelled: value.cancelled === true,
-      truncated: value.truncated === true,
-      timestamp: typeof value.timestamp === "number" ? value.timestamp : 0,
-    };
-  }
-  return;
 }
-
+function messageEntry(
+  value: Readonly<Record<string, unknown>>,
+  base: { readonly id: string; readonly timestamp: string },
+): DisplayEntry | undefined {
+  const message = observedMessage(value.message);
+  const native =
+    isRecord(value.message) && value.message.role === "assistant"
+      ? assistant(value.message)
+      : undefined;
+  return message ? { ...base, type: "message", message, native } : undefined;
+}
 /** Validate only display facts; an indexed observation is never invented owner/session metadata. */
 export function displayEntry(value: unknown): DisplayEntry | undefined {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.timestamp !== "string") {
@@ -266,12 +293,7 @@ export function displayEntry(value: unknown): DisplayEntry | undefined {
   }
   const base = { id: value.id, timestamp: value.timestamp };
   if (value.type === "message") {
-    const message = observedMessage(value.message);
-    const native =
-      isRecord(value.message) && value.message.role === "assistant"
-        ? assistant(value.message)
-        : undefined;
-    return message ? { ...base, type: "message", message, native } : undefined;
+    return messageEntry(value, base);
   }
   if (value.type === "custom_message" && typeof value.customType === "string") {
     return {

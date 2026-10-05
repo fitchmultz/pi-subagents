@@ -1,7 +1,6 @@
 import type {
   SubagentState,
   HistoryPageInput,
-  HistoryPage,
   HistoryRunPage,
   HistoryIndexHandle,
   HistoryEntry,
@@ -10,8 +9,8 @@ import { runHistoryIndex } from "../runs/shared/history-index.ts";
 import { indexedHistory, readableText, type AgentHistoryItem } from "./agent-history.ts";
 import type { AgentTask } from "./view-model.ts";
 import type { HistorySelection } from "./view-ports.ts";
-import { AgentTaskStore } from "./task-store.ts";
-import { ViewSession } from "./view-session.ts";
+import type { AgentTaskStore } from "./task-store.ts";
+import type { ViewSession } from "./view-session.ts";
 import { hasText, errorText } from "./text-values.ts";
 interface BrowseRequest {
   readonly generation: number;
@@ -61,6 +60,23 @@ async function anchorPaging(
   return entry ? { after: Math.max(0, entry.sequence - 1) } : undefined;
 }
 
+async function selectedHistory(
+  index: HistoryIndexHandle,
+  input: HistoryPageInput,
+  paging: Paging,
+  anchor: string | null | undefined,
+): Promise<HistorySelection> {
+  const marker = await readMarker(index, input),
+    selectedPaging = (await anchorPaging(index, input, anchor, marker)) ?? paging;
+  const result = await indexedHistory(index, { ...input, limit: 100, ...selectedPaging });
+  const latestPage =
+    selectedPaging.after !== undefined
+      ? !result.page.hasMore
+      : selectedPaging.before === undefined && selectedPaging.cursor === undefined;
+  const unreadStart =
+    input.readThrough === null || input.readThrough === undefined ? -1 : undefined;
+  return { ...result, latestPage, readThroughSequence: marker?.sequence ?? unreadStart };
+}
 /** Browse requests own paging, subscriptions and stale-observation guards, never execution authority. */
 export class AgentBrowser {
   private refreshPromise?: Promise<void>;
@@ -272,19 +288,11 @@ export class AgentBrowser {
     }
     const input = this.store.historyInput(task),
       index = await runHistoryIndex(this.state);
-    const marker = await readMarker(index, input),
-      selectedPaging = (await anchorPaging(index, input, anchor, marker)) ?? paging;
-    const result = await indexedHistory(index, { ...input, limit: 100, ...selectedPaging });
+    const result = await selectedHistory(index, input, paging, anchor);
     if (!this.session.live(generation) || this.store.task(key)?.run.runId !== task.run.runId) {
       return;
     }
-    const latestPage =
-      selectedPaging.after !== undefined
-        ? !result.page.hasMore
-        : selectedPaging.before === undefined && selectedPaging.cursor === undefined;
-    const unreadStart =
-      input.readThrough === null || input.readThrough === undefined ? -1 : undefined;
-    return { ...result, latestPage, readThroughSequence: marker?.sequence ?? unreadStart };
+    return result;
   }
   async savedResult(key: string, id: string): Promise<AgentHistoryItem> {
     const task = this.store.task(key),
