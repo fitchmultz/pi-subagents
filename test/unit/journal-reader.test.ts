@@ -13,6 +13,7 @@ import {
   JsonProjection,
   NativeJournal,
   readOutputPage,
+  readJsonProjection,
 } from "../../src/shared/journal-reader.ts";
 import { readNativeUsage, snapshotNativeBaseline } from "../../src/runs/shared/native-usage.ts";
 
@@ -68,6 +69,24 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
 test("sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records", (t) => {
   const root = temporary(t),
     file = path.join(root, "native.jsonl");
+  const ownerFile = path.join(root, "owner.json");
+  fs.writeFileSync(ownerFile, "{}");
+  const failure = new Error("original projection failure");
+  failure.toString = () => {
+    throw new Error("broken error stringifier");
+  };
+  assert.throws(
+    () =>
+      readJsonProjection(ownerFile, () => {
+        throw failure;
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof SyntaxError);
+      assert.equal(error.cause, failure);
+      assert.match(error.message, /original projection failure/);
+      return true;
+    },
+  );
   const original =
     '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
   fs.writeFileSync(file, original);
