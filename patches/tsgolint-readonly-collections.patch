@@ -1,8 +1,8 @@
 diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-index a55c730..1590568 100644
+index a55c730..e3f055c 100644
 --- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 +++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-@@ -136,6 +136,70 @@ func propertyIsReadonly(typeChecker *checker.Checker, property *ast.Symbol) bool
+@@ -136,6 +136,113 @@ func propertyIsReadonly(typeChecker *checker.Checker, property *ast.Symbol) bool
  	return checker.GetDeclarationModifierFlagsFromSymbol(property)&ast.ModifierFlagsReadonly != 0
  }
  
@@ -31,15 +31,58 @@ index a55c730..1590568 100644
 +	opts readonlynessOptions,
 +	seenTypes map[*checker.Type]struct{},
 +) readonlyness {
-+	forEach := checker.Checker_getPropertyOfType(typeChecker, t, "forEach")
-+	if !nativeCollectionMember(program, forEach) {
-+		return readonlynessUnknown
-+	}
 +	// Freezing method properties does not remove collection mutation operations.
 +	for _, name := range []string{"set", "add", "delete", "clear"} {
 +		if nativeCollectionMember(program, checker.Checker_getPropertyOfType(typeChecker, t, name)) {
 +			return readonlynessMutable
 +		}
++	}
++	// Projected native getters and iterators still expose stored values even
++	// when a Pick/Omit facade has removed forEach.
++	iterator := utils.GetWellKnownSymbolPropertyOfType(t, "iterator", typeChecker)
++	members := []*ast.Symbol{iterator}
++	for _, name := range []string{"get", "keys", "values", "entries"} {
++		members = append(members, checker.Checker_getPropertyOfType(typeChecker, t, name))
++	}
++	for _, member := range members {
++		if !nativeCollectionMember(program, member) {
++			continue
++		}
++		memberType := checker.Checker_getTypeOfPropertyOfType(typeChecker, t, member.Name)
++		for _, part := range utils.UnionTypeParts(memberType) {
++			for _, signature := range utils.GetCallSignatures(typeChecker, part) {
++				result := typeChecker.GetReturnTypeOfSignature(signature)
++				payloads := []*checker.Type{result}
++				if member.Name != "get" {
++					if !utils.IsObjectType(result) || checker.Type_objectFlags(result)&checker.ObjectFlagsReference == 0 {
++						continue
++					}
++					arguments := checker.Checker_getTypeArguments(typeChecker, result)
++					if len(arguments) == 0 {
++						continue
++					}
++					payloads = arguments[:1]
++					// entries() and a map iterator create a fresh pair; check its
++					// stored key/value elements, not that pair's mutability.
++					resultSymbol := checker.Type_symbol(result)
++					if member.Name == "entries" || (member == iterator && resultSymbol != nil && resultSymbol.Name == "MapIterator") {
++						if checker.IsTupleType(arguments[0]) {
++							payloads = checker.Checker_getTypeArguments(typeChecker, arguments[0])
++						}
++					}
++				}
++				for _, payload := range payloads {
++					if _, seen := seenTypes[payload]; !seen &&
++						isTypeReadonlyRecurser(program, typeChecker, payload, opts, seenTypes) == readonlynessMutable {
++						return readonlynessMutable
++					}
++				}
++			}
++		}
++	}
++	forEach := checker.Checker_getPropertyOfType(typeChecker, t, "forEach")
++	if !nativeCollectionMember(program, forEach) {
++		return readonlynessUnknown
 +	}
 +	// The native forEach callback exposes the instantiated value and key types,
 +	// including through mapped Readonly facades. Method ownership is still
@@ -73,7 +116,7 @@ index a55c730..1590568 100644
  func isTypeReadonlyObject(
  	program *compiler.Program,
  	typeChecker *checker.Checker,
-@@ -143,6 +207,9 @@ func isTypeReadonlyObject(
+@@ -143,6 +250,9 @@ func isTypeReadonlyObject(
  	opts readonlynessOptions,
  	seenTypes map[*checker.Type]struct{},
  ) readonlyness {

@@ -96,10 +96,16 @@ The separate `tsgolint-readonly-collections.patch` closes those negative paths:
   their owning `Map`, `Set`, `ReadonlyMap`, or `ReadonlySet` interfaces. Local or
   foreign same-named types retain ordinary structural checks.
 - Reject native mutation operations even when a mapped facade makes the method
-  properties readonly.
+  properties readonly or `Pick`/`Omit` removes `forEach`.
 - Recursively inspect the instantiated native `forEach` callback's value/key types
   with the existing readonly checker and cycle tracking. This also works through
   outer `Readonly`, `Partial`, `Required`, `Pick`, and repository type aliases.
+- Check stored payloads exposed by preserved native `get`, `keys`, `values`,
+  `entries`, and `[Symbol.iterator]` signatures independently of `forEach`.
+  Iterator-created entry pairs are fresh wrappers: their stored key/value
+  elements must be readonly, not the pair itself. This stays qualified to actual
+  default-library collection members; ordinary callback results and same-named
+  application/package methods retain their existing semantics.
 - Retain ordinary method/property ownership checks: raw native readonly maps/sets
   still report under `treatMethodsAsReadonly: false`. No patch adds a blanket
   container allowance or changes general callback-result/purity semantics.
