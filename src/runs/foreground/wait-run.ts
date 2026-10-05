@@ -238,17 +238,17 @@ class RunWait {
 
   private readonly check = (): void => {
     const { deps, ctx, index } = this.input;
-    if (
-      deps.state.currentSessionId !== this.session ||
-      ctx.sessionManager.getSessionId() !== this.owner
-    ) {
-      this.finish({
-        status: "unavailable",
-        text: "The owning session changed. This wait ended without stopping the child.",
-      });
-      return;
-    }
     try {
+      if (
+        deps.state.currentSessionId !== this.session ||
+        ctx.sessionManager.getSessionId() !== this.owner
+      ) {
+        this.finish({
+          status: "unavailable",
+          text: "The owning session changed. This wait ended without stopping the child.",
+        });
+        return;
+      }
       const observation = observeWait(this.target, deps.state, this.owner, index);
       const outcome = this.observeOutcome(observation);
       if (outcome) {
