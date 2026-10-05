@@ -20,6 +20,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const revision = "eb9339115edde6811ca94c3433adf69ea9852880";
 const typescriptRevision = "2bd066d87f5bafd315be9f40889d0a60b9e58e0b";
 const patch = join(root, "patches/tsgolint-safe-call.patch");
+const readonlyPatch = join(root, "patches/tsgolint-readonly-collections.patch");
 const cache = join(root, "node_modules/.cache/pi-quality-engine");
 const binary = join(cache, "tsgolint");
 const manifestPath = join(cache, "manifest.json");
@@ -71,20 +72,28 @@ function prepareSources(source) {
       cpSync(join(tsSource, "internal/collections", name), join(collections, name));
     }
   }
-  run("git", ["apply", "--check", patch], source);
-  run("git", ["apply", patch], source);
+  run("git", ["apply", "--check", patch, readonlyPatch], source);
+  run("git", ["apply", patch, readonlyPatch], source);
 }
 
-function setup() {
+function parseCommand() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
     console.log(
-      "Usage: node scripts/setup-quality-engine.mjs [--force]\nBuild the pinned safe-call-corrected tsgolint (Git and Go >=1.26 required).\nExample: npm ci --ignore-scripts && node scripts/setup-quality-engine.mjs\nUse OXLINT_TSGOLINT_PATH=node_modules/.cache/pi-quality-engine/tsgolint with Oxlint.",
+      "Usage: node scripts/setup-quality-engine.mjs [--force]\nBuild the pinned declaration-safe and readonly-corrected tsgolint (Git and Go >=1.26 required).\nExample: npm ci --ignore-scripts && node scripts/setup-quality-engine.mjs\nUse OXLINT_TSGOLINT_PATH=node_modules/.cache/pi-quality-engine/tsgolint with Oxlint.",
     );
     return;
   }
   if (args.some((arg) => arg !== "--force")) {
     throw new Error("Unknown argument. Use --help for usage.");
+  }
+  return args.includes("--force");
+}
+
+function setup() {
+  const force = parseCommand();
+  if (force === undefined) {
+    return;
   }
   if (!["darwin", "linux"].includes(process.platform) || !["arm64", "x64"].includes(process.arch)) {
     throw new Error(`Unsupported build host: ${process.platform}/${process.arch}`);
@@ -93,10 +102,11 @@ function setup() {
     revision,
     typescriptRevision,
     patchSha256: digest(patch),
+    readonlyPatchSha256: digest(readonlyPatch),
     platform: process.platform,
     arch: process.arch,
   };
-  if (!args.includes("--force") && existsSync(manifestPath) && existsSync(binary)) {
+  if (!force && existsSync(manifestPath) && existsSync(binary)) {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     if (
       Object.entries(identity).every(([key, value]) => manifest[key] === value) &&

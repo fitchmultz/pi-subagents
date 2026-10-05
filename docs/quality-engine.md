@@ -37,11 +37,12 @@ Build inputs:
 - TypeScript Go submodule: `2bd066d87f5bafd315be9f40889d0a60b9e58e0b`
 - Upstream TypeScript patches: the ordered `patches/*.patch` at that exact tsgolint
   revision, applied as in its canonical `just init` build
-- Local correction: `patches/tsgolint-safe-call.patch`
+- Local corrections: `patches/tsgolint-safe-call.patch` and
+  `patches/tsgolint-readonly-collections.patch`
 - Dependencies: upstream `go.mod`, `go.sum`, `go.work`, and `go.work.sum`; build uses
   `-mod=readonly`, `-trimpath`, `-buildvcs=false`, and `CGO_ENABLED=0`
 
-The cache manifest records source/submodule revisions, the local patch SHA-256,
+The cache manifest records source/submodule revisions, both local patch SHA-256 hashes,
 host platform/architecture, Go version, and binary SHA-256. Setup rebuilds when
 inputs change or the cached executable's digest differs. `--force` rebuilds from
 fresh sources; `--help` documents invocation. Cache artifacts live under
@@ -61,3 +62,48 @@ release passes the complete matrix; version/schema acceptance alone is not proof
 
 The helper's file-path canonicalization is shared with other qualified rules, but
 this does not establish readonly-container behavior or justify readonly relaxations.
+
+## Readonly-container content correction
+
+With `treatMethodsAsReadonly: false`, this unsuppressed input reports:
+
+```ts
+export function inspect(value: ReadonlyMap<string, string>) {
+  return value;
+}
+```
+
+That is a method-ownership limitation, not a demonstrated primitive-map checker
+defect: TypeScript accepts `value.get = () => undefined`. `ReadonlySet.has` is also
+assignable. Upstream describes this as
+[working as intended](https://github.com/typescript-eslint/typescript-eslint/issues/8013).
+The option remains false; no container allowlist or method-ownership relaxation is added.
+
+Native CLI probes accept `Readonly<ReadonlyMap<string, string>>` and
+`Readonly<ReadonlySet<string>>`, whose method properties are actually readonly.
+They reject mutable `Map`, mutable `Set`, and `readonly string[][]`, while accepting
+`readonly (readonly string[])[]`.
+
+The unpatched rule also accepts `Readonly<Map<string, string>>` despite callable
+`set`, and accepts `Readonly<ReadonlyMap<string, { values: string[] }>>` despite
+mutable nested values. Independent compiler probes accept both `wrapped.set(...)`
+and `nested.get(...)?.values.push(...)`; these are genuine content-checking gaps.
+
+The separate `tsgolint-readonly-collections.patch` closes those negative paths:
+
+- Identify native collection members by actual default-library declarations and
+  their owning `Map`, `Set`, `ReadonlyMap`, or `ReadonlySet` interfaces. Local or
+  foreign same-named types retain ordinary structural checks.
+- Reject native mutation operations even when a mapped facade makes the method
+  properties readonly.
+- Recursively inspect the instantiated native `forEach` callback's value/key types
+  with the existing readonly checker and cycle tracking. This also works through
+  outer `Readonly`, `Partial`, `Required`, `Pick`, and repository type aliases.
+- Retain ordinary method/property ownership checks: raw native readonly maps/sets
+  still report under `treatMethodsAsReadonly: false`. Neither patch adds a blanket
+  container allowance or changes general callback-result/purity semantics.
+
+The native regression matrix accepts primitive/deeply readonly wrapped containers,
+including nested arrays, objects, maps, sets and recursive types, while rejecting
+mutable containers, keys, values, nested arrays and mutable attached callback state.
+This is an input-contract check, not proof of callback purity or runtime freezing.

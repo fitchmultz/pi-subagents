@@ -1,0 +1,85 @@
+diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
+index a55c730..1590568 100644
+--- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
++++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
+@@ -136,6 +136,70 @@ func propertyIsReadonly(typeChecker *checker.Checker, property *ast.Symbol) bool
+ 	return checker.GetDeclarationModifierFlagsFromSymbol(property)&ast.ModifierFlagsReadonly != 0
+ }
+ 
++func nativeCollectionMember(program *compiler.Program, property *ast.Symbol) bool {
++	if property == nil {
++		return false
++	}
++	for _, declaration := range property.Declarations {
++		parent := declaration.Parent
++		if parent == nil || parent.Kind != ast.KindInterfaceDeclaration ||
++			!utils.IsSourceFileDefaultLibrary(program, ast.GetSourceFileOfNode(declaration)) {
++			continue
++		}
++		switch parent.Name().Text() {
++		case "Map", "Set", "ReadonlyMap", "ReadonlySet":
++			return true
++		}
++	}
++	return false
++}
++
++func isTypeReadonlyCollection(
++	program *compiler.Program,
++	typeChecker *checker.Checker,
++	t *checker.Type,
++	opts readonlynessOptions,
++	seenTypes map[*checker.Type]struct{},
++) readonlyness {
++	forEach := checker.Checker_getPropertyOfType(typeChecker, t, "forEach")
++	if !nativeCollectionMember(program, forEach) {
++		return readonlynessUnknown
++	}
++	// Freezing method properties does not remove collection mutation operations.
++	for _, name := range []string{"set", "add", "delete", "clear"} {
++		if nativeCollectionMember(program, checker.Checker_getPropertyOfType(typeChecker, t, name)) {
++			return readonlynessMutable
++		}
++	}
++	// The native forEach callback exposes the instantiated value and key types,
++	// including through mapped Readonly facades. Method ownership is still
++	// checked on t by the ordinary object walk, not on the callback's third
++	// collection parameter.
++	forEachType := checker.Checker_getTypeOfPropertyOfType(typeChecker, t, "forEach")
++	for _, part := range utils.UnionTypeParts(forEachType) {
++		for _, signature := range utils.GetCallSignatures(typeChecker, part) {
++			parameters := checker.Signature_parameters(signature)
++			if len(parameters) == 0 {
++				continue
++			}
++			callback := checker.Checker_getTypeOfSymbol(typeChecker, parameters[0])
++			for _, callbackSignature := range utils.GetCallSignatures(typeChecker, callback) {
++				for index, parameter := range checker.Signature_parameters(callbackSignature) {
++					if index == 2 {
++						break
++					}
++					valueType := checker.Checker_getTypeOfSymbol(typeChecker, parameter)
++					if _, seen := seenTypes[valueType]; !seen &&
++						isTypeReadonlyRecurser(program, typeChecker, valueType, opts, seenTypes) == readonlynessMutable {
++						return readonlynessMutable
++					}
++				}
++			}
++		}
++	}
++	return readonlynessUnknown
++}
++
+ func isTypeReadonlyObject(
+ 	program *compiler.Program,
+ 	typeChecker *checker.Checker,
+@@ -143,6 +207,9 @@ func isTypeReadonlyObject(
+ 	opts readonlynessOptions,
+ 	seenTypes map[*checker.Type]struct{},
+ ) readonlyness {
++	if isTypeReadonlyCollection(program, typeChecker, t, opts, seenTypes) == readonlynessMutable {
++		return readonlynessMutable
++	}
+ 	properties := checker.Checker_getPropertiesOfType(typeChecker, t)
+ 	for _, property := range properties {
+ 		if opts.treatMethodsAsReadonly && property.Flags&ast.SymbolFlagsMethod != 0 {
