@@ -1,3 +1,10 @@
+/** Native streaming events expose a header before complete content is available. */
+export interface ChildMessageHeader {
+  readonly [key: string]: unknown;
+  readonly role: string;
+  readonly timestamp?: number;
+}
+
 /** Observations from native journals and external runners are not necessarily complete SDK messages. */
 export interface ObservedUsage {
   readonly input?: number;
