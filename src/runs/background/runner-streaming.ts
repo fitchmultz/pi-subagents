@@ -207,6 +207,8 @@ export async function runPiStreaming(
       },
     });
     // Native recovery and non-streaming providers can finalize text without publishing deltas.
+    // onOutput can change outputWritten while the child attempt is awaiting stream completion.
+    // oxlint-disable-next-line typescript/no-unnecessary-condition
     if (!outputWritten && result.finalOutput.length > 0) {
       fs.writeFileSync(outputFd, `${result.finalOutput}\n`);
     }
