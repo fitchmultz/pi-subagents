@@ -247,11 +247,18 @@ export interface ParentUsageRegistration {
     ctx: ExtensionContext,
     saved: Readonly<ReadonlyMap<string, PublishedReceipt>>,
   ) => boolean;
-  readonly attach: (
-    result: ReadonlyInput<SubagentExecutionResult>,
-    contributions: readonly UsageContribution[],
-    ctx: ExtensionContext,
-  ) => ReadonlyInput<SubagentExecutionResult>;
+  readonly attach: {
+    (
+      result: SubagentExecutionResult,
+      contributions: readonly UsageContribution[],
+      ctx: ExtensionContext,
+    ): SubagentExecutionResult;
+    (
+      result: ReadonlyInput<SubagentExecutionResult>,
+      contributions: readonly UsageContribution[],
+      ctx: ExtensionContext,
+    ): ReadonlyInput<SubagentExecutionResult>;
+  };
 }
 
 export function registerParentUsage(
@@ -290,6 +297,40 @@ export function registerParentUsage(
     };
   });
 
+  // Attachment preserves the caller's content array, including its native mutable contract.
+  function attach(
+    result: SubagentExecutionResult,
+    contributions: readonly UsageContribution[],
+    ctx: ExtensionContext,
+  ): SubagentExecutionResult;
+  function attach(
+    result: ReadonlyInput<SubagentExecutionResult>,
+    contributions: readonly UsageContribution[],
+    ctx: ExtensionContext,
+  ): ReadonlyInput<SubagentExecutionResult>;
+  function attach(
+    result: ReadonlyInput<SubagentExecutionResult>,
+    contributions: readonly UsageContribution[],
+    ctx: ExtensionContext,
+  ): ReadonlyInput<SubagentExecutionResult> {
+    const { usage: _usage, ...rest } = result;
+    const { parentUsage: _parentUsage, ...details } = result.details;
+    if (contributions.length === 0) {
+      return { ...rest, details };
+    }
+    // Required identity/conflict rejection precedes any optional host I/O.
+    const saved = toolReceipts.read(ctx.sessionManager.getSessionFile());
+    const pending = unrecorded(contributions, receipts.read(ctx.sessionManager, saved));
+    // Intent only. Top-level usage is added at final message_end, immediately before native persistence.
+    return {
+      ...rest,
+      details: {
+        ...details,
+        ...(pending.length > 0 ? { parentUsage: { contributions: pending } } : {}),
+      },
+    };
+  }
+
   return {
     isRecorded(
       contributions: readonly UsageContribution[],
@@ -298,27 +339,6 @@ export function registerParentUsage(
     ): boolean {
       return unrecorded(contributions, receipts.read(ctx.sessionManager, saved)).length === 0;
     },
-    attach(
-      result: ReadonlyInput<SubagentExecutionResult>,
-      contributions: readonly UsageContribution[],
-      ctx: ExtensionContext,
-    ): ReadonlyInput<SubagentExecutionResult> {
-      const { usage: _usage, ...rest } = result;
-      const { parentUsage: _parentUsage, ...details } = result.details;
-      if (contributions.length === 0) {
-        return { ...rest, details };
-      }
-      // Required identity/conflict rejection precedes any optional host I/O.
-      const saved = toolReceipts.read(ctx.sessionManager.getSessionFile());
-      const pending = unrecorded(contributions, receipts.read(ctx.sessionManager, saved));
-      // Intent only. Top-level usage is added at final message_end, immediately before native persistence.
-      return {
-        ...rest,
-        details: {
-          ...details,
-          ...(pending.length > 0 ? { parentUsage: { contributions: pending } } : {}),
-        },
-      };
-    },
+    attach,
   };
 }

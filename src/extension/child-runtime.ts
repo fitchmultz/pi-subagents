@@ -26,7 +26,7 @@ import { loadConfig } from "./config.ts";
 import { registerCompactSubagentTools } from "./compact-tools.ts";
 import { adaptFinalizedToolResult, registerToolResultAdapter } from "./tool-result.ts";
 import { renderSubagentResult } from "../tui/render.ts";
-import type { AsyncStatus, ReadonlyDetails, SubagentExecutionResult } from "../shared/types.ts";
+import type { AsyncStatus, ReadonlyDetails } from "../shared/types.ts";
 import type { ReadonlyInput } from "../shared/types/inputs.ts";
 import { registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";

@@ -320,7 +320,7 @@ export function registerMessageRenderers(pi: ExtensionAPI): void {
       return renderNotify(content, message.details ?? parseNotifyContent(content), options, theme);
     }),
   );
-  pi.registerMessageRenderer<unknown>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
+  pi.registerMessageRenderer(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
     const notice = parseControlNotice(message.details);
     if (!notice) {
       return;
