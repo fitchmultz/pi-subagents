@@ -121,7 +121,7 @@ export class RunQueries {
         : view.matchedChildIndexes;
     return {
       ...view,
-      matchedChildIndexes,
+      ...(matchedChildIndexes === undefined ? {} : { matchedChildIndexes }),
       children: view.children.map((child) => {
         const { source } = this.scope.child(view.runId, child.index);
         if (!source) {
