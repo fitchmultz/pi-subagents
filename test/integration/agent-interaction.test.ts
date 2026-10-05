@@ -255,7 +255,6 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
 	saveAsyncRunResult(changed.runId, { runtimeVersion: 2, id: changed.runId, state: "complete", timestamp: changed.startedAt + 1000,
 		results: [{ agent: "worker", sessionFile: changed.children[0].sessionFile, success: true, exitCode: 0, finalOutput: "Updated saved report" }] });
 	await index.refresh(changed.runId); await f.controller.refresh();
-	assert.ok(calls.includes(changed.runId), "changed terminal rows refresh their metadata");
 	await index.refresh();
 	assert.equal((await index.listRuns({ limit: 100 })).freshness.state, "current", "Observe publication before asserting unchanged terminal rows stop polling");
 	await f.controller.refresh();
@@ -266,6 +265,7 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
 		if (!published) void f.controller.refresh();
 		return published;
 	}, "changed terminal metadata is published in the controller before unchanged polling");
+	assert.ok(calls.includes(changed.runId), "changed terminal rows refresh their metadata");
 	await check(runs.slice(0, 3).map((run) => run.runId));
 	const questionRun = runs[5];
 	createSupervisorQuestion({ runId: questionRun.runId, index: 0, agent: "worker", ownerTarget: "fixture-owner", childTarget: "fixture-child",
@@ -1389,7 +1389,21 @@ for (const nativeAnswer of [false, true]) test(`completed structured-output hist
 	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), original, "viewing must not rewrite the native history");
 	assert.equal(f.calls.length, 0);
 	f.overlay.handleInput("\x1b"); await reopen;
+	const savedResult = f.controller.savedResult.bind(f.controller);
+	let reportHeld = false, releaseReport!: () => void;
+	const reportBarrier = new Promise<void>((resolve) => { releaseReport = resolve; });
+	t.mock.method(f.controller, "savedResult", async (...args) => {
+		const report = await savedResult(...args);
+		reportHeld = true;
+		await reportBarrier;
+		return report;
+	});
+	t.after(() => releaseReport());
 	const reopenLatest = f.controller.open();
+	await until(() => reportHeld, "real worker's selected canonical result returned");
+	await f.controller.refresh();
+	await f.controller.refresh();
+	releaseReport();
 	await historyReady(f);
 	assert.equal(plain(f.overlay, 120).match(/The login fix is ready\./g)?.length, 1, "reopening the saved Latest position keeps the canonical report visible exactly once");
 	f.overlay.handleInput("\x1b"); await reopenLatest;

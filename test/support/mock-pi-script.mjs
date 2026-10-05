@@ -302,6 +302,9 @@ async function main() {
 		await new Promise((resolve) => setTimeout(resolve, response.keepAliveAfterFinalMessageMs));
 	}
 
+	await new Promise((resolve, reject) => {
+		process.stdout.write("", (error) => error ? reject(error) : resolve());
+	});
 	process.exit(typeof response.exitCode === "number" ? response.exitCode : 0);
 }
 

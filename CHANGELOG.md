@@ -10,6 +10,7 @@
 - Resolve latest stable official Pi and maintained fork main once per qualification run, retaining native, Git production-build, packed-install and full CI contracts without below-floor skip routes.
 
 ### Fixed
+- Keep the selected Agents report visible when a background metadata refresh completes while its saved history is loading, preserving full reports, reading positions and stale-request guards.
 - Join in-flight Intercom startup and reconnect attempts before session shutdown completes, without stopping a broker shared by other sessions.
 - Keep Agents history responsive on Linux when many unrelated run directories exist: recursively watch only admitted run directories and recover live updates after an owned run directory is deleted or recreated.
 

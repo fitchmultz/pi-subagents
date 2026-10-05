@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { INTERCOM_DETACH_REQUEST_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../../src/shared/types.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, type AsyncStartedEvent } from "../../src/shared/types.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import type { MockPi } from "../support/helpers.ts";
@@ -118,50 +118,138 @@ describe("parallel agent execution", () => {
 	});
 
 	it("extends a top-level foreground parallel timeout", async () => {
-		mockPi.onCall({ delay: 450, output: "Slow result" });
+		const release = path.join(tempDir, "release-child");
+		const clockFile = path.join(tempDir, "runner-clock.json");
+		const savedEnv = { NODE_OPTIONS: process.env.NODE_OPTIONS, PI_TEST_RUNNER_CLOCK: process.env.PI_TEST_RUNNER_CLOCK };
+		const preload = new URL("../fixtures/runner-clock.mjs", import.meta.url).href;
+		mockPi.onCall({ waitForFile: release, delay: 450, output: "Slow result" });
 		mockPi.onCall({ output: "Second result" });
 		const bus = createEventBus();
 		let runId: string | undefined;
-		bus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => { runId = event.id; });
+		let launcherPid: number | undefined;
+		let runnerPid: number | undefined;
+		bus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
+			const started = event as AsyncStartedEvent;
+			runId = started.id;
+			launcherPid = started.pid;
+		});
 		const executor = makeExecutor([makeAgent("slow"), makeAgent("second")], tempDir, bus);
-
-		const resultPromise = executor.execute(
-			"parallel-extend",
-			{
-				tasks: [
-					{ agent: "slow", task: "Need more time" },
-					{ agent: "second", task: "Starts after extension" },
-				],
-				concurrency: 1,
-				timeoutMs: 250,
-			},
-			new AbortController().signal,
-			undefined,
-			makeMinimalCtx(tempDir),
-		) as Promise<any>;
-		const deadline = Date.now() + 5_000;
-		while (!runId || !fs.existsSync(path.join(getRunMetadataDir(runId), "launch.json"))) {
-			assert.ok(Date.now() < deadline, "owner publishes its extendable launch before the control request");
-			await new Promise((resolve) => setTimeout(resolve, 5));
+		let resultPromise: Promise<any> | undefined;
+		let result: any;
+		let completed = false;
+		let sequence = 0;
+		const readEvidence = (name: string) => {
+			const file = runId && path.join(getRunMetadataDir(runId), name);
+			return file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+		};
+		const status = () => JSON.parse(readEvidence("status.json") ?? "null");
+		const waitFor = async (check: () => unknown, message: string) => {
+			const deadline = Date.now() + 5_000;
+			while (!check()) {
+				assert.ok(Date.now() < deadline, message);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+		};
+		const clockCommand = (command: { tick: number } | { resume: true }) => {
+			fs.writeFileSync(`${clockFile}.tmp`, JSON.stringify({ sequence: ++sequence, ...command }));
+			fs.renameSync(`${clockFile}.tmp`, clockFile);
+		};
+		const tick = async (amount: number) => {
+			clockCommand({ tick: amount });
+			await waitFor(() => fs.existsSync(`${clockFile}.ack`)
+				&& JSON.parse(fs.readFileSync(`${clockFile}.ack`, "utf8")).sequence === sequence, "owner clock advances");
+			return JSON.parse(fs.readFileSync(`${clockFile}.ack`, "utf8")).now as number;
+		};
+		const alive = (pid: number | undefined) => {
+			if (!pid) return false;
+			try { process.kill(pid, 0); return true; }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+				throw error;
+			}
+		};
+		try {
+			process.env.NODE_OPTIONS = `${savedEnv.NODE_OPTIONS ?? ""} --import=${preload}`;
+			process.env.PI_TEST_RUNNER_CLOCK = clockFile;
+			try {
+				resultPromise = executor.execute(
+					"parallel-extend",
+					{
+						tasks: [
+							{ agent: "slow", task: "Need more time" },
+							{ agent: "second", task: "Starts after extension" },
+						],
+						concurrency: 1,
+						timeoutMs: 250,
+					},
+					new AbortController().signal,
+					undefined,
+					makeMinimalCtx(tempDir),
+				).then((value) => { result = value; return value; });
+				await waitFor(() => {
+					const current = status();
+					runnerPid = current?.pid ?? runnerPid;
+					return current?.runtimeVersion === 2 && current.state === "running"
+						&& current.timeoutAt && mockPi.callCount() === 1;
+				}, "actual owner deadline and first child are ready");
+				const initial = status();
+				assert.equal(initial.timeoutAt - initial.startedAt, 250);
+				const extension = await executor.execute(
+					"parallel-extend-control",
+					{ action: "extend", id: runId, extendMs: 1500 },
+					new AbortController().signal,
+					undefined,
+					makeMinimalCtx(tempDir),
+				) as any;
+				assert.equal(extension.isError, undefined, JSON.stringify(extension));
+				assert.match(extension.content[0]?.text ?? "", /Requested 1500ms more for run/);
+				await tick(100);
+				await waitFor(() => status().timeoutAt === initial.timeoutAt + 1500
+					&& (readEvidence("events.jsonl") ?? "").trim().split("\n").filter(Boolean)
+						.map((line) => JSON.parse(line)).some((event) => event.type === "subagent.run.extended"
+							&& event.runId === runId && event.timeoutAt === initial.timeoutAt + 1500),
+				"owner applies the requested extension");
+				assert.equal(await tick(350), initial.startedAt + 450, "owner crosses the original 250ms deadline");
+				assert.equal(status().state, "running");
+				assert.equal(status().timedOut, undefined);
+				assert.equal(mockPi.callCount(), 1, "queued second child has not started");
+				fs.writeFileSync(release, "go");
+				await waitFor(() => result, "parallel result settles after both real child exits");
+				await resultPromise;
+				assert.equal(result.isError, undefined, JSON.stringify(result));
+				assert.equal(result.details.results.length, 2);
+				for (const child of result.details.results) {
+					assert.equal(child.exitCode, 0);
+					assert.equal(child.agentProcessExit?.code, 0, "actual child process exited successfully");
+				}
+				assert.equal(mockPi.callCount(), 2);
+				completed = true;
+			} finally {
+				fs.writeFileSync(release, "cleanup");
+				if (!completed) {
+					// Switch back to native timers for cancellation if a clock assertion failed.
+					clockCommand({ resume: true });
+					try {
+						if (runnerPid && alive(runnerPid)) process.kill(runnerPid, "SIGTERM");
+						else if (alive(launcherPid)) process.kill(-launcherPid!, "SIGTERM");
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+					}
+				}
+				await waitFor(() => !alive(launcherPid && -launcherPid) && !alive(runnerPid), "owned launcher group and runner exit before fixture teardown");
+				await waitFor(() => result, "foreground wait settles after owner exit");
+				await resultPromise;
+			}
+		} catch (error) {
+			throw new Error(`Parallel extension failed: ${JSON.stringify({
+				result, status: readEvidence("status.json"), events: readEvidence("events.jsonl"), runnerErrors: readEvidence("runner-error.log"),
+			})}`, { cause: error });
+		} finally {
+			for (const [key, value] of Object.entries(savedEnv)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
 		}
-		const launch = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(runId), "launch.json"), "utf8"));
-		assert.equal(launch.runtimeVersion, 2);
-		assert.equal(launch.timeoutMs, 250);
-		const extension = await executor.execute(
-			"parallel-extend-control",
-			{ action: "extend", id: runId, extendMs: 1500 },
-			new AbortController().signal,
-			undefined,
-			makeMinimalCtx(tempDir),
-		) as any;
-		const result = await resultPromise;
-
-		assert.equal(extension.isError, undefined, JSON.stringify(extension));
-		assert.match(extension.content[0]?.text ?? "", /Requested 1500ms more for run/);
-		assert.equal(result.isError, undefined);
-		assert.equal(result.details.results.length, 2);
-		assert.equal(result.details.results[0].exitCode, 0);
-		assert.equal(result.details.results[1].exitCode, 0);
 	});
 
 	it("keeps a detached child's worktree until that child exits", async () => {
