@@ -1389,7 +1389,21 @@ for (const nativeAnswer of [false, true]) test(`completed structured-output hist
 	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), original, "viewing must not rewrite the native history");
 	assert.equal(f.calls.length, 0);
 	f.overlay.handleInput("\x1b"); await reopen;
+	const savedResult = f.controller.savedResult.bind(f.controller);
+	let reportHeld = false, releaseReport!: () => void;
+	const reportBarrier = new Promise<void>((resolve) => { releaseReport = resolve; });
+	t.mock.method(f.controller, "savedResult", async (...args) => {
+		const report = await savedResult(...args);
+		reportHeld = true;
+		await reportBarrier;
+		return report;
+	});
+	t.after(() => releaseReport());
 	const reopenLatest = f.controller.open();
+	await until(() => reportHeld, "real worker's selected canonical result returned");
+	await f.controller.refresh();
+	await f.controller.refresh();
+	releaseReport();
 	await historyReady(f);
 	assert.equal(plain(f.overlay, 120).match(/The login fix is ready\./g)?.length, 1, "reopening the saved Latest position keeps the canonical report visible exactly once");
 	f.overlay.handleInput("\x1b"); await reopenLatest;
