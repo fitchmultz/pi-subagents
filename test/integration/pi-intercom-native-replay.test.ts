@@ -20,16 +20,10 @@ import { after as afterAll, before as beforeAll, test, type TestContext } from "
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, AgentSession } from "@earendil-works/pi-coding-agent";
-import type {
-  SubagentState,
-  SubagentExecutionResult,
-  ChainStepConfig,
-} from "../../src/shared/types.ts";
+import type { SubagentState, SubagentExecutionResult } from "../../src/shared/types.ts";
 import type { SubagentParamsLike } from "../../src/runs/foreground/subagent-executor.ts";
 import { parseAsyncStatus, parseControlEvent } from "../../src/runs/background/run-schemas.ts";
 import { errorMessage } from "../../src/shared/unknown.ts";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { TSchema } from "typebox";
 import {
   isMessage,
   normalizeSessionInfo,
@@ -205,10 +199,22 @@ function at(value: unknown, ...keys: readonly string[]): unknown {
   return current;
 }
 
-function registeredTool(session: AgentSession, name: string): AgentTool<TSchema, unknown> {
+function registeredTool(session: AgentSession, name: string) {
   const tool = session.agent.state.tools.find((candidate) => candidate.name === name);
   assertDefined(tool);
-  return tool;
+  return {
+    async execute(id: string, params: Readonly<Record<string, unknown>>, signal: AbortSignal) {
+      const published: unknown = await tool.execute(id, params, signal);
+      const result = record(published);
+      const isError = result.isError;
+      assert.ok(isError === undefined || typeof isError === "boolean");
+      const content = records(result.content).map((part) => ({
+        type: text(part.type),
+        text: text(part.text),
+      }));
+      return { content, details: result.details, isError };
+    },
+  };
 }
 
 function executeIntercom(
@@ -220,6 +226,21 @@ function executeIntercom(
     params,
     new AbortController().signal,
   );
+}
+
+function observedSession(
+  sessions: readonly ReadonlyInput<SessionInfo>[],
+  match: (session: ReadonlyInput<SessionInfo>) => boolean,
+): ReadonlyInput<SessionInfo> {
+  const session = sessions.find(match);
+  assertDefined(session);
+  return session;
+}
+
+function sessionTopic(session: ReadonlyInput<SessionInfo>, topic: string) {
+  const update = session.topics?.find((candidate) => candidate.topic === topic);
+  assertDefined(update);
+  return update;
 }
 
 function requireApi(api: ExtensionAPI | undefined): ExtensionAPI {
@@ -522,9 +543,10 @@ test("native Doctor reports broker registration and loaded compiled identity, no
   };
   const before = await doctor();
   assert.match(before, /- bridge: responding\n- connection: connected/);
-  const registered = (await receiver.sender.listSessions()).find(
+  const registered = observedSession(
+    await receiver.sender.listSessions(),
     (peer) => peer.name === "doctor-loaded",
-  )!;
+  );
   assert.ok(before.includes(`- broker session id: ${registered.id}`));
   assert.ok(before.includes(`- Node: ${process.version}`));
   assert.ok(before.includes(`- process: ${process.pid} (${process.execPath})`));
@@ -566,9 +588,10 @@ test("native Doctor reports broker registration and loaded compiled identity, no
 
 test("native session renaming after startup updates its broker target without a model turn", async (t) => {
   const receiver = await makeSession(t, "rename-before");
-  const registered = (await receiver.sender.listSessions()).find(
+  const registered = observedSession(
+    await receiver.sender.listSessions(),
     (peer) => peer.name === "rename-before",
-  )!;
+  );
   receiver.session.setSessionName("rename-after");
   await waitFor(
     async () => (await receiver.sender.listSessions()).some((peer) => peer.name === "rename-after"),
@@ -643,7 +666,7 @@ test("native steady passive receipts do not rescan old history and still survive
     "registration after receipt restore",
   );
   const entriesBefore = manager.getEntries();
-  const oldIds = new Set(entriesBefore.map((entry: { id: string }) => entry.id));
+  const oldIds = new Set(entriesBefore.map((entry: { readonly id: string }) => entry.id));
   let fullReads = 0,
     oldLookups = 0,
     lookups = 0;
@@ -828,9 +851,9 @@ for (const { count, reload, repeat } of [
     ]);
     const running = receiver.session.prompt("Start abortable work");
     await waitFor(() => receiver.faux.state.callCount === 1, "active provider request");
-    // Populate the native steering queue in input order before clearing it.
-    // oxlint-disable-next-line no-await-in-loop
     for (let index = 0; index < count; index++) {
+      // Populate native handoffs in send order before the clear.
+      // oxlint-disable-next-line no-await-in-loop
       await receiver.send(`cleared-${index}`);
     }
     await waitFor(
@@ -877,9 +900,9 @@ for (const { count, reload, repeat } of [
           "the first batch is consumed before later directions",
         );
       }
-      // The second recovery batch must retain its original admission order.
-      // oxlint-disable-next-line no-await-in-loop
       for (let index = 0; index < count; index++) {
+        // Each new direction must be admitted before its successor.
+        // oxlint-disable-next-line no-await-in-loop
         await receiver.send(`second-abort-${index}`);
       }
       await waitFor(
@@ -960,9 +983,10 @@ test("native abort during restored busy handoff recovers cleared steers once", a
     fauxAssistantMessage("Recovered steers"),
   ]);
   const manager = receiver.session.sessionManager;
-  const from = (await receiver.sender.listSessions()).find(
+  const from = observedSession(
+    await receiver.sender.listSessions(),
     (peer) => peer.name === "sender-busy-handoff-abort",
-  )!;
+  );
   for (let index = 0; index < 101; index++) {
     const id = `busy-cleared-${index}`;
     receiver.sends.push(id);
@@ -1098,9 +1122,9 @@ for (const hasUI of [true, false]) {
     ]);
     const running = receiver.session.prompt("Start abortable work");
     await waitFor(() => receiver.faux.state.callCount === 1, "active provider");
-    // Recovery followers retain their send order at the native handoff.
-    // oxlint-disable-next-line no-await-in-loop
     for (let index = 0; index < 101; index++) {
+      // Recover followers in native admission order.
+      // oxlint-disable-next-line no-await-in-loop
       await receiver.send(`recovered-${index}`);
     }
     await waitFor(
@@ -1507,7 +1531,7 @@ test("native concurrent asks reserve one reply waiter after a completed ask", as
   await concurrent;
   const winningResult = results.find((result) => result.toolCallId === winner.content.text);
   assert.equal(winningResult?.isError, false);
-  assert.match(JSON.stringify(winningResult?.content), new RegExp(`answer:${winner.content.text}`));
+  assert.match(JSON.stringify(winningResult.content), new RegExp(`answer:${winner.content.text}`));
 
   await completedAsk("after");
   assert.deepEqual(
@@ -1789,7 +1813,7 @@ test("native recovery, compaction, and reload preserve receipts without replayin
   assert.ok(
     receiver.session.sessionManager
       .getEntries()
-      .some((entry: { type: string }) => entry.type === "compaction"),
+      .some((entry: { readonly type: string }) => entry.type === "compaction"),
   );
   await receiver.session.reload();
   assert.equal(
@@ -2395,7 +2419,7 @@ test("native context omits previously delivered idle attention for a finished ch
   assert.deepEqual(
     parent.session.sessionManager
       .getEntries()
-      .find((entry: { id: string }) => entry.id === original.id),
+      .find((entry: { readonly id: string }) => entry.id === original.id),
     original,
   );
   assert.deepEqual(parent.errors, []);
@@ -2542,7 +2566,7 @@ for (const scenario of ["question", "tool"] as const) {
         parent.session.sessionManager
           .getEntries()
           .some(
-            (entry: { type: string; customType?: string }) =>
+            (entry: { readonly type: string; readonly customType?: string }) =>
               entry.type === "custom_message" && entry.customType === "subagent_control_notice",
           ),
       "native attention custom message",
@@ -2574,8 +2598,8 @@ for (const scenario of ["question", "tool"] as const) {
       writeFileSync(release, "released");
     }
     assert.equal(event.currentTool, scenario === "question" ? "contact_supervisor" : "bash");
-    assert.ok(event.currentToolDurationMs >= controlConfig.needsAttentionAfterMs);
-    assert.ok(event.elapsedMs >= controlConfig.needsAttentionAfterMs);
+    assert.ok(numberValue(event.currentToolDurationMs) >= controlConfig.needsAttentionAfterMs);
+    assert.ok(numberValue(event.elapsedMs) >= controlConfig.needsAttentionAfterMs);
     assert.match(message.content, /agent_runs\(\{ action: "inspect"/);
     assert.doesNotMatch(message.content, /subagent\(\{ action: "(?:status|nudge|interrupt)"/);
     await pending;
@@ -2586,9 +2610,9 @@ for (const scenario of ["question", "tool"] as const) {
       assert.equal(listSupervisorQuestions(owner, name)[0]?.state, "answered");
     }
     await parent.session.waitForIdle();
-    for (const message of parent.session.messages) {
-      if (message.role === "assistant") {
-        assert.equal(message.stopReason, "stop", message.errorMessage);
+    for (const nativeMessage of parent.session.messages) {
+      if (nativeMessage.role === "assistant") {
+        assert.equal(nativeMessage.stopReason, "stop", nativeMessage.errorMessage);
       }
     }
     assert.deepEqual(parent.errors, []);
@@ -2738,11 +2762,14 @@ test("native broker-staged progress recovers terminal child identity across relo
     threadId: "subagent-progress:reload-run:worker:0",
   });
   assert.equal(receipt.queued, true, "idle replace is staged by the real private broker");
+  const completionId = "subagent-completion:reload-terminal";
+  const summary = "Work finished\x1b[31m\x00after";
   assert.equal(
     await deliverSubagentResultIntercomEvent(
       requireApi(api).events,
       buildSubagentResultIntercomPayload({
         to: "historical-reload",
+        completionId: "reload-terminal",
         runId: "reload-run",
         mode: "parallel",
         source: "async",
@@ -2751,7 +2778,7 @@ test("native broker-staged progress recovers terminal child identity across relo
             agent: "worker",
             index: 0,
             status: "completed",
-            summary: "Work finished",
+            summary,
             intercomTarget: "sender-historical-reload",
           },
           {
@@ -2767,6 +2794,11 @@ test("native broker-staged progress recovers terminal child identity across relo
     true,
   );
   await waitFor(() => parent.settled() === 1, "completion before broker release");
+  assert.equal(parent.visible(completionId).length, 1);
+  assert.ok(
+    text(parent.visible(completionId)[0].content).includes(summary),
+    "local child output preserves literal ESC/NUL rather than adopting peer-wire restrictions",
+  );
   await parent.sender.disconnect();
   const running = parent.session.prompt("Independent work while progress is deferred");
   await waitFor(() => started, "second native blocking tool");
@@ -2792,6 +2824,25 @@ test("native broker-staged progress recovers terminal child identity across relo
   await waitFor(() => parent.session.isIdle, "independent work after reload/disconnect");
   await sleep(600);
   assert.equal(parent.visible("broker-delayed-progress").length, 0);
+  assert.equal(parent.visible(completionId).length, 1, "reload must not replay a consumed result");
+  assert.ok(text(parent.visible(completionId)[0].content).includes(summary));
+  const checkpoints = parent.session.sessionManager
+    .getEntries()
+    .filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery");
+  assert.equal(
+    checkpoints.filter((entry) => at(entry, "data", "entry", "message", "id") === completionId)
+      .length,
+    1,
+    "the real local result is checkpointed once",
+  );
+  assert.ok(
+    checkpoints.some(
+      (entry) =>
+        at(entry, "data", "messageId") === "broker-delayed-progress" &&
+        at(entry, "data", "stage") === "discarded",
+    ),
+    "reload retains the obsolete-progress tombstone",
+  );
   assert.equal(
     parent.faux.state.callCount,
     3,
@@ -2933,7 +2984,7 @@ test("native obsolete-progress suppression leaves detached, successor, unknown, 
     "wrong-sender",
   ]) {
     assert.doesNotMatch(
-      parent.visible(id)[0].content,
+      text(parent.visible(id)[0].content),
       /Historical\/deferred progress|Originally sent:/,
       id,
     );
@@ -2994,13 +3045,14 @@ test("native contact_supervisor progress reaches the first tool boundary before 
     { reason: "progress_update", message: "A required migration changes the API decision." },
     new AbortController().signal,
   );
-  assert.equal(receipt.details.accepted, true);
+  const receiptDetails = record(receipt.details);
+  assert.equal(receiptDetails.accepted, true);
   // Broker acceptance is not recipient admission. Keep the first tool active
   // until public recipient status confirms this exact message's native handoff.
   await waitFor(
     async () =>
       (await parent.status()).includes(
-        `[${receipt.details.messageId}] (delivered to model queue; not yet consumed)`,
+        `[${text(receiptDetails.messageId)}] (delivered to model queue; not yet consumed)`,
       ),
     "progress admitted during first parent tool",
   );
@@ -3079,14 +3131,14 @@ test("native owning-parent human messages preserve context and real consumption,
   await waitFor(
     async () =>
       (await child.status()).includes(
-        `[${receipt.messageId}] (delivered to model queue; not yet consumed)`,
+        `[${text(receipt.messageId)}] (delivered to model queue; not yet consumed)`,
       ),
     "human direction admitted during child tool",
   );
   hold.resolve();
   await running;
   assert.equal(humanEntries().length, 1);
-  assert.equal(humanEntries()[0].details.message.id, "human-direction");
+  assert.equal(at(humanEntries()[0], "details", "message", "id"), "human-direction");
   assert.match(seen, /Direct user message to this agent/);
   assert.match(seen, /human origin, not peer advice/);
   assert.match(seen, /Keep the public API unchanged/);
@@ -3112,8 +3164,8 @@ test("native owning-parent human messages preserve context and real consumption,
     "ordinary peer delivery",
   );
   assert.equal(humanEntries().length, 1);
-  assert.match(child.visible("spoofed-peer-origin")[0].content, /From sender-human-child/);
-  assert.doesNotMatch(child.visible("spoofed-peer-origin")[0].content, /Direct user message/);
+  assert.match(text(child.visible("spoofed-peer-origin")[0].content), /From sender-human-child/);
+  assert.doesNotMatch(text(child.visible("spoofed-peer-origin")[0].content), /Direct user message/);
   assert.deepEqual(child.errors, []);
 });
 
@@ -3184,12 +3236,12 @@ for (const mode of ["single", "parallel", "chain"] as const) {
           description: "Wait for the real native child fixture",
           parameters: Type.Object({}),
           async execute(id, _args, signal, update, ctx) {
-            const first: ChainStepConfig = {
+            const first: NonNullable<SubagentParamsLike["tasks"]>[number] = {
               agent: "worker",
               task: "STEP_A keep working",
               output: false,
             };
-            const second: ChainStepConfig = {
+            const second: NonNullable<SubagentParamsLike["tasks"]>[number] = {
               agent: "worker",
               task: "STEP_B consume {previous}",
               output: false,
@@ -3199,7 +3251,12 @@ for (const mode of ["single", "parallel", "chain"] as const) {
               request = { tasks: [first, second], concurrency: 1 };
             }
             if (mode === "chain") {
-              request = { chain: [first, second] };
+              request = {
+                chain: [
+                  { agent: first.agent, task: first.task, output: false },
+                  { agent: second.agent, task: second.task, output: false },
+                ],
+              };
             }
             yielded = await executor.execute(
               id,
@@ -3246,7 +3303,9 @@ for (const mode of ["single", "parallel", "chain"] as const) {
     assertDefined(yielded);
     const runId = text(record(yielded.details.wait).runId);
     const resultPath = path.join(getRunMetadataDir(runId), "result.json");
-    assert.equal(ownedRunView(state.ownedRuns.get(runId), state).state, "live");
+    const owned = state.ownedRuns.get(runId);
+    assertDefined(owned);
+    assert.equal(ownedRunView(owned, state).state, "live");
     assert.equal(
       existsSync(resultPath),
       false,
@@ -3257,7 +3316,9 @@ for (const mode of ["single", "parallel", "chain"] as const) {
       () => existsSync(resultPath),
       "all original workflow steps publish a final result",
     );
-    const view = ownedRunView(state.ownedRuns.get(runId), state);
+    const completed = state.ownedRuns.get(runId);
+    assertDefined(completed);
+    const view = ownedRunView(completed, state);
     assert.equal(view.state, "completed");
     assert.equal(view.children.length, mode === "single" ? 1 : 2);
     for (const child of view.children) {
@@ -3418,7 +3479,14 @@ test("native concurrent selected stops survive one runner poll without stopping 
   process.env.PI_FEEDBACK_RELEASE_FILE = childRelease;
   process.env.PI_FEEDBACK_SCENARIO = "tool";
   const id = randomUUID();
-  saveQuestionOwner(id, "concurrent-stop-owner");
+  let pi: ExtensionAPI | undefined;
+  const owner = await makeSession(t, "concurrent-stop-owner", {
+    configure(api) {
+      pi = api;
+    },
+  });
+  const ownerId = owner.session.sessionManager.getSessionId();
+  saveQuestionOwner(id, ownerId);
   const started = executeAsyncChain(id, {
     chain: [
       {
@@ -3439,9 +3507,9 @@ test("native concurrent selected stops survive one runner poll without stopping 
       }),
     ],
     ctx: {
-      pi: { events: createEventBus() },
+      pi: requireApi(pi),
       cwd: directory,
-      currentSessionId: "concurrent-stop-owner",
+      currentSessionId: ownerId,
     },
     cwd: directory,
     sessionRoot: path.join(directory, "sessions"),
@@ -3455,7 +3523,7 @@ test("native concurrent selected stops survive one runner poll without stopping 
   const statusPath = path.join(text(started.details.asyncDir), "status.json"),
     resultPath = path.join(getRunMetadataDir(id), "result.json");
   const status = () =>
-    existsSync(statusPath) ? json(readFileSync(statusPath, "utf8")) : undefined;
+    existsSync(statusPath) ? parseAsyncStatus(json(readFileSync(statusPath, "utf8"))) : undefined;
   t.after(async () => {
     writeFileSync(pollRelease, "released");
     for (const index of [0, 1, 2]) {
@@ -3470,24 +3538,38 @@ test("native concurrent selected stops survive one runner poll without stopping 
       }
     }
   });
-  await waitFor(
-    () =>
-      status()?.steps?.length === 3 && status().steps.every((step) => step.currentTool === "bash"),
-    "three real native tools before the first control poll",
-  );
+  await waitFor(() => {
+    const current = status()?.steps;
+    return (
+      current !== undefined &&
+      current.length === 3 &&
+      current.every((step) => step.currentTool === "bash")
+    );
+  }, "three real native tools before the first control poll");
+  const steps = () => {
+    const current = status()?.steps;
+    assertDefined(current);
+    return current;
+  };
   await waitFor(() => existsSync(`${pollRelease}.held`), "the private runner's poll clock is held");
   assert.equal(existsSync(pollRelease), false);
-  const state = {
-    asyncJobs: new Map([
-      [id, { asyncId: id, asyncDir: text(started.details.asyncDir), status: "running" }],
-    ]),
-  };
+  const state = fixtureState(directory);
+  state.asyncJobs.set(id, {
+    asyncId: id,
+    asyncDir: text(started.details.asyncDir),
+    status: "running",
+  });
   const receipts = [interruptAsyncRun(state, id, 0), interruptAsyncRun(state, id, 1)];
-  assert.ok(receipts.every((receipt) => receipt && !receipt.isError));
+  assert.ok(receipts.every((receipt) => receipt !== null && receipt.isError !== true));
   writeFileSync(pollRelease, "released");
-  await waitFor(() => status().steps[1].status === "paused", "second selected child pauses");
-  await sleep(200);
-  const observed = status().steps.map((step) => ({
+  await waitFor(() => steps()[1].status === "paused", "second selected child pauses");
+  await waitFor(
+    () =>
+      steps()[0].agentProcessExit?.at !== undefined &&
+      steps()[1].agentProcessExit?.at !== undefined,
+    "both selected native agent process exits",
+  );
+  const observed = steps().map((step) => ({
     status: step.status,
     currentTool: step.currentTool,
     agentProcessExit: step.agentProcessExit,
@@ -3503,7 +3585,8 @@ test("native concurrent selected stops survive one runner poll without stopping 
     "both accepted selected stops must execute; an unrelated native child keeps working",
   );
   assert.ok(
-    observed[0].agentProcessExit?.at && observed[1].agentProcessExit?.at,
+    observed[0].agentProcessExit?.at !== undefined &&
+      observed[1].agentProcessExit?.at !== undefined,
     "paused agent processes have actual exit evidence",
   );
   assert.equal(observed[2].currentTool, "bash");
@@ -3511,7 +3594,7 @@ test("native concurrent selected stops survive one runner poll without stopping 
   writeFileSync(childRelease.replace("{index}", "2"), "released");
   await waitFor(() => existsSync(resultPath), "unselected child finishes normally");
   assert.deepEqual(
-    status().steps.map((step) => step.status),
+    steps().map((step) => step.status),
     ["paused", "paused", "complete"],
   );
   const receipt = json(readFileSync(`${childRelease.replace("{index}", "2")}.json`, "utf8"));
@@ -3623,21 +3706,23 @@ test("native aggregate topic snapshots remain complete across reload and ordinar
   await publisher.session.prompt("Seed");
   await publisher.session.waitForIdle();
   await call({ action: "publish", topic, message: "Prior valid state" });
-  const peers = [],
-    received = [];
+  const peers: InstanceType<typeof IntercomClient>[] = [];
+  const received: string[] = [];
   t.after(async () => {
     await Promise.all(peers.map((peer) => peer.disconnect()));
   });
   for (let index = 0; index < 4; index++) {
     const peer = new IntercomClient();
-    peer.on("message", (_from, message) => received.push(message.content.text));
+    peer.on("message", (_from: ReadonlyInput<SessionInfo>, message: ReadonlyInput<Message>) => {
+      received.push(message.content.text);
+    });
     // Publish peers in deterministic registration order for the frame-size fixture.
     // oxlint-disable-next-line no-await-in-loop
     await peer.connect({ name: `aggregate-peer-${index}`, cwd: root, model: "fixture" });
     peers.push(peer);
   }
-  const before = await peers[0].listSessions(),
-    own = before.find((session) => session.name === "aggregate-topic-publisher")!;
+  const before = await peers[0].listSessions();
+  const own = observedSession(before, (session) => session.name === "aggregate-topic-publisher");
   const { id, ...registration } = own;
   const update = { topic, text: "", event: "update", revision: 2, updatedAt: Date.now() };
   const presence = { subscriptions: own.subscriptions ?? [], topics: [update] };
@@ -3656,7 +3741,7 @@ test("native aggregate topic snapshots remain complete across reload and ordinar
       type: "sessions",
       requestId: randomUUID(),
       sessions: before.map((session) =>
-        session.id === id ? { ...session, ...presence } : session,
+        session.id === id ? Object.assign({}, session, presence) : session,
       ),
     }) > MAX_FRAME_SIZE_BYTES,
     "the complete valid snapshot exceeds one reply frame",
@@ -3673,23 +3758,31 @@ test("native aggregate topic snapshots remain complete across reload and ordinar
     "valid topic data must not fail because ordinary peers enlarge the aggregate snapshot",
   );
   const snapshot = await peers[0].listSessions();
-  assert.equal(snapshot.find((session) => session.id === id).topics[0].text, update.text);
+  assert.equal(
+    sessionTopic(
+      observedSession(snapshot, (session) => session.id === id),
+      topic,
+    ).text,
+    update.text,
+  );
   for (const peer of peers) {
     assert.ok(snapshot.some((session) => session.id === peer.sessionId));
   }
   const otherTopics = ["private/concurrent-a", "private/concurrent-b"];
   const otherText = "Concurrent quiet result ".repeat(26000);
   await Promise.all(
-    otherTopics.map((topic) => call({ action: "publish", topic, message: otherText })),
+    otherTopics.map((topicName) =>
+      call({ action: "publish", topic: topicName, message: otherText }),
+    ),
   );
-  const combined = (await peers[0].listSessions()).find((session) => session.id === id)!;
+  const combined = observedSession(await peers[0].listSessions(), (session) => session.id === id);
   assert.ok(
     intercomMessageSizeBytes(combined) > MAX_FRAME_SIZE_BYTES,
     "one publisher's valid registry can span reply frames too",
   );
-  for (const topic of otherTopics) {
+  for (const topicName of otherTopics) {
     assert.equal(
-      combined.topics.find((update) => update.topic === topic).text,
+      sessionTopic(combined, topicName).text,
       otherText,
       "concurrent publications must not replace one another's records",
     );
@@ -3702,14 +3795,14 @@ test("native aggregate topic snapshots remain complete across reload and ordinar
   );
   await publisher.session.reload();
   assert.match(await publisher.status(), /Connected: Yes/);
-  const restored = (await peers[0].listSessions()).find((session) => session.id === id)!;
+  const restored = observedSession(await peers[0].listSessions(), (session) => session.id === id);
   assert.equal(
-    restored.topics.find((entry) => entry.topic === topic).text,
+    sessionTopic(restored, topic).text,
     update.text,
     "native reload preserves the complete published state",
   );
-  for (const topic of otherTopics) {
-    assert.equal(restored.topics.find((update) => update.topic === topic).text, otherText);
+  for (const topicName of otherTopics) {
+    assert.equal(sessionTopic(restored, topicName).text, otherText);
   }
   await call({ action: "publish", topic, message: "Small corrected state" });
   await call({ action: "send", to: peers[0].sessionId, message: "After correction" });
@@ -3726,9 +3819,10 @@ test("native large subscribed topic delivery does not duplicate text or leak its
   assert.ok(Buffer.byteLength(message) > 512 * 1024 && Buffer.byteLength(message) < 800 * 1024);
   await call(subscriber, { action: "subscribe", topic });
   const receipt = await call(publisher, { action: "publish", topic, message });
-  assert.equal(receipt.details.receipts.length, 1);
+  const receipts = records(record(receipt.details).receipts);
+  assert.equal(receipts.length, 1);
   assert.equal(
-    receipt.details.receipts[0].accepted,
+    record(receipts[0]).accepted,
     true,
     "a valid large topic update must reach its subscriber within the existing frame limit",
   );
@@ -3767,9 +3861,10 @@ test("native rejected complete topic delivery envelope preserves broker and dura
   await publisher.session.waitForIdle();
   await call(publisher, { action: "publish", topic, message: "Previous usable publication" });
   await call(subscriber, { action: "subscribe", topic });
-  const own = (await publisher.sender.listSessions()).find(
+  const own = observedSession(
+    await publisher.sender.listSessions(),
     (session) => session.name === "topic-envelope-publisher",
-  )!;
+  );
   const { id, topics: _topics, subscriptions: _subscriptions, ...from } = own;
   const update = { topic, text: "", event: "update", revision: 2, updatedAt: Date.now() };
   const message = {
@@ -3791,20 +3886,20 @@ test("native rejected complete topic delivery envelope preserves broker and dura
     session: { ...from, subscriptions: [], topics: [update] },
     requestedId: id,
   });
-  const text = "x".repeat(
+  const oversizedText = "x".repeat(
     Math.min(
       MAX_FRAME_SIZE_BYTES - emptyRegistrationSize - 32,
       MAX_FRAME_SIZE_BYTES - emptyDeliverySize + 64,
     ),
   );
-  assert.ok(emptyRegistrationSize + text.length < MAX_FRAME_SIZE_BYTES);
+  assert.ok(emptyRegistrationSize + oversizedText.length < MAX_FRAME_SIZE_BYTES);
   assert.ok(
-    emptyDeliverySize + text.length > MAX_FRAME_SIZE_BYTES,
+    emptyDeliverySize + oversizedText.length > MAX_FRAME_SIZE_BYTES,
     "the complete delivery envelope, even without duplicated text, exceeds the frame",
   );
   let rejection;
   try {
-    await call(publisher, { action: "publish", topic, message: text });
+    await call(publisher, { action: "publish", topic, message: oversizedText });
   } catch (error) {
     rejection = errorMessage(error);
   }
@@ -3826,7 +3921,10 @@ test("native rejected complete topic delivery envelope preserves broker and dura
     "a hard delivery rejection must not overwrite the prior durable publication",
   );
   assert.equal(
-    (await publisher.sender.listSessions()).find((session) => session.id === id).topics[0].text,
+    sessionTopic(
+      observedSession(await publisher.sender.listSessions(), (session) => session.id === id),
+      topic,
+    ).text,
     "Previous usable publication",
     "the broker must also retain its prior valid snapshot",
   );
@@ -3877,22 +3975,27 @@ test("native previously poisoned topic history cannot prevent reconnect or a sma
   assert.equal((await received)[1].content.text, "Ordinary message before correction");
   await call({ action: "publish", topic, message: "Small corrected state" });
   assert.equal(
-    (await publisher.sender.listSessions()).find(
-      (session) => session.name === "poisoned-topic-history",
-    ).topics[0].text,
+    sessionTopic(
+      observedSession(
+        await publisher.sender.listSessions(),
+        (session) => session.name === "poisoned-topic-history",
+      ),
+      topic,
+    ).text,
     "Small corrected state",
   );
   await publisher.session.reload();
   assert.match(await publisher.status(), /Connected: Yes/);
   assert.ok(
-    publisher.session.sessionManager
-      .getEntries()
-      .some(
-        (entry) =>
-          entry.type === "custom" &&
-          entry.customType === "intercom-topic" &&
-          text(at(entry, "data", "published", "text")).length === 1024 * 1024,
-      ),
+    publisher.session.sessionManager.getEntries().some((entry) => {
+      const published = at(entry, "data", "published", "text");
+      return (
+        entry.type === "custom" &&
+        entry.customType === "intercom-topic" &&
+        typeof published === "string" &&
+        published.length === 1024 * 1024
+      );
+    }),
     "raw native history remains intact",
   );
   assert.deepEqual(publisher.errors, []);

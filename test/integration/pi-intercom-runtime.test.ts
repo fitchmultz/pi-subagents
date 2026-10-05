@@ -357,12 +357,13 @@ async function createExtensionHarness(
     `${JSON.stringify({ type: "session", version: 3, id: "session-child-test", cwd: repoDir })}\n`,
   );
   manager.getSessionFile = () => sessionFile;
-  const ctx = {
+  const ctx: ExtensionContext & { readonly sessionManager: SessionManager } = {
     ...base,
     sessionManager: manager,
     model: { ...fauxProvider().getModel(), id: "child-model" },
     isIdle: options.isIdle ?? (() => true),
     hasUI: options.hasUI ?? false,
+    mode: options.hasUI === true ? "tui" : "print",
     abort: options.abort ?? (() => base.abort()),
     ui: { ...base.ui, ...options.ui },
   };
@@ -1479,9 +1480,10 @@ test(
       const target = await waitForSessionByName(planner, "hint-worker");
 
       await planner.send(target.id, { messageId: "plain-send", text: "FYI only" });
-      await nextTurn();
-      assert.match(harness.sentMessages[0]?.message.content ?? "", /FYI only/);
-      assert.doesNotMatch(harness.sentMessages[0]?.message.content ?? "", /To reply/);
+      await waitForSentMessages(harness, 1);
+      const plain = harness.sentMessages[0];
+      assert.match(plain.message.content, /FYI only/);
+      assert.doesNotMatch(plain.message.content, /To reply/);
       assert.deepEqual(harness.sentMessages[0]?.options, { triggerTurn: true });
 
       await planner.send(target.id, {
@@ -1489,9 +1491,10 @@ test(
         text: "FYI later",
         passive: true,
       });
-      await nextTurn();
-      assert.match(harness.sentMessages[1]?.message.content ?? "", /FYI later/);
-      assert.doesNotMatch(harness.sentMessages[1]?.message.content ?? "", /To reply/);
+      await waitForSentMessages(harness, 2);
+      const passive = harness.sentMessages[1];
+      assert.match(passive.message.content, /FYI later/);
+      assert.doesNotMatch(passive.message.content, /To reply/);
       assert.deepEqual(harness.sentMessages[1]?.options, { triggerTurn: false });
 
       await planner.send(target.id, {
@@ -1499,9 +1502,10 @@ test(
         text: "Need answer",
         expectsReply: true,
       });
-      await nextTurn();
-      assert.match(harness.sentMessages[2]?.message.content ?? "", /Need answer/);
-      assert.match(harness.sentMessages[2]?.message.content ?? "", /To reply/);
+      await waitForSentMessages(harness, 3);
+      const ask = harness.sentMessages[2];
+      assert.match(ask.message.content, /Need answer/);
+      assert.match(ask.message.content, /To reply/);
       assert.deepEqual(harness.sentMessages[2]?.options, { triggerTurn: true });
     } finally {
       await harness.emitLifecycle("session_shutdown");
@@ -2820,18 +2824,14 @@ test(
       await harness.emitLifecycle("session_start");
       const target = await waitForSessionByName(planner, "interactive-backlog-worker");
       for (let index = 0; index <= 100; index += 1) {
-        assert.equal(
-          // The backlog fixture establishes the accepted ask order before flushing.
-          // oxlint-disable-next-line no-await-in-loop
-          (
-            await planner.send(target.id, {
-              messageId: `backlog-ask-${index}`,
-              text: `Queued question ${index}`,
-              expectsReply: true,
-            })
-          ).delivered,
-          true,
-        );
+        // The backlog fixture establishes the accepted ask order before flushing.
+        // oxlint-disable-next-line no-await-in-loop
+        const sent = await planner.send(target.id, {
+          messageId: `backlog-ask-${index}`,
+          text: `Queued question ${index}`,
+          expectsReply: true,
+        });
+        assert.equal(sent.delivered, true);
       }
       // Sender acknowledgements confirm broker writes, not recipient processing.
       await waitForSession(
@@ -3574,19 +3574,15 @@ test(
         "Starting read-only scout.",
         "Found the root cause in the shared runner.",
       ]) {
-        assert.equal(
-          // Every progress revision supersedes the previous accepted revision.
-          // oxlint-disable-next-line no-await-in-loop
-          (
-            await planner.send(target.id, {
-              text: `Subagent progress update.\nRun: old-run\nAgent: scout\nChild index: 0\n\nUPDATE: ${text}`,
-              delivery: "queue",
-              queueMode: "replace",
-              threadId: "subagent-progress:old-run:scout:0",
-            })
-          ).accepted,
-          true,
-        );
+        // Every progress revision supersedes the previous accepted revision.
+        // oxlint-disable-next-line no-await-in-loop
+        const sent = await planner.send(target.id, {
+          text: `Subagent progress update.\nRun: old-run\nAgent: scout\nChild index: 0\n\nUPDATE: ${text}`,
+          delivery: "queue",
+          queueMode: "replace",
+          threadId: "subagent-progress:old-run:scout:0",
+        });
+        assert.equal(sent.accepted, true);
       }
       Date.now = realNow;
 
@@ -3679,7 +3675,7 @@ test(
       assert.equal(replaceWithoutThread.isError, true);
       assert.match(textAt(replaceWithoutThread.content), /requires a non-empty threadId/);
       assert.equal(replaceWithoutThread.details?.reasonCode, "invalid_queue_arguments");
-      const nextActions = records(replaceWithoutThread.details?.nextActions);
+      const nextActions = records(record(replaceWithoutThread.details).nextActions);
       assert.equal(record(nextActions[0]).action, "send");
 
       const queueModeWithoutQueue = await intercomTool.execute(
@@ -4059,6 +4055,61 @@ test(
   },
 );
 
+test(
+  "UI-owned intercom picker does not block session shutdown",
+  { concurrency: false },
+  async () => {
+    const { default: extension } = await import("../../src/pi-intercom/index.ts");
+    const { planner, cleanup } = await setupClients();
+    const mounted: PromiseWithResolvers<void> = Promise.withResolvers();
+    const tui = new TuiAltScreen(createTestTerminal());
+    let close: (() => void) | undefined;
+    const custom: ExtensionContext["ui"]["custom"] = (factory) =>
+      new Promise((resolve, reject) => {
+        const mount = (component: Component) => {
+          assert.ok(typeof component.handleInput === "function");
+          close = () => component.handleInput?.("\x1b");
+          mounted.resolve();
+        };
+        const view = factory(tui, renderTheme, new KeybindingsManager(), resolve);
+        if (view instanceof Promise) {
+          view.then(mount).catch(reject);
+        } else {
+          mount(view);
+        }
+      });
+    const harness = await createExtensionHarness("shutdown-open-picker", {
+      hasUI: true,
+      ui: { custom },
+    });
+    let shutdown: Promise<unknown> | undefined;
+    try {
+      extension(harness.pi);
+      await harness.emitLifecycle("session_start");
+      await waitForSessionByName(planner, "shutdown-open-picker");
+      harness.pi.events.emit("intercom:open", {});
+      await mounted.promise;
+      assertDefined(close);
+      shutdown = harness.emitLifecycle("session_shutdown");
+      assert.equal(
+        await Promise.race([shutdown.then(() => "shutdown"), sleep(1000, "still-open")]),
+        "shutdown",
+        "shutdown must not wait for the user to close a mounted native picker",
+      );
+      assert.equal(
+        (await planner.listSessions()).some((session) => session.name === "shutdown-open-picker"),
+        false,
+        "the bridge's broker registration is still released",
+      );
+    } finally {
+      close?.();
+      await shutdown;
+      await harness.emitLifecycle("session_shutdown");
+      await cleanup();
+    }
+  },
+);
+
 test("stale overlay work stops after same-session restart", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
@@ -4069,7 +4120,7 @@ test("stale overlay work stops after same-session restart", { concurrency: false
     new Promise((resolve, reject) => {
       customCalls += 1;
       const mount = (component: Component) => {
-        assert.ok(component.handleInput);
+        assert.ok(typeof component.handleInput === "function");
         const input = (data: string) => component.handleInput?.(data);
         if (customCalls > 1) {
           input("\x1b");
@@ -4449,7 +4500,8 @@ test(
 
           const question = listSupervisorQuestions("supervisor-session-test", "78f659a3").find(
             (entry) => entry.questionId === askMessage.id,
-          )!;
+          );
+          assertDefined(question);
           await orchestrator.send(askFrom.id, {
             text: "Recipient turn failed: temporary provider error",
             replyTo: askMessage.id,
@@ -5846,7 +5898,7 @@ test(
         const requestId = `local-health-${sequence++}`;
         const timer = setTimeout(() => {
           unsubscribe();
-          resolve();
+          resolve(undefined);
         }, 500);
         const unsubscribe = harness.pi.events.on("subagent:intercom-health-response", (payload) => {
           const response = record(payload);
