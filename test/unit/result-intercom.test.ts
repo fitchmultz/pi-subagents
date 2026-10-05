@@ -266,6 +266,7 @@ describe("result intercom formatter", () => {
           status: "completed",
           summary: "done",
           artifactPath: "/tmp/a.md",
+          metadataPath: "/tmp/a-metadata.json",
           intercomTarget: "subagent-a-run-abc-1",
         },
         { agent: "b", status: "failed", summary: "failed", sessionPath: "/tmp/b.jsonl" },
@@ -282,6 +283,11 @@ describe("result intercom formatter", () => {
     assert.match(receipt, /Child outcome: failed/);
     assert.match(receipt, /Children: 1 completed, 1 failed/);
     assert.match(receipt, /Artifacts:\n- a \[completed\]: \/tmp\/a\.md/);
+    assert.match(
+      receipt,
+      /Result metadata \(a; acceptance details when configured\): \/tmp\/a-metadata\.json/,
+    );
+    assert.doesNotMatch(receipt, /Result metadata \(b;/);
     assert.match(
       receipt,
       /Run intercom targets \(may be inactive after completion\):\n- a \[completed\]: subagent-a-run-abc-1/,
