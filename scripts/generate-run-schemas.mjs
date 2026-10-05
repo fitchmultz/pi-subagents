@@ -9,7 +9,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function stableDefinitionNames(definitions) {
   // TJS uses TypeScript display names; NodeNext import qualifiers include the checkout path.
   // Normalize identifiers only, preserving the module suffix and every schema value.
-  const prefix = `import(${JSON.stringify(`${root}/`).slice(0, -1)}`;
+  // TJS also strips spaces from display names, including spaces in that qualifier.
+  const prefix = `import(${JSON.stringify(`${root}/`).slice(0, -1)}`.replaceAll(" ", "");
   const names = Object.fromEntries(
     Object.keys(definitions).map((name) => [name, name.replaceAll(prefix, 'import("')]),
   );

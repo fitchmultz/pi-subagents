@@ -37,7 +37,7 @@ await test("canonical schemas are checkout-independent without hiding schema or 
   try {
     const expected = readFileSync(join(root, artifact), "utf8");
     succeeds(generate(root, "--check"));
-    for (const name of ["checkout-one", "another-checkout-root"]) {
+    for (const name of ["checkout-one", "another checkout root"]) {
       const checkout = join(temporary, name);
       mkdirSync(join(checkout, "scripts"), { recursive: true });
       for (const file of ["src", "node_modules", "package.json"]) {
