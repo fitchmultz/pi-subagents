@@ -60,13 +60,13 @@ export class AgentViewController {
   private readonly state: SubagentState;
   private readonly store: AgentTaskStore;
   private readonly session: ViewSession;
-  readonly browser: AgentBrowser;
+  private readonly browser: AgentBrowser;
   private readonly controls: AgentControls;
   readonly picker: PickerController;
   readonly conversation: ConversationController;
   /** Parent runtime notifications trigger an observation refresh, not a UI port operation. */
-  refresh(): Promise<void> {
-    return this.browser.refresh();
+  refresh(browse = false): Promise<void> {
+    return this.browser.refresh(browse);
   }
   private reportFailure(error: unknown): void {
     if (this.live()) {

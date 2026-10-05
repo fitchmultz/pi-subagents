@@ -637,7 +637,7 @@ async function fixture(
   const refreshes = new Set<Promise<void>>();
   const refreshErrors: unknown[] = [];
   function refreshView(force = false): void {
-    const pending = controller.browser.refresh(force).catch((error: unknown) => {
+    const pending = controller.refresh(force).catch((error: unknown) => {
       refreshErrors.push(error);
     });
     refreshes.add(pending);
@@ -664,7 +664,7 @@ async function fixture(
   const ready = (async () => {
     const index = await runHistoryIndex(state);
     await index.refresh();
-    await controller.browser.refresh();
+    await controller.refresh();
   })();
   await ready;
   const result = {
@@ -1045,8 +1045,8 @@ for (const count of [20, 227]) {
     assert.deepEqual(formatted(), [], "closed-panel startup does not format raw tool details");
     assert.equal(f.controller.picker.tasks.length, Math.min(count, 50));
     parse.mock.resetCalls();
-    await f.controller.browser.refresh();
-    await f.controller.browser.refresh(true);
+    await f.controller.refresh();
+    await f.controller.refresh(true);
     assert.equal(reads().length, 0, "unchanged live/forced observations stay off-thread");
     assert.equal(
       parse.mock.callCount(),
@@ -1148,7 +1148,7 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
   for (const task of f.controller.picker.tasks) {
     f.controller.conversation.visit(task.key).draft = "Retain my draft";
   }
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
   const index = await runHistoryIndex(f.state),
     calls: string[] = [],
     historyPage = index.historyPage.bind(index);
@@ -1164,8 +1164,8 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
   );
   const check = async (expected: readonly string[]) => {
     calls.length = 0;
-    await f.controller.browser.refresh();
-    await f.controller.browser.refresh();
+    await f.controller.refresh();
+    await f.controller.refresh();
     assert.deepEqual(
       [...new Set(calls)].sort((a, b) => a.localeCompare(b)),
       [...expected].sort((a, b) => a.localeCompare(b)),
@@ -1219,14 +1219,14 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
     ],
   });
   await index.refresh(changed.runId);
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
   await index.refresh();
   assert.equal(
     (await index.listRuns({ limit: 100 })).freshness.state,
     "current",
     "Observe publication before asserting unchanged terminal rows stop polling",
   );
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
   await until(async () => {
     const task = f.controller.conversation.task(`${changed.runId}:0`);
     const published =
@@ -1234,7 +1234,7 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
       task.run.updatedAt === changed.startedAt + 1000 &&
       task.child.result?.finalOutput === "Updated saved report";
     if (!published) {
-      await f.controller.browser.refresh();
+      await f.controller.refresh();
     }
     return published;
   }, "changed terminal metadata is published in the controller before unchanged polling");
@@ -1255,7 +1255,7 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
     message: "A question remains observable beside terminal rows",
   });
   await index.refresh(questionRun.runId);
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
   await check([runs[0].runId, runs[1].runId, runs[2].runId, questionRun.runId]);
   const opening = f.controller.open(`${runs[4].runId}:0`);
   await historyReady(f);
@@ -1479,7 +1479,7 @@ test("Agents predecessor and live continuation retain task identity and publishe
     t.mock.timers.tick(500);
     // Each forced refresh observes the same continuation before the next clock advance.
     // oxlint-disable-next-line no-await-in-loop
-    await f.controller.browser.refresh(true);
+    await f.controller.refresh(true);
     assert.equal(reads(), 0, "unchanged predecessor/live refreshes remain off-thread");
   }
   assert.equal(f.controller.conversation.visit(f.key).draft, "Keep my continuation draft");
@@ -3178,7 +3178,7 @@ test("clickable Agents hints: ordinary activity stays literal and cannot jump to
   f.tui.renderNow();
   await refreshFixture(f);
   f.tui.renderNow();
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
   f.tui.renderNow();
   assert.equal(requiredTask(f).unread, false);
   const anchor = structuredClone(f.controller.conversation.visit(f.key).anchor);
@@ -3772,8 +3772,8 @@ for (const nativeAnswer of [false, true]) {
     t.after(() => releaseReport());
     const reopenLatest = f.controller.open();
     await until(() => reportHeld, "real worker's selected canonical result returned");
-    await f.controller.browser.refresh();
-    await f.controller.browser.refresh();
+    await f.controller.refresh();
+    await f.controller.refresh();
     releaseReport();
     await historyReady(f);
     assert.equal(
@@ -4179,7 +4179,7 @@ for (const mode of ["regular", "fullscreen"] as const) {
       await held;
       return original(...args);
     });
-    const refresh = f.controller.browser.refresh();
+    const refresh = f.controller.refresh();
     await requested;
     try {
       for (const width of [110, 56, 24]) {
@@ -6088,8 +6088,8 @@ async function indexedReady(f: Fixture): Promise<void> {
     }
     assert.ok(missing > 0, "DEGRADED requires an independently verified missing source");
   }
-  await f.controller.browser.refresh();
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
+  await f.controller.refresh();
 }
 
 async function refreshFixture(f: Fixture): Promise<void> {
@@ -6207,15 +6207,15 @@ test("indexed Agents startup, ticks, global filter and pagination never hydrate 
   f.controller.start(f.ctx);
   const index = await runHistoryIndex(f.state);
   await index.refresh();
-  await f.controller.browser.refresh();
+  await f.controller.refresh();
   assert.equal(f.controller.picker.listPage?.total, 125);
   assert.equal(f.controller.picker.tasks.length, 50);
   assert.ok(
     f.controller.picker.tasks.every((task) => task.history.length === 0),
     "closed startup retains no native history cards",
   );
-  await f.controller.browser.refresh();
-  await f.controller.browser.refresh(true);
+  await f.controller.refresh();
+  await f.controller.refresh(true);
   assert.deepEqual(
     accesses(),
     [],
@@ -6412,7 +6412,7 @@ for (const retry of ["F5", "run list"] as const) {
     });
 
     f.controller.start(f.ctx);
-    await f.controller.browser.refresh();
+    await f.controller.refresh();
     assert.match(
       stringValue(f.controller.picker.listError),
       /History directory must not be a symbolic link/,
@@ -6421,7 +6421,7 @@ for (const retry of ["F5", "run list"] as const) {
       f.state.onRunsChanged?.();
       // Repeated background observations must settle before checking retry suppression.
       // oxlint-disable-next-line no-await-in-loop
-      await f.controller.browser.refresh();
+      await f.controller.refresh();
     }
     assert.equal(
       starts.mock.callCount(),
@@ -6450,7 +6450,7 @@ for (const retry of ["F5", "run list"] as const) {
       });
       assert.notEqual(result.isError, true);
       assert.equal(result.details.runList?.total, 1);
-      await f.controller.browser.refresh();
+      await f.controller.refresh();
     }
     await until(
       () =>
