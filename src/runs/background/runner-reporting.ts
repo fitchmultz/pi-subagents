@@ -42,7 +42,10 @@ export async function exportSessionHtml(
     throw new Error("exportFromFile not available");
   }
   const outputPath = path.join(outputDir, `${path.basename(sessionFile, ".jsonl")}.html`);
-  const exported: unknown = Reflect.apply(mod.exportFromFile, mod, [sessionFile, { outputPath }]);
+  const exported: unknown = await Reflect.apply(mod.exportFromFile, mod, [
+    sessionFile,
+    { outputPath },
+  ]);
   if (typeof exported !== "string") {
     throw new Error("exportFromFile returned an invalid output path");
   }
