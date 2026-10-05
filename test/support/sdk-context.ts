@@ -10,6 +10,8 @@ import {
 
 // No filesystem credentials, model catalogue or remote refresh belong to these
 // direct-executor tests. The native registry still owns its complete SDK contract.
+// ponytail: this idle fixture shares its untouched registry; tests that mutate
+// provider/auth state must supply their own registry or use createNativeSessionFixture.
 const modelRegistry = new ModelRegistry(
   await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
