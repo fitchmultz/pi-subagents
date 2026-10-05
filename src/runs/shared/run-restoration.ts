@@ -309,15 +309,16 @@ function recoverLegacyReceipt(
     return;
   }
   const run = legacyRun(ctx, entry, details, calls);
+  let recovered = run;
   try {
-    const recovered = nativeLaunchCwd(run, details);
+    recovered = nativeLaunchCwd(run, details);
     saveLegacyForeground(recovered, details);
     repairQuestionOwner(recovered);
     rememberOwnedRun(state, recovered);
   } catch (error) {
     // Receipt ownership survives incomplete supplemental child recovery.
     rememberOwnedRun(state, {
-      ...run,
+      ...recovered,
       recoveryError: `Saved child recovery remains incomplete: ${errorMessage(error)}`,
     });
     console.error(`Could not recover legacy receipt ${runId}: ${errorMessage(error)}`);
