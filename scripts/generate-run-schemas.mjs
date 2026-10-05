@@ -23,7 +23,7 @@ if (mode === "--help" || mode === "-h") {
   ].map((file) => path.join(root, file));
   const program = TJS.getProgramFromFiles(
     inputs,
-    { strictNullChecks: true, skipLibCheck: true },
+    { strict: true, noImplicitReturns: true, skipLibCheck: true },
     root,
   );
   const generator = TJS.buildGenerator(program, {

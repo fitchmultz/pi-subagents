@@ -116,7 +116,8 @@
           "type": "string"
         },
         "recordVersion": {
-          "const": 3,
+          "description": "Saved legacy results remain readable until their v3 publication replaces them.",
+          "enum": [1, 2, 3],
           "type": "number"
         },
         "completionId": {
@@ -525,7 +526,8 @@
           "type": "string"
         },
         "recordVersion": {
-          "const": 3,
+          "description": "Readers migrate v1/v2 owner records; all new publications use v3.",
+          "enum": [1, 2, 3],
           "type": "number"
         },
         "nativeSessionId": {
@@ -678,7 +680,8 @@
           "type": "string"
         },
         "recordVersion": {
-          "const": 3,
+          "description": "Readers migrate v1/v2 owner records; all new publications use v3.",
+          "enum": [1, 2, 3],
           "type": "number"
         },
         "nativeSessionId": {
@@ -898,7 +901,8 @@
           "type": "string"
         },
         "recordVersion": {
-          "const": 3,
+          "description": "Readers migrate v1/v2 owner records; all new publications use v3.",
+          "enum": [1, 2, 3],
           "type": "number"
         },
         "nativeSessionId": {
@@ -2786,6 +2790,9 @@
       "$ref": "#/definitions/Record%3Cstring%2Cstring%3E"
     },
     "Record<string,string>": {
+      "additionalProperties": {
+        "type": "string"
+      },
       "type": "object"
     },
     "AcceptanceReport": {
@@ -2887,6 +2894,7 @@
       }
     },
     "Record<string,unknown>": {
+      "additionalProperties": {},
       "type": "object"
     },
     "AcceptanceRuntimeCheck": {
@@ -3033,7 +3041,26 @@
       "$ref": "#/definitions/Record%3Cstring%2CChainOutputMapEntry%3E"
     },
     "Record<string,ChainOutputMapEntry>": {
+      "additionalProperties": {
+        "$ref": "#/definitions/ChainOutputMapEntry"
+      },
       "type": "object"
+    },
+    "ChainOutputMapEntry": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "structured": {},
+        "agent": {
+          "type": "string"
+        },
+        "stepIndex": {
+          "type": "number"
+        }
+      },
+      "required": ["agent", "stepIndex", "text"]
     },
     "MaxOutputConfig": {
       "$ref": "#/definitions/MaxOutputConfig_1"
@@ -4469,6 +4496,7 @@
     },
     "__type_10": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "additionalProperties": {},
       "type": "object"
     },
     "Readonly_1": {
@@ -5359,6 +5387,9 @@
     },
     "__type_26": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "additionalProperties": {
+        "type": "string"
+      },
       "type": "object"
     },
     "_ReadonlyObjectDeep_23": {

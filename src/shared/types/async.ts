@@ -68,7 +68,8 @@ export interface AsyncResultChild extends Partial<
 
 export interface AsyncResultFile {
   legacySource?: string;
-  recordVersion?: 3;
+  /** Saved legacy results remain readable until their v3 publication replaces them. */
+  recordVersion?: 1 | 2 | 3;
   completionId?: string;
   maxOutput?: MaxOutputConfig;
   error?: string;

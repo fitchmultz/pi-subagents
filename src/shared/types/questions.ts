@@ -6,7 +6,8 @@ import type { ReadonlySingleResult } from "./results.ts";
 
 export interface SupervisorRunContract {
   readonly legacySource?: string;
-  readonly recordVersion?: 3;
+  /** Readers migrate v1/v2 owner records; all new publications use v3. */
+  readonly recordVersion?: 1 | 2 | 3;
   readonly nativeSessionId?: string;
   readonly terminalLeafId?: string | null;
   readonly terminalEntryId?: string;
