@@ -1,6 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { describe, it, type TestContext } from "node:test";
 import {
@@ -9,13 +9,11 @@ import {
   trySignalChildTree,
 } from "../../src/shared/post-exit-stdio-guard.ts";
 
-type GuardChild = Parameters<typeof attachPostExitStdioGuard>[0];
-
-function makeChild(): GuardChild & EventEmitter {
-  return Object.assign(new EventEmitter(), {
+function makeChild() {
+  return Object.assign(new ChildProcess(), {
     stdout: new PassThrough(),
     stderr: new PassThrough(),
-  }) as GuardChild & EventEmitter;
+  });
 }
 
 function enableTimers(t: TestContext): void {
@@ -66,8 +64,8 @@ describe("attachPostExitStdioGuard", () => {
     child.emit("close", 0, null);
     t.mock.timers.tick(100);
 
-    assert.equal(child.stdout?.destroyed, false);
-    assert.equal(child.stderr?.destroyed, false);
+    assert.equal(child.stdout.destroyed, false);
+    assert.equal(child.stderr.destroyed, false);
   });
 
   it("destroys silent stdio at the idle deadline", (t) => {
@@ -77,12 +75,12 @@ describe("attachPostExitStdioGuard", () => {
 
     child.emit("exit", 0, null);
     t.mock.timers.tick(49);
-    assert.equal(child.stdout?.destroyed, false);
-    assert.equal(child.stderr?.destroyed, false);
+    assert.equal(child.stdout.destroyed, false);
+    assert.equal(child.stderr.destroyed, false);
 
     t.mock.timers.tick(1);
-    assert.equal(child.stdout?.destroyed, true);
-    assert.equal(child.stderr?.destroyed, true);
+    assert.equal(child.stdout.destroyed, true);
+    assert.equal(child.stderr.destroyed, true);
   });
 
   it("destroys chatty stdio at the hard deadline", (t) => {
@@ -92,15 +90,15 @@ describe("attachPostExitStdioGuard", () => {
 
     child.emit("exit", 0, null);
     t.mock.timers.tick(40);
-    child.stdout?.emit("data", Buffer.from("tick"));
+    child.stdout.emit("data", Buffer.from("tick"));
     t.mock.timers.tick(40);
-    child.stdout?.emit("data", Buffer.from("tick"));
+    child.stdout.emit("data", Buffer.from("tick"));
     t.mock.timers.tick(19);
-    assert.equal(child.stdout?.destroyed, false);
-    assert.equal(child.stderr?.destroyed, false);
+    assert.equal(child.stdout.destroyed, false);
+    assert.equal(child.stderr.destroyed, false);
 
     t.mock.timers.tick(1);
-    assert.equal(child.stdout?.destroyed, true);
-    assert.equal(child.stderr?.destroyed, true);
+    assert.equal(child.stdout.destroyed, true);
+    assert.equal(child.stderr.destroyed, true);
   });
 });

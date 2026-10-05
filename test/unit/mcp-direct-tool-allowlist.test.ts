@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { parseJson, strings } from "../support/assertions.ts";
+
 // Captured from the adapter's computeServerHash, independently of this consumer.
 const hashes = {
   "fitch-fixture": "43f0e396219a77e81b9f5d9602f5554eb2e84d89dca63b9a05490dfc7e6ebd8c",
@@ -53,24 +55,28 @@ function writeCache(directory: string, command: keyof typeof hashes, tool: strin
 }
 
 function resolveNames(root: string, agentDir: string): string[] {
-  return JSON.parse(
-    execFileSync(
-      process.execPath,
-      [
-        "--input-type=module",
-        "-e",
-        `
+  return [
+    ...strings(
+      parseJson(
+        execFileSync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `
 		const { resolveMcpDirectToolNames } = await import(${JSON.stringify(resolver)});
 		console.log(JSON.stringify(resolveMcpDirectToolNames(["demo"], process.cwd())));
 	`,
-      ],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agentDir },
-      },
+          ],
+          {
+            cwd: root,
+            encoding: "utf8",
+            env: { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agentDir },
+          },
+        ),
+      ),
     ),
-  );
+  ];
 }
 
 test("reads native metadata from pre-v5 and independent Fitch state", () => {

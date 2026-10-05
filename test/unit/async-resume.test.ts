@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import {
   buildRevivedAsyncTask,
   resolveAsyncResumeTarget,
+  type AsyncResumeTarget,
 } from "../../src/runs/background/async-resume.ts";
 
 function writeJson(filePath: string, value: object): void {
@@ -314,18 +315,16 @@ describe("async resume lookup", () => {
   });
 
   it("frames the revived follow-up with original run context", () => {
-    const task = buildRevivedAsyncTask(
-      {
-        kind: "revive",
-        runId: "run-old",
-        state: "complete",
-        agent: "worker",
-        index: 0,
-        intercomTarget: "subagent-worker-run-old-1",
-        sessionFile: "/tmp/session.jsonl",
-      },
-      "What changed?",
-    );
+    const target: AsyncResumeTarget = {
+      kind: "revive",
+      runId: "run-old",
+      state: "complete",
+      agent: "worker",
+      index: 0,
+      intercomTarget: "subagent-worker-run-old-1",
+      sessionFile: "/tmp/session.jsonl",
+    };
+    const task = buildRevivedAsyncTask(target, "What changed?");
 
     assert.match(task, /Original run: run-old/);
     assert.doesNotMatch(task, /async subagent conversation/);

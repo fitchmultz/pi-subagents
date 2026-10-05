@@ -2,9 +2,10 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { handleSubagentControlNotice } from "../../src/extension/control-notices.ts";
+import { record, text } from "../support/assertions.ts";
 import type { ControlEvent } from "../../src/shared/types.ts";
 
-function needsAttentionEvent(overrides: Partial<ControlEvent> = {}): ControlEvent {
+function needsAttentionEvent(overrides: Readonly<Partial<ControlEvent>> = {}): ControlEvent {
   return {
     type: "needs_attention",
     to: "needs_attention",
@@ -51,10 +52,7 @@ describe("subagent control notice delivery", () => {
     });
     assert.equal(recorder.sent.length, 1);
     assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: false });
-    assert.match(
-      String((recorder.sent[0]?.message as { content?: unknown })?.content ?? ""),
-      /Subagent failed: worker/,
-    );
+    assert.match(text(record(recorder.sent[0].message).content), /Subagent failed: worker/);
   });
 
   it("deduplicates the same owner event without hiding another child's attention", () => {

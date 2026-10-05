@@ -18,7 +18,7 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
       await import("../../src/runs/foreground/foreground-control.ts");
     const { resolveAsyncRunLocation } = await import("../../src/runs/background/async-resume.ts");
     const { resolveSubagentRunId } = await import("../../src/runs/background/run-id-resolver.ts");
-    const state: SubagentState = {
+    const state = {
       baseCwd: root,
       currentSessionId: "parent",
       asyncJobs: new Map(),
@@ -30,8 +30,13 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
       completionSeen: new Map(),
       watcher: null,
       watcherRestartTimer: null,
-      resultFileCoalescer: { schedule: () => false, clear() {} },
-    };
+      resultFileCoalescer: {
+        schedule: () => false,
+        clear() {
+          /* No timers are scheduled by this resolver fixture. */
+        },
+      },
+    } satisfies SubagentState;
     const asyncDirRoot = path.join(root, "runs"),
       resultsDir = path.join(root, "results");
     fs.mkdirSync(asyncDirRoot);
@@ -61,8 +66,8 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
         updatedAt: index,
         children: [],
       };
-      state.ownedRuns!.set(id, owned);
-      state.foregroundRuns!.set(id, foreground);
+      state.ownedRuns.set(id, owned);
+      state.foregroundRuns.set(id, foreground);
       fs.writeFileSync(
         path.join(resultsDir, `${id}.json`),
         JSON.stringify({ id, output: `Saved result ${index}` }),
@@ -89,8 +94,8 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
             assert.match(error.message, new RegExp(`${index + 1} matches`));
             assert.match(error.message, /showing 5/);
             assert.match(error.message, /longer prefix or full run id/);
-            assert.ok(error.message.includes(ids[0]!));
-            assert.ok(!error.message.includes(ids[5]!));
+            assert.ok(error.message.includes(ids[0]));
+            assert.ok(!error.message.includes(ids[5]));
             return true;
           },
         );
@@ -108,8 +113,8 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
     }
     assert.equal(resolveOwnedRun(state, "latest")?.runId, "a");
     assert.equal(resolveRememberedForegroundRun("last", state)?.runId, "a");
-    assert.equal(state.ownedRuns!.size, 2001);
-    assert.equal(state.foregroundRuns!.size, 2001);
+    assert.equal(state.ownedRuns.size, 2001);
+    assert.equal(state.foregroundRuns.size, 2001);
     assert.equal(fs.readdirSync(resultsDir).length, 2001);
     assert.deepEqual(
       JSON.parse(fs.readFileSync(path.join(resultsDir, `${ids[1999]}.json`), "utf8")),

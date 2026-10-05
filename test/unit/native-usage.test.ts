@@ -55,7 +55,8 @@ test("native accounting excludes actual fork baseline and checkpoints, includes 
       .map((entry) => JSON.stringify(entry))
       .join("\n") + "\n",
   );
-  const segments = readNativeUsage(file, baseline, ["nested", "review"])!;
+  const segments = readNativeUsage(file, baseline, ["nested", "review"]);
+  assert.ok(segments);
   assert.deepEqual(
     segments.map((part) => part.input),
     [20, 40],
@@ -70,7 +71,7 @@ test("native accounting excludes actual fork baseline and checkpoints, includes 
   assert.equal(total.turns, 2);
   assert.equal(total.contributions?.length, 6);
   assert.deepEqual(
-    total.contributions?.map((part) => part.id),
+    total.contributions.map((part) => part.id),
     [
       "child:first",
       "child:nested",
@@ -80,13 +81,13 @@ test("native accounting excludes actual fork baseline and checkpoints, includes 
       "child:review",
     ],
   );
-  assert.equal(total.contributions?.[0]?.model, "actual");
+  assert.equal(total.contributions[0].model, "actual");
   assert.equal(
-    total.contributions?.[1]?.provider,
+    total.contributions[1].provider,
     undefined,
     "native tool attribution is unavailable, not guessed",
   );
-  assert.deepEqual(total.contributions?.[4], {
+  assert.deepEqual(total.contributions[4], {
     id: "child:native-usage",
     provider: "other",
     model: "small",
@@ -110,7 +111,7 @@ test("new assistant/native usage entries require complete billing evidence; tool
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-usage-required-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "session.jsonl");
-  const write = (entries: object[]) =>
+  const write = (entries: readonly object[]) =>
     fs.writeFileSync(
       file,
       [
@@ -124,11 +125,15 @@ test("new assistant/native usage entries require complete billing evidence; tool
   ]) {
     write([entry]);
     assert.throws(() => readNativeUsage(file, new Set()), /Required native usage is unavailable/);
-    assert.deepEqual(readNativeUsage(file, new Set(["required"]))![0]!.contributions, []);
+    const inherited = readNativeUsage(file, new Set(["required"]));
+    assert.ok(inherited);
+    assert.deepEqual(inherited[0].contributions, []);
   }
   write([
     { type: "message", id: "tool", message: { role: "toolResult" } },
     { type: "compaction", id: "summary" },
   ]);
-  assert.deepEqual(readNativeUsage(file, new Set())![0]!.contributions, []);
+  const optional = readNativeUsage(file, new Set());
+  assert.ok(optional);
+  assert.deepEqual(optional[0].contributions, []);
 });

@@ -41,7 +41,7 @@ test("verification environment pairs preserve values and reject duplicate names"
     /duplicate/,
   );
   assert.ok(
-    Array.isArray(params.acceptance.verify[0]!.env),
+    Array.isArray(params.acceptance.verify[0].env),
     "normalization must not mutate the admitted input",
   );
 });

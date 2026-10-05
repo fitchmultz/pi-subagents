@@ -1,12 +1,8 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Message } from "@earendil-works/pi-ai";
+import { assistant as assistantContent } from "../support/runtime-messages.ts";
 import { getFinalOutput } from "../../src/shared/utils.ts";
-
-function assistantContent(content: unknown[]): Message {
-  return { role: "assistant", content } as unknown as Message;
-}
 
 describe("getFinalOutput", () => {
   it("uses the last non-empty text part in the latest assistant message", () => {
@@ -44,7 +40,9 @@ describe("getFinalOutput", () => {
   it("falls back to an older assistant message when the latest assistant message is tool-only", () => {
     const messages = [
       assistantContent([{ type: "text", text: "Earlier" }]),
-      assistantContent([{ type: "toolCall", name: "read", arguments: { path: "README.md" } }]),
+      assistantContent([
+        { type: "toolCall", id: "read", name: "read", arguments: { path: "README.md" } },
+      ]),
     ];
 
     assert.equal(getFinalOutput(messages), "Earlier");
@@ -62,11 +60,10 @@ describe("getFinalOutput", () => {
   it("does not use provider-error assistant text as fallback output", () => {
     const messages = [
       {
-        role: "assistant",
-        content: [{ type: "text", text: "temporary provider failure" }],
-        stopReason: "error",
+        ...assistantContent([{ type: "text", text: "temporary provider failure" }]),
+        stopReason: "error" as const,
         errorMessage: "provider transport failed",
-      } as unknown as Message,
+      },
       assistantContent([{ type: "text", text: "" }]),
     ];
 

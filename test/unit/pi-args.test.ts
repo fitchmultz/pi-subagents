@@ -22,6 +22,9 @@ import {
   resolveConfiguredChildProjectTrustPolicy,
 } from "../../src/runs/shared/pi-args.ts";
 
+import { assertDefined } from "../support/assertions.ts";
+import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
+
 const originalEnv = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
@@ -42,9 +45,9 @@ const originalEnv = {
 const originalCwd = process.cwd();
 const tempRoots: string[] = [];
 
-function buildPiArgs(input: Parameters<typeof buildArgs>[0]) {
+function buildPiArgs(input: ReadonlyInput<Parameters<typeof buildArgs>[0]>) {
   const built = buildArgs(input);
-  if (built.tempDir) {
+  if (built.tempDir !== undefined && built.tempDir.length > 0) {
     tempRoots.push(built.tempDir);
   }
   return built;
@@ -77,8 +80,8 @@ function writeJson(filePath: string, value: unknown): void {
 }
 
 function writeMcpFixture(
-  fixture: McpFixture,
-  options: {
+  fixture: Readonly<McpFixture>,
+  options: ReadonlyInput<{
     serverName?: string;
     definition?: Record<string, unknown>;
     settings?: Record<string, unknown>;
@@ -87,13 +90,13 @@ function writeMcpFixture(
     configPath?: string;
     configHash?: string;
     cachedAt?: number;
-  } = {},
+  }> = {},
 ): void {
   const serverName = options.serverName ?? "chrome-devtools";
   const definition = {
     command: "npx",
     args: ["chrome-devtools-mcp"],
-    ...(options.definition ?? {}),
+    ...options.definition,
   };
   writeJson(options.configPath ?? path.join(fixture.agentDir, "mcp.json"), {
     ...(options.settings ? { settings: options.settings } : {}),
@@ -132,7 +135,7 @@ afterEach(() => {
 
 describe("buildPiArgs session wiring", () => {
   for (const cwd of [undefined, "/requested project"]) {
-    it(`uses a new --session file with ${cwd ? "an explicit" : "no"} spawn cwd`, () => {
+    it(`uses a new --session file with ${cwd !== undefined ? "an explicit" : "no"} spawn cwd`, () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-args-session-"));
       try {
         const sessionFile = path.join(tempDir, "nested", "session.jsonl");
@@ -213,7 +216,7 @@ describe("buildPiArgs task wiring", () => {
         assert.ok(taskArg.startsWith("@"));
         assert.equal(fs.readFileSync(taskArg.slice(1), "utf8"), `Task: ${task}`);
       } finally {
-        if (materialized.tempDir) {
+        if (materialized.tempDir !== undefined && materialized.tempDir.length > 0) {
           fs.rmSync(materialized.tempDir, { recursive: true, force: true });
         }
       }
@@ -235,9 +238,10 @@ describe("buildPiArgs task wiring", () => {
       const taskPath = result.args.at(-1)?.slice(1);
       assert.notEqual(promptPath, taskPath);
       assert.equal(fs.readFileSync(promptPath, "utf8"), "system prompt");
-      assert.equal(fs.readFileSync(taskPath!, "utf8"), `Task: ${"a".repeat(895)}`);
+      assertDefined(taskPath);
+      assert.equal(fs.readFileSync(taskPath, "utf8"), `Task: ${"a".repeat(895)}`);
     } finally {
-      if (result.tempDir) {
+      if (result.tempDir !== undefined && result.tempDir.length > 0) {
         fs.rmSync(result.tempDir, { recursive: true, force: true });
       }
     }
@@ -718,10 +722,10 @@ describe("buildPiArgs system prompt mode wiring", () => {
       extensions: ["./agent-allowed-ext.ts"],
     });
 
-    const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
+    const extensionArgs = new Set(args.filter((arg, index) => args[index - 1] === "--extension"));
     assert.ok(args.includes("--no-extensions"));
-    assert.ok(extensionArgs.includes("/tmp/repoprompt-bridge.ts"));
-    assert.ok(extensionArgs.includes("./agent-allowed-ext.ts"));
+    assert.ok(extensionArgs.has("/tmp/repoprompt-bridge.ts"));
+    assert.ok(extensionArgs.has("./agent-allowed-ext.ts"));
   });
 
   it("authorizes child fanout without constraining normal tools when allowSubagents is true", () => {
@@ -995,7 +999,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
     });
 
     assert.ok(args.includes("--system-prompt"));
-    assert.equal(fs.readFileSync(args[args.indexOf("--system-prompt") + 1]!, "utf8"), "");
+    assert.equal(fs.readFileSync(args[args.indexOf("--system-prompt") + 1], "utf8"), "");
     assert.equal(args.includes("--append-system-prompt"), false);
   });
 });

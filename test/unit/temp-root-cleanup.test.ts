@@ -78,6 +78,8 @@ describe("cleanupOldRunStorage nested events", () => {
       fs.mkdirSync(routeRoot, { recursive: true });
       fs.writeFileSync(path.join(routeRoot, "route.json"), content);
       fs.utimesSync(routeRoot, OLD, OLD);
+      // Retention examines shared route storage; observe this removal before adding the next fixture.
+      // oxlint-disable-next-line no-await-in-loop
       await cleanupOldRunStorage();
       assert.equal(fs.existsSync(routeRoot), false);
     }

@@ -4,6 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { assertDefined } from "../support/assertions.ts";
+import { assistant } from "../support/runtime-messages.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   createForkContextResolver,
@@ -40,7 +42,7 @@ describe("createForkContextResolver", () => {
       () =>
         createForkContextResolver(
           {
-            getSessionFile: () => undefined,
+            getSessionFile: (): string | undefined => undefined,
             getLeafId: () => "leaf-123",
             getSessionDir: () => "/tmp",
           },
@@ -70,13 +72,19 @@ describe("createForkContextResolver", () => {
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const parent = SessionManager.create(dir, dir);
     parent.appendMessage({ role: "user", content: "parent prompt", timestamp: 1 });
-    parent.appendMessage({ role: "assistant", content: "parent response" });
-    const parentFile = parent.getSessionFile()!;
-    const leaf = parent.getLeafId()!;
+    parent.appendMessage(assistant([{ type: "text", text: "parent response" }]));
+    const parentFile = parent.getSessionFile();
+    const leaf = parent.getLeafId();
+    assertDefined(parentFile);
+    assertDefined(leaf);
     const bytes = fs.readFileSync(parentFile, "utf8");
     const entries = parent.getBranch(leaf);
     const resolver = createForkContextResolver(parent, "fork");
-    const children = [0, 1, 2, 3, 4, 7].map((index) => resolver.sessionFileForIndex(index)!);
+    const children = [0, 1, 2, 3, 4, 7].map((index) => {
+      const file = resolver.sessionFileForIndex(index);
+      assertDefined(file);
+      return file;
+    });
     assert.equal(
       new Set(children).size,
       6,
@@ -94,7 +102,8 @@ describe("createForkContextResolver", () => {
       );
       assert.deepEqual(JSON.parse(fs.readFileSync(`${file}.subagent-cwd-init`, "utf8")), {});
     }
-    const cached = children.at(-1)!;
+    const cached = children.at(-1);
+    assertDefined(cached);
     fs.unlinkSync(`${cached}.subagent-cwd-init`);
     assert.equal(resolver.sessionFileForIndex(7), cached);
     assert.equal(
@@ -149,7 +158,9 @@ describe("createForkContextResolver", () => {
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const parentFile = path.join(dir, "parent.jsonl");
     fs.writeFileSync(parentFile, "{}");
-    t.mock.method(SessionManager, "open", () => ({ createBranchedSession: () => undefined }));
+    t.mock.method(SessionManager, "open", () => ({
+      createBranchedSession: (): string | undefined => undefined,
+    }));
     const resolver = createForkContextResolver(
       { getSessionFile: () => parentFile, getLeafId: () => "leaf", getSessionDir: () => dir },
       "fork",

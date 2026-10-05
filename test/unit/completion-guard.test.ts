@@ -2,37 +2,13 @@ import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { Message } from "@earendil-works/pi-ai";
+import { toolCall as assistantToolCall, toolResult } from "../support/runtime-messages.ts";
 
 import {
   hasCompletedMutationToolCall,
   resolveCompletionPolicy,
 } from "../../src/runs/shared/completion-guard.ts";
 import { resolveCurrentPath } from "../../src/runs/shared/mutating-tool-guard.ts";
-
-function assistantToolCall(name: string, args: Record<string, unknown> = {}, id?: string): Message {
-  return {
-    role: "assistant",
-    content: [{ type: "toolCall", name, arguments: args, ...(id ? { id } : {}) }],
-  } as unknown as Message;
-}
-
-function toolResult(
-  text: string,
-  isError = false,
-  toolCallId?: string,
-  toolName?: string,
-  details?: unknown,
-): Message {
-  return {
-    role: "toolResult",
-    content: [{ type: "text", text }],
-    isError,
-    details,
-    ...(toolCallId ? { toolCallId } : {}),
-    ...(toolName ? { toolName } : {}),
-  } as unknown as Message;
-}
 
 test("only an explicit completion guard requires mutation; acceptance takes precedence", () => {
   assert.equal(

@@ -1,5 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import { assertDefined } from "../support/assertions.ts";
 import { afterEach, describe, it } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -22,7 +23,7 @@ const tempDirs: string[] = [];
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
-    if (!dir) {
+    if (dir === undefined || dir.length === 0) {
       continue;
     }
     fs.rmSync(dir, { recursive: true, force: true });
@@ -167,9 +168,10 @@ describe("cleanupSingleOutputFile", () => {
     const before = captureSingleOutputSnapshot(outputPath);
 
     const cleanup = cleanupSingleOutputFile(outputPath, "preexisting content", before);
+    assertDefined(cleanup);
 
-    assert.equal(cleanup?.action, "skipped");
-    assert.equal(cleanup?.reason, "file preexisted and was unchanged");
+    assert.equal(cleanup.action, "skipped");
+    assert.equal(cleanup.reason, "file preexisted and was unchanged");
     assert.equal(fs.readFileSync(outputPath, "utf-8"), "preexisting content");
   });
 });

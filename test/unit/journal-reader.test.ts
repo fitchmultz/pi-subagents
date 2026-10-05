@@ -5,14 +5,10 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { syncBuiltinESMExports } from "node:module";
-import { test } from "node:test";
-import {
-  JournalFrames,
-  JsonProjection,
-  NativeJournal,
-  readOutputPage,
-} from "../../src/shared/journal-reader.ts";
+import { test, type TestContext } from "node:test";
+import { observeReads } from "../support/runtime-fs.ts";
+import { record, textAt as firstText } from "../support/assertions.ts";
+import { JournalFrames, NativeJournal, readOutputPage } from "../../src/shared/journal-reader.ts";
 import { readNativeUsage, snapshotNativeBaseline } from "../../src/runs/shared/native-usage.ts";
 
 const usage = {
@@ -23,7 +19,7 @@ const usage = {
   totalTokens: 26,
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 7, total: 13 },
 };
-function temporary(t: { after(fn: () => void): void }) {
+function temporary(t: TestContext) {
   const root = fs.mkdtempSync(path.join(tmpdir(), "pi-subagents-journal-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
@@ -33,8 +29,10 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
   const values: unknown[] = [],
     frames = new JournalFrames(
       () => true,
-      ({ value }) => values.push(value),
-      "live",
+      ({ value }) => {
+        values.push(value);
+      },
+      { policy: "live" },
     );
   const complete = Buffer.from('{"id":"🦄","ignored":{"text":"\\uD83E\\uDD84"}}\r\n');
   for (const byte of complete) {
@@ -47,7 +45,7 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
   assert.equal(frames.finish(), complete.length + Buffer.byteLength('{"id":"later"}\n'));
   assert.deepEqual(values[1], { id: "later" });
   const skipped = new JournalFrames(
-    (path) => !path.length || path[0] === "id",
+    (keys) => keys.length === 0 || keys[0] === "id",
     () => assert.fail("malformed skipped data cannot commit"),
   );
   skipped.write(Buffer.from('{"id":"x","ignored":{"bad":truX}}'));
@@ -60,17 +58,9 @@ test("sealed inspection accepts a valid unterminated record without repair; stri
   const original =
     '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
   fs.writeFileSync(file, original);
-  const read = fs.readSync;
   let bytesRead = 0;
-  t.mock.method(fs, "readSync", function (...args) {
-    const count = read.apply(this, args);
+  observeReads(t, ({ count }) => {
     bytesRead += count;
-    return count;
-  });
-  syncBuiltinESMExports();
-  t.after(() => {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
   });
   assert.equal(new NativeJournal(file).configuration().model, "p/m");
   assert.equal(
@@ -106,14 +96,18 @@ test("sealed inspection and LF-published native bodies never weaken strict accou
   fs.writeFileSync(file, original);
   const sealed = new NativeJournal(file),
     unpublished = new NativeJournal(file, "inspect", true);
-  assert.equal(sealed.body(sealed.byId.get("terminal")!).message.content[0].text, text);
+  const sealedTerminal = sealed.byId.get("terminal");
+  assert.ok(sealedTerminal);
+  assert.equal(firstText(record(sealed.body(sealedTerminal).message).content), text);
   assert.equal(unpublished.byId.has("terminal"), false);
   assert.equal(unpublished.configuration().model, undefined);
   assert.equal(fs.readFileSync(file, "utf8"), original);
   fs.appendFileSync(file, "\n");
   const published = new NativeJournal(file, "inspect", true);
   assert.equal(published.configuration().model, "fixture/faux");
-  assert.equal(published.body(published.byId.get("terminal")!).message.content[0].text, text);
+  const publishedTerminal = published.byId.get("terminal");
+  assert.ok(publishedTerminal);
+  assert.equal(firstText(record(published.body(publishedTerminal).message).content), text);
   assert.throws(
     () => readNativeUsage(file, new Set()),
     SyntaxError,
@@ -131,7 +125,9 @@ test("sealed inspection and LF-published native bodies never weaken strict accou
   );
   fs.appendFileSync(file, "\n");
   assert.deepEqual([...snapshotNativeBaseline(file).ids], ["child", "terminal"]);
-  assert.equal(readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" })![0]!.input, 3);
+  const terminalUsage = readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" });
+  assert.ok(terminalUsage);
+  assert.equal(terminalUsage[0].input, 3);
 });
 
 test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors", () => {
@@ -149,9 +145,11 @@ test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped
     ]) {
       const records: unknown[] = [],
         reader = new JournalFrames(
-          (path) => !path.length,
-          ({ value }) => records.push(value),
-          policy,
+          (keys) => keys.length === 0,
+          ({ value }) => {
+            records.push(value);
+          },
+          { policy },
         );
       reader.write(Buffer.from('{"id":"committed"}\n'));
       assert.throws(() => reader.write(bytes), SyntaxError);
@@ -163,16 +161,9 @@ test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped
 test("output pages preserve Unicode at byte boundaries and do not read the preceding output", (t) => {
   const file = path.join(temporary(t), "output");
   fs.writeFileSync(file, "prefix\n🦄日本語\nend");
-  const read = fs.readSync;
   const reads: Array<{ length: number; position: number | bigint | null }> = [];
-  t.mock.method(fs, "readSync", function (fd, buffer, offset, length, position) {
+  observeReads(t, ({ length, position }) => {
     reads.push({ length, position });
-    return read.call(this, fd, buffer, offset, length, position);
-  });
-  syncBuiltinESMExports();
-  t.after(() => {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
   });
   const first = readOutputPage(file, { offset: 7, length: 5 });
   assert.equal(first.text, "🦄");
@@ -199,7 +190,11 @@ test(
       fd = fs.openSync(file, "wx"),
       hash = createHash("sha256");
     const write = (value: string | Buffer) => {
-      fs.writeSync(fd, value);
+      if (typeof value === "string") {
+        fs.writeSync(fd, value);
+      } else {
+        fs.writeSync(fd, value);
+      }
       hash.update(value);
     };
     const timestamp = "2026-01-01T00:00:00Z";
@@ -305,12 +300,11 @@ test(
         model: "later",
       }) + "\nnot JSON\n",
     );
-    assert.equal(
-      readNativeUsage(file, new Set(["child", "inherited"]), [], {
-        terminalEntryId: "terminal",
-      })![0]!.input,
-      9,
-    );
+    const predecessor = readNativeUsage(file, new Set(["child", "inherited"]), [], {
+      terminalEntryId: "terminal",
+    });
+    assert.ok(predecessor);
+    assert.equal(predecessor[0].input, 9);
     assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
   },
 );

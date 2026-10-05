@@ -17,7 +17,7 @@ afterEach(() => {
   }
 });
 
-function stateWithOwnedRun(id: string): SubagentState {
+function stateWithOwnedRun(id: string): SubagentState & Required<Pick<SubagentState, "ownedRuns">> {
   return {
     baseCwd: "",
     currentSessionId: null,
@@ -45,7 +45,12 @@ function stateWithOwnedRun(id: string): SubagentState {
     completionSeen: new Map(),
     watcher: null,
     watcherRestartTimer: null,
-    resultFileCoalescer: { schedule: () => false, clear: () => {} },
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear: () => {
+        /* This fixture has no queued file handlers. */
+      },
+    },
   };
 }
 
@@ -84,7 +89,9 @@ function writeNestedChild(
   });
 }
 
-function stateWithNestedRoute(route: ReturnType<typeof createNestedRoute>): SubagentState {
+function stateWithNestedRoute(
+  route: ReturnType<typeof createNestedRoute>,
+): ReturnType<typeof stateWithOwnedRun> {
   return stateWithOwnedRun(route.rootRunId);
 }
 
@@ -113,7 +120,7 @@ describe("subagent run id resolver", () => {
       fs.rmSync(path.join(asyncRoot, "shared-id"), { recursive: true, force: true });
       const resolved = resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir });
       assert.equal(resolved?.kind, "nested");
-      assert.equal(resolved?.id, "shared-id");
+      assert.equal(resolved.id, "shared-id");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -135,12 +142,17 @@ describe("subagent run id resolver", () => {
         startedAt: Date.now(),
         steps: [{ agent: "worker", status: "running" }],
       });
-      if (owned) state.ownedRuns!.set(id, stateWithOwnedRun(id).ownedRuns!.get(id)!);
-      else state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+      if (owned) {
+        const run = stateWithOwnedRun(id).ownedRuns.get(id);
+        assert.ok(run);
+        state.ownedRuns.set(id, run);
+      } else {
+        state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+      }
       for (const requested of [id, "direct-canonical-c"]) {
         const resolved = resolveSubagentRunId(requested, { state });
         assert.equal(resolved?.kind, "async");
-        assert.equal(resolved?.id, id);
+        assert.equal(resolved.id, id);
       }
     });
   }
@@ -182,15 +194,11 @@ describe("subagent run id resolver", () => {
       asyncDirRoot: asyncRoot,
     });
     assert.equal(resolved?.kind, "nested");
-    assert.equal(
-      resolved?.kind === "nested" ? resolved.match.rootRunId : undefined,
-      "root-allowed",
-    );
+    assert.equal(resolved.match.rootRunId, "root-allowed");
     const ambiguous = stateWithNestedRoute(allowed);
-    ambiguous.ownedRuns!.set(
-      "root-outside",
-      stateWithOwnedRun("root-outside").ownedRuns!.get("root-outside")!,
-    );
+    const outside = stateWithOwnedRun("root-outside").ownedRuns.get("root-outside");
+    assert.ok(outside);
+    ambiguous.ownedRuns.set("root-outside", outside);
     assert.throws(
       () => resolveSubagentRunId("shared-nest", { state: ambiguous }),
       /Ambiguous subagent run id prefix/,
@@ -212,8 +220,8 @@ describe("subagent run id resolver", () => {
       nested: { routes: [route], descendantOf: { parentRunId: "root-scoped", parentStepIndex: 0 } },
     });
     assert.equal(resolved?.kind, "nested");
-    assert.equal(resolved?.id, "same-child-zero");
-    assert.equal(resolved?.kind === "nested" ? resolved.match.run.parentStepIndex : undefined, 0);
+    assert.equal(resolved.id, "same-child-zero");
+    assert.equal(resolved.match.run.parentStepIndex, 0);
   });
 
   it("reports async prefix ambiguity without parsing resolver error text", () => {

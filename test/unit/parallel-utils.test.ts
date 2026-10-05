@@ -16,20 +16,31 @@ describe("isParallelGroup", () => {
   it("returns true for a parallel step group", () => {
     const step: ParallelStepGroup = {
       parallel: [
-        { agent: "a", task: "do stuff" },
-        { agent: "b", task: "do other stuff" },
+        { agent: "a", task: "do stuff", inheritProjectContext: false, inheritSkills: false },
+        { agent: "b", task: "do other stuff", inheritProjectContext: false, inheritSkills: false },
       ],
     };
     assert.equal(isParallelGroup(step), true);
   });
 
   it("returns false for a sequential step", () => {
-    const step: RunnerSubagentStep = { agent: "a", task: "do stuff" };
+    const step: RunnerSubagentStep = {
+      agent: "a",
+      task: "do stuff",
+      inheritProjectContext: false,
+      inheritSkills: false,
+    };
     assert.equal(isParallelGroup(step), false);
   });
 
   it("returns false when parallel is not an array", () => {
-    const step = { parallel: "not-an-array", agent: "a", task: "x" } as unknown as RunnerStep;
+    const step = {
+      parallel: "not-an-array",
+      agent: "a",
+      task: "x",
+      inheritProjectContext: false,
+      inheritSkills: false,
+    };
     assert.equal(isParallelGroup(step), false);
   });
 });
@@ -37,8 +48,8 @@ describe("isParallelGroup", () => {
 describe("flattenSteps", () => {
   it("returns sequential steps unchanged", () => {
     const steps: RunnerStep[] = [
-      { agent: "a", task: "t1" },
-      { agent: "b", task: "t2" },
+      { agent: "a", task: "t1", inheritProjectContext: false, inheritSkills: false },
+      { agent: "b", task: "t2", inheritProjectContext: false, inheritSkills: false },
     ];
     const flat = flattenSteps(steps);
     assert.equal(flat.length, 2);
@@ -48,14 +59,24 @@ describe("flattenSteps", () => {
 
   it("expands parallel groups into individual steps", () => {
     const steps: RunnerStep[] = [
-      { agent: "scout", task: "find info" },
+      { agent: "scout", task: "find info", inheritProjectContext: false, inheritSkills: false },
       {
         parallel: [
-          { agent: "reviewer-a", task: "review part 1" },
-          { agent: "reviewer-b", task: "review part 2" },
+          {
+            agent: "reviewer-a",
+            task: "review part 1",
+            inheritProjectContext: false,
+            inheritSkills: false,
+          },
+          {
+            agent: "reviewer-b",
+            task: "review part 2",
+            inheritProjectContext: false,
+            inheritSkills: false,
+          },
         ],
       },
-      { agent: "summarizer", task: "combine" },
+      { agent: "summarizer", task: "combine", inheritProjectContext: false, inheritSkills: false },
     ];
     const flat = flattenSteps(steps);
     assert.equal(flat.length, 4);
@@ -71,9 +92,9 @@ describe("flattenSteps", () => {
 
   it("handles empty parallel group", () => {
     const steps: RunnerStep[] = [
-      { agent: "before", task: "x" },
+      { agent: "before", task: "x", inheritProjectContext: false, inheritSkills: false },
       { parallel: [] },
-      { agent: "after", task: "y" },
+      { agent: "after", task: "y", inheritProjectContext: false, inheritSkills: false },
     ];
     const flat = flattenSteps(steps);
     assert.equal(flat.length, 2);
@@ -85,11 +106,7 @@ describe("flattenSteps", () => {
 });
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
+  return Promise.withResolvers();
 }
 
 describe("mapConcurrent", () => {
@@ -112,6 +129,8 @@ describe("mapConcurrent", () => {
 
       assert.equal(running, 1);
       gate.resolve();
+      // The shared concurrency counters must settle before the next limit's isolated run.
+      // oxlint-disable-next-line no-await-in-loop
       await result;
       assert.equal(maxRunning, 1);
     }

@@ -16,9 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
-
-const execFile = promisify(execFileCallback);
+import { record, json } from "../support/assertions.ts";
 const projectRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const buildScript = join(projectRoot, "scripts", "build.mjs");
 
@@ -41,19 +39,27 @@ function faultArgs(): string[] {
 
 async function runBuild(
   cwd: string,
-  env: Record<string, string> = {},
-  nodeArgs: string[] = [],
+  env: Readonly<Record<string, string>> = {},
+  nodeArgs: readonly string[] = [],
 ): Promise<{ code: number; stderr: string }> {
-  try {
-    const { stderr } = await execFile(process.execPath, [...nodeArgs, buildScript], {
-      cwd,
-      env: { ...process.env, ...env },
-    });
-    return { code: 0, stderr };
-  } catch (error) {
-    const failure = error as { code?: number; stderr?: string };
-    return { code: failure.code ?? 1, stderr: failure.stderr ?? "" };
-  }
+  return await new Promise((done) => {
+    execFileCallback(
+      process.execPath,
+      [...nodeArgs, buildScript],
+      {
+        cwd,
+        env: { ...process.env, ...env },
+        encoding: "utf8",
+      },
+      (error, _stdout, stderr) => {
+        let code = 0;
+        if (error !== null) {
+          code = typeof error.code === "number" ? error.code : 1;
+        }
+        done({ code, stderr });
+      },
+    );
+  });
 }
 
 function stagingDirs(cwd: string): string[] {
@@ -77,7 +83,8 @@ test("build.mjs: loaded provenance fingerprints emitted code and stays fixed unt
       existsSync(fileURLToPath(stamp)),
       "a built runtime must carry its own provenance, not reread package.json at doctor time",
     );
-    const loaded = (await import(stamp)).EXTENSION_BUILD;
+    const initialModule: unknown = await import(stamp);
+    const loaded = record(record(initialModule).EXTENSION_BUILD);
     const expectedHash = createHash("sha256")
       .update("index.js\0")
       .update(readFileSync(join(dir, "dist", "index.js")))
@@ -86,8 +93,9 @@ test("build.mjs: loaded provenance fingerprints emitted code and stays fixed unt
     assert.deepEqual(loaded, { version: "1.2.3", sha256: expectedHash });
     writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module", version: "2.0.0" }));
     assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "changed compiled code" })).code, 0);
+    const reimported: unknown = await import(stamp);
     assert.equal(
-      (await import(stamp)).EXTENSION_BUILD,
+      record(reimported).EXTENSION_BUILD,
       loaded,
       "a loaded module must not impersonate the rebuilt files on disk",
     );
@@ -101,7 +109,7 @@ test("build.mjs: loaded provenance fingerprints emitted code and stays fixed unt
       { encoding: "utf8" },
     );
     assert.equal(fresh.status, 0, fresh.stderr);
-    const next = JSON.parse(fresh.stdout);
+    const next = json(fresh.stdout);
     assert.equal(next.version, "2.0.0");
     assert.notEqual(next.sha256, loaded.sha256);
   }));

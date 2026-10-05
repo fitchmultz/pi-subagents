@@ -48,7 +48,7 @@ describe("async result file decoder", () => {
     assert.equal(data.terminalState, "complete");
     assert.equal(data.id, "async-1");
     assert.equal(data.results?.[0]?.agent, "a");
-    assert.deepEqual(data.results?.[0]?.children, [{ id: "nested-a", state: "complete" }]);
+    assert.deepEqual(data.results[0].children, [{ id: "nested-a", state: "complete" }]);
     assert.deepEqual(data.nestedChildren, [{ id: "top-nested", state: "complete" }]);
   });
 

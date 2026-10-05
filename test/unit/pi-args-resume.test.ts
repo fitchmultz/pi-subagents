@@ -8,7 +8,8 @@ import fs, {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { assertDefined, json } from "../support/assertions.ts";
+import { observeReads } from "../support/runtime-fs.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -34,9 +35,10 @@ test("same-cwd resumes omit the redundant fork-only flag without changing saved 
     });
     assert.equal(args.includes("--session-cwd"), false);
     assert.equal(Boolean(env.PI_SUBAGENT_SESSION_CWD), cwd === join(root, "replacement"));
-    if (env.PI_SUBAGENT_SESSION_CWD) {
-      assert.equal(JSON.parse(env.PI_SUBAGENT_SESSION_CWD).cwd, cwd);
-      assert.match(env.NODE_OPTIONS!, /--import=.*session-cwd-preload/);
+    if (env.PI_SUBAGENT_SESSION_CWD !== undefined) {
+      assert.equal(json(env.PI_SUBAGENT_SESSION_CWD).cwd, cwd);
+      assertDefined(env.NODE_OPTIONS);
+      assert.match(env.NODE_OPTIONS, /--import=.*session-cwd-preload/);
     } else {
       assert.equal(env.NODE_OPTIONS, undefined);
     }
@@ -74,7 +76,8 @@ test("uncertain existing headers and unavailable original directories retain the
       inheritSkills: false,
     });
     assert.equal(args.includes("--session-cwd"), false);
-    assert.equal(JSON.parse(env.PI_SUBAGENT_SESSION_CWD!).cwd, root);
+    assertDefined(env.PI_SUBAGENT_SESSION_CWD);
+    assert.equal(json(env.PI_SUBAGENT_SESSION_CWD).cwd, root);
   }
   fixtures.forEach((bytes, index) =>
     assert.equal(readFileSync(sessionFiles[index], "utf8"), bytes),
@@ -84,17 +87,9 @@ test("uncertain existing headers and unavailable original directories retain the
 test("header-only reads preserve split UTF-8, large headers, and EOF without a newline", (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-header-read-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const read = fs.readSync;
   let bytesRead = 0;
-  t.mock.method(fs, "readSync", function (...args) {
-    const count = read.apply(this, args);
+  observeReads(t, ({ count }) => {
     bytesRead += count;
-    return count;
-  });
-  syncBuiltinESMExports();
-  t.after(() => {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
   });
   const cwd = join(root, "é");
   mkdirSync(cwd);

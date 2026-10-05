@@ -56,7 +56,9 @@ for (const toolName of ["subagent", "delegate", "agent_runs"]) {
           undefined,
         );
         failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName, isError: true });
-        if (i < 4) assert.equal(failure, undefined);
+        if (i < 4) {
+          assert.equal(failure, undefined);
+        }
       }
       assert.equal(
         failure,
@@ -72,7 +74,9 @@ for (const toolName of ["subagent", "delegate", "agent_runs"]) {
         const toolCallId = `call-${i}`;
         recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName, args });
         failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName, isError: true });
-        if (i < 4) assert.equal(failure, undefined);
+        if (i < 4) {
+          assert.equal(failure, undefined);
+        }
         recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "one.ts" } });
         recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "two.ts" } });
       }
@@ -88,12 +92,14 @@ for (const toolName of ["subagent", "delegate", "agent_runs"]) {
       for (let i = 0; i < 5; i++) {
         const toolCallId = `call-${i}`;
         const args =
-          i % 2
+          i % 2 !== 0
             ? { task: "nested work", async: false, agent: "delegate" }
             : { agent: "delegate", task: "nested work", async: false };
         recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName, args });
         failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName, isError: true });
-        if (i < 4) assert.equal(failure, undefined);
+        if (i < 4) {
+          assert.equal(failure, undefined);
+        }
       }
       assert.equal(
         failure,

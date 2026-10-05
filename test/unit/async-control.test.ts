@@ -19,7 +19,7 @@ test("commands issued before a durable owner's first status cannot overwrite eac
   assert.deepEqual(
     readAsyncControlRequests(dir, "run")
       .map((request) => request.extendMs)
-      .sort(),
+      .sort((a, b) => (a ?? 0) - (b ?? 0)),
     [500, 800],
   );
 });
@@ -27,7 +27,16 @@ test("commands issued before a durable owner's first status cannot overwrite eac
 test("durable controls retain each request and validate deadline extensions", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-control-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ controlRequestFiles: true }));
+  fs.writeFileSync(
+    path.join(dir, "status.json"),
+    JSON.stringify({
+      runId: "run",
+      mode: "parallel",
+      state: "running",
+      startedAt: 1000,
+      controlRequestFiles: true,
+    }),
+  );
   writeAsyncControlRequest(dir, "run", "interrupt", 1);
   writeAsyncControlRequest(dir, "run", "extend", undefined, 500);
   writeAsyncControlRequest(dir, "run", "extend", undefined, 800);
@@ -44,7 +53,7 @@ test("durable controls retain each request and validate deadline extensions", (t
     requests
       .filter((request) => request.action === "extend")
       .map((request) => request.extendMs)
-      .sort(),
+      .sort((a, b) => (a ?? 0) - (b ?? 0)),
     [500, 800],
   );
   assert.equal(requests.find((request) => request.action === "interrupt")?.index, 1);

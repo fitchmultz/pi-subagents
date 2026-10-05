@@ -1,28 +1,32 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
+import { createNativeSessionFixture } from "../support/native-session.ts";
 import registerSubagentNotify from "../../src/runs/background/notify.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../src/shared/types.ts";
 
-function createPi() {
-  const events = new EventEmitter();
+async function createPi(t: TestContext) {
   const sent: Array<{ message: unknown; options: unknown }> = [];
-  const pi = {
-    events,
-    sendMessage(message: unknown, options: unknown) {
-      sent.push({ message, options });
+  const native = await createNativeSessionFixture({
+    cwd: process.cwd(),
+    agentDir: process.env.HOME ?? process.cwd(),
+    configure(pi) {
+      const capture = {
+        ...pi,
+        sendMessage: (message: unknown, options: unknown) => {
+          sent.push({ message, options });
+        },
+      };
+      registerSubagentNotify(capture);
     },
-  };
-
-  registerSubagentNotify(pi as never);
-
-  return { events, sent };
+  });
+  t.after(native.dispose);
+  return { events: native.pi.events, sent };
 }
 
 describe("registerSubagentNotify", () => {
-  it("skips fallback notifications when grouped intercom result delivery already succeeded", () => {
-    const { events, sent } = createPi();
+  it("skips fallback notifications when grouped intercom result delivery already succeeded", async (t) => {
+    const { events, sent } = await createPi(t);
 
     events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
       id: "notify-intercom-delivered-1",
@@ -37,8 +41,8 @@ describe("registerSubagentNotify", () => {
     assert.deepEqual(sent, []);
   });
 
-  it("uses a fallback summary when a background completion is empty", () => {
-    const { events, sent } = createPi();
+  it("uses a fallback summary when a background completion is empty", async (t) => {
+    const { events, sent } = await createPi(t);
 
     events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
       id: "notify-empty-1",
@@ -60,8 +64,8 @@ describe("registerSubagentNotify", () => {
     });
   });
 
-  it("preserves non-empty completion summaries", () => {
-    const { events, sent } = createPi();
+  it("preserves non-empty completion summaries", async (t) => {
+    const { events, sent } = await createPi(t);
     const summary = "  Done streaming\nAll clear  ";
 
     events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
@@ -86,8 +90,8 @@ describe("registerSubagentNotify", () => {
     });
   });
 
-  it("preserves session paths in notification content", () => {
-    const { events, sent } = createPi();
+  it("preserves session paths in notification content", async (t) => {
+    const { events, sent } = await createPi(t);
 
     events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
       id: "notify-path-1",
@@ -112,8 +116,8 @@ describe("registerSubagentNotify", () => {
     ]);
   });
 
-  it("labels paused completions as paused even without an exit code", () => {
-    const { events, sent } = createPi();
+  it("labels paused completions as paused even without an exit code", async (t) => {
+    const { events, sent } = await createPi(t);
 
     events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
       id: "notify-paused-1",

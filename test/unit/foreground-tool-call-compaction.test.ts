@@ -2,6 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { compactForegroundResult, extractToolArgsPreview } from "../../src/shared/utils.ts";
+import { toolCall } from "../support/runtime-messages.ts";
 import { formatToolCall } from "../../src/shared/formatters.ts";
 
 describe("foreground tool-call compaction", () => {
@@ -10,21 +11,7 @@ describe("foreground tool-call compaction", () => {
       agent: "tester",
       task: "run checks",
       exitCode: 0,
-      messages: [
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              name: "write",
-              arguments: {
-                path: "/tmp/report.md",
-                content: "x".repeat(50_000),
-              },
-            },
-          ],
-        },
-      ],
+      messages: [toolCall("write", { path: "/tmp/report.md", content: "x".repeat(50_000) })],
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
     });
 

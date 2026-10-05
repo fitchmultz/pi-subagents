@@ -6,7 +6,9 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
+import { observeReads } from "../support/runtime-fs.ts";
+import { text } from "../support/assertions.ts";
 
 const { recordRun, loadRunsForAgent } = await import("../../src/runs/shared/run-history.ts");
 const writerModule = new URL("../../src/runs/shared/run-history.ts", import.meta.url).href;
@@ -43,12 +45,14 @@ test("cold timing conversion retains a sample while an attached rollback-journal
   let error = "";
   writer.stderr.setEncoding("utf8");
   writer.stderr.on("data", (chunk) => {
-    error += chunk;
+    error += text(chunk);
   });
   const exited = new Promise<void>((resolve, reject) => {
     writer.once("error", reject);
     writer.once("exit", (status) =>
-      status === 0 ? resolve() : reject(new Error(error || `Writer exited ${status}`)),
+      status === 0
+        ? resolve()
+        : reject(new Error(error.length > 0 ? error : `Writer exited ${String(status)}`)),
     );
   });
   try {
@@ -116,7 +120,7 @@ test("cold timing writers retain their sample when SQLite removes another connec
     assert.equal(exists(database + "-shm"), false);
     vanished = true;
   };
-  t.mock.method(fs, "chmodSync", function (file, mode) {
+  t.mock.method(fs, "chmodSync", function (file: fs.PathLike, mode: fs.Mode) {
     if (file === database && !writer) {
       const child = spawn(
         process.execPath,
@@ -131,7 +135,7 @@ test("cold timing writers retain their sample when SQLite removes another connec
       exited = new Promise<void>((resolve, reject) => {
         child.once("error", reject);
         child.once("exit", (status) =>
-          status === 0 ? resolve() : reject(new Error(`Native writer exited ${status}`)),
+          status === 0 ? resolve() : reject(new Error(`Native writer exited ${String(status)}`)),
         );
       });
       wait(ready);
@@ -139,7 +143,7 @@ test("cold timing writers retain their sample when SQLite removes another connec
     if (file === database + "-wal") {
       closeWriter();
     }
-    return chmod.call(this, file, mode);
+    chmod(file, mode);
   });
   syncBuiltinESMExports();
   try {
@@ -156,7 +160,7 @@ test("cold timing writers retain their sample when SQLite removes another connec
   }
 });
 
-function fixture(t: { after: (fn: () => void) => void }) {
+function fixture(t: TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-history-")),
     previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = root;
@@ -186,10 +190,8 @@ test("timing-history reads preserve other agents and an acknowledged concurrent 
     }));
   const original = entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
   fs.writeFileSync(f.file, original);
-  const read = fs.readSync;
   let acknowledged = false;
-  t.mock.method(fs, "readSync", function (fd, buffer, offset, length, position) {
-    const snapshot = read.call(this, fd, buffer, offset, length, position);
+  observeReads(t, () => {
     if (!acknowledged) {
       const writer = spawnSync(
         process.execPath,
@@ -203,9 +205,7 @@ test("timing-history reads preserve other agents and an acknowledged concurrent 
       assert.equal(writer.status, 0, writer.stderr);
       acknowledged = true;
     }
-    return snapshot;
   });
-  syncBuiltinESMExports();
   let requested;
   try {
     requested = loadRunsForAgent("requested");
@@ -246,13 +246,10 @@ test("timing history bounds legacy reads and retains the latest 1000 samples per
     );
   const original = " ".repeat(2 * 1024 * 1024) + "\n" + rows.join("\n") + "\nnot-json\n";
   fs.writeFileSync(f.file, original);
-  const read = fs.readSync;
   let bytesRead = 0;
-  t.mock.method(fs, "readSync", function (fd, buffer, offset, length, position) {
+  observeReads(t, ({ length }) => {
     bytesRead += length;
-    return read.call(this, fd, buffer, offset, length, position);
   });
-  syncBuiltinESMExports();
   let samples;
   try {
     samples = loadRunsForAgent("requested");
@@ -281,11 +278,13 @@ test("timing history bounds legacy reads and retains the latest 1000 samples per
           let error = "";
           child.stderr.setEncoding("utf8");
           child.stderr.on("data", (chunk) => {
-            error += chunk;
+            error += text(chunk);
           });
           child.once("error", reject);
           child.once("exit", (status) =>
-            status === 0 ? resolve() : reject(new Error(error || `Writer exited ${status}`)),
+            status === 0
+              ? resolve()
+              : reject(new Error(error.length > 0 ? error : `Writer exited ${String(status)}`)),
           );
         }),
     ),
@@ -293,11 +292,12 @@ test("timing history bounds legacy reads and retains the latest 1000 samples per
   const after = loadRunsForAgent("requested");
   assert.equal(after.length, 1000);
   for (const worker of ["one", "two", "three", "four"]) {
-    for (let index = 0; index < 25; index++)
+    for (let index = 0; index < 25; index++) {
       assert.ok(
         after.some((row) => row.task === `${worker}${index}`),
         "each completed concurrent sample survives",
       );
+    }
   }
   assert.equal(loadRunsForAgent("other").length, 500);
   const db = new DatabaseSync(f.database, { readOnly: true });

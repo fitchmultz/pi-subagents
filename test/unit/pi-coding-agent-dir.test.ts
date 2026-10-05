@@ -10,6 +10,8 @@ import { discoverAvailableSkills, resolveSkillPath } from "../../src/agents/skil
 import { loadConfig } from "../../src/extension/config.ts";
 import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs } from "../../src/shared/artifacts.ts";
+import { textAt } from "../support/assertions.ts";
+import { makeMinimalCtx } from "../support/helpers.ts";
 import { getAgentDir } from "../../src/shared/utils.ts";
 
 let tempDir = "";
@@ -22,12 +24,10 @@ function writeFile(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, "utf-8");
 }
 
-function readText(result: { content: Array<{ type: string; text?: string }> }): string {
-  const first = result.content[0];
-  assert.ok(first);
-  assert.equal(first.type, "text");
-  assert.equal(typeof first.text, "string");
-  return first.text;
+function readText(result: {
+  readonly content: readonly { readonly type: string; readonly text?: string }[];
+}): string {
+  return textAt(result.content);
 }
 
 describe("PI_CODING_AGENT_DIR runtime paths", () => {
@@ -134,7 +134,7 @@ Inspect env.
     const createdName = "created-env-agent";
     const created = handleCreate(
       { config: { name: createdName, description: "Created in env dir", scope: "user" } },
-      { cwd, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      makeMinimalCtx(cwd),
     );
     assert.equal(created.isError, false, readText(created));
     assert.equal(fs.existsSync(path.join(agentDir, "agents", `${createdName}.md`)), true);

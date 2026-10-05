@@ -18,6 +18,7 @@ import {
   saveQuestionOwner,
 } from "../../src/runs/shared/supervisor-questions.ts";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
+import { json, assertDefined } from "../support/assertions.ts";
 import type { SavedLaunchConfig } from "../../src/shared/types.ts";
 
 function fixture() {
@@ -171,7 +172,7 @@ test("native selection is projected without rewriting frozen launch or racing ow
       output: false,
       outputMode: "inline",
     };
-    launch.outputSchema = {
+    const outputSchema = {
       type: "object",
       properties: {
         messages: { type: "string" },
@@ -181,10 +182,11 @@ test("native selection is projected without rewriting frozen launch or racing ow
       },
       required: ["messages"],
     };
+    const frozenLaunch = { ...launch, outputSchema };
     saveQuestionContract(
       question.runId,
       0,
-      { launch, outputSchema: launch.outputSchema, sessionFile: question.sessionFile, pid: 123 },
+      { launch: frozenLaunch, outputSchema, sessionFile: question.sessionFile, pid: 123 },
       root,
     );
     fs.writeFileSync(
@@ -211,18 +213,18 @@ test("native selection is projected without rewriting frozen launch or racing ow
         .join("\n") + "\n",
     );
     const file = path.join(root, question.runId, "contracts", "0.json");
-    const legacy = JSON.parse(fs.readFileSync(file, "utf8"));
-    legacy.recordVersion = 2;
-    fs.writeFileSync(file, JSON.stringify(legacy));
+    const legacy = json(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(file, JSON.stringify({ ...legacy, recordVersion: 2 }));
     fs.truncateSync(question.sessionFile, fs.statSync(question.sessionFile).size - 1);
-    const recovered = readQuestionContract(question.runId, 0, root)!;
+    const recovered = readQuestionContract(question.runId, 0, root);
+    assertDefined(recovered);
     assert.equal(recovered.launch?.model, "provider/current");
     assert.equal(
-      recovered.launch?.thinking,
+      recovered.launch.thinking,
       "low",
       "legacy recovery cannot publish a native thinking change without LF",
     );
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).effectiveConfiguration, {
+    assert.deepEqual(json(fs.readFileSync(file, "utf8")).effectiveConfiguration, {
       model: "provider/current",
       modelRecordedAt: Date.parse("2026-01-01T00:01:00Z"),
     });
@@ -241,15 +243,16 @@ test("native selection is projected without rewriting frozen launch or racing ow
     // successor changes the journal or its locator becomes unreadable.
     fs.unlinkSync(question.sessionFile);
     fs.mkdirSync(question.sessionFile);
-    const projected = readQuestionContract(question.runId, 0, root)!;
+    const projected = readQuestionContract(question.runId, 0, root);
+    assertDefined(projected);
     assert.equal(projected.launch?.model, "provider/current");
-    assert.equal(projected.launch?.thinking, "high");
-    assert.equal(projected.launch?.output, false);
-    assert.equal(projected.launch?.agent.inheritSkills, false);
-    assert.deepEqual(projected.outputSchema, launch.outputSchema);
+    assert.equal(projected.launch.thinking, "high");
+    assert.equal(projected.launch.output, false);
+    assert.equal(projected.launch.agent.inheritSkills, false);
+    assert.deepEqual(projected.outputSchema, outputSchema);
     assert.deepEqual(
-      projected.launch?.outputSchema,
-      launch.outputSchema,
+      projected.launch.outputSchema,
+      outputSchema,
       "continuation's frozen schema is complete even when its properties use transcript/output field names",
     );
     assert.equal(fs.readFileSync(file, "utf8"), before);
@@ -262,8 +265,8 @@ test("native selection is projected without rewriting frozen launch or racing ow
     assert.equal(created.launch?.model, "provider/current");
     assert.equal(created.pid, process.pid);
     assert.equal(fs.readFileSync(file, "utf8"), afterOwnerUpdate);
-    assert.deepEqual(JSON.parse(afterOwnerUpdate).launch, launch);
-    assert.deepEqual(JSON.parse(afterOwnerUpdate).effectiveConfiguration, {
+    assert.deepEqual(json(afterOwnerUpdate).launch, frozenLaunch);
+    assert.deepEqual(json(afterOwnerUpdate).effectiveConfiguration, {
       model: "provider/current",
       thinking: "high",
     });

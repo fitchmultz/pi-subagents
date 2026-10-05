@@ -1,5 +1,4 @@
 import "../support/isolated-home.ts";
-import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,7 +15,10 @@ function parentToolEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function runProbe(script: string, options: { env?: NodeJS.ProcessEnv } = {}): void {
+function runProbe(
+  script: string,
+  options: { readonly env?: Readonly<NodeJS.ProcessEnv> } = {},
+): void {
   execFileSync(process.execPath, ["--input-type=module", "--eval", String.raw`${script}`], {
     cwd: projectRoot,
     stdio: "pipe",

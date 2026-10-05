@@ -4,7 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, it } from "node:test";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { textAt as firstText, json, record, array, assertDefined } from "../support/assertions.ts";
+import { makeMinimalCtx } from "../support/helpers.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AsyncStatus, OwnedRun, SubagentState } from "../../src/shared/types.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-durable-storage-"));
@@ -32,7 +34,11 @@ async function waitFor(check: () => boolean, message: string) {
   const deadline = performance.now() + 5_000;
   while (!check()) {
     assert.ok(performance.now() < deadline, message);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    // Observe the prior publication before polling again; these checks cannot run concurrently.
+    // oxlint-disable-next-line no-await-in-loop
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
   }
 }
 
@@ -50,7 +56,7 @@ function snapshot(dir: string): unknown {
     return [entry.name, stat.ino, stat.mtimeNs, fs.readFileSync(file, "utf8")];
   });
 }
-function state(): SubagentState {
+function state(): SubagentState & Required<Pick<SubagentState, "ownedRuns">> {
   return {
     baseCwd: root,
     currentSessionId: "parent-file",
@@ -62,7 +68,12 @@ function state(): SubagentState {
     watcher: null,
     watcherRestartTimer: null,
     ownedRuns: new Map(),
-    resultFileCoalescer: { schedule: () => false, clear() {} },
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear() {
+        /* File scheduling is disabled in this storage fixture. */
+      },
+    },
   };
 }
 function fixture(id: string) {
@@ -84,7 +95,7 @@ function fixture(id: string) {
   write(path.join(dir, "status.json"), status);
   write(path.join(dir, "launch.json"), { runtimeVersion: 2, id, artifacts: false, share: false });
   saveQuestionOwner(id, "parent");
-  const run: OwnedRun = {
+  const run = {
     runId: id,
     rootRunId: id,
     ownerSessionId: "parent",
@@ -95,7 +106,7 @@ function fixture(id: string) {
     startedAt: 100,
     asyncDir: dir,
     children: [{ agent: "worker", index: 0, sessionFile }],
-  };
+  } satisfies OwnedRun;
   return { dir, sessionFile, status, run };
 }
 const dead = () => {
@@ -118,8 +129,9 @@ it("v2 discovery, inspection and restore are pure and never infer group success 
   const reconciled = reconcileAsyncRun(dir, { kill: dead });
   assert.equal(reconciled.repaired, false);
   assert.equal(reconciled.status?.state, "failed");
-  assert.equal(reconciled.status?.steps?.[0]?.status, "complete");
-  assert.match(reconciled.message!, /Completion is unconfirmed/);
+  assert.equal(reconciled.status.steps?.[0]?.status, "complete");
+  assertDefined(reconciled.message);
+  assert.match(reconciled.message, /Completion is unconfirmed/);
   assert.equal(ownedRunView(run, local).state, "unknown");
   assert.equal(ownedRunView(run, local).children[0]?.result?.finalOutput, "Child evidence");
   assert.equal(
@@ -127,18 +139,12 @@ it("v2 discovery, inspection and restore are pure and never infer group success 
     "failed",
   );
   assert.ok(listAsyncRuns(ASYNC_DIR, { kill: dead }).some((entry) => entry.id === run.runId));
-  const ctx = {
-    cwd: root,
-    sessionManager: {
-      getSessionId: () => "parent",
-      getSessionFile: () => "parent-file",
-      getEntries: () => [],
-      getHeader: () => ({}),
-    },
-  } as unknown as ExtensionContext;
+  const manager = SessionManager.inMemory(root, { id: "parent" });
+  manager.getSessionFile = () => "parent-file";
+  const ctx = makeMinimalCtx(root, { sessionManager: manager });
   restoreOwnedRuns(local, ctx);
-  assert.equal(local.ownedRuns?.get(run.runId)?.asyncDir, dir);
-  assert.equal(local.ownedRuns?.get(run.runId)?.legacy, false);
+  assert.equal(local.ownedRuns.get(run.runId)?.asyncDir, dir);
+  assert.equal(local.ownedRuns.get(run.runId)?.legacy, false);
   assert.deepEqual(snapshot(dir), before);
   assert.equal(fs.existsSync(path.join(dir, "result.json")), false);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "status.json"), "utf8")), status);
@@ -183,7 +189,7 @@ it("v2 final results survive temporary cleanup and supply full execution results
   });
   // A stale legacy copy cannot supersede the v2 owner.
   write(path.join(ASYNC_DIR, run.runId, "status.json"), {
-    ...JSON.parse(fs.readFileSync(path.join(dir, "status.json"), "utf8")),
+    ...json(fs.readFileSync(path.join(dir, "status.json"), "utf8")),
     runtimeVersion: undefined,
     state: "failed",
   });
@@ -210,7 +216,7 @@ it("v2 final results survive temporary cleanup and supply full execution results
   );
   assert.equal(execution.details.results[0]?.artifactPaths?.metadataPath, "metadata");
   assert.deepEqual(execution.details.outputs, { report: { path: "report.md" } });
-  assert.match(execution.content[0]!.text!, /Worktree changes retained/);
+  assert.match(firstText(execution.content), /Worktree changes retained/);
   assert.deepEqual(snapshot(dir), before);
 });
 
@@ -230,17 +236,12 @@ it("active legacy runs remain in their original directory and keep partial confi
   });
   const before = snapshot(path.join(ASYNC_DIR, id));
   const local = state();
-  const ctx = {
-    cwd: root,
-    sessionManager: {
-      getSessionId: () => "parent",
-      getSessionFile: () => "parent-file",
-      getEntries: () => [],
-      getHeader: () => ({}),
-    },
-  } as unknown as ExtensionContext;
+  const manager = SessionManager.inMemory(root, { id: "parent" });
+  manager.getSessionFile = () => "parent-file";
+  const ctx = makeMinimalCtx(root, { sessionManager: manager });
   restoreOwnedRuns(local, ctx);
-  const run = local.ownedRuns!.get(id)!;
+  const run = local.ownedRuns.get(id);
+  assert.ok(run);
   assert.equal(run.asyncDir, path.join(ASYNC_DIR, id));
   assert.equal(resolveAsyncResumeTarget({ id }).kind, "live");
   assert.equal(ownedRunView(run, local).children[0]?.configuration, "legacy-partial");
@@ -268,7 +269,7 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
   });
   const before = fs.readFileSync(file, "utf8");
   const local = state();
-  local.ownedRuns!.set(run.runId, run);
+  local.ownedRuns.set(run.runId, run);
   const events = createEventBus();
   const delivered: unknown[] = [];
   events.on("subagent:async-complete", (data) => {
@@ -280,7 +281,7 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
     await waitFor(() => delivered.length === 1, "canonical result must publish");
     await watcher.joinInFlight();
     assert.equal(delivered.length, 1);
-    assert.equal((delivered[0] as typeof result).results[0]?.output, "Canonical full result");
+    assert.equal(record(array(record(delivered[0]).results)[0]).output, "Canonical full result");
     assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${run.runId}.json`)), false);
     assert.equal(fs.readFileSync(file, "utf8"), before);
     watcher.stopResultWatcher();
@@ -321,30 +322,31 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
     waitingRuns: new Map([[run.runId, 1]]),
     isRunResultConsumed: () => consumed,
   });
-  local.ownedRuns!.set(run.runId, run);
+  local.ownedRuns.set(run.runId, run);
   const events = createEventBus();
-  const delivered: Array<{ suppressNotification?: boolean }> = [];
-  events.on("subagent:async-complete", (data) =>
-    delivered.push(data as { suppressNotification?: boolean }),
-  );
+  const delivered: Array<Readonly<Record<string, unknown>>> = [];
+  events.on("subagent:async-complete", (data) => {
+    delivered.push(record(data));
+  });
   const watcher = createResultWatcher({ events }, local, RESULTS_DIR);
   try {
     watcher.primeExistingResults();
     await waitFor(() => delivered.length > 0, "waiting owner must process result");
     await watcher.joinInFlight();
     assert.ok(delivered.length > 0);
-    assert.ok(delivered.every((entry) => entry.suppressNotification));
+    assert.ok(delivered.every((entry) => entry.suppressNotification === true));
     assert.equal(fs.existsSync(notification), true);
     assert.equal(local.completionSeen.size, 0);
-    assert.equal(run.delivery, undefined);
+    const inspectedRun: OwnedRun = run;
+    assert.equal(inspectedRun.delivery, undefined);
     local.waitingRuns.clear();
     watcher.primeExistingResults();
     await waitFor(
-      () => delivered.some((entry) => !entry.suppressNotification),
+      () => delivered.some((entry) => entry.suppressNotification !== true),
       "detached owner must publish once",
     );
     await watcher.joinInFlight();
-    assert.equal(delivered.filter((entry) => !entry.suppressNotification).length, 1);
+    assert.equal(delivered.filter((entry) => entry.suppressNotification !== true).length, 1);
     assert.equal(fs.existsSync(notification), false);
     assert.equal(fs.existsSync(path.join(dir, "result.json")), true);
     consumed = true;
@@ -357,7 +359,7 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
     );
     await watcher.joinInFlight();
     assert.equal(
-      delivered.filter((entry) => !entry.suppressNotification).length,
+      delivered.filter((entry) => entry.suppressNotification !== true).length,
       1,
       "native consumption prevents a second notification",
     );
@@ -371,7 +373,7 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 it("nested v2 owner loss is projected without publishing a competing completion event", () => {
   const route = createNestedRoute("nested-owner");
   const dir = path.join(
-    process.env.PI_SUBAGENT_TEMP_ROOT!,
+    path.join(root, "pi-subagents-runtime"),
     "nested-subagent-runs",
     route.rootRunId,
     "nested-v2",
@@ -401,9 +403,9 @@ it("nested v2 owner loss is projected without publishing a competing completion 
     },
   });
   projectNestedEvents(route);
-  const before = snapshot(process.env.PI_SUBAGENT_TEMP_ROOT!);
+  const before = snapshot(path.join(root, "pi-subagents-runtime"));
   const projected = reconcileNestedAsyncDescendants(route, { kill: dead });
-  assert.deepEqual(snapshot(process.env.PI_SUBAGENT_TEMP_ROOT!), before);
+  assert.deepEqual(snapshot(path.join(root, "pi-subagents-runtime")), before);
   assert.equal(projected[0]?.state, "failed");
   assert.match(projected[0]?.error ?? "", /Completion is unconfirmed/);
 });

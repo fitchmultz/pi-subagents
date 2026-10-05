@@ -4,7 +4,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  type BeforeAgentStartEvent,
+  type Skill,
+} from "@earendil-works/pi-coding-agent";
+import { fauxProvider } from "@earendil-works/pi-ai";
+import { createNativeSessionFixture } from "../support/native-session.ts";
+import { makeMinimalCtx } from "../support/helpers.ts";
+import { assertDefined, json, array, records, text } from "../support/assertions.ts";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/shared/pi-args.ts";
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
@@ -27,33 +35,66 @@ const envSnapshot = {
   PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA: process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA,
 };
 
-function promptEvent() {
+function skill(name: string): Skill {
   return {
-    systemPrompt: "Opaque prompt is never parsed",
-    systemPromptOptions: {
-      customPrompt: "Selected replacement",
-      appendSystemPrompt: '<skill name="explicit">Selected instructions</skill>',
-      sections: {} as Record<string, string>,
-      skills: [{ name: "safe-bash" }, { name: "pi-subagents" }],
-      contextFiles: [{ path: "/repo/AGENTS.md", content: "Selected project policy" }],
-      forceSystemPrompt: undefined as string | undefined,
+    name,
+    description: name,
+    filePath: `/skills/${name}/SKILL.md`,
+    baseDir: `/skills/${name}`,
+    disableModelInvocation: false,
+    sourceInfo: {
+      path: `/skills/${name}/SKILL.md`,
+      source: "fixture",
+      scope: "user",
+      origin: "top-level",
     },
   };
 }
 
-function registerPromptHandler() {
-  let handler: (event: ReturnType<typeof promptEvent>) => unknown;
-  registerSubagentPromptRuntime({
-    on(name: string, callback: typeof handler) {
-      if (name === "before_agent_start") {
-        handler = callback;
-      }
+function promptEvent(): BeforeAgentStartEvent {
+  return {
+    type: "before_agent_start",
+    prompt: "Assigned task",
+    systemPrompt: "Opaque prompt is never parsed",
+    systemPromptOptions: {
+      cwd: "/fixture",
+      selectedTools: [],
+      toolSnippets: {},
+      toolGuidelines: {},
+      promptGuidelines: [],
+      customPrompt: "Selected replacement",
+      appendSystemPrompt: '<skill name="explicit">Selected instructions</skill>',
+      sections: {},
+      skills: [skill("safe-bash"), skill("pi-subagents")],
+      contextFiles: [{ path: "/repo/AGENTS.md", content: "Selected project policy" }],
     },
-  } as never);
-  return (event: ReturnType<typeof promptEvent>) => handler(event);
+  };
 }
 
-afterEach(() => {
+const disposals: Array<() => Promise<void>> = [];
+async function runtime() {
+  const native = await createNativeSessionFixture({
+    cwd: "/fixture",
+    agentDir: os.tmpdir(),
+    configure: registerSubagentPromptRuntime,
+    bindExtensions: false,
+  });
+  disposals.push(native.dispose);
+  const emit = async (name: string, event: unknown, ctx: unknown = native.context) => {
+    const handler = native.extensions[0].handlers.get(name)?.at(-1);
+    assertDefined(handler);
+    return await handler(event, ctx);
+  };
+  return { ...native, emit };
+}
+
+async function registerPromptHandler() {
+  const h = await runtime();
+  return async (event: unknown) => await h.emit("before_agent_start", event);
+}
+
+afterEach(async () => {
+  await Promise.all(disposals.splice(0).map((dispose) => dispose()));
   for (const key of ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_NATIVE_BASELINE_COUNT"] as const) {
     if (envSnapshot[key] === undefined) {
       delete process.env[key];
@@ -151,12 +192,12 @@ describe("subagent prompt runtime", () => {
       ["portable"],
     );
     assert.deepEqual(cursor.read(portable).entries, []);
-    const transient = { ...source, getSessionFile: () => undefined };
+    const transient = { ...source, getSessionFile: (): string | undefined => undefined };
     assert.equal(cursor.read(transient).reset, true);
     assert.deepEqual(cursor.read(transient).entries, []);
   });
 
-  it("observes append-only native history with work proportional to new entries", (t) => {
+  it("observes append-only native history with work proportional to new entries", async (t) => {
     process.env.PI_SUBAGENT_CHILD = "1";
     process.env.PI_SUBAGENT_NATIVE_BASELINE_COUNT = "4000";
     const manager = SessionManager.inMemory("/fixture");
@@ -171,35 +212,31 @@ describe("subagent prompt runtime", () => {
     t.after(() => fs.rmSync(path.dirname(file), { recursive: true, force: true }));
     let visits = 0,
       lookups = 0;
-    const source = {
-      getSessionId: () => manager.getSessionId(),
-      getSessionFile: () => file,
-      getLeafId: () => manager.getLeafId(),
-      getEntryCount: () => manager.getEntryCount(),
-      getEntry: (id: string) => {
-        visits++;
-        lookups++;
-        return manager.getEntry(id);
-      },
-      getEntries: () => {
-        const entries = manager.getEntries();
-        visits += entries.length;
-        return entries;
-      },
-    };
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
-    registerSubagentPromptRuntime({
-      on: (name: string, handler: (event: unknown, ctx: unknown) => void) =>
-        handlers.set(name, handler),
-      getThinkingLevel: () => "off",
-    } as never);
+
+    const h = await runtime();
     const emitted: string[] = [];
     t.mock.method(process.stdout, "write", (chunk: unknown) => {
-      emitted.push(String(chunk));
+      emitted.push(text(chunk));
       return true;
     });
-    const ctx = { sessionManager: source, model: { provider: "fixture", id: "faux" } };
-    handlers.get("session_start")!({}, ctx);
+    const ctx = makeMinimalCtx("/fixture", {
+      model: { ...fauxProvider().getModel(), provider: "fixture", id: "faux" },
+    });
+    const entryLookup = manager.getEntry.bind(manager),
+      entryScan = manager.getEntries.bind(manager);
+    manager.getSessionFile = () => file;
+    manager.getEntry = (id) => {
+      visits++;
+      lookups++;
+      return entryLookup(id);
+    };
+    manager.getEntries = () => {
+      const values = entryScan();
+      visits += values.length;
+      return values;
+    };
+    const observed = { ...ctx, sessionManager: manager };
+    await h.emit("session_start", { type: "session_start" }, observed);
     assert.ok(
       lookups < 10,
       `startup must use bulk references, not one filesystem-refreshing lookup per historical entry: ${lookups}`,
@@ -207,21 +244,27 @@ describe("subagent prompt runtime", () => {
     const ids: string[] = [];
     for (let index = 0; index < 2000; index++) {
       ids.push(manager.appendMessage({ role: "user", content: `New ${index}`, timestamp: index }));
-      handlers.get("message_end")!({ message: { role: "user" } }, ctx);
-      handlers.get("turn_end")!({}, ctx);
+      // Native message publication is observed before the next turn boundary.
+      // oxlint-disable-next-line no-await-in-loop
+      await h.emit("message_end", { type: "message_end", message: { role: "user" } }, observed);
+      // Observe this persisted turn before appending another message to the same journal.
+      // oxlint-disable-next-line no-await-in-loop
+      await h.emit("turn_end", { type: "turn_end" }, observed);
     }
-    handlers.get("agent_settled")!({}, ctx);
+    await h.emit("agent_settled", { type: "agent_settled" }, observed);
     t.mock.restoreAll();
-    const records = emitted.map((line) => JSON.parse(line));
-    assert.equal(records[0].type, "subagent.native_baseline");
-    assert.equal(records[0].entryIds.length, 4000);
+    const reports = emitted.map(json);
+    assert.equal(reports[0].type, "subagent.native_baseline");
+    assert.equal(array(reports[0].entryIds).length, 4000);
     assert.deepEqual(
-      records.slice(1, -1).map((record) => record.entries.map((entry: { id: string }) => entry.id)),
+      reports.slice(1, -1).map((report) => records(report.entries).map((entry) => entry.id)),
       ids.map((id) => [id]),
     );
-    assert.deepEqual(records.at(-1).entries, []);
-    assert.equal(records.at(-1).messageCount, 2000);
-    assert.deepEqual(records.at(-1).configuration, { model: "fixture/faux", thinking: "off" });
+    const terminal = reports.at(-1);
+    assertDefined(terminal);
+    assert.deepEqual(terminal.entries, []);
+    assert.equal(terminal.messageCount, 2000);
+    assert.deepEqual(terminal.configuration, { model: "fixture/faux", thinking: "off" });
     t.diagnostic(`4000 inherited + 2000 new entries: ${visits} native entry visits`);
     assert.ok(
       visits < 20_000,
@@ -229,38 +272,34 @@ describe("subagent prompt runtime", () => {
     );
   });
 
-  it("retains initial in-memory entries, off-branch appends, and replacement entries", (t) => {
+  it("retains initial in-memory entries, off-branch appends, and replacement entries", async (t) => {
     process.env.PI_SUBAGENT_CHILD = "1";
     const manager = SessionManager.inMemory("/fixture");
     const root = manager.appendCustomEntry("root", {});
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
-    registerSubagentPromptRuntime({
-      on: (name: string, handler: (event: unknown, ctx: unknown) => void) =>
-        handlers.set(name, handler),
-      getThinkingLevel: () => "off",
-    } as never);
+    const h = await runtime();
     const emitted: string[] = [];
     t.mock.method(process.stdout, "write", (chunk: unknown) => {
-      emitted.push(String(chunk));
+      emitted.push(text(chunk));
       return true;
     });
-    const ctx = { sessionManager: manager };
-    handlers.get("session_start")!({}, ctx);
-    handlers.get("turn_end")!({}, ctx);
+    let observed = makeMinimalCtx("/fixture", { sessionManager: manager });
+    await h.emit("session_start", { type: "session_start" }, observed);
+    await h.emit("turn_end", { type: "turn_end" }, observed);
     const first = manager.appendCustomEntry("first", {});
-    handlers.get("turn_end")!({}, ctx);
+    await h.emit("turn_end", { type: "turn_end" }, observed);
     manager.branch(root);
     const abandoned = manager.appendCustomEntry("abandoned", {});
     manager.branch(first);
     const active = manager.appendCustomEntry("active", {});
-    handlers.get("turn_end")!({}, ctx);
-    ctx.sessionManager = SessionManager.inMemory("/fixture");
-    const replacement = ctx.sessionManager.appendCustomEntry("replacement", {});
-    handlers.get("session_start")!({}, ctx);
-    handlers.get("turn_end")!({}, ctx);
+    await h.emit("turn_end", { type: "turn_end" }, observed);
+    const replacementManager = SessionManager.inMemory("/fixture");
+    observed = makeMinimalCtx("/fixture", { sessionManager: replacementManager });
+    const replacement = replacementManager.appendCustomEntry("replacement", {});
+    await h.emit("session_start", { type: "session_start" }, observed);
+    await h.emit("turn_end", { type: "turn_end" }, observed);
     t.mock.restoreAll();
     assert.deepEqual(
-      emitted.map((line) => JSON.parse(line).entries.map((entry: { id: string }) => entry.id)),
+      emitted.map((line) => records(json(line).entries).map((entry) => entry.id)),
       [[root], [first], [abandoned, active], [replacement]],
     );
   });
@@ -281,30 +320,16 @@ describe("subagent prompt runtime", () => {
       );
       process.env[STRUCTURED_OUTPUT_SCHEMA_ENV] = schemaPath;
       process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = outputPath;
-      let execute:
-        | ((_id: string, params: { value: unknown }) => Promise<{ terminate?: boolean }>)
-        | undefined;
-
-      registerSubagentPromptRuntime({
-        registerTool(tool: {
-          name: string;
-          execute: (_id: string, params: { value: unknown }) => Promise<{ terminate?: boolean }>;
-        }) {
-          if (tool.name === "structured_output") {
-            execute = tool.execute;
-          }
-        },
-        on() {},
-      } as {
-        registerTool(tool: {
-          name: string;
-          execute: (_id: string, params: { value: unknown }) => Promise<{ terminate?: boolean }>;
-        }): void;
-        on(): void;
-      });
-
-      assert.ok(execute, "structured_output tool should be registered");
-      const result = await execute("tool-1", { value: { ok: true } });
+      const h = await runtime();
+      const tool = h.session.extensionRunner.getToolDefinition("structured_output");
+      assertDefined(tool);
+      const result = await tool.execute(
+        "tool-1",
+        { value: { ok: true } },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createToolContext("tool-1", undefined),
+      );
       assert.equal(result.terminate, true);
       assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { ok: true });
     } finally {
@@ -312,12 +337,13 @@ describe("subagent prompt runtime", () => {
     }
   });
 
-  it("adds child sections without reparsing selected skills, project policy, or replacement prompts", () => {
+  it("adds child sections without reparsing selected skills, project policy, or replacement prompts", async () => {
     process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "0";
     process.env.PI_SUBAGENT_INHERIT_SKILLS = "0";
     process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
     const event = promptEvent();
-    assert.equal(registerPromptHandler()(event), undefined);
+    const run = await registerPromptHandler();
+    assert.equal(await run(event), undefined);
     assert.equal(
       event.systemPromptOptions.sections.subagent_role,
       CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
@@ -331,15 +357,17 @@ describe("subagent prompt runtime", () => {
     assert.deepEqual(event.systemPromptOptions.contextFiles, [
       { path: "/repo/AGENTS.md", content: "Selected project policy" },
     ]);
-    assert.deepEqual(event.systemPromptOptions.skills, [{ name: "safe-bash" }]);
+    assert.deepEqual(event.systemPromptOptions.skills, [skill("safe-bash")]);
   });
 
-  it("replaces only its structured boundary when switching fanout policy", () => {
-    const run = registerPromptHandler();
+  it("replaces only its structured boundary when switching fanout policy", async () => {
+    const run = await registerPromptHandler();
     const event = promptEvent();
     for (const allowed of [false, true, false]) {
       process.env[SUBAGENT_FANOUT_CHILD_ENV] = allowed ? "1" : "0";
-      run(event);
+      // Inspect this policy's projection before replacing the shared environment flag.
+      // oxlint-disable-next-line no-await-in-loop
+      await run(event);
       if (allowed) {
         assert.ok(
           event.systemPromptOptions.sections.subagent_role.startsWith(
@@ -374,11 +402,12 @@ describe("subagent prompt runtime", () => {
     }
   });
 
-  it("preserves an earlier opaque full override and makes the child boundary visible", () => {
+  it("preserves an earlier opaque full override and makes the child boundary visible", async () => {
     process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
     const event = promptEvent();
     event.systemPromptOptions.forceSystemPrompt = "EXACT OVERRIDE";
-    registerPromptHandler()(event);
+    const run = await registerPromptHandler();
+    await run(event);
     assert.equal(
       event.systemPromptOptions.forceSystemPrompt,
       `EXACT OVERRIDE\n\n<subagent_role>\n${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n</subagent_role>`,
@@ -386,60 +415,15 @@ describe("subagent prompt runtime", () => {
   });
 
   it("sets the child intercom session name from env during agent startup", async () => {
-    let sessionName: string | undefined;
-    let beforeAgentStart:
-      | ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>)
-      | undefined;
     process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = "subagent-worker-78f659a3";
-
-    registerSubagentPromptRuntime({
-      on(
-        event: string,
-        handler: (payload: {
-          systemPrompt: string;
-        }) => Promise<{ systemPrompt: string } | undefined>,
-      ) {
-        if (event === "before_agent_start") {
-          beforeAgentStart = handler;
-        }
-      },
-      setSessionName(name: string) {
-        sessionName = name;
-      },
-    } as {
-      on(
-        event: string,
-        handler: (payload: {
-          systemPrompt: string;
-        }) => Promise<{ systemPrompt: string } | undefined>,
-      ): void;
-      setSessionName(name: string): void;
-    });
-
-    await beforeAgentStart?.(promptEvent());
-    assert.equal(sessionName, "subagent-worker-78f659a3");
+    const h = await runtime();
+    await h.emit("before_agent_start", promptEvent());
+    assert.equal(h.pi.getSessionName(), "subagent-worker-78f659a3");
   });
 
-  it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {
+  it("filters parent-only artifacts from polluted fork context while preserving ordinary history", async () => {
     process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
-    let contextHandler:
-      | ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined)
-      | undefined;
-    registerSubagentPromptRuntime({
-      on(
-        event: string,
-        handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined,
-      ) {
-        if (event === "context") {
-          contextHandler = handler;
-        }
-      },
-    } as {
-      on(
-        event: string,
-        handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined,
-      ): void;
-    });
+    const h = await runtime();
 
     const priorParentTurn = {
       role: "user",
@@ -498,7 +482,7 @@ describe("subagent prompt runtime", () => {
       currentTask,
     ];
     const saved = structuredClone(messages);
-    assert.deepEqual(contextHandler?.({ messages }), {
+    assert.deepEqual(await h.emit("context", { type: "context", messages }), {
       messages: [
         priorParentTurn,
         readResult,
@@ -508,7 +492,7 @@ describe("subagent prompt runtime", () => {
       ],
     });
     process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
-    assert.deepEqual(contextHandler?.({ messages }), {
+    assert.deepEqual(await h.emit("context", { type: "context", messages }), {
       messages: [
         priorParentTurn,
         ...callsAndResults,
@@ -521,25 +505,8 @@ describe("subagent prompt runtime", () => {
     assert.deepEqual(messages, saved, "context projection never mutates the saved history");
   });
 
-  it("does not rewrite child context when no parent-only artifacts are present", () => {
-    let contextHandler:
-      | ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined)
-      | undefined;
-    registerSubagentPromptRuntime({
-      on(
-        event: string,
-        handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined,
-      ) {
-        if (event === "context") {
-          contextHandler = handler;
-        }
-      },
-    } as {
-      on(
-        event: string,
-        handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined,
-      ): void;
-    });
+  it("does not rewrite child context when no parent-only artifacts are present", async () => {
+    const h = await runtime();
 
     const messages = [
       { role: "user", content: "Task" },
@@ -550,6 +517,6 @@ describe("subagent prompt runtime", () => {
       },
     ];
 
-    assert.equal(contextHandler?.({ messages }), undefined);
+    assert.equal(await h.emit("context", { type: "context", messages }), undefined);
   });
 });

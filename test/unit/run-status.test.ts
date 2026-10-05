@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
+import { textAt, json, array, record } from "../support/assertions.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
 
 const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-suite-"));
@@ -27,9 +28,8 @@ function rmrf(target: string): void {
   fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 }
 
-function textContent(result: ReturnType<typeof inspectSubagentStatus>): string {
-  const first = result.content[0];
-  return first?.type === "text" ? first.text : "";
+function textContent(result: { readonly content: readonly unknown[] }): string {
+  return textAt(result.content);
 }
 
 function statusState(baseCwd: string, currentSessionId: string): SubagentState {
@@ -43,7 +43,12 @@ function statusState(baseCwd: string, currentSessionId: string): SubagentState {
     completionSeen: new Map(),
     watcher: null,
     watcherRestartTimer: null,
-    resultFileCoalescer: { schedule: () => false, clear() {} },
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear() {
+        /* Status inspection schedules no coalesced file work in this fixture. */
+      },
+    },
   };
 }
 
@@ -70,9 +75,9 @@ describe("async run status inspection", () => {
     const result = await ownedRunList(state, { offset: 20, limit: 20 });
     assert.deepEqual(result.details.runs, []);
     assert.equal(result.details.runList?.total, 1);
-    assert.equal(result.details.runList?.offset, 20);
-    assert.equal(result.details.runList?.limit, 20);
-    assert.equal(result.details.runList?.freshness.authoritative, false);
+    assert.equal(result.details.runList.offset, 20);
+    assert.equal(result.details.runList.limit, 20);
+    assert.equal(result.details.runList.freshness.authoritative, false);
     assert.match(textContent(result), /Owned runs: 1 \(showing none; attention order\)/);
   });
 
@@ -204,7 +209,7 @@ describe("async run status inspection", () => {
         ["failed", "completed"],
       );
       assert.ok(
-        result.details.managementControls?.every((control) =>
+        result.details.managementControls.every((control) =>
           control.capabilities.includes("resume"),
         ),
       );
@@ -283,11 +288,9 @@ describe("async run status inspection", () => {
         text,
         /Continue: agent_runs\(\{ action: "continue", id: "run-stale", message: "\.\.\." \}\)/,
       );
-      const resultJson = JSON.parse(
-        fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8"),
-      );
+      const resultJson = json(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8"));
       assert.equal(resultJson.success, false);
-      assert.equal(resultJson.results[0].sessionFile, sessionFile);
+      assert.equal(record(array(resultJson.results)[0]).sessionFile, sessionFile);
     } finally {
       rmrf(root);
     }
@@ -451,6 +454,21 @@ describe("async run status inspection", () => {
                 status: "failed",
                 acceptance: {
                   status: "rejected",
+                  explicit: true,
+                  effectiveAcceptance: {
+                    level: "attested",
+                    explicit: true,
+                    inferredReason: [],
+                    criteria: [],
+                    evidence: [],
+                    verify: [],
+                    stopRules: [],
+                    finalization: { mode: "self-review-loop", maxTurns: 2 },
+                  },
+                  inferredReason: [],
+                  criteria: [],
+                  runtimeChecks: [],
+                  verifyRuns: [],
                   finalization: {
                     mode: "self-review-loop",
                     status: "failed",

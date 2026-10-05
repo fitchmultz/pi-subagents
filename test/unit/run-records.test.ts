@@ -4,12 +4,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { it } from "node:test";
+import { assertDefined, textAt } from "../support/assertions.ts";
 import type {
   ArtifactPaths,
   AsyncResultFile,
   OwnedRun,
   SubagentState,
 } from "../../src/shared/types.ts";
+
+function fixtureChildStatus(index: number): "complete" | "pending" | "running" {
+  if (index === 0) {
+    return "complete";
+  }
+  return index === 4 ? "pending" : "running";
+}
 
 it("owned inspection retains persisted background attempt usage and full, partial, or absent artifact paths", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-owned-evidence-"));
@@ -31,7 +39,12 @@ it("owned inspection retains persisted background attempt usage and full, partia
       metadataPath: path.join(root, "metadata.json"),
     };
     const legacyPaths = { outputPath: path.join(root, "legacy-output.md") };
-    for (const file of [...Object.values(artifactPaths), legacyPaths.outputPath]) {
+    for (const file of [
+      artifactPaths.inputPath,
+      artifactPaths.outputPath,
+      artifactPaths.metadataPath,
+      legacyPaths.outputPath,
+    ]) {
       fs.writeFileSync(file, "Recorded background evidence.\n");
     }
     const run: OwnedRun = {
@@ -109,7 +122,12 @@ it("owned inspection retains persisted background attempt usage and full, partia
       completionSeen: new Map(),
       watcher: null,
       watcherRestartTimer: null,
-      resultFileCoalescer: { schedule: () => false, clear() {} },
+      resultFileCoalescer: {
+        schedule: () => false,
+        clear() {
+          /* This inspection fixture never schedules file events. */
+        },
+      },
     };
     const inspected = ownedRunStatusResult(run, state);
     const view = inspected.details.run;
@@ -219,12 +237,10 @@ it("owned inspection retains persisted background attempt usage and full, partia
       rootRunId: chainId,
       mode: "chain",
       asyncDir: chainDir,
-      children: workflowAgentNodes(graph).map((node, index) => ({
-        index,
-        agent: node.agent!,
-        workflowNodeId: node.id,
-        task: `Assignment ${index}`,
-      })),
+      children: workflowAgentNodes(graph).map((node, index) => {
+        assertDefined(node.agent);
+        return { index, agent: node.agent, workflowNodeId: node.id, task: `Assignment ${index}` };
+      }),
     };
     saveRunStatus(chainId, {
       runtimeVersion: 2,
@@ -238,7 +254,7 @@ it("owned inspection retains persisted background attempt usage and full, partia
       workflowGraph: graph,
       steps: chain.children.map((child, index) => ({
         agent: child.agent,
-        status: index === 0 ? "complete" : index === 4 ? "pending" : "running",
+        status: fixtureChildStatus(index),
       })),
     });
     const chainProgress = ownedRunProgressResult(chain, state);
@@ -254,27 +270,38 @@ it("owned inspection retains persisted background attempt usage and full, partia
       "the third physical child is still in logical step two",
     );
     assert.equal(chainProgress.details.chainAgents?.length, 3);
-    graph.nodes[0]!.status = "completed";
-    graph.nodes[1]!.status = "failed";
-    graph.nodes[1]!.error = "Invalid collection";
-    for (const child of graph.nodes[1]!.children!) {
-      child.status = "completed";
-    }
+    assertDefined(graph.nodes[1].children);
+    const failedGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node, index) => {
+        if (index === 0) {
+          return Object.assign({}, node, { status: "completed" as const });
+        }
+        if (index === 1) {
+          return Object.assign({}, node, {
+            status: "failed" as const,
+            error: "Invalid collection",
+            children: node.children?.map((child) =>
+              Object.assign({}, child, { status: "completed" as const }),
+            ),
+          });
+        }
+        return node;
+      }),
+    };
     saveAsyncRunResult(chainId, {
       runtimeVersion: 2,
       id: chainId,
       state: "failed",
       error: "Invalid collection",
-      workflowGraph: graph,
-      results: chain.children
-        .slice(0, 4)
-        .map((child) => ({
-          agent: child.agent,
-          task: child.task,
-          success: true,
-          exitCode: 0,
-          output: "Done",
-        })),
+      workflowGraph: failedGraph,
+      results: chain.children.slice(0, 4).map((child) => ({
+        agent: child.agent,
+        task: child.task,
+        success: true,
+        exitCode: 0,
+        output: "Done",
+      })),
     });
     const chainResult = ownedRunExecutionResult(chain, state);
     assert.equal(chainResult.isError, true);
@@ -313,14 +340,16 @@ it("owned inspection retains persisted background attempt usage and full, partia
         })),
       });
       const failed = ownedRunStatusResult(failedRun, state);
-      assert.equal(failed.details.run?.state, "failed");
-      assert.equal(failed.details.run?.diagnosis, error);
+      const failedView = failed.details.run;
+      assertDefined(failedView);
+      assert.equal(failedView.state, "failed");
+      assert.equal(failedView.diagnosis, error);
       assert.deepEqual(
-        failed.details.run?.children.map((child) => ({ task: child.task, state: child.state })),
+        failedView.children.map((child) => ({ task: child.task, state: child.state })),
         children.map((child) => ({ task: child.task, state: "completed" })),
       );
-      assert.match(failed.content[0]!.text, /Collected output does not match/);
-      assert.doesNotMatch(failed.content[0]!.text, /Original child assignment unavailable/);
+      assert.match(textAt(failed.content), /Collected output does not match/);
+      assert.doesNotMatch(textAt(failed.content), /Original child assignment unavailable/);
       const result = ownedRunExecutionResult(failedRun, state);
       assert.equal(result.isError, true);
       assert.equal(
@@ -328,7 +357,7 @@ it("owned inspection retains persisted background attempt usage and full, partia
         childCount,
         "workflow failure never fabricates a resumable child",
       );
-      assert.match(result.content[0]!.text, /Collected output does not match/);
+      assert.match(textAt(result.content), /Collected output does not match/);
     }
   } finally {
     if (previousAgentDir === undefined) {

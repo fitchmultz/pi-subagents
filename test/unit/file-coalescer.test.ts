@@ -7,7 +7,9 @@ describe("createFileCoalescer", () => {
   it("coalesces duplicate schedule calls per file", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const events: string[] = [];
-    const coalescer = createFileCoalescer((file) => events.push(file), 50);
+    const coalescer = createFileCoalescer((file) => {
+      events.push(file);
+    }, 50);
     assert.equal(coalescer.schedule("a.json"), true);
     assert.equal(coalescer.schedule("a.json"), false);
     t.mock.timers.tick(49);
@@ -22,17 +24,24 @@ describe("createFileCoalescer", () => {
   it("allows different files to schedule independently", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const events: string[] = [];
-    const coalescer = createFileCoalescer((file) => events.push(file), 50);
+    const coalescer = createFileCoalescer((file) => {
+      events.push(file);
+    }, 50);
     coalescer.schedule("a.json");
     coalescer.schedule("b.json");
     t.mock.timers.tick(50);
-    assert.deepEqual(events.sort(), ["a.json", "b.json"]);
+    assert.deepEqual(
+      events.sort((a, b) => a.localeCompare(b)),
+      ["a.json", "b.json"],
+    );
   });
 
   it("clear cancels all pending handlers", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const events: string[] = [];
-    const coalescer = createFileCoalescer((file) => events.push(file), 50);
+    const coalescer = createFileCoalescer((file) => {
+      events.push(file);
+    }, 50);
     coalescer.schedule("a.json");
     coalescer.schedule("b.json");
     coalescer.clear();
