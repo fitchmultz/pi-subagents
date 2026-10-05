@@ -5,6 +5,73 @@ import { fileURLToPath } from "node:url";
 import TJS from "typescript-json-schema";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function stableDefinitionNames(definitions) {
+  // TJS uses TypeScript display names; NodeNext import qualifiers include the checkout path.
+  // Normalize identifiers only, preserving the module suffix and every schema value.
+  const prefix = `import(${JSON.stringify(`${root}/`).slice(0, -1)}`;
+  const names = Object.fromEntries(
+    Object.keys(definitions).map((name) => [name, name.replaceAll(prefix, 'import("')]),
+  );
+  if (new Set(Object.values(names)).size !== Object.keys(names).length) {
+    throw new Error("Canonical schema definition names collide after path normalization.");
+  }
+  return names;
+}
+
+function stableSchema(schema, names, refs) {
+  if (typeof schema === "boolean") {
+    return schema;
+  }
+  const result = { ...schema };
+  if (typeof schema.$ref === "string" && Object.hasOwn(refs, schema.$ref)) {
+    result.$ref = refs[schema.$ref];
+  }
+  for (const key of ["definitions", "properties", "patternProperties", "dependencies"]) {
+    if (schema[key] !== undefined) {
+      result[key] = Object.fromEntries(
+        Object.entries(schema[key]).map(([name, value]) => [
+          key === "definitions" ? (names[name] ?? name) : name,
+          Array.isArray(value) ? value : stableSchema(value, names, refs),
+        ]),
+      );
+    }
+  }
+  for (const key of [
+    "items",
+    "additionalItems",
+    "additionalProperties",
+    "contains",
+    "propertyNames",
+    "if",
+    "then",
+    "else",
+    "not",
+    "allOf",
+    "anyOf",
+    "oneOf",
+  ]) {
+    const value = schema[key];
+    if (value !== undefined) {
+      result[key] = Array.isArray(value)
+        ? value.map((entry) => stableSchema(entry, names, refs))
+        : stableSchema(value, names, refs);
+    }
+  }
+  return result;
+}
+
+function normalizeDefinitionPaths(schema) {
+  const names = stableDefinitionNames(schema.definitions);
+  const refs = Object.fromEntries(
+    Object.entries(names).map(([name, stable]) => [
+      `#/definitions/${encodeURIComponent(name)}`,
+      `#/definitions/${encodeURIComponent(stable)}`,
+    ]),
+  );
+  return stableSchema(schema, names, refs);
+}
+
 const mode = process.argv[2];
 if (mode === "--help" || mode === "-h") {
   console.log(
@@ -71,7 +138,7 @@ if (mode === "--help" || mode === "-h") {
     "NativeFinalizationConfig",
     "NativeFinalizationEvent",
   ];
-  const schema = generator.getSchemaForSymbols(names);
+  const schema = normalizeDefinitionPaths(generator.getSchemaForSymbols(names));
   const target = path.join(root, "src/runs/background/schemas/RunContracts.json");
   if (mode === "--check") {
     const actual = JSON.parse(fs.readFileSync(target, "utf8"));
