@@ -255,7 +255,6 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
 	saveAsyncRunResult(changed.runId, { runtimeVersion: 2, id: changed.runId, state: "complete", timestamp: changed.startedAt + 1000,
 		results: [{ agent: "worker", sessionFile: changed.children[0].sessionFile, success: true, exitCode: 0, finalOutput: "Updated saved report" }] });
 	await index.refresh(changed.runId); await f.controller.refresh();
-	assert.ok(calls.includes(changed.runId), "changed terminal rows refresh their metadata");
 	await index.refresh();
 	assert.equal((await index.listRuns({ limit: 100 })).freshness.state, "current", "Observe publication before asserting unchanged terminal rows stop polling");
 	await f.controller.refresh();
@@ -266,6 +265,7 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
 		if (!published) void f.controller.refresh();
 		return published;
 	}, "changed terminal metadata is published in the controller before unchanged polling");
+	assert.ok(calls.includes(changed.runId), "changed terminal rows refresh their metadata");
 	await check(runs.slice(0, 3).map((run) => run.runId));
 	const questionRun = runs[5];
 	createSupervisorQuestion({ runId: questionRun.runId, index: 0, agent: "worker", ownerTarget: "fixture-owner", childTarget: "fixture-child",
