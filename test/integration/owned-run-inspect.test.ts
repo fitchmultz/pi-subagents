@@ -9,7 +9,10 @@ import {
   makeMinimalCtx,
   removeTempDir,
 } from "../support/helpers.ts";
-import type { AsyncStatus, OwnedRun, SubagentState } from "../../src/shared/types.ts";
+import type { AsyncStatus, TrackedOwnedRun } from "../../src/shared/types.ts";
+
+import { assertDefined, record, strings, text as textValue } from "../support/assertions.ts";
+import { createSubagentState, toolText } from "../support/background-fixtures.ts";
 
 const root = createTempDir("owned-inspect-");
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -26,7 +29,8 @@ for (const durable of [true, false]) {
     const runId = `inspect-${durable}`;
     const sessionFile = path.join(root, `${runId}.jsonl`);
     fs.writeFileSync(sessionFile, "");
-    const run: OwnedRun = {
+    const asyncDir = durable ? getRunMetadataDir(runId) : path.join(ASYNC_DIR, runId);
+    const run: TrackedOwnedRun = {
       runId,
       rootRunId: runId,
       ownerSessionId: "session-123",
@@ -36,22 +40,12 @@ for (const durable of [true, false]) {
       task: "Check the approved behavior",
       startedAt: 100,
       children: [{ agent: "worker", index: 0, sessionFile }],
-      asyncDir: durable ? getRunMetadataDir(runId) : path.join(ASYNC_DIR, runId),
+      asyncDir,
       pid: process.pid,
     };
-    const state: SubagentState = {
-      baseCwd: root,
-      currentSessionId: run.ownerSessionId,
-      ownedRuns: new Map([[runId, run]]),
-      asyncJobs: new Map(),
-      cleanupTimers: new Map(),
-      lastUiContext: null,
-      poller: null,
-      completionSeen: new Map(),
-      watcher: null,
-      watcherRestartTimer: null,
-      resultFileCoalescer: { schedule: () => false, clear() {} },
-    };
+    const state = createSubagentState(root);
+    state.currentSessionId = run.ownerSessionId;
+    state.ownedRuns = new Map([[runId, run]]);
     saveQuestionContract(runId, 0, {
       sessionFile,
       pid: process.pid,
@@ -82,7 +76,7 @@ for (const durable of [true, false]) {
     });
     let status: AsyncStatus | undefined;
     {
-      fs.mkdirSync(run.asyncDir!, { recursive: true });
+      fs.mkdirSync(asyncDir, { recursive: true });
       status = {
         ...(durable
           ? {
@@ -121,17 +115,19 @@ for (const durable of [true, false]) {
           },
         ],
       };
-      fs.writeFileSync(path.join(run.asyncDir!, "status.json"), JSON.stringify(status));
+      fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
       fs.writeFileSync(
-        path.join(run.asyncDir!, "output-0.log"),
+        path.join(asyncDir, "output-0.log"),
         "Unique legacy output tail\nRun: this is user output, not a report heading",
       );
-      fs.writeFileSync(path.join(run.asyncDir!, `subagent-log-${runId}.md`), "log");
-      fs.writeFileSync(path.join(run.asyncDir!, "events.jsonl"), "");
+      fs.writeFileSync(path.join(asyncDir, `subagent-log-${runId}.md`), "log");
+      fs.writeFileSync(path.join(asyncDir, "events.jsonl"), "");
     }
     const events = createEventBus();
     events.on("subagent:intercom-health-request", (request) => {
-      const { requestId, targets } = request as { requestId: string; targets: string[] };
+      const data = record(request);
+      const requestId = textValue(data.requestId);
+      const targets = strings(data.targets);
       events.emit("subagent:intercom-health-response", {
         requestId,
         health: targets.map((target) => ({
@@ -152,22 +148,21 @@ for (const durable of [true, false]) {
       discoverAgents: () => ({ agents: [] }),
     });
     const inspect = () =>
-      executor.execute(
-        "inspect",
-        { action: "status", id: runId },
-        undefined,
-        undefined,
-        makeMinimalCtx(root),
-      );
+      executor.execute({
+        toolCallId: "inspect",
+        params: { action: "status", id: runId },
+        ctx: makeMinimalCtx(root),
+      });
     const live = await inspect();
     assert.equal(live.isError, undefined);
-    const text = live.content.map((part) => part.text).join("\n");
-    for (const heading of ["Run", "State", "Mode"])
+    const text = toolText(live.content);
+    for (const heading of ["Run", "State", "Mode"]) {
       assert.equal(
         text.match(new RegExp(`^${heading}:`, "gm"))?.length,
         1,
         `${heading} must appear once`,
       );
+    }
     assert.equal(live.content.length, 1, "one coherent report, not two content blocks");
     for (const detail of [
       "Task: Check the approved behavior",
@@ -180,65 +175,72 @@ for (const durable of [true, false]) {
       "Intercom: registered",
       "Nudge (preferred",
       "Ask (blocking",
-    ])
+    ]) {
       assert.ok(text.includes(detail), detail);
+    }
+    const liveRun = live.details.run;
+    assertDefined(liveRun);
+    const launch = liveRun.children[0].launch;
+    assertDefined(launch);
     assert.equal(
-      live.details.run?.children[0]?.launch?.agent.filePath,
+      launch.agent.filePath,
       "/fixture/worker.md",
       "full profile provenance remains stored",
     );
-    assert.ok(live.details.managementControl?.capabilities.includes("nudge"));
-    assert.ok(live.details.managementControl?.capabilities.includes("resume"));
-    assert.ok(live.details.managementControl?.capabilities.includes("interrupt"));
-    for (const detail of ["123 tokens", "/fixture/changed.ts", "2 turns", "3 tools"])
+    const capabilities = live.details.managementControl?.capabilities;
+    assertDefined(capabilities);
+    assert.equal(capabilities.includes("nudge"), true);
+    assert.equal(capabilities.includes("resume"), true);
+    assert.equal(capabilities.includes("interrupt"), true);
+    for (const detail of ["123 tokens", "/fixture/changed.ts", "2 turns", "3 tools"]) {
       assert.ok(text.includes(detail), detail);
+    }
     if (durable) {
-      for (const detail of ["Timeout:", "Extend:"]) assert.ok(text.includes(detail), detail);
-      assert.ok(live.details.managementControl?.capabilities.includes("extend"));
-      const extended = await executor.execute(
-        "extend",
-        { action: "extend", id: runId, extendMs: 1000 },
-        undefined,
-        undefined,
-        makeMinimalCtx(root),
-      );
+      for (const detail of ["Timeout:", "Extend:"]) {
+        assert.ok(text.includes(detail), detail);
+      }
+      assert.equal(capabilities.includes("extend"), true);
+      const extended = await executor.execute({
+        toolCallId: "extend",
+        params: { action: "extend", id: runId, extendMs: 1000 },
+        ctx: makeMinimalCtx(root),
+      });
       assert.equal(extended.isError, undefined);
       assert.deepEqual(
-        readAsyncControlRequests(run.asyncDir!, runId).map(({ action, extendMs, index }) => ({
+        readAsyncControlRequests(asyncDir, runId).map(({ action, extendMs, index }) => ({
           action,
           extendMs,
           index,
         })),
         [{ action: "extend", extendMs: 1000, index: undefined }],
       );
-      let nudged: { to: string; message: string } | undefined;
+      const nudges: Array<{ to: string; message: string }> = [];
       events.on("subagent:live-intercom", (request) => {
-        nudged = request;
+        const data = record(request);
+        nudges.push({ to: textValue(data.to), message: textValue(data.message) });
         events.emit("subagent:live-intercom-delivery", {
-          requestId: request.requestId,
+          requestId: textValue(data.requestId),
           delivered: true,
         });
       });
-      const nudge = await executor.execute(
-        "nudge",
-        { action: "nudge", message: "Keep the API" },
-        undefined,
-        undefined,
-        makeMinimalCtx(root),
-      );
+      const nudge = await executor.execute({
+        toolCallId: "nudge",
+        params: { action: "nudge", message: "Keep the API" },
+        ctx: makeMinimalCtx(root),
+      });
       assert.equal(nudge.isError, undefined);
-      assert.equal(nudged?.to, `subagent-worker-${runId}-1`);
-      assert.match(nudged!.message, /Keep the API/);
-      const stopped = await executor.execute(
-        "selected-stop",
-        { action: "interrupt", id: runId, index: 0 },
-        undefined,
-        undefined,
-        makeMinimalCtx(root),
-      );
+      const nudged = nudges[0];
+      assertDefined(nudged);
+      assert.equal(nudged.to, `subagent-worker-${runId}-1`);
+      assert.match(nudged.message, /Keep the API/);
+      const stopped = await executor.execute({
+        toolCallId: "selected-stop",
+        params: { action: "interrupt", id: runId, index: 0 },
+        ctx: makeMinimalCtx(root),
+      });
       assert.equal(stopped.isError, undefined);
       assert.deepEqual(
-        readAsyncControlRequests(run.asyncDir!, runId).map(({ action, index }) => ({
+        readAsyncControlRequests(asyncDir, runId).map(({ action, index }) => ({
           action,
           index,
         })),
@@ -256,11 +258,13 @@ for (const durable of [true, false]) {
         "fallback · thinking medium",
         "Log:",
         "Events:",
-      ])
+      ]) {
         assert.ok(text.includes(detail), detail);
-      status!.state = "complete";
-      status!.steps![0]!.status = "complete";
-      fs.writeFileSync(path.join(run.asyncDir!, "status.json"), JSON.stringify(status));
+      }
+      status.state = "complete";
+      assertDefined(status.steps);
+      status.steps[0].status = "complete";
+      fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
       saveAsyncRunResult(runId, {
         id: runId,
         state: "complete",
@@ -285,15 +289,21 @@ for (const durable of [true, false]) {
         ],
       });
       const completed = await inspect();
-      const completedText = completed.content.map((part) => part.text).join("\n");
+      const completedText = toolText(completed.content);
       assert.equal(completedText.match(/^Run:/gm)?.length, 1);
       assert.match(completedText, /Unique legacy output tail/);
       assert.match(completedText, /  Run: this is user output/);
       assert.match(completedText, /Saved result/);
-      assert.equal(completed.details.run?.children[0]?.result?.usage.input, 23);
-      assert.ok(completed.details.managementControl?.capabilities.includes("review"));
-      assert.ok(completed.details.managementControl?.capabilities.includes("resume"));
-      assert.ok(!completed.details.managementControl?.capabilities.includes("nudge"));
+      const completedRun = completed.details.run;
+      assertDefined(completedRun);
+      const childResult = completedRun.children[0].result;
+      assertDefined(childResult);
+      assert.equal(childResult.usage.input, 23);
+      const completedCapabilities = completed.details.managementControl?.capabilities;
+      assertDefined(completedCapabilities);
+      assert.equal(completedCapabilities.includes("review"), true);
+      assert.equal(completedCapabilities.includes("resume"), true);
+      assert.equal(completedCapabilities.includes("nudge"), false);
     }
   });
 }

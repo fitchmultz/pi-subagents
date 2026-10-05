@@ -10,15 +10,14 @@ import type {
   AsyncJobState,
   AsyncStatus,
   AsyncResultChild,
-  ForegroundResumeRun,
   OwnedRun,
   SubagentState,
 } from "../../src/shared/types.ts";
 import { assertDefined } from "./assertions.ts";
 
 type BackgroundFixtureState = SubagentState & {
-  ownedRuns: Map<string, OwnedRun>;
-  foregroundRuns: Map<string, ForegroundResumeRun>;
+  ownedRuns: NonNullable<SubagentState["ownedRuns"]>;
+  foregroundRuns: NonNullable<SubagentState["foregroundRuns"]>;
 };
 
 /** Complete extension-owned state without claiming a native receipt or persisted run. */
@@ -46,7 +45,7 @@ export function createSubagentState(cwd: string): BackgroundFixtureState {
 }
 
 /** Observe the published status through its filesystem owner, failing on absence. */
-export function readStatusFile(file: string): AsyncStatus {
+export function readStatusFile(file: string): ReadonlyDeep<AsyncStatus> {
   const status = readStatus(dirname(file));
   assertDefined(status);
   return status;

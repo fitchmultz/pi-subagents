@@ -5,7 +5,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import type { ReadonlyDeep } from "type-fest";
-import { assertDefined } from "../support/assertions.ts";
+import { assertDefined, record } from "../support/assertions.ts";
+import {
+  parseAsyncResult,
+  parseAsyncStatus,
+  parseSupervisorRunContract,
+} from "../../src/runs/background/run-schemas.ts";
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const isolatedAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-agent-"));
 process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
@@ -32,6 +37,50 @@ function createAsyncDir(
 }
 
 describe("async status helpers", () => {
+  it("validates nested persisted output and verification dictionaries without dropping legacy receipts", () => {
+    const status = { runId: "dictionary-contract", startedAt: 1, mode: "chain", state: "running" };
+    const entry = { text: "Reviewed", agent: "worker", stepIndex: 0, structured: { ok: true } };
+    for (const parse of [parseAsyncStatus, parseAsyncResult]) {
+      const valid = { ...status, outputs: { reviewed: entry }, futureField: "preserved" };
+      const parsed = parse(valid);
+      assert.deepEqual(parsed.outputs, { reviewed: entry });
+      assert.equal(record(parsed).futureField, "preserved");
+      assert.throws(() => parse({ ...status, outputs: { reviewed: 42 } }), /outputs/);
+      assert.throws(
+        () => parse({ ...status, outputs: { reviewed: { ...entry, stepIndex: "zero" } } }),
+        /stepIndex/,
+      );
+    }
+    const effectiveAcceptance = {
+      level: "verified",
+      explicit: true,
+      inferredReason: [],
+      criteria: [],
+      evidence: [],
+      verify: [{ id: "verify-output", command: "echo checked", env: { KEY: "value" } }],
+      stopRules: [],
+      finalization: { mode: "none", maxTurns: 1 },
+    };
+    assert.deepEqual(
+      parseSupervisorRunContract({ effectiveAcceptance }).effectiveAcceptance?.verify[0].env,
+      { KEY: "value" },
+    );
+    assert.throws(
+      () =>
+        parseSupervisorRunContract({
+          effectiveAcceptance: {
+            ...effectiveAcceptance,
+            verify: [{ id: "verify-output", command: "echo checked", env: { KEY: 42 } }],
+          },
+        }),
+      /env/,
+    );
+    for (const version of [1, 2, 3]) {
+      assert.equal(parseAsyncResult({ recordVersion: version }).recordVersion, version);
+    }
+    assert.throws(() => parseAsyncResult({ recordVersion: 4 }), /recordVersion/);
+  });
+
   it("lists only requested states and includes flattened step summaries", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-"));
     try {

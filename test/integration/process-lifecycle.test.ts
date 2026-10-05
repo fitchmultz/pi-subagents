@@ -15,8 +15,11 @@ import {
 } from "../../src/runs/shared/acceptance.ts";
 import { ASYNC_DIR, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { writeAsyncInterruptRequest } from "../../src/runs/foreground/foreground-control.ts";
+import { assertDefined, readJson, record, numberValue, text } from "../support/assertions.ts";
+import { readResult, readStatusFile } from "../support/background-fixtures.ts";
 import {
   createMockPi,
+  createEventBus,
   createTempDir,
   events,
   makeAgent,
@@ -27,8 +30,62 @@ async function waitForFile(file: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (!fs.existsSync(file)) {
     assert.ok(Date.now() < deadline, `Timed out waiting for ${file}`);
+    // Readiness polling must observe publication between delays.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
+}
+
+function killIfPresent(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    assert.ok(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+}
+
+function createHangingHook(
+  cwd: string,
+  repo: string,
+  hookType: "post-checkout" | "setup" | "rollback",
+) {
+  const ready = path.join(cwd, "hook-ready.json");
+  const hookPath =
+    hookType === "post-checkout"
+      ? path.join(repo, ".git", "hooks", "post-checkout")
+      : path.join(cwd, "setup.cjs");
+  fs.writeFileSync(
+    hookPath,
+    `#!${process.execPath}
+const { spawn } = require("node:child_process");
+if (process.cwd().endsWith("-0")) { console.log("{}"); process.exit(0); }
+spawn(process.execPath, ["-e", ${JSON.stringify(`
+process.on("SIGTERM", () => {});
+require("node:fs").writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ hook: process.ppid, descendant: process.pid }));
+setInterval(() => {}, 1000);
+`)}], { stdio: "inherit" });
+setInterval(() => {}, 1000);
+`,
+  );
+  fs.chmodSync(hookPath, 0o755);
+  const rollbackPid = path.join(cwd, "rollback.pid");
+  if (hookType === "rollback") {
+    fs.writeFileSync(
+      path.join(repo, ".git", "hooks", "reference-transaction"),
+      `#!${process.execPath}
+let input = "";
+process.stdin.on("data", (chunk) => input += chunk);
+process.stdin.on("end", () => {
+\tif (require("node:fs").existsSync(${JSON.stringify(ready)}) && process.argv[2] === "prepared" && input.split(" ")[1] === "0".repeat(40)) {
+\t\trequire("node:fs").writeFileSync(${JSON.stringify(rollbackPid)}, String(process.pid));
+\t\tsetInterval(() => {}, 1000);
+\t}
+});
+`,
+      { mode: 0o755 },
+    );
+  }
+  return { ready, hookPath, rollbackPid };
 }
 
 const report = '```acceptance-report\n{"manualNotes":"process lifecycle check"}\n```';
@@ -51,6 +108,12 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
     }
   });
 
+  function stopOutcome(stop: string): { state: "paused" | "failed"; exitCode: number } {
+    return stop === "interrupt"
+      ? { state: "paused", exitCode: 0 }
+      : { state: "failed", exitCode: 124 };
+  }
+
   for (const hookType of ["post-checkout", "setup", "rollback"] as const) {
     for (const stop of ["interrupt", "timeout"] as const) {
       if (hookType === "rollback" && stop === "timeout") {
@@ -59,7 +122,7 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
       it(`${stop} stops a hanging ${hookType} hook and ${hookType === "rollback" ? "reports incomplete rollback" : "rolls back all worktrees"}`, async () => {
         const repo = path.join(cwd, "repo");
         fs.mkdirSync(repo);
-        const git = (...args: string[]) => {
+        const git = (...args: readonly string[]) => {
           const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
           assert.equal(result.status, 0, result.stderr);
           return result.stdout.trim();
@@ -70,42 +133,7 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
         fs.writeFileSync(path.join(repo, "tracked"), "initial");
         git("add", ".");
         git("commit", "-m", "initial");
-        const ready = path.join(cwd, "hook-ready.json");
-        const hookPath =
-          hookType === "post-checkout"
-            ? path.join(repo, ".git", "hooks", "post-checkout")
-            : path.join(cwd, "setup.cjs");
-        fs.writeFileSync(
-          hookPath,
-          `#!${process.execPath}
-const { spawn } = require("node:child_process");
-if (process.cwd().endsWith("-0")) { console.log("{}"); process.exit(0); }
-spawn(process.execPath, ["-e", ${JSON.stringify(`
-process.on("SIGTERM", () => {});
-require("node:fs").writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ hook: process.ppid, descendant: process.pid }));
-setInterval(() => {}, 1000);
-`)}], { stdio: "inherit" });
-setInterval(() => {}, 1000);
-`,
-        );
-        fs.chmodSync(hookPath, 0o755);
-        const rollbackPid = path.join(cwd, "rollback.pid");
-        if (hookType === "rollback") {
-          fs.writeFileSync(
-            path.join(repo, ".git", "hooks", "reference-transaction"),
-            `#!${process.execPath}
-let input = "";
-process.stdin.on("data", (chunk) => input += chunk);
-process.stdin.on("end", () => {
-	if (require("node:fs").existsSync(${JSON.stringify(ready)}) && process.argv[2] === "prepared" && input.split(" ")[1] === "0".repeat(40)) {
-		require("node:fs").writeFileSync(${JSON.stringify(rollbackPid)}, String(process.pid));
-		setInterval(() => {}, 1000);
-	}
-});
-`,
-            { mode: 0o755 },
-          );
-        }
+        const { ready, hookPath, rollbackPid } = createHangingHook(cwd, repo, hookType);
         const id = `setup-${hookType}-${stop}-${process.pid}-${Date.now()}`;
         const asyncDir = path.join(cwd, "run");
         const resultPath = path.join(cwd, "result.json");
@@ -124,11 +152,12 @@ process.stdin.on("end", () => {
             steps: [
               {
                 worktree: true,
-                parallel: [makeAgent("worker"), makeAgent("worker")].map((agent) => ({
-                  ...agent,
-                  agent: agent.name,
-                  task: "Must not start",
-                })),
+                parallel: Array.from({ length: 2 }, () =>
+                  Object.assign(makeAgent("worker"), {
+                    agent: "worker",
+                    task: "Must not start",
+                  }),
+                ),
               },
             ],
           }),
@@ -143,8 +172,9 @@ process.stdin.on("end", () => {
         );
         const closed = once(runner, "close");
         let stderr = "";
-        runner.stderr.setEncoding("utf8").on("data", (text) => {
-          stderr += text;
+        assertDefined(runner.stderr);
+        runner.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+          stderr += chunk;
         });
         try {
           await waitForFile(ready);
@@ -153,25 +183,22 @@ process.stdin.on("end", () => {
           }
           await waitForFile(resultPath);
           await closed;
-          const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
-          assert.equal(result.state, stop === "interrupt" ? "paused" : "failed", stderr);
-          assert.equal(result.exitCode, stop === "interrupt" ? 0 : 124);
+          const result = readResult(resultPath);
+          const expected = stopOutcome(stop);
+          assert.equal(result.state, expected.state, stderr);
+          assert.equal(result.exitCode, expected.exitCode);
           assert.equal(result.timedOut === true, stop === "timeout");
           assert.equal(mock.callCount(), 0, "children must not start after stopped setup");
-          const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
-          assert.ok(
-            status.steps.every(
-              (step: { status: string }) =>
-                step.status === (stop === "interrupt" ? "paused" : "failed"),
-            ),
-          );
+          const status = readStatusFile(path.join(asyncDir, "status.json"));
+          assertDefined(status.steps);
+          assert.ok(status.steps.every((step) => step.status === expected.state));
           if (hookType === "rollback") {
-            assert.match(result.summary, /Worktree rollback incomplete/);
+            assert.match(text(result.summary), /Worktree rollback incomplete/);
             assert.ok(
               git("branch", "--list", `pi-parallel-${id}-s0-1`).includes(`pi-parallel-${id}-s0-1`),
             );
             assert.ok(
-              result.summary.includes(`pi-parallel-${id}-s0-1`),
+              text(result.summary).includes(`pi-parallel-${id}-s0-1`),
               "the normal paused summary must identify the remaining branch",
             );
             assert.throws(() => process.kill(Number(fs.readFileSync(rollbackPid, "utf8")), 0), {
@@ -186,27 +213,21 @@ process.stdin.on("end", () => {
               hookType === "rollback" && index === 0,
             );
           }
-          const pids = JSON.parse(fs.readFileSync(ready, "utf8"));
-          for (const pid of Object.values(pids) as number[]) {
+          const pids = record(readJson(ready));
+          for (const pid of Object.values(pids)) {
             assert.throws(
-              () => process.kill(pid, 0),
+              () => process.kill(numberValue(pid), 0),
               { code: "ESRCH" },
-              `setup process ${pid} survived`,
+              `setup process ${numberValue(pid)} survived`,
             );
           }
         } finally {
           if (fs.existsSync(rollbackPid)) {
-            try {
-              process.kill(Number(fs.readFileSync(rollbackPid, "utf8")), "SIGKILL");
-            } catch {}
+            killIfPresent(Number(fs.readFileSync(rollbackPid, "utf8")));
           }
           if (fs.existsSync(ready)) {
-            for (const pid of Object.values(
-              JSON.parse(fs.readFileSync(ready, "utf8")),
-            ) as number[]) {
-              try {
-                process.kill(pid, "SIGKILL");
-              } catch {}
+            for (const pid of Object.values(record(readJson(ready)))) {
+              killIfPresent(numberValue(pid));
             }
           }
           if (runner.exitCode === null) {
@@ -266,13 +287,13 @@ process.stdin.on("end", () => {
             agent: "worker",
             task: "Follow up",
             agentConfig: agent,
-            ctx: { pi: { events: { emit() {} } }, cwd, currentSessionId: "lifecycle" },
+            ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: "lifecycle" },
             shareEnabled: false,
             maxSubagentDepth: 2,
           });
           const resultPath = path.join(RESULTS_DIR, `${id}.json`);
           await waitForFile(resultPath);
-          const result = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+          const result = readResult(resultPath);
           assert.equal(result.success, true);
           assert.equal(result.results[0].output, "Follow-up completed");
         }
@@ -309,21 +330,22 @@ process.stdin.on("end", () => {
           task: "Inspect",
           acceptance,
           agentConfig: makeAgent("worker"),
-          ctx: { pi: { events: { emit() {} } }, cwd, currentSessionId: "lifecycle" },
+          ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: "lifecycle" },
           sessionFile: path.join(cwd, "session.jsonl"),
           shareEnabled: false,
           maxSubagentDepth: 2,
         });
         await waitForFile(ready);
-        const status = JSON.parse(
-          fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8"),
-        );
+        const status = readStatusFile(path.join(getRunMetadataDir(id), "status.json"));
+        assertDefined(status.pid);
         process.kill(status.pid, "SIGTERM");
         const resultPath = path.join(RESULTS_DIR, `${id}.json`);
         await waitForFile(resultPath);
-        const result = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+        const result = readResult(resultPath);
         assert.equal(result.success, false);
-        assert.equal(result.results[0].acceptance.status, "rejected");
+        const childAcceptance = result.results[0].acceptance;
+        assertDefined(childAcceptance);
+        assert.equal(childAcceptance.status, "rejected");
       }
       await delay(1100);
       assert.equal(fs.existsSync(late), false, "verification descendant survived cancellation");
@@ -351,7 +373,7 @@ process.stdin.on("end", () => {
           agent: "worker",
           task: "Inspect",
           agentConfig: makeAgent("worker"),
-          ctx: { pi: { events: { emit() {} } }, cwd, currentSessionId: "lifecycle" },
+          ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: "lifecycle" },
           shareEnabled: false,
           maxSubagentDepth: 2,
         });
@@ -360,31 +382,30 @@ process.stdin.on("end", () => {
       const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
       try {
         {
-          const status = JSON.parse(
-            fs.readFileSync(path.join(getRunMetadataDir(id!), "status.json"), "utf-8"),
-          );
+          const status = readStatusFile(path.join(getRunMetadataDir(id), "status.json"));
+          assertDefined(status.pid);
           process.kill(status.pid, "SIGTERM");
           const resultPath = path.join(RESULTS_DIR, `${id}.json`);
           await waitForFile(resultPath);
-          assert.equal(JSON.parse(fs.readFileSync(resultPath, "utf-8")).success, false);
+          assert.equal(readResult(resultPath).success, false);
         }
         const deadline = Date.now() + 3000;
         while (Date.now() < deadline) {
           try {
             process.kill(descendantPid, 0);
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            if (error instanceof Error && "code" in error && error.code === "ESRCH") {
               return;
             }
             throw error;
           }
+          // Poll the actual descendant's existence until it exits.
+          // oxlint-disable-next-line no-await-in-loop
           await delay(20);
         }
         assert.fail(`Owned descendant ${descendantPid} survived cancellation`);
       } finally {
-        try {
-          process.kill(descendantPid, "SIGKILL");
-        } catch {}
+        killIfPresent(descendantPid);
       }
     });
   }
@@ -403,32 +424,38 @@ process.stdin.on("end", () => {
       agent: "worker",
       task: "Inspect",
       agentConfig: makeAgent("worker"),
-      ctx: { pi: { events: { emit() {} } }, cwd, currentSessionId: "lifecycle" },
+      ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: "lifecycle" },
       shareEnabled: false,
       maxSubagentDepth: 2,
     });
-    const statusFile = path.join(started.details.asyncDir!, "status.json");
+    const asyncDir = started.details.asyncDir;
+    assertDefined(asyncDir);
+    const statusFile = path.join(asyncDir, "status.json");
     await waitForFile(statusFile);
     const deadline = Date.now() + 10_000;
-    const status = () => JSON.parse(fs.readFileSync(statusFile, "utf8"));
+    const status = () => readStatusFile(statusFile);
     while (status().steps?.[0]?.currentTool !== "bash") {
       assert.ok(Date.now() < deadline);
+      // The process must publish actual tool activity before Stop is requested.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(20);
     }
-    const { writeAsyncInterruptRequest } =
-      await import("../../src/runs/foreground/foreground-control.ts");
-    writeAsyncInterruptRequest(started.details.asyncDir!, id);
+    writeAsyncInterruptRequest(asyncDir, id);
     await delay(300);
     assert.equal(status().state, "running", "stop requested is not a terminal process receipt");
-    assert.equal(status().steps[0].currentTool, "bash");
-    assert.equal(status().steps[0].endedAt, undefined);
+    const stoppingStep = status().steps?.[0];
+    assertDefined(stoppingStep);
+    assert.equal(stoppingStep.currentTool, "bash");
+    assert.equal(stoppingStep.endedAt, undefined);
     const resultPath = path.join(RESULTS_DIR, `${id}.json`);
     await waitForFile(resultPath);
-    const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+    const result = readResult(resultPath);
     assert.equal(result.state, "paused");
     assert.equal(result.results[0].exitCode, 0);
-    assert.equal(result.results[0].agentProcessExit.signal, "SIGKILL");
-    assert.deepEqual(status().steps[0].agentProcessExit, result.results[0].agentProcessExit);
+    const receipt = result.results[0].agentProcessExit;
+    assertDefined(receipt);
+    assert.equal(receipt.signal, "SIGKILL");
+    assert.deepEqual(status().steps?.[0]?.agentProcessExit, receipt);
   });
 
   it("does not start verification commands when already cancelled", async () => {

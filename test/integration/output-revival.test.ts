@@ -18,11 +18,27 @@ import {
   ASYNC_DIR,
   RESULTS_DIR,
   getAsyncConfigPath,
-  type AsyncResultFile,
-  type ForegroundResumeRun,
   type SubagentExecutionResult,
 } from "../../src/shared/types.ts";
 import { readStatus } from "../../src/shared/utils.ts";
+import { parseForegroundResumeRun } from "../../src/runs/background/run-schemas.ts";
+import { createSubagentState, readResult, toolText } from "../support/background-fixtures.ts";
+import {
+  assertDefined,
+  json,
+  record,
+  readJson,
+  text,
+  strings,
+  numberValue,
+} from "../support/assertions.ts";
+import { fauxProvider } from "@earendil-works/pi-ai";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
+import { createTestTerminal } from "../support/terminal.ts";
+import type { ReadonlyDeep } from "type-fest";
+initTheme("dark", false);
 import {
   createEventBus,
   createMockPi,
@@ -37,12 +53,19 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (!check()) {
     assert.ok(Date.now() < deadline, message);
+    // Poll the actual filesystem publication before advancing to revival.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
 
-function savedLaunch(runId: string, index = 0) {
-  const launch = readQuestionContract(runId, index)?.launch;
+function savedLaunch(runId: string, index = 0, readConfiguration = true) {
+  const launch = readQuestionContract(
+    runId,
+    index,
+    undefined,
+    readConfiguration ? {} : { readConfiguration: false },
+  )?.launch;
   assert.ok(launch, `missing saved launch for ${runId}:${index}`);
   return launch;
 }
@@ -56,7 +79,7 @@ const producer = { agent: "producer", task: "Prepare inputs" };
 function launchRoutes(
   model?: string,
 ): Array<{ name: string; params: SubagentParamsLike; indices: number[]; structured?: boolean }> {
-  const task = { ...writer, ...(model ? { model } : {}) };
+  const task = { ...writer, ...(model !== undefined ? { model } : {}) };
   return [
     { name: "single", params: task, indices: [0] },
     { name: "parallel", params: { tasks: [task, task] }, indices: [0, 1] },
@@ -80,6 +103,15 @@ function launchRoutes(
   ];
 }
 const routes = launchRoutes();
+function executionLabel(background: boolean): string {
+  return background ? "async" : "foreground";
+}
+function modelPolicyLabel(model: string | undefined): string {
+  return model === undefined ? "inherited" : "pinned";
+}
+function profileLabel(current: boolean): string {
+  return current ? "current profile" : "saved launch";
+}
 
 describe("saved output choices", () => {
   let mockPi: MockPi;
@@ -106,10 +138,29 @@ describe("saved output choices", () => {
     executor = createExecutor();
   });
 
+  function acceptBackgroundPreview(): void {
+    ctx.ui.custom = async (factory) =>
+      new Promise((resolve, reject) => {
+        const component = factory(
+          new TuiMainScreen(createTestTerminal()),
+          ctx.ui.theme,
+          new KeybindingsManager(),
+          resolve,
+        );
+        Promise.resolve(component)
+          .then((view) => {
+            assert.equal(typeof view.handleInput, "function");
+            view.handleInput?.("b");
+            view.handleInput?.("\r");
+          })
+          .catch(reject);
+      });
+  }
+
   function createExecutor() {
     return createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
-      state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
+      pi: { events: createEventBus(), getSessionName: () => "output-parent" },
+      state: createSubagentState(tempDir),
       config: {},
       asyncByDefault: false,
       tempArtifactsDir: path.join(tempDir, "artifacts"),
@@ -132,19 +183,19 @@ describe("saved output choices", () => {
     removeTempDir(tempDir);
   });
 
-  async function run(params: SubagentParamsLike): Promise<SubagentExecutionResult> {
-    const result = await executor.execute("output-revival", params, undefined, undefined, ctx);
-    assert.ok(!result.isError, result.content.map((part) => part.text).join("\n"));
+  async function run(params: ReadonlyDeep<SubagentParamsLike>): Promise<SubagentExecutionResult> {
+    const result = await executor.execute({ toolCallId: "output-revival", params, ctx });
+    assert.notEqual(result.isError, true, toolText(result.content));
     const id = result.details.runId ?? result.details.asyncId;
-    assert.ok(id);
+    assertDefined(id);
     runIds.add(id);
-    if (result.details.asyncId) {
+    if (result.details.asyncId !== undefined) {
       const resultPath = path.join(RESULTS_DIR, `${id}.json`);
       await waitFor(() => fs.existsSync(resultPath), `missing async result for ${id}`);
-      const payload = JSON.parse(fs.readFileSync(resultPath, "utf8")) as AsyncResultFile;
+      const payload = readResult(resultPath);
       assert.equal(payload.success, true, JSON.stringify(payload));
-      const pid = readStatus(result.details.asyncDir!)?.pid;
-      assert.ok(pid);
+      const pid = readStatus(text(result.details.asyncDir))?.pid;
+      assertDefined(pid);
       await waitFor(() => !questionProcessAlive({ pid }), `async runner ${pid} did not exit`);
     }
     return result;
@@ -153,7 +204,7 @@ describe("saved output choices", () => {
   async function continueWithOwnOutput(
     runId: string,
     index = 0,
-    overrides: SubagentParamsLike = {},
+    overrides: ReadonlyDeep<SubagentParamsLike> = {},
   ) {
     const previous = savedLaunch(runId, index);
     assert.ok(typeof previous.output === "string");
@@ -162,17 +213,21 @@ describe("saved output choices", () => {
     const resultPath = ["result.json", "foreground.json"]
       .map((name) => path.join(getRunMetadataDir(runId), name))
       .find((file) => fs.existsSync(file));
-    assert.ok(resultPath);
+    assertDefined(resultPath);
     const resultBytes = fs.readFileSync(resultPath);
-    const savedResult: AsyncResultFile | ForegroundResumeRun = JSON.parse(resultBytes.toString());
+    const savedResult =
+      path.basename(resultPath) === "foreground.json"
+        ? parseForegroundResumeRun(readJson(resultPath))
+        : readResult(resultPath);
+    assertDefined(savedResult);
     const artifactPath =
       "children" in savedResult
         ? savedResult.children.find((child) => child.index === index)?.artifactPath
-        : savedResult.results?.[index]?.artifactPaths?.outputPath;
+        : savedResult.results[index]?.artifactPaths?.outputPath;
     if (previous.artifacts) {
-      assert.ok(artifactPath, "expected predecessor output artifact");
+      assertDefined(artifactPath);
     }
-    const artifactBytes = artifactPath ? fs.readFileSync(artifactPath) : undefined;
+    const artifactBytes = artifactPath !== undefined ? fs.readFileSync(artifactPath) : undefined;
     const discoveryCount = discoveries;
     profile.output = "changed-current-profile.md";
     mockPi.onCall({ output: "Successor report — new bytes" });
@@ -183,7 +238,7 @@ describe("saved output choices", () => {
       message: "Write a follow-up report",
       ...overrides,
     });
-    const successorId = continued.details.asyncId!;
+    const successorId = text(continued.details.asyncId);
     const successor = savedLaunch(successorId);
     assert.ok(typeof successor.output === "string");
     assert.notEqual(
@@ -219,7 +274,7 @@ describe("saved output choices", () => {
       resultBytes,
       "predecessor result must stay intact",
     );
-    if (artifactPath) {
+    if (artifactPath !== undefined) {
       assert.deepEqual(
         fs.readFileSync(artifactPath),
         artifactBytes,
@@ -231,26 +286,27 @@ describe("saved output choices", () => {
     assert.equal(successor.generatedOutputFilename, "frozen.md");
     assert.equal(successor.agent.output, "reports/frozen.md");
     assert.equal(successor.outputMode, overrides.outputMode ?? previous.outputMode);
+    assertSuccessorOutput(successorId);
+    return successorId;
+  }
+
+  function assertSuccessorOutput(successorId: string): void {
+    const successor = savedLaunch(successorId);
+    const output = text(successor.output);
+    const payload = readResult(path.join(RESULTS_DIR, `${successorId}.json`));
     if (successor.outputMode === "file-only") {
-      assert.equal(fs.readFileSync(successor.output, "utf8"), "Successor report — new bytes");
-      const payload = JSON.parse(
-        fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8"),
-      ) as AsyncResultFile;
-      assert.match(payload.results![0]!.output!, /Output saved to:/);
-      assert.doesNotMatch(payload.results![0]!.output!, /Successor report/);
+      assert.equal(fs.readFileSync(output, "utf8"), "Successor report — new bytes");
+      assert.match(text(payload.results[0]?.output), /Output saved to:/);
+      assert.doesNotMatch(text(payload.results[0]?.output), /Successor report/);
     } else {
       assert.equal(
-        fs.existsSync(successor.output),
+        fs.existsSync(output),
         false,
         "inline generated output is consumed after capture",
       );
-      const payload = JSON.parse(
-        fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8"),
-      ) as AsyncResultFile;
-      assert.match(payload.results![0]!.output!, /Successor report/);
-      assert.match(payload.results![0]!.output!, /Output file consumed:/);
+      assert.match(text(payload.results[0]?.output), /Successor report/);
+      assert.match(text(payload.results[0]?.output), /Output file consumed:/);
     }
-    return successorId;
   }
 
   it("reuses a live continuation when resuming the original async directory again", async () => {
@@ -259,46 +315,42 @@ describe("saved output choices", () => {
     mockPi.onCall({ output: "Continued report", delay: 2_000 });
     const continuations: SubagentExecutionResult[] = [];
     try {
-      const first = await executor.execute(
-        "resume-dir",
-        {
+      const first = await executor.execute({
+        toolCallId: "resume-dir",
+        params: {
           action: "resume",
           dir: original.details.asyncDir,
           message: "First follow-up",
           async: true,
         },
-        undefined,
-        undefined,
         ctx,
-      );
-      assert.ok(!first.isError);
+      });
+      assert.notEqual(first.isError, true);
       continuations.push(first);
-      runIds.add(first.details.asyncId!);
+      runIds.add(text(first.details.asyncId));
       await waitFor(() => mockPi.callCount() === 2, "the continuation must start");
       await waitFor(
-        () => Boolean(readQuestionContract(first.details.asyncId!, 0)?.pid),
+        () => Boolean(readQuestionContract(text(first.details.asyncId), 0)?.pid),
         "the continuation must publish its process contract",
       );
-      const liveContract = contractBytes(first.details.asyncId!);
-      const second = await executor.execute(
-        "resume-dir-again",
-        {
+      const liveContract = contractBytes(text(first.details.asyncId));
+      const second = await executor.execute({
+        toolCallId: "resume-dir-again",
+        params: {
           action: "resume",
           dir: original.details.asyncDir,
           message: "Second follow-up",
           model: "mock/not-a-live-mutation:high",
           async: true,
         },
-        undefined,
-        undefined,
         ctx,
-      );
+      });
       assert.deepEqual(
-        contractBytes(first.details.asyncId!),
+        contractBytes(text(first.details.asyncId)),
         liveContract,
         "live guidance must not mutate launch policy",
       );
-      if (second.details.asyncId) {
+      if (second.details.asyncId !== undefined) {
         continuations.push(second);
         runIds.add(second.details.asyncId);
       }
@@ -308,92 +360,107 @@ describe("saved output choices", () => {
         "resume by dir must steer the same live continuation, not start another child",
       );
       assert.match(
-        second.content.map((part) => part.text).join("\n"),
+        toolText(second.content),
         /Nudge was not delivered/,
         "the fixture has no intercom endpoint",
       );
       assert.equal(mockPi.callCount(), 2);
     } finally {
       for (const continuation of continuations) {
+        // Teardown joins each published successor before deleting its files.
+        // oxlint-disable-next-line no-await-in-loop
         await waitFor(
-          () => fs.existsSync(path.join(RESULTS_DIR, `${continuation.details.asyncId}.json`)),
+          () => fs.existsSync(path.join(RESULTS_DIR, `${text(continuation.details.asyncId)}.json`)),
           "continuation cleanup",
         );
+        // Do not remove runner resources while the native process is still alive.
+        // oxlint-disable-next-line no-await-in-loop
         await waitFor(
-          () => !questionProcessAlive({ pid: readStatus(continuation.details.asyncDir!)?.pid }),
+          () =>
+            !questionProcessAlive({
+              pid: numberValue(readStatus(text(continuation.details.asyncDir))?.pid),
+            }),
           "continuation runner must exit",
         );
       }
     }
   });
 
-  for (const async of [true, false]) {
-    for (const route of routes) {
-      it(`${async ? "async" : "foreground"} ${route.name} regenerates default outputs from saved launches`, async () => {
-        if (route.structured) {
-          mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
-        }
-        mockPi.onCall({ output: "Predecessor report — preserved bytes\n" });
-        const original = await run({ ...route.params, async });
-        const id = original.details.runId!;
-        for (const index of route.indices) {
-          await continueWithOwnOutput(id, index);
-        }
-      });
-    }
-  }
-
-  for (const async of [true, false]) {
-    for (const override of [undefined, "mock/chosen:high"]) {
-      for (const route of launchRoutes(override)) {
-        it(`${async ? "async" : "foreground"} ${route.name} preserves ${override ? "pinned" : "inherited"} model policy through revival`, async () => {
-          profile.model = undefined;
-          profile.thinking = "medium";
-          profile.fallbackModels = ["mock/backup:low"];
-          const parentModel = { provider: "mock", id: "inherited" };
-          ctx.model = parentModel;
-          if (route.structured) {
+  function registerGeneratedOutputRoutes(): void {
+    for (const async of [true, false]) {
+      for (const route of routes) {
+        it(`${executionLabel(async)} ${route.name} regenerates default outputs from saved launches`, async () => {
+          if (route.structured === true) {
             mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
           }
-          mockPi.onCall({ output: "Report" });
+          mockPi.onCall({ output: "Predecessor report — preserved bytes\n" });
           const original = await run({ ...route.params, async });
-          const id = original.details.runId!;
-          const expectedModel = override ?? "mock/inherited:medium";
-          const expectedCandidates = override ? [override] : [expectedModel, "mock/backup:low"];
-          profile.model = "mock/updated";
-          profile.thinking = "low";
-          profile.fallbackModels = ["mock/updated-backup"];
+          const id = text(original.details.runId);
           for (const index of route.indices) {
-            const launch = savedLaunch(id, index);
-            assert.equal(launch.model, expectedModel);
-            assert.equal(launch.thinking, override ? "high" : "medium");
-            assert.deepEqual(launch.modelCandidates, expectedCandidates);
-            const continued = await run({ action: "resume", id, index, message: "Continue" });
-            const successor = savedLaunch(continued.details.asyncId!);
-            assert.equal(successor.model, expectedModel);
-            assert.equal(successor.thinking, launch.thinking);
-            assert.deepEqual(successor.modelCandidates, expectedCandidates);
+            // Each successor must finish before reviving the next saved child.
+            // oxlint-disable-next-line no-await-in-loop
+            await continueWithOwnOutput(id, index);
           }
         });
       }
     }
   }
+  registerGeneratedOutputRoutes();
+
+  function registerModelPolicyRoutes(): void {
+    for (const async of [true, false]) {
+      for (const override of [undefined, "mock/chosen:high"]) {
+        for (const route of launchRoutes(override)) {
+          it(`${executionLabel(async)} ${route.name} preserves ${modelPolicyLabel(override)} model policy through revival`, async () => {
+            profile.model = undefined;
+            profile.thinking = "medium";
+            profile.fallbackModels = ["mock/backup:low"];
+            const parentModel = { ...fauxProvider().getModel(), provider: "mock", id: "inherited" };
+            ctx.model = parentModel;
+            if (route.structured === true) {
+              mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
+            }
+            mockPi.onCall({ output: "Report" });
+            const original = await run({ ...route.params, async });
+            const id = text(original.details.runId);
+            const expectedModel = override ?? "mock/inherited:medium";
+            const expectedCandidates =
+              override !== undefined ? [override] : [expectedModel, "mock/backup:low"];
+            profile.model = "mock/updated";
+            profile.thinking = "low";
+            profile.fallbackModels = ["mock/updated-backup"];
+            for (const index of route.indices) {
+              const launch = savedLaunch(id, index);
+              assert.equal(launch.model, expectedModel);
+              assert.equal(launch.thinking, override !== undefined ? "high" : "medium");
+              assert.deepEqual(launch.modelCandidates, expectedCandidates);
+              // Revivals share their saved run and must settle in order.
+              // oxlint-disable-next-line no-await-in-loop
+              const continued = await run({ action: "resume", id, index, message: "Continue" });
+              const successor = savedLaunch(text(continued.details.asyncId));
+              assert.equal(successor.model, expectedModel);
+              assert.equal(successor.thinking, launch.thinking);
+              assert.deepEqual(successor.modelCandidates, expectedCandidates);
+            }
+          });
+        }
+      }
+    }
+  }
+  registerModelPolicyRoutes();
 
   for (const route of routes.filter((entry) =>
     ["single", "parallel", "sequential chain"].includes(entry.name),
   )) {
     it(`clarify-to-background ${route.name} preserves generated output origin`, async () => {
       ctx.hasUI = true;
-      ctx.ui.custom = async () => ({
-        confirmed: true,
-        templates: route.name === "single" ? [writer.task] : ["Prepare inputs", writer.task],
-        behaviorOverrides: [],
-        runInBackground: true,
-      });
+      acceptBackgroundPreview();
       mockPi.onCall({ output: "Predecessor report" });
       const original = await run({ ...route.params, async: true, clarify: true });
-      assert.ok(original.details.asyncId);
+      assertDefined(original.details.asyncId);
       for (const index of route.indices) {
+        // Each child continuation must finish before starting the next one.
+        // oxlint-disable-next-line no-await-in-loop
         await continueWithOwnOutput(original.details.asyncId, index);
       }
     });
@@ -403,7 +470,7 @@ describe("saved output choices", () => {
     it(`explicit output:${JSON.stringify(output)} keeps the generated default over repeated continuations`, async () => {
       mockPi.onCall({ output: "Predecessor report" });
       const original = await run({ ...writer, async: true, output });
-      const successorId = await continueWithOwnOutput(original.details.asyncId!);
+      const successorId = await continueWithOwnOutput(text(original.details.asyncId));
       await continueWithOwnOutput(successorId);
     });
   }
@@ -413,18 +480,16 @@ describe("saved output choices", () => {
       ctx.sessionManager.getSessionId = () => "root-A";
       mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
       const original = await run({ ...writer, async: true, output: false, outputMode: "inline" });
-      const id = original.details.asyncId!;
-      const originalPayload = JSON.parse(
-        fs.readFileSync(path.join(RESULTS_DIR, `${id}.json`), "utf8"),
-      ) as AsyncResultFile;
+      const id = text(original.details.asyncId);
+      const originalPayload = readResult(path.join(RESULTS_DIR, `${id}.json`));
       assert.equal(
-        JSON.parse(originalPayload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID,
+        json(text(originalPayload.results[0]?.output)).PI_SUBAGENT_ROOT_SESSION_ID,
         "root-A",
       );
       // Older persisted contracts may still carry the original root.
       const contractPath = path.join(getRunMetadataDir(id), "contracts", "0.json");
-      const contract = JSON.parse(fs.readFileSync(contractPath, "utf8"));
-      contract.launch.rootSessionId = "root-A";
+      const contract = record(readJson(contractPath));
+      record(contract.launch).rootSessionId = "root-A";
       fs.writeFileSync(contractPath, JSON.stringify(contract));
       const receipt = contractBytes(id);
 
@@ -439,14 +504,9 @@ describe("saved output choices", () => {
         output: false,
         outputMode: "inline",
       });
-      const successorId = continued.details.asyncId!;
-      const payload = JSON.parse(
-        fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8"),
-      ) as AsyncResultFile;
-      assert.equal(
-        JSON.parse(payload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID,
-        reviverRoot,
-      );
+      const successorId = text(continued.details.asyncId);
+      const payload = readResult(path.join(RESULTS_DIR, `${successorId}.json`));
+      assert.equal(json(text(payload.results[0]?.output)).PI_SUBAGENT_ROOT_SESSION_ID, reviverRoot);
       assert.deepEqual(contractBytes(id), receipt, "revival must not rewrite the old contract");
     });
   }
@@ -454,21 +514,21 @@ describe("saved output choices", () => {
   it("an inline continuation consumes only its new generated file", async () => {
     mockPi.onCall({ output: "Predecessor report" });
     const original = await run({ ...writer, async: true });
-    await continueWithOwnOutput(original.details.asyncId!, 0, { outputMode: "inline" });
+    await continueWithOwnOutput(text(original.details.asyncId), 0, { outputMode: "inline" });
   });
 
   it("inline launches preserve predecessor artifacts and results while consuming both temporary files", async () => {
     mockPi.onCall({ output: "Inline predecessor report" });
     const original = await run({ ...writer, async: true, outputMode: "inline" });
-    const previous = savedLaunch(original.details.asyncId!);
+    const previous = savedLaunch(text(original.details.asyncId));
     assert.ok(typeof previous.output === "string");
     assert.equal(fs.existsSync(previous.output), false);
-    await continueWithOwnOutput(original.details.asyncId!);
+    await continueWithOwnOutput(text(original.details.asyncId));
   });
 
   for (const async of [true, false]) {
     for (const choice of ["explicit", "absolute-default", "disabled"] as const) {
-      it(`${async ? "async" : "foreground"} ${choice} output retains its fixed or disabled contract`, async () => {
+      it(`${executionLabel(async)} ${choice} output retains its fixed or disabled contract`, async () => {
         const fixedPath = path.join(tempDir, "fixed.md");
         if (choice === "explicit") {
           profile.output = "fixed.md";
@@ -483,14 +543,14 @@ describe("saved output choices", () => {
           ...(choice === "explicit" ? { output: "fixed.md" } : {}),
           ...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
         });
-        const id = original.details.runId!;
+        const id = text(original.details.runId);
         const previous = savedLaunch(id);
         const receipt = contractBytes(id);
         assert.equal(previous.generatedOutputFilename, undefined);
         assert.equal(previous.output, choice === "disabled" ? false : fixedPath);
         mockPi.onCall({ output: "Replacement report" });
         const continued = await run({ action: "resume", id, message: "Replace the report" });
-        const successor = savedLaunch(continued.details.asyncId!);
+        const successor = savedLaunch(text(continued.details.asyncId));
         assert.equal(successor.output, previous.output);
         assert.equal(successor.generatedOutputFilename, undefined);
         assert.equal(successor.outputMode, previous.outputMode);
@@ -508,7 +568,7 @@ describe("saved output choices", () => {
     it(`explicit continuation output:${JSON.stringify(output)} replaces only the output choice`, async () => {
       mockPi.onCall({ output: "Predecessor report" });
       const original = await run({ ...writer, async: true });
-      const id = original.details.asyncId!;
+      const id = text(original.details.asyncId);
       const previous = savedLaunch(id);
       assert.ok(typeof previous.output === "string");
       const bytes = fs.readFileSync(previous.output);
@@ -520,7 +580,7 @@ describe("saved output choices", () => {
         output,
         outputMode: output === false ? "inline" : "file-only",
       });
-      const successor = savedLaunch(continued.details.asyncId!);
+      const successor = savedLaunch(text(continued.details.asyncId));
       assert.equal(successor.generatedOutputFilename, undefined);
       assert.equal(successor.output, output === false ? false : path.join(tempDir, output));
       assert.deepEqual(fs.readFileSync(previous.output), bytes);
@@ -533,8 +593,8 @@ describe("saved output choices", () => {
   it("generated output survives continuation with debug artifacts disabled", async () => {
     mockPi.onCall({ output: "Predecessor report" });
     const original = await run({ ...writer, async: true, artifacts: false });
-    assert.equal(savedLaunch(original.details.asyncId!).artifacts, false);
-    await continueWithOwnOutput(original.details.asyncId!);
+    assert.equal(savedLaunch(text(original.details.asyncId)).artifacts, false);
+    await continueWithOwnOutput(text(original.details.asyncId));
   });
 
   it("explicit continuation output:true selects the saved default instead of an earlier fixed override", async () => {
@@ -548,9 +608,11 @@ describe("saved output choices", () => {
       message: "Use the default",
       output: true,
     });
-    const successor = savedLaunch(continued.details.asyncId!);
+    const successor = savedLaunch(text(continued.details.asyncId));
     assert.ok(typeof successor.output === "string");
-    assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
+    assert.ok(
+      path.basename(successor.output).startsWith(`${text(continued.details.asyncId)}_writer_0_`),
+    );
     assert.ok(successor.output.endsWith("_frozen.md"));
     assert.equal(successor.generatedOutputFilename, "frozen.md");
     assert.equal(fs.readFileSync(successor.output, "utf8"), "New default report");
@@ -559,18 +621,16 @@ describe("saved output choices", () => {
 
   for (const clarify of [false, true]) {
     for (const output of [undefined, true]) {
-      it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${output})`, async () => {
+      it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${String(output)})`, async () => {
         profile.output = path.join(tempDir, "absolute.md");
         ctx.hasUI = clarify;
-        ctx.ui.custom = async () => ({
-          confirmed: true,
-          templates: [writer.task],
-          behaviorOverrides: [],
-          runInBackground: true,
-        });
+        acceptBackgroundPreview();
         mockPi.onCall({ output: "Absolute predecessor" });
         const original = await run({ ...writer, async: true, clarify, outputMode: "inline" });
-        assert.equal(savedLaunch(original.details.asyncId!).generatedOutputFilename, undefined);
+        assert.equal(
+          savedLaunch(text(original.details.asyncId)).generatedOutputFilename,
+          undefined,
+        );
         assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute predecessor");
         mockPi.onCall({ output: "Absolute successor" });
         const continued = await run({
@@ -579,7 +639,7 @@ describe("saved output choices", () => {
           message: "Replace fixed output",
           output,
         });
-        assert.equal(savedLaunch(continued.details.asyncId!).output, profile.output);
+        assert.equal(savedLaunch(text(continued.details.asyncId)).output, profile.output);
         assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute successor");
       });
     }
@@ -588,7 +648,7 @@ describe("saved output choices", () => {
   it("a successor's newly written file wins over its assistant receipt without touching the predecessor", async () => {
     mockPi.onCall({ output: "Predecessor report" });
     const original = await run({ ...writer, async: true });
-    const previous = savedLaunch(original.details.asyncId!);
+    const previous = savedLaunch(text(original.details.asyncId));
     assert.ok(typeof previous.output === "string");
     const bytes = fs.readFileSync(previous.output);
     const release = path.join(tempDir, "release-successor");
@@ -604,7 +664,7 @@ describe("saved output choices", () => {
         () => mockPi.callCount() === 2,
         "successor child must start before its file is written",
       );
-      successor = savedLaunch([...runIds].at(-1)!);
+      successor = savedLaunch(text([...runIds].at(-1)));
       assert.ok(typeof successor.output === "string");
       fs.mkdirSync(path.dirname(successor.output), { recursive: true });
       fs.writeFileSync(successor.output, "Detailed child-written report\n");
@@ -613,11 +673,9 @@ describe("saved output choices", () => {
       await pending;
     }
     const continued = await pending;
-    const payload = JSON.parse(
-      fs.readFileSync(path.join(RESULTS_DIR, `${continued.details.asyncId}.json`), "utf8"),
-    ) as AsyncResultFile;
-    const artifactPath = payload.results?.[0]?.artifactPaths?.outputPath;
-    assert.ok(artifactPath);
+    const payload = readResult(path.join(RESULTS_DIR, `${text(continued.details.asyncId)}.json`));
+    const artifactPath = payload.results[0]?.artifactPaths?.outputPath;
+    assertDefined(artifactPath);
     assert.equal(fs.readFileSync(artifactPath, "utf8"), "Detailed child-written report");
     assert.equal(fs.readFileSync(successor.output, "utf8"), "Detailed child-written report\n");
     assert.deepEqual(fs.readFileSync(previous.output), bytes);
@@ -626,19 +684,19 @@ describe("saved output choices", () => {
   it("legacy snapshots without origin proof retain matching-looking generated paths", async () => {
     mockPi.onCall({ output: "Legacy report" });
     const original = await run({ ...writer, async: true });
-    const id = original.details.asyncId!;
+    const id = text(original.details.asyncId);
     const legacy = { ...savedLaunch(id) };
     delete legacy.generatedOutputFilename;
     fs.writeFileSync(
       path.join(getRunMetadataDir(id), "contracts", "0.json"),
-      JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }),
+      JSON.stringify({ ...json(contractBytes(id).toString()), launch: legacy }),
     );
     const receipt = contractBytes(id);
     assert.ok(typeof legacy.output === "string");
     assert.ok(legacy.output.includes(id));
     mockPi.onCall({ output: "Legacy replacement" });
     const continued = await run({ action: "resume", id, message: "Use the saved output choice" });
-    const successor = savedLaunch(continued.details.asyncId!);
+    const successor = savedLaunch(text(continued.details.asyncId));
     assert.equal(successor.output, legacy.output);
     assert.equal(successor.generatedOutputFilename, undefined);
     assert.equal(fs.readFileSync(legacy.output, "utf8"), "Legacy replacement");
@@ -655,12 +713,13 @@ describe("saved output choices", () => {
           outputMode,
           model: "mock/old:medium",
         });
-        const id = original.details.asyncId!;
+        const id = text(original.details.asyncId);
         const previous = savedLaunch(id);
         assert.ok(typeof previous.output === "string");
         const receipt = contractBytes(id);
         const bytes = fs.existsSync(previous.output) ? fs.readFileSync(previous.output) : undefined;
-        const contract = readQuestionContract(id, 0)!;
+        const contract = readQuestionContract(id, 0);
+        assertDefined(contract);
         const question =
           action === "answer"
             ? createSupervisorQuestion({
@@ -670,9 +729,9 @@ describe("saved output choices", () => {
                 ownerTarget: "fixture-parent",
                 childTarget: "fixture-child",
                 childSessionId: "fixture-session",
-                sessionFile: contract.sessionFile!,
+                sessionFile: text(contract.sessionFile),
                 cwd: tempDir,
-                pid: contract.pid!,
+                pid: numberValue(contract.pid),
                 reason: "need_decision",
                 message: "May I continue?",
               })
@@ -690,11 +749,13 @@ describe("saved output choices", () => {
           questionId: question?.questionId,
           message: "Continue with the current profile",
         });
-        const successor = savedLaunch(continued.details.asyncId!);
+        const successor = savedLaunch(text(continued.details.asyncId));
         assert.ok(typeof successor.output === "string");
         assert.notEqual(successor.output, previous.output);
         assert.ok(
-          path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`),
+          path
+            .basename(successor.output)
+            .startsWith(`${text(continued.details.asyncId)}_writer_0_`),
         );
         assert.ok(
           successor.output.endsWith("_frozen.md"),
@@ -735,7 +796,7 @@ describe("saved output choices", () => {
           id: continued.details.asyncId,
           message: "Continue again without selecting a profile",
         });
-        const latest = savedLaunch(repeated.details.asyncId!);
+        const latest = savedLaunch(text(repeated.details.asyncId));
         assert.ok(typeof latest.output === "string");
         assert.notEqual(latest.output, successor.output);
         assert.ok(
@@ -757,11 +818,12 @@ describe("saved output choices", () => {
   it("saved continuation preserves its pinned launch instead of mutable native display metadata", async () => {
     mockPi.onCall({ output: "Original" });
     const original = await run({ ...writer, async: true, model: "mock/chosen:high" });
-    const id = original.details.asyncId!;
-    const contract = readQuestionContract(id, 0)!;
+    const id = text(original.details.asyncId);
+    const contract = readQuestionContract(id, 0);
+    assertDefined(contract);
     const timestamp = new Date().toISOString();
     fs.writeFileSync(
-      contract.sessionFile!,
+      text(contract.sessionFile),
       [
         { type: "session", version: 3, id: "native-session", cwd: tempDir, timestamp },
         {
@@ -789,23 +851,20 @@ describe("saved output choices", () => {
       "default reads retain the captured selection",
     );
     const continued = await run({ action: "resume", id, message: "Continue" });
-    const successor = readQuestionContract(continued.details.asyncId!, 0, undefined, {
-      readConfiguration: false,
-    })!.launch!;
+    const successor = savedLaunch(text(continued.details.asyncId), 0, false);
     assert.equal(successor.model, "mock/chosen:high");
     assert.equal(successor.thinking, "high");
     assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
     const calls = fs
       .readdirSync(mockPi.dir)
       .filter((name) => /^call-.*\.json$/.test(name))
-      .sort();
-    const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, calls.at(-1)!), "utf8"))
-      .args as string[];
+      .sort((left, right) => left.localeCompare(right));
+    const args = strings(record(readJson(path.join(mockPi.dir, text(calls.at(-1))))).args);
     assert.equal(args[args.indexOf("--model") + 1], "mock/chosen:high");
   });
 
   for (const selectProfile of [false, true]) {
-    it(`explicit continuation model wins over ${selectProfile ? "current profile" : "saved launch"} policy`, async () => {
+    it(`explicit continuation model wins over ${profileLabel(selectProfile)} policy`, async () => {
       profile.model = "mock/original";
       profile.thinking = "medium";
       profile.fallbackModels = ["mock/original-backup:low"];
@@ -821,7 +880,7 @@ describe("saved output choices", () => {
         ...(selectProfile ? { agent: "writer" } : {}),
         model: "mock/chosen:high",
       });
-      const successor = savedLaunch(continued.details.asyncId!);
+      const successor = savedLaunch(text(continued.details.asyncId));
       assert.equal(successor.model, "mock/chosen:high");
       assert.equal(successor.thinking, "high");
       assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
@@ -830,7 +889,7 @@ describe("saved output choices", () => {
         id: continued.details.asyncId,
         message: "Keep going",
       });
-      assert.deepEqual(savedLaunch(repeated.details.asyncId!).modelCandidates, [
+      assert.deepEqual(savedLaunch(text(repeated.details.asyncId)).modelCandidates, [
         "mock/chosen:high",
       ]);
     });
@@ -855,7 +914,7 @@ describe("saved output choices", () => {
         ...(choice === "explicit" ? { output: "fixed.md" } : {}),
         ...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
       });
-      const id = original.details.asyncId!;
+      const id = text(original.details.asyncId);
       const previous = savedLaunch(id);
       if (choice === "legacy") {
         const legacy = { ...previous };
@@ -863,13 +922,13 @@ describe("saved output choices", () => {
         Reflect.deleteProperty(legacy, "outputFromAgentDefault");
         fs.writeFileSync(
           path.join(getRunMetadataDir(id), "contracts", "0.json"),
-          JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }),
+          JSON.stringify({ ...json(contractBytes(id).toString()), launch: legacy }),
         );
       }
       if (choice === "no-launch") {
         fs.writeFileSync(
           path.join(getRunMetadataDir(id), "contracts", "0.json"),
-          JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: undefined }),
+          JSON.stringify({ ...json(contractBytes(id).toString()), launch: undefined }),
         );
       }
       const receipt = contractBytes(id);
@@ -882,7 +941,7 @@ describe("saved output choices", () => {
         message: "Use the current profile",
         ...(choice === "new-default" ? { output: true } : {}),
       });
-      const successor = savedLaunch(continued.details.asyncId!);
+      const successor = savedLaunch(text(continued.details.asyncId));
       assert.equal(successor.agent.output, profile.output);
       assert.deepEqual(contractBytes(id), receipt);
       if (choice === "new-default") {
@@ -904,12 +963,14 @@ describe("saved output choices", () => {
     it(`${action} revives an exited question with a successor-owned default output`, async () => {
       mockPi.onCall({ output: "Predecessor report" });
       const original = await run({ ...writer, async: true });
-      const id = original.details.asyncId!;
-      const contract = readQuestionContract(id, 0)!;
+      const id = text(original.details.asyncId);
+      const contract = readQuestionContract(id, 0);
+      assertDefined(contract);
       const previous = savedLaunch(id);
       assert.ok(typeof previous.output === "string");
       const bytes = fs.readFileSync(previous.output);
-      assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
+      assertDefined(contract.pid);
+      assert.equal(questionProcessAlive({ pid: contract.pid }), false);
       const question = createSupervisorQuestion({
         runId: id,
         index: 0,
@@ -917,7 +978,7 @@ describe("saved output choices", () => {
         ownerTarget: "fixture-parent",
         childTarget: "fixture-child",
         childSessionId: "fixture-session",
-        sessionFile: contract.sessionFile!,
+        sessionFile: text(contract.sessionFile),
         cwd: tempDir,
         pid: contract.pid,
         reason: "need_decision",
@@ -932,11 +993,11 @@ describe("saved output choices", () => {
         questionId: question.questionId,
         message: "Yes, write the follow-up",
       });
-      const successor = savedLaunch(continued.details.asyncId!);
+      const successor = savedLaunch(text(continued.details.asyncId));
       assert.ok(typeof successor.output === "string");
       assert.notEqual(successor.output, previous.output);
       assert.ok(
-        path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`),
+        path.basename(successor.output).startsWith(`${text(continued.details.asyncId)}_writer_0_`),
       );
       assert.ok(successor.output.endsWith("_frozen.md"));
       assert.equal(successor.generatedOutputFilename, "frozen.md");
@@ -970,9 +1031,11 @@ describe("saved output choices", () => {
         output: false,
         acceptance: { criteria: ["Deliver the result"], maxFinalizationTurns: 1 },
       });
-      const id = original.details.runId!;
-      const contract = readQuestionContract(id, 0)!;
-      assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
+      const id = text(original.details.runId);
+      const contract = readQuestionContract(id, 0);
+      assertDefined(contract);
+      assertDefined(contract.pid);
+      assert.equal(questionProcessAlive({ pid: contract.pid }), false);
       const question =
         action === "answer"
           ? createSupervisorQuestion({
@@ -982,7 +1045,7 @@ describe("saved output choices", () => {
               ownerTarget: "fixture-parent",
               childTarget: "fixture-child",
               childSessionId: "fixture-session",
-              sessionFile: contract.sessionFile!,
+              sessionFile: text(contract.sessionFile),
               cwd: originalCwd,
               pid: contract.pid,
               reason: "need_decision",
@@ -990,7 +1053,7 @@ describe("saved output choices", () => {
             })
           : undefined;
       fs.rmdirSync(originalCwd);
-      const before = mockPi.callCount();
+      const callsBefore = mockPi.callCount();
       const nativeReceipt = path.join(tempDir, "native-after.json");
       mockPi.onCall({
         nativeReport: {
@@ -1007,15 +1070,15 @@ describe("saved output choices", () => {
         message: "Continue in the replacement",
         cwd: "replacement",
       });
-      assert.equal(savedLaunch(continued.details.asyncId!).cwd, replacementCwd);
+      assert.equal(savedLaunch(text(continued.details.asyncId)).cwd, replacementCwd);
       const attempts = fs
         .readdirSync(mockPi.dir)
         .filter((name) => /^call-.*\.json$/.test(name))
-        .sort()
-        .map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf8")))
-        .slice(before);
+        .sort((left, right) => left.localeCompare(right))
+        .map((name) => record(readJson(path.join(mockPi.dir, name))))
+        .slice(callsBefore);
       assert.equal(attempts.length, 1, "initial work and review share one native process");
-      const native = JSON.parse(fs.readFileSync(nativeReceipt, "utf8"));
+      const native = record(readJson(nativeReceipt));
       assert.equal(native.providerCalls, 2);
       assert.deepEqual(
         native.providerCwds,
@@ -1023,26 +1086,24 @@ describe("saved output choices", () => {
       );
       for (const call of attempts) {
         assert.equal(call.cwd, fs.realpathSync(replacementCwd));
-        assert.equal(call.args[call.args.indexOf("--session") + 1], contract.sessionFile);
-        assert.equal(call.args.includes("--session-cwd"), false);
-        assert.equal(call.sessionCwd.cwd, replacementCwd);
+        assert.equal(
+          strings(call.args)[strings(call.args).indexOf("--session") + 1],
+          contract.sessionFile,
+        );
+        assert.equal(strings(call.args).includes("--session-cwd"), false);
+        assert.equal(record(call.sessionCwd).cwd, replacementCwd);
       }
     });
   }
 
   it("rejects file-only with output:false before any child starts", async () => {
-    const result = await executor.execute(
-      "disabled-file-only",
-      { ...writer, output: false, async: true },
-      undefined,
-      undefined,
+    const result = await executor.execute({
+      toolCallId: "disabled-file-only",
+      params: { ...writer, output: false, async: true },
       ctx,
-    );
+    });
     assert.equal(result.isError, true);
-    assert.match(
-      result.content.map((part) => part.text).join("\n"),
-      /does not configure an output file/,
-    );
+    assert.match(toolText(result.content), /does not configure an output file/);
     assert.equal(mockPi.callCount(), 0);
   });
 });

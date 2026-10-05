@@ -13,8 +13,9 @@ import {
   saveQuestionContract,
 } from "../../src/runs/shared/supervisor-questions.ts";
 import { readStatus } from "../../src/shared/utils.ts";
-import type { SubagentState } from "../../src/shared/types.ts";
 import { createEventBus, createTempDir, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
+import { assertDefined } from "../support/assertions.ts";
+import { createSubagentState, toolText } from "../support/background-fixtures.ts";
 
 const alive = (pid: number) => {
   try {
@@ -28,7 +29,23 @@ async function until(check: () => boolean, message: string) {
   const deadline = Date.now() + 10_000;
   while (!check()) {
     assert.ok(Date.now() < deadline, message);
+    // Each readiness probe must follow the previous polling delay.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
+  }
+}
+
+function killOwnedProcess(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+    return;
+  } catch (error) {
+    assert.ok(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    assert.ok(error instanceof Error && "code" in error && error.code === "ESRCH");
   }
 }
 
@@ -58,15 +75,10 @@ setInterval(() => fs.appendFileSync(heartbeat, 'tick\\n'), 30);
       { mode: 0o755 },
     );
     const originalPath = process.env.PATH;
-    process.env.PATH = `${bin}${path.delimiter}${originalPath}`;
-    const state = {
-      baseCwd: cwd,
-      currentSessionId: null,
-      asyncJobs: new Map(),
-      ownedRuns: new Map(),
-    } as SubagentState;
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ""}`;
+    const state = createSubagentState(cwd);
     const executor = createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
+      pi: { events: createEventBus(), getSessionName: () => "orphan-parent" },
       state,
       config: {},
       asyncByDefault: false,
@@ -76,46 +88,53 @@ setInterval(() => fs.appendFileSync(heartbeat, 'tick\\n'), 30);
       discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false })] }),
     });
     const pids: number[] = [];
-    let id: string | undefined;
+    const cleanup: { runId?: string } = {};
     t.after(async () => {
-      process.env.PATH = originalPath;
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
       for (const pid of pids) {
-        try {
-          process.kill(-pid, "SIGKILL");
-        } catch {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {}
-        }
+        killOwnedProcess(pid);
       }
       await delay(100);
-      if (id) {
-        fs.rmSync(getRunMetadataDir(id), { recursive: true, force: true });
+      if (cleanup.runId !== undefined) {
+        fs.rmSync(getRunMetadataDir(cleanup.runId), { recursive: true, force: true });
       }
       fs.rmSync(cwd, { recursive: true, force: true });
     });
-    const started = await executor.execute(
-      "start",
-      {
+    const started = await executor.execute({
+      toolCallId: "start",
+      params: {
         tasks: [
           { agent: "worker", task: "Scratch heartbeat", output: false },
           { agent: "worker", task: "Scratch heartbeat", output: false },
         ],
         async: true,
       },
-      undefined,
-      undefined,
-      makeMinimalCtx(cwd),
-    );
-    assert.ok(!started.isError, JSON.stringify(started));
-    id = started.details.asyncId!;
-    const dir = started.details.asyncDir!;
-    pids.push(started.details.asyncPid!);
+      ctx: makeMinimalCtx(cwd),
+    });
+    assert.notEqual(started.isError, true, JSON.stringify(started));
+    const id = started.details.asyncId;
+    const dir = started.details.asyncDir;
+    const asyncPid = started.details.asyncPid;
+    assertDefined(id);
+    assertDefined(dir);
+    assertDefined(asyncPid);
+    cleanup.runId = id;
+    pids.push(asyncPid);
     await until(
-      () => Boolean(readQuestionContract(id!, 0)?.pid && readQuestionContract(id!, 1)?.pid),
+      () =>
+        readQuestionContract(id, 0)?.pid !== undefined &&
+        readQuestionContract(id, 1)?.pid !== undefined,
       "children must start",
     );
-    const children = [0, 1].map((index) => readQuestionContract(id!, index)!.pid!);
+    const children = [0, 1].map((index) => {
+      const pid = readQuestionContract(id, index)?.pid;
+      assertDefined(pid);
+      return pid;
+    });
     pids.push(...children);
     await until(
       () => children.every((pid) => fs.existsSync(path.join(cwd, `descendant-${pid}`))),
@@ -132,7 +151,8 @@ setInterval(() => fs.appendFileSync(heartbeat, 'tick\\n'), 30);
         ),
       "heartbeats must start",
     );
-    const runnerPid = readStatus(dir)!.pid!;
+    const runnerPid = readStatus(dir)?.pid;
+    assertDefined(runnerPid);
     pids.push(runnerPid);
     process.kill(runnerPid, "SIGKILL");
     await until(() => !alive(runnerPid), "runner must exit");
@@ -143,45 +163,54 @@ setInterval(() => fs.appendFileSync(heartbeat, 'tick\\n'), 30);
       fs.statSync(heartbeat).size > before,
       "child must still execute after the runner dies",
     );
+    assertDefined(state.ownedRuns);
+    const owned = state.ownedRuns.get(id);
+    assertDefined(owned);
     assert.equal(
-      ownedRunView(state.ownedRuns!.get(id)!, state).canInterrupt,
+      ownedRunView(owned, state).canInterrupt,
       true,
       "Stop must remain available for live orphaned children",
     );
     if (scenario === "mismatched identity") {
       saveQuestionContract(id, 1, { processIdentity: "different process birth" });
     }
-    const receipt = interruptAsyncRun(state, id, scenario === "selected child" ? 0 : undefined)!;
+    const receipt = interruptAsyncRun(state, id, scenario === "selected child" ? 0 : undefined);
+    assertDefined(receipt);
     if (scenario === "mismatched identity") {
       assert.equal(receipt.isError, true, "unverified PID ownership must reject Stop");
-      assert.match(receipt.content[0]!.text, /ownership|session/i);
+      assert.match(toolText(receipt.content), /ownership|session/i);
       assert.ok(children.every(alive), "unrelated process and sibling must survive");
       return;
     }
-    assert.ok(!receipt.isError, JSON.stringify(receipt));
-    assert.match(receipt.content[0]!.text, /exit are not yet confirmed/);
+    assert.notEqual(receipt.isError, true, JSON.stringify(receipt));
+    assert.match(toolText(receipt.content), /exit are not yet confirmed/);
+    const stoppedStep = readStatus(dir)?.steps?.[0];
+    assertDefined(stoppedStep);
     assert.equal(
-      readStatus(dir)!.steps![0]!.agentProcessExit,
+      stoppedStep.agentProcessExit,
       undefined,
       "Stop must not fabricate an exit receipt",
     );
     const stopped =
-      scenario === "whole run" ? [...children, ...descendants] : [children[0]!, descendants[0]!];
+      scenario === "whole run" ? [...children, ...descendants] : [children[0], descendants[0]];
     await until(() => stopped.every((pid) => !alive(pid)), "orphaned child and commands must stop");
     const stoppedSize = fs.statSync(heartbeat).size;
     await delay(100);
     assert.equal(fs.statSync(heartbeat).size, stoppedSize, "stopped child must stop writing");
     if (scenario === "selected child") {
       assert.ok(
-        alive(children[1]!) && alive(descendants[1]!),
+        alive(children[1]) && alive(descendants[1]),
         "selected Stop must preserve sibling and its commands",
       );
-      assert.ok(
-        !interruptAsyncRun(state, id)!.isError,
+      const wholeRunStop = interruptAsyncRun(state, id);
+      assertDefined(wholeRunStop);
+      assert.notEqual(
+        wholeRunStop.isError,
+        true,
         "whole-run Stop must also work after one child has exited",
       );
       await until(
-        () => !alive(children[1]!) && !alive(descendants[1]!),
+        () => !alive(children[1]) && !alive(descendants[1]),
         "remaining sibling must stop",
       );
     }

@@ -108,27 +108,30 @@ for (const scenario of [
     fs.writeFileSync(path.join(dir, "output-0.log.finalization-1.log"), "UNBOUND_REVIEW_LOG\n");
     let acceptance;
     if (scenario === "immutable-review") {
-      acceptance = evaluateAcceptanceReport({
+      const evaluated = evaluateAcceptanceReport({
         acceptance: resolveEffectiveAcceptance({
           explicit: { criteria: ["Review the final report"] },
         }),
         output: legacyReport,
       });
-      acceptance.finalization = {
-        mode: "self-review-loop",
-        status: "completed",
-        maxTurns: 1,
-        turns: [
-          {
-            turn: 1,
-            prompt: "Review",
-            status: acceptance.status,
-            rawOutput: legacyReport,
-            report,
-            runtimeChecks: [],
-            verifyRuns: [],
-          },
-        ],
+      acceptance = {
+        ...evaluated,
+        finalization: {
+          mode: "self-review-loop",
+          status: "completed",
+          maxTurns: 1,
+          turns: [
+            {
+              turn: 1,
+              prompt: "Review",
+              status: evaluated.status,
+              rawOutput: legacyReport,
+              report,
+              runtimeChecks: [],
+              verifyRuns: [],
+            },
+          ],
+        },
       };
     }
     if (scenario === "missing-session" || scenario === "immutable-review") {
