@@ -57,7 +57,7 @@ export interface AgentVisit {
   seenActivityAt?: number;
   outbox: OutgoingMessage[];
   lastSentId?: string;
-  notice?: string | { continue: keyof typeof CONTINUE_NOTICES };
+  notice?: string | { readonly continue: keyof typeof CONTINUE_NOTICES };
 }
 
 export interface AgentTask {

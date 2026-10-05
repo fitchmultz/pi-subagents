@@ -23,7 +23,7 @@ function pageStatus(controller: PickerController): string {
 function pageItems(
   controller: PickerController,
   query: string,
-): { readonly tasks: readonly AgentTask[]; readonly items: SelectItem[] } {
+): { readonly tasks: readonly Readonly<AgentTask>[]; readonly items: SelectItem[] } {
   const rows = controller.listPage?.rows ?? [];
   const tasks = controller.tasks.filter((task) => rows.some((run) => run.runId === task.run.runId));
   const items = tasks.map((task) => {

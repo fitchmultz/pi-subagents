@@ -12,14 +12,14 @@ export interface HistorySelection {
 /** Browsing operations exposed to the native picker, not the controller's private state. */
 export interface PickerController {
   readonly shortcut: KeyId;
-  readonly tasks: readonly AgentTask[];
+  readonly tasks: readonly Readonly<AgentTask>[];
   readonly listFilter: string;
   readonly listPending: boolean;
   readonly listPage?: HistoryRunPage;
   readonly listError?: string;
   readonly listLoading: boolean;
   readonly availableHeight: (tui: TUI) => number;
-  readonly task: (key: string) => AgentTask | undefined;
+  readonly task: (key: string) => Readonly<AgentTask> | undefined;
   readonly pageTasks: (direction: "earlier" | "later") => void;
   readonly retry: (key?: string) => Promise<void>;
   readonly filterTasks: (text: string) => void;
