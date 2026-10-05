@@ -1,11 +1,12 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { createMutationCompletionTracker } from "./mutating-tool-guard.ts";
+import { isRecord } from "./record-value.ts";
 
 export type CompletionPolicy = "none" | "mutation-guard" | "acceptance-contract";
 
 export function resolveCompletionPolicy(input: {
-  completionGuardEnabled: boolean;
-  usesAcceptanceContract: boolean;
+  readonly completionGuardEnabled: boolean;
+  readonly usesAcceptanceContract: boolean;
 }): CompletionPolicy {
   if (input.usesAcceptanceContract) {
     return "acceptance-contract";
@@ -13,35 +14,29 @@ export function resolveCompletionPolicy(input: {
   return input.completionGuardEnabled ? "mutation-guard" : "none";
 }
 
-export function hasCompletedMutationToolCall(messages: Message[]): boolean {
-  const mutations = createMutationCompletionTracker();
+function recordAssistantCalls(
+  message: Extract<Message, { role: "assistant" }>,
+  tracker: ReturnType<typeof createMutationCompletionTracker>,
+): void {
+  for (const part of message.content) {
+    if (part.type === "toolCall") {
+      tracker.recordToolStart({
+        id: part.id,
+        toolName: part.name,
+        args: isRecord(part.arguments) ? part.arguments : {},
+      });
+    }
+  }
+}
+
+export function hasCompletedMutationToolCall(messages: readonly Message[]): boolean {
+  const tracker = createMutationCompletionTracker();
   for (const message of messages) {
     if (message.role === "assistant") {
-      for (const part of message.content) {
-        if (part.type !== "toolCall") {
-          continue;
-        }
-        const args =
-          typeof part.arguments === "object" &&
-          part.arguments !== null &&
-          !Array.isArray(part.arguments)
-            ? (part.arguments as Record<string, unknown>)
-            : {};
-        mutations.recordToolStart({
-          id: typeof part.id === "string" ? part.id : undefined,
-          toolName: typeof part.name === "string" ? part.name : undefined,
-          args,
-        });
-      }
-      continue;
-    }
-    if (message.role !== "toolResult") {
-      continue;
-    }
-    if (
-      mutations.recordToolResult(
-        message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown },
-      )?.completedMutation
+      recordAssistantCalls(message, tracker);
+    } else if (
+      message.role === "toolResult" &&
+      tracker.recordToolResult(message)?.completedMutation === true
     ) {
       return true;
     }

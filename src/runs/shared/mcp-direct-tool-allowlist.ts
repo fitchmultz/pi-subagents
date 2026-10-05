@@ -4,7 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getAgentDir } from "../../shared/utils.ts";
 
-const CACHE_VERSION = 1;
+import type { Static } from "typebox";
+import type { ReadonlyInput } from "../../shared/types.ts";
+import { Check, ServersSchema, type ServerSchema, CacheSchema } from "./mcp-config-schema.ts";
+import { stableStringify } from "./stable-value.ts";
+import { isRecord } from "./record-value.ts";
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
 const GENERIC_GLOBAL_CONFIG_PATH = path.join(os.homedir(), ".config", "mcp", "mcp.json");
@@ -32,58 +36,23 @@ const IMPORT_PATHS = {
 type ToolPrefix = "server" | "none" | "short";
 type ImportKind = keyof typeof IMPORT_PATHS;
 
-interface ServerEntry {
-  command?: string;
-  args?: string[];
-  socket?: string;
-  env?: Record<string, string>;
-  cwd?: string;
-  url?: string;
-  headers?: Record<string, string>;
-  auth?: "oauth" | "bearer" | false;
-  bearerToken?: string;
-  bearerTokenEnv?: string;
-  exposeResources?: boolean;
-  excludeTools?: string[];
-  includeTools?: string[];
-  toolPrefix?: ToolPrefix;
-  disabled?: boolean;
-}
-
+type ServerEntry = ReadonlyInput<Static<typeof ServerSchema>>;
 interface McpConfig {
-  mcpServers: Record<string, ServerEntry>;
-  imports?: ImportKind[];
-  settings?: {
-    toolPrefix?: ToolPrefix;
-  };
+  readonly mcpServers: Readonly<Record<string, ServerEntry>>;
+  readonly imports?: readonly ImportKind[];
+  readonly settings?: { readonly toolPrefix?: ToolPrefix };
 }
-
-interface CachedTool {
-  name?: string;
-}
-
-interface CachedResource {
-  uri?: string;
-  name?: string;
-}
-
-interface ServerCacheEntry {
-  configHash?: string;
-  tools?: CachedTool[];
-  resources?: CachedResource[];
-  cachedAt?: number;
-}
-
+type ServerCacheEntry = ReadonlyInput<Static<typeof CacheSchema>>["servers"][string];
 interface MetadataCache {
-  version: number;
-  servers: Record<string, ServerCacheEntry>;
+  readonly version: number;
+  readonly servers: Readonly<Partial<Record<string, ServerCacheEntry>>>;
 }
 
 export function resolveMcpDirectToolNames(
-  mcpDirectTools: string[] | undefined,
+  mcpDirectTools: readonly string[] | undefined,
   cwd = process.cwd(),
 ): string[] {
-  if (!mcpDirectTools?.length) {
+  if (mcpDirectTools === undefined || mcpDirectTools.length === 0) {
     return [];
   }
 
@@ -120,19 +89,7 @@ function loadMetadataCache(directory: string): MetadataCache | null {
     return null;
   }
 
-  if (!parsed || typeof parsed !== "object") {
-    return null;
-  }
-  const raw = parsed as Record<string, unknown>;
-  if (
-    raw.version !== CACHE_VERSION ||
-    !raw.servers ||
-    typeof raw.servers !== "object" ||
-    Array.isArray(raw.servers)
-  ) {
-    return null;
-  }
-  return raw as unknown as MetadataCache;
+  return Check(CacheSchema, parsed) ? parsed : null;
 }
 
 function loadMcpConfig(cwd: string, directory: string): McpConfig {
@@ -175,24 +132,21 @@ function readConfig(configPath: string): McpConfig | null {
   return validateConfig(parsed);
 }
 
+function validatedServers(value: unknown): Readonly<Record<string, ServerEntry>> {
+  return Check(ServersSchema, value) ? value : {};
+}
+
 function validateConfig(raw: unknown): McpConfig {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+  if (!isRecord(raw)) {
     return { mcpServers: {} };
   }
-  const obj = raw as Record<string, unknown>;
-  const servers = obj.mcpServers ?? obj["mcp-servers"] ?? {};
+  const settings = isRecord(raw.settings)
+    ? { toolPrefix: getToolPrefix(raw.settings.toolPrefix) }
+    : undefined;
   return {
-    mcpServers:
-      servers && typeof servers === "object" && !Array.isArray(servers)
-        ? (servers as Record<string, ServerEntry>)
-        : {},
-    imports: Array.isArray(obj.imports)
-      ? obj.imports.filter((value): value is ImportKind => isImportKind(value))
-      : undefined,
-    settings:
-      obj.settings && typeof obj.settings === "object" && !Array.isArray(obj.settings)
-        ? (obj.settings as McpConfig["settings"])
-        : undefined,
+    mcpServers: validatedServers(raw.mcpServers ?? raw["mcp-servers"] ?? {}),
+    imports: Array.isArray(raw.imports) ? raw.imports.filter(isImportKind) : undefined,
+    settings,
   };
 }
 
@@ -200,20 +154,20 @@ function mergeConfigs(base: McpConfig, next: McpConfig): McpConfig {
   const imports = [...(base.imports ?? []), ...(next.imports ?? [])];
   return {
     mcpServers: { ...base.mcpServers, ...next.mcpServers },
-    imports: imports.length ? [...new Set(imports)] : undefined,
+    imports: imports.length > 0 ? [...new Set(imports)] : undefined,
     settings: next.settings ? { ...base.settings, ...next.settings } : base.settings,
   };
 }
 
 function expandImports(config: McpConfig, cwd: string): McpConfig {
-  if (!config.imports?.length) {
+  if (config.imports === undefined || config.imports.length === 0) {
     return config;
   }
 
-  const importedServers: Record<string, ServerEntry> = {};
+  const importedServers = new Map<string, ServerEntry>();
   for (const importKind of config.imports) {
     const importPath = resolveImportPath(importKind, cwd);
-    if (!importPath) {
+    if (importPath === null) {
       continue;
     }
     let imported: unknown;
@@ -223,8 +177,8 @@ function expandImports(config: McpConfig, cwd: string): McpConfig {
       continue;
     }
     for (const [name, definition] of Object.entries(extractServers(imported, importKind))) {
-      if (!importedServers[name]) {
-        importedServers[name] = definition;
+      if (!importedServers.has(name)) {
+        importedServers.set(name, definition);
       }
     }
   }
@@ -232,7 +186,7 @@ function expandImports(config: McpConfig, cwd: string): McpConfig {
   return {
     imports: config.imports,
     settings: config.settings,
-    mcpServers: { ...importedServers, ...config.mcpServers },
+    mcpServers: { ...Object.fromEntries(importedServers), ...config.mcpServers },
   };
 }
 
@@ -246,115 +200,124 @@ function resolveImportPath(importKind: ImportKind, cwd: string): string | null {
   return null;
 }
 
-function extractServers(config: unknown, kind: ImportKind): Record<string, ServerEntry> {
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
+function extractServers(config: unknown, kind: ImportKind): Readonly<Record<string, ServerEntry>> {
+  if (!isRecord(config)) {
     return {};
   }
-  const obj = config as Record<string, unknown>;
   const servers =
     kind === "cursor" || kind === "windsurf" || kind === "vscode"
-      ? (obj.mcpServers ?? obj["mcp-servers"])
-      : obj.mcpServers;
-  return servers && typeof servers === "object" && !Array.isArray(servers)
-    ? (servers as Record<string, ServerEntry>)
-    : {};
+      ? (config.mcpServers ?? config["mcp-servers"])
+      : config.mcpServers;
+  return validatedServers(servers);
+}
+
+// Selection consumers need membership only; the parsing operation owns the sets.
+type ToolSelection = true | { readonly has: (name: string) => boolean };
+
+function cachedNames(cache: ServerCacheEntry, exposeResources: boolean): string[] {
+  const tools = (cache.tools ?? []).flatMap((tool) =>
+    tool.name !== undefined && tool.name !== "" ? [tool.name] : [],
+  );
+  if (!exposeResources) {
+    return tools;
+  }
+  const resources = (cache.resources ?? []).flatMap((resource) => {
+    if (
+      resource.name === undefined ||
+      resource.name === "" ||
+      resource.uri === undefined ||
+      resource.uri === ""
+    ) {
+      return [];
+    }
+    return [`read_${resourceNameToToolName(resource.name)}`];
+  });
+  return [...tools, ...resources];
+}
+
+function serverDirectNames(input: {
+  readonly serverName: string;
+  readonly definition: ServerEntry;
+  readonly cache: ServerCacheEntry;
+  readonly prefix: ToolPrefix;
+  readonly selection: ToolSelection;
+}): string[] {
+  const names: string[] = [];
+  for (const name of cachedNames(input.cache, input.definition.exposeResources !== false)) {
+    if (input.selection !== true && !input.selection.has(name)) {
+      continue;
+    }
+    if (isToolExcluded(name, input.serverName, input.prefix, input.definition.excludeTools)) {
+      continue;
+    }
+    const prefixed = formatToolName(name, input.serverName, input.prefix);
+    if (!BUILTIN_TOOL_NAMES.has(prefixed)) {
+      names.push(prefixed);
+    }
+  }
+  return names;
 }
 
 function resolveDirectToolNames(
   config: McpConfig,
   cache: MetadataCache,
   defaultPrefix: ToolPrefix,
-  envOverride: string[],
+  envOverride: readonly string[],
 ): string[] {
   const names: string[] = [];
-  const seenNames = new Set<string>();
-  const { servers: selectedServers, tools: selectedTools } = parseSelections(envOverride);
-
+  const { servers, tools } = parseSelections(envOverride);
   for (const [serverName, definition] of Object.entries(config.mcpServers)) {
-    if (definition.disabled) {
-      continue;
-    }
     const serverCache = cache.servers[serverName];
-    if (!isServerCacheValid(serverCache, definition)) {
+    if (definition.disabled === true || !isServerCacheValid(serverCache, definition)) {
       continue;
     }
-    const prefix = definition.toolPrefix ?? defaultPrefix;
-
-    const toolFilter = selectedServers.has(serverName) ? true : selectedTools.get(serverName);
-    if (!toolFilter) {
+    const selection = servers.has(serverName) ? true : tools.get(serverName);
+    if (selection === undefined) {
       continue;
     }
-
-    for (const tool of Array.isArray(serverCache.tools) ? serverCache.tools : []) {
-      if (typeof tool?.name !== "string" || !tool.name) {
-        continue;
-      }
-      if (toolFilter !== true && !toolFilter.has(tool.name)) {
-        continue;
-      }
-      if (isToolExcluded(tool.name, serverName, prefix, definition.excludeTools)) {
-        continue;
-      }
-      const prefixedName = formatToolName(tool.name, serverName, prefix);
-      if (BUILTIN_TOOL_NAMES.has(prefixedName) || seenNames.has(prefixedName)) {
-        continue;
-      }
-      seenNames.add(prefixedName);
-      names.push(prefixedName);
-    }
-
-    if (definition.exposeResources === false) {
-      continue;
-    }
-    for (const resource of Array.isArray(serverCache.resources) ? serverCache.resources : []) {
-      if (
-        typeof resource?.name !== "string" ||
-        !resource.name ||
-        typeof resource.uri !== "string" ||
-        !resource.uri
-      ) {
-        continue;
-      }
-      const baseName = `read_${resourceNameToToolName(resource.name)}`;
-      if (toolFilter !== true && !toolFilter.has(baseName)) {
-        continue;
-      }
-      if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) {
-        continue;
-      }
-      const prefixedName = formatToolName(baseName, serverName, prefix);
-      if (BUILTIN_TOOL_NAMES.has(prefixedName) || seenNames.has(prefixedName)) {
-        continue;
-      }
-      seenNames.add(prefixedName);
-      names.push(prefixedName);
-    }
+    names.push(
+      ...serverDirectNames({
+        serverName,
+        definition,
+        cache: serverCache,
+        prefix: definition.toolPrefix ?? defaultPrefix,
+        selection,
+      }),
+    );
   }
-
-  return names;
+  return [...new Set(names)];
 }
 
-function parseSelections(selections: string[]): {
+function parseSelection(item: string): { server: string; tool?: string } | undefined {
+  const normalized = item.replace(/\/+$/, "");
+  if (!normalized.includes("/")) {
+    return normalized === "" ? undefined : { server: normalized };
+  }
+  const [server = "", tool = ""] = normalized.split("/", 2);
+  if (server === "") {
+    return;
+  }
+  return tool === "" ? { server } : { server, tool };
+}
+
+function parseSelections(selections: readonly string[]): {
   servers: Set<string>;
   tools: Map<string, Set<string>>;
 } {
   const servers = new Set<string>();
   const tools = new Map<string, Set<string>>();
-  for (let item of selections) {
-    item = item.replace(/\/+$/, "");
-    if (item.includes("/")) {
-      const [server, tool] = item.split("/", 2);
-      if (server && tool) {
-        if (!tools.has(server)) {
-          tools.set(server, new Set());
-        }
-        tools.get(server)!.add(tool);
-      } else if (server) {
-        servers.add(server);
-      }
-    } else if (item) {
-      servers.add(item);
+  for (const item of selections) {
+    const selected = parseSelection(item);
+    if (!selected) {
+      continue;
     }
+    if (selected.tool === undefined) {
+      servers.add(selected.server);
+      continue;
+    }
+    const names = tools.get(selected.server) ?? new Set<string>();
+    names.add(selected.tool);
+    tools.set(selected.server, names);
   }
   return { servers, tools };
 }
@@ -366,7 +329,7 @@ function isServerCacheValid(
   if (!entry || entry.configHash !== computeMcpServerHash(definition)) {
     return false;
   }
-  if (!entry.cachedAt || typeof entry.cachedAt !== "number") {
+  if (entry.cachedAt === undefined || entry.cachedAt === 0) {
     return false;
   }
   return Date.now() - entry.cachedAt <= CACHE_MAX_AGE_MS;
@@ -379,7 +342,10 @@ function computeMcpServerHash(definition: ServerEntry): string {
     socket: resolveConfigPath(definition.socket),
     env: interpolateEnvRecord(definition.env),
     cwd: resolveConfigPath(definition.cwd),
-    url: definition.url ? interpolateEnvVars(definition.url) : definition.url,
+    url:
+      definition.url !== undefined && definition.url !== ""
+        ? interpolateEnvVars(definition.url)
+        : definition.url,
     headers: interpolateEnvRecord(definition.headers),
     auth: definition.auth,
     bearerToken: resolveBearerToken(definition),
@@ -405,14 +371,14 @@ function getServerPrefix(serverName: string, mode: ToolPrefix): string {
   }
   if (mode === "short") {
     const short = serverName.replace(/-?mcp$/i, "").replace(/-/g, "_");
-    return short || "mcp";
+    return short === "" ? "mcp" : short;
   }
   return serverName.replace(/-/g, "_");
 }
 
 function formatToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
   const serverPrefix = getServerPrefix(serverName, prefix);
-  return serverPrefix ? `${serverPrefix}_${toolName}` : toolName;
+  return serverPrefix !== "" ? `${serverPrefix}_${toolName}` : toolName;
 }
 
 function isToolExcluded(
@@ -446,14 +412,14 @@ function resourceNameToToolName(name: string): string {
     .replace(/^_+/, "")
     .replace(/_+$/, "")
     .toLowerCase();
-  if (!result || /^\d/.test(result)) {
-    result = `resource${result ? `_${result}` : ""}`;
+  if (result === "" || /^\d/.test(result)) {
+    result = `resource${result !== "" ? `_${result}` : ""}`;
   }
   return result;
 }
 
 function interpolateEnvRecord(
-  values: Record<string, string> | undefined,
+  values: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> | undefined {
   if (!values || typeof values !== "object" || Array.isArray(values)) {
     return undefined;
@@ -496,19 +462,4 @@ function resolveBearerToken(
   return typeof definition.bearerTokenEnv === "string"
     ? process.env[definition.bearerTokenEnv]
     : undefined;
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || value === undefined || typeof value !== "object") {
-    const serialized = JSON.stringify(value);
-    return serialized === undefined ? "undefined" : serialized;
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  }
-  const obj = value as Record<string, unknown>;
-  return `{${Object.keys(obj)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
-    .join(",")}}`;
 }

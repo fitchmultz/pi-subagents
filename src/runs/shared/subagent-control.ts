@@ -1,19 +1,22 @@
-import {
-  type ActivityState,
-  type ControlConfig,
-  type ControlEvent,
-  type ControlEventType,
-  type ControlNotificationChannel,
-  type ResolvedControlConfig,
+import type {
+  ActivityState,
+  ControlEvent,
+  ControlEventType,
+  ControlNotificationChannel,
+  ResolvedControlConfig,
+  ReadonlyAsyncStatus,
 } from "../../shared/types.ts";
 
 import { formatRunAction } from "../../shared/status-format.ts";
 import { readStatus } from "../../shared/utils.ts";
 import { getRunMetadataDir } from "./supervisor-questions.ts";
 
-export function isObsoleteIdleNotice(details: { event: ControlEvent; asyncDir?: string }): boolean {
-  const event = details?.event;
-  if (!event || event.reason !== "idle" || event.supervisorQuestion) {
+export function isObsoleteIdleNotice(details: {
+  readonly event: ControlEvent;
+  readonly asyncDir?: string;
+}): boolean {
+  const event = details.event;
+  if (event.reason !== "idle" || event.supervisorQuestion) {
     return false;
   }
   let status;
@@ -26,19 +29,30 @@ export function isObsoleteIdleNotice(details: { event: ControlEvent; asyncDir?: 
   if (!status || status.runId !== event.runId) {
     return false;
   }
-  const child = event.index === undefined ? undefined : status.steps?.[event.index];
   return (
     ["complete", "failed", "blocked", "paused"].includes(status.state) ||
-    Boolean(
-      child &&
-      ["complete", "completed", "failed", "blocked", "paused", "timed-out"].includes(child.status),
-    )
+    hasTerminalChild(status, event.index)
   );
 }
 
-const CONTROL_EVENT_TYPES: ControlEventType[] = ["needs_attention"];
-const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "async", "intercom"];
-const DEFAULT_NOTIFY_ON: ControlEventType[] = ["needs_attention"];
+function hasTerminalChild(status: ReadonlyAsyncStatus, index: number | undefined): boolean {
+  if (index === undefined) {
+    return false;
+  }
+  const child = status.steps?.[index];
+  return (
+    child !== undefined &&
+    ["complete", "completed", "failed", "blocked", "paused", "timed-out"].includes(child.status)
+  );
+}
+
+const CONTROL_EVENT_TYPES: readonly ControlEventType[] = ["needs_attention"];
+const CONTROL_NOTIFICATION_CHANNELS: readonly ControlNotificationChannel[] = [
+  "event",
+  "async",
+  "intercom",
+];
+const DEFAULT_NOTIFY_ON: readonly ControlEventType[] = ["needs_attention"];
 
 export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
   enabled: true,
@@ -68,48 +82,74 @@ function parseControlList<T extends string>(
   if (value.length === 0) {
     return [];
   }
-  const allowedSet = new Set(allowed);
-  const parsed = value.filter(
-    (entry): entry is T => typeof entry === "string" && allowedSet.has(entry as T),
+  const entries: readonly unknown[] = value;
+  const parsed = entries.filter(
+    (entry): entry is T =>
+      typeof entry === "string" && allowed.some((candidate) => candidate === entry),
   );
   return parsed.length > 0 ? Array.from(new Set(parsed)) : undefined;
 }
 
-export function resolveControlConfig(
-  globalConfig?: ControlConfig,
-  override?: ControlConfig,
-): ResolvedControlConfig {
-  const enabled = override?.enabled ?? globalConfig?.enabled ?? DEFAULT_CONTROL_CONFIG.enabled;
-  const needsAttentionAfterMs =
-    parsePositiveInt(override?.needsAttentionAfterMs) ??
-    parsePositiveInt(globalConfig?.needsAttentionAfterMs) ??
-    DEFAULT_CONTROL_CONFIG.needsAttentionAfterMs;
-  const failedToolAttemptsBeforeAttention =
-    parsePositiveInt(override?.failedToolAttemptsBeforeAttention) ??
-    parsePositiveInt(globalConfig?.failedToolAttemptsBeforeAttention) ??
-    DEFAULT_CONTROL_CONFIG.failedToolAttemptsBeforeAttention;
-  const notifyOn =
-    parseControlList(override?.notifyOn, CONTROL_EVENT_TYPES) ??
-    parseControlList(globalConfig?.notifyOn, CONTROL_EVENT_TYPES) ??
-    DEFAULT_CONTROL_CONFIG.notifyOn;
-  const notifyChannels =
-    parseControlList(override?.notifyChannels, CONTROL_NOTIFICATION_CHANNELS) ??
-    parseControlList(globalConfig?.notifyChannels, CONTROL_NOTIFICATION_CHANNELS) ??
-    DEFAULT_CONTROL_CONFIG.notifyChannels;
+export interface ControlConfigInput {
+  readonly enabled?: boolean;
+  readonly needsAttentionAfterMs?: unknown;
+  readonly failedToolAttemptsBeforeAttention?: unknown;
+  readonly notifyOn?: unknown;
+  readonly notifyChannels?: unknown;
+}
+
+function parsedControlConfig(config: ControlConfigInput | undefined) {
+  const input = config ?? {};
   return {
-    enabled,
-    needsAttentionAfterMs,
-    failedToolAttemptsBeforeAttention,
+    enabled: input.enabled,
+    needsAttentionAfterMs: parsePositiveInt(input.needsAttentionAfterMs),
+    failedToolAttemptsBeforeAttention: parsePositiveInt(input.failedToolAttemptsBeforeAttention),
+    notifyOn: parseControlList(input.notifyOn, CONTROL_EVENT_TYPES),
+    notifyChannels: parseControlList(input.notifyChannels, CONTROL_NOTIFICATION_CHANNELS),
+  };
+}
+function controlThresholds(
+  global: Partial<
+    Pick<ResolvedControlConfig, "needsAttentionAfterMs" | "failedToolAttemptsBeforeAttention">
+  >,
+  override: Partial<
+    Pick<ResolvedControlConfig, "needsAttentionAfterMs" | "failedToolAttemptsBeforeAttention">
+  >,
+) {
+  return {
+    needsAttentionAfterMs:
+      override.needsAttentionAfterMs ??
+      global.needsAttentionAfterMs ??
+      DEFAULT_CONTROL_CONFIG.needsAttentionAfterMs,
+    failedToolAttemptsBeforeAttention:
+      override.failedToolAttemptsBeforeAttention ??
+      global.failedToolAttemptsBeforeAttention ??
+      DEFAULT_CONTROL_CONFIG.failedToolAttemptsBeforeAttention,
+  };
+}
+
+export function resolveControlConfig(
+  globalConfig?: ControlConfigInput,
+  overrideConfig?: ControlConfigInput,
+): ResolvedControlConfig {
+  const global = parsedControlConfig(globalConfig);
+  const override = parsedControlConfig(overrideConfig);
+  const notifyOn = override.notifyOn ?? global.notifyOn ?? DEFAULT_CONTROL_CONFIG.notifyOn;
+  const notifyChannels =
+    override.notifyChannels ?? global.notifyChannels ?? DEFAULT_CONTROL_CONFIG.notifyChannels;
+  return {
+    enabled: override.enabled ?? global.enabled ?? DEFAULT_CONTROL_CONFIG.enabled,
+    ...controlThresholds(global, override),
     notifyOn: [...notifyOn],
     notifyChannels: [...notifyChannels],
   };
 }
 
 export function deriveActivityState(input: {
-  config: ResolvedControlConfig;
-  startedAt: number;
-  lastActivityAt?: number;
-  now?: number;
+  readonly config: ResolvedControlConfig;
+  readonly startedAt: number;
+  readonly lastActivityAt?: number;
+  readonly now?: number;
 }): ActivityState | undefined {
   if (!input.config.enabled) {
     return undefined;
@@ -120,48 +160,82 @@ export function deriveActivityState(input: {
   return ageMs > input.config.needsAttentionAfterMs ? "needs_attention" : undefined;
 }
 
-export function buildControlEvent(input: {
-  type?: ControlEventType;
-  from?: ActivityState;
-  to: ActivityState;
-  runId: string;
-  agent: string;
-  index?: number;
-  ts?: number;
-  lastActivityAt?: number;
-  message?: string;
-  reason?: ControlEvent["reason"];
-  turns?: number;
-  tokens?: number;
-  toolCount?: number;
-  currentTool?: string;
-  currentToolDurationMs?: number;
-  currentPath?: string;
-  elapsedMs?: number;
-  recentFailureSummary?: string;
-  supervisorQuestion?: ControlEvent["supervisorQuestion"];
-}): ControlEvent {
-  const ts = input.ts ?? Date.now();
-  const type = input.type ?? "needs_attention";
-  const elapsedMs =
-    input.elapsedMs ??
-    (input.lastActivityAt !== undefined ? Math.max(0, ts - input.lastActivityAt) : undefined);
-  const elapsedSeconds = elapsedMs !== undefined ? Math.floor(elapsedMs / 1000) : undefined;
+type ControlEventInput = Omit<ControlEvent, "type" | "ts" | "message" | "reason"> & {
+  readonly type?: ControlEventType;
+  readonly ts?: number;
+  readonly message?: string;
+  readonly reason?: ControlEvent["reason"];
+  readonly lastActivityAt?: number;
+};
+
+function controlObservation(
+  input: ControlEventInput,
+  elapsedSeconds: number | undefined,
+): string | undefined {
+  if (input.currentTool !== undefined && input.currentTool !== "") {
+    const duration =
+      input.currentToolDurationMs === undefined
+        ? ""
+        : ` for ${Math.floor(input.currentToolDurationMs / 1000)}s`;
+    const elapsed =
+      elapsedSeconds === undefined ? "" : `; no observed output/events for ${elapsedSeconds}s`;
+    return `${input.currentTool} still active${duration}${elapsed}`;
+  }
+  return elapsedSeconds === undefined ? undefined : `no observed activity for ${elapsedSeconds}s`;
+}
+function controlSignal(input: ControlEventInput): string {
   const question = input.supervisorQuestion;
-  const observation = input.currentTool
-    ? `${input.currentTool} still active${input.currentToolDurationMs !== undefined ? ` for ${Math.floor(input.currentToolDurationMs / 1000)}s` : ""}${elapsedSeconds !== undefined ? `; no observed output/events for ${elapsedSeconds}s` : ""}`
-    : elapsedSeconds !== undefined
-      ? `no observed activity for ${elapsedSeconds}s`
-      : undefined;
-  const signal = question
-    ? question.state === "awaiting_input"
-      ? `Waiting for supervisor input (question ${question.questionId})`
-      : `Supervisor answer saved for question ${question.questionId}; delivery unconfirmed`
-    : `${input.agent} needs attention`;
-  const message = input.message ?? `${signal}${observation ? ` (${observation})` : ""}`;
+  if (!question) {
+    return `${input.agent} needs attention`;
+  }
+  return question.state === "awaiting_input"
+    ? `Waiting for supervisor input (question ${question.questionId})`
+    : `Supervisor answer saved for question ${question.questionId}; delivery unconfirmed`;
+}
+function controlMetrics(
+  input: ControlEventInput,
+  elapsedMs: number | undefined,
+): Partial<ControlEvent> {
   return {
-    type,
-    ...(input.from ? { from: input.from } : {}),
+    ...(input.turns !== undefined ? { turns: input.turns } : {}),
+    ...(input.tokens !== undefined ? { tokens: input.tokens } : {}),
+    ...(input.toolCount !== undefined ? { toolCount: input.toolCount } : {}),
+    ...(input.currentToolDurationMs !== undefined
+      ? { currentToolDurationMs: input.currentToolDurationMs }
+      : {}),
+    ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+  };
+}
+function controlContext(input: ControlEventInput): Partial<ControlEvent> {
+  return {
+    ...((input.currentTool ?? "") !== "" ? { currentTool: input.currentTool } : {}),
+    ...((input.currentPath ?? "") !== "" ? { currentPath: input.currentPath } : {}),
+    ...((input.recentFailureSummary ?? "") !== ""
+      ? { recentFailureSummary: input.recentFailureSummary }
+      : {}),
+    ...(input.supervisorQuestion ? { supervisorQuestion: input.supervisorQuestion } : {}),
+  };
+}
+
+function controlElapsed(input: ControlEventInput, ts: number): number | undefined {
+  return (
+    input.elapsedMs ??
+    (input.lastActivityAt !== undefined ? Math.max(0, ts - input.lastActivityAt) : undefined)
+  );
+}
+export function buildControlEvent(input: ControlEventInput): ControlEvent {
+  const ts = input.ts ?? Date.now();
+  const elapsedMs = controlElapsed(input, ts);
+  const observation = controlObservation(
+    input,
+    elapsedMs === undefined ? undefined : Math.floor(elapsedMs / 1000),
+  );
+  const message =
+    input.message ??
+    `${controlSignal(input)}${observation === undefined ? "" : ` (${observation})`}`;
+  return {
+    type: input.type ?? "needs_attention",
+    ...(input.from !== undefined ? { from: input.from } : {}),
     to: input.to,
     ts,
     runId: input.runId,
@@ -169,74 +243,51 @@ export function buildControlEvent(input: {
     ...(input.index !== undefined ? { index: input.index } : {}),
     message,
     reason: input.reason ?? "idle",
-    ...(input.turns !== undefined ? { turns: input.turns } : {}),
-    ...(input.tokens !== undefined ? { tokens: input.tokens } : {}),
-    ...(input.toolCount !== undefined ? { toolCount: input.toolCount } : {}),
-    ...(input.currentTool ? { currentTool: input.currentTool } : {}),
-    ...(input.currentToolDurationMs !== undefined
-      ? { currentToolDurationMs: input.currentToolDurationMs }
-      : {}),
-    ...(input.currentPath ? { currentPath: input.currentPath } : {}),
-    ...(elapsedMs !== undefined ? { elapsedMs } : {}),
-    ...(input.recentFailureSummary ? { recentFailureSummary: input.recentFailureSummary } : {}),
-    ...(question ? { supervisorQuestion: question } : {}),
+    ...controlMetrics(input, elapsedMs),
+    ...controlContext(input),
   };
 }
 
-export function shouldNotifyControlEvent(
-  config: ResolvedControlConfig,
-  event: ControlEvent,
-): boolean {
-  return config.enabled && config.notifyOn.includes(event.type);
+export { shouldNotifyControlEvent, controlNotificationKey } from "./control-event-policy.ts";
+export { claimControlNotification } from "./control-notification-owner.ts";
+
+function failureNotice(event: ControlEvent, childIntercomTarget: string | undefined): string {
+  return [
+    `Subagent failed: ${event.agent}`,
+    `Run: ${event.runId}${event.index !== undefined ? ` step ${event.index + 1}` : ""}`,
+    `Signal: ${event.message}`,
+    "Next: read the output artifact or session from the subagent result, then retry with a more explicit implementation prompt or handle the fix directly.",
+    childIntercomTarget !== undefined && childIntercomTarget !== ""
+      ? `Run intercom target (may be inactive): ${childIntercomTarget}`
+      : undefined,
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
 }
 
-export function controlNotificationKey(event: ControlEvent, childIntercomTarget?: string): string {
-  const childKey =
-    childIntercomTarget ??
-    (event.index !== undefined ? `${event.runId}:${event.index}` : event.runId);
-  return `${childKey}:${event.type}:${event.reason ?? "idle"}`;
+function questionNotice(event: ControlEvent, childSafe: boolean): string[] {
+  const question = event.supervisorQuestion;
+  if (!question) {
+    return [];
+  }
+  return [
+    `Question ID: ${question.questionId}`,
+    question.state === "answer_pending"
+      ? "The saved answer has not been confirmed delivered. Inspect the child and retry the same answer; do not assume it resumed."
+      : "Answer the saved question so the child can continue.",
+    `Questions: ${formatRunAction("questions", event.runId, {}, childSafe)}`,
+    `Answer: ${formatRunAction("answer", event.runId, { questionId: question.questionId, message: question.answer ?? "..." }, childSafe)}`,
+  ];
 }
 
-export function claimControlNotification(
-  config: ResolvedControlConfig,
+function liveNotice(
   event: ControlEvent,
-  seenKeys: Set<string>,
-  childIntercomTarget?: string,
-): boolean {
-  if (!shouldNotifyControlEvent(config, event)) {
-    return false;
-  }
-  const key = controlNotificationKey(event, childIntercomTarget);
-  if (seenKeys.has(key)) {
-    return false;
-  }
-  seenKeys.add(key);
-  return true;
-}
-
-export function formatControlNoticeMessage(
-  event: ControlEvent,
-  childIntercomTarget?: string,
-  childSafe = false,
-): string {
-  const runTarget = event.runId;
-  if (event.reason === "completion_guard") {
-    return [
-      `Subagent failed: ${event.agent}`,
-      `Run: ${runTarget}${event.index !== undefined ? ` step ${event.index + 1}` : ""}`,
-      `Signal: ${event.message}`,
-      "Next: read the output artifact or session from the subagent result, then retry with a more explicit implementation prompt or handle the fix directly.",
-      childIntercomTarget
-        ? `Run intercom target (may be inactive): ${childIntercomTarget}`
-        : undefined,
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
-  }
-
+  childIntercomTarget: string | undefined,
+  childSafe: boolean,
+): string[] {
   const nudgeCommand = formatRunAction(
     "nudge",
-    runTarget,
+    event.runId,
     {
       ...(event.index !== undefined ? { index: event.index } : {}),
       message:
@@ -244,37 +295,41 @@ export function formatControlNoticeMessage(
     },
     childSafe,
   );
-  const question = event.supervisorQuestion;
-  const askCommand = childIntercomTarget
-    ? `intercom({ action: "ask", to: "${childIntercomTarget}", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`
-    : undefined;
+  const ask =
+    childIntercomTarget !== undefined && childIntercomTarget !== ""
+      ? `Ask (blocking wait only; parent must remain alive): intercom({ action: "ask", to: "${childIntercomTarget}", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`
+      : "Ask (blocking wait only): no child message route registered";
+  return [
+    event.reason === "idle" && (event.currentTool ?? "") !== ""
+      ? "Hint: Inspect command progress. A long-running tool may still be running or hung; elapsed time alone does not prove either."
+      : "Hint: Inspect status first unless the run is clearly blocked.",
+    `Nudge (preferred live coordination): ${nudgeCommand}`,
+    ask,
+  ];
+}
+
+export function formatControlNoticeMessage(
+  event: ControlEvent,
+  childIntercomTarget?: string,
+  childSafe = false,
+): string {
+  if (event.reason === "completion_guard") {
+    return failureNotice(event, childIntercomTarget);
+  }
   return [
     `Subagent needs attention: ${event.agent}`,
-    `Run: ${runTarget}${event.index !== undefined ? ` step ${event.index + 1}` : ""}`,
+    `Run: ${event.runId}${event.index !== undefined ? ` step ${event.index + 1}` : ""}`,
     `Signal: ${event.message}`,
-    event.recentFailureSummary ? `Recent failures: ${event.recentFailureSummary}` : undefined,
-    ...(question
-      ? [
-          `Question ID: ${question.questionId}`,
-          question.state === "answer_pending"
-            ? "The saved answer has not been confirmed delivered. Inspect the child and retry the same answer; do not assume it resumed."
-            : "Answer the saved question so the child can continue.",
-          `Questions: ${formatRunAction("questions", runTarget, {}, childSafe)}`,
-          `Answer: ${formatRunAction("answer", runTarget, { questionId: question.questionId, message: question.answer ?? "..." }, childSafe)}`,
-        ]
-      : [
-          event.reason === "idle" && event.currentTool
-            ? "Hint: Inspect command progress. A long-running tool may still be running or hung; elapsed time alone does not prove either."
-            : "Hint: Inspect status first unless the run is clearly blocked.",
-          `Nudge (preferred live coordination): ${nudgeCommand}`,
-          childIntercomTarget
-            ? `Ask (blocking wait only; parent must remain alive): ${askCommand}`
-            : "Ask (blocking wait only): no child message route registered",
-        ]),
-    `Status: ${formatRunAction("status", runTarget, {}, childSafe)}`,
-    `${childSafe ? "Interrupt" : "Stop"}: ${formatRunAction("interrupt", runTarget, {}, childSafe)}`,
+    (event.recentFailureSummary ?? "") !== ""
+      ? `Recent failures: ${event.recentFailureSummary ?? ""}`
+      : undefined,
+    ...(event.supervisorQuestion
+      ? questionNotice(event, childSafe)
+      : liveNotice(event, childIntercomTarget, childSafe)),
+    `Status: ${formatRunAction("status", event.runId, {}, childSafe)}`,
+    `${childSafe ? "Interrupt" : "Stop"}: ${formatRunAction("interrupt", event.runId, {}, childSafe)}`,
   ]
-    .filter((line): line is string => Boolean(line))
+    .filter((line): line is string => line !== undefined)
     .join("\n");
 }
 
