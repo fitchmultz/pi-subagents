@@ -25,6 +25,10 @@ interface Container {
   index: number;
 }
 
+function retained(keep: boolean | number): boolean {
+  return keep === true || (typeof keep === "number" && keep !== 0 && !Number.isNaN(keep));
+}
+
 /** Validate all tokens, assembling selected values only. Skipped strings remain unpacked. */
 export class JsonProjection {
   private readonly parse = jsonParser({ packValues: false });
@@ -62,7 +66,7 @@ export class JsonProjection {
   private selected(path: readonly (string | number)[]): boolean | number {
     const parent = this.stack.at(-1);
     const keep = parent && parent.value === undefined ? false : this.select(path, this.root());
-    if (keep !== false && keep !== 0 && this.limits && ++this.nodes > this.limits.nodes) {
+    if (retained(keep) && this.limits && ++this.nodes > this.limits.nodes) {
       throw new RangeError("JSON projection exceeds its assembled-node budget.");
     }
     return keep;
@@ -100,7 +104,7 @@ export class JsonProjection {
     const path = this.nextPath();
     const keep = this.selected(path);
     let value: Container["value"];
-    if (keep !== false && keep !== 0) {
+    if (retained(keep)) {
       value = array ? [] : {};
       this.put(path, value);
     }
@@ -109,7 +113,9 @@ export class JsonProjection {
   private startScalar(number: boolean): void {
     const path = this.nextPath();
     const keep = this.selected(path);
-    this.scalar = { path, text: "", limit: keep === true ? Infinity : Number(keep), number };
+    const selectedLimit = keep === true ? Infinity : Number(keep);
+    const limit = Number.isNaN(selectedLimit) ? 0 : selectedLimit;
+    this.scalar = { path, text: "", limit, number };
   }
   private appendKey(text: string): void {
     const parent = this.parent();
@@ -188,7 +194,7 @@ export class JsonProjection {
       case "nullValue": {
         const path = this.nextPath();
         const keep = this.selected(path);
-        if (keep !== false && keep !== 0) {
+        if (retained(keep)) {
           this.put(path, token.value);
         }
         break;
