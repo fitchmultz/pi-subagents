@@ -15,7 +15,7 @@ import { createSubagentExecutor } from "../runs/foreground/subagent-executor.ts"
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { rememberOwnedRun, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
 import { closeRunHistory, runHistoryIndex, startRunHistory } from "../runs/shared/history-index.ts";
-import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
+import { registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
 import { isObsoleteIdleNotice } from "../runs/shared/subagent-control.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
@@ -40,8 +40,7 @@ import {
   type SubagentControlMessageDetails,
 } from "./control-notices.ts";
 import { parseControlNotice } from "./control-notice-schema.ts";
-import { registerToolResultAdapter } from "./tool-result.ts";
-import { copyExecutionResult } from "./result-snapshot.ts";
+import { adaptFinalizedToolResult, registerToolResultAdapter } from "./tool-result.ts";
 import { registerCompactSubagentTools } from "./compact-tools.ts";
 import { registerParentSubagentTool, SUBAGENT_GUIDELINES } from "./primary-tool.ts";
 import { registerMessageRenderers } from "./message-renderers.ts";
@@ -55,6 +54,7 @@ import {
 import {
   cleanupStaleSubscriptions,
   EVENT_UNSUBSCRIBES_KEY,
+  isStaleExtensionContextError,
   removeSharedRuntimeValue,
   RUNTIME_CLEANUP_KEY,
   setSharedRuntimeValue,
@@ -125,29 +125,13 @@ export class ParentSubagentRuntime {
     this.registerSessionEvents();
   }
 
-  private adaptResult(
-    result: ReadonlyInput<SubagentExecutionResult>,
-    ctx: ExtensionContext,
-  ): SubagentExecutionResult {
-    const nativeResult = copyExecutionResult(result);
-    const attached =
-      result.details.wait?.status === "completed" &&
-      result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
-        ? this.parentUsage.attach(
-            nativeResult,
-            finalizedChildUsage(result.details.run.children, result.details.wait.index),
-            ctx,
-          )
-        : nativeResult;
-    return this.adaptToolResult(attached);
-  }
-
   private registerTools(): void {
     const asyncByDefault = this.config.asyncByDefault !== false;
     const adapt = (
       result: ReadonlyInput<SubagentExecutionResult>,
       ctx: ExtensionContext,
-    ): SubagentExecutionResult => this.adaptResult(result, ctx);
+    ): SubagentExecutionResult =>
+      adaptFinalizedToolResult(result, ctx, this.parentUsage, this.adaptToolResult);
     this.reconcileTools = registerCompactSubagentTools(this.pi, {
       executor: this.executor,
       state: this.state,
@@ -237,12 +221,18 @@ export class ParentSubagentRuntime {
   }
 
   private subscribeEvents(): void {
-    this.eventUnsubscribes = [
-      this.pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (data) => this.startedEvent(data)),
-      this.pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, this.tracker.handleComplete),
-      this.pi.events.on(SUBAGENT_CONTROL_EVENT, (data) => this.controlEvent(data)),
-    ];
+    this.eventUnsubscribes = [];
     setSharedRuntimeValue(EVENT_UNSUBSCRIBES_KEY, this.eventUnsubscribes);
+    // Retain each successful subscription even if a later registration fails.
+    this.eventUnsubscribes.push(
+      this.pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (data) => this.startedEvent(data)),
+    );
+    this.eventUnsubscribes.push(
+      this.pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, this.tracker.handleComplete),
+    );
+    this.eventUnsubscribes.push(
+      this.pi.events.on(SUBAGENT_CONTROL_EVENT, (data) => this.controlEvent(data)),
+    );
   }
 
   private registerRunEvents(): void {
@@ -363,6 +353,16 @@ export class ParentSubagentRuntime {
   }
 
   private async shutdown(): Promise<void> {
+    // A reset can still publish history, view and delivery after its awaited restoration/cleanup.
+    // Join that owner before disposing the resources it may start.
+    try {
+      await this.sessionReset;
+    } finally {
+      await this.disposeSession();
+    }
+  }
+
+  private async disposeSession(): Promise<void> {
     this.agentView.dispose();
     this.stopPoller();
     await this.completionDelivery.stopAndJoin({ preservePending: true });
@@ -397,9 +397,7 @@ export class ParentSubagentRuntime {
         this.state.lastUiContext.ui.setWidget(WIDGET_KEY, undefined);
       }
     } catch (error) {
-      if (
-        !(error instanceof Error && error.message.includes("Extension context no longer active"))
-      ) {
+      if (!isStaleExtensionContextError(error)) {
         throw error;
       }
     }

@@ -1,8 +1,28 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SubagentExecutionResult } from "../shared/types.ts";
 import type { ReadonlyInput } from "../shared/types/inputs.ts";
 import { isRecord } from "../shared/unknown.ts";
 import { copyExecutionResult } from "./result-snapshot.ts";
+import { finalizedChildUsage, type ParentUsageRegistration } from "../runs/shared/parent-usage.ts";
+
+/** Only completed, directly owned waits carry accounting intent to the native result boundary. */
+export function adaptFinalizedToolResult(
+  result: ReadonlyInput<SubagentExecutionResult>,
+  ctx: ExtensionContext,
+  parentUsage: ParentUsageRegistration,
+  adapt: (result: ReadonlyInput<SubagentExecutionResult>) => SubagentExecutionResult,
+): SubagentExecutionResult {
+  const attached =
+    result.details.wait?.status === "completed" &&
+    result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
+      ? parentUsage.attach(
+          result,
+          finalizedChildUsage(result.details.run.children, result.details.wait.index),
+          ctx,
+        )
+      : result;
+  return adapt(attached);
+}
 
 export function registerToolResultAdapter(
   pi: ExtensionAPI,

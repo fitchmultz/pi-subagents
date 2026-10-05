@@ -24,17 +24,16 @@ import { readStatus } from "../shared/utils.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { registerCompactSubagentTools } from "./compact-tools.ts";
-import { registerToolResultAdapter } from "./tool-result.ts";
+import { adaptFinalizedToolResult, registerToolResultAdapter } from "./tool-result.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import type { AsyncStatus, ReadonlyDetails, SubagentExecutionResult } from "../shared/types.ts";
 import type { ReadonlyInput } from "../shared/types/inputs.ts";
-import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
+import { registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { ownedRunList, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
 import { closeRunHistory, runHistoryIndex, startRunHistory } from "../runs/shared/history-index.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
 import { createRuntimeState, expandTilde, getSubagentSessionRoot } from "./runtime-storage.ts";
-import { copyExecutionResult } from "./result-snapshot.ts";
 import { NestedControlInbox } from "./nested-control-inbox.ts";
 import { removeSharedRuntimeValue, setSharedRuntimeValue } from "./runtime-reload.ts";
 
@@ -107,23 +106,6 @@ export class FanoutChildRuntime {
     this.completionDelivery.start();
   }
 
-  private adapt(
-    result: ReadonlyInput<SubagentExecutionResult>,
-    ctx: ExtensionContext,
-  ): SubagentExecutionResult {
-    const nativeResult = copyExecutionResult(result);
-    return this.adaptToolResult(
-      result.details.wait?.status === "completed" &&
-        result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
-        ? this.parentUsage.attach(
-            nativeResult,
-            finalizedChildUsage(result.details.run.children, result.details.wait.index),
-            ctx,
-          )
-        : nativeResult,
-    );
-  }
-
   private guidelines(): string[] {
     return [
       "Delegate useful helper work within your assigned task when it saves time or improves quality; the original parent owns integration and final delivery.",
@@ -141,7 +123,8 @@ export class FanoutChildRuntime {
         executor: this.executor,
         state: this.state,
         getHistoryIndex: () => runHistoryIndex(this.state),
-        adapt: (result, ctx) => this.adapt(result, ctx),
+        adapt: (result, ctx) =>
+          adaptFinalizedToolResult(result, ctx, this.parentUsage, this.adaptToolResult),
         guidelines: [...this.guidelines(), ...acceptanceGuidelines],
         childSafe: true,
         asyncByDefault: this.config.asyncByDefault === true,
@@ -168,7 +151,7 @@ export class FanoutChildRuntime {
       promptGuidelines: this.guidelines(),
       parameters: SubagentParams,
       execute: async (id, params, signal, onUpdate, ctx) =>
-        this.adapt(
+        adaptFinalizedToolResult(
           await this.executor.execute({
             toolCallId: id,
             params: normalizeSubagentParamsLike(params),
@@ -177,6 +160,8 @@ export class FanoutChildRuntime {
             ctx,
           }),
           ctx,
+          this.parentUsage,
+          this.adaptToolResult,
         ),
       renderResult: renderSubagentResult,
     };

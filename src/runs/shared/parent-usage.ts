@@ -248,10 +248,10 @@ export interface ParentUsageRegistration {
     saved: Readonly<ReadonlyMap<string, PublishedReceipt>>,
   ) => boolean;
   readonly attach: (
-    result: SubagentExecutionResult,
+    result: ReadonlyInput<SubagentExecutionResult>,
     contributions: readonly UsageContribution[],
     ctx: ExtensionContext,
-  ) => SubagentExecutionResult;
+  ) => ReadonlyInput<SubagentExecutionResult>;
 }
 
 export function registerParentUsage(
@@ -299,10 +299,10 @@ export function registerParentUsage(
       return unrecorded(contributions, receipts.read(ctx.sessionManager, saved)).length === 0;
     },
     attach(
-      result: SubagentExecutionResult,
+      result: ReadonlyInput<SubagentExecutionResult>,
       contributions: readonly UsageContribution[],
       ctx: ExtensionContext,
-    ): SubagentExecutionResult {
+    ): ReadonlyInput<SubagentExecutionResult> {
       const { usage: _usage, ...rest } = result;
       const { parentUsage: _parentUsage, ...details } = result.details;
       if (contributions.length === 0) {

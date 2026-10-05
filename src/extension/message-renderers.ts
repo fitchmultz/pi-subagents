@@ -30,6 +30,7 @@ import {
   SUBAGENT_CONTROL_MESSAGE_TYPE,
   type SubagentControlMessageDetails,
 } from "./control-notices.ts";
+import { parseControlNotice } from "./control-notice-schema.ts";
 
 type Theme = ExtensionContext["ui"]["theme"];
 type RenderOptions = Readonly<MessageRenderOptions>;
@@ -319,19 +320,15 @@ export function registerMessageRenderers(pi: ExtensionAPI): void {
       return renderNotify(content, message.details ?? parseNotifyContent(content), options, theme);
     }),
   );
-  pi.registerMessageRenderer<Partial<SubagentControlMessageDetails> | undefined>(
-    SUBAGENT_CONTROL_MESSAGE_TYPE,
-    (message, _options, theme) => {
-      const details = message.details;
-      if (!details?.event) {
-        return;
-      }
-      const notice = { ...details, event: details.event };
-      const content = typeof message.content === "string" ? message.content : undefined;
-      return new ControlNoticeComponent(
-        { ...notice, noticeText: formatSubagentControlNotice(notice, content) },
-        theme,
-      );
-    },
-  );
+  pi.registerMessageRenderer<unknown>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
+    const notice = parseControlNotice(message.details);
+    if (!notice) {
+      return;
+    }
+    const content = typeof message.content === "string" ? message.content : undefined;
+    return new ControlNoticeComponent(
+      { ...notice, noticeText: formatSubagentControlNotice(notice, content) },
+      theme,
+    );
+  });
 }

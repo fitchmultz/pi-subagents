@@ -40,8 +40,12 @@ function cleanupCallback(value: unknown): void {
   }
 }
 
-export function cleanupStaleRuntime(): void {
-  cleanupCallback(sharedRuntimeValue(RUNTIME_CLEANUP_KEY));
+export function cleanupStaleRuntime(key = RUNTIME_CLEANUP_KEY): void {
+  cleanupCallback(sharedRuntimeValue(key));
+}
+
+export function isStaleExtensionContextError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Extension context no longer active");
 }
 
 export function cleanupStaleSubscriptions(): void {
