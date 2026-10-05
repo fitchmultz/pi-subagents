@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ReadonlyDeep } from "type-fest";
+import type { AgentConfig } from "../../src/agents/agents.ts";
 import { createMockPi as _createMockPi, type MockPi } from "./mock-pi.ts";
 import { makeExtensionContext } from "./sdk-context.ts";
 
@@ -35,30 +36,6 @@ export function createEventBus(): EventBus {
   return createNativeEventBus();
 }
 
-interface AgentConfig {
-  name: string;
-  description?: string;
-  systemPrompt?: string;
-  model?: string;
-  fallbackModels?: string[];
-  tools?: string[];
-  extensions?: string[];
-  skills?: string[];
-  thinking?: string;
-  systemPromptMode?: string;
-  inheritProjectContext?: boolean;
-  inheritSkills?: boolean;
-  scope?: string;
-  output?: string | false;
-  reads?: string[] | false;
-  progress?: boolean;
-  mcpDirectTools?: string[];
-  maxSubagentDepth?: number;
-  maxExecutionTimeMs?: number;
-  maxTokens?: number;
-  completionGuard?: boolean;
-}
-
 export function makeAgentConfigs(names: readonly string[]): AgentConfig[] {
   return names.map((name) => makeAgent(name));
 }
@@ -71,6 +48,8 @@ export function makeAgent(
     name,
     description: `Test agent: ${name}`,
     systemPrompt: "",
+    source: "user",
+    filePath: path.join(os.tmpdir(), `${name}.md`),
     systemPromptMode: "replace",
     inheritProjectContext: false,
     inheritSkills: false,
@@ -79,7 +58,8 @@ export function makeAgent(
     tools: overrides.tools?.slice(),
     extensions: overrides.extensions?.slice(),
     skills: overrides.skills?.slice(),
-    reads: overrides.reads === false ? false : overrides.reads?.slice(),
+    defaultReads: overrides.defaultReads?.slice(),
+    extraFields: overrides.extraFields === undefined ? undefined : { ...overrides.extraFields },
     mcpDirectTools: overrides.mcpDirectTools?.slice(),
   };
 }
