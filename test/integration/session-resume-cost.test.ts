@@ -1,3 +1,4 @@
+import { assertDefined, record, records, text } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -5,19 +6,29 @@ import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { OwnedRun } from "../../src/shared/types.ts";
-import { createEventBus } from "../support/helpers.ts";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import type { TrackedOwnedRun } from "../../src/shared/types.ts";
+import { createEventBus, createNativeSessionFixture, makeMinimalCtx } from "../support/helpers.ts";
 
-const sdkRoot =
-  process.env.PI_INTERCOM_TEST_SDK ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+const defined565_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(defined565_0);
+const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(defined565_0);
 process.env.PI_PACKAGE_DIR = sdkRoot;
-const { SessionManager, DefaultResourceLoader, SettingsManager, createAgentSession } = await import(
-  pathToFileURL(path.join(sdkRoot, "dist/index.js")).href
+assert.equal(
+  fs.realpathSync(sdkRoot),
+  fs.realpathSync(path.dirname(defined565_0)),
+  "selected host must match the installed SDK graph",
 );
+const { SessionManager, DefaultResourceLoader, SettingsManager, createAgentSession } =
+  await import("@earendil-works/pi-coding-agent");
+const nativeRoot = fs.mkdtempSync(path.join(tmpdir(), "resume-cost-sdk-"));
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  fs.rmSync(nativeRoot, { recursive: true, force: true });
+});
 const { createCompletionDelivery } =
   await import("../../src/runs/background/completion-delivery.ts");
 const { registerParentUsage } = await import("../../src/runs/shared/parent-usage.ts");
@@ -33,7 +44,7 @@ test("native session startup services input during archive discovery and restore
     foreignCount = 2048;
   const manager = SessionManager.inMemory(root);
   const runId = `${prefix}-owned`;
-  const run: OwnedRun = {
+  const run: TrackedOwnedRun = {
     runId,
     rootRunId: runId,
     ownerSessionId: manager.getSessionId(),
@@ -120,7 +131,7 @@ test("native session startup services input during archive discovery and restore
     running = true,
     input: NodeJS.Immediate;
   const readsAtInput: number[] = [];
-  t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+  t.mock.method(fs, "openSync", (...args: Readonly<Parameters<typeof fs.openSync>>) => {
     if (
       String(args[0]).includes(`${prefix}-foreign-`) &&
       String(args[0]).endsWith("question-owner.json")
@@ -143,10 +154,17 @@ test("native session startup services input during archive discovery and restore
   input = setImmediate(serviceInput);
   const errors: unknown[] = [];
   try {
-    await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error) });
+    await session.bindExtensions({
+      mode: "print",
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
   } finally {
     running = false;
-    clearImmediate(input!);
+    const defined5134_0 = input;
+    assertDefined(defined5134_0);
+    clearImmediate(defined5134_0);
   }
   assert.equal(foreignReads, foreignCount, "each unrelated owner is classified once");
   assert.ok(
@@ -154,15 +172,17 @@ test("native session startup services input during archive discovery and restore
     "input must run before the archive census finishes",
   );
   assert.deepEqual(errors, []);
-  const controls = session.agent.state.tools.find((tool) => tool.name === "agent_runs")!;
-  assert.ok(controls, "restored questions keep controls available");
+  const defined5427_0 = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+  assertDefined(defined5427_0);
+  const controls = defined5427_0;
+  assert.ok(Boolean(controls), "restored questions keep controls available");
   const listed = await controls.execute(
     "owned-list",
     { action: "list" },
     new AbortController().signal,
   );
   assert.deepEqual(
-    listed.details.runs.map((entry) => entry.runId),
+    records(record(listed.details).runs).map((entry) => entry.runId),
     [runId],
     "foreign archives cannot establish ownership",
   );
@@ -172,7 +192,7 @@ test("native session startup services input during archive discovery and restore
     new AbortController().signal,
   );
   assert.deepEqual(
-    questions.details.questions.map((entry) => entry.questionId),
+    records(record(questions.details).questions).map((entry) => entry.questionId),
     [question.questionId],
   );
 });
@@ -191,6 +211,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     historicalIds.add(
       manager.appendMessage({
         role: "toolResult",
+        isError: false,
         toolName: "subagent",
         toolCallId: `old-${index}`,
         timestamp: Date.now(),
@@ -199,7 +220,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
       }),
     );
   }
-  const runs = new Map<string, OwnedRun>(),
+  const runs = new Map<string, TrackedOwnedRun>(),
     usage = {
       input: 1,
       output: 1,
@@ -212,7 +233,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     const runId = `resume-${path.basename(root)}-${index}`,
       completionId = `done-${index}`;
     t.after(() => fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true }));
-    const run: OwnedRun = {
+    const run: TrackedOwnedRun = {
       runId,
       rootRunId: runId,
       ownerSessionId: manager.getSessionId(),
@@ -256,7 +277,9 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     });
     runs.set(runId, run);
   }
-  const fileBytes = fs.statSync(manager.getSessionFile()!).size;
+  const sessionFile = manager.getSessionFile();
+  assertDefined(sessionFile);
+  const fileBytes = fs.statSync(sessionFile).size;
   let parsedChars = 0,
     historicalLookups = 0,
     historicalBodyReads = 0,
@@ -264,13 +287,18 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     ownerWrites = 0,
     sent = 0,
     ownerWritesAtInput: number | undefined;
-  const write = JsonProjection.prototype.write;
-  t.mock.method(JsonProjection.prototype, "write", function (chunk: string | symbol) {
-    if (typeof chunk === "string") {
-      parsedChars += chunk.length;
-    }
-    return write.call(this, chunk);
-  });
+  const write: unknown = Reflect.get(JsonProjection.prototype, "write");
+  assert.ok(typeof write === "function");
+  t.mock.method(
+    JsonProjection.prototype,
+    "write",
+    function (this: InstanceType<typeof JsonProjection>, chunk: string | symbol) {
+      if (typeof chunk === "string") {
+        parsedChars += chunk.length;
+      }
+      Reflect.apply(write, this, [chunk]);
+    },
+  );
   const getEntry = manager.getEntry.bind(manager);
   const getEntries = manager.getEntries.bind(manager),
     guarded = new WeakMap<SessionEntry, SessionEntry>();
@@ -305,23 +333,19 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     return guard(getEntry(id));
   });
   const pi = {
-    on() {},
+    ...native.pi,
     events: createEventBus(),
     sendMessage() {
       sent++;
     },
-  } as unknown as Parameters<typeof createCompletionDelivery>[0];
+  };
   const state = {
+    ...createSubagentState(root),
     currentSessionId: manager.getSessionId(),
     ownedRuns: runs,
     foregroundRuns: new Map(),
     completionSeen: new Map(),
-    lastUiContext: {
-      cwd: root,
-      sessionManager: manager,
-      isIdle: () => true,
-      hasPendingMessages: () => false,
-    },
+    lastUiContext: makeMinimalCtx(root, { sessionManager: manager }),
     persistOwnedRun(run: unknown) {
       ownerWrites++;
       if (ownerWrites === 1) {
@@ -331,7 +355,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
       }
       manager.appendCustomEntry("subagent-run", run);
     },
-  } as Parameters<typeof createCompletionDelivery>[1];
+  };
   const delivery = createCompletionDelivery(
     pi,
     state,
@@ -342,10 +366,12 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     const deadline = performance.now() + 5000;
     while (
       [...runs.values()].some(
-        (run) => run.accounting?.state !== "pending" || !run.delivery?.entryId,
+        (run) => run.accounting?.state !== "pending" || !((run.delivery?.entryId ?? "").length > 0),
       )
     ) {
       assert.ok(performance.now() < deadline, "all legacy runs finish reconciliation");
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     delivery.stop();
@@ -368,7 +394,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
       0,
       "published billing fields do not look up unrelated historical results",
     );
-    if (guardedHistoricalEntries) {
+    if (guardedHistoricalEntries !== 0 && !Number.isNaN(guardedHistoricalEntries)) {
       assert.equal(
         guardedHistoricalEntries,
         historicalIds.size,
@@ -401,6 +427,7 @@ test("unchanged completion hits share verified parent bytes only within each syn
   const manager = SessionManager.create(root, path.join(root, "sessions"));
   manager.appendMessage({
     role: "assistant",
+    api: "faux",
     content: [{ type: "text", text: "x".repeat(1024 * 1024) }],
     provider: "faux",
     model: "faux",
@@ -421,6 +448,7 @@ test("unchanged completion hits share verified parent bytes only within each syn
     const runId = `batch-${path.basename(root)}-${index}`;
     manager.appendMessage({
       role: "toolResult",
+      isError: false,
       toolName: "delegate",
       toolCallId: runId,
       timestamp: 0,
@@ -440,27 +468,33 @@ test("unchanged completion hits share verified parent bytes only within each syn
     t.after(() => fs.rmSync(file, { force: true }));
     return file;
   });
-  const parentFile = manager.getSessionFile()!,
+  const defined14686_0 = manager.getSessionFile();
+  assertDefined(defined14686_0);
+  const parentFile = defined14686_0,
     parentStat = fs.statSync(parentFile),
     read = fs.readSync;
   // Full-suite processes share RESULTS_DIR. Measure this fixture's eight-hit
   // scan, not foreign hints that can legitimately split its four-file batches.
   const readDirectory = fs.readdirSync,
     hintNames = new Set(hints.map((file) => path.basename(file)));
-  const listing = t.mock.method(fs, "readdirSync", (directory, ...args) => {
-    const names = readDirectory(directory, ...args);
+  const listing = t.mock.method(fs, "readdirSync", (directory: fs.PathLike) => {
+    const names = readDirectory(directory);
     return directory === RESULTS_DIR ? names.filter((name) => hintNames.has(name)) : names;
   });
   let parentBytes = 0,
     sent = 0;
-  const mock = t.mock.method(fs, "readSync", function (fd, ...args) {
-    const count = read.call(this, fd, ...args);
-    const stat = fs.fstatSync(fd);
-    if (stat.dev === parentStat.dev && stat.ino === parentStat.ino) {
-      parentBytes += count;
-    }
-    return count;
-  });
+  const mock = t.mock.method(
+    fs,
+    "readSync",
+    (fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => {
+      const count = read(fd, buffer, offset, length, position);
+      const stat = fs.fstatSync(fd);
+      if (stat.dev === parentStat.dev && stat.ino === parentStat.ino) {
+        parentBytes += count;
+      }
+      return count;
+    },
+  );
   syncBuiltinESMExports();
   t.after(() => {
     mock.mock.restore();
@@ -468,24 +502,27 @@ test("unchanged completion hits share verified parent bytes only within each syn
     syncBuiltinESMExports();
   });
   const pi = {
-    on() {},
+    ...native.pi,
     events: createEventBus(),
     sendMessage() {
       sent++;
     },
-  } as Parameters<typeof createCompletionDelivery>[0];
+  };
   const state = {
+    ...createSubagentState(root),
     currentSessionId: manager.getSessionId(),
     ownedRuns: new Map(),
     completionSeen: new Map(),
-    lastUiContext: { sessionManager: manager, isIdle: () => true, hasPendingMessages: () => false },
-  } as Parameters<typeof createCompletionDelivery>[1];
+    lastUiContext: makeMinimalCtx(root, { sessionManager: manager }),
+  };
   const delivery = createCompletionDelivery(pi, state, registerParentUsage(pi, []));
   try {
     delivery.start();
     const deadline = performance.now() + 5000;
     while (hints.some((file) => fs.existsSync(file))) {
       assert.ok(performance.now() < deadline, "published results retire all hints");
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     assert.equal(sent, 0);
@@ -508,6 +545,7 @@ test("awaited delivery refreshes verified receipts even when only external journ
   const manager = SessionManager.create(root, path.join(root, "sessions"));
   manager.appendMessage({
     role: "assistant",
+    api: "faux",
     content: [{ type: "text", text: "Ready" }],
     provider: "faux",
     model: "faux",
@@ -524,7 +562,7 @@ test("awaited delivery refreshes verified receipts even when only external journ
   });
   const runId = `await-${path.basename(root)}`,
     completionId = `done-${runId}`,
-    run: OwnedRun = {
+    run: TrackedOwnedRun = {
       runId,
       rootRunId: runId,
       ownerSessionId: manager.getSessionId(),
@@ -549,33 +587,39 @@ test("awaited delivery refreshes verified receipts even when only external journ
   let relay: { requestId: string } | undefined,
     notices = 0;
   events.on("subagent:result-intercom", (request) => {
-    relay = request;
+    const payload = record(request);
+    relay = { requestId: text(payload.requestId) };
   });
   const pi = {
-    on() {},
+    ...native.pi,
     events,
     sendMessage() {
       notices++;
     },
-  } as Parameters<typeof createCompletionDelivery>[0];
+  };
   const state = {
+    ...createSubagentState(root),
     currentSessionId: manager.getSessionId(),
     ownedRuns: new Map([[runId, run]]),
     completionSeen: new Map(),
-    lastUiContext: { sessionManager: manager, isIdle: () => true, hasPendingMessages: () => false },
-  } as Parameters<typeof createCompletionDelivery>[1];
+    lastUiContext: makeMinimalCtx(root, { sessionManager: manager }),
+  };
   const delivery = createCompletionDelivery(pi, state, registerParentUsage(pi, []));
   try {
     delivery.start();
     const deadline = performance.now() + 5000;
     while (!relay) {
       assert.ok(performance.now() < deadline, "delivery enters its async tail");
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     const leaf = manager.getLeafId(),
       count = manager.getEntryCount();
+    const file = manager.getSessionFile();
+    assertDefined(file);
     fs.appendFileSync(
-      manager.getSessionFile()!,
+      file,
       JSON.stringify({
         type: "custom_message",
         id: "external-receipt",
@@ -596,11 +640,16 @@ test("awaited delivery refreshes verified receipts even when only external journ
       requestId: relay.requestId,
       delivered: true,
     });
-    while (!state.ownedRuns!.get(runId)!.delivery?.entryId) {
+    assertDefined(state.ownedRuns);
+    while (state.ownedRuns.get(runId)?.delivery?.entryId === undefined) {
       assert.ok(performance.now() < deadline, "async resume observes the new receipt");
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
-    assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, "external-receipt");
+    const defined20082_0 = state.ownedRuns.get(runId);
+    assertDefined(defined20082_0);
+    assert.equal(defined20082_0.delivery?.entryId, "external-receipt");
     assert.equal(notices, 0);
   } finally {
     delivery.stop();
@@ -636,19 +685,30 @@ for (const change of [
     if (change === "same-stamp edit") {
       const fixed = fs.statSync(file, { bigint: true }),
         fstat = fs.fstatSync;
-      const mock = t.mock.method(fs, "fstatSync", (fd: number, options?: fs.StatOptions) => {
-        const stat = fstat(fd, options);
-        return options?.bigint ? { ...stat, mtimeNs: fixed.mtimeNs, ctimeNs: fixed.ctimeNs } : stat;
-      });
+      const mock = t.mock.method(
+        fs,
+        "fstatSync",
+        (fd: number, options?: Readonly<fs.StatOptions>) => {
+          const stat = fstat(fd, options);
+          if (options?.bigint === true) {
+            Object.defineProperties(stat, {
+              mtimeNs: { value: fixed.mtimeNs },
+              ctimeNs: { value: fixed.ctimeNs },
+            });
+          }
+          return stat;
+        },
+      );
       syncBuiltinESMExports();
       t.after(() => {
         mock.mock.restore();
         syncBuiltinESMExports();
       });
     }
-    const key = () =>
-      (reader.read(file).get("receipt") as { details: { completion: { key: string } } } | undefined)
-        ?.details.completion.key;
+    const key = () => {
+      const entry = record(reader.read(file).get("receipt"));
+      return record(record(entry.details).completion).key;
+    };
     if (change === "partial tail") {
       fs.appendFileSync(file, receipt("completion:B").replace('"receipt"', '"new"'));
       assert.equal(

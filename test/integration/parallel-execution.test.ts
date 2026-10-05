@@ -1,3 +1,7 @@
+import type { SubagentExecutionResult } from "../../src/shared/types.ts";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import { readChildCall } from "../support/child-process-receipts.ts";
+import { assertDefined, parseJson, textAt, record, numberValue } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 /** Parallel execution through the public executor. */
 
@@ -9,13 +13,14 @@ import * as path from "node:path";
 import {
   INTERCOM_DETACH_REQUEST_EVENT,
   SUBAGENT_ASYNC_STARTED_EVENT,
-  type AsyncStartedEvent,
 } from "../../src/shared/types.ts";
+import { parseAsyncStatus, parseAsyncStartedEvent } from "../../src/runs/background/run-schemas.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import {
   type MockPi,
   createEventBus,
+  createNativeSessionFixture,
   createMockPi,
   createTempDir,
   events,
@@ -23,6 +28,13 @@ import {
   makeMinimalCtx,
   removeTempDir,
 } from "../support/helpers.ts";
+
+const nativeRoot = createTempDir("parallel-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
 
 describe("parallel agent execution", () => {
   let tempDir: string;
@@ -46,7 +58,7 @@ describe("parallel agent execution", () => {
     removeTempDir(tempDir);
   });
 
-  function git(cwd: string, args: string[]): string {
+  function git(cwd: string, args: readonly string[]): string {
     const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
     if (result.status !== 0) {
       const message =
@@ -89,8 +101,19 @@ describe("parallel agent execution", () => {
     eventBus = createEventBus(),
   ) {
     return createSubagentExecutor({
-      pi: { events: eventBus, getSessionName: () => undefined },
-      state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
+      pi: {
+        ...native.pi,
+        events: eventBus,
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
+      state: {
+        ...createSubagentState(tempDir),
+        baseCwd: tempDir,
+        currentSessionId: null,
+        asyncJobs: new Map(),
+      },
       config: {},
       asyncByDefault: false,
       tempArtifactsDir: artifactsDir,
@@ -102,8 +125,9 @@ describe("parallel agent execution", () => {
 
   function readLastCallArgs(): string[] {
     const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
-    assert.ok(callFile, "expected a recorded mock pi call");
-    return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+    assert.ok(Boolean(callFile), "expected a recorded mock pi call");
+    assertDefined(callFile);
+    return readChildCall(path.join(mockPi.dir, callFile)).args;
   }
 
   it("top-level foreground parallel timeout returns completed and timed-out children", async () => {
@@ -112,9 +136,9 @@ describe("parallel agent execution", () => {
     const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")]);
 
     const start = Date.now();
-    const result = (await executor.execute(
-      "parallel-timeout",
-      {
+    const result = await executor.execute({
+      toolCallId: "parallel-timeout",
+      params: {
         tasks: [
           { agent: "fast", task: "Finish quickly" },
           { agent: "slow", task: "Run too long" },
@@ -122,15 +146,14 @@ describe("parallel agent execution", () => {
         concurrency: 1,
         timeoutMs: 1000,
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    )) as any;
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
     const elapsed = Date.now() - start;
 
     assert.ok(elapsed < 5000, `should time out early, took ${elapsed}ms`);
     assert.equal(result.isError, true);
-    assert.match(result.content[0]?.text ?? "", /Parallel run timed out/);
+    assert.match(textAt(result.content), /Parallel run timed out/);
     assert.equal(result.details.results.length, 2);
     assert.equal(result.details.results[0].exitCode, 0);
     assert.equal(result.details.results[0].timedOut, undefined);
@@ -153,28 +176,38 @@ describe("parallel agent execution", () => {
     let launcherPid: number | undefined;
     let runnerPid: number | undefined;
     bus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
-      const started = event as AsyncStartedEvent;
+      const started = parseAsyncStartedEvent(event);
       runId = started.id;
       launcherPid = started.pid;
     });
     const executor = makeExecutor([makeAgent("slow"), makeAgent("second")], tempDir, bus);
-    let resultPromise: Promise<any> | undefined;
-    let result: any;
+    let resultPromise: Promise<SubagentExecutionResult> | undefined;
+    let result: SubagentExecutionResult | undefined;
     let completed = false;
     let sequence = 0;
     const readEvidence = (name: string) => {
-      const file = runId && path.join(getRunMetadataDir(runId), name);
-      return file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+      if (runId === undefined) {
+        return;
+      }
+      const file = path.join(getRunMetadataDir(runId), name);
+      return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
     };
-    const status = () => JSON.parse(readEvidence("status.json") ?? "null");
-    const waitFor = async (check: () => unknown, message: string) => {
+    const status = () => {
+      const saved = readEvidence("status.json");
+      return saved === undefined ? undefined : parseAsyncStatus(parseJson(saved));
+    };
+    const waitFor = async (check: () => boolean, message: string) => {
       const deadline = Date.now() + 5_000;
       while (!check()) {
         assert.ok(Date.now() < deadline, message);
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        // Observe the owner publication before advancing this lifecycle transition.
+        // oxlint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => {
+          setTimeout(resolve, 5);
+        });
       }
     };
-    const clockCommand = (command: { tick: number } | { resume: true }) => {
+    const clockCommand = (command: { readonly tick: number } | { readonly resume: true }) => {
       fs.writeFileSync(`${clockFile}.tmp`, JSON.stringify({ sequence: ++sequence, ...command }));
       fs.renameSync(`${clockFile}.tmp`, clockFile);
     };
@@ -183,16 +216,17 @@ describe("parallel agent execution", () => {
       await waitFor(
         () =>
           fs.existsSync(`${clockFile}.ack`) &&
-          JSON.parse(fs.readFileSync(`${clockFile}.ack`, "utf8")).sequence === sequence,
+          record(parseJson(fs.readFileSync(`${clockFile}.ack`, "utf8"))).sequence === sequence,
         "owner clock advances",
       );
-      return JSON.parse(fs.readFileSync(`${clockFile}.ack`, "utf8")).now as number;
+      return numberValue(record(parseJson(fs.readFileSync(`${clockFile}.ack`, "utf8"))).now);
     };
     const alive = (pid: number | undefined) => {
-      if (!pid) {
+      if (!((pid ?? 0) !== 0 && !Number.isNaN(pid))) {
         return false;
       }
       try {
+        assertDefined(pid);
         process.kill(pid, 0);
         return true;
       } catch (error) {
@@ -207,9 +241,9 @@ describe("parallel agent execution", () => {
       process.env.PI_TEST_RUNNER_CLOCK = clockFile;
       try {
         resultPromise = executor
-          .execute(
-            "parallel-extend",
-            {
+          .execute({
+            toolCallId: "parallel-extend",
+            params: {
               tasks: [
                 { agent: "slow", task: "Need more time" },
                 { agent: "second", task: "Starts after extension" },
@@ -217,10 +251,9 @@ describe("parallel agent execution", () => {
               concurrency: 1,
               timeoutMs: 250,
             },
-            new AbortController().signal,
-            undefined,
-            makeMinimalCtx(tempDir),
-          )
+            signal: new AbortController().signal,
+            ctx: makeMinimalCtx(tempDir),
+          })
           .then((value) => {
             result = value;
             return value;
@@ -231,51 +264,62 @@ describe("parallel agent execution", () => {
           return (
             current?.runtimeVersion === 2 &&
             current.state === "running" &&
-            current.timeoutAt &&
+            current.timeoutAt !== undefined &&
+            current.timeoutAt !== 0 &&
             mockPi.callCount() === 1
           );
         }, "actual owner deadline and first child are ready");
         const initial = status();
-        assert.equal(initial.timeoutAt - initial.startedAt, 250);
-        const extension = (await executor.execute(
-          "parallel-extend-control",
-          { action: "extend", id: runId, extendMs: 1500 },
-          new AbortController().signal,
-          undefined,
-          makeMinimalCtx(tempDir),
-        )) as any;
+        assertDefined(initial);
+        const initialTimeout = initial.timeoutAt;
+        const initialStart = initial.startedAt;
+        assertDefined(initialTimeout);
+        assertDefined(initialStart);
+        assert.equal(initialTimeout - initialStart, 250);
+        const extension = await executor.execute({
+          toolCallId: "parallel-extend-control",
+          params: { action: "extend", id: runId, extendMs: 1500 },
+          signal: new AbortController().signal,
+          ctx: makeMinimalCtx(tempDir),
+        });
         assert.equal(extension.isError, undefined, JSON.stringify(extension));
-        assert.match(extension.content[0]?.text ?? "", /Requested 1500ms more for run/);
+        assert.match(textAt(extension.content), /Requested 1500ms more for run/);
         await tick(100);
         await waitFor(
           () =>
-            status().timeoutAt === initial.timeoutAt + 1500 &&
+            status()?.timeoutAt === initialTimeout + 1500 &&
             (readEvidence("events.jsonl") ?? "")
               .trim()
               .split("\n")
               .filter(Boolean)
-              .map((line) => JSON.parse(line))
+              .map((line) => record(parseJson(line)))
               .some(
                 (event) =>
                   event.type === "subagent.run.extended" &&
                   event.runId === runId &&
-                  event.timeoutAt === initial.timeoutAt + 1500,
+                  event.timeoutAt === initialTimeout + 1500,
               ),
           "owner applies the requested extension",
         );
         assert.equal(
           await tick(350),
-          initial.startedAt + 450,
+          initialStart + 450,
           "owner crosses the original 250ms deadline",
         );
-        assert.equal(status().state, "running");
-        assert.equal(status().timedOut, undefined);
+        assert.equal(status()?.state, "running");
+        assert.equal(status()?.timedOut, undefined);
         assert.equal(mockPi.callCount(), 1, "queued second child has not started");
         fs.writeFileSync(release, "go");
-        await waitFor(() => result, "parallel result settles after both real child exits");
+        await waitFor(
+          () => result !== undefined,
+          "parallel result settles after both real child exits",
+        );
         await resultPromise;
+        assertDefined(result);
         assert.equal(result.isError, undefined, JSON.stringify(result));
+        assertDefined(result);
         assert.equal(result.details.results.length, 2);
+        assertDefined(result);
         for (const child of result.details.results) {
           assert.equal(child.exitCode, 0);
           assert.equal(child.agentProcessExit?.code, 0, "actual child process exited successfully");
@@ -288,10 +332,13 @@ describe("parallel agent execution", () => {
           // Switch back to native timers for cancellation if a clock assertion failed.
           clockCommand({ resume: true });
           try {
-            if (runnerPid && alive(runnerPid)) {
+            if (Boolean(runnerPid) && alive(runnerPid)) {
+              assertDefined(runnerPid);
               process.kill(runnerPid, "SIGTERM");
             } else if (alive(launcherPid)) {
-              process.kill(-launcherPid!, "SIGTERM");
+              const defined10811_0 = launcherPid;
+              assertDefined(defined10811_0);
+              process.kill(-defined10811_0, "SIGTERM");
             }
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
@@ -300,10 +347,10 @@ describe("parallel agent execution", () => {
           }
         }
         await waitFor(
-          () => !alive(launcherPid && -launcherPid) && !alive(runnerPid),
+          () => !alive(launcherPid === undefined ? undefined : -launcherPid) && !alive(runnerPid),
           "owned launcher group and runner exit before fixture teardown",
         );
-        await waitFor(() => result, "foreground wait settles after owner exit");
+        await waitFor(() => result !== undefined, "foreground wait settles after owner exit");
         await resultPromise;
       }
     } catch (error) {
@@ -345,8 +392,19 @@ describe("parallel agent execution", () => {
     });
     const bus = createEventBus();
     const executor = createSubagentExecutor({
-      pi: { events: bus, getSessionName: () => undefined },
-      state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
+      pi: {
+        ...native.pi,
+        events: bus,
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
+      state: {
+        ...createSubagentState(tempDir),
+        baseCwd: tempDir,
+        currentSessionId: null,
+        asyncJobs: new Map(),
+      },
       config: {},
       asyncByDefault: false,
       tempArtifactsDir: tempDir,
@@ -356,30 +414,31 @@ describe("parallel agent execution", () => {
     });
     let detached = false;
 
-    const result = await executor.execute(
-      "detached-worktree",
-      { tasks: [{ agent: "worker", task: "Wait for input" }], worktree: true },
-      new AbortController().signal,
-      (update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+    const result = await executor.execute({
+      toolCallId: "detached-worktree",
+      params: { tasks: [{ agent: "worker", task: "Wait for input" }], worktree: true },
+      signal: new AbortController().signal,
+      onUpdate: (update) => {
         if (
           detached ||
-          !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")
+          !(
+            update.details?.progress?.some(
+              (entry) => entry.currentTool === "contact_supervisor",
+            ) === true
+          )
         ) {
           return;
         }
         detached = true;
         bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-worktree" });
       },
-      makeMinimalCtx(tempDir),
-    );
-    assert.match(
-      result.content[0]?.text ?? "",
-      /Released the wait for an incoming Intercom message/i,
-    );
+      ctx: makeMinimalCtx(tempDir),
+    });
+    assert.match(textAt(result.content), /Released the wait for an incoming Intercom message/i);
     const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
-    assert.ok(callFile);
-    const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8"))
-      .cwd as string;
+    assert.ok(Boolean(callFile));
+    assertDefined(callFile);
+    const worktreeCwd = readChildCall(path.join(mockPi.dir, callFile)).cwd;
     assert.notEqual(worktreeCwd, tempDir);
     assert.equal(
       fs.existsSync(worktreeCwd),
@@ -394,7 +453,11 @@ describe("parallel agent execution", () => {
     fs.writeFileSync(release, "");
     const deadline = Date.now() + 5_000;
     while (fs.existsSync(worktreeCwd) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => {
+        setTimeout(resolve, 25);
+      });
     }
     assert.equal(
       fs.existsSync(worktreeCwd),
@@ -402,6 +465,7 @@ describe("parallel agent execution", () => {
       "worktree should be cleaned after detached completion",
     );
     const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
+    assertDefined(result.details.wait);
     const patch = fs.readFileSync(
       path.join(
         getRunMetadataDir(result.details.wait.runId),
@@ -423,8 +487,9 @@ describe("parallel agent execution", () => {
     fs.mkdirSync(artifactsDir, { recursive: true });
     const eventBus = createEventBus();
     eventBus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
-      assert.ok(event.asyncDir, "owner must publish its artifact directory");
-      fs.writeFileSync(path.join(event.asyncDir, "worktree-diffs"), "not a directory\n", "utf-8");
+      const started = parseAsyncStartedEvent(event);
+      assert.ok(started.asyncDir, "owner must publish its artifact directory");
+      fs.writeFileSync(path.join(started.asyncDir, "worktree-diffs"), "not a directory\n", "utf-8");
     });
     mockPi.onCall({ output: "Fast result" });
     mockPi.onCall({ delay: 10000 });
@@ -434,9 +499,9 @@ describe("parallel agent execution", () => {
     try {
       const ctx = makeMinimalCtx(tempDir);
       ctx.sessionManager.getSessionFile = () => sessionFile;
-      const result = (await executor.execute(
-        "parallel-timeout-worktree-diff-failure",
-        {
+      const result = await executor.execute({
+        toolCallId: "parallel-timeout-worktree-diff-failure",
+        params: {
           tasks: [
             { agent: "fast", task: "Finish quickly" },
             { agent: "slow", task: "Run too long" },
@@ -445,23 +510,22 @@ describe("parallel agent execution", () => {
           timeoutMs: 1500,
           worktree: true,
         },
-        new AbortController().signal,
-        undefined,
-        ctx,
-      )) as any;
+        signal: new AbortController().signal,
+        ctx: ctx,
+      });
 
-      const text = result.content[0]?.text ?? "";
+      const text = textAt(result.content);
       assert.equal(result.isError, true);
       assert.match(text, /Parallel run timed out/);
       assert.match(text, /Diff capture failed:/);
       assert.match(text, /Preserved worktree:/);
       preservedWorktree = text.match(/Preserved worktree: (.+)/)?.[1]?.trim() ?? "";
       preservedBranch = text.match(/Preserved branch: (.+)/)?.[1]?.trim() ?? "";
-      assert.ok(preservedWorktree, "expected preserved worktree path in result text");
-      assert.ok(preservedBranch, "expected preserved branch in result text");
+      assert.ok(Boolean(preservedWorktree), "expected preserved worktree path in result text");
+      assert.ok(Boolean(preservedBranch), "expected preserved branch in result text");
       assert.equal(fs.existsSync(preservedWorktree), true, "worktree should remain for recovery");
     } finally {
-      if (preservedWorktree && preservedBranch) {
+      if (Boolean(preservedWorktree) && Boolean(preservedBranch)) {
         bestEffortRemovePreservedWorktree(tempDir, preservedWorktree, preservedBranch);
       }
       removeTempDir(sessionRoot);
@@ -472,20 +536,19 @@ describe("parallel agent execution", () => {
     mockPi.onCall({ output: "Saved report" });
     const executor = makeExecutor();
 
-    const result = await executor.execute(
-      "parallel-output",
-      { tasks: [{ agent: "echo", task: "Write report", output: "parallel-output.md" }] },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "parallel-output",
+      params: { tasks: [{ agent: "echo", task: "Write report", output: "parallel-output.md" }] },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     const outputPath = path.join(tempDir, "parallel-output.md");
     assert.equal(result.isError, undefined);
     assert.equal(fs.readFileSync(outputPath, "utf-8"), "Saved report");
-    assert.equal(result.details?.results?.[0]?.savedOutputPath, outputPath);
-    assert.equal(result.details?.results?.[0]?.outputCleanup, undefined);
-    assert.match(result.details?.results?.[0]?.finalOutput ?? "", /Saved report/);
+    assert.equal(result.details.results[0].savedOutputPath, outputPath);
+    assert.equal(result.details.results[0].outputCleanup, undefined);
+    assert.match(result.details.results[0].finalOutput ?? "", /Saved report/);
   });
 
   it("top-level parallel tasks support outputSchema", async () => {
@@ -495,9 +558,9 @@ describe("parallel agent execution", () => {
     });
     const executor = makeExecutor();
 
-    const result = await executor.execute(
-      "parallel-output-schema",
-      {
+    const result = await executor.execute({
+      toolCallId: "parallel-output-schema",
+      params: {
         tasks: [
           {
             agent: "echo",
@@ -514,13 +577,12 @@ describe("parallel agent execution", () => {
           },
         ],
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
-    assert.deepEqual(result.details?.results?.[0]?.structuredOutput, {
+    assert.deepEqual(result.details.results[0].structuredOutput, {
       summary: "ok",
       counts: { files: 1 },
       files_to_edit: [],
@@ -531,9 +593,9 @@ describe("parallel agent execution", () => {
     mockPi.onCall({ output: "Parallel full report\nwith details" });
     const executor = makeExecutor();
 
-    const result = await executor.execute(
-      "parallel-file-only-output",
-      {
+    const result = await executor.execute({
+      toolCallId: "parallel-file-only-output",
+      params: {
         tasks: [
           {
             agent: "echo",
@@ -543,19 +605,18 @@ describe("parallel agent execution", () => {
           },
         ],
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     const outputPath = path.join(tempDir, "parallel-file-only.md");
-    const text = result.content[0]?.text ?? "";
+    const text = textAt(result.content);
     assert.equal(result.isError, undefined);
     assert.match(text, /Output saved to:/);
     assert.match(text, /2 lines/);
     assert.doesNotMatch(text, /Parallel full report/);
-    assert.match(result.details?.results?.[0]?.finalOutput ?? "", /Output saved to:/);
-    assert.doesNotMatch(result.details?.results?.[0]?.finalOutput ?? "", /Parallel full report/);
+    assert.match(result.details.results[0].finalOutput ?? "", /Output saved to:/);
+    assert.doesNotMatch(result.details.results[0].finalOutput ?? "", /Parallel full report/);
     assert.equal(fs.readFileSync(outputPath, "utf-8"), "Parallel full report\nwith details");
   });
 
@@ -565,9 +626,9 @@ describe("parallel agent execution", () => {
       initGitRepo(tempDir);
       const release = path.join(tempDir, "release");
       mockPi.onCall({ waitForFile: release, output: "Report written." });
-      const pending = makeExecutor().execute(
-        "worktree-report",
-        {
+      const pending = makeExecutor().execute({
+        toolCallId: "worktree-report",
+        params: {
           tasks: [
             {
               agent: "echo",
@@ -580,17 +641,26 @@ describe("parallel agent execution", () => {
           artifacts: false,
           async: false,
         },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+        signal: new AbortController().signal,
+        ctx: makeMinimalCtx(tempDir),
+      });
       let callFile: string | undefined;
       const deadline = Date.now() + 10_000;
-      while (!(callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-")))) {
+      while (
+        !(
+          ((callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"))) ?? "")
+            .length > 0
+        )
+      ) {
         assert.ok(Date.now() < deadline, "worktree child starts");
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        // Observe the owner publication before advancing this lifecycle transition.
+        // oxlint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => {
+          setTimeout(resolve, 25);
+        });
       }
-      const childCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf8")).cwd;
+      assertDefined(callFile);
+      const childCwd = readChildCall(path.join(mockPi.dir, callFile)).cwd;
       const report = "ONLY_COPY_OF_THE_REQUESTED_REPORT\n";
       const outputPath = path.join(childCwd, ".scratchpad/report.md");
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -600,13 +670,17 @@ describe("parallel agent execution", () => {
       const child = result.details.results[0];
       assert.equal(child.exitCode, 0);
       assert.equal(fs.existsSync(childCwd), false, "successful worktree cleanup still runs");
-      assert.ok(child.savedOutputPath);
+      assert.ok(Boolean(child.savedOutputPath));
+      assertDefined(child.savedOutputPath);
       assert.equal(fs.readFileSync(child.savedOutputPath, "utf8"), report);
       assert.equal(child.outputReference?.path, child.savedOutputPath);
       assert.equal(child.artifactPaths, undefined);
       if (outputMode === "file-only") {
+        assertDefined(child.finalOutput);
+        assertDefined(child.savedOutputPath);
         assert.ok(child.finalOutput.includes(child.savedOutputPath));
-        assert.ok(result.content[0].text.includes(child.savedOutputPath));
+        assertDefined(child.savedOutputPath);
+        assert.ok(textAt(result.content).includes(child.savedOutputPath));
       }
     });
   }
@@ -614,16 +688,15 @@ describe("parallel agent execution", () => {
   it("rejects top-level parallel file-only output without an output path", async () => {
     const executor = makeExecutor();
 
-    const result = await executor.execute(
-      "parallel-file-only-missing-output",
-      { tasks: [{ agent: "echo", task: "Write report", outputMode: "file-only" }] },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "parallel-file-only-missing-output",
+      params: { tasks: [{ agent: "echo", task: "Write report", outputMode: "file-only" }] },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, true);
-    assert.match(result.content[0]?.text ?? "", /outputMode: "file-only"/);
+    assert.match(textAt(result.content), /outputMode: "file-only"/);
     assert.equal(mockPi.callCount(), 0);
   });
 
@@ -631,60 +704,55 @@ describe("parallel agent execution", () => {
     const executor = makeExecutor([makeAgent("worker")]);
     const signal = new AbortController().signal;
     const ctx = makeMinimalCtx(tempDir);
-    const single = await executor.execute(
-      "wrong-mode-single-worktree",
-      { agent: "worker", task: "work", worktree: true } as never,
-      signal,
-      undefined,
-      ctx,
-    );
-    const chain = await executor.execute(
-      "wrong-mode-chain-worktree",
-      { chain: [{ agent: "worker", task: "work" }], worktree: true } as never,
-      signal,
-      undefined,
-      ctx,
-    );
-    const flattened = await executor.execute(
-      "ignored-parallel-field",
-      { chain: [{ parallel: [{ agent: "worker", task: "work" }], output: "ignored.md" }] } as never,
-      signal,
-      undefined,
-      ctx,
-    );
-    const emptyTask = await executor.execute(
-      "empty-parallel-task",
-      { tasks: [{ agent: "worker", task: "" }] } as never,
-      signal,
-      undefined,
-      ctx,
-    );
+    const single = await executor.execute({
+      toolCallId: "wrong-mode-single-worktree",
+      params: { agent: "worker", task: "work", worktree: true },
+      signal: signal,
+      ctx: ctx,
+    });
+    const chain = await executor.execute({
+      toolCallId: "wrong-mode-chain-worktree",
+      params: { chain: [{ agent: "worker", task: "work" }], worktree: true },
+      signal: signal,
+      ctx: ctx,
+    });
+    const flattened = await executor.execute({
+      toolCallId: "ignored-parallel-field",
+      params: { chain: [{ parallel: [{ agent: "worker", task: "work" }], output: "ignored.md" }] },
+      signal: signal,
+      ctx: ctx,
+    });
+    const emptyTask = await executor.execute({
+      toolCallId: "empty-parallel-task",
+      params: { tasks: [{ agent: "worker", task: "" }] },
+      signal: signal,
+      ctx: ctx,
+    });
 
-    assert.match(single.content[0]?.text ?? "", /worktree.*tasks parallel mode/i);
-    assert.match(chain.content[0]?.text ?? "", /worktree.*tasks parallel mode/i);
-    assert.match(flattened.content[0]?.text ?? "", /fields are not supported.*output/i);
-    assert.match(emptyTask.content[0]?.text ?? "", /task must be a non-empty string/i);
+    assert.match(textAt(single.content), /worktree.*tasks parallel mode/i);
+    assert.match(textAt(chain.content), /worktree.*tasks parallel mode/i);
+    assert.match(textAt(flattened.content), /fields are not supported.*output/i);
+    assert.match(textAt(emptyTask.content), /task must be a non-empty string/i);
     assert.equal(mockPi.callCount(), 0);
   });
 
   it("rejects duplicate top-level parallel output paths", async () => {
     const executor = makeExecutor();
 
-    const result = await executor.execute(
-      "parallel-duplicate-output",
-      {
+    const result = await executor.execute({
+      toolCallId: "parallel-duplicate-output",
+      params: {
         tasks: [
           { agent: "echo", task: "Write A", output: "same.md" },
           { agent: "echo", task: "Write B", output: "same.md" },
         ],
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, true);
-    assert.match(result.content[0]?.text ?? "", /same path/);
+    assert.match(textAt(result.content), /same path/);
     assert.equal(mockPi.callCount(), 0);
   });
 
@@ -694,22 +762,23 @@ describe("parallel agent execution", () => {
     const artifactsDir = path.join(tempDir, "artifacts");
     const executor = makeExecutor([makeAgent("scout", { output: "context.md" })], artifactsDir);
 
-    const result = await executor.execute(
-      "parallel-default-output-artifacts",
-      {
+    const result = await executor.execute({
+      toolCallId: "parallel-default-output-artifacts",
+      params: {
         tasks: [
           { agent: "scout", task: "Write A" },
           { agent: "scout", task: "Write B" },
         ],
         concurrency: 2,
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
-    const details = (result as any).details;
-    const paths = details?.results?.map((r: any) => r.outputReference?.path).filter(Boolean) ?? [];
+    const details = result.details;
+    const paths = details.results
+      .map((child) => child.outputReference?.path)
+      .filter((value): value is string => value !== undefined && value.length > 0);
     assert.equal(result.isError, undefined);
     assert.equal(mockPi.callCount(), 2);
     assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
@@ -718,25 +787,24 @@ describe("parallel agent execution", () => {
     assert.ok(paths.every((p: string) => p.includes(`${path.sep}requested-outputs${path.sep}`)));
     assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_0_context\.md$/.test(p)));
     assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_1_context\.md$/.test(p)));
-    assert.ok(details?.results?.every((r: any) => r.outputCleanup?.action === "deleted"));
+    assert.ok(details.results.every((child) => child.outputCleanup?.action === "deleted"));
   });
 
   it("treats string false as disabled output in top-level parallel runs", async () => {
     mockPi.onCall({ output: "Review done" });
     const executor = makeExecutor();
 
-    const result = await executor.execute(
-      "parallel-string-false-output",
-      {
+    const result = await executor.execute({
+      toolCallId: "parallel-string-false-output",
+      params: {
         tasks: [
           { agent: "echo", task: "Review A", output: "false" },
           { agent: "echo", task: "Review B", output: "false" },
         ],
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
     assert.equal(mockPi.callCount(), 2);
@@ -747,13 +815,12 @@ describe("parallel agent execution", () => {
     mockPi.onCall({ output: "Read done" });
     const executor = makeExecutor();
 
-    await executor.execute(
-      "parallel-reads",
-      { tasks: [{ agent: "echo", task: "Inspect", reads: ["a.md", "b.md"] }] },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    await executor.execute({
+      toolCallId: "parallel-reads",
+      params: { tasks: [{ agent: "echo", task: "Inspect", reads: ["a.md", "b.md"] }] },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     const args = readLastCallArgs();
     const taskArg = args.at(-1) ?? "";
@@ -769,13 +836,12 @@ Inspect`),
     mockPi.onCall({ output: "Progress done" });
     const executor = makeExecutor();
 
-    await executor.execute(
-      "parallel-progress",
-      { tasks: [{ agent: "echo", task: "Track work", progress: true }] },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    await executor.execute({
+      toolCallId: "parallel-progress",
+      params: { tasks: [{ agent: "echo", task: "Track work", progress: true }] },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     const args = readLastCallArgs();
     assert.ok(
@@ -788,13 +854,14 @@ Inspect`),
     mockPi.onCall({ output: "Review done" });
     const executor = makeExecutor([makeAgent("reviewer", { defaultProgress: true })]);
 
-    await executor.execute(
-      "parallel-read-only-progress",
-      { tasks: [{ agent: "reviewer", task: "Review-only. Do not edit files. Return findings." }] },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    await executor.execute({
+      toolCallId: "parallel-read-only-progress",
+      params: {
+        tasks: [{ agent: "reviewer", task: "Review-only. Do not edit files. Return findings." }],
+      },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     const taskArg = readLastCallArgs().at(-1) ?? "";
     assert.doesNotMatch(taskArg, /progress\.md/);

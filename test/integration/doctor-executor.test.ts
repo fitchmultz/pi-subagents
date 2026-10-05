@@ -1,10 +1,20 @@
+import type { createSubagentExecutor as ExecutorFactory } from "../../src/runs/foreground/subagent-executor.ts";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import {
+  assertDefined,
+  textAt,
+  record,
+  text as stringValue,
+  assertRecord,
+} from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 import {
   createEventBus,
+  createNativeSessionFixture,
   createTempDir,
   makeMinimalCtx,
   removeTempDir,
@@ -17,7 +27,7 @@ const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const importHome = createTempDir("pi-doctor-executor-import-home-");
 process.env.HOME = importHome;
 process.env.USERPROFILE = importHome;
-let createSubagentExecutor: typeof import("../../src/runs/foreground/subagent-executor.ts").createSubagentExecutor;
+let createSubagentExecutor: typeof ExecutorFactory;
 try {
   ({ createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts"));
 } finally {
@@ -35,19 +45,15 @@ try {
 }
 
 function makeState(cwd: string) {
-  return {
-    baseCwd: cwd,
-    currentSessionId: null,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: { schedule: () => false, clear: () => {} },
-  };
+  return createSubagentState(cwd);
 }
+
+const nativeRoot = createTempDir("doctor-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
 
 describe("doctor action executor routing", () => {
   let tempDir = "";
@@ -96,7 +102,9 @@ describe("doctor action executor routing", () => {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, contents);
     };
-    const agentDir = process.env.PI_CODING_AGENT_DIR!;
+    const defined3471_0 = process.env.PI_CODING_AGENT_DIR;
+    assertDefined(defined3471_0);
+    const agentDir = defined3471_0;
     for (const [dir, names] of [
       [path.join(agentDir, "agents"), ["user-a"]],
       [path.join(tempDir, ".pi", "agents"), ["project-a", "project-b"]],
@@ -139,7 +147,13 @@ describe("doctor action executor routing", () => {
     );
     write(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["./package"] }));
     const executor = createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
+      pi: {
+        ...native.pi,
+        events: createEventBus(),
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
       state: makeState(tempDir),
       config: { defaultSessionDir: path.join(tempDir, "configured-sessions") },
       asyncByDefault: false,
@@ -152,16 +166,15 @@ describe("doctor action executor routing", () => {
     ctx.sessionManager.getSessionFile = () => sessionFile;
     ctx.sessionManager.getSessionId = () => "session-doctor";
 
-    const result = await executor.execute(
-      "doctor-id",
-      { action: "doctor" },
-      new AbortController().signal,
-      undefined,
-      ctx,
-    );
+    const result = await executor.execute({
+      toolCallId: "doctor-id",
+      params: { action: "doctor" },
+      signal: new AbortController().signal,
+      ctx: ctx,
+    });
 
     assert.equal(result.isError, undefined);
-    const text = result.content[0]?.text ?? "";
+    const text = textAt(result.content);
     assert.match(text, /^Subagents doctor report/);
     assert.ok(text.includes(`- Native session cwd: ${tempDir}`));
     assert.ok(text.includes(`- current session file: ${sessionFile}`));
@@ -190,10 +203,10 @@ describe("doctor action executor routing", () => {
     it(`reports ${connection} from the live bridge, not the routing name`, async () => {
       const events = createEventBus();
       let requests = 0;
-      if (connection !== "unavailable")
+      if (connection !== "unavailable") {
         events.on("subagent:intercom-health-request", (payload) => {
           requests++;
-          const { requestId } = payload as { requestId: string };
+          const requestId = stringValue(record(payload).requestId);
           events.emit("subagent:intercom-health-response", {
             requestId,
             health: [],
@@ -203,8 +216,9 @@ describe("doctor action executor routing", () => {
             },
           });
         });
+      }
       const executor = createSubagentExecutor({
-        pi: { events, getSessionName: () => "looks-connected" },
+        pi: { ...native.pi, events, getSessionName: () => "looks-connected" },
         state: makeState(tempDir),
         config: {},
         asyncByDefault: false,
@@ -214,14 +228,12 @@ describe("doctor action executor routing", () => {
         discoverAgents: () => ({ agents: [] }),
       });
       const started = performance.now();
-      const result = await executor.execute(
-        "doctor",
-        { action: "doctor" },
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
-      const text = result.content[0]?.text ?? "";
+      const result = await executor.execute({
+        toolCallId: "doctor",
+        params: { action: "doctor" },
+        ctx: makeMinimalCtx(tempDir),
+      });
+      const text = textAt(result.content);
       assert.equal(result.isError, undefined);
       assert.ok(
         performance.now() - started < 2_000,
@@ -259,10 +271,12 @@ describe("doctor action executor routing", () => {
     let current = selected;
     let resolutions = 0;
     events.on("pi-change-working-dir:resolve-execution-cwd", (request) => {
+      assertRecord(request);
       resolutions++;
       request.result = { cwd: current };
     });
-    events.on("subagent:intercom-health-request", ({ requestId }) => {
+    events.on("subagent:intercom-health-request", (request) => {
+      const requestId = stringValue(record(request).requestId);
       queueMicrotask(() => {
         current = tempDir;
         events.emit("subagent:intercom-health-response", {
@@ -273,7 +287,13 @@ describe("doctor action executor routing", () => {
       });
     });
     const executor = createSubagentExecutor({
-      pi: { events, getSessionName: () => undefined },
+      pi: {
+        ...native.pi,
+        events,
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
       state: makeState(tempDir),
       config: {},
       asyncByDefault: false,
@@ -282,16 +302,14 @@ describe("doctor action executor routing", () => {
       expandTilde: (value) => value,
       discoverAgents: () => ({ agents: [] }),
     });
-    const pending = executor.execute(
-      "doctor",
-      { action: "doctor" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const pending = executor.execute({
+      toolCallId: "doctor",
+      params: { action: "doctor" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(resolutions, 1, "resolve synchronously before the first await");
     const result = await pending;
-    assert.ok(result.content[0].text.includes(`- Requested cwd: ${selected}`));
+    assert.ok(textAt(result.content).includes(`- Requested cwd: ${selected}`));
     assert.equal(resolutions, 1);
   });
 
@@ -301,7 +319,13 @@ describe("doctor action executor routing", () => {
     }
     fs.writeFileSync(ASYNC_DIR, "not a directory");
     const executor = createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
+      pi: {
+        ...native.pi,
+        events: createEventBus(),
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
       state: makeState(tempDir),
       config: {},
       asyncByDefault: false,
@@ -318,16 +342,15 @@ describe("doctor action executor routing", () => {
       throw new Error("session unavailable");
     };
 
-    const result = await executor.execute(
-      "doctor-id",
-      { action: "doctor" },
-      new AbortController().signal,
-      undefined,
-      ctx,
-    );
+    const result = await executor.execute({
+      toolCallId: "doctor-id",
+      params: { action: "doctor" },
+      signal: new AbortController().signal,
+      ctx: ctx,
+    });
 
     assert.equal(result.isError, undefined);
-    const text = result.content[0]?.text ?? "";
+    const text = textAt(result.content);
     assert.match(text, /^Subagents doctor report/);
     assert.match(text, /- session manager: failed — Error: session unavailable/);
     assert.match(text, /- current session file: not available/);
@@ -342,15 +365,13 @@ describe("doctor action executor routing", () => {
     const malformedDir = path.join(tempDir, "malformed");
     fs.mkdirSync(path.join(malformedDir, ".pi", "agents"), { recursive: true });
     fs.writeFileSync(path.join(malformedDir, ".pi", "settings.json"), "{bad-json");
-    const malformed = await executor.execute(
-      "doctor-malformed",
-      { action: "doctor", cwd: malformedDir },
-      undefined,
-      undefined,
-      ctx,
-    );
+    const malformed = await executor.execute({
+      toolCallId: "doctor-malformed",
+      params: { action: "doctor", cwd: malformedDir },
+      ctx: ctx,
+    });
     assert.equal(malformed.isError, undefined);
-    const diagnostics = malformed.content[0]?.text ?? "";
+    const diagnostics = textAt(malformed.content);
     assert.match(diagnostics, /- agents\/chains: failed — Error: Failed to parse settings file/);
     assert.match(diagnostics, /- skills: failed — Error: Failed to read skills settings file/);
     assert.match(diagnostics, /- temp root: ok /);

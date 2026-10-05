@@ -1,3 +1,12 @@
+import { parseHistoryPage } from "../../src/runs/background/run-schemas.ts";
+import { readRunStatus } from "../support/run-publications.ts";
+import {
+  assertDefined,
+  record as objectRecord,
+  records as unknownRecords,
+  text as stringValue,
+  numberValue,
+} from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -9,7 +18,7 @@ import { readSavedOutput } from "../../src/history/canonical-result.ts";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import {
   SubagentHistoryIndex,
   type OwnedRun,
@@ -36,9 +45,9 @@ const message = (id: string, text: string, role = "user") => ({
   timestamp,
   message: { role, content: [{ type: "text", text }] },
 });
-const lines = (records: object[]) =>
+const lines = (records: readonly unknown[]) =>
   records.map((record) => JSON.stringify(record)).join("\n") + "\n";
-function fixture(t: { after: (fn: () => Promise<void>) => void }) {
+function fixture(t: TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "history-index-")),
     agentDir = path.join(root, "agent");
   fs.mkdirSync(agentDir);
@@ -57,7 +66,7 @@ function fixture(t: { after: (fn: () => Promise<void>) => void }) {
       await index.close();
       index = new SubagentHistoryIndex(agentDir);
     },
-    file(name: string, records: object[]) {
+    file(name: string, records: readonly unknown[]) {
       const file = path.join(root, name);
       fs.writeFileSync(file, lines(records), { mode: 0o600 });
       return file;
@@ -74,14 +83,14 @@ function run(id: string, sessionFile?: string, agent = "worker"): OwnedRun {
     cwd: "/synthetic",
     task: `Task ${id}`,
     startedAt: 100,
-    children: [{ agent, index: 0, ...(sessionFile ? { sessionFile } : {}) }],
+    children: [{ agent, index: 0, ...((sessionFile ?? "").length > 0 ? { sessionFile } : {}) }],
   };
 }
 function seed(
-  f: ReturnType<typeof fixture>,
+  f: Readonly<Pick<ReturnType<typeof fixture>, "agentDir" | "file">>,
   id: string,
   state: OwnedRunView["state"],
-  attention: string[],
+  attention: readonly string[],
   updatedAt: number,
   agent = "worker",
 ): OwnedRun {
@@ -157,14 +166,14 @@ function seed(
   return ownedRun;
 }
 async function owned(
-  index: SubagentHistoryIndex,
-  runs: OwnedRun[],
-  extra: Partial<HistoryOwner> = {},
+  index: Readonly<Pick<SubagentHistoryIndex, "setOwner" | "refresh">>,
+  runs: readonly OwnedRun[],
+  extra: Readonly<Partial<HistoryOwner>> = {},
 ) {
-  await index.setOwner({ ownerSessionId: "parent", runs, ...extra });
+  await index.setOwner({ ownerSessionId: "parent", runs: [...runs], ...extra });
   await index.refresh();
 }
-const code = (value: string) => (error: any) => error.code === value;
+const code = (value: string) => (error: unknown) => objectRecord(error).code === value;
 
 test(
   "an already observed native watch hint preserves completed degraded history without queuing another ingest",
@@ -196,29 +205,36 @@ test(
     let sequence = 0;
     const requests = new Map<
       number,
-      { resolve: (value: any) => void; reject: (error: any) => void }
+      Readonly<{ resolve: (value: unknown) => void; reject: (error: Error) => void }>
     >();
     const observed = new Set<string>(),
       waiting = new Map<string, () => void>();
     const directories: string[] = [];
-    worker.on("message", (response: any) => {
-      if (response.watchDirectory) {
+    worker.on("message", (message: unknown) => {
+      const response = objectRecord(message);
+      if (typeof response.watchDirectory === "string") {
         directories.push(response.watchDirectory);
         return;
       }
-      if (response.watchHint) {
+      if (typeof response.watchHint === "string") {
         observed.add(response.watchHint);
         waiting.get(response.watchHint)?.();
         waiting.delete(response.watchHint);
         return;
       }
-      const request = requests.get(response.id);
+      const id = numberValue(response.id);
+      const request = requests.get(id);
       if (!request) {
         return;
       }
-      requests.delete(response.id);
+      requests.delete(id);
       if (response.error) {
-        request.reject(response.error);
+        const failure = objectRecord(response.error);
+        request.reject(
+          Object.assign(new Error(stringValue(failure.message)), {
+            code: stringValue(failure.code),
+          }),
+        );
       } else {
         request.resolve(response.value);
       }
@@ -226,9 +242,11 @@ test(
     const hint = (name: string) =>
       observed.has(name)
         ? Promise.resolve()
-        : new Promise<void>((resolve) => waiting.set(name, resolve));
-    const request = (method: string, input: object = {}) =>
-      new Promise<any>((resolve, reject) => {
+        : new Promise<void>((resolve) => {
+            waiting.set(name, resolve);
+          });
+    const request = (method: string, input: Readonly<Record<string, unknown>> = {}) =>
+      new Promise<unknown>((resolve, reject) => {
         const id = ++sequence;
         requests.set(id, { resolve, reject });
         worker.send({ id, method, input });
@@ -242,14 +260,18 @@ test(
       );
       await hint("observed");
       await assert.rejects(request("refresh", { runId: "delayed-watch" }), code("DEGRADED"));
-      const before = await request("historyPage", { runId: "delayed-watch", index: 0 });
+      const before = parseHistoryPage(
+        await request("historyPage", { runId: "delayed-watch", index: 0 }),
+      );
       assert.equal(before.sourceState, "degraded");
       assert.equal(before.freshness.state, "degraded");
       worker.send({ watchHint: "deliver" });
       await hint("delivered");
-      const after = await request("historyPage", { runId: "delayed-watch", index: 0 });
+      const after = parseHistoryPage(
+        await request("historyPage", { runId: "delayed-watch", index: 0 }),
+      );
       assert.deepEqual(
-        after.entries.map((entry: any) => entry.id),
+        after.entries.map((entry) => entry.id),
         ["first", "later"],
       );
       assert.equal(after.sourceState, "degraded");
@@ -264,18 +286,22 @@ test(
       await hint("observed");
       worker.send({ watchHint: "deliver" });
       await hint("delivered");
-      const changed = await request("historyPage", { runId: "delayed-watch", index: 0 });
+      const changed = parseHistoryPage(
+        await request("historyPage", { runId: "delayed-watch", index: 0 }),
+      );
       assert.equal(
         changed.freshness.state,
         "catching-up",
         "a genuinely changed source still queues work",
       );
-      assert.ok(changed.freshness.pending > 0);
+      assert.ok(numberValue(changed.freshness.pending) > 0);
       worker.send({ watchHint: "drain" });
       await assert.rejects(request("refresh", { runId: "delayed-watch" }), code("DEGRADED"));
-      const reconciled = await request("historyPage", { runId: "delayed-watch", index: 0 });
+      const reconciled = parseHistoryPage(
+        await request("historyPage", { runId: "delayed-watch", index: 0 }),
+      );
       assert.deepEqual(
-        reconciled.entries.map((entry: any) => entry.id),
+        reconciled.entries.map((entry) => entry.id),
         ["first", "later", "newest"],
       );
       assert.equal(reconciled.freshness.state, "degraded");
@@ -290,10 +316,14 @@ test(
       const ready = async (id: string) => {
         const deadline = Date.now() + 3000;
         for (;;) {
-          const page = await request("historyPage", { runId: "delayed-watch", index: 0 });
+          // Each scenario owns shared fixture state; complete it before starting the next one.
+          // oxlint-disable-next-line no-await-in-loop
+          const page = parseHistoryPage(
+            await request("historyPage", { runId: "delayed-watch", index: 0 }),
+          );
           if (
             page.sourceState === "current" &&
-            !page.freshness.pending &&
+            page.freshness.pending === 0 &&
             page.entries.at(-1)?.id === id
           ) {
             return;
@@ -403,7 +433,11 @@ test("owned compact run ordering, filtering and seek pagination do not adopt orp
   );
   const before = await f.index.status();
   for (let page = 0; page < 12; page++) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     await f.index.listRuns({ limit: 1 });
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     await f.index.search({ query: "miss" });
   }
   const after = await f.index.status();
@@ -437,7 +471,7 @@ test("a full Agents page retains deep native branch configuration within the his
     },
     ...Array.from({ length: depth }, (_, index) => ({
       ...message(`deep-${index}`, `Native history ${index}`),
-      parentId: index ? `deep-${index - 1}` : "thinking",
+      parentId: index !== 0 && !Number.isNaN(index) ? `deep-${index - 1}` : "thinking",
     })),
     {
       type: "model_change",
@@ -505,7 +539,7 @@ test("a full Agents page retains deep native branch configuration within the his
 
 test("canonical foreground summaries stay compact, while physical archive pages retain >100 entries and tool pairs", async (t) => {
   const f = fixture(t),
-    records = Array.from({ length: 235 }, (_, number) =>
+    records: unknown[] = Array.from({ length: 235 }, (_, number) =>
       message(`entry-${number}`, `retained entry ${number}`),
     );
   records[4] = {
@@ -524,7 +558,7 @@ test("canonical foreground summaries stay compact, while physical archive pages 
         },
       ],
     },
-  } as any;
+  };
   records[150] = {
     type: "message",
     id: "entry-150",
@@ -536,7 +570,7 @@ test("canonical foreground summaries stay compact, while physical archive pages 
       toolName: "synthetic",
       content: [{ type: "text", text: "paired visible result" }],
     },
-  } as any;
+  };
   const file = f.file("native.jsonl", [header(), ...records]);
   const ownedRun = run("archive", file);
   await owned(f.index, [ownedRun], {
@@ -557,7 +591,9 @@ test("canonical foreground summaries stay compact, while physical archive pages 
               task: "task",
               exitCode: 0,
               usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-              messages: [message("huge", "private-provider-blob")] as any,
+              messages: [
+                { role: "user", content: [{ type: "text", text: "private-provider-blob" }] },
+              ],
               finalOutput: "x".repeat(30_000),
               terminalEntryId: "entry-50",
             },
@@ -569,12 +605,20 @@ test("canonical foreground summaries stay compact, while physical archive pages 
   const row = (await f.index.listRuns()).rows[0];
   assert.equal(row.state, "completed");
   assert.equal(row.updatedAt, 777);
-  assert.equal(row.children[0].result!.messages, undefined);
-  assert.ok(row.children[0].result!.finalOutput!.length <= 1024);
+  const defined18575_0 = row.children[0].result;
+  assertDefined(defined18575_0);
+  assert.equal(defined18575_0.messages, undefined);
+  assertDefined(row.children[0].result);
+  assertDefined(row.children[0].result.finalOutput);
+  const defined18636_0 = row.children[0].result.finalOutput;
+  assertDefined(defined18636_0);
+  assert.ok(defined18636_0.length <= 1024);
   const latest = await f.index.historyPage({ runId: "archive", index: 0, limit: 100 });
   assert.equal(latest.count, 235);
   assert.equal(latest.entries[0].id, "entry-135");
-  assert.equal(latest.entries.at(-1)!.id, "entry-234");
+  const defined18876_0 = latest.entries.at(-1);
+  assertDefined(defined18876_0);
+  assert.equal(defined18876_0.id, "entry-234");
   assert.equal(latest.hasMore, true);
   const middle = await f.index.historyPage({
     runId: "archive",
@@ -592,7 +636,7 @@ test("canonical foreground summaries stay compact, while physical archive pages 
   assert.equal(oldest.hasMore, false);
   assert.deepEqual(
     [...oldest.entries, ...middle.entries, ...latest.entries].map((entry) => entry.id),
-    records.map((entry) => entry.id),
+    records.map((entry) => objectRecord(entry).id),
   );
   const forward = await f.index.historyPage({
     runId: "archive",
@@ -611,7 +655,9 @@ test("canonical foreground summaries stay compact, while physical archive pages 
     limit: 100,
   });
   assert.equal(bounded.count, 51);
-  assert.equal(bounded.entries.at(-1)!.id, "entry-50");
+  const defined19900_0 = bounded.entries.at(-1);
+  assertDefined(defined19900_0);
+  assert.equal(defined19900_0.id, "entry-50");
   await assert.rejects(
     f.index.historyPage({ runId: "archive", index: 0, terminalEntryId: "not-indexed" }),
     code("BOUNDARY_UNAVAILABLE"),
@@ -628,10 +674,20 @@ test("canonical foreground summaries stay compact, while physical archive pages 
     toolCallId: "call-one",
     kind: "result",
   });
-  assert.equal(call!.id, "entry-4");
-  assert.equal(result!.id, "entry-150");
+  const defined20362_0 = call;
+  assertDefined(defined20362_0);
+  assert.equal(defined20362_0.id, "entry-4");
+  const defined20399_0 = result;
+  assertDefined(defined20399_0);
+  assert.equal(defined20399_0.id, "entry-150");
+  const defined20440_0 = call;
+  assertDefined(defined20440_0);
   assert.equal(
-    call!.entry.message.content[0].arguments.payload,
+    objectRecord(
+      objectRecord(
+        unknownRecords(objectRecord(objectRecord(defined20440_0.entry).message).content)[0],
+      ).arguments,
+    ).payload,
     "arguments-secret",
     "argument previews remain bounded, not searchable",
   );
@@ -655,9 +711,18 @@ test("canonical foreground summaries stay compact, while physical archive pages 
     }),
     null,
   );
+  const defined21043_0 = call;
+  assertDefined(defined21043_0);
+  const selectedRecord = await f.index.record({
+    runId: "archive",
+    index: 0,
+    ref: defined21043_0.ref,
+  });
   assert.equal(
-    (await f.index.record({ runId: "archive", index: 0, ref: call!.ref }))!.message.content[0]
-      .arguments.payload,
+    objectRecord(
+      objectRecord(unknownRecords(objectRecord(objectRecord(selectedRecord).message).content)[0])
+        .arguments,
+    ).payload,
     "arguments-secret",
   );
   assert.equal(
@@ -707,8 +772,10 @@ test("full child filters and latest-attempt paging retain unsuperseded siblings 
     filtered.rows.map((row) => [row.runId, row.matchedChildIndexes]),
     [["original", [1]]],
   );
+  const defined22844_0 = filtered.rows[0].children[1].task;
+  assertDefined(defined22844_0);
   assert.ok(
-    filtered.rows[0].children[1].task!.length <= 1024,
+    defined22844_0.length <= 1024,
     "filtering uses full assignments, not their display preview",
   );
   assert.equal(
@@ -790,7 +857,7 @@ test("conversation metadata spans unloaded pages and matches the exact sanitized
       },
       ...Array.from({ length: 130 }, (_, index) => ({
         ...message(`later-${index}`, `later activity ${index}`),
-        parentId: index ? `later-${index - 1}` : "answer",
+        parentId: index !== 0 && !Number.isNaN(index) ? `later-${index - 1}` : "answer",
       })),
       {
         ...message("similar-preview", answer.slice(0, 512) + " different full ending", "assistant"),
@@ -907,9 +974,16 @@ test("conversation metadata spans unloaded pages and matches the exact sanitized
   assert.equal(bounded.finalResultId, "answer:0");
   assert.ok(bounded.terminalSequence !== undefined);
   const human = await f.index.entry({ runId: "metadata", index: 0, entryId: "human" });
-  assert.equal(human!.entry.details.message.id, "outgoing-one");
+  const defined28950_0 = human;
+  assertDefined(defined28950_0);
+  assert.equal(objectRecord(objectRecord(defined28950_0.entry.details).message).id, "outgoing-one");
   const savedAnswer = await f.index.entry({ runId: "metadata", index: 0, entryId: "answer" });
-  assert.equal(savedAnswer!.entry.message.content[0].thinking, "brief reasoning");
+  const defined29110_0 = savedAnswer;
+  assertDefined(defined29110_0);
+  assert.equal(
+    unknownRecords(objectRecord(defined29110_0.entry.message).content)[0]?.thinking,
+    "brief reasoning",
+  );
   assert.equal(
     (await f.index.historyPage({ runId: "metadata", index: 0, readThrough: "tool-only:1" }))
       .unreadAfter,
@@ -962,8 +1036,13 @@ test("selected canonical result details select sparse child indices, retain full
       ],
     },
   ]);
-  const preview = (await f.index.listRuns()).rows[0].children.find((child) => child.index === 9)!;
-  assert.ok(preview.result!.finalOutput!.length <= 1024);
+  const preview = (await f.index.listRuns()).rows[0].children.find((child) => child.index === 9);
+  assertDefined(preview);
+  assertDefined(preview.result);
+  assertDefined(preview.result.finalOutput);
+  const defined30753_0 = preview.result.finalOutput;
+  assertDefined(defined30753_0);
+  assert.ok(defined30753_0.length <= 1024);
   assert.deepEqual(await f.index.result({ runId: "legacy-result", index: 9 }), {
     text: answer,
     timestamp: 500,
@@ -996,14 +1075,18 @@ test("selected canonical result details select sparse child indices, retain full
   const read = fs.readSync;
   let selectedBytes = 0,
     grew = false;
-  t.mock.method(fs, "readSync", function (fd, buffer, offset, length, position) {
-    if (!grew) {
-      grew = true;
-      fs.appendFileSync(growing, Buffer.alloc(17 * 1024 * 1024, 120));
-    }
-    selectedBytes += length;
-    return read.call(this, fd, buffer, offset, length, position);
-  });
+  t.mock.method(
+    fs,
+    "readSync",
+    (fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => {
+      if (!grew) {
+        grew = true;
+        fs.appendFileSync(growing, Buffer.alloc(17 * 1024 * 1024, 120));
+      }
+      selectedBytes += length;
+      return read(fd, buffer, offset, length, position);
+    },
+  );
   syncBuiltinESMExports();
   try {
     assert.throws(() => readSavedOutput(growing), code("SOURCE_CHANGED"));
@@ -1082,7 +1165,9 @@ test("FTS indexes only visible text, validates grammar, respects owner filters a
     "summaryvisible",
     '"crossboundary exactphrase"',
   ]) {
-    assert.ok((await f.index.search({ query, runId: "visible" })).matches.length, query);
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
+    assert.ok(Boolean((await f.index.search({ query, runId: "visible" })).matches.length), query);
   }
   for (const query of [
     "thinkingsecret",
@@ -1094,6 +1179,8 @@ test("FTS indexes only visible text, validates grammar, respects owner filters a
     "customdatasecret",
     "hiddennoticesecret",
   ]) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     assert.equal((await f.index.search({ query })).matches.length, 0, query);
   }
   assert.equal(
@@ -1102,6 +1189,8 @@ test("FTS indexes only visible text, validates grammar, respects owner filters a
     "token search is not substring search",
   );
   for (const query of ["word OR another", "word*", '"unterminated', "a-b", ""]) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     await assert.rejects(f.index.search({ query }), code("INVALID_QUERY"));
   }
   const filtered = await f.index.search({ query: "uniqueword", agent: "other", limit: 1 });
@@ -1164,9 +1253,13 @@ test("search tokenizes visible text after streaming terminal-sequence removal", 
     "fieldneedle",
     "recordneedle",
   ]) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     assert.equal((await f.index.search({ query })).matches.length, 1, query);
   }
   for (const query of ["31mredneedle", "hiddenurl", "hiddenpayload", "unterminated"]) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     assert.equal((await f.index.search({ query })).matches.length, 0, query);
   }
 });
@@ -1191,9 +1284,13 @@ test("multiword search matches whole native records before ranking and paginatio
   ]);
   await owned(f.index, [run("search-records", file)]);
   for (const sort of ["relevance", "newest"] as const) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     const first = await f.index.search({ query: "firstneedle lastneedle", sort, limit: 1 });
     assert.equal(first.matches.length, 1);
-    assert.ok(first.nextCursor);
+    assert.ok(Boolean(first.nextCursor));
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     const second = await f.index.search({
       query: "firstneedle lastneedle",
       sort,
@@ -1251,7 +1348,9 @@ for (const interrupted of [false, true]) {
       );
       const exited = once(worker, "exit");
       t.after(async () => {
-        if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
+        if (worker.exitCode === null && worker.signalCode === null) {
+          worker.kill("SIGKILL");
+        }
         await exited;
       });
       assert.deepEqual((await once(worker, "message"))[0], { ready: true });
@@ -1272,7 +1371,11 @@ for (const interrupted of [false, true]) {
       await f.index.setOwner({ ownerSessionId: "parent", runs });
       const refresh = f.index.refresh();
       // The public worker keeps serving IPC while waiting for another writer.
-      for (let request = 0; request < 8; request++) await f.index.listRuns();
+      for (let request = 0; request < 8; request++) {
+        // Each scenario owns shared fixture state; complete it before starting the next one.
+        // oxlint-disable-next-line no-await-in-loop
+        await f.index.listRuns();
+      }
       first.worker.kill("SIGKILL");
       await first.exited;
       await refresh;
@@ -1338,7 +1441,9 @@ test("over-budget non-text structures degrade the index without assembling them 
     ["after-budget"],
   );
   assert.equal(page.freshness.state, "degraded");
-  assert.match(page.unavailable!, /3 exceeded bounded history structure\/text budgets/);
+  const defined43032_0 = page.unavailable;
+  assertDefined(defined43032_0);
+  assert.match(defined43032_0, /3 exceeded bounded history structure\/text budgets/);
   assert.equal(
     (await f.index.search({ query: "afterbudgetword" })).matches[0].entryId,
     "after-budget",
@@ -1366,7 +1471,8 @@ test("LF publication, malformed lines, append, replacement, truncation and delet
   assert.equal(page.count, 3);
   assert.equal(page.freshness.state, "degraded");
   assert.equal(page.sourceState, "degraded");
-  assert.ok(page.unavailable && !page.unavailable.includes("secret-no-log"));
+  assertDefined(page.unavailable);
+  assert.ok(Boolean(page.unavailable) && !page.unavailable.includes("secret-no-log"));
   assert.equal((await f.index.search({ query: "afterbroken" })).matches.length, 1);
   const replacement = f.file("replacement.jsonl", [header(), message("first", "rewrittenword")]);
   fs.renameSync(replacement, file);
@@ -1376,7 +1482,9 @@ test("LF publication, malformed lines, append, replacement, truncation and delet
   );
   await f.index.refresh("mutable");
   page = await f.index.historyPage({ runId: "mutable", index: 0 });
-  assert.ok(page.generation! > original.ref.generation);
+  const defined45079_0 = page.generation;
+  assertDefined(defined45079_0);
+  assert.ok(defined45079_0 > original.ref.generation);
   assert.equal(page.count, 1);
   assert.equal((await f.index.search({ query: "originalword" })).matches.length, 0);
   fs.writeFileSync(file, lines([header()]));
@@ -1426,17 +1534,22 @@ test("persistent replay publishes cursor and entries together; legacy missing id
   await f.index.refresh();
   await f.index.close();
   const db = new DatabaseSync(status.databaseFile);
-  assert.equal(db.prepare("PRAGMA quick_check").get()!.quick_check, "ok");
-  const cursor = db.prepare("SELECT cursor FROM sources").get()!.cursor;
-  const published = db
-    .prepare("SELECT COUNT(*) AS count FROM entries WHERE published=1")
-    .get()!.count;
+  const defined47500_0 = db.prepare("PRAGMA quick_check").get();
+  assertDefined(defined47500_0);
+  assert.equal(defined47500_0.quick_check, "ok");
+  const defined47575_0 = db.prepare("SELECT cursor FROM sources").get();
+  assertDefined(defined47575_0);
+  const cursor = defined47575_0.cursor;
+  const publication = db.prepare("SELECT COUNT(*) AS count FROM entries WHERE published=1").get();
+  assertDefined(publication);
+  const published = publication.count;
   assert.equal(cursor, fs.statSync(file).size);
   assert.equal(published, 2);
-  assert.equal(
-    db.prepare("SELECT COUNT(*) AS count FROM entries WHERE published=0").get()!.count,
-    0,
-  );
+  const defined47840_0 = db
+    .prepare("SELECT COUNT(*) AS count FROM entries WHERE published=0")
+    .get();
+  assertDefined(defined47840_0);
+  assert.equal(defined47840_0.count, 0);
   // The previous schema could mark a cursor current after losing an entry.
   // Upgrade must rebuild, not trust that apparently complete cursor.
   db.exec("DELETE FROM entries; PRAGMA user_version=4; PRAGMA wal_checkpoint(TRUNCATE)");
@@ -1475,8 +1588,8 @@ test("canonical durable-run projection is read-only and never turns transcript p
   await owned(f.index, [ownedRun]);
   const row = (await f.index.listRuns()).rows[0];
   assert.equal(row.state, "unknown");
-  assert.ok(row.diagnosis?.includes("unconfirmed"));
-  assert.deepEqual(JSON.parse(fs.readFileSync(statusFile, "utf8")), status);
+  assert.ok(row.diagnosis?.includes("unconfirmed") === true);
+  assert.deepEqual(readRunStatus(statusFile), status);
   assert.equal(fs.existsSync(path.join(root, "result.json")), false);
   assert.equal(fs.existsSync(path.join(root, "events.jsonl")), false);
 });
@@ -1495,9 +1608,13 @@ test("background catch-up leaves parent/query progress responsive and hard cance
   fs.mkdirSync(directory, { recursive: true });
   let beats = 0,
     notifications = 0;
-  const timer = setInterval(() => beats++, 5);
+  const timer = setInterval(() => {
+    beats++;
+  }, 5);
   t.after(async () => clearInterval(timer));
-  const unsubscribe = f.index.onChanged(() => notifications++);
+  const unsubscribe = f.index.onChanged(() => {
+    notifications++;
+  });
   await f.index.setOwner({ ownerSessionId: "parent", runs });
   const before = await f.index.listRuns();
   assert.equal(before.total, 1);
@@ -1520,11 +1637,15 @@ test("background catch-up leaves parent/query progress responsive and hard cance
   );
   const observedTask = async (task: string) => {
     const deadline = Date.now() + 10_000;
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     while ((await f.index.listRuns()).rows[0].children[0].task !== task) {
       assert.ok(
         Date.now() < deadline,
         `watch publishes nested owned task ${task} without refresh or census`,
       );
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
   };
@@ -1546,11 +1667,15 @@ test("background catch-up leaves parent/query progress responsive and hard cance
   await observedTask("Recreated nested update");
   fs.appendFileSync(file, lines([message("watched-append", "linked native source update")]));
   const sourceDeadline = Date.now() + 10_000;
+  // Observe the owner publication before advancing this lifecycle transition.
+  // oxlint-disable-next-line no-await-in-loop
   while ((await f.index.historyPage({ runId: "backfill", index: 0 })).count !== 1201) {
     assert.ok(
       Date.now() < sourceDeadline,
       "linked source parent watch publishes native append without refresh",
     );
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(10);
   }
   const colocated = path.join(directory, "shared-native.jsonl");
@@ -1562,11 +1687,15 @@ test("background catch-up leaves parent/query progress responsive and hard cance
     lines([message("shared-append", "source inside another admitted metadata tree")]),
   );
   const sharedDeadline = Date.now() + 10_000;
+  // Observe the owner publication before advancing this lifecycle transition.
+  // oxlint-disable-next-line no-await-in-loop
   while ((await f.index.historyPage({ runId: "shared-native", index: 0 })).count !== 1) {
     assert.ok(
       Date.now() < sharedDeadline,
       "co-located metadata and linked-source watches retain both dirty queues",
     );
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(10);
   }
   fs.rmSync(directory, { recursive: true });
@@ -1578,6 +1707,8 @@ test("background catch-up leaves parent/query progress responsive and hard cance
   );
   await observedTask("Recreated shared source parent");
   const recreatedSourceDeadline = Date.now() + 10_000;
+  // Observe the owner publication before advancing this lifecycle transition.
+  // oxlint-disable-next-line no-await-in-loop
   while (
     (await f.index.historyPage({ runId: "shared-native", index: 0 })).entries[0]?.id !==
     "replacement"
@@ -1586,17 +1717,23 @@ test("background catch-up leaves parent/query progress responsive and hard cance
       Date.now() < recreatedSourceDeadline,
       "owned directory recreation catches up its co-located source without refresh",
     );
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(10);
   }
   fs.appendFileSync(
     colocated,
     lines([message("replacement-append", "new source parent watch remains live")]),
   );
+  // Observe the owner publication before advancing this lifecycle transition.
+  // oxlint-disable-next-line no-await-in-loop
   while ((await f.index.historyPage({ runId: "shared-native", index: 0 })).count !== 2) {
     assert.ok(
       Date.now() < recreatedSourceDeadline,
       "owned directory recreation reinstalls its co-located source-parent watch",
     );
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(10);
   }
   await f.index.refresh();
@@ -1605,6 +1742,8 @@ test("background catch-up leaves parent/query progress responsive and hard cance
   const done = await f.index.status(),
     start = done.operations;
   for (let page = 0; page < 10; page++) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     await f.index.historyPage({ runId: "backfill", index: 0, limit: 10 });
   }
   const warm = await f.index.status();

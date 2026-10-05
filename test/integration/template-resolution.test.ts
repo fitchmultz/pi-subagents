@@ -9,10 +9,10 @@ import "../support/isolated-home.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { normalizeSkillInput } from "../../src/agents/skills.ts";
 import {
   buildChainInstructions,
+  type ResolvedStepBehavior,
   createChainDir,
   isParallelStep,
   resolveChainTemplates,
@@ -21,7 +21,7 @@ import {
   suppressProgressForReadOnlyTask,
   taskDisallowsFileUpdates,
 } from "../../src/shared/settings.ts";
-import { createTempDir, removeTempDir } from "../support/helpers.ts";
+import { createTempDir, removeTempDir, makeAgent } from "../support/helpers.ts";
 
 describe("resolveChainTemplates", () => {
   it("uses step task for first step", () => {
@@ -57,7 +57,7 @@ describe("resolveChainTemplates", () => {
     ];
     const templates = resolveChainTemplates(chain);
     assert.ok(Array.isArray(templates[0]), "parallel step templates should be an array");
-    const parallelTemplates = templates[0] as string[];
+    const parallelTemplates = templates[0];
     assert.equal(parallelTemplates[0], "Review auth");
     assert.equal(parallelTemplates[1], "Review data");
   });
@@ -125,6 +125,7 @@ describe("resolveStepBehavior", () => {
   it("returns agent defaults when no overrides", () => {
     // Uses agentConfig.output, .defaultReads, .defaultProgress
     const config = {
+      ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
       name: "test",
       output: "report.md",
       defaultProgress: true,
@@ -137,36 +138,62 @@ describe("resolveStepBehavior", () => {
   });
 
   it("step overrides take precedence", () => {
-    const config = { name: "test", output: "report.md" };
+    const config = {
+      ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+      name: "test",
+      output: "report.md",
+    };
     const behavior = resolveStepBehavior(config, { output: "custom.md" });
     assert.equal(behavior.output, "custom.md");
   });
 
   it("defaults outputMode to inline unless a step overrides it", () => {
-    const inlineBehavior = resolveStepBehavior({ name: "test", output: "report.md" }, {});
+    const inlineBehavior = resolveStepBehavior(
+      {
+        ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+        name: "test",
+        output: "report.md",
+      },
+      {},
+    );
     assert.equal(inlineBehavior.outputMode, "inline");
 
     const stepOverrideBehavior = resolveStepBehavior(
-      { name: "test", output: "report.md" },
+      {
+        ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+        name: "test",
+        output: "report.md",
+      },
       { outputMode: "file-only" },
     );
     assert.equal(stepOverrideBehavior.outputMode, "file-only");
   });
 
   it("false disables output", () => {
-    const config = { name: "test", output: "report.md" };
+    const config = {
+      ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+      name: "test",
+      output: "report.md",
+    };
     const behavior = resolveStepBehavior(config, { output: false });
     assert.equal(behavior.output, false);
   });
 
   it("string false disables output defensively", () => {
-    const config = { name: "test", output: "report.md" };
+    const config = {
+      ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+      name: "test",
+      output: "report.md",
+    };
     const behavior = resolveStepBehavior(config, { output: "false" });
     assert.equal(behavior.output, false);
   });
 
   it("defaults to false when agent has no config", () => {
-    const config = { name: "test" };
+    const config = {
+      ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+      name: "test",
+    };
     const behavior = resolveStepBehavior(config, {});
     assert.equal(behavior.output, false);
     assert.equal(behavior.reads, false);
@@ -175,11 +202,26 @@ describe("resolveStepBehavior", () => {
 
   it("lets top-level skill: false disable agent and step skills", () => {
     assert.equal(
-      resolveStepBehavior({ name: "test", skills: ["agent-skill"] }, {}, false).skills,
+      resolveStepBehavior(
+        {
+          ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+          name: "test",
+          skills: ["agent-skill"],
+        },
+        {},
+        false,
+      ).skills,
       false,
     );
     assert.equal(
-      resolveStepBehavior({ name: "test" }, { skills: ["step-skill"] }, false).skills,
+      resolveStepBehavior(
+        {
+          ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
+          name: "test",
+        },
+        { skills: ["step-skill"] },
+        false,
+      ).skills,
       false,
     );
   });
@@ -189,7 +231,13 @@ describe("resolveParallelBehaviors", () => {
   it("string false agent default disables output in chain parallel tasks", () => {
     const behaviors = resolveParallelBehaviors(
       [{ agent: "reviewer", task: "Review" }],
-      [{ name: "reviewer", output: "false" }],
+      [
+        {
+          ...makeAgent("reviewer", { inheritProjectContext: true, inheritSkills: true }),
+          name: "reviewer",
+          output: "false",
+        },
+      ],
       0,
     );
 
@@ -199,7 +247,13 @@ describe("resolveParallelBehaviors", () => {
   it("propagates top-level skill: false to parallel tasks", () => {
     const behaviors = resolveParallelBehaviors(
       [{ agent: "reviewer", task: "Review", skill: "task-skill" }],
-      [{ name: "reviewer", skills: ["agent-skill"] }],
+      [
+        {
+          ...makeAgent("reviewer", { inheritProjectContext: true, inheritSkills: true }),
+          name: "reviewer",
+          skills: ["agent-skill"],
+        },
+      ],
       0,
       false,
     );
@@ -210,12 +264,12 @@ describe("resolveParallelBehaviors", () => {
 
 describe("read-only progress suppression", () => {
   it("suppresses progress for review-only or no-edit tasks", () => {
-    const behavior = {
-      reads: undefined,
+    const behavior: ResolvedStepBehavior = {
+      reads: false,
       output: false,
       outputMode: "inline",
       progress: true,
-      skills: undefined,
+      skills: false,
     };
 
     assert.equal(taskDisallowsFileUpdates("Review-only. Do not edit files."), true);
@@ -239,12 +293,12 @@ describe("read-only progress suppression", () => {
 
 describe("buildChainInstructions", () => {
   it("adds [Read from:] prefix for reads", () => {
-    const behavior = {
+    const behavior: ResolvedStepBehavior = {
       reads: ["context.md"],
       output: false,
       outputMode: "inline",
       progress: false,
-      skills: undefined,
+      skills: false,
     };
     const dir = createTempDir("chain-test-");
     try {
@@ -257,12 +311,12 @@ describe("buildChainInstructions", () => {
   });
 
   it("adds [Write to:] prefix for output", () => {
-    const behavior = {
-      reads: undefined,
+    const behavior: ResolvedStepBehavior = {
+      reads: false,
       output: "output.md",
       outputMode: "inline",
       progress: false,
-      skills: undefined,
+      skills: false,
     };
     const dir = createTempDir("chain-test-");
     try {
@@ -275,12 +329,12 @@ describe("buildChainInstructions", () => {
   });
 
   it("adds progress instructions in suffix for first progress step", () => {
-    const behavior = {
-      reads: undefined,
+    const behavior: ResolvedStepBehavior = {
+      reads: false,
       output: false,
       outputMode: "inline",
       progress: true,
-      skills: undefined,
+      skills: false,
     };
     const dir = createTempDir("chain-test-");
     try {
@@ -296,12 +350,12 @@ describe("buildChainInstructions", () => {
   });
 
   it("returns empty prefix/suffix when no behavior configured", () => {
-    const behavior = {
-      reads: undefined,
+    const behavior: ResolvedStepBehavior = {
+      reads: false,
       output: false,
       outputMode: "inline",
       progress: false,
-      skills: undefined,
+      skills: false,
     };
     const dir = createTempDir("chain-test-");
     try {

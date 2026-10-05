@@ -1,19 +1,22 @@
+import { parseSubagentExecutionResult } from "../../src/runs/background/run-schemas.ts";
+import { record, assertDefined } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
-import { getModel } from "@earendil-works/pi-ai/compat";
 
 // Keep the canonical storage root fixed across SDK sessions: both native and Jiti
 // modules retain storage paths from their first import.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-child-surface-"));
 const savedEnv = { ...process.env };
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
 }
 Object.assign(process.env, {
   HOME: root,
@@ -22,11 +25,18 @@ Object.assign(process.env, {
   PI_SUBAGENT_CHILD: "1",
   PI_SUBAGENT_FANOUT_CHILD: "1",
 });
-const sdkRoot =
-  process.env.PI_COMPACT_TEST_HOST ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+const defined927_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(defined927_0);
+const sdkRoot = process.env.PI_COMPACT_TEST_HOST ?? path.dirname(defined927_0);
 process.env.PI_PACKAGE_DIR = sdkRoot;
-const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
+const installedPackage = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(installedPackage);
+assert.equal(
+  fs.realpathSync(sdkRoot),
+  fs.realpathSync(path.dirname(installedPackage)),
+  "selected host must match the installed SDK graph",
+);
+const sdk = await import("@earendil-works/pi-coding-agent");
 const extensionPath = fileURLToPath(
   new URL("../../src/extension/fanout-child.ts", import.meta.url),
 );
@@ -37,7 +47,7 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function open(compactChildTools: boolean, tools?: string[]) {
+async function open(compactChildTools: boolean, tools?: readonly string[]) {
   fs.writeFileSync(configPath, JSON.stringify({ compactChildTools }));
   const settingsManager = sdk.SettingsManager.inMemory({
     retry: { enabled: false },
@@ -62,8 +72,7 @@ async function open(compactChildTools: boolean, tools?: string[]) {
     settingsManager,
     resourceLoader,
     sessionManager: sdk.SessionManager.inMemory(root),
-    model: getModel("openai", "gpt-4o-mini"),
-    tools,
+    tools: tools?.slice(),
   });
   await session.bindExtensions({ mode: "print" });
   return session;
@@ -73,11 +82,16 @@ async function close(session: InstanceType<typeof sdk.AgentSession>) {
   session.dispose();
 }
 
-const activeTool = (session: InstanceType<typeof sdk.AgentSession>, name: string) =>
-  session.agent.state.tools.find((tool: any) => tool.name === name)!;
+const activeTool = (session: InstanceType<typeof sdk.AgentSession>, name: string) => {
+  const tool = session.agent.state.tools.find((entry) => entry.name === name);
+  assertDefined(tool);
+  return tool;
+};
 test("native child startup reduces serialized definitions and preserves lazy, legacy and filtered capabilities", async () => {
   const measurements: Record<string, number> = {};
   for (const compact of [false, true]) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     const session = await open(compact);
     try {
       const active = session.getActiveToolNames();
@@ -88,42 +102,57 @@ test("native child startup reduces serialized definitions and preserves lazy, le
       assert.equal(active.includes("agent_runs"), false);
       const definitions = session
         .getAllTools()
-        .filter((tool: any) => active.includes(tool.name))
-        .map(({ name, description, parameters, promptSnippet, promptGuidelines }: any) => ({
-          name,
-          description,
-          parameters,
-          promptSnippet,
-          promptGuidelines,
+        .filter((tool) => active.includes(tool.name))
+        .map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          promptSnippet: record(tool).promptSnippet,
+          promptGuidelines: tool.promptGuidelines,
         }));
       measurements[compact ? "compactChars" : "legacyChars"] = JSON.stringify(definitions).length;
       if (compact) {
+        // Each scenario owns shared fixture state; complete it before starting the next one.
+        // oxlint-disable-next-line no-await-in-loop
         await activeTool(session, "load_subagent").execute(
           "load-controls",
           { advanced: false },
           new AbortController().signal,
         );
         assert.equal(session.getActiveToolNames().includes("subagent"), false);
-        const list = await activeTool(session, "agent_runs").execute(
-          "child-list",
-          { action: "list" },
-          new AbortController().signal,
+        // Each scenario owns shared fixture state; complete it before starting the next one.
+        // oxlint-disable-next-line no-await-in-loop
+        const list = parseSubagentExecutionResult(
+          await activeTool(session, "agent_runs").execute(
+            "child-list",
+            { action: "list" },
+            new AbortController().signal,
+          ),
         );
+        assertDefined(list.details.runList);
         assert.equal(list.details.runList.total, 0);
+        // Each scenario owns shared fixture state; complete it before starting the next one.
+        // oxlint-disable-next-line no-await-in-loop
         await activeTool(session, "load_subagent").execute(
           "load",
           {},
           new AbortController().signal,
         );
-        assert.ok(activeTool(session, "subagent"));
+        assert.ok(Boolean(activeTool(session, "subagent")));
       }
-      const blocked = await activeTool(session, "subagent").execute(
-        "blocked",
-        { action: "create", config: { name: "forbidden" } },
-        new AbortController().signal,
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
+      const blocked = parseSubagentExecutionResult(
+        await activeTool(session, "subagent").execute(
+          "blocked",
+          { action: "create", config: { name: "forbidden" } },
+          new AbortController().signal,
+        ),
       );
       assert.match(JSON.stringify(blocked.content), /not available from child-safe/);
     } finally {
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
       await close(session);
     }
   }

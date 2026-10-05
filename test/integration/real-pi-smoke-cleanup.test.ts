@@ -1,3 +1,4 @@
+import { assertDefined, parseJson, record, text, numberValue } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -14,32 +15,36 @@ const script =
   fileURLToPath(new URL("../../scripts/real-pi-smoke.mjs", import.meta.url));
 const fixture = fileURLToPath(new URL("../fixtures/real-pi-smoke-cli.mjs", import.meta.url));
 const repo = fileURLToPath(new URL("../../", import.meta.url));
-type Event = {
-  event: string;
-  role: string;
-  pid: number;
-  time: number;
-  auth?: boolean;
-  models?: boolean;
-  artifacts?: boolean;
-  kind?: string;
-};
+
 const processRef = (pid: number) => ({
   pid,
   kill: (signal: NodeJS.Signals | number = 0) => process.kill(pid, signal),
 });
-const eventsAt = (root: string): Event[] =>
+const eventsAt = (root: string) =>
   existsSync(join(root, "events.jsonl"))
     ? readFileSync(join(root, "events.jsonl"), "utf8")
         .trim()
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line))
+        .map((line) => {
+          const event = record(parseJson(line));
+          return {
+            event: text(event.event),
+            role: text(event.role),
+            pid: numberValue(event.pid),
+            auth: event.auth,
+            models: event.models,
+            artifacts: event.artifacts,
+            kind: event.kind,
+          };
+        })
     : [];
 async function until(check: () => boolean, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     assert.ok(Date.now() < deadline, "fixture did not finish before its watchdog");
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
@@ -62,6 +67,8 @@ test(
       "success-clean",
     ]) {
       const scenario = name === "success-clean" ? "success" : name;
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
       await t.test(name, async () => {
         const root = mkdtempSync(
           join(process.env.PI_REAL_SMOKE_TEST_ROOT ?? tmpdir(), "pi-subagents-smoke-cleanup-"),
@@ -119,10 +126,14 @@ test(
               stdio: ["ignore", "pipe", "pipe"],
             },
           );
-          controller.stdout!.on("data", (chunk) => {
+          const defined4438_0 = controller.stdout;
+          assertDefined(defined4438_0);
+          defined4438_0.on("data", (chunk) => {
             output += chunk;
           });
-          controller.stderr!.on("data", (chunk) => {
+          const defined4534_0 = controller.stderr;
+          assertDefined(defined4534_0);
+          defined4534_0.on("data", (chunk) => {
             output += chunk;
           });
           controller.on("close", (exitCode) => {
@@ -134,11 +145,20 @@ test(
             existsSync(join(root, "parent-ready")),
             "fixture must reach detached launch, not merely fail startup",
           );
-          smokeRoot = JSON.parse(readFileSync(join(root, "install.json"), "utf8")).root;
-          const copiedAuth = join(smokeRoot!, "pi-agent", "auth.json");
-          const copiedModels = join(smokeRoot!, "pi-agent", "models.json");
-          const ready = JSON.parse(readFileSync(join(root, "parent-ready"), "utf8"));
-          assert.ok(ready.auth && ready.models, "dummy credentials were copied before the failure");
+          smokeRoot = text(
+            record(parseJson(readFileSync(join(root, "install.json"), "utf8"))).root,
+          );
+          const defined5078_0 = smokeRoot;
+          assertDefined(defined5078_0);
+          const copiedAuth = join(defined5078_0, "pi-agent", "auth.json");
+          const defined5150_0 = smokeRoot;
+          assertDefined(defined5150_0);
+          const copiedModels = join(defined5150_0, "pi-agent", "models.json");
+          const ready = record(parseJson(readFileSync(join(root, "parent-ready"), "utf8")));
+          assert.ok(
+            ready.auth === true && ready.models === true,
+            "dummy credentials were copied before the failure",
+          );
           if (scenario.startsWith("SIG")) {
             controller.kill(scenario as NodeJS.Signals);
             await delay(20);
@@ -150,7 +170,7 @@ test(
             const owned = eventsAt(root).filter((event) => event.event === "started");
             if (
               (!existsSync(copiedAuth) || !existsSync(copiedModels)) &&
-              owned.some((event) => isChildTreeAlive(processRef(event.pid)))
+              owned.some((event) => isChildTreeAlive(processRef(numberValue(event.pid))))
             ) {
               prematureRemoval = true;
             }
@@ -158,9 +178,11 @@ test(
           });
           const owned = eventsAt(root).filter((event) => event.event === "started");
           const liveAtExit = owned
-            .filter((event) => isChildTreeAlive(processRef(event.pid)))
+            .filter((event) => isChildTreeAlive(processRef(numberValue(event.pid))))
             .map((event) => event.role);
-          const { writeAt } = JSON.parse(readFileSync(join(root, "child-ready"), "utf8"));
+          const writeAt = numberValue(
+            record(parseJson(readFileSync(join(root, "child-ready"), "utf8"))).writeAt,
+          );
           if (scenario !== "success") {
             await delay(Math.max(0, writeAt + 100 - Date.now()));
           }
@@ -184,8 +206,10 @@ test(
             false,
             "--keep-temp must still remove copied credentials",
           );
+          const defined7176_0 = smokeRoot;
+          assertDefined(defined7176_0);
           assert.equal(
-            existsSync(smokeRoot!),
+            existsSync(defined7176_0),
             name !== "success-clean",
             "only --keep-temp preserves noncredential evidence",
           );
@@ -197,7 +221,7 @@ test(
             ["stopping", "exiting", "finalizing"].includes(event.event),
           )) {
             assert.equal(
-              event.auth && event.models && event.artifacts,
+              event.auth === true && event.models === true && event.artifacts,
               true,
               `${event.role} lost resources before ${event.event}`,
             );
@@ -238,18 +262,24 @@ test(
               .map((event) => event.pid),
           );
           for (const child of [controller, bystander]) {
-            if (child?.pid) pids.add(child.pid);
+            if ((child?.pid ?? 0) !== 0 && !Number.isNaN(child?.pid)) {
+              assertDefined(child);
+              assertDefined(child.pid);
+              pids.add(child.pid);
+            }
           }
           for (const pid of pids) {
             trySignalChildTree(processRef(pid), "SIGKILL");
           }
           await until(() => [...pids].every((pid) => !isChildTreeAlive(processRef(pid))));
           rmSync(auth, { recursive: true, force: true });
-          if (smokeRoot) {
-            for (const name of ["auth.json", "models.json"])
+          if ((smokeRoot ?? "").length > 0) {
+            for (const name of ["auth.json", "models.json"]) {
+              assertDefined(smokeRoot);
               rmSync(join(smokeRoot, "pi-agent", name), { force: true });
+            }
           }
-          if (!process.env.PI_REAL_SMOKE_TEST_ROOT) {
+          if (!((process.env.PI_REAL_SMOKE_TEST_ROOT ?? "").length > 0)) {
             rmSync(root, { recursive: true, force: true });
           }
         }

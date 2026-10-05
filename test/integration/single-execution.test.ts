@@ -1,3 +1,7 @@
+import type { SubagentState } from "../../src/shared/types.ts";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import { readChildCall } from "../support/child-process-receipts.ts";
+import { assertDefined, textAt } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 /** Single-agent contracts through the public executor and detached owner. */
 
@@ -24,6 +28,7 @@ import {
   createMockPi,
   createTempDir,
   createEventBus,
+  createNativeSessionFixture,
   removeTempDir,
   makeAgentConfigs,
   makeAgent,
@@ -50,10 +55,17 @@ function writePackageSkill(packageRoot: string, skillName: string): void {
   );
 }
 
+const nativeRoot = createTempDir("single-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
+
 describe("single owner execution", () => {
   let tempDir: string;
   let mockPi: MockPi;
-  let state;
+  let state: SubagentState;
 
   before(() => {
     mockPi = createMockPi();
@@ -68,6 +80,7 @@ describe("single owner execution", () => {
     tempDir = createTempDir();
     mockPi.reset();
     state = {
+      ...createSubagentState(tempDir),
       baseCwd: tempDir,
       currentSessionId: null,
       asyncJobs: new Map(),
@@ -76,6 +89,7 @@ describe("single owner execution", () => {
   });
 
   afterEach(() => {
+    assertDefined(state.ownedRuns);
     for (const run of state.ownedRuns.values()) {
       removeTempDir(getRunMetadataDir(run.runId));
       fs.rmSync(path.join(RESULTS_DIR, `${run.runId}.json`), { force: true });
@@ -94,13 +108,9 @@ describe("single owner execution", () => {
       .filter((name) => name.startsWith("call-") && name.endsWith(".json"))
       .sort()
       .at(-1);
-    assert.ok(callFile, "expected a recorded mock pi call");
-    const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as {
-      args?: string[];
-      expandedArgs?: string[];
-      cwd?: string;
-      env?: Record<string, string | null>;
-    };
+    assert.ok(Boolean(callFile), "expected a recorded mock pi call");
+    assertDefined(callFile);
+    const payload = readChildCall(path.join(mockPi.dir, callFile));
     assert.ok(Array.isArray(payload.args), "expected recorded args");
     return {
       args: payload.args,
@@ -116,7 +126,13 @@ describe("single owner execution", () => {
 
   function makeExecutor(agents = [makeAgent("echo")]) {
     return createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
+      pi: {
+        ...native.pi,
+        events: createEventBus(),
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
       state,
       config: {},
       asyncByDefault: false,
@@ -139,18 +155,20 @@ describe("single owner execution", () => {
       const { agents } = discoverAgents(tempDir, "project");
       mockPi.reset();
       mockPi.onCall({ output: "Review complete." });
-      const result = await makeExecutor(agents).execute(
-        "long",
-        { agent: name, task },
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
+      const result = await makeExecutor(agents).execute({
+        toolCallId: "long",
+        params: { agent: name, task },
+        ctx: makeMinimalCtx(tempDir),
+      });
       assert.equal(result.isError, undefined, JSON.stringify(result.content));
       assert.equal(result.details.results[0].finalOutput, "Review complete.");
       assert.equal(mockPi.callCount(), 1);
       const call = readLastCall();
-      const taskArg = call.args.at(-1)!;
+      const defined4983_0 = call.args.at(-1);
+      assertDefined(defined4983_0);
+      const taskArg = defined4983_0;
       assert.ok(taskArg.startsWith("@"));
       assert.ok(call.args.includes("--system-prompt"));
       assert.notEqual(call.args[call.args.indexOf("--system-prompt") + 1], taskArg.slice(1));
@@ -160,13 +178,11 @@ describe("single owner execution", () => {
 
   it("ignores null JSON records without losing the final answer", async () => {
     mockPi.onCall({ jsonl: [null, events.assistantMessage("still completed")] });
-    const result = await makeExecutor().execute(
-      "null",
-      { agent: "echo", task: "Handle output" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await makeExecutor().execute({
+      toolCallId: "null",
+      params: { agent: "echo", task: "Handle output" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(result.isError, undefined);
     assert.equal(result.details.results[0].finalOutput, "still completed");
   });
@@ -193,17 +209,17 @@ describe("single owner execution", () => {
         extensions: ["./allowed-ext.ts"],
         tools: ["read", "./custom-tool.ts"],
       });
-      const result = await makeExecutor([agent]).execute(
-        "bridge",
-        { tasks: [{ agent: "echo", task: "Inspect", cwd: "nested" }] },
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await makeExecutor([agent]).execute({
+        toolCallId: "bridge",
+        params: { tasks: [{ agent: "echo", task: "Inspect", cwd: "nested" }] },
+        ctx: makeMinimalCtx(tempDir),
+      });
       assert.equal(result.isError, undefined, JSON.stringify(result.content));
       assert.deepEqual(result.details.results[0].skills, ["runtime-fallback-skill"]);
       const call = readLastCall();
-      assert.equal(fs.realpathSync(call.cwd!), fs.realpathSync(taskCwd));
+      const defined7144_0 = call.cwd;
+      assertDefined(defined7144_0);
+      assert.equal(fs.realpathSync(defined7144_0), fs.realpathSync(taskCwd));
       assert.deepEqual(call.env, {
         REPOPROMPT_PI_PERMISSION_LEVEL: "readOnly",
         REPOPROMPT_PI_MANAGED_RUN: "1",
@@ -245,20 +261,21 @@ describe("single owner execution", () => {
           ? { allowSubagents: true }
           : { tools: allowed ? ["read", "subagent"] : ["read"] },
       );
-      const result = await makeExecutor([agent]).execute(
-        "fanout",
-        { agent: "echo", task: "Inspect" },
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await makeExecutor([agent]).execute({
+        toolCallId: "fanout",
+        params: { agent: "echo", task: "Inspect" },
+        ctx: makeMinimalCtx(tempDir),
+      });
       assert.equal(result.isError, undefined, JSON.stringify(result.content));
-      const env = readLastCall().env!;
+      const defined8915_0 = readLastCall().env;
+      assertDefined(defined8915_0);
+      const env = defined8915_0;
       assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], allowed ? "1" : "0");
       assert.equal(env[SUBAGENT_PARENT_RUN_ID_ENV], allowed ? result.details.runId : "");
       assert.equal(env[SUBAGENT_PARENT_CHILD_INDEX_ENV], allowed ? "0" : "");
-      for (const key of [SUBAGENT_PARENT_EVENT_SINK_ENV, SUBAGENT_PARENT_CONTROL_INBOX_ENV])
+      for (const key of [SUBAGENT_PARENT_EVENT_SINK_ENV, SUBAGENT_PARENT_CONTROL_INBOX_ENV]) {
         assert.equal(Boolean(env[key]), Boolean(allowed));
+      }
     });
   }
 
@@ -282,20 +299,23 @@ describe("single owner execution", () => {
       };
       mockPi.onCall({ ...failure, delay: 300 });
       mockPi.onCall(recover ? { output: "fresh fallback answer" } : failure);
-      const pending = makeExecutor([agent]).execute(
-        "fallback",
-        { agent: "echo", task: "Work", output },
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
-      while (!mockPi.callCount()) {
+      const pending = makeExecutor([agent]).execute({
+        toolCallId: "fallback",
+        params: { agent: "echo", task: "Work", output },
+        ctx: makeMinimalCtx(tempDir),
+      });
+      while (!(mockPi.callCount() !== 0 && !Number.isNaN(mockPi.callCount()))) {
+        // Observe the owner publication before advancing this lifecycle transition.
+        // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
       fs.writeFileSync(output, "stale primary output");
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
       const result = await pending;
       const child = result.details.results[0];
       assert.equal(child.exitCode, recover ? 0 : 1);
+      assertDefined(child.modelAttempts);
       assert.deepEqual(
         child.modelAttempts.map((attempt) => attempt.success),
         [false, recover],
@@ -305,6 +325,7 @@ describe("single owner execution", () => {
         assert.equal(child.finalOutput, "fresh fallback answer");
         assert.equal(fs.readFileSync(output, "utf8"), "fresh fallback answer");
       } else {
+        assertDefined(child.error);
         assert.match(child.error, /429 quota exceeded/);
       }
     }
@@ -320,14 +341,13 @@ describe("single owner execution", () => {
     });
     const result = await makeExecutor([
       makeAgent("echo", { model: "mock/primary", fallbackModels: ["mock/fallback"] }),
-    ]).execute(
-      "ordinary",
-      { agent: "echo", task: "Work" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    ]).execute({
+      toolCallId: "ordinary",
+      params: { agent: "echo", task: "Work" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(result.details.results[0].exitCode, 127);
+    assertDefined(result.details.results[0].error);
     assert.match(result.details.results[0].error, /bash failed \(exit 127\)/);
     assert.deepEqual(result.details.results[0].attemptedModels, ["mock/primary"]);
     assert.equal(mockPi.callCount(), 1);
@@ -339,16 +359,18 @@ describe("single owner execution", () => {
       mockPi.onCall({ output: "Recovered" });
       const result = await makeExecutor([
         makeAgent("echo", { model: "mock/primary", fallbackModels: ["mock/fallback"] }),
-      ]).execute(
-        "recovery",
-        { agent: "echo", task: "Work" },
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      ]).execute({
+        toolCallId: "recovery",
+        params: { agent: "echo", task: "Work" },
+        ctx: makeMinimalCtx(tempDir),
+      });
       assert.equal(result.isError, undefined, JSON.stringify(result.content));
       assert.equal(result.details.results[0].finalOutput, "Recovered");
       assert.deepEqual(result.details.results[0].attemptedModels, ["mock/primary", "mock/primary"]);
+      assertDefined(result.details.results[0].modelAttempts);
+      assertDefined(result.details.results[0].modelAttempts[0].error);
+      assertDefined(result.details.results[0].modelAttempts[0].error);
+      assertDefined(result.details.results[0].modelAttempts);
       assert.match(result.details.results[0].modelAttempts[0].error, /143|database is locked/);
       assert.equal(mockPi.callCount(), 2);
     });
@@ -369,17 +391,18 @@ describe("single owner execution", () => {
       exitCode: 143,
     });
     mockPi.onCall({ exitCode: 1 });
-    const result = await makeExecutor([makeAgent("echo", { model: "mock/primary" })]).execute(
-      "empty-retry",
-      { agent: "echo", task: "Work" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await makeExecutor([makeAgent("echo", { model: "mock/primary" })]).execute({
+      toolCallId: "empty-retry",
+      params: { agent: "echo", task: "Work" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(result.isError, true);
     const child = result.details.results[0];
+    assertDefined(child.modelAttempts);
     assert.equal(child.modelAttempts.length, 2);
+    assertDefined(child.error);
     assert.match(child.error, /without producing a final assistant response/);
+    assertDefined(child.error);
     assert.match(child.error, /Previous attempt.*143/);
   });
 
@@ -388,36 +411,34 @@ describe("single owner execution", () => {
       makeAgent("echo", { model: "mock/primary", fallbackModels: ["mock/fallback"] }),
     ]);
     mockPi.onCall({ delay: 10000 });
-    const timed = await executor.execute(
-      "timeout",
-      { agent: "echo", task: "Work", timeoutMs: 500 },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const timed = await executor.execute({
+      toolCallId: "timeout",
+      params: { agent: "echo", task: "Work", timeoutMs: 500 },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(timed.details.results[0].timedOut, true);
     assert.deepEqual(timed.details.results[0].attemptedModels, ["mock/primary"]);
     mockPi.onCall({ delay: 800, output: "Done" });
-    const pending = executor.execute(
-      "no-deadline",
-      { agent: "echo", task: "Work" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const pending = executor.execute({
+      toolCallId: "no-deadline",
+      params: { agent: "echo", task: "Work" },
+      ctx: makeMinimalCtx(tempDir),
+    });
+    assertDefined(state.ownedRuns);
     while (state.ownedRuns.size < 2) {
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
+    assertDefined(state.ownedRuns);
     const id = [...state.ownedRuns.keys()].at(-1);
-    const extended = await executor.execute(
-      "extend",
-      { action: "extend", id, extendMs: 1000 },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const extended = await executor.execute({
+      toolCallId: "extend",
+      params: { action: "extend", id, extendMs: 1000 },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(extended.isError, true);
-    assert.match(extended.content[0].text, /No live run with an extendable timeout/);
+    assert.match(textAt(extended.content), /No live run with an extendable timeout/);
     assert.equal((await pending).isError, undefined);
   });
 
@@ -425,24 +446,23 @@ describe("single owner execution", () => {
     mockPi.onCall({ exitCode: 143, delay: 200 });
     mockPi.onCall({ output: "Recovered after extension", delay: 1200 });
     const executor = makeExecutor([makeAgent("echo", { model: "mock/primary" })]);
-    const pending = executor.execute(
-      "extend-recovery",
-      { agent: "echo", task: "Work", timeoutMs: 1000 },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
-    while (!mockPi.callCount()) {
+    const pending = executor.execute({
+      toolCallId: "extend-recovery",
+      params: { agent: "echo", task: "Work", timeoutMs: 1000 },
+      ctx: makeMinimalCtx(tempDir),
+    });
+    while (!(mockPi.callCount() !== 0 && !Number.isNaN(mockPi.callCount()))) {
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
+    assertDefined(state.ownedRuns);
     const id = [...state.ownedRuns.keys()][0];
-    const extended = await executor.execute(
-      "extend",
-      { action: "extend", id, extendMs: 5000 },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const extended = await executor.execute({
+      toolCallId: "extend",
+      params: { action: "extend", id, extendMs: 5000 },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(extended.isError, undefined, JSON.stringify(extended.content));
     const result = await pending;
     assert.equal(result.isError, undefined, JSON.stringify(result.content));
@@ -454,13 +474,12 @@ describe("single owner execution", () => {
     const executor = makeExecutor([makeAgent("echo")]);
     const ctx = makeMinimalCtx(tempDir);
     ctx.sessionManager.getSessionId = () => "actual-owner-uuid";
-    const result = (await executor.execute(
-      "root-inheritance",
-      { agent: "echo", task: "Check root", output: false },
-      new AbortController().signal,
-      undefined,
-      ctx,
-    )) as any;
+    const result = await executor.execute({
+      toolCallId: "root-inheritance",
+      params: { agent: "echo", task: "Check root", output: false },
+      signal: new AbortController().signal,
+      ctx: ctx,
+    });
     assert.equal(result.isError, undefined, JSON.stringify(result.content));
     assert.equal(readLastCall().env?.PI_SUBAGENT_ROOT_SESSION_ID, "actual-owner-uuid");
   });
@@ -470,63 +489,60 @@ describe("single owner execution", () => {
     const executor = makeExecutor([makeAgent("echo")]);
     const outputPath = path.join(tempDir, "explicit-report.md");
 
-    const result = (await executor.execute(
-      "single-explicit-output",
-      { agent: "echo", task: "Write report", output: "explicit-report.md" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    )) as any;
+    const result = await executor.execute({
+      toolCallId: "single-explicit-output",
+      params: { agent: "echo", task: "Write report", output: "explicit-report.md" },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
     assert.equal(fs.readFileSync(outputPath, "utf-8"), "workspace report");
-    assert.equal(result.details?.results?.[0]?.savedOutputPath, outputPath);
-    assert.equal(result.details?.results?.[0]?.outputCleanup, undefined);
-    assert.match(result.content[0]?.text ?? "", /Output saved to:/);
+    assert.equal(result.details.results[0].savedOutputPath, outputPath);
+    assert.equal(result.details.results[0].outputCleanup, undefined);
+    assert.match(textAt(result.content), /Output saved to:/);
   });
 
   it("supports outputSchema for top-level single runs", async () => {
     mockPi.onCall({ output: "structured prose", structuredOutput: { ok: true } });
     const executor = makeExecutor([makeAgent("echo")]);
 
-    const result = (await executor.execute(
-      "single-output-schema",
-      {
+    const result = await executor.execute({
+      toolCallId: "single-output-schema",
+      params: {
         agent: "echo",
         task: "Return structured",
         outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    )) as any;
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
-    assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { ok: true });
+    assert.deepEqual(result.details.results[0].structuredOutput, { ok: true });
   });
 
   it("materializes agent-default output while debug artifacts are disabled", async () => {
     mockPi.onCall({ output: "default report" });
     const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
 
-    const result = await executor.execute(
-      "single-default-output-artifact",
-      { agent: "echo", task: "Write report", artifacts: false },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "single-default-output-artifact",
+      params: { agent: "echo", task: "Write report", artifacts: false },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
-    const text = result.content[0]?.text ?? "";
-    const details = (result as any).details;
-    const outputReference = details?.results?.[0]?.outputReference?.path ?? "";
+    const text = textAt(result.content);
+    const details = result.details;
+    const outputReference = details.results[0].outputReference?.path ?? "";
     assert.equal(result.isError, undefined);
     assert.match(text, /default report/);
     assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
     assert.match(outputReference, /requested-outputs/);
     assert.match(outputReference, /[a-f0-9]{8}_echo_0_default-report\.md$/);
-    assert.equal(details?.results?.[0]?.artifactPaths, undefined);
-    assert.equal(details?.results?.[0]?.outputCleanup?.action, "deleted");
+    assert.equal(details.results[0].artifactPaths, undefined);
+    assert.equal(details.results[0].outputCleanup?.action, "deleted");
     assert.match(readCallArgs().join("\n"), /requested-outputs/);
   });
 
@@ -540,13 +556,13 @@ describe("single owner execution", () => {
         mode === "chain"
           ? { chain: [{ agent: "echo", task: "Write report" }], async: false }
           : { tasks: [{ agent: "echo", task: "Write report" }], async: false };
-      const result = await executor.execute(
-        `absolute-${mode}`,
-        params,
-        undefined,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
+      const result = await executor.execute({
+        toolCallId: `absolute-${mode}`,
+        params: params,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined, JSON.stringify(result.content));
       assert.equal(result.details.results[0]?.outputCleanup, undefined);
@@ -559,17 +575,16 @@ describe("single owner execution", () => {
     mockPi.onCall({ output: "full default file-only report" });
     const executor = makeExecutor([makeAgent("echo", { output: "default-file-only.md" })]);
 
-    const result = await executor.execute(
-      "single-default-output-file-only",
-      { agent: "echo", task: "Write report", outputMode: "file-only" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "single-default-output-file-only",
+      params: { agent: "echo", task: "Write report", outputMode: "file-only" },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
-    const text = result.content[0]?.text ?? "";
-    const details = (result as any).details;
-    const outputPath = details?.results?.[0]?.savedOutputPath ?? "";
+    const text = textAt(result.content);
+    const details = result.details;
+    const outputPath = details.results[0].savedOutputPath ?? "";
     assert.equal(result.isError, undefined);
     assert.match(text, /Output saved to:/);
     assert.doesNotMatch(text, /full default file-only report/);
@@ -582,17 +597,16 @@ describe("single owner execution", () => {
     mockPi.onCall({ output: "inline report" });
     const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
 
-    const result = await executor.execute(
-      "single-string-false-output",
-      { agent: "echo", task: "Write report", output: "false" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "single-string-false-output",
+      params: { agent: "echo", task: "Write report", output: "false" },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
-    assert.match(result.content[0]?.text ?? "", /inline report/);
-    assert.doesNotMatch(result.content[0]?.text ?? "", /Output saved to:/);
+    assert.match(textAt(result.content), /inline report/);
+    assert.doesNotMatch(textAt(result.content), /Output saved to:/);
     assert.equal(fs.existsSync(path.join(tempDir, "false")), false);
     assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
     assert.doesNotMatch(readCallArgs().at(-1) ?? "", /Write your findings to:/);
@@ -601,13 +615,12 @@ describe("single owner execution", () => {
   it("makes skill: false disable inherited skills", async () => {
     mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INHERIT_SKILLS"] });
     const executor = makeExecutor([makeAgent("echo", { inheritSkills: true })]);
-    const result = (await executor.execute(
-      "disable-inherited-skills",
-      { agent: "echo", task: "Run without skills", skill: false, output: false },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    )) as any;
+    const result = await executor.execute({
+      toolCallId: "disable-inherited-skills",
+      params: { agent: "echo", task: "Run without skills", skill: false, output: false },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined, JSON.stringify(result.content));
     assert.equal(readLastCall().env?.PI_SUBAGENT_INHERIT_SKILLS, "0");
@@ -618,13 +631,11 @@ describe("single owner execution", () => {
     mockPi.onCall({ output: "Success", stderr: "Warning: something", exitCode: 0 });
     const agents = makeAgentConfigs(["echo"]);
 
-    const result = await makeExecutor(agents).execute(
-      "stderr",
-      { agent: "echo", task: "Task" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await makeExecutor(agents).execute({
+      toolCallId: "stderr",
+      params: { agent: "echo", task: "Task" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(result.isError, undefined);
   });
 });

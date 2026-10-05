@@ -1,43 +1,15 @@
+import { assertDefined } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createRequire } from "node:module";
-
-const { KeybindingsManager } = await import(
-  new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
-);
-const { setKeybindings } = await import(
-  createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve(
-    "@earendil-works/pi-tui",
-  )
-);
+import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
+import { setKeybindings } from "@earendil-works/pi-tui";
+import { renderSubagentResult } from "../../src/tui/render.ts";
 setKeybindings(new KeybindingsManager());
 
-type RenderSubagentResult = (
-  result: {
-    content: Array<{ type: "text"; text: string }>;
-    details?: {
-      mode: "single" | "parallel" | "chain" | "management";
-      context?: "fresh" | "fork";
-      results: unknown[];
-    };
-  },
-  options: { expanded: boolean },
-  theme: {
-    fg(name: string, text: string): string;
-    bold(text: string): string;
-  },
-) => { render(width: number): string[] };
-
-let renderSubagentResult: RenderSubagentResult | undefined;
-({ renderSubagentResult } = (await import("../../src/tui/render.ts")) as {
-  renderSubagentResult?: RenderSubagentResult;
-});
-
-const theme = {
-  fg: (_name: string, text: string) => text,
-  bold: (text: string) => text,
-};
+import { createPlainTheme } from "../support/ui.ts";
+import { resolveEffectiveAcceptance } from "../../src/runs/shared/acceptance.ts";
+const theme = createPlainTheme();
 
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
@@ -45,7 +17,12 @@ function firstGrapheme(text: string): string {
   return Array.from(text.trimStart())[0] ?? "";
 }
 
-function withTerminalWidth<T>(columns: number, fn: () => T): T {
+function withTerminalWidth<T>(
+  columns: number,
+  // This callable has no mutable properties; T is the callback's real result.
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
+  fn: () => T,
+): T {
   const original = process.stdout.columns;
   Object.defineProperty(process.stdout, "columns", {
     value: columns,
@@ -63,7 +40,9 @@ function withTerminalWidth<T>(columns: number, fn: () => T): T {
 
 describe("renderSubagentResult fork indicator", () => {
   it("shows [fork] when details are empty but context is fork", () => {
-    const widget = renderSubagentResult!(
+    const defined1900_0 = renderSubagentResult;
+    assertDefined(defined1900_0);
+    const widget = defined1900_0(
       {
         content: [{ type: "text", text: "Async: reviewer [abc123]" }],
         details: { mode: "single", context: "fork", results: [] },
@@ -77,7 +56,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows [fork] on single-result header", () => {
-    const widget = renderSubagentResult!(
+    const defined2289_0 = renderSubagentResult;
+    assertDefined(defined2289_0);
+    const widget = defined2289_0(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -103,7 +84,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("uses compacted tool-call summaries when messages were stripped", () => {
-    const widget = renderSubagentResult!(
+    const defined2914_0 = renderSubagentResult;
+    assertDefined(defined2914_0);
+    const widget = defined2914_0(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -137,7 +120,7 @@ describe("renderSubagentResult fork indicator", () => {
     const longTask =
       "Review the auth flow, trace the race condition, and document the precise failing tool sequence at the end.";
     const collapsed = withTerminalWidth(40, () =>
-      renderSubagentResult!(
+      renderSubagentResult(
         {
           content: [{ type: "text", text: "done" }],
           details: {
@@ -161,7 +144,7 @@ describe("renderSubagentResult fork indicator", () => {
     );
 
     const expanded = withTerminalWidth(40, () =>
-      renderSubagentResult!(
+      renderSubagentResult(
         {
           content: [{ type: "text", text: "done" }],
           details: {
@@ -190,7 +173,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("uses glyph-first compact rendering for completed subagents", () => {
-    const widget = renderSubagentResult!(
+    const defined5283_0 = renderSubagentResult;
+    assertDefined(defined5283_0);
+    const widget = defined5283_0(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -222,7 +207,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows finalization turn counts in acceptance status", () => {
-    const widget = renderSubagentResult!(
+    const defined6222_0 = renderSubagentResult;
+    assertDefined(defined6222_0);
+    const widget = defined6222_0(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -235,6 +222,21 @@ describe("renderSubagentResult fork indicator", () => {
               messages: [],
               usage: emptyUsage,
               acceptance: {
+                explicit: true,
+                inferredReason: [],
+                effectiveAcceptance: resolveEffectiveAcceptance({
+                  explicit: { criteria: ["Implement the task"] },
+                }),
+                criteria: [
+                  {
+                    id: "criterion-1",
+                    must: "Implement the task",
+                    evidence: [],
+                    severity: "required",
+                  },
+                ],
+                runtimeChecks: [],
+                verifyRuns: [],
                 status: "checked",
                 finalization: {
                   mode: "self-review-loop",
@@ -265,7 +267,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps failure reasons visible in compact rendering", () => {
-    const widget = renderSubagentResult!(
+    const defined7423_0 = renderSubagentResult;
+    assertDefined(defined7423_0);
+    const widget = defined7423_0(
       {
         content: [{ type: "text", text: "failed" }],
         details: {
@@ -293,7 +297,9 @@ describe("renderSubagentResult fork indicator", () => {
 
   it("shows live detail hints for running subagents", () => {
     const now = Date.now();
-    const widget = renderSubagentResult!(
+    const defined8108_0 = renderSubagentResult;
+    assertDefined(defined8108_0);
+    const widget = defined8108_0(
       {
         content: [{ type: "text", text: "(running...)" }],
         details: {
@@ -305,6 +311,8 @@ describe("renderSubagentResult fork indicator", () => {
               exitCode: 0,
               messages: [],
               artifactPaths: {
+                inputPath: "/tmp/reviewer_input.md",
+                metadataPath: "/tmp/reviewer_metadata.json",
                 outputPath: "/tmp/reviewer_output.md",
               },
               usage: emptyUsage,
@@ -370,9 +378,13 @@ describe("renderSubagentResult fork indicator", () => {
         ],
       },
     };
-    const first = renderSubagentResult!(result, { expanded: false }, theme).render(120);
+    const defined10409_0 = renderSubagentResult;
+    assertDefined(defined10409_0);
+    const first = defined10409_0(result, { expanded: false }, theme).render(120);
     t.mock.timers.tick(120);
-    const second = renderSubagentResult!(result, { expanded: false }, theme).render(120);
+    const defined10527_0 = renderSubagentResult;
+    assertDefined(defined10527_0);
+    const second = defined10527_0(result, { expanded: false }, theme).render(120);
 
     assert.deepEqual(second, first);
   });
@@ -380,7 +392,7 @@ describe("renderSubagentResult fork indicator", () => {
   it("advances running compact result glyphs when progress changes", () => {
     const renderGlyph = (toolCount: number) =>
       firstGrapheme(
-        renderSubagentResult!(
+        renderSubagentResult(
           {
             content: [{ type: "text", text: "(running...)" }],
             details: {
@@ -416,7 +428,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps paused multi-result runs visible in the compact headline", () => {
-    const widget = renderSubagentResult!(
+    const defined11840_0 = renderSubagentResult;
+    assertDefined(defined11840_0);
+    const widget = defined11840_0(
       {
         content: [{ type: "text", text: "paused" }],
         details: {
@@ -444,7 +458,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps empty-output warnings visible in compact multi-result rendering", () => {
-    const widget = renderSubagentResult!(
+    const defined12548_0 = renderSubagentResult;
+    assertDefined(defined12548_0);
+    const widget = defined12548_0(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -471,7 +487,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps pending placeholder steps pending in compact rendering", () => {
-    const widget = renderSubagentResult!(
+    const defined13253_0 = renderSubagentResult;
+    assertDefined(defined13253_0);
+    const widget = defined13253_0(
       {
         content: [{ type: "text", text: "running" }],
         details: {
@@ -526,13 +544,15 @@ describe("renderSubagentResult fork indicator", () => {
     const lines = widget.render(120);
     const pendingIndex = lines.findIndex((line) => /Step 2: b/.test(line));
     assert.notEqual(pendingIndex, -1);
-    assert.match(lines[pendingIndex]!, /◦ Step 2: b · pending/);
-    assert.doesNotMatch(lines[pendingIndex]!, /0ms/);
+    assert.match(lines[pendingIndex], /◦ Step 2: b · pending/);
+    assert.doesNotMatch(lines[pendingIndex], /0ms/);
     assert.doesNotMatch(lines[pendingIndex + 1] ?? "", /Done \(no text output\)/);
   });
 
   it("uses running/done wording and agent fractions for live parallel rendering", () => {
-    const widget = renderSubagentResult!(
+    const defined15026_0 = renderSubagentResult;
+    assertDefined(defined15026_0);
+    const widget = defined15026_0(
       {
         content: [{ type: "text", text: "(running...)" }],
         details: {
@@ -585,7 +605,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows mixed done/running counters for top-level parallel mode", () => {
-    const widget = renderSubagentResult!(
+    const defined16496_0 = renderSubagentResult;
+    assertDefined(defined16496_0);
+    const widget = defined16496_0(
       {
         content: [{ type: "text", text: "(running...)" }],
         details: {
@@ -664,7 +686,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("labels active chain parallel groups with chain step and agent fractions", () => {
-    const widget = renderSubagentResult!(
+    const defined18624_0 = renderSubagentResult;
+    assertDefined(defined18624_0);
+    const widget = defined18624_0(
       {
         content: [{ type: "text", text: "running" }],
         details: {
@@ -748,7 +772,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows only the active parallel group for mixed chains after a serial step", () => {
-    const widget = renderSubagentResult!(
+    const defined21006_0 = renderSubagentResult;
+    assertDefined(defined21006_0);
+    const widget = defined21006_0(
       {
         content: [{ type: "text", text: "running" }],
         details: {
@@ -908,7 +934,9 @@ describe("renderSubagentResult fork indicator", () => {
         durationMs: 1,
       },
     ];
-    const widget = renderSubagentResult!(
+    const defined25197_0 = renderSubagentResult;
+    assertDefined(defined25197_0);
+    const widget = defined25197_0(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -940,7 +968,9 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps serial chain wording for non-parallel steps", () => {
-    const widget = renderSubagentResult!(
+    const defined26187_0 = renderSubagentResult;
+    assertDefined(defined26187_0);
+    const widget = defined26187_0(
       {
         content: [{ type: "text", text: "running" }],
         details: {

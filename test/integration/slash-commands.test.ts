@@ -1,13 +1,31 @@
+import {
+  assertDefined,
+  record,
+  records,
+  text as stringValue,
+  array,
+} from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { beforeEach, describe, it } from "node:test";
+import { after, beforeEach, describe, it } from "node:test";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  RegisteredCommand,
+} from "@earendil-works/pi-coding-agent";
+import {
+  createNativeSessionFixture,
+  createTempDir,
+  removeTempDir,
+  createEventBus,
+  makeAgent,
+} from "../support/helpers.ts";
 
 import { validateExecutionInput } from "../../src/runs/foreground/execution-input.ts";
-import { ASYNC_DIR } from "../../src/shared/types.ts";
-import { makeAgent } from "../support/helpers.ts";
+import { normalizeSubagentParamsLike } from "../../src/runs/foreground/subagent-executor.ts";
 
 const SLASH_RESULT_TYPE = "subagent-slash-result";
 const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
@@ -15,15 +33,7 @@ const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
 const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 
-interface EventBus {
-  on(event: string, handler: (data: unknown) => void): () => void;
-  emit(event: string, data: unknown): void;
-}
-
-type RegisteredSlashCommand = {
-  handler(args: string, ctx: unknown): Promise<void>;
-  getArgumentCompletions?: (prefix: string) => unknown;
-};
+type RegisteredSlashCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 
 import { registerSlashCommands } from "../../src/slash/slash-commands.ts";
 import {
@@ -31,29 +41,6 @@ import {
   getSlashRenderableSnapshot,
   resolveSlashMessageDetails,
 } from "../../src/slash/slash-live-state.ts";
-
-function createEventBus(): EventBus {
-  const handlers = new Map<string, Array<(data: unknown) => void>>();
-  return {
-    on(event, handler) {
-      const existing = handlers.get(event) ?? [];
-      existing.push(handler);
-      handlers.set(event, existing);
-      return () => {
-        const current = handlers.get(event) ?? [];
-        handlers.set(
-          event,
-          current.filter((entry) => entry !== handler),
-        );
-      };
-    },
-    emit(event, data) {
-      for (const handler of handlers.get(event) ?? []) {
-        handler(data);
-      }
-    },
-  };
-}
 
 function createState(cwd: string) {
   return {
@@ -68,7 +55,9 @@ function createState(cwd: string) {
     watcherRestartTimer: null,
     resultFileCoalescer: {
       schedule: () => false,
-      clear: () => {},
+      clear: () => {
+        /* The fixture does not need clear side effects. */
+      },
     },
   };
 }
@@ -96,35 +85,37 @@ async function withIsolatedHome<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+const nativeRoot = createTempDir("slash-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
+
 function createCommandContext(
-  overrides: Partial<{
-    cwd: string;
-    hasUI: boolean;
-    custom: (...args: unknown[]) => Promise<unknown>;
-    notify: (message: string, type?: string) => void;
-    setStatus: (key: string, text: string | undefined) => void;
-    getToolsExpanded: () => boolean;
-    setToolsExpanded: (expanded: boolean) => void;
-    sessionManager: unknown;
-  }> = {},
-) {
+  overrides: Readonly<
+    Partial<{
+      cwd: string;
+      hasUI: boolean;
+      notify: ExtensionCommandContext["ui"]["notify"];
+      setStatus: ExtensionCommandContext["ui"]["setStatus"];
+      getToolsExpanded: () => boolean;
+      setToolsExpanded: (expanded: boolean) => void;
+    }>
+  > = {},
+): ExtensionCommandContext {
+  const base = native.session.extensionRunner.createCommandContext();
   return {
+    ...base,
     cwd: overrides.cwd ?? process.cwd(),
-    mode: overrides.hasUI ? "tui" : "json",
+    mode: overrides.hasUI === true ? "tui" : "json",
     hasUI: overrides.hasUI ?? false,
-    isProjectTrusted: () => true,
     ui: {
-      notify: overrides.notify ?? ((_message: string) => {}),
-      setStatus: overrides.setStatus ?? ((_key: string, _text: string | undefined) => {}),
-      getToolsExpanded: overrides.getToolsExpanded ?? (() => false),
-      setToolsExpanded: overrides.setToolsExpanded ?? ((_expanded: boolean) => {}),
-      onTerminalInput: () => () => {},
-      custom: overrides.custom ?? (async () => undefined),
-    },
-    modelRegistry: { getAvailable: () => [] },
-    sessionManager: overrides.sessionManager ?? {
-      getSessionFile: () => null,
-      getSessionId: () => "session-test",
+      ...base.ui,
+      notify: overrides.notify ?? base.ui.notify,
+      setStatus: overrides.setStatus ?? base.ui.setStatus,
+      getToolsExpanded: overrides.getToolsExpanded ?? base.ui.getToolsExpanded,
+      setToolsExpanded: overrides.setToolsExpanded ?? base.ui.setToolsExpanded,
     },
   };
 }
@@ -144,6 +135,11 @@ function writeProjectChain(root: string, fileName: string, content: string): voi
   fs.writeFileSync(path.join(root, ".pi", "chains", fileName), content, "utf-8");
 }
 
+function requestPayload(value: unknown): { readonly requestId: string; readonly params?: unknown } {
+  const payload = record(value);
+  return { params: payload.params, requestId: stringValue(payload.requestId) };
+}
+
 async function captureSlashCommandParams(
   commandName: string,
   args: string,
@@ -157,7 +153,7 @@ async function captureSlashCommandParams(
     let requestedParams: unknown;
     const notifications: string[] = [];
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const payload = data as { requestId: string; params?: unknown };
+      const payload = requestPayload(data);
       requestedParams = payload.params;
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
@@ -170,17 +166,24 @@ async function captureSlashCommandParams(
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: RegisteredSlashCommand) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
-      sendMessage(_message: unknown) {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
+      sendMessage(_message: unknown) {
+        /* The fixture does not need sendMessage side effects. */
+      },
     };
 
-    registerSlashCommands(pi as never, createState(cwd) as never);
-    await commands.get(commandName)!.handler(
+    registerSlashCommands(pi, createState(cwd));
+    const defined5833_0 = commands.get(commandName);
+    assertDefined(defined5833_0);
+    await defined5833_0.handler(
       args,
       createCommandContext({
         cwd,
@@ -200,11 +203,11 @@ describe("slash command custom message delivery", () => {
 
   it("/run accepts an agent without a task", async () => {
     const sent: unknown[] = [];
-    const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+    const commands = new Map<string, RegisteredSlashCommand>();
     const events = createEventBus();
     let requestedParams: unknown;
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const payload = data as { requestId: string; params?: unknown };
+      const payload = requestPayload(data);
       requestedParams = payload.params;
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
@@ -217,19 +220,24 @@ describe("slash command custom message delivery", () => {
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
       sendMessage(message: unknown) {
         sent.push(message);
       },
     };
 
-    registerSlashCommands(pi as never, createState(process.cwd()) as never);
-    await commands.get("run")!.handler("scout", createCommandContext());
+    registerSlashCommands(pi, createState(process.cwd()));
+    const defined7347_0 = commands.get("run");
+    assertDefined(defined7347_0);
+    await defined7347_0.handler("scout", createCommandContext());
 
     assert.deepEqual(requestedParams, {
       agent: "scout",
@@ -238,19 +246,19 @@ describe("slash command custom message delivery", () => {
       agentScope: "both",
     });
     assert.equal(sent.length, 2);
-    assert.equal((sent[0] as { display?: boolean }).display, true);
-    assert.equal((sent[0] as { content?: string }).content, "Running subagent...");
-    assert.equal((sent[1] as { display?: boolean }).display, false);
-    assert.match((sent[1] as { content?: string }).content ?? "", /Commit finished/);
+    assert.equal(record(sent[0]).display, true);
+    assert.equal(record(sent[0]).content, "Running subagent...");
+    assert.equal(record(sent[1]).display, false);
+    assert.match(stringValue(record(sent[1]).content), /Commit finished/);
   });
 
   it("/run finalizes the slash snapshot before the last UI redraw on success", async () => {
     const sent: unknown[] = [];
     const log: string[] = [];
-    const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+    const commands = new Map<string, RegisteredSlashCommand>();
     const events = createEventBus();
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const requestId = (data as { requestId: string }).requestId;
+      const requestId = stringValue(record(data).requestId);
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
       events.emit(SLASH_SUBAGENT_UPDATE_EVENT, { requestId, toolCount: 2, currentTool: "read" });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
@@ -263,22 +271,25 @@ describe("slash command custom message delivery", () => {
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
       sendMessage(message: unknown) {
         sent.push(message);
-        log.push(
-          `send:${(message as { display?: boolean }).display === false ? "hidden" : "visible"}`,
-        );
+        log.push(`send:${record(message).display === false ? "hidden" : "visible"}`);
       },
     };
 
-    registerSlashCommands(pi as never, createState(process.cwd()) as never);
-    await commands.get("run")!.handler(
+    registerSlashCommands(pi, createState(process.cwd()));
+    const defined9256_0 = commands.get("run");
+    assertDefined(defined9256_0);
+    await defined9256_0.handler(
       "scout inspect this",
       createCommandContext({
         hasUI: true,
@@ -289,20 +300,14 @@ describe("slash command custom message delivery", () => {
     );
 
     assert.equal(sent.length, 2);
-    assert.equal(
-      (sent[0] as { customType?: string; display?: boolean }).customType,
-      SLASH_RESULT_TYPE,
-    );
-    assert.equal((sent[0] as { display?: boolean }).display, true);
-    assert.equal((sent[0] as { content?: string }).content, "inspect this");
-    assert.equal(
-      (sent[1] as { customType?: string; display?: boolean }).customType,
-      SLASH_RESULT_TYPE,
-    );
-    assert.equal((sent[1] as { display?: boolean }).display, false);
-    assert.match((sent[1] as { content?: string }).content ?? "", /Scout finished/);
+    assert.equal(record(sent[0]).customType, SLASH_RESULT_TYPE);
+    assert.equal(record(sent[0]).display, true);
+    assert.equal(record(sent[0]).content, "inspect this");
+    assert.equal(record(sent[1]).customType, SLASH_RESULT_TYPE);
+    assert.equal(record(sent[1]).display, false);
+    assert.match(stringValue(record(sent[1]).content), /Scout finished/);
     assert.match(
-      (sent[1] as { content?: string }).content ?? "",
+      stringValue(record(sent[1]).content),
       /Child session exports\n\n- `\/tmp\/child-session\.jsonl`/,
     );
     assert.deepEqual(log, [
@@ -313,18 +318,18 @@ describe("slash command custom message delivery", () => {
       "status:clear",
     ]);
 
-    const visibleDetails = resolveSlashMessageDetails((sent[0] as { details?: unknown }).details);
+    const visibleDetails = resolveSlashMessageDetails(record(sent[0]).details);
     assert.ok(visibleDetails);
-    const visibleSnapshot = getSlashRenderableSnapshot(visibleDetails!);
-    assert.equal((visibleSnapshot.result.content[0] as { text?: string }).text, "Scout finished");
+    const visibleSnapshot = getSlashRenderableSnapshot(visibleDetails);
+    assert.equal(record(visibleSnapshot.result.content[0]).text, "Scout finished");
   });
 
   it("/run preserves tool output expansion before showing the initial live card", async () => {
     const log: string[] = [];
-    const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+    const commands = new Map<string, RegisteredSlashCommand>();
     const events = createEventBus();
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const requestId = (data as { requestId: string }).requestId;
+      const requestId = stringValue(record(data).requestId);
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
         requestId,
@@ -336,20 +341,25 @@ describe("slash command custom message delivery", () => {
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
       sendMessage() {
         log.push("send");
       },
     };
 
-    registerSlashCommands(pi as never, createState(process.cwd()) as never);
+    registerSlashCommands(pi, createState(process.cwd()));
     let expanded = false;
-    const run = commands.get("run")!;
+    const defined11737_0 = commands.get("run");
+    assertDefined(defined11737_0);
+    const run = defined11737_0;
     const ctx = createCommandContext({
       hasUI: true,
       getToolsExpanded: () => expanded,
@@ -378,10 +388,10 @@ describe("slash command custom message delivery", () => {
   it("/run finalizes the slash snapshot before the last UI redraw on error", async () => {
     const sent: unknown[] = [];
     const log: string[] = [];
-    const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+    const commands = new Map<string, RegisteredSlashCommand>();
     const events = createEventBus();
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const requestId = (data as { requestId: string }).requestId;
+      const requestId = stringValue(record(data).requestId);
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
         requestId,
@@ -394,22 +404,25 @@ describe("slash command custom message delivery", () => {
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
       sendMessage(message: unknown) {
         sent.push(message);
-        log.push(
-          `send:${(message as { display?: boolean }).display === false ? "hidden" : "visible"}`,
-        );
+        log.push(`send:${record(message).display === false ? "hidden" : "visible"}`);
       },
     };
 
-    registerSlashCommands(pi as never, createState(process.cwd()) as never);
-    await commands.get("run")!.handler(
+    registerSlashCommands(pi, createState(process.cwd()));
+    const defined13657_0 = commands.get("run");
+    assertDefined(defined13657_0);
+    await defined13657_0.handler(
       "scout inspect this",
       createCommandContext({
         hasUI: true,
@@ -420,32 +433,26 @@ describe("slash command custom message delivery", () => {
     );
 
     assert.equal(sent.length, 2);
-    assert.equal(
-      (sent[0] as { customType?: string; display?: boolean }).customType,
-      SLASH_RESULT_TYPE,
-    );
-    assert.equal((sent[0] as { display?: boolean }).display, true);
-    assert.equal((sent[0] as { content?: string }).content, "inspect this");
-    assert.equal(
-      (sent[1] as { customType?: string; display?: boolean }).customType,
-      SLASH_RESULT_TYPE,
-    );
-    assert.equal((sent[1] as { display?: boolean }).display, false);
-    assert.match((sent[1] as { content?: string }).content ?? "", /Subagent failed/);
+    assert.equal(record(sent[0]).customType, SLASH_RESULT_TYPE);
+    assert.equal(record(sent[0]).display, true);
+    assert.equal(record(sent[0]).content, "inspect this");
+    assert.equal(record(sent[1]).customType, SLASH_RESULT_TYPE);
+    assert.equal(record(sent[1]).display, false);
+    assert.match(stringValue(record(sent[1]).content), /Subagent failed/);
     assert.deepEqual(log, ["send:visible", "status:running...", "send:hidden", "status:clear"]);
 
-    const visibleDetails = resolveSlashMessageDetails((sent[0] as { details?: unknown }).details);
+    const visibleDetails = resolveSlashMessageDetails(record(sent[0]).details);
     assert.ok(visibleDetails);
-    const visibleSnapshot = getSlashRenderableSnapshot(visibleDetails!);
-    assert.equal((visibleSnapshot.result.content[0] as { text?: string }).text, "Subagent failed");
+    const visibleSnapshot = getSlashRenderableSnapshot(visibleDetails);
+    assert.equal(record(visibleSnapshot.result.content[0]).text, "Subagent failed");
   });
 
   it("/parallel forwards inline output behavior config", async () => {
-    const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+    const commands = new Map<string, RegisteredSlashCommand>();
     const events = createEventBus();
     let requestedParams: unknown;
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const payload = data as { requestId: string; params?: unknown };
+      const payload = requestPayload(data);
       requestedParams = payload.params;
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
@@ -458,22 +465,27 @@ describe("slash command custom message delivery", () => {
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
-      sendMessage(_message: unknown) {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
+      sendMessage(_message: unknown) {
+        /* The fixture does not need sendMessage side effects. */
+      },
     };
 
-    registerSlashCommands(pi as never, createState(process.cwd()) as never);
-    await commands
-      .get("parallel")!
-      .handler(
-        "scout[output=x.md,outputMode=file-only,reads=a.md+b.md,progress] -- Review",
-        createCommandContext(),
-      );
+    registerSlashCommands(pi, createState(process.cwd()));
+    const parallelCommand = commands.get("parallel");
+    assertDefined(parallelCommand);
+    await parallelCommand.handler(
+      "scout[output=x.md,outputMode=file-only,reads=a.md+b.md,progress] -- Review",
+      createCommandContext(),
+    );
 
     assert.deepEqual(requestedParams, {
       tasks: [
@@ -493,12 +505,12 @@ describe("slash command custom message delivery", () => {
 
   it("/parallel no longer hard-blocks runs above the old 8-task limit before the executor responds", async () => {
     const sent: unknown[] = [];
-    const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
+    const commands = new Map<string, RegisteredSlashCommand>();
     const events = createEventBus();
     let requestedTasks = 0;
     events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const payload = data as { requestId: string; params?: { tasks?: unknown[] } };
-      requestedTasks = payload.params?.tasks?.length ?? 0;
+      const payload = requestPayload(data);
+      requestedTasks = array(record(payload.params).tasks).length;
       events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
       events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
         requestId: payload.requestId,
@@ -510,26 +522,29 @@ describe("slash command custom message delivery", () => {
       });
     });
 
-    const pi = {
+    const pi: ExtensionAPI = {
+      ...native.pi,
       events,
-      registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+      registerCommand(name, spec) {
         commands.set(name, spec);
       },
-      registerShortcut() {},
+      registerShortcut() {
+        /* The fixture does not need registerShortcut side effects. */
+      },
       sendMessage(message: unknown) {
         sent.push(message);
       },
     };
 
-    registerSlashCommands(pi as never, createState(process.cwd()) as never);
-    const args = Array.from({ length: 9 }, (_, index) => `scout \"task ${index + 1}\"`).join(
-      " -> ",
-    );
-    await commands.get("parallel")!.handler(args, createCommandContext());
+    registerSlashCommands(pi, createState(process.cwd()));
+    const args = Array.from({ length: 9 }, (_, index) => `scout "task ${index + 1}"`).join(" -> ");
+    const defined17803_0 = commands.get("parallel");
+    assertDefined(defined17803_0);
+    await defined17803_0.handler(args, createCommandContext());
 
     assert.equal(requestedTasks, 9);
     assert.equal(sent.length, 2);
-    assert.match((sent[1] as { content?: string }).content ?? "", /parallel finished/);
+    assert.match(stringValue(record(sent[1]).content), /parallel finished/);
   });
 });
 
@@ -579,9 +594,7 @@ Write
         root,
       );
       assert.deepEqual(
-        (chain.params as { chain?: Array<{ agent?: string; task?: string }> }).chain?.map(
-          ({ agent, task }) => ({ agent, task }),
-        ),
+        records(record(chain.params).chain).map(({ agent, task }) => ({ agent, task })),
         [
           { agent: "code-analysis.scout", task: "Scan" },
           { agent: "documentation.writer", task: undefined },
@@ -590,26 +603,37 @@ Write
 
       await withIsolatedHome(async () => {
         const commands = new Map<string, RegisteredSlashCommand>();
-        const pi = {
+        const pi: ExtensionAPI = {
+          ...native.pi,
           events: createEventBus(),
-          registerCommand(name: string, spec: RegisteredSlashCommand) {
+          registerCommand(name, spec) {
             commands.set(name, spec);
           },
-          registerShortcut() {},
-          sendMessage(_message: unknown) {},
+          registerShortcut() {
+            /* The fixture does not need registerShortcut side effects. */
+          },
+          sendMessage(_message: unknown) {
+            /* The fixture does not need sendMessage side effects. */
+          },
         };
-        registerSlashCommands(pi as never, createState(root) as never);
-        const runCompletions = commands.get("run")!.getArgumentCompletions!("code-") as Array<{
-          value: string;
-          label: string;
-        }>;
+        registerSlashCommands(pi, createState(root));
+        const registeredRunCommand = commands.get("run");
+        assertDefined(registeredRunCommand);
+        const defined19907_0 = registeredRunCommand.getArgumentCompletions;
+        assertDefined(defined19907_0);
+        const runCompletions = await defined19907_0("code-");
+        assertDefined(runCompletions);
         assert.deepEqual(
           runCompletions.map((completion) => completion.value),
           ["code-analysis.scout"],
         );
-        const chainCompletions = commands.get("chain")!.getArgumentCompletions!(
-          'code-analysis.scout "Scan" -> doc',
-        ) as Array<{ value: string; label: string }>;
+        const registeredChainCommand = commands.get("chain");
+        assertDefined(registeredChainCommand);
+        const defined20201_0 = registeredChainCommand.getArgumentCompletions;
+        assertDefined(defined20201_0);
+        const chainCompletions = await defined20201_0('code-analysis.scout "Scan" -> doc');
+        assertDefined(chainCompletions);
+        assertDefined(chainCompletions);
         assert.deepEqual(
           chainCompletions.map((completion) => completion.value),
           ['code-analysis.scout "Scan" -> documentation.writer'],
@@ -643,17 +667,10 @@ Review {previous}
         "review-flow -- Audit the auth flow",
         root,
       );
-      const runParams = params as {
-        chain?: Array<{ agent?: string; task?: string }>;
-        task?: string;
-        clarify?: boolean;
-        agentScope?: string;
-        async?: unknown;
-        context?: unknown;
-      };
+      const runParams = record(params);
 
       assert.deepEqual(
-        runParams.chain?.map(({ agent, task }) => ({ agent, task })),
+        records(runParams.chain).map(({ agent, task }) => ({ agent, task })),
         [
           { agent: "scout", task: "Scan {task}" },
           { agent: "reviewer", task: "Review {previous}" },
@@ -705,24 +722,20 @@ Review {previous}
         "dynamic-review -- Audit",
         root,
       );
-      const runParams = params as {
-        chain?: Array<Record<string, unknown>>;
-        task?: string;
-        clarify?: boolean;
-        agentScope?: string;
-      };
+      const runParams = record(params);
 
       assert.equal(runParams.task, "Audit");
       assert.equal(runParams.clarify, false);
       assert.equal(runParams.agentScope, "both");
-      assert.equal(runParams.chain?.[0]?.agent, "scout");
-      assert.deepEqual(runParams.chain?.[1]?.expand, {
+      const steps = records(runParams.chain);
+      assert.equal(steps[0].agent, "scout");
+      assert.deepEqual(steps[1].expand, {
         from: { output: "targets", path: "/items" },
         item: "target",
         key: "/path",
         maxItems: 4,
       });
-      assert.deepEqual(runParams.chain?.[1]?.collect, { as: "reviews" });
+      assert.deepEqual(steps[1].collect, { as: "reviews" });
     });
   });
 
@@ -746,17 +759,14 @@ Review {previous}
       );
 
       const { params } = await captureSlashCommandParams("run-chain", "gated -- Inspect", root);
-      const step = (params as { chain?: Array<{ cwd?: string; acceptance?: unknown }> }).chain?.[1];
-      assert.deepEqual(step?.acceptance, acceptance);
-      assert.equal(step?.cwd, "subdir");
+      const step = records(record(params).chain)[1];
+      assert.deepEqual(step.acceptance, acceptance);
+      assert.equal(step.cwd, "subdir");
       assert.equal(
         validateExecutionInput(
-          params as Parameters<typeof validateExecutionInput>[0],
+          normalizeSubagentParamsLike(record(params)),
           [makeAgent("scout"), makeAgent("reviewer")],
-          true,
-          false,
-          false,
-          false,
+          { hasChain: true, hasTasks: false, hasSingle: false, allowClarifyTaskPrompt: false },
         ),
         null,
       );
@@ -785,29 +795,34 @@ Scan {task}
         "code-analysis.review-flow -- Audit",
         root,
       );
-      assert.equal((params as { task?: string }).task, "Audit");
+      assert.equal(record(params).task, "Audit");
       assert.deepEqual(
-        (params as { chain?: Array<{ agent?: string; task?: string }> }).chain?.map(
-          ({ agent, task }) => ({ agent, task }),
-        ),
+        records(record(params).chain).map(({ agent, task }) => ({ agent, task })),
         [{ agent: "code-analysis.scout", task: "Scan {task}" }],
       );
 
       await withIsolatedHome(async () => {
         const commands = new Map<string, RegisteredSlashCommand>();
-        const pi = {
+        const pi: ExtensionAPI = {
+          ...native.pi,
           events: createEventBus(),
-          registerCommand(name: string, spec: RegisteredSlashCommand) {
+          registerCommand(name, spec) {
             commands.set(name, spec);
           },
-          registerShortcut() {},
-          sendMessage(_message: unknown) {},
+          registerShortcut() {
+            /* The fixture does not need registerShortcut side effects. */
+          },
+          sendMessage(_message: unknown) {
+            /* The fixture does not need sendMessage side effects. */
+          },
         };
-        registerSlashCommands(pi as never, createState(root) as never);
-        const completions = commands.get("run-chain")!.getArgumentCompletions!("code-") as Array<{
-          value: string;
-          label: string;
-        }>;
+        registerSlashCommands(pi, createState(root));
+        const registeredRunChainCommand = commands.get("run-chain");
+        assertDefined(registeredRunChainCommand);
+        const defined26130_0 = registeredRunChainCommand.getArgumentCompletions;
+        assertDefined(defined26130_0);
+        const completions = await defined26130_0("code-");
+        assertDefined(completions);
         assert.deepEqual(
           completions.map((completion) => completion.value),
           ["code-analysis.review-flow"],
@@ -873,20 +888,28 @@ Triage
 
       await withIsolatedHome(async () => {
         const commands = new Map<string, RegisteredSlashCommand>();
-        const pi = {
+        const pi: ExtensionAPI = {
+          ...native.pi,
           events: createEventBus(),
-          registerCommand(name: string, spec: RegisteredSlashCommand) {
+          registerCommand(name, spec) {
             commands.set(name, spec);
           },
-          registerShortcut() {},
-          sendMessage(_message: unknown) {},
+          registerShortcut() {
+            /* The fixture does not need registerShortcut side effects. */
+          },
+          sendMessage(_message: unknown) {
+            /* The fixture does not need sendMessage side effects. */
+          },
         };
 
-        registerSlashCommands(pi as never, createState(root) as never);
-        const completions = commands.get("run-chain")!.getArgumentCompletions!("re") as Array<{
-          value: string;
-          label: string;
-        }>;
+        registerSlashCommands(pi, createState(root));
+        const registeredRunChainCommand = commands.get("run-chain");
+        assertDefined(registeredRunChainCommand);
+        const defined27927_0 = registeredRunChainCommand.getArgumentCompletions;
+        assertDefined(defined27927_0);
+        const completions = await defined27927_0("re");
+        assertDefined(completions);
+        assertDefined(completions);
         assert.deepEqual(completions.map((completion) => completion.value).sort(), [
           "release-flow",
           "review-flow",
@@ -895,7 +918,9 @@ Triage
           "release-flow",
           "review-flow",
         ]);
-        assert.equal(commands.get("run-chain")!.getArgumentCompletions!("review-flow -- "), null);
+        const defined28381_0 = registeredRunChainCommand.getArgumentCompletions;
+        assertDefined(defined28381_0);
+        assert.equal(defined28381_0("review-flow -- "), null);
       });
     });
   });
@@ -922,8 +947,8 @@ Scan
         root,
       );
 
-      assert.equal((params as { async?: unknown }).async, true);
-      assert.equal((params as { context?: unknown }).context, undefined);
+      assert.equal(record(params).async, true);
+      assert.equal(record(params).context, undefined);
     });
   });
 
@@ -949,7 +974,7 @@ Scan
         root,
       );
 
-      assert.equal((params as { async?: unknown }).async, false);
+      assert.equal(record(params).async, false);
     });
   });
 
@@ -987,8 +1012,8 @@ Scan
         root,
       );
 
-      assert.equal((params as { context?: unknown }).context, "fork");
-      assert.equal((params as { async?: unknown }).async, undefined);
+      assert.equal(record(params).context, "fork");
+      assert.equal(record(params).async, undefined);
     });
   });
 
@@ -1031,10 +1056,7 @@ User chain task
         },
       );
 
-      assert.equal(
-        (params as { chain?: Array<{ task?: string }> }).chain?.[0]?.task,
-        "Project chain task",
-      );
+      assert.equal(records(record(params).chain)[0].task, "Project chain task");
     });
   });
 
@@ -1068,10 +1090,7 @@ Markdown chain task
         "review-flow -- Shared task",
         root,
       );
-      assert.equal(
-        (params as { chain?: Array<{ task?: string }> }).chain?.[0]?.task,
-        "JSON chain task",
-      );
+      assert.equal(records(record(params).chain)[0].task, "JSON chain task");
     });
   });
 
@@ -1105,13 +1124,10 @@ Gather context
         root,
       );
 
-      assert.deepEqual(
-        (params as { chain?: Array<{ outputSchema?: unknown }> }).chain?.[0]?.outputSchema,
-        {
-          type: "object",
-          properties: { ok: { type: "boolean" } },
-        },
-      );
+      assert.deepEqual(records(record(params).chain)[0].outputSchema, {
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+      });
     });
   });
 
@@ -1143,7 +1159,7 @@ Gather context
         root,
       );
 
-      assert.deepEqual((params as { chain?: unknown[] }).chain?.[0], {
+      assert.deepEqual(array(record(params).chain)[0], {
         agent: "scout",
         task: "Gather context",
         output: "context.md",
@@ -1170,16 +1186,21 @@ describe("subagents-doctor slash command", () => {
   it("does not register the removed subagents-status overlay command", async () => {
     await withIsolatedHome(async () => {
       const commands = new Map<string, RegisteredSlashCommand>();
-      const pi = {
+      const pi: ExtensionAPI = {
+        ...native.pi,
         events: createEventBus(),
-        registerCommand(name: string, spec: RegisteredSlashCommand) {
+        registerCommand(name, spec) {
           commands.set(name, spec);
         },
-        registerShortcut() {},
-        sendMessage(_message: unknown) {},
+        registerShortcut() {
+          /* The fixture does not need registerShortcut side effects. */
+        },
+        sendMessage(_message: unknown) {
+          /* The fixture does not need sendMessage side effects. */
+        },
       };
 
-      registerSlashCommands(pi as never, createState(process.cwd()) as never);
+      registerSlashCommands(pi, createState(process.cwd()));
       assert.equal(commands.has("subagents-status"), false);
     });
   });

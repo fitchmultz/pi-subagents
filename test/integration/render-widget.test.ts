@@ -2,20 +2,16 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-const { buildWidgetLines, renderWidget } = (await import("../../src/tui/render.ts")) as {
-  buildWidgetLines: (
-    jobs: Array<Record<string, unknown>>,
-    theme: { fg(name: string, text: string): string; bold(text: string): string },
-    width?: number,
-    expanded?: boolean,
-  ) => string[];
-  renderWidget: (ctx: Record<string, unknown>, jobs: Array<Record<string, unknown>>) => void;
-};
+import { buildWidgetLines, renderWidget } from "../../src/tui/render.ts";
 
-const theme = {
-  fg: (_name: string, text: string) => text,
-  bold: (text: string) => text,
-};
+import { createPlainTheme } from "../support/ui.ts";
+import { makeMinimalCtx } from "../support/helpers.ts";
+import { createTestTerminal } from "../support/terminal.ts";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AsyncJobState } from "../../src/shared/types.ts";
+const theme = createPlainTheme();
+const tui = new TuiMainScreen(createTestTerminal());
 
 const runningGlyphPattern = "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●]";
 
@@ -36,23 +32,25 @@ function firstRunningGlyph(text: string): string {
 }
 
 function createUiContext(expanded = false) {
-  const widgets: unknown[] = [];
+  const widgets: Array<Parameters<ExtensionContext["ui"]["setWidget"]>[1] | readonly string[]> = [];
   let renderRequests = 0;
   let toolsExpanded = expanded;
-  const ctx = {
-    mode: "tui",
-    hasUI: true,
-    ui: {
-      theme,
-      getToolsExpanded: () => toolsExpanded,
-      setWidget: (_key: string, value: unknown) => {
-        widgets.push(value);
-      },
-      requestRender: () => {
-        renderRequests += 1;
-      },
+  const base = makeMinimalCtx(process.cwd());
+  const ui = {
+    ...base.ui,
+    theme,
+    getToolsExpanded: () => toolsExpanded,
+    setWidget: (
+      _key: string,
+      value: Parameters<ExtensionContext["ui"]["setWidget"]>[1] | readonly string[],
+    ) => {
+      widgets.push(value);
+    },
+    requestRender: () => {
+      renderRequests += 1;
     },
   };
+  const ctx: ExtensionContext = { ...base, mode: "tui", hasUI: true, ui };
   return {
     ctx,
     widgets,
@@ -214,7 +212,7 @@ describe("subagent async widget rendering", () => {
   it("renders a one-line collapsed component widget for three active parallel agents", () => {
     const now = Date.now();
     const ui = createUiContext();
-    renderWidget(ui.ctx as never, [
+    renderWidget(ui.ctx, [
       {
         asyncId: "run-1",
         asyncDir: "/tmp/1",
@@ -234,7 +232,7 @@ describe("subagent async widget rendering", () => {
             lastActivityAt: now,
             turnCount: 5,
             toolCount: 18,
-            tokens: { input: 30_000, output: 10_000, cache: 4_000, total: 44_000 },
+            tokens: { input: 30_000, output: 10_000, total: 44_000 },
           },
           {
             index: 1,
@@ -243,7 +241,7 @@ describe("subagent async widget rendering", () => {
             lastActivityAt: now - 2000,
             turnCount: 4,
             toolCount: 13,
-            tokens: { input: 16_000, output: 4_000, cache: 2_000, total: 22_000 },
+            tokens: { input: 16_000, output: 4_000, total: 22_000 },
           },
           {
             index: 2,
@@ -253,7 +251,7 @@ describe("subagent async widget rendering", () => {
             currentToolStartedAt: now - 1000,
             turnCount: 3,
             toolCount: 11,
-            tokens: { input: 14_000, output: 3_000, cache: 2_000, total: 19_000 },
+            tokens: { input: 14_000, output: 3_000, total: 19_000 },
           },
         ],
       },
@@ -264,9 +262,8 @@ describe("subagent async widget rendering", () => {
       "function",
       "renderWidget should install a component widget, not a capped string-array widget",
     );
-    const lines = (
-      widget as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] }
-    )(undefined, theme)
+    assert.ok(typeof widget === "function");
+    const lines = widget(tui, theme)
       .render(180)
       .map((line) => line.trimEnd());
     const text = lines.join("\n");
@@ -279,7 +276,7 @@ describe("subagent async widget rendering", () => {
 
   it("reuses the installed component across resize and Ctrl+O changes", () => {
     const ui = createUiContext(false);
-    renderWidget(ui.ctx as never, [
+    renderWidget(ui.ctx, [
       {
         asyncId: "failed-1",
         asyncDir: "/tmp/failed",
@@ -290,11 +287,9 @@ describe("subagent async widget rendering", () => {
         steps: [{ agent: "worker", status: "failed", error: "write failed" }],
       },
     ]);
-    const widget = ui.widgets.at(-1) as (
-      _tui: unknown,
-      widgetTheme: typeof theme,
-    ) => { render(width: number): string[] };
-    const component = widget(undefined, theme);
+    const widget = ui.widgets.at(-1);
+    assert.ok(typeof widget === "function");
+    const component = widget(tui, theme);
     const collapsed = component.render(100).join("\n");
     assert.match(collapsed, /Failed · write failed/);
     ui.setExpanded(true);
@@ -307,7 +302,7 @@ describe("subagent async widget rendering", () => {
     const columns = Object.getOwnPropertyDescriptor(process.stdout, "columns");
     Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
     try {
-      const job = {
+      const job: AsyncJobState = {
         asyncId: "run-1",
         asyncDir: "/tmp/1",
         status: "running",
@@ -334,13 +329,11 @@ describe("subagent async widget rendering", () => {
         ],
       };
       const ui = createUiContext(true);
-      renderWidget(ui.ctx as never, [job]);
-      const widget = ui.widgets.at(-1) as (
-        _tui: unknown,
-        widgetTheme: typeof theme,
-      ) => { render(width: number): string[] };
+      renderWidget(ui.ctx, [job]);
+      const widget = ui.widgets.at(-1);
+      assert.ok(typeof widget === "function");
       assert.equal(
-        widget(undefined, theme).render(80).length,
+        widget(tui, theme).render(80).length,
         buildWidgetLines([job], theme, 78, true).length,
         "padded expanded rows must not wrap into continuation lines",
       );
@@ -348,13 +341,13 @@ describe("subagent async widget rendering", () => {
       if (columns) {
         Object.defineProperty(process.stdout, "columns", columns);
       } else {
-        delete (process.stdout as { columns?: number }).columns;
+        Reflect.deleteProperty(process.stdout, "columns");
       }
     }
   });
 
   it("names a lone queued run instead of summarizing it as a count", () => {
-    const queuedJob = {
+    const queuedJob: AsyncJobState = {
       asyncId: "queued-1",
       asyncDir: "/tmp/queued",
       status: "queued",
@@ -362,7 +355,7 @@ describe("subagent async widget rendering", () => {
     };
     const alone = buildWidgetLines([queuedJob], theme, 120);
     assert.equal(alone.length, 1);
-    assert.match(alone[0]!, /planner/);
+    assert.match(alone[0], /planner/);
 
     const alongsideRunning = buildWidgetLines(
       [{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", agents: ["scout"] }, queuedJob],
@@ -387,7 +380,7 @@ describe("subagent async widget rendering", () => {
     Object.defineProperty(process.stdout, "columns", { value: 40, configurable: true });
     try {
       const ui = createUiContext();
-      renderWidget(ui.ctx as never, [
+      renderWidget(ui.ctx, [
         {
           asyncId: "run-1",
           asyncDir: "/tmp/1",
@@ -400,12 +393,10 @@ describe("subagent async widget rendering", () => {
           startedAt: Date.now() - 90_000,
         },
       ]);
-      const widget = ui.widgets.at(-1) as (
-        _tui: unknown,
-        widgetTheme: typeof theme,
-      ) => { render(width: number): string[] };
+      const widget = ui.widgets.at(-1);
+      assert.ok(typeof widget === "function");
       assert.equal(
-        widget(undefined, theme).render(40).length,
+        widget(tui, theme).render(40).length,
         1,
         "the component pads a column per side, so rows must be built narrower",
       );
@@ -413,7 +404,7 @@ describe("subagent async widget rendering", () => {
       if (columns) {
         Object.defineProperty(process.stdout, "columns", columns);
       } else {
-        delete (process.stdout as { columns?: number }).columns;
+        Reflect.deleteProperty(process.stdout, "columns");
       }
     }
   });
@@ -444,7 +435,7 @@ describe("subagent async widget rendering", () => {
             {
               agent: "reviewer",
               status: "complete",
-              tokens: { input: 1000, output: 500, cache: 0, total: 1500 },
+              tokens: { input: 1000, output: 500, total: 1500 },
             },
           ],
         },
@@ -535,7 +526,7 @@ describe("subagent async widget rendering", () => {
 
   it("shows inline live detail for expanded async parallel widget rows", () => {
     const now = Date.now();
-    const job = {
+    const job: AsyncJobState = {
       asyncId: "run-1",
       asyncDir: "/tmp/1",
       status: "running",
@@ -575,7 +566,7 @@ describe("subagent async widget rendering", () => {
 
   it("shows step detail and Ctrl+O hint for running single async jobs with steps", () => {
     const now = Date.now();
-    const job = {
+    const job: AsyncJobState = {
       asyncId: "single-run",
       asyncDir: "/tmp/single-run",
       status: "running",
@@ -865,7 +856,7 @@ describe("subagent async widget rendering", () => {
 
   it("keeps running widget output stable when progress seed is unchanged", (t) => {
     t.mock.timers.enable({ apis: ["Date"], now: 10_000 });
-    const job = {
+    const job: AsyncJobState = {
       asyncId: "run-stable",
       asyncDir: "/tmp/run",
       status: "running",
@@ -887,7 +878,7 @@ describe("subagent async widget rendering", () => {
   it("does not animate queued-only widgets", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
     const ui = createUiContext();
-    renderWidget(ui.ctx as never, [
+    renderWidget(ui.ctx, [
       { asyncId: "queued-only", asyncDir: "/tmp/queued", status: "queued", agents: ["planner"] },
     ]);
     const initialWidgetCount = ui.widgets.length;
@@ -903,7 +894,7 @@ describe("subagent async widget rendering", () => {
   it("does not refresh running widgets at animation cadence", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
     const ui = createUiContext();
-    renderWidget(ui.ctx as never, [
+    renderWidget(ui.ctx, [
       { asyncId: "run-static", asyncDir: "/tmp/run", status: "running", agents: ["scout"] },
     ]);
     const initialWidgetCount = ui.widgets.length;
@@ -915,7 +906,7 @@ describe("subagent async widget rendering", () => {
     );
     assert.equal(ui.renderRequests, 0);
 
-    renderWidget(ui.ctx as never, []);
+    renderWidget(ui.ctx, []);
     const afterClearCount = ui.widgets.length;
     t.mock.timers.tick(190);
     assert.equal(ui.widgets.length, afterClearCount, "cleared widget should stay quiet");

@@ -1,3 +1,5 @@
+import { createSubagentState } from "../support/background-fixtures.ts";
+import { textAt } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -5,36 +7,38 @@ import { createSubagentExecutor } from "../../src/runs/foreground/subagent-execu
 import {
   type MockPi,
   createEventBus,
+  createNativeSessionFixture,
+  makeMinimalCtx,
+  makeAgent,
   createMockPi,
   createTempDir,
   removeTempDir,
   events,
 } from "../support/helpers.ts";
 
+const nativeRoot = createTempDir("payload-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
+
 function makeState(cwd: string) {
-  return {
-    baseCwd: cwd,
-    currentSessionId: null,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear: () => {},
-    },
-  };
+  return createSubagentState(cwd);
 }
 
 function makeExecutor(cwd: string) {
   return createSubagentExecutor({
     pi: {
+      ...native.pi,
       events: createEventBus(),
-      getSessionName: () => undefined,
-      setSessionName: () => {},
+      getSessionName: () => {
+        /* The fixture does not need getSessionName side effects. */
+      },
+      setSessionName: () => {
+        /* The fixture does not need setSessionName side effects. */
+        /* No persisted session name in this direct executor fixture. */
+      },
     },
     state: makeState(cwd),
     config: {},
@@ -43,23 +47,9 @@ function makeExecutor(cwd: string) {
     getSubagentSessionRoot: () => cwd,
     expandTilde: (value: string) => value,
     discoverAgents: () => ({
-      agents: [{ name: "tester", description: "Tool-heavy test agent" }],
+      agents: [makeAgent("tester", { description: "Tool-heavy test agent" })],
     }),
   });
-}
-
-function makeCtx(cwd: string) {
-  return {
-    cwd,
-    hasUI: false,
-    ui: {},
-    sessionManager: {
-      getSessionId: () => "session-123",
-      getSessionFile: () => null,
-    },
-    modelRegistry: { getAvailable: () => [] },
-    isProjectTrusted: () => true,
-  };
 }
 
 function buildDockerNoiseChunk(step: number): string {
@@ -103,10 +93,11 @@ describe("foreground result payload compaction", () => {
     jsonl.push({
       type: "message_end",
       message: {
-        role: "assistant",
+        ...events.assistantMessage("").message,
         content: [
           {
             type: "toolCall",
+            id: "mock-write",
             name: "write",
             arguments: {
               path: "/tmp/huge-report.md",
@@ -114,8 +105,6 @@ describe("foreground result payload compaction", () => {
             },
           },
         ],
-        model: "mock/test-model",
-        usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
       },
     });
     jsonl.push(
@@ -125,12 +114,16 @@ describe("foreground result payload compaction", () => {
     jsonl.push(events.toolEnd("write"));
     for (let step = 0; step < 60; step++) {
       jsonl.push(
-        events.toolStart("bash", {
-          command: `docker compose run --rm api test-shard-${step} --retry --verbose`,
-        }),
+        events.toolStart(
+          "bash",
+          {
+            command: `docker compose run --rm api test-shard-${step} --retry --verbose`,
+          },
+          `bash-${step}`,
+        ),
       );
-      jsonl.push(events.toolResult("bash", buildDockerNoiseChunk(step)));
-      jsonl.push(events.toolEnd("bash"));
+      jsonl.push(events.toolResult("bash", buildDockerNoiseChunk(step), false, `bash-${step}`));
+      jsonl.push(events.toolEnd("bash", `bash-${step}`));
     }
     jsonl.push(
       events.assistantMessage(
@@ -140,50 +133,49 @@ describe("foreground result payload compaction", () => {
     mockPi.onCall({ jsonl });
 
     const executor = makeExecutor(tempDir);
-    const result = await executor.execute(
-      "id",
-      { agent: "tester", task: "Run the full noisy test sweep", includeProgress: false },
-      new AbortController().signal,
-      undefined,
-      makeCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "id",
+      params: { agent: "tester", task: "Run the full noisy test sweep", includeProgress: false },
+      signal: new AbortController().signal,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(
       result.isError,
       undefined,
-      result.isError
+      result.isError === true
         ? JSON.stringify({
             content: result.content,
-            runId: result.details?.runId,
-            wait: result.details?.wait,
+            runId: result.details.runId,
+            wait: result.details.wait,
           })
         : undefined,
     );
-    assert.equal(result.details?.mode, "single");
-    assert.equal(result.details?.results?.length, 1);
+    assert.equal(result.details.mode, "single");
+    assert.equal(result.details.results.length, 1);
 
-    const displayText = result.content[0]?.text ?? "";
+    const displayText = textAt(result.content);
     assert.ok(
       displayText.length < 2_000,
       `expected small visible output, got ${displayText.length} bytes`,
     );
 
-    const step = result.details?.results?.[0];
-    assert.equal(step?.exitCode, 0);
+    const step = result.details.results[0];
+    assert.equal(step.exitCode, 0);
     assert.ok(
-      step?.messages === undefined,
+      step.messages === undefined,
       "completed foreground results should not inline raw messages",
     );
     assert.ok(
-      step?.progress === undefined,
+      step.progress === undefined,
       "completed foreground results should not inline full progress objects",
     );
     assert.ok(
-      step?.toolCalls?.length,
+      Boolean(step.toolCalls?.length),
       "completed foreground results should preserve compact tool-call summaries",
     );
-    assert.equal(step?.toolCalls?.[0]?.text, "write /tmp/huge-report.md");
-    assert.equal(step?.toolCalls?.[0]?.expandedText, "write /tmp/huge-report.md");
+    assert.equal(step.toolCalls?.[0].text, "write /tmp/huge-report.md");
+    assert.equal(step.toolCalls[0].expandedText, "write /tmp/huge-report.md");
 
     const payloadSize = JSON.stringify(result).length;
     assert.ok(

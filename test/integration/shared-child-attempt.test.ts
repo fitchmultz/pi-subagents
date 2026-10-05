@@ -1,4 +1,8 @@
+import { readRunResult, readRunStatus } from "../support/run-publications.ts";
+import { readNativeAttemptReceipt } from "../support/child-process-receipts.ts";
+import { assertDefined, array } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
+import { isRecord } from "../../src/shared/unknown.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -14,39 +18,54 @@ import { createMockPi, createTempDir, events, removeTempDir } from "../support/h
 import { runChildAttempt } from "../../src/runs/shared/child-attempt.ts";
 import { createNativeFinalization } from "../../src/runs/shared/native-finalization.ts";
 
-const sdkRoot =
-  process.env.PI_INTERCOM_TEST_SDK ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+const defined888_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(defined888_0);
+const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(defined888_0);
 const repo = path.resolve(".");
 const runtimeDir = path.join(
   repo,
-  process.env.PI_DRIVER_TEST_DIST ? "dist" : "src",
+  (process.env.PI_DRIVER_TEST_DIST ?? "").length > 0 ? "dist" : "src",
   "runs/background",
 );
-const runtimeExtension = process.env.PI_DRIVER_TEST_DIST ? "js" : "ts";
+const runtimeExtension = (process.env.PI_DRIVER_TEST_DIST ?? "").length > 0 ? "js" : "ts";
 const report = {
   criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "Native fixture completed" }],
   residualRisks: [],
   diffSummary: "Implemented fixture",
 };
 
-async function run(
-  scenario: string,
-  options: {
-    turns?: number;
-    timeoutMs?: number;
-    extendMs?: number;
-    verify?: string;
-    maxTokens?: number;
-    maxExecutionTimeMs?: number;
-    omitSessionFile?: boolean;
-    staged?: boolean;
-    withoutAcceptance?: boolean;
-    fallback?: boolean;
-    legacy?: boolean;
-    startupExit?: { code: number; once?: boolean; stderr?: string; model?: string };
-  } = {},
-) {
+type DriverOptions = Readonly<{
+  turns?: number;
+  timeoutMs?: number;
+  extendMs?: number;
+  verify?: string;
+  maxTokens?: number;
+  maxExecutionTimeMs?: number;
+  omitSessionFile?: boolean;
+  staged?: boolean;
+  withoutAcceptance?: boolean;
+  fallback?: boolean;
+  legacy?: boolean;
+  startupExit?: Readonly<{ code: number; once?: boolean; stderr?: string; model?: string }>;
+}>;
+
+function driverAcceptance(options: DriverOptions) {
+  return resolveEffectiveAcceptance({
+    explicit:
+      options.withoutAcceptance === true
+        ? undefined
+        : {
+            criteria: [{ id: "deliver", must: "Deliver fixture" }],
+            maxFinalizationTurns: options.turns ?? 1,
+            ...(options.staged === true ? { evidence: ["no-staged-files"] } : {}),
+            ...(options.verify !== undefined && options.verify.length > 0
+              ? { verify: [{ id: "check", command: options.verify }] }
+              : {}),
+          },
+  });
+}
+
+function prepareNativeRun(scenario: string, options: DriverOptions) {
   const root = createTempDir("driver-native-");
   const id = path.basename(root);
   const asyncDir = getRunMetadataDir(id);
@@ -68,7 +87,7 @@ async function run(
     `#!/bin/sh\necho $$ >> '${root}/pids'\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`,
     { mode: 0o755 },
   );
-  if (options.staged) {
+  if (options.staged === true) {
     execFileSync("git", ["init", "-q"], { cwd: root });
     fs.writeFileSync(path.join(root, "staged.txt"), "staged fixture\n");
     execFileSync("git", ["add", "staged.txt"], { cwd: root });
@@ -78,27 +97,18 @@ async function run(
     JSON.stringify({
       scenario,
       receiptPath,
-      report: { ...report, ...(options.staged ? { noStagedFiles: true } : {}) },
+      report: { ...report, ...(options.staged === true ? { noStagedFiles: true } : {}) },
       startupExit: options.startupExit,
     }),
   );
   fs.mkdirSync(asyncDir, { recursive: true });
-  const acceptance = resolveEffectiveAcceptance({
-    explicit: options.withoutAcceptance
-      ? undefined
-      : {
-          criteria: [{ id: "deliver", must: "Deliver fixture" }],
-          maxFinalizationTurns: options.turns ?? 1,
-          ...(options.staged ? { evidence: ["no-staged-files"] } : {}),
-          ...(options.verify ? { verify: [{ id: "check", command: options.verify }] } : {}),
-        },
-  });
+  const acceptance = driverAcceptance(options);
   const configPath = path.join(asyncDir, "launch.json");
   fs.writeFileSync(
     configPath,
     JSON.stringify({
       id,
-      runtimeVersion: options.legacy ? undefined : 2,
+      runtimeVersion: options.legacy === true ? undefined : 2,
       timeoutMs: options.timeoutMs,
       cwd: root,
       asyncDir,
@@ -110,14 +120,16 @@ async function run(
           agent: "worker",
           task: "Complete synthetic fixture",
           model: "driver-fixture/faux-1",
-          modelCandidates: options.fallback
-            ? ["driver-fixture/faux-1", "driver-fixture/faux-2"]
-            : undefined,
+          modelCandidates:
+            options.fallback === true
+              ? ["driver-fixture/faux-1", "driver-fixture/faux-2"]
+              : undefined,
           inheritProjectContext: false,
           inheritSkills: false,
-          tools: options.staged ? ["read", "bash"] : ["read"],
+          tools: options.staged === true ? ["read", "bash"] : ["read"],
           extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs")],
-          sessionFile: options.omitSessionFile ? undefined : path.join(root, "session.jsonl"),
+          sessionFile:
+            options.omitSessionFile === true ? undefined : path.join(root, "session.jsonl"),
           outputPath: path.join(root, "output.md"),
           effectiveAcceptance: acceptance,
           maxTokens: options.maxTokens,
@@ -135,7 +147,7 @@ async function run(
       ],
     }),
   );
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     PI_INTERCOM_TEST_SDK: sdkRoot,
     PI_PACKAGE_DIR: sdkRoot,
@@ -146,8 +158,18 @@ async function run(
     PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
   };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PI_SUBAGENT_") && key !== "PI_SUBAGENT_TEMP_ROOT") delete env[key];
+    if (key.startsWith("PI_SUBAGENT_") && key !== "PI_SUBAGENT_TEMP_ROOT") {
+      delete env[key];
+    }
   }
+  return { root, id, asyncDir, receiptPath, resultPath, configPath, env };
+}
+
+async function run(scenario: string, options: DriverOptions = {}) {
+  const { root, id, asyncDir, receiptPath, resultPath, configPath, env } = prepareNativeRun(
+    scenario,
+    options,
+  );
   const proc = spawn(
     process.execPath,
     [
@@ -158,31 +180,34 @@ async function run(
     { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";
-  proc.stdout.on("data", (chunk) => {
-    log += chunk;
+  proc.stdout.on("data", (chunk: Buffer) => {
+    log += chunk.toString();
   });
-  proc.stderr.on("data", (chunk) => {
-    log += chunk;
+  proc.stderr.on("data", (chunk: Buffer) => {
+    log += chunk.toString();
   });
-  const watchdog = setTimeout(() => proc.kill("SIGTERM"), 20_000);
+  const watchdog = setTimeout(() => {
+    proc.kill("SIGTERM");
+  }, 20_000);
   try {
-    if (options.extendMs) {
+    if ((options.extendMs ?? 0) !== 0 && !Number.isNaN(options.extendMs)) {
       const deadline = Date.now() + 15_000;
       while (!fs.existsSync(receiptPath)) {
         assert.ok(Date.now() < deadline, log);
+        // Observe the owner publication before advancing this lifecycle transition.
+        // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
-      writeAsyncControlRequest(asyncDir, id, "extend", undefined, options.extendMs);
+      writeAsyncControlRequest(asyncDir, id, "extend", { extendMs: options.extendMs });
     }
-    const [code] = await once(proc, "close");
+    const closed: unknown = await once(proc, "close");
+    const code = array(closed)[0];
     assert.equal(code, 0, log);
     assert.ok(fs.existsSync(resultPath), log);
-    const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
-    const receipt = fs.existsSync(receiptPath)
-      ? JSON.parse(fs.readFileSync(receiptPath, "utf8"))
-      : undefined;
-    const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
-    if (!options.legacy) {
+    const result = readRunResult(resultPath);
+    const receipt = fs.existsSync(receiptPath) ? readNativeAttemptReceipt(receiptPath) : undefined;
+    const status = readRunStatus(path.join(asyncDir, "status.json"));
+    if (!(options.legacy === true)) {
       assert.ok(fs.existsSync(configPath), "v2 owner retains frozen launch");
     }
     assert.equal(receipt?.networkRequests ?? 0, 0);
@@ -201,12 +226,16 @@ async function run(
     if (proc.exitCode === null) {
       proc.kill("SIGTERM");
     }
-    if (process.env.PI_DRIVER_EVIDENCE_DIR) {
+    if ((process.env.PI_DRIVER_EVIDENCE_DIR ?? "").length > 0) {
+      assertDefined(process.env.PI_DRIVER_EVIDENCE_DIR);
       fs.mkdirSync(process.env.PI_DRIVER_EVIDENCE_DIR, { recursive: true });
+      assertDefined(process.env.PI_DRIVER_EVIDENCE_DIR);
       fs.cpSync(root, path.join(process.env.PI_DRIVER_EVIDENCE_DIR, id), { recursive: true });
+      assertDefined(process.env.PI_DRIVER_EVIDENCE_DIR);
       fs.cpSync(asyncDir, path.join(process.env.PI_DRIVER_EVIDENCE_DIR, `${id}-owner`), {
         recursive: true,
       });
+      assertDefined(process.env.PI_DRIVER_EVIDENCE_DIR);
       fs.writeFileSync(path.join(process.env.PI_DRIVER_EVIDENCE_DIR, `${id}.log`), log);
     }
     removeTempDir(root);
@@ -223,9 +252,17 @@ for (const withoutAcceptance of [true, false]) {
     assert.equal(result.success, true, JSON.stringify(result));
     assert.equal(pids.length, 2);
     assert.equal(new Set(pids).size, 2);
+    assertDefined(receipt);
     assert.equal(receipt.pid, pids[1]);
+    assertDefined(result.results[0].modelAttempts);
+    assertDefined(result.results[0].modelAttempts[0].exitCode);
     assert.equal(result.results[0].modelAttempts[0].exitCode, 143);
+    assertDefined(result.results[0].modelAttempts);
+    assertDefined(result.results[0].modelAttempts[0].error);
+    assertDefined(result.results[0].modelAttempts[0].error);
+    assertDefined(result.results[0].modelAttempts);
     assert.match(result.results[0].modelAttempts[0].error, /143/);
+    assertDefined(result.results[0].modelAttempts);
     assert.ok(
       result.results[0].modelAttempts.every((attempt) => attempt.model === "driver-fixture/faux-1"),
     );
@@ -236,11 +273,13 @@ test("native pre-boundary transport failure retains its exit after the retry bud
   const { result, pids } = await run("success", { startupExit: { code: 143 } });
   assert.equal(result.success, false);
   assert.equal(pids.length, 2);
+  assertDefined(result.results[0].modelAttempts);
   assert.deepEqual(
     result.results[0].modelAttempts.map((attempt) => attempt.exitCode),
     [143, 143],
   );
   assert.equal(result.results[0].exitCode, 143);
+  assertDefined(result.results[0].error);
   assert.doesNotMatch(result.results[0].error, /boundary did not return/);
 });
 
@@ -253,6 +292,7 @@ test("native pre-boundary transport failure reaches the configured fallback afte
   assert.equal(result.success, true, JSON.stringify(child));
   assert.equal(pids.length, 3);
   assert.equal(new Set(pids).size, 3);
+  assertDefined(receipt);
   assert.equal(receipt.pid, pids[2]);
   assert.equal(child.model, "driver-fixture/faux-2");
   assert.deepEqual(child.attemptedModels, [
@@ -260,10 +300,13 @@ test("native pre-boundary transport failure reaches the configured fallback afte
     "driver-fixture/faux-1",
     "driver-fixture/faux-2",
   ]);
+  assertDefined(child.modelAttempts);
   assert.deepEqual(
     child.modelAttempts.map((attempt) => attempt.exitCode),
     [143, 143, 0, 0],
   );
+  assertDefined(child.acceptance);
+  assertDefined(child.acceptance.finalization);
   assert.equal(child.acceptance.finalization.turns.length, 1);
 });
 
@@ -275,6 +318,7 @@ test("native pre-boundary ordinary failure preserves diagnostics without a retry
   assert.equal(result.success, false);
   assert.equal(pids.length, 1);
   assert.equal(result.results[0].exitCode, 7);
+  assertDefined(result.results[0].error);
   assert.match(result.results[0].error, /Fixture startup failed/);
 });
 
@@ -283,6 +327,7 @@ test("native apparent success without a required self-review boundary is rejecte
   assert.equal(result.success, false);
   assert.equal(pids.length, 1);
   assert.equal(result.results[0].exitCode, 1);
+  assertDefined(result.results[0].error);
   assert.match(result.results[0].error, /Native self-review boundary did not return a result/);
 });
 
@@ -296,24 +341,35 @@ test("native no-staged-files rejection repairs in one process and retains both r
   const child = result.results[0];
   assert.equal(pids.length, 1, JSON.stringify({ pids, child }));
   assert.equal(result.success, true, JSON.stringify(child));
+  assertDefined(receipt);
   assert.equal(receipt.pid, pids[0]);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 4);
+  assertDefined(receipt);
   assert.equal(receipt.sawStagedFailure, true);
   assert.equal(output, "Repaired answer");
   assert.equal(child.finalOutput, "Repaired answer");
+  assertDefined(child.acceptance);
+  assertDefined(child.acceptance.finalization);
   assert.deepEqual(
     child.acceptance.finalization.turns.map((turn) => turn.status),
     ["rejected", "checked"],
   );
+  assertDefined(child.acceptance);
+  assertDefined(child.acceptance.finalization);
+  assertDefined(child.acceptance.finalization.turns[0].failureMessage);
   assert.match(
     child.acceptance.finalization.turns[0].failureMessage,
     /Staged files present:.*staged\.txt/,
   );
+  assertDefined(child.acceptance);
   assert.equal(
-    child.acceptance.runtimeChecks.find((check) => check.id === "no-staged-files").status,
+    child.acceptance.runtimeChecks.find((check) => check.id === "no-staged-files")?.status,
     "passed",
   );
+  assertDefined(child.acceptance);
   assert.equal(child.acceptance.verifyRuns.length, 1);
+  assertDefined(child.acceptance);
   assert.equal(child.acceptance.verifyRuns[0].stdout, "owner-check");
 });
 
@@ -321,23 +377,31 @@ test("native no-staged-files rejection exhausts its review cap without another p
   const { result, receipt, pids } = await run("success", { staged: true, turns: 2 });
   assert.equal(pids.length, 1);
   assert.equal(result.success, false);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 3);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.finalization);
   assert.deepEqual(
     result.results[0].acceptance.finalization.turns.map((turn) => turn.status),
     ["rejected", "rejected"],
   );
+  assertDefined(result.results[0].error);
   assert.match(result.results[0].error, /Staged files present:.*staged\.txt/);
 });
 
 test("owner rechecks the index after native no-staged-files repair and shutdown", async () => {
   const { result, receipt, pids } = await run("staged-repair-restage", { staged: true, turns: 2 });
   assert.equal(pids.length, 1);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 4);
   assert.equal(result.success, false);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.finalization);
   assert.deepEqual(
     result.results[0].acceptance.finalization.turns.map((turn) => turn.status),
     ["rejected", "checked"],
   );
+  assertDefined(result.results[0].error);
   assert.match(result.results[0].error, /Staged files present:.*staged\.txt/);
 });
 
@@ -349,19 +413,37 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
     });
     const child = result.results[0];
     assert.equal(result.success, true, JSON.stringify(child));
+    assertDefined(receipt);
     assert.equal(receipt.calls, scenario === "repair" ? 3 : 2);
+    assertDefined(receipt);
+    assertDefined(child.acceptance);
+    assertDefined(child.acceptance.finalization);
     assert.equal(child.acceptance.finalization.turns.length, receipt.calls - 1);
     assert.equal(
       output,
       scenario === "public-output" ? '{"items":["reviewed payload"]}' : "Reviewed answer",
     );
+    assertDefined(receipt);
+    assertDefined(child.modelAttempts);
     assert.equal(child.modelAttempts.length, receipt.calls);
+    assertDefined(receipt);
     assert.deepEqual(receipt.sampling[1], { type: "json_schema", strict: "prefer" });
+    assertDefined(receipt);
+    assertDefined(child.modelAttempts);
     assert.deepEqual(
-      child.modelAttempts.map((attempt) => attempt.usage.input),
+      child.modelAttempts.map((attempt) => {
+        assertDefined(attempt.usage);
+        return attempt.usage.input;
+      }),
       Array(receipt.calls).fill(11),
     );
-    const contributions = child.modelAttempts.flatMap((attempt) => attempt.usage.contributions);
+    assertDefined(child.modelAttempts);
+    const contributions = child.modelAttempts.flatMap((attempt) => {
+      assertDefined(attempt.usage);
+      assertDefined(attempt.usage.contributions);
+      return attempt.usage.contributions;
+    });
+    assertDefined(receipt);
     assert.equal(new Set(contributions.map((item) => item.id)).size, receipt.calls);
     assert.ok(
       contributions.every(
@@ -373,6 +455,7 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
     );
     if (scenario === "public-output") {
       assert.deepEqual(child.structuredOutput, { items: ["reviewed payload"] });
+      assertDefined(receipt);
       assert.deepEqual(receipt.sampling[0], { type: "json_schema", strict: "prefer" });
     }
   });
@@ -393,39 +476,62 @@ for (const scenario of ["retry", "linger", "resubmit", "missing-then-repair"]) {
     });
     const child = result.results[0];
     assert.equal(result.success, true, JSON.stringify(child));
+    assertDefined(receipt);
+    assertDefined(child.agentProcessExit);
     assert.equal(child.agentProcessExit.pid, receipt.pid);
+    assertDefined(child.acceptance);
     assert.equal(child.acceptance.status, "checked");
     assert.equal(child.finalOutput, "Reviewed answer");
+    assertDefined(child.acceptance);
+    assertDefined(child.acceptance.finalization);
     assert.equal(
       child.acceptance.finalization.turns.length,
       scenario === "missing-then-repair" ? 2 : 1,
     );
+    assertDefined(receipt);
     assert.equal(receipt.calls, scenario === "linger" ? 2 : 3);
+    assertDefined(receipt);
     assert.equal(receipt.shutdownStarted, true);
+    assertDefined(receipt);
     assert.equal(receipt.shutdownFinished, scenario !== "linger");
     if (scenario === "retry") {
+      assertDefined(receipt);
       assert.deepEqual(receipt.errors, ["503 overloaded; native fixture"]);
+      assertDefined(child.modelAttempts);
       assert.equal(
         child.modelAttempts.length,
         2,
         "native transport retry remains inside the same review attempt",
       );
+      assertDefined(child.modelAttempts);
+      assertDefined(child.modelAttempts[1].usage);
       assert.equal(child.modelAttempts[1].usage.turns, 2);
     }
-    if (scenario === "missing-then-repair")
+    if (scenario === "missing-then-repair") {
+      assertDefined(child.acceptance);
+      assertDefined(child.acceptance.finalization);
       assert.deepEqual(
         child.acceptance.finalization.turns.map((turn) => turn.status),
         ["rejected", "checked"],
       );
+    }
   });
 }
 
 test("native post-submission provider failure remains authoritative", async () => {
   const { result, receipt } = await run("final-error");
   assert.equal(result.success, false);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 3);
+  assertDefined(result.results[0].error);
   assert.match(result.results[0].error, /Fixture final provider failure/);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.childReport);
   assert.equal(result.results[0].acceptance.childReport, undefined);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.unconfirmedOutput);
+  assertDefined(result.results[0].acceptance.unconfirmedOutput);
+  assertDefined(result.results[0].acceptance);
   assert.match(result.results[0].acceptance.unconfirmedOutput, /Reviewed answer/);
 });
 
@@ -433,8 +539,13 @@ test("per-attempt time allowance resets between initial work and review in one n
   // Two 4.5s attempts exceed 8s together, while each leaves room for cold native startup.
   const { result, receipt } = await run("per-attempt-time", { maxExecutionTimeMs: 8000 });
   assert.equal(result.success, true, JSON.stringify(result));
+  assertDefined(receipt);
   assert.equal(receipt.calls, 2);
+  assertDefined(receipt);
+  assertDefined(result.results[0].agentProcessExit);
+  assertDefined(result.results[0].agentProcessExit.pid);
   assert.equal(result.results[0].agentProcessExit.pid, receipt.pid);
+  assertDefined(result.results[0].progressSummary);
   assert.ok(result.results[0].progressSummary.durationMs > 8000);
   assert.equal(result.results[0].resourceLimitExceeded, undefined);
 });
@@ -494,9 +605,12 @@ test("a missing child message fails closed and retains its wire audit instead of
   });
   assert.equal(result.terminalFailure, true);
   assert.equal(result.exitCode, 1);
+  assertDefined(result.error);
   assert.match(result.error, /missing its message/);
   assert.equal(result.auditRecords?.[0].kind, "receiver_failure");
-  assert.match(fs.readFileSync(result.auditPath!, "utf8"), /"type":"message_end"}/);
+  const defined19290_0 = result.auditPath;
+  assertDefined(defined19290_0);
+  assert.match(fs.readFileSync(defined19290_0, "utf8"), /"type":"message_end"}/);
 });
 
 test("native message references and finalization scans scale with new messages rather than baseline and prior observations", async (t) => {
@@ -556,44 +670,57 @@ test("native message references and finalization scans scale with new messages r
     fs.rmSync(boundaries, { force: true });
     let comparisons = 0,
       filtered = 0;
-    const find = Array.prototype.find;
-    Object.defineProperty(Array.prototype, "find", {
-      value: function (
-        this: unknown[],
-        predicate: (value: unknown, index: number, array: unknown[]) => boolean,
+    const prototype: Pick<unknown[], "find" | "filter"> = Array.prototype;
+    const find = prototype.find;
+    const findMock = t.mock.method(
+      prototype,
+      "find",
+      function (
+        this: readonly unknown[],
+        predicate: (value: unknown, index: number, array: readonly unknown[]) => unknown,
         thisArg?: unknown,
       ) {
-        const observation = this[0] as { start?: unknown; kind?: unknown } | undefined;
+        const observation = this[0];
         const matching =
-          observation &&
+          isRecord(observation) &&
           typeof observation.start === "number" &&
           observation.kind === "message_end";
-        return find.call(this, (item, index, array) => {
-          if (matching) {
-            comparisons++;
-          }
-          return predicate.call(thisArg, item, index, array);
-        });
+        const result: unknown = Reflect.apply(find, this, [
+          (item: unknown, index: number, array: readonly unknown[]) => {
+            if (matching) {
+              comparisons++;
+            }
+            return predicate.call(thisArg, item, index, array);
+          },
+        ]);
+        return result;
       },
-    });
-    const filter = Array.prototype.filter;
-    Object.defineProperty(Array.prototype, "filter", {
-      value: function (
-        this: unknown[],
-        predicate: (value: unknown, index: number, array: unknown[]) => boolean,
+    );
+    const filter = prototype.filter;
+    const filterMock = t.mock.method(
+      prototype,
+      "filter",
+      function (
+        this: readonly unknown[],
+        predicate: (value: unknown, index: number, array: readonly unknown[]) => unknown,
         thisArg?: unknown,
       ) {
-        const messages = this[0] as { role?: unknown } | undefined;
-        return filter.call(this, (item, index, array) => {
-          if (typeof messages?.role === "string") {
-            filtered++;
-          }
-          return predicate.call(thisArg, item, index, array);
-        });
+        const messages = this[0];
+        const result: unknown = Reflect.apply(filter, this, [
+          (item: unknown, index: number, array: readonly unknown[]) => {
+            if (isRecord(messages) && typeof messages.role === "string") {
+              filtered++;
+            }
+            return predicate.call(thisArg, item, index, array);
+          },
+        ]);
+        return result;
       },
-    });
+    );
     let result: Awaited<ReturnType<typeof runChildAttempt>>;
     try {
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
       result = await runChildAttempt({
         args: [],
         cwd: root,
@@ -608,8 +735,8 @@ test("native message references and finalization scans scale with new messages r
         auditPath: path.join(root, "audit"),
       });
     } finally {
-      Object.defineProperty(Array.prototype, "find", { value: find });
-      Object.defineProperty(Array.prototype, "filter", { value: filter });
+      findMock.mock.restore();
+      filterMock.mock.restore();
     }
     assert.equal(result.exitCode, 0, result.error);
     assert.equal(result.accounting?.state, "complete", result.accounting?.error);
@@ -621,7 +748,7 @@ test("native message references and finalization scans scale with new messages r
       "the custom context observation remains audited",
     );
     assert.equal(result.finalization?.length, 1);
-    assert.ok(result.finalization?.[0]);
+    assert.ok(Boolean(result.finalization[0]));
     assert.equal(
       result.finalization[0].messages.length,
       1000,
@@ -697,7 +824,9 @@ test("native fallback never assigns baseline IDs to new messages with identical 
 test("owner allocates a native session when acceptance has no preassigned file", async () => {
   const { result, receipt } = await run("success", { omitSessionFile: true });
   assert.equal(result.success, true, JSON.stringify(result));
+  assertDefined(receipt);
   assert.equal(receipt.calls, 2);
+  assertDefined(result.results[0].sessionFile);
   assert.match(result.results[0].sessionFile, /session-0\.jsonl$/);
 });
 
@@ -705,36 +834,58 @@ test("native child stops at explicit blocked initial report without review or ve
   const { result, receipt, pids } = await run("blocked", { verify: "exit 7", turns: 3 });
   assert.equal(result.state, "blocked");
   assert.equal(pids.length, 1);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 1);
+  assertDefined(result.results[0].acceptance);
   assert.deepEqual(result.results[0].acceptance.verifyRuns, []);
 });
 
 test("native child rejects missing current report at the configured cap", async () => {
   const { result, receipt } = await run("stale");
   assert.equal(result.success, false);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.finalization);
   assert.equal(result.results[0].acceptance.finalization.turns.length, 1);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.childReportParseError);
+  assertDefined(result.results[0].acceptance.childReportParseError);
+  assertDefined(result.results[0].acceptance);
   assert.match(
     result.results[0].acceptance.childReportParseError,
     /No current finalization report/,
   );
+  assertDefined(receipt);
   assert.equal(receipt.calls, 2);
 });
 
 test("native review rejects an older valid report after later assistant activity", async () => {
   const { result, receipt } = await run("stale-after-report");
   assert.equal(result.success, false);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.finalization);
   assert.equal(result.results[0].acceptance.finalization.turns.length, 1);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.childReport);
   assert.equal(result.results[0].acceptance.childReport, undefined);
+  assertDefined(result.results[0].acceptance);
+  assertDefined(result.results[0].acceptance.unconfirmedOutput);
+  assertDefined(result.results[0].acceptance.unconfirmedOutput);
+  assertDefined(result.results[0].acceptance);
   assert.match(result.results[0].acceptance.unconfirmedOutput, /Reviewed answer/);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 3, "queued work stays inside one review attempt");
 });
 
 test("owner verification failure and process failure override a valid native report", async () => {
   const verified = await run("success", { verify: "exit 7" });
   assert.equal(verified.result.success, false);
+  assertDefined(verified.result.results[0].acceptance);
+  assertDefined(verified.result.results[0].acceptance.verifyRuns[0].exitCode);
   assert.equal(verified.result.results[0].acceptance.verifyRuns[0].exitCode, 7);
   const exited = await run("process-error");
   assert.equal(exited.result.success, false);
+  assertDefined(exited.result.results[0].agentProcessExit);
+  assertDefined(exited.result.results[0].agentProcessExit.code);
   assert.equal(exited.result.results[0].agentProcessExit.code, 7);
 });
 
@@ -751,6 +902,8 @@ test("durable extend control moves the owner's deadline", async () => {
   const { result, status, receipt } = await run("slow", { timeoutMs: 2500, extendMs: 4000 });
   assert.equal(result.success, true, JSON.stringify(result));
   assert.equal(status.timedOut, undefined);
+  assertDefined(receipt);
   assert.equal(receipt.calls, 2);
+  assertDefined(status.timeoutAt);
   assert.ok(status.timeoutAt - status.startedAt >= 6500);
 });

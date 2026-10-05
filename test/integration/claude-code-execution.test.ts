@@ -1,5 +1,11 @@
+import type { SubagentState } from "../../src/shared/types.ts";
+import type { AgentConfig } from "../../src/agents/agents.ts";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import { readClaudeCall } from "../support/child-process-receipts.ts";
+import { readRunResult, readRunStatus } from "../support/run-publications.ts";
+import { assertDefined, parseJson, textAt, record } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -17,6 +23,7 @@ import {
   createTempDir,
   removeTempDir,
   createEventBus,
+  createNativeSessionFixture,
 } from "../support/helpers.ts";
 
 function installMockClaude(root: string): { callsDir: string; restore: () => void } {
@@ -94,22 +101,29 @@ function readCalls(
     .readdirSync(callsDir)
     .filter((name) => name.startsWith("call-"))
     .sort()
-    .map(
-      (name) =>
-        JSON.parse(fs.readFileSync(path.join(callsDir, name), "utf-8")) as {
-          args: string[];
-          env: Record<string, string | null>;
-        },
-    );
+    .map((name) => readClaudeCall(path.join(callsDir, name)));
 }
+
+const nativeRoot = createTempDir("claude-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
 
 describe("Claude Code child backend", () => {
   let tempDir: string;
   let mock: { callsDir: string; restore: () => void };
-  let state;
-  function executor(agent) {
+  let state: SubagentState;
+  function executor(agent: AgentConfig) {
     return createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
+      pi: {
+        ...native.pi,
+        events: createEventBus(),
+        getSessionName: () => {
+          /* The fixture does not need getSessionName side effects. */
+        },
+      },
       state,
       config: {},
       asyncByDefault: false,
@@ -124,6 +138,7 @@ describe("Claude Code child backend", () => {
     tempDir = createTempDir("claude-code-exec-");
     mock = installMockClaude(tempDir);
     state = {
+      ...createSubagentState(tempDir),
       baseCwd: tempDir,
       currentSessionId: null,
       asyncJobs: new Map(),
@@ -133,6 +148,7 @@ describe("Claude Code child backend", () => {
 
   afterEach(() => {
     mock.restore();
+    assertDefined(state.ownedRuns);
     for (const run of state.ownedRuns.values()) {
       removeTempDir(getRunMetadataDir(run.runId));
       fs.rmSync(path.join(RESULTS_DIR, `${run.runId}.json`), { force: true });
@@ -147,26 +163,25 @@ describe("Claude Code child backend", () => {
       tools: ["bash", "read"],
     });
     const launch = executor(agent);
-    const started = await launch.execute(
-      "start",
-      { agent: "echo", task: "start" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const started = await launch.execute({
+      toolCallId: "start",
+      params: { agent: "echo", task: "start" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(started.isError, undefined, JSON.stringify(started.content));
     const first = started.details.results[0];
     const sessionFile = first.sessionFile;
     assert.equal(first.exitCode, 0);
     assert.equal(first.finalOutput, "MOCK_STARTED");
     assert.equal(first.model, "claude-code/sonnet:high");
-    assert.ok(sessionFile);
+    assert.ok(Boolean(sessionFile));
+    assertDefined(sessionFile);
     assert.equal(fs.existsSync(sessionFile), true);
     assert.match(fs.readFileSync(sessionFile, "utf8"), /MOCK_STARTED/);
     const metadata = readClaudeCodeSessionMetadata(sessionFile);
-    assert.ok(metadata?.sessionId);
+    assert.ok(Boolean(metadata?.sessionId));
 
-    const firstCall = readCalls(mock.callsDir)[0]!;
+    const firstCall = readCalls(mock.callsDir)[0];
     assert.ok(firstCall.args.includes("--dangerously-skip-permissions"));
     assert.ok(!firstCall.args.includes("--safe-mode"));
     assert.deepEqual(
@@ -184,6 +199,7 @@ describe("Claude Code child backend", () => {
       ["--effort", "high"],
     );
     assert.ok(firstCall.args.includes("--session-id"));
+    assertDefined(metadata);
     assert.equal(firstCall.args[firstCall.args.indexOf("--session-id") + 1], metadata.sessionId);
     assert.deepEqual(
       firstCall.args.slice(
@@ -199,22 +215,22 @@ describe("Claude Code child backend", () => {
     assert.ok(firstCall.args.indexOf("--disallowedTools=Agent") < taskIndex);
     assert.equal(firstCall.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
 
-    const continued = await launch.execute(
-      "continue",
-      { action: "resume", id: started.details.runId, message: "continue", async: false },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const continued = await launch.execute({
+      toolCallId: "continue",
+      params: { action: "resume", id: started.details.runId, message: "continue", async: false },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(continued.isError, undefined, JSON.stringify(continued.content));
     const second = continued.details.results[0];
     assert.equal(second.exitCode, 0);
     assert.equal(second.finalOutput, "MOCK_RESUMED");
     assert.equal(second.sessionFile, sessionFile);
+    assertDefined(metadata);
     assert.equal(readClaudeCodeSessionMetadata(second.sessionFile)?.sessionId, metadata.sessionId);
     assert.match(fs.readFileSync(sessionFile, "utf8"), /MOCK_RESUMED/);
-    const secondCall = readCalls(mock.callsDir)[1]!;
+    const secondCall = readCalls(mock.callsDir)[1];
     assert.ok(secondCall.args.includes("--resume"));
+    assertDefined(metadata);
     assert.equal(secondCall.args[secondCall.args.indexOf("--resume") + 1], metadata.sessionId);
     assert.ok(!secondCall.args.includes("--session-id"));
   });
@@ -223,18 +239,21 @@ describe("Claude Code child backend", () => {
     const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
     const completed = await executor(
       makeAgent("echo", { model: "mock/pi", tools: ["read"] }),
-    ).execute(
-      "json",
-      { agent: "echo", task: "return JSON", model: "claude-code/sonnet", outputSchema: schema },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    ).execute({
+      toolCallId: "json",
+      params: {
+        agent: "echo",
+        task: "return JSON",
+        model: "claude-code/sonnet",
+        outputSchema: schema,
+      },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(completed.isError, undefined, JSON.stringify(completed.content));
     const result = completed.details.results[0];
     assert.equal(result.exitCode, 0);
     assert.deepEqual(result.structuredOutput, { ok: true });
-    const args = readCalls(mock.callsDir)[0]!.args;
+    const args = readCalls(mock.callsDir)[0].args;
     assert.deepEqual(args.slice(args.indexOf("--json-schema"), args.indexOf("--json-schema") + 2), [
       "--json-schema",
       JSON.stringify(schema),
@@ -254,7 +273,11 @@ describe("Claude Code child backend", () => {
             agent: "echo",
             task: "Return the result",
             agentConfig: agent,
-            ctx: { pi: { events: createEventBus() }, cwd: tempDir, currentSessionId: id },
+            ctx: {
+              pi: { ...native.pi, events: createEventBus() },
+              cwd: tempDir,
+              currentSessionId: id,
+            },
             acceptance,
             outputSchema: publicSchema ? schema : undefined,
             sessionFile: path.join(tempDir, "session.jsonl"),
@@ -265,15 +288,22 @@ describe("Claude Code child backend", () => {
           const deadline = Date.now() + 15_000;
           while (!fs.existsSync(resultPath)) {
             assert.ok(Date.now() < deadline, "Claude fixture background result must arrive");
-            await new Promise((resolve) => setTimeout(resolve, 20));
+            // Observe the owner publication before advancing this lifecycle transition.
+            // oxlint-disable-next-line no-await-in-loop
+            await new Promise((resolve) => {
+              setTimeout(resolve, 20);
+            });
           }
-          result = JSON.parse(fs.readFileSync(resultPath, "utf8")).results[0];
-          const status = JSON.parse(
-            fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf8"),
-          );
+          result = readRunResult(resultPath).results[0];
+          const status = readRunStatus(path.join(getRunMetadataDir(id), "status.json"));
+          assertDefined(status.pid);
           while (questionProcessAlive({ pid: status.pid })) {
             assert.ok(Date.now() < deadline, "owned Claude fixture runner must exit");
-            await new Promise((resolve) => setTimeout(resolve, 20));
+            // Observe the owner publication before advancing this lifecycle transition.
+            // oxlint-disable-next-line no-await-in-loop
+            await new Promise((resolve) => {
+              setTimeout(resolve, 20);
+            });
           }
         }
         assert.equal(result.exitCode, 0, result.error);
@@ -281,13 +311,18 @@ describe("Claude Code child backend", () => {
           result.finalOutput ?? result.output,
           publicSchema ? '{"ok":false}' : "MOCK_RESUMED",
         );
+        assertDefined(result.acceptance);
         assert.equal(result.acceptance.status, "checked");
+        assertDefined(result.acceptance);
+        assertDefined(result.acceptance.finalization);
         assert.equal(result.acceptance.finalization.turns.length, 1);
         assert.deepEqual(result.structuredOutput, publicSchema ? { ok: false } : undefined);
-        if (publicSchema)
-          assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), {
+        if (publicSchema) {
+          assertDefined(result.structuredOutputPath);
+          assert.deepEqual(parseJson(fs.readFileSync(result.structuredOutputPath, "utf8")), {
             ok: false,
           });
+        }
         const calls = readCalls(mock.callsDir);
         assert.equal(calls.length, 2);
         for (const call of calls) {
@@ -306,16 +341,20 @@ describe("Claude Code child backend", () => {
             calls[0].args[calls[0].args.indexOf("--json-schema") + 1],
             JSON.stringify(schema),
           );
-          const reviewSchema = JSON.parse(
-            calls[1].args[calls[1].args.indexOf("--json-schema") + 1],
+          const reviewSchema = record(
+            parseJson(calls[1].args[calls[1].args.indexOf("--json-schema") + 1]),
           );
-          assert.deepEqual(reviewSchema.properties.answer, {
+          assert.deepEqual(record(reviewSchema.properties).answer, {
             $id: "urn:pi-subagents:public-output",
             ...schema,
           });
           assert.deepEqual(reviewSchema.required, ["answer", "report"]);
-        } else assert.ok(!calls[1].args.includes("--json-schema"));
-        assert.doesNotMatch(calls[1].args.at(-1)!, /sole `structured_output`/);
+        } else {
+          assert.ok(!calls[1].args.includes("--json-schema"));
+        }
+        const defined13136_0 = calls[1].args.at(-1);
+        assertDefined(defined13136_0);
+        assert.doesNotMatch(defined13136_0, /sole `structured_output`/);
       } finally {
         removeTempDir(getRunMetadataDir(id));
         removeTempDir(path.join(ASYNC_DIR, id));
@@ -331,29 +370,25 @@ describe("Claude Code child backend", () => {
       tools: ["read"],
       mcpDirectTools: ["github.create_issue"],
     });
-    const result = await executor(agent).execute(
-      "unsupported-mcp",
-      { agent: "echo", task: "start" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor(agent).execute({
+      toolCallId: "unsupported-mcp",
+      params: { agent: "echo", task: "start" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /MCP direct tool allowlist entries: github\.create_issue/);
+    assert.match(textAt(result.content), /MCP direct tool allowlist entries: github\.create_issue/);
     assert.deepEqual(readCalls(mock.callsDir), []);
   });
 
   it("fails closed for Claude Code agents with nested subagent fanout enabled", async () => {
     const agent = makeAgent("echo", { model: "claude-code/sonnet", allowSubagents: true });
-    const result = await executor(agent).execute(
-      "unsupported-fanout",
-      { agent: "echo", task: "start" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor(agent).execute({
+      toolCallId: "unsupported-fanout",
+      params: { agent: "echo", task: "start" },
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /does not support nested subagent fanout/);
+    assert.match(textAt(result.content), /does not support nested subagent fanout/);
     assert.deepEqual(readCalls(mock.callsDir), []);
   });
 });

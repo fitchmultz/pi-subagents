@@ -1,12 +1,22 @@
+import {
+  assertDefined,
+  record,
+  text as stringValue,
+  array,
+  textAt,
+} from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, before, describe, it } from "node:test";
-import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import {
+  createSubagentExecutor,
+  type SubagentParamsLike,
+} from "../../src/runs/foreground/subagent-executor.ts";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
 import { OWNED_RUN_ENTRY, restoreOwnedRuns } from "../../src/runs/shared/run-records.ts";
@@ -16,9 +26,12 @@ import {
   RESULTS_DIR,
   INTERCOM_DETACH_REQUEST_EVENT,
   type SubagentState,
+  type SubagentExecutionResult,
+  type TrackedOwnedRun,
 } from "../../src/shared/types.ts";
 import {
   createEventBus,
+  createNativeSessionFixture,
   createMockPi,
   createTempDir,
   events,
@@ -30,15 +43,31 @@ import {
 const sdkRoot =
   process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ??
   path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
-const { SessionManager } = await import(
-  pathToFileURL(path.join(sdkRoot, "dist/core/session-manager.js")).href
+assert.equal(
+  fs.realpathSync(sdkRoot),
+  fs.realpathSync(
+    path.dirname(
+      path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))),
+    ),
+  ),
+  "selected host must match the installed SDK graph",
 );
+const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+import { createSubagentState, readResult, readStatusFile } from "../support/background-fixtures.ts";
+import { readChildCall } from "../support/child-process-receipts.ts";
+const nativeRoot = createTempDir("mixed-sdk-");
+const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
+after(async () => {
+  await native.dispose();
+  removeTempDir(nativeRoot);
+});
 const failureReason = "MIXED_BAD: required evidence was rejected";
-const readJson = (file: string) => JSON.parse(fs.readFileSync(file, "utf8"));
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (!predicate()) {
     assert.ok(Date.now() < deadline, `Timed out waiting for ${label}`);
+    // Observe the owner publication before advancing this lifecycle transition.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
@@ -67,25 +96,29 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
             );
             let parent = SessionManager.open(parentFile);
             const state = {
+              ...createSubagentState(cwd),
               baseCwd: cwd,
               currentSessionId: parentFile,
               asyncJobs: new Map(),
-              ownedRuns: new Map(),
+              ownedRuns: new Map<string, TrackedOwnedRun>(),
               completionSeen: new Map(),
               cleanupTimers: new Map(),
-              persistOwnedRun: (run) => parent.appendCustomEntry(OWNED_RUN_ENTRY, run),
-            } as SubagentState;
+              persistOwnedRun: (run) => {
+                parent.appendCustomEntry(OWNED_RUN_ENTRY, run);
+              },
+            } satisfies SubagentState;
             const ctx = { ...makeMinimalCtx(cwd), sessionManager: parent };
             const bus = createEventBus();
-            const notifications: any[] = [];
-            bus.on("subagent:result-intercom", (message: any) => {
-              notifications.push(message);
+            const notifications: Record<string, unknown>[] = [];
+            bus.on("subagent:result-intercom", (message) => {
+              const payload = record(message);
+              notifications.push(payload);
               bus.emit("subagent:result-intercom-delivery", {
-                requestId: message.requestId,
+                requestId: stringValue(record(message).requestId),
                 delivered: true,
               });
             });
-            const pi = { events: bus, getSessionName: () => "mixed-parent" };
+            const pi = { ...native.pi, events: bus, getSessionName: () => "mixed-parent" };
             const tracker = createAsyncJobTracker(pi, state, ASYNC_DIR);
             bus.on("subagent:async-started", tracker.handleStarted);
             bus.on("subagent:async-complete", tracker.handleComplete);
@@ -99,8 +132,17 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
               expandTilde: (value) => value,
               discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false })] }),
             });
-            const invoke = (params, onUpdate?) =>
-              executor.execute(randomUUID(), params, new AbortController().signal, onUpdate, ctx);
+            const invoke = (
+              params: SubagentParamsLike,
+              onUpdate?: (result: SubagentExecutionResult) => void,
+            ) =>
+              executor.execute({
+                toolCallId: randomUUID(),
+                params: params,
+                signal: new AbortController().signal,
+                onUpdate: onUpdate,
+                ctx: ctx,
+              });
             const watcher = createResultWatcher(pi, state, RESULTS_DIR);
             // One active child makes completion order deterministic; failures cannot stop the wait child.
             const tokens = [
@@ -137,15 +179,19 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
             });
             mock.onCall({ matchArgsIncludes: "MIXED_QUEUED", output: "QUEUED_CHILD_FINISHED" });
             mock.onCall({ matchArgsIncludes: "MIXED_DOWNSTREAM", output: "DOWNSTREAM_FINISHED" });
-            const tasks = tokens.map((task) => ({ agent: "worker", task, output: false }));
+            const tasks = tokens.map((task) => ({ agent: "worker", task, output: false as const }));
             const prefix = {
               agent: "worker",
               task: "MIXED_SOURCE",
               as: "targets",
-              output: false,
+              output: false as const,
               outputSchema: { type: "object" },
             };
-            const downstream = { agent: "worker", task: "MIXED_DOWNSTREAM", output: false };
+            const downstream = {
+              agent: "worker",
+              task: "MIXED_DOWNSTREAM",
+              output: false as const,
+            };
             const group =
               shape === "dynamic-chain"
                 ? {
@@ -153,7 +199,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                       from: { output: "targets", path: "/items" },
                       maxItems: tokens.length,
                     },
-                    parallel: { agent: "worker", task: "{item}", output: false },
+                    parallel: { agent: "worker", task: "{item}", output: false as const },
                     collect: { as: "collected" },
                     concurrency: 1,
                     failFast: false,
@@ -185,22 +231,25 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                     update.details?.progress?.some(
                       (progress) =>
                         progress.currentTool === (detaching ? "contact_supervisor" : "bash"),
-                    )
+                    ) === true
                   ) {
                     ready = true;
                   }
                 },
               );
-              await waitFor(() => state.ownedRuns!.size === 1, "owned run registration");
-              runId = [...state.ownedRuns!.keys()][0]!;
+              await waitFor(() => state.ownedRuns.size === 1, "owned run registration");
+              const defined8602_0 = [...state.ownedRuns.keys()][0];
+              assertDefined(defined8602_0);
+              runId = defined8602_0;
+              assertDefined(runId);
               const metadata = getRunMetadataDir(runId);
               await waitFor(
                 () =>
                   host === "foreground"
                     ? ready
                     : fs.existsSync(path.join(metadata, "status.json")) &&
-                      readJson(path.join(metadata, "status.json")).steps[waitIndex]?.currentTool ===
-                        "bash",
+                      readStatusFile(path.join(metadata, "status.json")).steps?.[waitIndex]
+                        ?.currentTool === "bash",
                 "wait child after successful/failed siblings",
               );
               if (stop === "interrupt") {
@@ -213,14 +262,15 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
               if (detaching) {
                 fs.writeFileSync(release, "");
               }
-              const initial = JSON.parse(JSON.stringify(response));
-              let terminal = initial.details;
+              const initial = structuredClone(response);
+              let terminal: SubagentExecutionResult["details"] | ReturnType<typeof readResult> =
+                initial.details;
               if (host === "background" || detaching) {
                 await waitFor(
                   () => fs.existsSync(path.join(metadata, "result.json")),
                   "durable background result",
                 );
-                terminal = readJson(path.join(metadata, "result.json"));
+                terminal = readResult(path.join(metadata, "result.json"));
                 await waitFor(
                   () => fs.existsSync(path.join(RESULTS_DIR, `${runId}.json`)),
                   "notification file before the one-time scan",
@@ -241,7 +291,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                 .readdirSync(mock.dir)
                 .filter((file) => file.startsWith("call-"))
                 .sort()
-                .map((file) => readJson(path.join(mock.dir, file)));
+                .map((file) => readChildCall(path.join(mock.dir, file)));
               const receipt = {
                 host,
                 shape,
@@ -255,8 +305,10 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                 notifications,
                 calls,
               };
-              if (process.env.PI_MIXED_SIBLING_EVIDENCE_DIR) {
+              if ((process.env.PI_MIXED_SIBLING_EVIDENCE_DIR ?? "").length > 0) {
+                assertDefined(process.env.PI_MIXED_SIBLING_EVIDENCE_DIR);
                 fs.mkdirSync(process.env.PI_MIXED_SIBLING_EVIDENCE_DIR, { recursive: true });
+                assertDefined(process.env.PI_MIXED_SIBLING_EVIDENCE_DIR);
                 fs.writeFileSync(
                   path.join(
                     process.env.PI_MIXED_SIBLING_EVIDENCE_DIR,
@@ -279,14 +331,14 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
               assert.deepEqual(
                 calls.map(
                   (call) =>
-                    call.expandedArgs
-                      .at(-1)
-                      .match(/MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/)?.[0],
+                    stringValue(call.expandedArgs.at(-1)).match(
+                      /MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/,
+                    )?.[0],
                 ),
                 executed,
               );
               assert.equal(
-                results[prefixCount].finalOutput ?? results[prefixCount].output,
+                results[prefixCount].finalOutput ?? record(results[prefixCount]).output,
                 "SUCCESSFUL_SIBLING_EVIDENCE",
               );
               if (failed) {
@@ -296,20 +348,23 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                 assert.equal(results[waitIndex].interrupted, true);
                 assert.equal(results[waitIndex + 1].interrupted, true, "queued child stays paused");
               } else if (detaching) {
-                assert.equal(results[waitIndex].output, "DETACHED_CHILD_FINISHED");
+                assert.equal(record(results[waitIndex]).output, "DETACHED_CHILD_FINISHED");
                 if (stop === "detach-queued") {
-                  assert.equal(results[waitIndex + 1].output, "QUEUED_CHILD_FINISHED");
+                  assert.equal(record(results[waitIndex + 1]).output, "QUEUED_CHILD_FINISHED");
                 }
               } else {
                 assert.equal(results[waitIndex].timedOut, true);
               }
               if (shape === "static-chain") {
+                assertDefined(terminal.outputs);
                 assert.equal(terminal.outputs.evidence.text, "SUCCESSFUL_SIBLING_EVIDENCE");
               }
               if (shape === "dynamic-chain") {
                 if (detaching && !failed) {
-                  assert.equal(terminal.outputs.collected.structured.length, tokens.length);
+                  assertDefined(terminal.outputs);
+                  assert.equal(array(terminal.outputs.collected.structured).length, tokens.length);
                 } else {
+                  assertDefined(terminal.outputs);
                   assert.equal(
                     terminal.outputs.collected,
                     undefined,
@@ -317,14 +372,19 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                   );
                 }
               }
-              const saved = inspection.details.run!;
+              const defined14190_0 = inspection.details.run;
+              assertDefined(defined14190_0);
+              const saved = defined14190_0;
               const expectedState = aggregateFailed ? "failed" : detaching ? "completed" : "paused";
               assert.equal(saved.state, expectedState);
               if (detaching) {
                 const notification = notifications.find((entry) => entry.runId === runId);
+                assertDefined(notification);
                 assert.equal(notification.status, expectedState);
-                assert.match(notification.message, /SUCCESSFUL_SIBLING_EVIDENCE/);
-                assert.equal(notification.children[waitIndex].status, "completed");
+                assertDefined(notification);
+                assert.match(stringValue(notification.message), /SUCCESSFUL_SIBLING_EVIDENCE/);
+                assertDefined(notification);
+                assert.equal(record(array(notification.children)[waitIndex]).status, "completed");
               }
               assert.equal(saved.children[prefixCount].state, "completed");
               assert.equal(
@@ -339,17 +399,19 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                 stop === "interrupt" ? "paused" : detaching ? "completed" : "failed",
               );
               if (shape !== "parallel") {
+                assertDefined(terminal.workflowGraph);
                 assert.equal(
                   terminal.workflowGraph.nodes[1].status,
                   aggregateFailed ? "failed" : detaching ? "completed" : "paused",
                 );
               }
               if (host === "foreground") {
-                const text = initial.content.map((part) => part.text).join("\n");
+                const text = initial.content.map((part) => textAt([part])).join("\n");
                 if (detaching) {
+                  assertDefined(initial.details.wait);
                   assert.equal(initial.details.wait.status, "yielded");
                   assert.deepEqual(
-                    JSON.parse(JSON.stringify(response)),
+                    structuredClone(response),
                     initial,
                     "later completion must not mutate the yielded wait receipt",
                   );
@@ -367,30 +429,40 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
                   }
                 }
               } else {
-                assert.equal(terminal.success, false);
-                assert.equal(terminal.state, failed ? "failed" : "paused");
+                assert.equal(record(terminal).success, false);
+                assert.equal(record(terminal).state, failed ? "failed" : "paused");
                 const notification = notifications.find((entry) => entry.runId === runId);
+                assertDefined(notification);
                 assert.equal(notification.status, failed ? "failed" : "paused");
-                assert.equal(notification.children[waitIndex].status, "paused");
-                assert.match(notification.message, /SUCCESSFUL_SIBLING_EVIDENCE/);
+                assertDefined(notification);
+                assert.equal(record(array(notification.children)[waitIndex]).status, "paused");
+                assertDefined(notification);
+                assert.match(stringValue(notification.message), /SUCCESSFUL_SIBLING_EVIDENCE/);
                 if (failed) {
-                  assert.ok(notification.message.includes(failureReason));
+                  assertDefined(notification);
+                  assert.ok(stringValue(notification.message).includes(failureReason));
                 }
               }
             } finally {
               watcher.stopResultWatcher();
-              if (runId && !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json"))) {
+              if (
+                runId !== undefined &&
+                runId.length > 0 &&
+                !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json"))
+              ) {
                 await invoke({ action: "interrupt", id: runId });
                 await waitFor(
-                  () => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")),
+                  () => fs.existsSync(path.join(getRunMetadataDir(runId ?? ""), "result.json")),
                   "owned test run cleanup",
                 );
               }
               await pending;
               tracker.resetJobs();
-              if (runId) {
+              if ((runId ?? "").length > 0) {
+                assertDefined(runId);
                 removeTempDir(path.join(ASYNC_DIR, runId));
                 fs.rmSync(path.join(RESULTS_DIR, `${runId}.json`), { force: true });
+                assertDefined(runId);
                 removeTempDir(getRunMetadataDir(runId));
               }
               removeTempDir(cwd);

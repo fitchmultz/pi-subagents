@@ -3,36 +3,58 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { detectSubagentError } from "../../src/shared/utils.ts";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 
 /**
  * Helper to create a tool result message (success or error).
  */
-function toolResult(toolName: string, text: string, isError = false): Record<string, unknown> {
+function toolResult(toolName: string, text: string, isError = false): ToolResultMessage {
   return {
     role: "toolResult",
     toolCallId: `call-${Math.random().toString(36).slice(2, 8)}`,
     toolName,
     content: [{ type: "text", text }],
     isError,
+    timestamp: 0,
   };
 }
 
-function assistantMsg(text: string): Record<string, unknown> {
+function assistantMsg(text: string): AssistantMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
-    api: "test",
+    api: "openai-responses",
+    stopReason: "stop",
+    timestamp: 0,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
     provider: "test",
     model: "test",
   };
 }
 
 /** Assistant message with only a tool call, no text content */
-function assistantToolCall(toolName: string): Record<string, unknown> {
+function assistantToolCall(toolName: string): AssistantMessage {
   return {
     role: "assistant",
-    content: [{ type: "toolCall", name: toolName, input: {} }],
-    api: "test",
+    content: [{ type: "toolCall", id: "call-fixture", name: toolName, arguments: {} }],
+    api: "openai-responses",
+    stopReason: "stop",
+    timestamp: 0,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
     provider: "test",
     model: "test",
   };
@@ -62,7 +84,8 @@ describe("detectSubagentError", () => {
     const result = detectSubagentError(messages);
     assert.equal(result.hasError, true);
     assert.equal(result.errorType, "read");
-    assert.match(result.details!, /EISDIR/);
+    assert.ok(result.details !== undefined);
+    assert.match(result.details, /EISDIR/);
   });
 
   it("does not infer bash failure from benign fatal-looking text", () => {

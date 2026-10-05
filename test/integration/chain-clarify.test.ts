@@ -1,99 +1,73 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { ChainClarifyComponent } from "../../src/runs/foreground/chain-clarify.ts";
+import { TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  ChainClarifyComponent,
+  type ChainClarifyOptions,
+} from "../../src/runs/foreground/chain-clarify.ts";
+import { makeAgent } from "../support/helpers.ts";
+import { createPlainTheme } from "../support/ui.ts";
+import { createTestTerminal } from "../support/terminal.ts";
 
 function stripAnsi(text: string): string {
+  // Native terminal SGR sequences are protocol controls, not printable task text.
+  // oxlint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function preview(model: string | undefined, options: Readonly<Partial<ChainClarifyOptions>> = {}) {
+  return new ChainClarifyComponent(
+    new TuiMainScreen(createTestTerminal()),
+    createPlainTheme(),
+    {
+      agentConfigs: [makeAgent("worker", { model })],
+      templates: ["Task"],
+      originalTask: "Task",
+      resolvedBehaviors: [
+        { output: false, outputMode: "inline", reads: false, progress: false, skills: [], model },
+      ],
+      availableModels: [],
+      availableSkills: [],
+      mode: "single",
+      ...options,
+    },
+    () => {
+      // These interaction checks inspect the preview; none launches an execution.
+    },
+  );
+}
+
+function chooseHigh(component: Readonly<ChainClarifyComponent>): void {
+  component.handleInput("t");
+  // The public menu is off, minimal, low, medium, high for these models.
+  for (let index = 0; index < 4; index++) {
+    component.handleInput("\x1b[B");
+  }
+  component.handleInput("\r");
+}
+
+function overview(component: Readonly<ChainClarifyComponent>): string {
+  return component.render(84).map(stripAnsi).join("\n");
 }
 
 describe("chain clarify model display", () => {
   it("keeps the preferred provider visible after applying thinking to a bare model", () => {
-    const component = new ChainClarifyComponent(
-      { requestRender() {} },
-      {
-        fg(_key: string, text: string) {
-          return text;
-        },
-      },
-      [
-        {
-          name: "worker",
-          description: "",
-          systemPrompt: "",
-          systemPromptMode: "replace",
-          inheritProjectContext: false,
-          inheritSkills: false,
-          source: "user",
-          filePath: "worker.md",
-          model: "gpt-5-mini",
-        },
-      ],
-      ["Task"],
-      "Task",
-      undefined,
-      [
-        {
-          output: false,
-          outputMode: "inline",
-          reads: false,
-          progress: false,
-          skills: [],
-          model: "gpt-5-mini",
-        },
-      ],
-      [
+    const component = preview("gpt-5-mini", {
+      availableModels: [
         { provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
         { provider: "github-copilot", id: "gpt-5-mini", fullId: "github-copilot/gpt-5-mini" },
       ],
-      "github-copilot",
-      [],
-      () => {},
-      "single",
-    );
-
-    assert.equal(component.getEffectiveModel(0), "github-copilot/gpt-5-mini");
-    component.editingStep = 0;
-    component.applyThinkingLevel("high");
-    assert.equal(component.getEffectiveModel(0), "github-copilot/gpt-5-mini:high");
+      preferredProvider: "github-copilot",
+    });
+    assert.match(overview(component), /github-copilot\/gpt-5-mini/);
+    chooseHigh(component);
+    assert.match(overview(component), /github-copilot\/gpt-5-mini:high/);
   });
 
   it("shows only thinking levels supported by the selected model", () => {
-    const component = new ChainClarifyComponent(
-      { requestRender() {} },
-      {
-        fg(_key: string, text: string) {
-          return text;
-        },
-      },
-      [
-        {
-          name: "worker",
-          description: "",
-          systemPrompt: "",
-          systemPromptMode: "replace",
-          inheritProjectContext: false,
-          inheritSkills: false,
-          source: "user",
-          filePath: "worker.md",
-          model: "deepseek-v4-pro",
-        },
-      ],
-      ["Task"],
-      "Task",
-      undefined,
-      [
-        {
-          output: false,
-          outputMode: "inline",
-          reads: false,
-          progress: false,
-          skills: [],
-          model: "deepseek-v4-pro",
-        },
-      ],
-      [
+    const component = preview("deepseek-v4-pro", {
+      availableModels: [
         {
           provider: "deepseek",
           id: "deepseek-v4-pro",
@@ -109,16 +83,10 @@ describe("chain clarify model display", () => {
           },
         },
       ],
-      "deepseek",
-      [],
-      () => {},
-      "single",
-    );
-
-    component.selectedStep = 0;
-    component.enterThinkingSelector();
-    const rendered = component.renderThinkingSelector().join("\n");
-
+      preferredProvider: "deepseek",
+    });
+    component.handleInput("t");
+    const rendered = overview(component);
     assert.match(rendered, /off - No extended thinking/);
     assert.match(rendered, /high - Deep reasoning/);
     assert.match(rendered, /xhigh - Extra-high reasoning/);
@@ -129,40 +97,8 @@ describe("chain clarify model display", () => {
   });
 
   it("drops thinking when switching to a model that does not support it", () => {
-    const component = new ChainClarifyComponent(
-      { requestRender() {} },
-      {
-        fg(_key: string, text: string) {
-          return text;
-        },
-      },
-      [
-        {
-          name: "worker",
-          description: "",
-          systemPrompt: "",
-          systemPromptMode: "replace",
-          inheritProjectContext: false,
-          inheritSkills: false,
-          source: "user",
-          filePath: "worker.md",
-          model: "reasoning-model",
-        },
-      ],
-      ["Task"],
-      "Task",
-      undefined,
-      [
-        {
-          output: false,
-          outputMode: "inline",
-          reads: false,
-          progress: false,
-          skills: [],
-          model: "reasoning-model",
-        },
-      ],
-      [
+    const component = preview("reasoning-model", {
+      availableModels: [
         {
           provider: "test",
           id: "reasoning-model",
@@ -171,117 +107,29 @@ describe("chain clarify model display", () => {
         },
         { provider: "test", id: "basic-model", fullId: "test/basic-model", reasoning: false },
       ],
-      "test",
-      [],
-      () => {},
-      "single",
-    );
-
-    component.editingStep = 0;
-    component.applyThinkingLevel("high");
-    component.selectedStep = 0;
-    component.enterModelSelector();
-    component.modelSelectedIndex = component.filteredModels.findIndex(
-      (model) => model.fullId === "test/basic-model",
-    );
-    component.handleModelSelectorInput("\r");
-
-    assert.equal(component.getEffectiveModel(0), "test/basic-model");
+      preferredProvider: "test",
+    });
+    chooseHigh(component);
+    component.handleInput("m");
+    component.handleInput("\x1b[B");
+    component.handleInput("\r");
+    assert.match(overview(component), /test\/basic-model/);
+    assert.doesNotMatch(overview(component), /basic-model:high/);
   });
 
   it("does not expose persistent save shortcuts", () => {
-    const component = new ChainClarifyComponent(
-      { requestRender() {} },
-      {
-        fg(_key: string, text: string) {
-          return text;
-        },
-      },
-      [
-        {
-          name: "worker",
-          description: "",
-          systemPrompt: "",
-          systemPromptMode: "replace",
-          inheritProjectContext: false,
-          inheritSkills: false,
-          source: "user",
-          filePath: "worker.md",
-        },
-      ],
-      ["Task"],
-      "Task",
-      undefined,
-      [
-        {
-          output: false,
-          outputMode: "inline",
-          reads: false,
-          progress: false,
-          skills: [],
-          model: undefined,
-        },
-      ],
-      [],
-      undefined,
-      [],
-      () => {},
-      "chain",
-    );
-
-    const initial = component.render(84).join("\n");
+    const component = preview(undefined, { mode: "chain" });
+    const initial = overview(component);
     assert.doesNotMatch(initial, /\bS\b/);
     assert.doesNotMatch(initial, /\bW\b/);
-
     component.handleInput("W");
-    const afterSaveChainKey = component.render(84).join("\n");
-    assert.doesNotMatch(afterSaveChainKey, /Save Chain/);
-
+    assert.doesNotMatch(overview(component), /Save Chain/);
     component.handleInput("S");
-    const afterSaveAgentKey = component.render(84).join("\n");
-    assert.doesNotMatch(afterSaveAgentKey, /Saved agent settings/);
+    assert.doesNotMatch(overview(component), /Saved agent settings/);
   });
 
   it("wraps wide characters inside the runtime editor width", () => {
-    const component = new ChainClarifyComponent(
-      { requestRender() {} },
-      {
-        fg(_key: string, text: string) {
-          return text;
-        },
-      },
-      [
-        {
-          name: "worker",
-          description: "",
-          systemPrompt: "",
-          systemPromptMode: "replace",
-          inheritProjectContext: false,
-          inheritSkills: false,
-          source: "user",
-          filePath: "worker.md",
-        },
-      ],
-      ["界".repeat(60)],
-      "Task",
-      undefined,
-      [
-        {
-          output: false,
-          outputMode: "inline",
-          reads: false,
-          progress: false,
-          skills: [],
-          model: undefined,
-        },
-      ],
-      [],
-      undefined,
-      [],
-      () => {},
-      "single",
-    );
-
+    const component = preview(undefined, { templates: ["界".repeat(60)] });
     component.handleInput("e");
     const lines = component.render(84).map(stripAnsi);
     assert.ok(
@@ -294,66 +142,22 @@ describe("chain clarify model display", () => {
   });
 
   it("keeps the current model selected and preserves thinking when switching models", () => {
-    const component = new ChainClarifyComponent(
-      { requestRender() {} },
-      {
-        fg(_key: string, text: string) {
-          return text;
-        },
-      },
-      [
-        {
-          name: "worker",
-          description: "",
-          systemPrompt: "",
-          systemPromptMode: "replace",
-          inheritProjectContext: false,
-          inheritSkills: false,
-          source: "user",
-          filePath: "worker.md",
-          model: "gpt-5-mini",
-        },
-      ],
-      ["Task"],
-      "Task",
-      undefined,
-      [
-        {
-          output: false,
-          outputMode: "inline",
-          reads: false,
-          progress: false,
-          skills: [],
-          model: "gpt-5-mini",
-        },
-      ],
-      [
+    const component = preview("gpt-5-mini", {
+      availableModels: [
         { provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
         { provider: "openai", id: "gpt-5", fullId: "openai/gpt-5" },
         { provider: "github-copilot", id: "gpt-5-mini", fullId: "github-copilot/gpt-5-mini" },
         { provider: "github-copilot", id: "gpt-5", fullId: "github-copilot/gpt-5" },
       ],
-      "github-copilot",
-      [],
-      () => {},
-      "single",
-    );
-
-    component.editingStep = 0;
-    component.applyThinkingLevel("high");
-    component.selectedStep = 0;
-    component.enterModelSelector();
-
-    assert.equal(
-      component.filteredModels[component.modelSelectedIndex]?.fullId,
-      "github-copilot/gpt-5-mini",
-    );
-
-    component.modelSelectedIndex = component.filteredModels.findIndex(
-      (model) => model.fullId === "github-copilot/gpt-5",
-    );
-    component.handleModelSelectorInput("\r");
-
-    assert.equal(component.getEffectiveModel(0), "github-copilot/gpt-5:high");
+      preferredProvider: "github-copilot",
+    });
+    chooseHigh(component);
+    component.handleInput("m");
+    component.handleInput("\r");
+    assert.match(overview(component), /github-copilot\/gpt-5-mini:high/);
+    component.handleInput("m");
+    component.handleInput("\x1b[B");
+    component.handleInput("\r");
+    assert.match(overview(component), /github-copilot\/gpt-5:high/);
   });
 });

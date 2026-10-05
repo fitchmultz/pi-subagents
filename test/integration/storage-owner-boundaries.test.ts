@@ -1,3 +1,9 @@
+import {
+  assertDefined,
+  parseJson,
+  record as objectRecord,
+  records as unknownRecords,
+} from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -5,7 +11,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createCompletionDelivery } from "../../src/runs/background/completion-delivery.ts";
 import { registerParentUsage } from "../../src/runs/shared/parent-usage.ts";
@@ -20,9 +26,12 @@ import {
   getRunMetadataDir,
   saveAsyncRunResult,
   saveQuestionContract,
-  readRunJson,
 } from "../../src/runs/shared/supervisor-questions.ts";
-import { createEventBus } from "../support/helpers.ts";
+import { createEventBus, createNativeSessionFixture, makeMinimalCtx } from "../support/helpers.ts";
+import { readRunResult } from "../support/run-publications.ts";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { TrackedOwnedRun } from "../../src/shared/types.ts";
 
 const usage = {
   input: 3,
@@ -32,7 +41,8 @@ const usage = {
   totalTokens: 26,
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 7, total: 13 },
 };
-const message = {
+const message: AssistantMessage = {
+  api: "faux",
   role: "assistant",
   content: [{ type: "text", text: "Completed work 🦄" }],
   provider: "fixture",
@@ -41,7 +51,7 @@ const message = {
   usage,
   timestamp: 7,
 };
-function fixture(t: { after(fn: () => void): void }, script: string) {
+function fixture(t: TestContext, script: string) {
   const root = fs.mkdtempSync(path.join(tmpdir(), "pi-subagents-owner-storage-"));
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
@@ -186,7 +196,7 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
       manager = SessionManager.create(root, path.join(root, "parent"));
     manager.appendMessage(message);
     const ownerSessionId = manager.getSessionId();
-    const run = {
+    const run: TrackedOwnedRun = {
       runId,
       rootRunId: runId,
       ownerSessionId,
@@ -213,7 +223,9 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
         },
       },
     );
-    const reopened = SessionManager.open(manager.getSessionFile()!);
+    const defined8643_0 = manager.getSessionFile();
+    assertDefined(defined8643_0);
+    const reopened = SessionManager.open(defined8643_0);
     const resultFile = path.join(getRunMetadataDir(runId), "result.json");
     fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
     const legacy = JSON.stringify({
@@ -230,40 +242,45 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
     t.after(() => fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true }));
     const completionKey = `completion:legacy:${runId}:1`;
     const state = {
+      ...createSubagentState(root),
       currentSessionId: ownerSessionId,
       ownedRuns: new Map([[runId, run]]),
       completionSeen: new Map(),
-      lastUiContext: {
-        sessionManager: reopened,
-        isIdle: () => true,
-        hasPendingMessages: () => false,
-      },
-    } as Parameters<typeof createCompletionDelivery>[1];
+      lastUiContext: makeMinimalCtx(root, { sessionManager: reopened }),
+    };
     const sent: unknown[] = [],
       completed: unknown[] = [];
+    const native = await createNativeSessionFixture({ cwd: root, agentDir: root });
+    t.after(() => native.dispose());
     const pi = {
+      ...native.pi,
       events: createEventBus(),
-      on: () => {},
-      sendMessage: (message: unknown) => sent.push(message),
-    } as unknown as Parameters<typeof createCompletionDelivery>[0];
+      sendMessage: (notification: unknown) => {
+        sent.push(notification);
+      },
+    };
     pi.events.on("subagent:async-complete", (event) => completed.push(event));
-    const completion = createCompletionDelivery(pi, state, registerParentUsage(pi));
+    const completion = createCompletionDelivery(pi, state, registerParentUsage(pi, ["subagent"]));
     try {
       completion.start();
       const deadline = performance.now() + 5_000;
       while (
         receiptOwner === "foreign"
           ? completed.length === 0
-          : state.ownedRuns!.get(runId)!.delivery?.entryId !== receiptId
+          : state.ownedRuns.get(runId)?.delivery?.entryId !== receiptId
       ) {
         assert.ok(
           performance.now() < deadline,
           "cold recovery must process actual owner/receipt evidence",
         );
+        // Observe the owner publication before advancing this lifecycle transition.
+        // oxlint-disable-next-line no-await-in-loop
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       if (receiptOwner === "foreign") {
-        assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, undefined);
+        const defined10531_0 = state.ownedRuns.get(runId);
+        assertDefined(defined10531_0);
+        assert.equal(defined10531_0.delivery?.entryId, undefined);
         assert.equal(
           completed.length,
           1,
@@ -272,9 +289,15 @@ for (const receiptOwner of [undefined, "current", "foreign"]) {
         assert.equal(sent.length, 1, "the genuine owner still receives a notification");
         return;
       }
-      assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, receiptId);
-      assert.equal(state.ownedRuns!.get(runId)!.completion?.state, "journaled");
-      assert.equal(state.ownedRuns!.get(runId)!.completion?.id, completionKey);
+      const defined10867_0 = state.ownedRuns.get(runId);
+      assertDefined(defined10867_0);
+      assert.equal(defined10867_0.delivery?.entryId, receiptId);
+      const defined10946_0 = state.ownedRuns.get(runId);
+      assertDefined(defined10946_0);
+      assert.equal(defined10946_0.completion?.state, "journaled");
+      const defined11027_0 = state.ownedRuns.get(runId);
+      assertDefined(defined11027_0);
+      assert.equal(defined11027_0.completion?.id, completionKey);
       assert.equal(
         state.completionSeen.size,
         0,
@@ -330,19 +353,34 @@ test("live consumed tool arguments and structured reports retain complete long p
     t,
     `process.stdout.write(${JSON.stringify(events.map((event) => JSON.stringify(event)).join("\n") + "\n")});`,
   );
-  const received: any[] = [];
+  const received: unknown[] = [];
   await runChildAttempt({
     args: [],
     cwd: root,
     env,
     agent: "fixture",
-    onEvent: (event) => received.push(event),
-  });
-  assert.deepEqual(received.find((event) => event.type === "tool_execution_start").args, {
-    [key]: "Exact argument",
+    onEvent: (event) => {
+      received.push(event);
+    },
   });
   assert.deepEqual(
-    received.find((event) => event.type === "message_end").message.content[0].arguments.value,
+    objectRecord(received.find((event) => objectRecord(event).type === "tool_execution_start"))
+      .args,
+    {
+      [key]: "Exact argument",
+    },
+  );
+  assert.deepEqual(
+    objectRecord(
+      objectRecord(
+        unknownRecords(
+          objectRecord(
+            objectRecord(received.find((event) => objectRecord(event).type === "message_end"))
+              .message,
+          ).content,
+        )[0],
+      ).arguments,
+    ).value,
     report,
   );
 });
@@ -437,15 +475,23 @@ test("failed accounting preserves successful execution and repairs only the reco
     startedAt: 0,
     children: [{ agent: "fixture", index: 0 }],
   });
-  const repaired = readRunJson<typeof saved>(path.join(getRunMetadataDir(runId), "result.json"))!;
+  const defined16298_0 = readRunResult(path.join(getRunMetadataDir(runId), "result.json"));
+  assertDefined(defined16298_0);
+  const repaired = defined16298_0;
   assert.equal(repaired.success, true);
   assert.equal(repaired.completionId, saved.completionId);
-  assert.equal(repaired.results![0]!.accounting?.state, "complete");
+  const defined16496_0 = repaired.results;
+  assertDefined(defined16496_0);
+  assert.equal(defined16496_0[0].accounting?.state, "complete");
+  const defined16564_0 = repaired.results;
+  assertDefined(defined16564_0);
   assert.deepEqual(
-    repaired.results![0]!.usage?.contributions?.map((value) => value.id),
+    defined16564_0[0].usage?.contributions?.map((value) => value.id),
     ["child:terminal"],
   );
-  assert.equal(repaired.results![0]!.usage?.input, 3);
+  const defined16686_0 = repaired.results;
+  assertDefined(defined16686_0);
+  assert.equal(defined16686_0[0].usage?.input, 3);
   assert.equal(fs.readFileSync(calls, "utf8"), "called\n");
 });
 
@@ -507,10 +553,15 @@ test("compact observations preserve late bash errors, partial edit receipts and 
     17,
   );
   assert.equal(result.stderr.length, 16_384);
-  const record = result.auditRecords!.find((record) => record.kind === "stderr")!;
+  assertDefined(result.auditRecords);
+  const defined18634_0 = result.auditRecords.find((record) => record.kind === "stderr");
+  assertDefined(defined18634_0);
+  const record = defined18634_0;
+  const defined18717_0 = result.auditPath;
+  assertDefined(defined18717_0);
   assert.equal(
     fs
-      .readFileSync(result.auditPath!)
+      .readFileSync(defined18717_0)
       .subarray(record.offset, record.offset + record.length)
       .toString(),
     diagnostics,
@@ -523,7 +574,9 @@ test("compact observations preserve late bash errors, partial edit receipts and 
     agent: "fixture",
   });
   assert.equal(unconfirmed.exitCode, 1);
-  assert.match(unconfirmed.error!, /no completed assistant result/);
+  const defined19096_0 = unconfirmed.error;
+  assertDefined(defined19096_0);
+  assert.match(defined19096_0, /no completed assistant result/);
 });
 
 test("startup isolates an unreadable unrelated foreground owner", (t) => {
@@ -556,11 +609,16 @@ test("startup isolates an unreadable unrelated foreground owner", (t) => {
       fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true });
     }
   });
-  const state = {} as Parameters<typeof restoreOwnedRuns>[0],
-    ctx = { cwd: "/fixture", sessionManager: manager } as Parameters<typeof restoreOwnedRuns>[1];
+  const state = createSubagentState("/fixture"),
+    ctx = makeMinimalCtx("/fixture", { sessionManager: manager });
   restoreOwnedRuns(state, ctx);
-  assert.equal(state.foregroundRuns!.get(healthy)!.updatedAt, 2);
-  assert.equal(state.ownedRuns!.has(healthy), true);
+  assertDefined(state.foregroundRuns);
+  const defined20406_0 = state.foregroundRuns.get(healthy);
+  assertDefined(defined20406_0);
+  assert.equal(defined20406_0.updatedAt, 2);
+  const defined20472_0 = state.ownedRuns;
+  assertDefined(defined20472_0);
+  assert.equal(defined20472_0.has(healthy), true);
 });
 
 test("legacy receipt recovery retains a malformed-child run as incomplete without hiding a healthy owner", (t) => {
@@ -607,13 +665,20 @@ test("legacy receipt recovery retains a malformed-child run as incomplete withou
       fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true });
     }
   });
-  const state = {} as Parameters<typeof restoreOwnedRuns>[0],
-    ctx = { cwd: root, sessionManager: manager } as Parameters<typeof restoreOwnedRuns>[1];
+  const state = createSubagentState(root),
+    ctx = makeMinimalCtx(root, { sessionManager: manager });
   restoreOwnedRuns(state, ctx);
-  assert.equal(state.ownedRuns!.has(healthy), true);
-  const retained = state.ownedRuns!.get(broken)!;
+  const defined22029_0 = state.ownedRuns;
+  assertDefined(defined22029_0);
+  assert.equal(defined22029_0.has(healthy), true);
+  assertDefined(state.ownedRuns);
+  const defined22082_0 = state.ownedRuns.get(broken);
+  assertDefined(defined22082_0);
+  const retained = defined22082_0;
   assert.equal(ownedRunView(retained, state).state, "unknown");
-  assert.match(ownedRunView(retained, state).diagnosis!, /recovery remains incomplete/);
+  const defined22196_0 = ownedRunView(retained, state).diagnosis;
+  assertDefined(defined22196_0);
+  assert.match(defined22196_0, /recovery remains incomplete/);
   assert.equal(
     fs.existsSync(path.join(getRunMetadataDir(broken), "foreground.json")),
     false,
@@ -642,6 +707,8 @@ test("missing stream usage or an unverified native-reference claim preserves exe
     if (claimed) {
       fs.writeFileSync(file, '{"type":"session","id":"child","version":3}\n');
     }
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     const result = await runChildAttempt({
       args: [],
       cwd: root,
@@ -659,7 +726,12 @@ test("missing stream usage or an unverified native-reference claim preserves exe
       undefined,
       "a child claim or file locator is not a native commit receipt",
     );
-    assert.equal(JSON.parse(fs.readFileSync(result.auditPath!, "utf8")).type, "message_end");
+    const defined23952_0 = result.auditPath;
+    assertDefined(defined23952_0);
+    assert.equal(
+      objectRecord(parseJson(fs.readFileSync(defined23952_0, "utf8"))).type,
+      "message_end",
+    );
     if (claimed) {
       assert.equal(
         result.usage.input,
@@ -684,6 +756,8 @@ for (const claimed of [false, true]) {
       const file = path.join(root, "native.jsonl"),
         audit = path.join(root, "audit");
       fs.writeFileSync(file, '{"type":"session","id":"child","version":3}\n');
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
       const result = await runChildAttempt({
         args: [],
         cwd: root,
@@ -719,7 +793,7 @@ for (const claimed of [false, true]) {
         );
       } else {
         assert.equal(result.auditPath, audit);
-        assert.deepEqual(JSON.parse(fs.readFileSync(audit, "utf8")), {
+        assert.deepEqual(parseJson(fs.readFileSync(audit, "utf8")), {
           type: "message_end",
           message,
         });

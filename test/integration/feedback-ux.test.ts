@@ -1,3 +1,8 @@
+import type { SubagentResultIntercomPayload } from "../../src/shared/types.ts";
+import { toolText } from "../support/background-fixtures.ts";
+import { readRunStatus } from "../support/run-publications.ts";
+import { readChildCall } from "../support/child-process-receipts.ts";
+import { assertDefined, textAt, record, text as stringValue } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -7,12 +12,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Check } from "typebox/value";
 import {
   createEventBus,
+  createNativeSessionFixture,
   createMockPi,
   createTempDir,
   makeMinimalCtx,
   removeTempDir,
 } from "../support/helpers.ts";
-import type { OwnedRun, SavedLaunchConfig, SubagentState } from "../../src/shared/types.ts";
+import type {
+  TrackedOwnedRun,
+  SavedLaunchConfig,
+  SubagentState,
+  AsyncResultFile,
+} from "../../src/shared/types.ts";
 
 const root = createTempDir("feedback-ux-");
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -34,12 +45,16 @@ const { resolveEffectiveAcceptance } = await import("../../src/runs/shared/accep
 const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
 const { formatAsyncStartedMessage } = await import("../../src/runs/background/async-execution.ts");
 const { formatRunAction } = await import("../../src/shared/status-format.ts");
-after(() => removeTempDir(root));
+const native = await createNativeSessionFixture({ cwd: root, agentDir: path.join(root, "agent") });
+after(async () => {
+  await native.dispose();
+  removeTempDir(root);
+});
 
 function setup(id: string) {
   const sessionFile = path.join(root, `${id}.jsonl`);
   fs.writeFileSync(sessionFile, "");
-  const run: OwnedRun = {
+  const run: TrackedOwnedRun = {
     runId: id,
     rootRunId: id,
     ownerSessionId: "session-123",
@@ -86,7 +101,12 @@ function setup(id: string) {
     completionSeen: new Map(),
     watcher: null,
     watcherRestartTimer: null,
-    resultFileCoalescer: { schedule: () => false, clear() {} },
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear() {
+        /* The fixture does not need clear side effects. */
+      },
+    },
   };
   const events = createEventBus();
   const emitted: string[] = [];
@@ -95,10 +115,12 @@ function setup(id: string) {
     "subagent:result-intercom",
     "subagent:async-started",
   ]) {
-    events.on(event, () => emitted.push(event));
+    events.on(event, () => {
+      emitted.push(event);
+    });
   }
   const executor = createSubagentExecutor({
-    pi: { events, getSessionName: () => "parent" },
+    pi: { ...native.pi, events, getSessionName: () => "parent" },
     state,
     config: {},
     asyncByDefault: false,
@@ -125,25 +147,24 @@ function setup(id: string) {
     sessionFile,
     child,
     execute: (params: Record<string, unknown>) =>
-      executor.execute(
-        "fixture",
-        normalizeSubagentParamsLike(params),
-        undefined,
-        undefined,
-        makeMinimalCtx(root),
-      ),
+      executor.execute({
+        toolCallId: "fixture",
+        params: normalizeSubagentParamsLike(params),
+        ctx: makeMinimalCtx(root),
+      }),
   };
 }
 
 test("feedback inspect is compact by default, full is opt-in, and questions/errors/paths remain actionable", async () => {
   const fixture = setup("inspect-compact");
   const artifactPaths = {
+    inputPath: path.join(root, "missing-input.md"),
     outputPath: path.join(root, "missing-output.md"),
     metadataPath: path.join(root, "missing-meta.json"),
   };
   const effectiveAcceptance = resolveEffectiveAcceptance({
     explicit: { criteria: ["Retain evidence"] },
-  })!;
+  });
   saveForegroundRun({
     ...fixture.run,
     results: [
@@ -155,6 +176,7 @@ test("feedback inspect is compact by default, full is opt-in, and questions/erro
         acceptance: {
           status: "rejected",
           explicit: true,
+          inferredReason: [],
           effectiveAcceptance,
           criteria: effectiveAcceptance.criteria,
           runtimeChecks: [],
@@ -177,7 +199,7 @@ test("feedback inspect is compact by default, full is opt-in, and questions/erro
     message: "Choose the branch before continuing.",
   });
   const compact = await fixture.execute({ action: "status", id: fixture.run.runId });
-  const text = compact.content.map((part) => part.text).join("\n");
+  const text = toolText(compact.content);
   assert.doesNotMatch(text, /TASK-END|PRIVATE-PROMPT-END/);
   for (const value of [
     "Task lead",
@@ -195,11 +217,15 @@ test("feedback inspect is compact by default, full is opt-in, and questions/erro
     assert.ok(text.includes(value), value);
   }
   assert.equal(compact.details.run?.task, fixture.run.task);
-  assert.deepEqual(compact.details.run?.children[0]?.launch, fixture.launch);
+  assert.deepEqual(compact.details.run.children[0]?.launch, fixture.launch);
   assert.equal(compact.details.questions?.[0]?.questionId, question.questionId);
   const full = await fixture.execute({ action: "status", id: fixture.run.runId, full: true });
-  assert.ok(full.content.some((part) => part.text.includes(fixture.run.task)));
-  assert.ok(full.content.some((part) => part.text.includes("PRIVATE-PROMPT-END")));
+  assert.ok(
+    full.content.some((part) => part.type === "text" && part.text.includes(fixture.run.task)),
+  );
+  assert.ok(
+    full.content.some((part) => part.type === "text" && part.text.includes("PRIVATE-PROMPT-END")),
+  );
   assert.deepEqual(
     full.details.run,
     compact.details.run,
@@ -216,7 +242,7 @@ test("feedback review returns only a saved parent-decision receipt and never rel
     decision: "needs_changes",
     message: note,
   });
-  const text = result.content.map((part) => part.text).join("\n");
+  const text = toolText(result.content);
   assert.ok(text.length < 450, "review is a receipt, not a second inspect");
   assert.match(text, /Saved parent review.*needs_changes/);
   assert.match(text, /parent-only.*not sent/);
@@ -245,29 +271,38 @@ test("feedback explicit continuation never replays a saved parent review as new 
       id: fixture.run.runId,
       message: "ONLY-NEW-ACTIONABLE-INSTRUCTION",
     });
-    assert.ok(!result.isError, result.content[0]?.text);
+    assert.ok(!(result.isError === true), textAt(result.content));
     const deadline = Date.now() + 10000;
     while (!fs.existsSync(path.join(RESULTS_DIR, `${result.details.asyncId}.json`))) {
       assert.ok(Date.now() < deadline);
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await sleep(10);
     }
-    const status = JSON.parse(
-      fs.readFileSync(path.join(result.details.asyncDir!, "status.json"), "utf8"),
-    );
+    const defined8714_0 = result.details.asyncDir;
+    assertDefined(defined8714_0);
+    const status = readRunStatus(path.join(defined8714_0, "status.json"));
+    assertDefined(status.pid);
     while (questions.questionProcessAlive({ pid: status.pid })) {
       assert.ok(Date.now() < deadline);
+      // Observe the owner publication before advancing this lifecycle transition.
+      // oxlint-disable-next-line no-await-in-loop
       await sleep(10);
     }
     const calls = fs.readdirSync(mock.dir).filter((name) => name.startsWith("call-"));
     assert.equal(calls.length, 1);
-    const call = JSON.parse(fs.readFileSync(path.join(mock.dir, calls[0]!), "utf8"));
+    const call = readChildCall(path.join(mock.dir, calls[0]));
     assert.ok(call.expandedArgs.join("\n").includes("ONLY-NEW-ACTIONABLE-INSTRUCTION"));
     assert.ok(!call.expandedArgs.join("\n").includes("PARENT-ONLY-REVIEW-NOTE"));
-    assert.equal(
-      fixture.state.ownedRuns!.get(fixture.run.runId)!.review?.decision,
-      "needs_changes",
-    );
-    assert.equal(fixture.state.ownedRuns!.get(result.details.asyncId!)!.review, undefined);
+    assertDefined(fixture.state.ownedRuns);
+    const defined9348_0 = fixture.state.ownedRuns.get(fixture.run.runId);
+    assertDefined(defined9348_0);
+    assert.equal(defined9348_0.review?.decision, "needs_changes");
+    assertDefined(result.details.asyncId);
+    assertDefined(fixture.state.ownedRuns);
+    const defined9469_0 = fixture.state.ownedRuns.get(result.details.asyncId);
+    assertDefined(defined9469_0);
+    assert.equal(defined9469_0.review, undefined);
   } finally {
     mock.uninstall();
   }
@@ -278,6 +313,7 @@ test("feedback completion and compact receipts expose existing result/acceptance
   const { formatSubagentResultReceipt } = await import("../../src/intercom/result-intercom.ts");
   const fixture = setup("metadata-pointer");
   const artifactPaths = {
+    inputPath: path.join(root, "short-input.md"),
     outputPath: path.join(root, "short-output.md"),
     metadataPath: path.join(root, "acceptance-meta.json"),
   };
@@ -289,9 +325,9 @@ test("feedback completion and compact receipts expose existing result/acceptance
     }),
   );
   const bus = createEventBus();
-  const deliveries: import("../../src/shared/types.ts").SubagentResultIntercomPayload[] = [];
+  const deliveries: SubagentResultIntercomPayload[] = [];
   bus.on("subagent:result-intercom", (raw) => {
-    const payload = raw as import("../../src/shared/types.ts").SubagentResultIntercomPayload;
+    const payload = raw as SubagentResultIntercomPayload;
     deliveries.push(payload);
     bus.emit("subagent:result-intercom-delivery", {
       requestId: payload.requestId,
@@ -301,7 +337,7 @@ test("feedback completion and compact receipts expose existing result/acceptance
   const resultsDir = path.join(root, "metadata-results");
   fs.mkdirSync(resultsDir);
   const runId = "metadata-async";
-  const data = {
+  const data: AsyncResultFile = {
     id: runId,
     sessionId: fixture.run.ownerSessionId,
     mode: "single",
@@ -321,10 +357,12 @@ test("feedback completion and compact receipts expose existing result/acceptance
   try {
     watcher.primeExistingResults();
     await completed.promise;
-    const payload = deliveries[0]!;
+    const payload = deliveries[0];
     assert.equal(payload.children[0]?.metadataPath, artifactPaths.metadataPath);
     assert.ok(payload.message.includes(artifactPaths.metadataPath));
-    assert.ok(payload.resultPath?.endsWith("result.json") && fs.existsSync(payload.resultPath));
+    assert.ok(
+      payload.resultPath?.endsWith("result.json") === true && fs.existsSync(payload.resultPath),
+    );
     assert.ok(
       formatSubagentResultReceipt({ mode: "single", runId, payload }).includes(
         artifactPaths.metadataPath,
@@ -343,7 +381,7 @@ test("feedback completion and compact receipts expose existing result/acceptance
   fs.writeFileSync(path.join(resultsDir, `${disabledId}.json`), JSON.stringify(disabled));
   const disabledDone = Promise.withResolvers<void>();
   bus.on("subagent:async-complete", (event) => {
-    if (event.runId === disabledId) {
+    if (record(event).runId === disabledId) {
       disabledDone.resolve();
     }
   });
@@ -351,7 +389,9 @@ test("feedback completion and compact receipts expose existing result/acceptance
   try {
     disabledWatcher.primeExistingResults();
     await disabledDone.promise;
-    const payload = deliveries.find((delivery) => delivery.runId === disabledId)!;
+    const defined12791_0 = deliveries.find((delivery) => delivery.runId === disabledId);
+    assertDefined(defined12791_0);
+    const payload = defined12791_0;
     assert.equal(payload.children[0]?.metadataPath, undefined);
     assert.doesNotMatch(
       formatSubagentResultReceipt({ mode: "single", runId: disabledId, payload }),
@@ -373,10 +413,19 @@ test("feedback public and advanced schemas expose full inspection and explain un
   assert.equal(Check(SubagentParams, { action: "status", runId: "run", full: true }), true);
   assert.equal(Check(SubagentParams, { action: "status", full: true }), false);
   assert.equal(normalizeSubagentParamsLike({ action: "status", full: true }).full, true);
-  assert.match(AgentRunsParams.properties.message.description, /parent-only.*not sent/);
-  assert.match(SubagentParams.properties.message.description, /not sent/);
-  assert.match(AcceptanceOverride.description, /entire Git index.*pre-existing staged/);
-  assert.match(AcceptanceOverride.description, /never to a live child's acceptance/);
+  assert.match(
+    stringValue(record(AgentRunsParams.properties.message).description),
+    /parent-only.*not sent/,
+  );
+  assert.match(stringValue(record(SubagentParams.properties.message).description), /not sent/);
+  assert.match(
+    stringValue(record(AcceptanceOverride).description),
+    /entire Git index.*pre-existing staged/,
+  );
+  assert.match(
+    stringValue(record(AcceptanceOverride).description),
+    /never to a live child's acceptance/,
+  );
 });
 
 test("feedback live runs precede 31 unreviewed results while history and explicit continuation links remain intact", async (t) => {
@@ -403,7 +452,9 @@ test("feedback live runs precede 31 unreviewed results while history and explici
       rootRunId: `finished-${i}`,
       startedAt: i + 10,
     };
-    fixture.state.ownedRuns!.set(run.runId, run);
+    const defined15109_0 = fixture.state.ownedRuns;
+    assertDefined(defined15109_0);
+    defined15109_0.set(run.runId, run);
     saveForegroundRun({ ...run, results: [fixture.child] });
   }
   const successor = {
@@ -412,19 +463,25 @@ test("feedback live runs precede 31 unreviewed results while history and explici
     predecessorIndex: 0,
     rootRunId: "finished-0",
   };
-  fixture.state.ownedRuns!.set(successor.runId, successor);
+  const defined15359_0 = fixture.state.ownedRuns;
+  assertDefined(defined15359_0);
+  defined15359_0.set(successor.runId, successor);
   t.after(() => closeRunHistory(fixture.state));
   await (await runHistoryIndex(fixture.state)).needsControls();
   const list = await ownedRunList(fixture.state, { limit: 2 });
   assert.equal(list.details.runs?.[0]?.runId, fixture.run.runId);
-  assert.match(list.content[0]!.text, /from finished-0:0/);
+  assert.match(textAt(list.content), /from finished-0:0/);
   const all = [];
   let predecessorText = "";
   for (let offset = 0; offset < 32; offset += 5) {
+    // Each scenario owns shared fixture state; complete it before starting the next one.
+    // oxlint-disable-next-line no-await-in-loop
     const page = await ownedRunList(fixture.state, { offset, limit: 5 });
     assert.equal(page.details.runList?.total, 32);
-    all.push(...page.details.runs!.map((run) => run.runId));
-    predecessorText += page.content[0]!.text;
+    const defined15945_0 = page.details.runs;
+    assertDefined(defined15945_0);
+    all.push(...defined15945_0.map((run) => run.runId));
+    predecessorText += textAt(page.content);
   }
   assert.equal(new Set(all).size, 32);
   assert.match(predecessorText, /continued as list-live \(separate results\/reviews\)/);
@@ -471,10 +528,12 @@ for (const surface of ["parent", "child-compact", "child-legacy"]) {
     };
     questions.saveRunStatus(control.runId, control);
     const text = [
-      inspectSubagentStatus(
-        { id: control.runId },
-        { nested: childSafe ? { routes: [] } : undefined },
-      ).content[0]!.text,
+      textAt(
+        inspectSubagentStatus(
+          { id: control.runId },
+          { nested: childSafe ? { routes: [] } : undefined },
+        ).content,
+      ),
       formatAsyncStartedMessage("Started", childSafe),
       formatControlNoticeMessage(
         buildControlEvent({ runId: control.runId, agent: "worker", to: "needs_attention" }),

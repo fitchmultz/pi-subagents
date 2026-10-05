@@ -1,6 +1,8 @@
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { assertDefined, textAt, record, text } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,15 +10,18 @@ import { randomUUID } from "node:crypto";
 import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import {
+  type ReadonlyInput,
   SUBAGENT_LIVE_INTERCOM_EVENT,
   SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT,
   SUBAGENT_RESULT_INTERCOM_EVENT,
   SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
   type SubagentExecutionResult,
   type UsageContribution,
+  type Usage,
 } from "../../src/shared/types.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerParentUsage } from "../../src/runs/shared/parent-usage.ts";
 import { readNativeUsage, snapshotNativeUsage } from "../../src/runs/shared/native-usage.ts";
 import registerSubagents from "../../src/extension/index.ts";
@@ -35,15 +40,30 @@ import {
   writeNestedControlResult,
 } from "../../src/runs/shared/nested-events.ts";
 
-const sdkRoot =
-  process.env.PI_PARENT_USAGE_TEST_SDK ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+const defined1420_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(defined1420_0);
+const sdkRoot = process.env.PI_PARENT_USAGE_TEST_SDK ?? path.dirname(defined1420_0);
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
-const sdk = await import(sdkEntry.href);
-const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
-const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } = await import(
-  pathToFileURL(path.join(aiRoot, "dist/index.js")).href
+const installedPackage = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(installedPackage);
+assert.equal(
+  path.resolve(sdkRoot),
+  path.resolve(path.dirname(installedPackage)),
+  "selected host must match the installed SDK graph",
 );
+const sdk = await import("@earendil-works/pi-coding-agent");
+const defined1674_0 = findPackageJSON("@earendil-works/pi-ai", sdkEntry);
+assertDefined(defined1674_0);
+const aiRoot = path.dirname(defined1674_0);
+const installedAiPackage = findPackageJSON("@earendil-works/pi-ai", import.meta.url);
+assertDefined(installedAiPackage);
+assert.equal(
+  path.resolve(aiRoot),
+  path.resolve(path.dirname(installedAiPackage)),
+  "selected host must match the installed AI graph",
+);
+const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } =
+  await import("@earendil-works/pi-ai");
 const usage = {
   input: 10,
   output: 20,
@@ -78,6 +98,8 @@ async function harness(t: TestContext) {
   }
   t.after(async () => {
     for (const session of sessions) {
+      // Each scenario owns shared fixture state; complete it before starting the next one.
+      // oxlint-disable-next-line no-await-in-loop
       await close(session);
     }
     rmSync(root, { recursive: true, force: true });
@@ -91,11 +113,11 @@ async function harness(t: TestContext) {
   modelRuntime.registerNativeProvider(faux.provider);
   async function open(
     file?: string,
-    delegation?: { tool: string; register: (pi: ExtensionAPI) => void },
+    delegation?: Readonly<{ tool: string; register: (pi: ExtensionAPI) => void }>,
   ) {
     let adapter!: ReturnType<typeof registerParentUsage>;
     let ctx!: ExtensionContext;
-    let contributions = [contribution];
+    let contributions: readonly UsageContribution[] = [contribution];
     const errors: unknown[] = [];
     const settingsManager = sdk.SettingsManager.inMemory({
       compaction: { enabled: false },
@@ -126,11 +148,11 @@ async function harness(t: TestContext) {
             }),
             async execute(_id, params, signal, onUpdate, context) {
               onUpdate?.(result());
-              if (params.inspect) {
+              if (params.inspect === true) {
                 return result();
               }
               const final = adapter.attach(result(), contributions, context);
-              if (params.discard) {
+              if (params.discard === true) {
                 context.abort();
                 assert.equal(signal?.aborted, true);
                 throw new DOMException("Wait aborted before returning its result", "AbortError");
@@ -151,17 +173,20 @@ async function harness(t: TestContext) {
       model: faux.getModel(),
       settingsManager,
       resourceLoader: loader,
-      sessionManager: file
-        ? sdk.SessionManager.open(file)
-        : sdk.SessionManager.create(root, path.join(root, "sessions")),
+      sessionManager:
+        file !== undefined && file.length > 0
+          ? sdk.SessionManager.open(file)
+          : sdk.SessionManager.create(root, path.join(root, "sessions")),
       tools: ["usage_wait", ...(delegation ? [delegation.tool] : [])],
     });
     sessions.add(session);
     await session.bindExtensions({
       mode: "print",
-      onError: (error: unknown) => errors.push(error),
+      onError: (error: unknown) => {
+        errors.push(error);
+      },
     });
-    const invoke = async (tool: string, ...args: object[]) => {
+    const invoke = async (tool: string, ...args: readonly ReadonlyInput<JsonObject>[]) => {
       faux.setResponses([
         fauxAssistantMessage(
           args.map((params) => fauxToolCall(tool, params)),
@@ -177,8 +202,8 @@ async function harness(t: TestContext) {
       adapter,
       ctx,
       invoke,
-      wait: (...args: object[]) => invoke("usage_wait", ...args),
-      setContributions(value: UsageContribution[]) {
+      wait: (...args: readonly ReadonlyInput<JsonObject>[]) => invoke("usage_wait", ...args),
+      setContributions(value: readonly UsageContribution[]) {
         contributions = value;
       },
     };
@@ -186,10 +211,10 @@ async function harness(t: TestContext) {
   return { open, close };
 }
 
-function toolMessages(session: any) {
+function toolMessages(session: AgentSession) {
   return session.sessionManager
     .getEntries()
-    .flatMap((entry: any) =>
+    .flatMap((entry) =>
       entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : [],
     );
 }
@@ -200,10 +225,11 @@ test("portable concurrent final waits charge once in native journal and survive 
   await first.wait({}, {});
   assert.equal(first.session.getSessionStats().cost, 10);
   assert.deepEqual(
-    toolMessages(first.session).map((message: any) => message.usage),
+    toolMessages(first.session).map((message) => message.usage),
     [usage, undefined],
   );
   const file = first.session.sessionManager.getSessionFile();
+  assertDefined(file);
   assert.equal(
     readFileSync(file, "utf8")
       .split("\n")
@@ -215,7 +241,9 @@ test("portable concurrent final waits charge once in native journal and survive 
   const resumed = await h.open(file);
   await resumed.wait({});
   assert.equal(resumed.session.getSessionStats().cost, 10);
-  assert.equal(toolMessages(resumed.session).at(-1).usage, undefined);
+  const resumedResult = toolMessages(resumed.session).at(-1);
+  assertDefined(resumedResult);
+  assert.equal(resumedResult.usage, undefined);
   resumed.setContributions([contribution, { ...contribution, id: "child-session:resumed-entry" }]);
   await resumed.wait({});
   assert.equal(resumed.session.getSessionStats().cost, 20, "only resumed child work is new");
@@ -230,13 +258,13 @@ test("portable discarded result does not reserve usage; inspection and custom de
   });
   await wait({ inspect: true }, { discard: true });
   assert.equal(session.getSessionStats().cost, 0);
-  assert.ok(toolMessages(session).every((message: any) => message.usage === undefined));
+  assert.ok(toolMessages(session).every((message) => message.usage === undefined));
   await wait({}, {});
   assert.equal(session.getSessionStats().cost, 10);
   assert.deepEqual(
     toolMessages(session)
       .slice(-2)
-      .map((message: any) => message.usage),
+      .map((message) => message.usage),
     [usage, undefined],
   );
 });
@@ -279,7 +307,8 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
     for (const [id, sessionId] of [
       [rootId, savedParentFile],
       [nestedId, childFile],
-    ])
+    ] as const) {
+      assertDefined(id);
       saveRunStatus(id, {
         runtimeVersion: 2,
         runId: id,
@@ -298,6 +327,7 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
           },
         ],
       });
+    }
     saveQuestionContract(rootId, 0, { task: "Direct child", sessionFile: childFile });
     saveQuestionContract(nestedId, 0, { task: "Grandchild work" });
     writeFileSync(
@@ -336,9 +366,11 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
       PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: route.capabilityToken,
     };
     const savedEnv = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
-    if (childSafe) Object.assign(process.env, env);
+    if (childSafe) {
+      Object.assign(process.env, env);
+    }
     await h.close(original.session);
-    let directUsage;
+    let directUsage: Usage | undefined;
     const parent = await h.open(savedParentFile, {
       tool: advanced ? "subagent" : "agent_runs",
       register(pi) {
@@ -346,9 +378,12 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
         for (const [send, delivered] of [
           [SUBAGENT_LIVE_INTERCOM_EVENT, SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT],
           [SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT],
-        ]) {
+        ] as const) {
           pi.events.on(send, (request) => {
-            if (request.runId !== rootId) return;
+            const payload = record(request);
+            if (payload.runId !== rootId) {
+              return;
+            }
             saveAsyncRunResult(rootId, {
               runtimeVersion: 2,
               id: rootId,
@@ -365,7 +400,7 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
                 },
               ],
             });
-            pi.events.emit(delivered, { requestId: request.requestId, delivered: true });
+            pi.events.emit(delivered, { requestId: text(payload.requestId), delivered: true });
           });
         }
       },
@@ -373,7 +408,9 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
     let delivered = false;
     const reply = setInterval(() => {
       const request = readNestedControlRequests(route)[0];
-      if (!request || delivered) return;
+      if (!request || delivered) {
+        return;
+      }
       delivered = true;
       saveAsyncRunResult(nestedId, {
         runtimeVersion: 2,
@@ -409,20 +446,27 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
     t.after(() => {
       clearInterval(reply);
       for (const [key, value] of Object.entries(savedEnv)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
       }
-      for (const dir of [rootDir, nestedDir, path.dirname(route.eventSink)])
+      for (const dir of [rootDir, nestedDir, path.dirname(route.eventSink)]) {
         rmSync(dir, { recursive: true, force: true });
+      }
     });
     const tool = advanced ? "subagent" : "agent_runs",
       action = advanced ? "resume" : "continue";
     await parent.invoke(tool, { action, id: nestedId, message: "Finish grandchild", async: false });
     const nestedResult = toolMessages(parent.session).at(-1);
-    assert.equal(nestedResult.isError, false, nestedResult.content[0]?.text);
-    assert.match(nestedResult.content[0]?.text, /Grandchild completed/);
+    assertDefined(nestedResult);
+    assert.equal(nestedResult.isError, false, textAt(nestedResult.content));
+    assertDefined(nestedResult);
+    assert.match(textAt(nestedResult.content), /Grandchild completed/);
+    assertDefined(nestedResult);
     assert.equal(
-      nestedResult.details.run.ownerSessionId,
+      record(record(nestedResult.details).run).ownerSessionId,
       child.session.sessionManager.getSessionId(),
     );
     assert.equal(
@@ -431,11 +475,17 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
       "observing a descendant must not charge it directly to the ancestor",
     );
     await child.wait({}, {});
-    directUsage = readNativeUsage(childFile, baseline)![0]!;
+    const nativeUsage = readNativeUsage(childFile, baseline);
+    assertDefined(nativeUsage);
+    directUsage = nativeUsage[0];
+    assertDefined(directUsage);
     assert.equal(directUsage.cost, 10);
+    assertDefined(directUsage.contributions);
     assert.ok(directUsage.contributions.every((item) => item.id !== contribution.id));
     await parent.invoke(tool, { action, id: rootId, message: "Finish direct child", async: false });
-    assert.match(toolMessages(parent.session).at(-1).content[0]?.text, /Direct child completed/);
+    const directResult = toolMessages(parent.session).at(-1);
+    assertDefined(directResult);
+    assert.match(textAt(directResult.content), /Direct child completed/);
     assert.equal(
       parent.session.getSessionStats().cost,
       10,
