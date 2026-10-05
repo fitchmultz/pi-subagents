@@ -596,6 +596,7 @@ test("Agents model details preserve a provider-matching model namespace in assis
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
 	await refreshFixture(f);
 	const opening = f.controller.open(), view = f.overlay;
+	await historyReady(f);
 	view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
 	const toolDetail = await readDetails(view, 160);
 	assert.match(toolDetail, /namespace\.txt/);
@@ -620,6 +621,7 @@ test("Agents model details retain an empty-content error model after fallback", 
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
 	await refreshFixture(f);
 	const opening = f.controller.open(), view = f.overlay;
+	await historyReady(f);
 	assert.match(plain(view, 160), /saved: openrouter\/openrouter\/fixture/, "the conversation status has moved to the fallback");
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
 	const detail = await readDetails(view, 160);
@@ -1093,6 +1095,7 @@ test("clickable Agents hints: quoted shell tabs keep native text and remove-cont
 	f.childSessions[0].appendMessage({ role: "bashExecution", command: "printf\tquote", output: "Recorded output", exitCode: 0, cancelled: false, timestamp: Date.now() });
 	await refreshFixture(f);
 	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	await historyReady(f);
 	f.terminal.input("\t"); f.terminal.input("\x1b[F"); f.tui.renderNow();
 	f.terminal.input("\x1br"); f.terminal.input("Unsent draft");
 	await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted shell context loaded"); f.tui.renderNow();
