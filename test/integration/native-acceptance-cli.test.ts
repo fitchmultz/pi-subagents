@@ -6,12 +6,15 @@ import { fileURLToPath } from "node:url";
 import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  createEventBus,
+  createNativeSessionFixture,
   createTempDir,
   makeAgent,
-  makeMinimalCtx,
   removeTempDir,
 } from "../support/helpers.ts";
+import type { SubagentState, OwnedRun } from "../../src/shared/types.ts";
+import { readJson, assertDefined } from "../support/assertions.ts";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
 
 const originalEnv = { ...process.env };
 const sdkRoot =
@@ -61,7 +64,10 @@ process.env = {
 };
 after(() => {
   process.env = originalEnv;
-  if (originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR) {
+  if (
+    originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR !== undefined &&
+    originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR !== ""
+  ) {
     fs.mkdirSync(originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR, { recursive: true });
     fs.cpSync(root, path.join(originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR, path.basename(root)), {
       recursive: true,
@@ -80,6 +86,8 @@ async function waitFor(check: () => boolean, label: string) {
   const deadline = Date.now() + 20_000;
   while (!check()) {
     assert.ok(Date.now() < deadline, label);
+    // Wait for native command publication before exercising Stop.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
@@ -95,16 +103,28 @@ it(
     const agent = makeAgent("worker", {
       model: "report-cli-fixture/faux-1",
       extensions: [extension],
-      output: false,
     });
-    const state = {
+    const native = await createNativeSessionFixture({ cwd, agentDir: path.join(cwd, "agent") });
+    const state: SubagentState & { ownedRuns: Map<string, OwnedRun> } = {
       baseCwd: cwd,
       currentSessionId: null,
       asyncJobs: new Map(),
       ownedRuns: new Map(),
+      cleanupTimers: new Map(),
+      lastUiContext: null,
+      poller: null,
+      completionSeen: new Map(),
+      watcher: null,
+      watcherRestartTimer: null,
+      resultFileCoalescer: {
+        schedule: () => false,
+        clear() {
+          // Direct foreground execution does not enqueue result-file coalescing.
+        },
+      },
     };
     const executor = createSubagentExecutor({
-      pi: { events: createEventBus(), getSessionName: () => undefined },
+      pi: native.pi,
       state,
       config: {},
       asyncByDefault: false,
@@ -113,13 +133,11 @@ it(
       expandTilde: (value) => value,
       discoverAgents: () => ({ agents: [agent] }),
     });
-    const pending = executor.execute(
-      "native-stop",
-      { agent: "worker", task: "Run the controlled native bash command" },
-      undefined,
-      undefined,
-      makeMinimalCtx(cwd),
-    );
+    const pending = executor.execute({
+      toolCallId: "native-stop",
+      params: { agent: "worker", task: "Run the controlled native bash command", output: false },
+      ctx: native.context,
+    });
     await waitFor(
       () => fs.existsSync(path.join(cwd, "ready")),
       "real native bash must publish its ready file",
@@ -129,20 +147,25 @@ it(
     assert.equal(questionProcessAlive({ pid: shellPid }), true);
     assert.equal(questionProcessAlive({ pid: descendantPid }), true);
     const id = [...state.ownedRuns.keys()][0];
-    const stopped = await executor.execute(
-      "stop",
-      { action: "interrupt", id },
-      undefined,
-      undefined,
-      makeMinimalCtx(cwd),
-    );
+    const stopped = await executor.execute({
+      toolCallId: "stop",
+      params: { action: "interrupt", id },
+      ctx: native.context,
+    });
     assert.equal(stopped.isError, undefined, JSON.stringify(stopped.content));
     const completed = await pending;
     const result = completed.details.results[0];
     const receipts = fs
       .readdirSync(cwd)
       .filter((file) => /^initial-\d+\.json$/.test(file))
-      .map((file) => JSON.parse(fs.readFileSync(path.join(cwd, file), "utf8")));
+      .map((file) => {
+        const value = readJson(path.join(cwd, file));
+        Assert(
+          Type.Object({ cli: Type.String(), networkRequests: Type.Number(), pid: Type.Number() }),
+          value,
+        );
+        return value;
+      });
     assert.equal(receipts.length, 1);
     assert.equal(receipts[0].cli, nativeEntry);
     assert.equal(receipts[0].networkRequests, 0);
@@ -151,7 +174,7 @@ it(
     assert.equal(result.interrupted, true);
     assert.ok(result.agentProcessExit, "real process exit evidence must be retained");
     assert.ok(
-      result.agentProcessExit.code !== 0 || result.agentProcessExit.signal,
+      result.agentProcessExit.code !== 0 || Boolean(result.agentProcessExit.signal),
       "the stopped process outcome is not manufactured exit zero",
     );
     await waitFor(
@@ -161,7 +184,8 @@ it(
     );
     const { SubagentHistoryIndex } = await import("../../src/history/index.ts");
     const { indexedHistory } = await import("../../src/tui/agent-history.ts");
-    const run = state.ownedRuns.get(id)!;
+    const run = state.ownedRuns.get(id);
+    assertDefined(run);
     const index = new SubagentHistoryIndex(path.join(root, "a"));
     try {
       await index.setOwner({ ownerSessionId: run.ownerSessionId, runs: [run] });
@@ -176,7 +200,8 @@ it(
       );
       assert.ok(command);
       if (command.title.includes("result not recorded")) {
-        assert.match(command.details!, /exit is unconfirmed/);
+        assertDefined(command.details);
+        assert.match(command.details, /exit is unconfirmed/);
       }
       fs.writeFileSync(
         path.join(cwd, "stop-evidence.json"),
@@ -184,6 +209,7 @@ it(
       );
     } finally {
       await index.close();
+      await native.dispose();
     }
   },
 );

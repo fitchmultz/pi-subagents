@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { findPackageJSON } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,45 +11,83 @@ import { requestChildExecutionCwd } from "../../src/runs/shared/child-execution-
 import { createForkContextResolver } from "../../src/shared/fork-context.ts";
 
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+  if (key.startsWith("PI_SUBAGENT_")) {
+    delete process.env[key];
+  }
 }
-const { buildPiArgs } = await import(
-  process.env.PI_ARGS_TEST_MODULE
+import { nativeSdkRoot, nativeCli } from "../support/native-sdk.ts";
+import { assertDefined, readJson, record, records, text, textAt } from "../support/assertions.ts";
+import type { ReadonlyDeep } from "type-fest";
+import { importSelectedNative } from "../../src/shared/native-import.ts";
+const { buildPiArgs } = await importSelectedNative(
+  import.meta.url,
+  "../../src/runs/shared/pi-args.ts",
+  process.env.PI_ARGS_TEST_MODULE !== undefined && process.env.PI_ARGS_TEST_MODULE !== ""
     ? pathToFileURL(path.resolve(process.env.PI_ARGS_TEST_MODULE)).href
-    : "../../src/runs/shared/pi-args.ts"
+    : new URL("../../src/runs/shared/pi-args.ts", import.meta.url).href,
+  () => import("../../src/runs/shared/pi-args.ts"),
 );
 const repo = fileURLToPath(new URL("../../", import.meta.url));
-const host =
-  process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
-const sdkUrl = pathToFileURL(path.join(host, "dist/index.js"));
-const sdk = await import(sdkUrl.href);
+const host = nativeSdkRoot(process.env.PI_CONTEXT_TEST_PACKAGE_ROOT);
+const sdk = await import("@earendil-works/pi-coding-agent");
 const { SessionManager } = sdk;
-const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkUrl)!);
-const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const ai = await import("@earendil-works/pi-ai");
 const provider = path.join(repo, "test/fixtures/native-execution-cwd-provider.ts");
 const sourceOwner =
   process.env.PI_CWD_TEST_OWNER ?? path.join(repo, "test/fixtures/native-execution-cwd-owner.ts");
 
+function createIncompatibleOwner(root: string, failure: string, resolvedCwd: string): string {
+  const directory = path.join(root, failure, "pi-change-working-dir");
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, "index.ts");
+  const resolver =
+    failure === "old"
+      ? ""
+      : `
+    pi.events.on('pi-change-working-dir:resolve-execution-cwd', request => {
+      request.result = { cwd: ${JSON.stringify(resolvedCwd)}, ${failure === "resolver-error" ? "error: 'resolver refused'" : ""} };
+    });`;
+  const setter = ["setter-error", "wrong-selection"].includes(failure)
+    ? `
+    pi.events.on('pi-change-working-dir:set-execution-cwd', request => {
+      request.result = { cwd: ${JSON.stringify(resolvedCwd)}, ${failure === "setter-error" ? "error: 'setter refused'" : ""} };
+    });`
+    : "";
+  fs.writeFileSync(
+    file,
+    `export default function(pi) {
+    pi.registerCommand('cwd', { handler: async () => {} });
+    pi.registerTool({ name: 'change_dir', label: 'old cwd', description: 'old owner', parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
+    ${resolver}
+    ${setter}
+  }`,
+  );
+  return file;
+}
+
 test("native child CLI applies new-fork directory intent once and rejects incompatible owners before dispatch", async (t) => {
   const evidence = process.env.PI_CWD_TEST_EVIDENCE_DIR;
-  if (evidence) {
+  if (evidence !== undefined && evidence !== "") {
     fs.mkdirSync(evidence, { recursive: true });
   }
   const root = fs.realpathSync(fs.mkdtempSync(path.join(evidence ?? os.tmpdir(), "pi-child-cwd-")));
   t.after(() => {
-    if (!evidence) {
+    if (evidence === undefined || evidence === "") {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
-  const dirs = Object.fromEntries(
-    ["A", "B", "C", "D"].map((name) => {
-      const dir = path.join(root, name);
-      fs.mkdirSync(dir);
-      fs.writeFileSync(path.join(dir, "sentinel.txt"), name);
-      return [name, dir];
-    }),
-  );
+  function makeDirectory(name: string): string {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "sentinel.txt"), name);
+    return dir;
+  }
+  const dirs = {
+    A: makeDirectory("A"),
+    B: makeDirectory("B"),
+    C: makeDirectory("C"),
+    D: makeDirectory("D"),
+  };
   const agentDir = path.join(root, "agent");
   fs.mkdirSync(agentDir);
   fs.writeFileSync(
@@ -58,7 +95,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
     JSON.stringify({
       compaction: { enabled: false },
       retry: { enabled: false },
-      cacheWarming: { enabled: false },
+      cacheWarming: "off",
     }),
   );
   const env = {
@@ -75,9 +112,11 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
   function launch(
     sessionFile: string,
     cwd: string | undefined,
-    owner: string | undefined,
-    script = [{ name: "read", input: { path: "sentinel.txt" } }],
-    extraArgs: string[] = [],
+    owner?: string,
+    script: readonly Readonly<{ name: string; input: Readonly<{ path: string | undefined }> }>[] = [
+      { name: "read", input: { path: "sentinel.txt" } },
+    ],
+    extraArgs: readonly string[] = [],
   ) {
     const output = path.join(root, `observed-${++serial}.json`);
     const built = buildPiArgs({
@@ -96,55 +135,42 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
       model: "faux/faux-1",
       inheritProjectContext: false,
       inheritSkills: false,
-      extensions: [provider, ...(owner ? [owner] : [])],
+      extensions: [provider, ...(owner !== undefined && owner !== "" ? [owner] : [])],
       projectTrust: "no-approve",
     });
-    const child = spawnSync(
-      process.execPath,
-      [
-        path.join(
-          host,
-          JSON.parse(fs.readFileSync(path.join(host, "package.json"), "utf8")).bin.pi,
-        ),
-        ...built.args,
-      ],
-      {
-        cwd: cwd ?? dirs.B,
-        encoding: "utf8",
-        timeout: 25_000,
-        env: {
-          ...env,
-          ...built.env,
-          PI_CWD_FIXTURE_SCRIPT: JSON.stringify(script),
-          PI_CWD_FIXTURE_OUTPUT: output,
-        },
+    const child = spawnSync(process.execPath, [nativeCli(host), ...built.args], {
+      cwd: cwd ?? dirs.B,
+      encoding: "utf8",
+      timeout: 25_000,
+      env: {
+        ...env,
+        ...built.env,
+        PI_CWD_FIXTURE_SCRIPT: JSON.stringify(script),
+        PI_CWD_FIXTURE_OUTPUT: output,
       },
-    );
-    fs.writeFileSync(path.join(root, `stderr-${serial}.txt`), child.stderr ?? "");
+    });
+    fs.writeFileSync(path.join(root, `stderr-${serial}.txt`), child.stderr);
     assert.equal(child.error, undefined, child.error?.message);
-    assert.ok(fs.existsSync(output), child.stderr || child.stdout);
-    const observed = JSON.parse(fs.readFileSync(output, "utf8"));
+    assert.ok(fs.existsSync(output), child.stderr !== "" ? child.stderr : child.stdout);
+    const observed = record(readJson(output));
     return { child, observed };
   }
-  function readLetters(observed: {
-    results: Array<{
-      name: string;
-      content: Array<{ type: string; text: string }>;
-      isError: boolean;
-    }>;
-  }) {
-    const reads = observed.results.filter(({ name }) => name === "read");
+  function readLetters(observed: Readonly<Record<string, unknown>>) {
+    const reads = records(observed.results).filter(({ name }) => name === "read");
     for (const result of reads) {
       assert.equal(result.isError, false, JSON.stringify(result));
     }
     return reads.map(({ content }) =>
-      content
+      records(content)
         .filter(({ type }) => type === "text")
-        .map(({ text }) => text)
+        .map(({ text: value }) => text(value))
         .join("\n"),
     );
   }
-  function successful(result: ReturnType<typeof launch>, expected: string[]) {
+  function successful(
+    result: ReadonlyDeep<ReturnType<typeof launch>>,
+    expected: readonly string[],
+  ) {
     assert.equal(result.child.status, 0, result.child.stderr);
     assert.deepEqual(readLetters(result.observed), expected);
   }
@@ -163,11 +189,18 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
   const parentBytes = fs.readFileSync(parentFile, "utf8");
   const parent = SessionManager.open(parentFile);
   // Reproduce the root cause with an unmarked native fork: C's read still follows inherited B.
-  const unmarked = SessionManager.open(parentFile).createBranchedSession(parent.getLeafId());
+  const leafId = parent.getLeafId();
+  assertDefined(leafId);
+  const unmarked = SessionManager.open(parentFile).createBranchedSession(leafId);
+  assertDefined(unmarked);
   successful(launch(unmarked, dirs.C, owner), ["B"]);
   let forkIndex = 0;
   const resolver = createForkContextResolver(parent, "fork");
-  const fork = () => resolver.sessionFileForIndex(forkIndex++)!;
+  const fork = () => {
+    const file = resolver.sessionFileForIndex(forkIndex++);
+    assertDefined(file);
+    return file;
+  };
   const childFile = fork();
   const inherited = fs.readFileSync(childFile, "utf8");
   const first = launch(childFile, dirs.C, owner, [
@@ -190,7 +223,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
   const resumed = launch(childFile, dirs.C, owner);
   successful(resumed, ["D"]);
   assert.equal(resumed.observed.id, first.observed.id);
-  requestChildExecutionCwd(childFile, dirs.A);
+  requestChildExecutionCwd(childFile, text(dirs.A));
   successful(launch(childFile, dirs.A, owner), ["A"]);
   successful(launch(childFile, dirs.A, owner), ["A"]);
   const savedA = launch(childFile, undefined, owner);
@@ -202,7 +235,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
   );
   successful(launch(fork(), dirs.A, owner), ["A"]);
   successful(launch(fork(), dirs.B, owner), ["B"]);
-  successful(launch(fork(), dirs.C, undefined), ["C"]);
+  successful(launch(fork(), dirs.C), ["C"]);
   assert.equal(
     fs.readFileSync(parentFile, "utf8"),
     parentBytes,
@@ -216,18 +249,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
     "resolver-error",
     "wrong-selection",
   ]) {
-    const ownerDir = path.join(root, failure, "pi-change-working-dir");
-    fs.mkdirSync(ownerDir, { recursive: true });
-    const ownerFile = path.join(ownerDir, "index.ts");
-    fs.writeFileSync(
-      ownerFile,
-      `export default function(pi) {
-			pi.registerCommand('cwd', { handler: async () => {} });
-			pi.registerTool({ name: 'change_dir', label: 'old cwd', description: 'old owner', parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [] }) });
-			${failure === "old" ? "" : `pi.events.on('pi-change-working-dir:resolve-execution-cwd', request => { request.result = { cwd: ${JSON.stringify(dirs.B)}, ${failure === "resolver-error" ? "error: 'resolver refused'" : ""} }; });`}
-			${["setter-error", "wrong-selection"].includes(failure) ? `pi.events.on('pi-change-working-dir:set-execution-cwd', request => { request.result = { cwd: ${JSON.stringify(dirs.B)}, ${failure === "setter-error" ? "error: 'setter refused'" : ""} }; });` : ""}
-		}`,
-    );
+    const ownerFile = createIncompatibleOwner(root, failure, dirs.B);
     for (const fresh of [false, true]) {
       if (fresh && !["old", "resolver-error"].includes(failure)) {
         continue;
@@ -246,9 +268,9 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
         !fresh,
         "failed fork intent remains pending; fresh children need no marker",
       );
-      assert.ok(observed.commands.some(({ name }: { name: string }) => name === "cwd"));
+      assert.ok(records(observed.commands).some(({ name }) => name === "cwd"));
       assert.equal(
-        observed.tools.some(({ name }: { name: string }) => name === "change_dir"),
+        records(observed.tools).some(({ name }) => name === "change_dir"),
         false,
       );
     }
@@ -274,7 +296,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
   const settings = sdk.SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
-    cacheWarming: { enabled: false },
+    cacheWarming: "off",
   });
   const modelRuntime = await sdk.ModelRuntime.create({
     credentials: new ai.InMemoryCredentialStore(),
@@ -324,10 +346,11 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
     await session.prompt("Owner startup completed");
     assert.equal(faux.state.callCount, 2);
     const read = session.messages.findLast(
-      (message: { role: string; toolName?: string }) =>
-        message.role === "toolResult" && message.toolName === "read",
+      (message) => message.role === "toolResult" && message.toolName === "read",
     );
-    assert.equal(read?.content[0]?.text, "C");
+    assertDefined(read);
+    assert.equal(read.role, "toolResult");
+    assert.equal(textAt(read.content), "C");
     assert.equal(fs.existsSync(`${coldFile}.subagent-cwd-init`), false);
   } finally {
     console.error = originalError;

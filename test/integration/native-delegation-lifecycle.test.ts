@@ -5,15 +5,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { after, test } from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import {
-  createEventBus,
-  createMockPi,
-  events,
-  makeAgent,
-  makeMinimalCtx,
-} from "../support/helpers.ts";
+import { after, test, type TestContext } from "node:test";
+import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ReadonlyDeep } from "type-fest";
+import type {
+  SubagentState,
+  OwnedRun,
+  ExtensionConfig,
+  AsyncStatus,
+} from "../../src/shared/types.ts";
+import type { SubagentParamsLike } from "../../src/runs/foreground/subagent-params.ts";
+import { record, text, textAt, assertDefined } from "../support/assertions.ts";
+import { createNativeSessionFixture, createMockPi, events, makeAgent } from "../support/helpers.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-delegation-"));
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -44,34 +47,33 @@ const {
 } = await import("../../src/shared/types.ts");
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-async function until(check, message) {
+async function until(check: () => boolean, message: string) {
   const deadline = Date.now() + 10_000;
   while (!check()) {
     assert.ok(Date.now() < deadline, message);
+    // Observe the native child/result boundary before performing the next lifecycle operation.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
 
-function setup(t, config = {}, asyncByDefault = true) {
+async function setup(
+  t: TestContext,
+  config: ReadonlyDeep<ExtensionConfig> = {},
+  asyncByDefault = true,
+) {
   const cwd = fs.mkdtempSync(path.join(root, "case-"));
   const manager = SessionManager.create(cwd, path.join(cwd, "parent"));
   manager.appendMessage(events.assistantMessage("Delegate a bounded task").message);
-  const ctx = {
-    ...makeMinimalCtx(cwd),
+  const native = await createNativeSessionFixture({
+    cwd,
+    agentDir: path.join(cwd, "agent"),
     sessionManager: manager,
-    model: { provider: "fixture", id: "parent" },
-    isIdle: () => true,
-    hasPendingMessages: () => false,
-  };
-  const bus = createEventBus();
-  const pi = {
-    events: bus,
-    getSessionName: () => "native-parent",
-    appendEntry: (type, data) => {
-      manager.appendCustomEntry(type, data);
-    },
-  };
-  const state = {
+  });
+  const ctx = native.context;
+  const pi = native.pi;
+  const bus = pi.events;
+  const state: SubagentState & { ownedRuns: Map<string, OwnedRun> } = {
     baseCwd: cwd,
     currentSessionId: null,
     ownedRuns: new Map(),
@@ -80,33 +82,50 @@ function setup(t, config = {}, asyncByDefault = true) {
     cleanupTimers: new Map(),
     completionSeen: new Map(),
     lastUiContext: ctx,
-    persistOwnedRun: (run) => manager.appendCustomEntry("subagent-run", run),
-    resultFileCoalescer: { schedule: () => false, clear() {} },
+    poller: null,
+    watcher: null,
+    watcherRestartTimer: null,
+    persistOwnedRun: (run) => {
+      manager.appendCustomEntry("subagent-run", run);
+    },
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear() {
+        // These direct lifecycle tests explicitly prime the result watcher, not a file coalescer.
+      },
+    },
   };
-  const executor = createSubagentExecutor({
+  const deps = {
     pi,
     state,
     config,
     asyncByDefault,
     tempArtifactsDir: cwd,
     getSubagentSessionRoot: () => path.join(cwd, "children"),
-    expandTilde: (value) => value,
+    expandTilde: (value: string) => value,
     discoverAgents: () => ({
       agents: [makeAgent("worker", { model: "fixture/child", completionGuard: false })],
     }),
-  });
+  };
+  const executor = createSubagentExecutor(deps);
   const mock = createMockPi();
   mock.install();
   t.after(async () => {
     for (const run of state.ownedRuns.values()) {
-      if (run.asyncDir && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) {
-        await executor.execute(
-          randomUUID(),
-          { action: "interrupt", id: run.runId },
-          undefined,
-          undefined,
+      if (
+        run.asyncDir !== undefined &&
+        run.asyncDir !== "" &&
+        !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))
+      ) {
+        // Stop each owned child before removing its independent fixture runtime.
+        // oxlint-disable-next-line no-await-in-loop
+        await executor.execute({
+          toolCallId: randomUUID(),
+          params: { action: "interrupt", id: run.runId },
           ctx,
-        );
+        });
+        // Its real persisted terminal result is the teardown barrier.
+        // oxlint-disable-next-line no-await-in-loop
         await until(
           () => fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json")),
           "fixture child must exit before cleanup",
@@ -114,6 +133,7 @@ function setup(t, config = {}, asyncByDefault = true) {
       }
     }
     mock.uninstall();
+    await native.dispose();
   });
   return {
     cwd,
@@ -124,8 +144,9 @@ function setup(t, config = {}, asyncByDefault = true) {
     state,
     executor,
     mock,
-    invoke: (id, params, signal?) => executor.execute(id, params, signal, undefined, ctx),
-    wait: (id, index?, signal?, includeProgress?) =>
+    invoke: (id: string, params: ReadonlyDeep<SubagentParamsLike>, signal?: AbortSignal) =>
+      executor.execute({ toolCallId: id, params, signal, ctx }),
+    wait: (id: string, index?: number, signal?: AbortSignal, includeProgress?: boolean) =>
       waitForOwnedRun({
         id,
         index,
@@ -133,34 +154,39 @@ function setup(t, config = {}, asyncByDefault = true) {
         includeProgress,
         executionResult: true,
         ctx,
-        deps: { pi, state, config },
+        deps,
       }),
   };
 }
 
 for (const background of [undefined, true, false]) {
-  test(`background launch returns a receipt before completion (${background === false ? "forced" : background})`, async (t) => {
-    const f = setup(t, { forceTopLevelAsync: background === false });
+  test(`background launch returns a receipt before completion (${background === false ? "forced" : (background ?? "default")})`, async (t) => {
+    const f = await setup(t, { forceTopLevelAsync: background === false });
     f.mock.onCall({ delay: 700, output: "APPENDED_COMPLETION" });
     const receipt = await f.invoke("native-receipt", {
       agent: "worker",
       task: "Do bounded work",
       async: background,
     });
-    const runId = receipt.details.asyncId;
-    assert.ok(runId);
+    const runId = text(receipt.details.asyncId);
+    assert.ok(runId.length > 0);
     assert.equal(receipt.details.wait, undefined);
     assert.equal(
       fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")),
       false,
       "receipt precedes completion",
     );
-    const notices = [];
+    const notices: Array<{
+      message: Parameters<ExtensionAPI["sendMessage"]>[0];
+      options: Parameters<ExtensionAPI["sendMessage"]>[1];
+    }> = [];
+    const send = f.pi.sendMessage.bind(f.pi);
+    f.pi.sendMessage = (message, options) => {
+      notices.push({ message, options });
+      send(message, options);
+    };
     const { default: registerNotify } = await import("../../src/runs/background/notify.ts");
-    registerNotify({
-      ...f.pi,
-      sendMessage: (message, options) => notices.push({ message, options }),
-    });
+    registerNotify(f.pi);
     const watcher = createResultWatcher(f.pi, f.state, RESULTS_DIR);
     t.after(() => watcher.stopResultWatcher());
     await until(
@@ -170,25 +196,25 @@ for (const background of [undefined, true, false]) {
     watcher.primeExistingResults();
     await until(() => notices.length === 1, "completion appends a wake-up message");
     assert.equal(notices[0].message.customType, "subagent-notify");
-    assert.match(notices[0].message.content, /APPENDED_COMPLETION/);
-    assert.equal(notices[0].options.triggerTurn, true);
+    assert.match(text(notices[0].message.content), /APPENDED_COMPLETION/);
+    assert.equal(notices[0].options?.triggerTurn, true);
     watcher.primeExistingResults();
-    await delay(100);
+    await watcher.joinInFlight();
     assert.equal(notices.length, 1);
   });
 }
 
 for (const action of ["resume", "answer"]) {
-  for (const background of [undefined, true])
-    test(`${action} returns its receipt without waiting (${background})`, async (t) => {
-      const f = setup(t);
+  for (const background of [undefined, true]) {
+    test(`${action} returns its receipt without waiting (${background ?? "default"})`, async (t) => {
+      const f = await setup(t);
       f.mock.onCall({ delay: 900, output: "LATER_RESULT" });
       const launch = await f.invoke("launch", { agent: "worker", task: "Keep working" });
-      const runId = launch.details.asyncId;
+      const runId = text(launch.details.asyncId);
       await until(() => f.mock.callCount() === 1, "child starts");
       f.bus.on(SUBAGENT_LIVE_INTERCOM_EVENT, (request) => {
         f.bus.emit(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, {
-          requestId: request.requestId,
+          requestId: text(record(request).requestId),
           delivered: true,
         });
       });
@@ -222,14 +248,20 @@ for (const action of ["resume", "answer"]) {
         false,
         "control returns while the child is still running",
       );
-      if (question) assert.equal(receipt.details.questions[0].answer.message, "Proceed");
-      else assert.equal(receipt.details.managementControl.runId, runId);
+      if (question) {
+        assertDefined(receipt.details.questions);
+        assertDefined(receipt.details.questions[0].answer);
+        assert.equal(receipt.details.questions[0].answer.message, "Proceed");
+      } else {
+        assert.equal(record(receipt.details.managementControl).runId, runId);
+      }
     });
+  }
 }
 
 for (const foreground of [false, undefined]) {
   test(`foreground delegation waits for the actual result (${foreground === false ? "explicit" : "configured"})`, async (t) => {
-    const f = setup(t, {}, false);
+    const f = await setup(t, {}, false);
     f.mock.onCall({ delay: 350, output: "ORIGINAL_CALL_RESULT" });
     let finished = false;
     const resultPromise = f
@@ -241,67 +273,68 @@ for (const foreground of [false, undefined]) {
     await until(() => f.mock.callCount() === 1, "native child starts");
     assert.equal(finished, false, "a launch receipt cannot settle a foreground call");
     const runId = [...f.state.ownedRuns.keys()][0];
-    assert.ok(runId, "list exposes the durable handle while the foreground call waits");
+    assert.ok(runId.length > 0, "list exposes the durable handle while the foreground call waits");
     const result = await resultPromise;
-    assert.equal(result.details.wait.status, "completed");
-    assert.equal(result.details.wait.runId, runId);
-    assert.match(result.content[0].text, /ORIGINAL_CALL_RESULT/);
+    assert.equal(record(result.details.wait).status, "completed");
+    assert.equal(record(result.details.wait).runId, runId);
+    assert.match(textAt(result.content), /ORIGINAL_CALL_RESULT/);
     assert.equal(f.mock.callCount(), 1);
   });
 }
 
 test("aborting an existing wait preserves the child; restoring owned work does not relaunch", async (t) => {
-  const f = setup(t);
+  const f = await setup(t);
   f.mock.onCall({ delay: 450, output: "AFTER_REATTACH" });
   const receipt = await f.invoke("launch", { agent: "worker", task: "Keep running" });
-  const runId = receipt.details.asyncId;
+  const runId = text(receipt.details.asyncId);
   await until(() => f.mock.callCount() === 1, "child starts");
   const abort = new AbortController();
   const waiting = f.wait(runId, undefined, abort.signal);
   abort.abort();
-  assert.equal((await waiting).details.wait.status, "cancelled");
+  assert.equal(record((await waiting).details.wait).status, "cancelled");
   assert.equal(fs.existsSync(path.join(getRunMetadataDir(runId), "control-requests")), false);
   f.state.ownedRuns.clear();
   restoreOwnedRuns(f.state, f.ctx);
   const result = await f.wait(runId, undefined, undefined, true);
-  assert.equal(result.details.wait.status, "completed");
-  assert.match(result.content[0].text, /AFTER_REATTACH/);
+  assert.equal(record(result.details.wait).status, "completed");
+  assert.match(textAt(result.content), /AFTER_REATTACH/);
   assert.equal(result.details.progress?.[0]?.task, "Keep running");
   assert.equal(f.mock.callCount(), 1);
 });
 
 test("Intercom attention releases the foreground wait without stopping existing work", async (t) => {
-  const f = setup(t);
+  const f = await setup(t);
   f.mock.onCall({ delay: 350, output: "AFTER_STEER" });
   const receipt = await f.invoke("launch", { agent: "worker", task: "Finish" });
   await until(() => f.mock.callCount() === 1, "child starts");
-  const waiting = f.wait(receipt.details.asyncId);
+  const waiting = f.wait(text(receipt.details.asyncId));
   let accepted = false;
   f.bus.on(INTERCOM_DETACH_RESPONSE_EVENT, (response) => {
-    accepted = response.accepted;
+    assert.equal(typeof record(response).accepted, "boolean");
+    accepted = record(response).accepted === true;
   });
   f.bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "attention", reason: "attention" });
   assert.equal(accepted, true);
-  assert.equal((await waiting).details.wait.status, "yielded");
-  assert.match((await f.wait(receipt.details.asyncId)).content[0].text, /AFTER_STEER/);
+  assert.equal(record((await waiting).details.wait).status, "yielded");
+  assert.match(textAt((await f.wait(text(receipt.details.asyncId))).content), /AFTER_STEER/);
 });
 
 for (const includeProgress of [true, undefined]) {
-  test(`live continuation waits and restores its own progress opt-in (${includeProgress})`, async (t) => {
-    const f = setup(t);
+  test(`live continuation waits and restores its own progress opt-in (${includeProgress ?? "default"})`, async (t) => {
+    const f = await setup(t);
     f.mock.onCall({ delay: 650, output: "LIVE_CONTINUATION_RESULT" });
     const receipt = await f.invoke("portable-launch", {
       agent: "worker",
       task: "Wait for guidance",
-      includeProgress: !includeProgress,
+      includeProgress: includeProgress !== true,
     });
-    const runId = receipt.details.asyncId;
+    const runId = text(receipt.details.asyncId);
     await until(() => f.mock.callCount() === 1, "portable child starts");
     let deliveries = 0;
     f.bus.on(SUBAGENT_LIVE_INTERCOM_EVENT, (request) => {
       deliveries++;
       f.bus.emit(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, {
-        requestId: request.requestId,
+        requestId: text(record(request).requestId),
         delivered: true,
       });
     });
@@ -312,11 +345,11 @@ for (const includeProgress of [true, undefined]) {
       includeProgress,
       async: false,
     });
-    assert.equal(result.details.wait.status, "completed");
-    assert.match(result.content[0].text, /LIVE_CONTINUATION_RESULT/);
+    assert.equal(record(result.details.wait).status, "completed");
+    assert.match(textAt(result.content), /LIVE_CONTINUATION_RESULT/);
     assert.equal(
       result.details.progress?.[0]?.status,
-      includeProgress ? "complete" : undefined,
+      includeProgress === true ? "complete" : undefined,
       "the waiting continuation opts in independently of the original launch",
     );
     const recovered = await f.wait(runId, undefined, undefined, includeProgress);
@@ -329,7 +362,7 @@ for (const includeProgress of [true, undefined]) {
 
 for (const selected of [undefined, 1]) {
   test(`nested continuation ${selected === undefined ? "whole-run" : "selected-child"} waits and recovers without adoption or redelivery`, async (t) => {
-    const f = setup(t),
+    const f = await setup(t),
       rootId = randomUUID(),
       runId = randomUUID(),
       callId = `native-nested-${selected ?? "all"}`;
@@ -349,16 +382,20 @@ for (const selected of [undefined, 1]) {
       children: [],
     });
     saveQuestionOwner(runId, childOwner.getSessionId());
-    const steps = Array.from({ length: selected === undefined ? 1 : 2 }, (_, index) => ({
-      agent: "worker",
-      status: "running",
-      sessionFile: path.join(f.cwd, `nested-${index}.jsonl`),
-    }));
-    for (const [index, step] of steps.entries())
+    const steps: NonNullable<AsyncStatus["steps"]> = Array.from(
+      { length: selected === undefined ? 1 : 2 },
+      (_, index) => ({
+        agent: "worker",
+        status: "running",
+        sessionFile: path.join(f.cwd, `nested-${index}.jsonl`),
+      }),
+    );
+    for (const [index, step] of steps.entries()) {
       saveQuestionContract(runId, index, {
         task: `Nested assignment ${index}`,
         sessionFile: step.sessionFile,
       });
+    }
     saveRunStatus(runId, {
       runtimeVersion: 2,
       runId,
@@ -400,12 +437,14 @@ for (const selected of [undefined, 1]) {
     });
     let delivered = 0;
     const reply = setInterval(() => {
-      const request = readNestedControlRequests(route)[0];
-      if (!request || delivered) return;
+      const request = readNestedControlRequests(route).at(0);
+      if (request === undefined || delivered !== 0) {
+        return;
+      }
       delivered++;
       writeNestedControlResult(route, {
         ts: Date.now(),
-        requestId: request.requestId,
+        requestId: text(record(request).requestId),
         targetRunId: runId,
         ok: true,
         message: "Guidance accepted",
@@ -441,9 +480,9 @@ for (const selected of [undefined, 1]) {
       false,
       "accepted nested guidance must remain pending for the actual saved result",
     );
-    assert.equal(readNestedControlRequests(route)[0]?.index, selected);
+    assert.equal(readNestedControlRequests(route).at(0)?.index, selected);
     abort.abort();
-    assert.equal((await pending).details.wait.status, "cancelled");
+    assert.equal(record((await pending).details.wait).status, "cancelled");
     assert.equal(
       fs.existsSync(path.join(asyncDir, "control-requests")),
       false,
@@ -469,7 +508,7 @@ for (const selected of [undefined, 1]) {
       finalOutput: "NESTED_NATIVE_RESULT",
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
     };
-    if (selected === undefined)
+    if (selected === undefined) {
       saveAsyncRunResult(runId, {
         runtimeVersion: 2,
         id: runId,
@@ -478,18 +517,20 @@ for (const selected of [undefined, 1]) {
         timestamp: Date.now(),
         results: [{ ...childResult, success: true }],
       });
-    else saveQuestionContract(runId, selected, { result: childResult });
+    } else {
+      saveQuestionContract(runId, selected, { result: childResult });
+    }
     const result = await recovery;
-    assert.equal(result?.details.wait?.status, "completed");
-    assert.match(result!.content[0].text, /NESTED_NATIVE_RESULT/);
+    assert.equal(result.details.wait?.status, "completed");
+    assert.match(textAt(result.content), /NESTED_NATIVE_RESULT/);
     assert.equal(
-      result!.details.run.ownerSessionId,
+      record(result.details.run).ownerSessionId,
       childOwner.getSessionId(),
       "read-only projection retains the actual direct parent",
     );
-    assert.equal(result!.details.wait.index, selected);
-    assert.equal(result!.details.results.length, 1);
-    assert.equal((await f.wait(runId, selected))?.details.wait?.status, "completed");
+    assert.equal(record(result.details.wait).index, selected);
+    assert.equal(result.details.results.length, 1);
+    assert.equal((await f.wait(runId, selected)).details.wait?.status, "completed");
     assert.equal(delivered, 1);
     assert.equal(f.mock.callCount(), 0);
     assert.deepEqual([...f.state.ownedRuns.keys()], [rootId]);
@@ -503,7 +544,7 @@ for (const selected of [undefined, 1]) {
 }
 
 test("obsolete saved native-call metadata cannot suppress durable completion notifications", async (t) => {
-  const f = setup(t),
+  const f = await setup(t),
     runId = randomUUID(),
     dir = getRunMetadataDir(runId);
   f.manager.appendCustomEntry("subagent-invocation", {
@@ -539,18 +580,21 @@ test("obsolete saved native-call metadata cannot suppress durable completion not
       ],
     }),
   );
-  f.state.currentSessionId = f.manager.getSessionFile();
-  const completions = [];
-  f.bus.on("subagent:async-complete", (event) => completions.push(event));
-  const pi = { ...f.pi, on() {}, sendMessage() {} };
-  const completion = createCompletionDelivery(pi, f.state, registerParentUsage(pi));
+  const file = f.manager.getSessionFile();
+  assertDefined(file);
+  f.state.currentSessionId = file;
+  const completions: unknown[] = [];
+  f.bus.on("subagent:async-complete", (event) => {
+    completions.push(event);
+  });
+  const completion = createCompletionDelivery(f.pi, f.state, registerParentUsage(f.pi, []));
   try {
     completion.start();
     await until(
       () => completions.length > 0,
       "canonical result discovered despite obsolete pending-call metadata",
     );
-    assert.ok(completions.every((event) => !event.suppressNotification));
+    assert.ok(completions.every((event) => record(event).suppressNotification !== true));
     assert.equal(fs.existsSync(path.join(dir, "result.json")), true);
   } finally {
     completion.stop();

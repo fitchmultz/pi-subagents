@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { discoverAgentsAll } from "../../src/agents/agents.ts";
 import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
+import { nativeCli } from "../support/native-sdk.ts";
+import { parseJson, assertRecord, strings, text } from "../support/assertions.ts";
 
 const packageRoot =
   process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ??
@@ -69,14 +71,7 @@ export default function(pi) {
       try {
         const child = spawnSync(
           process.execPath,
-          [
-            process.env.PI_HOST_CLI ??
-              path.join(
-                packageRoot,
-                JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).bin.pi,
-              ),
-            ...built.args,
-          ],
+          [process.env.PI_HOST_CLI ?? nativeCli(packageRoot), ...built.args],
           { cwd: root, env, input: "", encoding: "utf8", timeout: 15_000 },
         );
         assert.equal(child.status, 0, child.stderr);
@@ -95,7 +90,7 @@ export default function(pi) {
 });
 
 it("native child and intercom prompt sections preserve provider-visible content and fork boundaries", () => {
-  const env = { ...process.env, PI_PROMPT_TEST_SDK: packageRoot };
+  const env: NodeJS.ProcessEnv = { ...process.env, PI_PROMPT_TEST_SDK: packageRoot };
   delete env.NODE_TEST_CONTEXT;
   const child = spawnSync(
     process.execPath,
@@ -175,10 +170,10 @@ export default function(pi) {
         },
       },
     );
-    assert.equal(child.status, 0, child.stderr || child.error?.message);
-    assert.deepEqual(JSON.parse(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
+    assert.equal(child.status, 0, child.stderr.length > 0 ? child.stderr : child.error?.message);
+    assert.deepEqual(parseJson(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
     assert.deepEqual(
-      JSON.parse(fs.readFileSync(output, "utf8")).sort(),
+      [...strings(parseJson(fs.readFileSync(output, "utf8")))].sort((a, b) => a.localeCompare(b)),
       process.env.PI_COMPAT_HOST === "fork"
         ? ["background_command", "bash", "discover_tools", "fixture_custom_tool", "read"]
         : ["bash", "fixture_custom_tool", "read"],
@@ -190,7 +185,7 @@ export default function(pi) {
 
 it("native Pi applies the saved-session cwd before extension execution and preserves the session on repeat opens", (t) => {
   const evidence = process.env.PI_SESSION_CWD_EVIDENCE_DIR;
-  if (evidence) {
+  if (evidence !== undefined && evidence !== "") {
     fs.mkdirSync(evidence, { recursive: true });
   }
   const root = fs.realpathSync(
@@ -332,13 +327,16 @@ export default async function(pi) {
           },
         });
         const observation = fs.existsSync(output)
-          ? JSON.parse(fs.readFileSync(output, "utf8"))
+          ? parseJson(fs.readFileSync(output, "utf8"))
           : undefined;
         const shutdown = fs.existsSync(shutdownPath)
-          ? JSON.parse(fs.readFileSync(shutdownPath, "utf8"))
+          ? parseJson(fs.readFileSync(shutdownPath, "utf8"))
           : undefined;
         const savedBytes = fs.readFileSync(sessionFile, "utf8");
-        if (process.env.PI_SESSION_CWD_EVIDENCE_DIR) {
+        if (
+          process.env.PI_SESSION_CWD_EVIDENCE_DIR !== undefined &&
+          process.env.PI_SESSION_CWD_EVIDENCE_DIR !== ""
+        ) {
           fs.mkdirSync(process.env.PI_SESSION_CWD_EVIDENCE_DIR, { recursive: true });
           fs.writeFileSync(
             path.join(process.env.PI_SESSION_CWD_EVIDENCE_DIR, `${label}.json`),
@@ -364,13 +362,18 @@ export default async function(pi) {
             ),
           );
         }
-        assert.equal(child.status, 0, child.stderr || child.error?.message);
+        assert.equal(
+          child.status,
+          0,
+          child.stderr.length > 0 ? child.stderr : child.error?.message,
+        );
         assert.equal(child.signal, null);
         // Node 24.0 emits this warning when the native cwd preload imports TypeScript.
         assert.match(
           child.stderr,
           /^(?:\(node:\d+\) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/,
         );
+        assertRecord(observation);
         assert.deepEqual(observation.executed, {
           stdout: `${expectedCwd}\n`,
           stderr: "",
@@ -382,9 +385,12 @@ export default async function(pi) {
         assert.equal(observation.processCwd, launchCwd);
         assert.deepEqual(observation.model, { provider: "faux", id: "faux-1" });
         assert.deepEqual(shutdown, { providerCalls: 0 });
-        assert.deepEqual(observation.tools.sort(), ["bash", "read", "structured_output"]);
+        assert.deepEqual(
+          [...strings(observation.tools)].sort((a, b) => a.localeCompare(b)),
+          ["bash", "read", "structured_output"],
+        );
         assert.equal(observation.trusted, replacement);
-        assert.equal(observation.prompt.includes("REPLACEMENT_PROJECT_CONTEXT"), replacement);
+        assert.equal(text(observation.prompt).includes("REPLACEMENT_PROJECT_CONTEXT"), replacement);
         assert.equal(observation.rootId, "owning-parent");
         assert.equal(observation.nodeOptions, process.env.NODE_OPTIONS);
         assert.equal(observation.overrideEnvironment, undefined);

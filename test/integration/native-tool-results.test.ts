@@ -6,6 +6,25 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { readJson } from "../support/assertions.ts";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
+
+const evidenceSchema = Type.Object({
+  failures: Type.Array(Type.String()),
+  nativeProviderRequests: Type.Number(),
+  networkRequests: Type.Number(),
+  extensionErrors: Type.Array(Type.Unknown()),
+  cases: Type.Array(
+    Type.Object({
+      name: Type.String(),
+      mixed: Type.Optional(Type.Boolean()),
+      liveUpdate: Type.Optional(Type.Object({ type: Type.Optional(Type.String()) })),
+      failures: Type.Array(Type.String()),
+      checks: Type.Array(Type.Unknown()),
+    }),
+  ),
+});
 
 for (const route of ["parent", "child"]) {
   it(
@@ -53,11 +72,16 @@ for (const route of ["parent", "child"]) {
             maxBuffer: 1024 * 1024,
           },
         );
-        fs.writeFileSync(path.join(root, "stdout.log"), child.stdout ?? "");
-        fs.writeFileSync(path.join(root, "stderr.log"), child.stderr ?? "");
+        fs.writeFileSync(path.join(root, "stdout.log"), child.stdout);
+        fs.writeFileSync(path.join(root, "stderr.log"), child.stderr);
         assert.equal(child.error, undefined, child.error?.message);
-        const evidence = JSON.parse(fs.readFileSync(path.join(root, "evidence.json"), "utf8"));
-        assert.deepEqual(evidence.failures, [], child.stderr || child.stdout);
+        const evidence = readJson(path.join(root, "evidence.json"));
+        Assert(evidenceSchema, evidence);
+        assert.deepEqual(
+          evidence.failures,
+          [],
+          child.stderr.length > 0 ? child.stderr : child.stdout,
+        );
         assert.equal(evidence.nativeProviderRequests, 0);
         assert.equal(evidence.networkRequests, 0);
         assert.deepEqual(evidence.extensionErrors, []);
@@ -66,7 +90,7 @@ for (const route of ["parent", "child"]) {
           child.stderr,
           /^(?:\(node:\d+\) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/,
         );
-        assert.equal(evidence.cases.filter((entry) => entry.mixed).length, 6);
+        assert.equal(evidence.cases.filter((entry) => entry.mixed === true).length, 6);
         assert.equal(evidence.cases.filter((entry) => entry.name.endsWith("-pure")).length, 8);
         assert.equal(
           evidence.cases.find((entry) => entry.name === "static-chain-interrupt-pure")?.liveUpdate
@@ -79,22 +103,32 @@ for (const route of ["parent", "child"]) {
           "dynamic-collect-success",
           "normal-success",
           "inspect-handle",
-        ])
+        ]) {
           assert.ok(
             evidence.cases.some((entry) => entry.name === name),
             name,
           );
-        for (const receipt of evidence.cases)
-          await t.test(receipt.name, () => {
-            assert.deepEqual(receipt.failures, [], receipt.failures.join("\n"));
-            assert.ok(receipt.checks.length > 0);
-          });
+        }
+        await Promise.all(
+          evidence.cases.map((receipt) =>
+            t.test(receipt.name, () => {
+              assert.deepEqual(receipt.failures, [], receipt.failures.join("\n"));
+              assert.ok(receipt.checks.length > 0);
+            }),
+          ),
+        );
         assert.equal(child.status, 0, child.stdout);
         passed = true;
       } finally {
-        if (!passed || process.env.PI_NATIVE_TOOL_RESULT_EVIDENCE_DIR)
+        if (
+          !passed ||
+          (process.env.PI_NATIVE_TOOL_RESULT_EVIDENCE_DIR !== undefined &&
+            process.env.PI_NATIVE_TOOL_RESULT_EVIDENCE_DIR !== "")
+        ) {
           console.log(`Native registered-tool evidence: ${root}/evidence.json`);
-        else fs.rmSync(root, { recursive: true, force: true });
+        } else {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
       }
     },
   );

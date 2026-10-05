@@ -1,38 +1,36 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { pathToFileURL } from "node:url";
+import { nativeSdkRoot } from "../support/native-sdk.ts";
+import { assertDefined, parseJson } from "../support/assertions.ts";
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
   STRUCTURED_OUTPUT_SCHEMA_ENV,
 } from "../../src/runs/shared/structured-output.ts";
 import { buildPiArgs } from "../../src/runs/shared/pi-args.ts";
 
-const sdkRoot =
-  process.env.PI_INTERCOM_TEST_SDK ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
-const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
-const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
+nativeSdkRoot(process.env.PI_INTERCOM_TEST_SDK);
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
-  await import(sdkEntry.href);
+  await import("@earendil-works/pi-coding-agent");
 const {
   fauxProvider,
   fauxAssistantMessage,
   fauxToolCall,
   InMemoryCredentialStore,
   getCurrentTools,
-} = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+} = await import("@earendil-works/pi-ai");
 
 test("a no-schema child launch cannot install a tool that writes its parent's structured capture", async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "native-structured-child-"));
   const previous = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) {
-      if (!(key in previous)) delete process.env[key];
+      if (!(key in previous)) {
+        delete process.env[key];
+      }
     }
     Object.assign(process.env, previous);
     rmSync(root, { recursive: true, force: true });
@@ -63,7 +61,7 @@ test("a no-schema child launch cannot install a tool that writes its parent's st
   });
   const loader = new DefaultResourceLoader({
     cwd: root,
-    agentDir: process.env.PI_CODING_AGENT_DIR,
+    agentDir: path.join(root, "agent"),
     settingsManager,
     noExtensions: true,
     noSkills: true,
@@ -93,20 +91,31 @@ test("a no-schema child launch cannot install a tool that writes its parent's st
 for (const explicit of [false, true]) {
   test(`resumed structured output reaches the provider and captures its report (${explicit ? "explicit tools" : "saved tools"})`, async (t) => {
     const evidenceDir = process.env.PI_INTERCOM_TEST_EVIDENCE_DIR;
-    if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
+    if (evidenceDir !== undefined && evidenceDir !== "") {
+      mkdirSync(evidenceDir, { recursive: true });
+    }
     const root = mkdtempSync(path.join(evidenceDir ?? tmpdir(), "native-structured-output-"));
     const previous = { ...process.env };
-    for (const key of Object.keys(process.env))
-      if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("PI_SUBAGENT_")) {
+        delete process.env[key];
+      }
+    }
     Object.assign(process.env, {
       HOME: root,
       PI_CODING_AGENT_DIR: path.join(root, "agent"),
       PI_OFFLINE: "1",
     });
     t.after(() => {
-      for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+      for (const key of Object.keys(process.env)) {
+        if (!(key in previous)) {
+          delete process.env[key];
+        }
+      }
       Object.assign(process.env, previous);
-      if (!evidenceDir) rmSync(root, { recursive: true, force: true });
+      if (evidenceDir === undefined || evidenceDir === "") {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
     const faux = fauxProvider({ provider: "structured-output-resume" });
     const modelRuntime = await ModelRuntime.create({
@@ -121,7 +130,7 @@ for (const explicit of [false, true]) {
     });
     const loaderOptions = {
       cwd: root,
-      agentDir: process.env.PI_CODING_AGENT_DIR,
+      agentDir: path.join(root, "agent"),
       settingsManager,
       noExtensions: true,
       noSkills: true,
@@ -148,6 +157,7 @@ for (const explicit of [false, true]) {
       false,
     );
     const sessionFile = initial.sessionManager.getSessionFile();
+    assertDefined(sessionFile);
     initial.dispose();
 
     const output = path.join(root, "report.json");
@@ -187,12 +197,10 @@ for (const explicit of [false, true]) {
     t.diagnostic(`Native restored tools before extension startup: ${restoredTools.join(", ")}`);
     await session.bindExtensions({ mode: "print" });
     let providerTools: string[] = [];
-    let providerMessages: unknown[] = [];
+    let providerMessages: readonly unknown[] = [];
     faux.setResponses([
-      (context: { tools?: Array<{ name: string }>; messages: unknown[] }) => {
-        providerTools = (context.tools ?? getCurrentTools(context.messages)).map(
-          (tool: { name: string }) => tool.name,
-        );
+      (context) => {
+        providerTools = getCurrentTools(context.messages).map((tool) => tool.name);
         providerMessages = context.messages;
         return fauxAssistantMessage(
           fauxToolCall("structured_output", { value: { report: "Verified final report" } }),
@@ -227,11 +235,13 @@ for (const explicit of [false, true]) {
     );
     assert.ok(providerTools.includes("read"), "existing tool selection survives");
     assert.deepEqual(
-      providerTools.sort(),
-      [...new Set([...restoredTools, "structured_output"])].sort(),
+      providerTools.sort((a, b) => a.localeCompare(b)),
+      [...new Set([...restoredTools, "structured_output"])].sort((a, b) => a.localeCompare(b)),
       "startup activation must preserve the host's restored selection without enabling unrelated tools",
     );
-    if (explicit) assert.deepEqual(providerTools, ["read", "structured_output"]);
-    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), { report: "Verified final report" });
+    if (explicit) {
+      assert.deepEqual(providerTools, ["read", "structured_output"]);
+    }
+    assert.deepEqual(parseJson(readFileSync(output, "utf8")), { report: "Verified final report" });
   });
 }

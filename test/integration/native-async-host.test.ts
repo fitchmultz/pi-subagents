@@ -8,11 +8,46 @@ import { findPackageJSON } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
+import { assertDefined } from "../support/assertions.ts";
+
+const evidenceSchema = Type.Object({
+  networkRequests: Type.Number(),
+  errors: Type.Array(Type.Unknown()),
+  entries: Type.Optional(
+    Type.Array(
+      Type.Object({
+        type: Type.String(),
+        customType: Type.Optional(Type.String()),
+        data: Type.Optional(Type.Object({ delivery: Type.Optional(Type.Unknown()) })),
+      }),
+    ),
+  ),
+});
+function readEvidence(file: string) {
+  const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+  Assert(evidenceSchema, value);
+  return value;
+}
+function failureMessage(result: {
+  readonly stderr: string;
+  readonly stdout: string;
+  readonly error?: Readonly<Error>;
+}): string {
+  if (result.stderr.length > 0) {
+    return result.stderr;
+  }
+  if (result.stdout.length > 0) {
+    return result.stdout;
+  }
+  return result.error?.message ?? "Native child failed";
+}
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
-const sdkRoot =
-  process.env.PI_NATIVE_ASYNC_TEST_SDK ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+const sdkPackage = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+assertDefined(sdkPackage);
+const sdkRoot = process.env.PI_NATIVE_ASYNC_TEST_SDK ?? path.dirname(sdkPackage);
 const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-native-suite-"));
 Object.assign(process.env, {
   HOME: suiteRoot,
@@ -40,10 +75,8 @@ for (const [phase, title] of [
         ],
         { cwd: repo, encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024 },
       );
-      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-      const evidence = JSON.parse(
-        fs.readFileSync(path.join(root, `${phase}-evidence.json`), "utf8"),
-      );
+      assert.equal(result.status, 0, failureMessage(result));
+      const evidence = readEvidence(path.join(root, `${phase}-evidence.json`));
       assert.equal(evidence.networkRequests, 0);
       assert.deepEqual(evidence.errors, []);
     } finally {
@@ -53,7 +86,7 @@ for (const [phase, title] of [
   });
 }
 for (const variant of ["receipt", "advanced-receipt", "child-restart", "advanced-child-restart"]) {
-  test(`native ${variant} closes before background completion`, { timeout: 40_000 }, (t) => {
+  test(`native ${variant} closes before background completion`, { timeout: 40_000 }, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-native-receipt-"));
     try {
       const result = spawnSync(
@@ -68,10 +101,8 @@ for (const variant of ["receipt", "advanced-receipt", "child-restart", "advanced
         ],
         { cwd: repo, encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024 },
       );
-      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-      const evidence = JSON.parse(
-        fs.readFileSync(path.join(root, "receipt-evidence.json"), "utf8"),
-      );
+      assert.equal(result.status, 0, failureMessage(result));
+      const evidence = readEvidence(path.join(root, "receipt-evidence.json"));
       assert.equal(evidence.networkRequests, 0);
       assert.deepEqual(evidence.errors, []);
     } finally {
@@ -81,16 +112,16 @@ for (const variant of ["receipt", "advanced-receipt", "child-restart", "advanced
   });
 }
 for (const variant of ["receipt", "child-restart"]) {
-  for (const crashAt of [undefined, "before", "after"])
+  for (const crashAt of [undefined, "before", "after"]) {
     test(
-      `native background ${variant} completion survives ${crashAt ? `crash ${crashAt} notification append` : "owner restart"} exactly once`,
+      `native background ${variant} completion survives ${crashAt !== undefined ? `crash ${crashAt} notification append` : "owner restart"} exactly once`,
       { timeout: 60_000 },
-      async (t) => {
+      async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-receipt-restart-"));
         try {
           for (const phase of [
             "receipt-seed",
-            ...(crashAt ? [`receipt-crash-${crashAt}`] : []),
+            ...(crashAt !== undefined ? [`receipt-crash-${crashAt}`] : []),
             "receipt-resume",
             "receipt-reopen",
           ]) {
@@ -109,22 +140,20 @@ for (const variant of ["receipt", "child-restart"]) {
             assert.equal(
               result.status,
               phase.startsWith("receipt-crash-") ? 86 : 0,
-              `${phase}: ${result.stderr || result.stdout || result.error?.message}`,
+              `${phase}: ${failureMessage(result)}`,
             );
-            const evidence = JSON.parse(
-              fs.readFileSync(
-                path.join(
-                  root,
-                  phase.startsWith("receipt-crash-")
-                    ? "crash-evidence.json"
-                    : `${phase}-evidence.json`,
-                ),
-                "utf8",
+            const evidence = readEvidence(
+              path.join(
+                root,
+                phase.startsWith("receipt-crash-")
+                  ? "crash-evidence.json"
+                  : `${phase}-evidence.json`,
               ),
             );
             assert.equal(evidence.networkRequests, 0);
             assert.deepEqual(evidence.errors, []);
             if (phase.startsWith("receipt-crash-")) {
+              assert.ok(evidence.entries, "native crash evidence includes the journal");
               assert.equal(
                 evidence.entries.filter(
                   (entry) =>
@@ -137,14 +166,17 @@ for (const variant of ["receipt", "child-restart"]) {
                   (entry) =>
                     entry.type === "custom" &&
                     entry.customType === "subagent-run" &&
-                    entry.data.delivery,
+                    Boolean(entry.data?.delivery),
                 ),
                 "no delivery claim may precede the persisted notification",
               );
             }
             if (phase === "receipt-seed") {
               fs.writeFileSync(path.join(root, "release-child"), "release");
-              const seed = JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
+              const seed: unknown = JSON.parse(
+                fs.readFileSync(path.join(root, "seed.json"), "utf8"),
+              );
+              Assert(Type.Object({ runId: Type.String() }), seed);
               const deadline = Date.now() + 10_000;
               while (
                 !fs.existsSync(
@@ -152,6 +184,8 @@ for (const variant of ["receipt", "child-restart"]) {
                 )
               ) {
                 assert.ok(Date.now() < deadline, "child must finish while its parent is offline");
+                // Poll the persisted result while the native owner is offline.
+                // oxlint-disable-next-line no-await-in-loop
                 await delay(20);
               }
             }
@@ -162,4 +196,5 @@ for (const variant of ["receipt", "child-restart"]) {
         }
       },
     );
+  }
 }

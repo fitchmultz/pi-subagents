@@ -3,8 +3,13 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findPackageJSON } from "node:module";
-import { pathToFileURL } from "node:url";
+import { nativeSdkRoot } from "../support/native-sdk.ts";
+import { array, record, records } from "../support/assertions.ts";
+import type { ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
+import type {
+  AgentToolUpdateCallback,
+  ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -13,18 +18,15 @@ import { createMutationCompletionTracker } from "../../src/runs/shared/mutating-
 const editor = process.env.PI_EDITOR_RECEIPT_TEST_ROOT;
 test(
   "actual editor receipts reach the mutation guard through native tool events",
-  { skip: !editor, timeout: 30_000 },
+  { skip: editor === undefined || editor === "", timeout: 30_000 },
   async (t) => {
-    const sdkRoot =
-      process.env.PI_EDITOR_RECEIPT_TEST_SDK ??
-      path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
-    const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
-    const sdk = await import(sdkEntry.href);
-    const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
+    assert.ok(editor !== undefined && editor !== "", "actual native editor checkout is configured");
+    const sdkRoot = nativeSdkRoot(process.env.PI_EDITOR_RECEIPT_TEST_SDK);
+    const sdk = await import("@earendil-works/pi-coding-agent");
     const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } =
-      await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+      await import("@earendil-works/pi-ai");
     const evidenceRoot = process.env.PI_EDITOR_RECEIPT_EVIDENCE_DIR;
-    if (evidenceRoot) {
+    if (evidenceRoot !== undefined && evidenceRoot !== "") {
       fs.mkdirSync(evidenceRoot, { recursive: true });
     }
     const cwd = fs.realpathSync(
@@ -53,14 +55,24 @@ test(
       noContextFiles: true,
       noThemes: true,
       noPromptTemplates: true,
-      additionalExtensionPaths: [path.join(editor!, "extensions/apply-edits.ts")],
+      additionalExtensionPaths: [path.join(editor, "extensions/apply-edits.ts")],
       extensionsOverride(base) {
         for (const extension of base.extensions) {
           for (const { definition } of extension.tools.values()) {
-            if (definition.name !== "write_files") continue;
-            const execute = definition.execute;
-            definition.execute = async (id, params, signal, update, ctx) => {
-              if (params.files.length !== 3) return execute(id, params, signal, update, ctx);
+            if (definition.name !== "write_files") {
+              continue;
+            }
+            const execute = definition.execute.bind(definition);
+            definition.execute = async (
+              id: string,
+              params: unknown,
+              signal: AbortSignal | undefined,
+              update: AgentToolUpdateCallback<unknown> | undefined,
+              ctx: ExtensionToolContext,
+            ) => {
+              if (array(record(params).files).length !== 3) {
+                return execute(id, params, signal, update, ctx);
+              }
               const cancellation = new AbortController();
               return execute(
                 id,
@@ -72,8 +84,9 @@ test(
                     progress.content.some(
                       (part) => part.type === "text" && part.text.startsWith("Completed 1/"),
                     )
-                  )
+                  ) {
                     cancellation.abort();
+                  }
                 },
                 ctx,
               );
@@ -95,16 +108,24 @@ test(
       resourceLoader: loader,
       sessionManager: manager,
     });
-    const errors = [],
-      receipts = [];
+    const errors: unknown[] = [];
+    const receipts: Array<{
+      message: ToolResultMessage;
+      tracked: ReturnType<typeof tracker.recordToolResult>;
+    }> = [];
     const tracker = createMutationCompletionTracker();
-    await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error) });
+    await session.bindExtensions({
+      mode: "json",
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") {
         tracker.recordToolStart({
           id: event.toolCallId,
           toolName: event.toolName,
-          args: event.args,
+          args: record(event.args),
         });
       }
       if (event.type === "message_end" && event.message.role === "toolResult") {
@@ -114,11 +135,11 @@ test(
     t.after(async () => {
       await session.abort();
       session.dispose();
-      if (!evidenceRoot) {
+      if (evidenceRoot === undefined || evidenceRoot === "") {
         fs.rmSync(cwd, { recursive: true, force: true });
       }
     });
-    const calls = [
+    const calls: Array<readonly [string, ToolCall["arguments"]]> = [
       ["preview_patch", { input: "*** Begin Patch\n*** Add File: planned\n+never\n*** End Patch" }],
       [
         "write_files",
@@ -159,12 +180,12 @@ test(
       true,
       "native error hook preserves the real partial-publication error",
     );
-    assert.deepEqual(receipts[2].message.details.modifiedFiles, [path.join(cwd, "a")]);
+    assert.deepEqual(record(receipts[2].message.details).modifiedFiles, [path.join(cwd, "a")]);
     assert.deepEqual(
-      receipts[2].message.details.files.map((file) => file.status),
+      records(record(receipts[2].message.details).files).map((file) => file.status),
       ["applied", "failed", "unattempted"],
     );
-    assert.equal(receipts[3].message.details.files[0].status, "unchanged");
+    assert.equal(records(record(receipts[3].message.details).files)[0].status, "unchanged");
     assert.equal(fs.existsSync(path.join(cwd, "planned")), false);
     assert.equal(fs.readFileSync(path.join(cwd, "b"), "utf8"), "before\n");
     assert.equal(fs.readFileSync(path.join(cwd, "added"), "utf8"), "verified\n");
@@ -175,7 +196,7 @@ test(
         {
           sdkRoot,
           editor,
-          editorCommit: execFileSync("git", ["-C", editor!, "rev-parse", "HEAD"], {
+          editorCommit: execFileSync("git", ["-C", editor, "rev-parse", "HEAD"], {
             encoding: "utf8",
           }).trim(),
           consumerCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),

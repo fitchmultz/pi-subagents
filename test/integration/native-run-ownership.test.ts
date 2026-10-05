@@ -6,6 +6,47 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
+
+const evidenceSchema = Type.Object({
+  nativeProviderRequests: Type.Number(),
+  failures: Type.Array(Type.Unknown()),
+  networkRequests: Type.Optional(Type.Number()),
+  workflows: Type.Optional(Type.Array(Type.Unknown())),
+  legacyAsync: Type.Optional(
+    Type.Object({
+      tempRemoved: Type.Boolean(),
+      nonOwners: Type.Array(Type.Unknown()),
+    }),
+  ),
+  ownedRunCount: Type.Optional(Type.Number()),
+  parentPid: Type.Optional(Type.Number()),
+  coldParent: Type.Optional(
+    Type.Object({
+      originalPid: Type.Optional(Type.Number()),
+      continuedId: Type.Optional(Type.String()),
+    }),
+  ),
+});
+function readEvidence(file: string) {
+  const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+  Assert(evidenceSchema, value);
+  return value;
+}
+function failureMessage(result: {
+  readonly stderr: string;
+  readonly stdout: string;
+  readonly error?: Readonly<Error>;
+}): string {
+  if (result.stderr.length > 0) {
+    return result.stderr;
+  }
+  if (result.stdout.length > 0) {
+    return result.stdout;
+  }
+  return result.error?.message ?? "Native child failed";
+}
 
 it(
   "native workflow outcomes retain successful evidence, truthful grouped notifications, and actual children across reload in both modes",
@@ -20,8 +61,9 @@ it(
       );
     const env = { ...process.env };
     for (const key of Object.keys(env)) {
-      if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key))
+      if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) {
         delete env[key];
+      }
     }
     try {
       const result = spawnSync(
@@ -35,20 +77,22 @@ it(
         ],
         { cwd: repo, env, encoding: "utf8", timeout: 110_000, maxBuffer: 1024 * 1024 },
       );
-      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+      assert.equal(result.status, 0, failureMessage(result));
       assert.equal(
         result.stderr,
         "",
         "Native workflow reload/reopen must not warn about valid saved statuses.",
       );
-      const evidence = JSON.parse(
-        fs.readFileSync(path.join(root, "workflow-evidence.json"), "utf8"),
-      );
+      const evidence = readEvidence(path.join(root, "workflow-evidence.json"));
       assert.equal(evidence.nativeProviderRequests, 0);
       assert.deepEqual(evidence.failures, []);
+      assert.ok(evidence.workflows, "native workflow evidence is present");
       assert.equal(evidence.workflows.length, 10);
     } finally {
-      if (process.env.PI_OWNERSHIP_KEEP_EVIDENCE) {
+      if (
+        process.env.PI_OWNERSHIP_KEEP_EVIDENCE !== undefined &&
+        process.env.PI_OWNERSHIP_KEEP_EVIDENCE !== ""
+      ) {
         console.log(`Native workflow evidence: ${root}/workflow-evidence.json`);
       } else {
         fs.rmSync(root, { recursive: true, force: true });
@@ -70,9 +114,11 @@ for (const route of ["receipt-result", "status-result", "status-session"]) {
           path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))),
         );
       const env = { ...process.env };
-      for (const key of Object.keys(env))
-        if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key))
+      for (const key of Object.keys(env)) {
+        if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) {
           delete env[key];
+        }
+      }
       try {
         const result = spawnSync(
           process.execPath,
@@ -85,15 +131,13 @@ for (const route of ["receipt-result", "status-result", "status-session"]) {
           ],
           { cwd: repo, env, encoding: "utf8", timeout: 25_000, maxBuffer: 1024 * 1024 },
         );
-        assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+        assert.equal(result.status, 0, failureMessage(result));
         assert.equal(
           result.stderr,
           "",
           "Valid legacy async metadata must migrate without warnings.",
         );
-        const evidence = JSON.parse(
-          fs.readFileSync(path.join(root, "legacy-evidence.json"), "utf8"),
-        );
+        const evidence = readEvidence(path.join(root, "legacy-evidence.json"));
         assert.equal(
           evidence.nativeProviderRequests,
           1,
@@ -101,12 +145,18 @@ for (const route of ["receipt-result", "status-result", "status-session"]) {
         );
         assert.equal(evidence.networkRequests, 0);
         assert.deepEqual(evidence.failures, []);
+        assert.ok(evidence.legacyAsync, "native migration evidence is present");
         assert.equal(evidence.legacyAsync.tempRemoved, true);
         assert.equal(evidence.legacyAsync.nonOwners.length, 3);
       } finally {
-        if (process.env.PI_OWNERSHIP_KEEP_EVIDENCE)
+        if (
+          process.env.PI_OWNERSHIP_KEEP_EVIDENCE !== undefined &&
+          process.env.PI_OWNERSHIP_KEEP_EVIDENCE !== ""
+        ) {
           console.log(`Native legacy async evidence: ${root}/legacy-evidence.json`);
-        else fs.rmSync(root, { recursive: true, force: true });
+        } else {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
       }
     },
   );
@@ -125,8 +175,9 @@ it(
       );
     const env = { ...process.env };
     for (const key of Object.keys(env)) {
-      if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key))
+      if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) {
         delete env[key];
+      }
     }
     try {
       for (const phase of ["journey", "cold-parent"]) {
@@ -141,28 +192,28 @@ it(
           ],
           { cwd: repo, env, encoding: "utf8", timeout: 110_000, maxBuffer: 1024 * 1024 },
         );
-        assert.equal(
-          result.status,
-          0,
-          `${phase}: ${result.stderr || result.stdout || result.error?.message}`,
-        );
-        const evidence = JSON.parse(
-          fs.readFileSync(
-            path.join(root, phase === "journey" ? "evidence.json" : "cold-evidence.json"),
-            "utf8",
-          ),
+        assert.equal(result.status, 0, `${phase}: ${failureMessage(result)}`);
+        const evidence = readEvidence(
+          path.join(root, phase === "journey" ? "evidence.json" : "cold-evidence.json"),
         );
         assert.equal(evidence.nativeProviderRequests, 0);
         assert.deepEqual(evidence.failures, []);
         if (phase === "journey") {
+          assert.ok(evidence.ownedRunCount !== undefined, "native owned run count is present");
           assert.ok(evidence.ownedRunCount > 50);
         } else {
+          assert.ok(evidence.coldParent, "native cold recovery evidence is present");
+          assert.ok(evidence.coldParent.originalPid !== undefined);
+          assert.ok(evidence.coldParent.continuedId !== undefined);
           assert.notEqual(evidence.parentPid, evidence.coldParent.originalPid);
-          assert.ok(evidence.coldParent.continuedId);
+          assert.ok(evidence.coldParent.continuedId.length > 0);
         }
       }
     } finally {
-      if (process.env.PI_OWNERSHIP_KEEP_EVIDENCE) {
+      if (
+        process.env.PI_OWNERSHIP_KEEP_EVIDENCE !== undefined &&
+        process.env.PI_OWNERSHIP_KEEP_EVIDENCE !== ""
+      ) {
         console.log(
           `Native ownership evidence: ${root}/evidence.json\nCold parent evidence: ${root}/cold-evidence.json`,
         );
