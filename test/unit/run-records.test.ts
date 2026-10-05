@@ -4,6 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { it } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { makeExtensionContext } from "../support/sdk-context.ts";
 import { assertDefined, textAt } from "../support/assertions.ts";
 import type {
   ArtifactPaths,
@@ -11,6 +14,153 @@ import type {
   OwnedRun,
   SubagentState,
 } from "../../src/shared/types.ts";
+
+function inspectionState(cwd: string, ownerSessionId: string): SubagentState {
+  return {
+    baseCwd: cwd,
+    currentSessionId: ownerSessionId,
+    asyncJobs: new Map(),
+    cleanupTimers: new Map(),
+    lastUiContext: null,
+    poller: null,
+    completionSeen: new Map(),
+    watcher: null,
+    watcherRestartTimer: null,
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear() {
+        // These inspection cases never schedule file events.
+      },
+    },
+  };
+}
+
+it("legacy receipt recovery retains native cwd and ownership after supplemental filesystem failure", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-recovery-fault-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousTempRoot = process.env.PI_SUBAGENT_TEMP_ROOT;
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
+  process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
+  t.after(() => {
+    if (previousAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
+    if (previousTempRoot === undefined) {
+      delete process.env.PI_SUBAGENT_TEMP_ROOT;
+    } else {
+      process.env.PI_SUBAGENT_TEMP_ROOT = previousTempRoot;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const { restoreOwnedRuns, ownedRunStatusResult } =
+    await import("../../src/runs/shared/run-records.ts");
+  const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
+  const nativeCwd = path.join(root, "native-child-cwd");
+  fs.mkdirSync(nativeCwd);
+  const owner = SessionManager.create(root, path.join(root, "parent-sessions"));
+  const child = SessionManager.create(nativeCwd, path.join(root, "child-sessions"));
+  child.appendMessage({
+    role: "user",
+    content: "Retain native child context",
+    timestamp: Date.now(),
+  });
+  child.appendMessage(fauxAssistantMessage("Retained child output"));
+  const childFile = child.getSessionFile();
+  assertDefined(childFile);
+  assert.equal(SessionManager.open(childFile).getHeader()?.cwd, nativeCwd);
+  const runId = "receipt-recovery-fault";
+  const call = fauxToolCall("delegate", {
+    agent: "worker",
+    task: "Recover child",
+    cwd: "requested-cwd",
+  });
+  owner.appendMessage({ role: "user", content: "Delegate child work", timestamp: Date.now() });
+  owner.appendMessage(fauxAssistantMessage(call, { stopReason: "toolUse" }));
+  const receiptId = owner.appendMessage({
+    role: "toolResult",
+    toolName: "delegate",
+    toolCallId: call.id,
+    content: [{ type: "text", text: "Retained child output" }],
+    isError: false,
+    timestamp: Date.now(),
+    details: {
+      mode: "single",
+      runId,
+      results: [
+        {
+          agent: "worker",
+          task: "Recover child",
+          exitCode: 0,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          sessionFile: childFile,
+          finalOutput: "Retained child output",
+        },
+      ],
+    },
+  });
+  owner.appendCustomEntry("subagent-run", {
+    runId: "foreign-declaration",
+    rootRunId: "foreign-declaration",
+    ownerSessionId: "another-owner",
+    source: "foreground",
+    mode: "single",
+    cwd: root,
+    task: "Not owned here",
+    startedAt: Date.now(),
+    children: [{ agent: "worker", index: 0 }],
+  });
+  const ownerFile = owner.getSessionFile();
+  assertDefined(ownerFile);
+  const reopened = SessionManager.open(ownerFile);
+  assert.equal(
+    reopened.getEntry(receiptId)?.type,
+    "message",
+    "the owner receipt was published to its native journal",
+  );
+  const foreground = path.join(getRunMetadataDir(runId), "foreground.json");
+  fs.mkdirSync(foreground, { recursive: true });
+  const state = inspectionState(root, owner.getSessionId());
+  restoreOwnedRuns(state, makeExtensionContext(root, { sessionManager: reopened }));
+  const recovered = state.ownedRuns?.get(runId);
+  assertDefined(recovered);
+  assert.equal(recovered.ownerSessionId, owner.getSessionId());
+  assert.equal(
+    recovered.cwd,
+    nativeCwd,
+    "a later persistence failure cannot discard validated native cwd",
+  );
+  assert.equal(state.ownedRuns?.has("foreign-declaration"), false);
+  assert.match(
+    recovered.recoveryError ?? "",
+    /Saved child recovery remains incomplete:.*foreground\.json/,
+  );
+  assert.equal(
+    fs.statSync(foreground).isDirectory(),
+    true,
+    "supplemental publication hit the actual filesystem obstacle",
+  );
+  fs.rmdirSync(foreground);
+  const inspected = ownedRunStatusResult(recovered, state);
+  const view = inspected.details.run;
+  assertDefined(view);
+  assert.equal(
+    view.state,
+    "unknown",
+    "a receipt with incomplete recovery does not prove completion",
+  );
+  assert.equal(view.diagnosis, recovered.recoveryError);
+  assert.match(textAt(inspected.content), /Saved child recovery remains incomplete/);
+  const fork = SessionManager.forkFrom(ownerFile, root, path.join(root, "fork-sessions"));
+  const forkState = inspectionState(root, fork.getSessionId());
+  restoreOwnedRuns(forkState, makeExtensionContext(root, { sessionManager: fork }));
+  assert.equal(
+    forkState.ownedRuns?.size,
+    0,
+    "copied native receipts and foreign declarations cannot grant ownership to the fork",
+  );
+});
 
 function fixtureChildStatus(index: number): "complete" | "pending" | "running" {
   if (index === 0) {
@@ -112,23 +262,7 @@ it("owned inspection retains persisted background attempt usage and full, partia
       persisted.results,
       "the background writer and reader retain the recorded evidence",
     );
-    const state: SubagentState = {
-      baseCwd: root,
-      currentSessionId: run.ownerSessionId,
-      asyncJobs: new Map(),
-      cleanupTimers: new Map(),
-      lastUiContext: null,
-      poller: null,
-      completionSeen: new Map(),
-      watcher: null,
-      watcherRestartTimer: null,
-      resultFileCoalescer: {
-        schedule: () => false,
-        clear() {
-          /* This inspection fixture never schedules file events. */
-        },
-      },
-    };
+    const state = inspectionState(root, run.ownerSessionId);
     const inspected = ownedRunStatusResult(run, state);
     const view = inspected.details.run;
     assert.ok(view);
