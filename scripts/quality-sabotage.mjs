@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { root } from "./quality-scope.mjs";
 
 function run(command, args, cwd) {
@@ -48,7 +48,12 @@ function verifyAcceptanceFailures() {
     throw new Error(added.stderr);
   }
   try {
-    symlinkSync(resolve(root, "node_modules"), join(directory, "node_modules"));
+    const install = run("npm", ["ci", "--ignore-scripts"], directory);
+    const installLog = join(tmpdir(), "pi-quality-sabotage-install.log");
+    writeFileSync(installLog, install.stdout + install.stderr);
+    if (install.status !== 0) {
+      throw new Error(`Disposable acceptance clean install failed: ${installLog}`);
+    }
     const baseline = run("npm", ["run", "ci"], directory);
     const log = join(tmpdir(), "pi-quality-sabotage-baseline.log");
     writeFileSync(log, baseline.stdout + baseline.stderr);
@@ -97,7 +102,6 @@ function verifyAcceptanceFailures() {
       writeFileSync(configPath, original);
     }
   } finally {
-    rmSync(join(directory, "node_modules"), { force: true });
     const removed = spawnSync("git", ["worktree", "remove", directory], {
       cwd: root,
       encoding: "utf8",
@@ -113,7 +117,7 @@ function verifyAcceptanceFailures() {
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: node scripts/quality-sabotage.mjs\nVerify the actual npm run ci workflow rejects five independent violations.\nRequires a committed, clean, integrated revision and installed quality engine.\nRuns baseline CI then each sabotage in a disposable detached worktree; logs under TMPDIR.\nExit 1 if baseline fails or an injected violation escapes. Example: npm run quality:sabotage",
+    "Usage: node scripts/quality-sabotage.mjs\nVerify the actual npm run ci workflow rejects five independent violations.\nRequires a committed, clean, integrated revision, npm, Git and Go.\nRuns a clean install, baseline CI then each sabotage in a disposable detached worktree; logs under TMPDIR.\nExit 1 if baseline fails or an injected violation escapes. Example: npm run quality:sabotage",
   );
 } else if (process.argv.length > 2) {
   throw new Error("Unknown acceptance-probe option; use --help");

@@ -154,9 +154,10 @@ materialized outside normal compilation. Tests cover language opt-in, inherited 
 errors, production/test limits, rule options, comment directives, native declarations, safe-call and
 mutation-owner isolation, and native-container contents/method ownership.
 
-`quality:sabotage` starts from a clean committed integrated revision, runs baseline **real `npm run ci`**,
+`quality:sabotage` starts from a clean committed integrated revision, installs its own lockfile-resolved
+dependencies in a disposable detached worktree, runs baseline **real `npm run ci`**,
 then injects a syntactic lint violation, semantic violation, compiler error, formatting error and wrong
-existing safe-call declaration path into a disposable detached worktree. It requires the intended error,
+existing safe-call declaration path in that worktree. It requires the intended error,
 retains logs in the OS temporary directory and removes its own worktree without touching other work.
 A failing baseline is not successful sabotage proof: finish integrated source cleanup first.
 
