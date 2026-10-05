@@ -4,9 +4,9 @@ import {
   type createSubagentExecutor,
   normalizeSubagentParamsLike,
 } from "../runs/foreground/subagent-executor.ts";
-import type { SubagentExecutionResult, SubagentState } from "../shared/types.ts";
+import type { SubagentExecutionResult } from "../shared/types.ts";
+import type { ReadonlyInput } from "../shared/types/inputs.ts";
 import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
-import { runHistoryIndex } from "../runs/shared/history-index.ts";
 import type { HistoryRunOptions } from "../history/types.ts";
 import { listSupervisorQuestionsAsync } from "../runs/shared/supervisor-questions.ts";
 import { renderSubagentResult } from "../tui/render.ts";
@@ -15,75 +15,105 @@ import { normalizeEverydayParams } from "./tool-input.ts";
 
 type Executor = ReturnType<typeof createSubagentExecutor>;
 type AdaptResult = (
-  result: SubagentExecutionResult,
+  result: ReadonlyInput<SubagentExecutionResult>,
   ctx: ExtensionContext,
 ) => SubagentExecutionResult;
+type ControlsIndex = { readonly needsControls: () => Promise<boolean> };
+interface RunControlsState {
+  readonly ownedRuns?: { readonly size: number };
+  readonly lastUiContext: ExtensionContext | null;
+  readonly currentSessionId: string | null;
+  readonly historyIndex?: unknown;
+}
+interface ExecutionOptions {
+  readonly executor: Readonly<Executor>;
+  readonly adapt: AdaptResult;
+  readonly listRuns?: (
+    params: ReadonlyInput<HistoryRunOptions>,
+    ctx: ExtensionContext,
+  ) => Promise<SubagentExecutionResult>;
+}
+interface CompactOptions extends ExecutionOptions {
+  readonly state: RunControlsState;
+  readonly getHistoryIndex: () => Promise<ControlsIndex>;
+  readonly guidelines: readonly string[];
+  readonly childSafe?: boolean;
+  readonly keepAdvancedActive?: boolean;
+  readonly asyncByDefault: boolean;
+}
 
-export function registerCompactSubagentTools(
+function hasOwnedRunsFor(state: RunControlsState, owner: string | null): boolean {
+  return (
+    (state.lastUiContext?.sessionManager.getSessionId() ?? state.currentSessionId) === owner &&
+    (state.ownedRuns?.size ?? 0) > 0
+  );
+}
+
+async function activateOwnedControls(
   pi: ExtensionAPI,
-  options: {
-    executor: Executor;
-    state: SubagentState;
-    adapt: AdaptResult;
-    guidelines: readonly string[];
-    childSafe?: boolean;
-    keepAdvancedActive?: boolean;
-    listRuns?: (
-      params: HistoryRunOptions,
-      ctx: ExtensionContext,
-    ) => Promise<SubagentExecutionResult>;
-    asyncByDefault: boolean;
-  },
+  state: RunControlsState,
+  getHistoryIndex: () => Promise<ControlsIndex>,
+  owner: string | null,
+): Promise<void> {
+  try {
+    const index = await getHistoryIndex();
+    const needed = await index.needsControls();
+    if (state.historyIndex === index && needed) {
+      activateTools(pi, ["agent_runs"]);
+    }
+  } catch {
+    // An unavailable browse index cannot establish that genuine owned work is inert.
+    if (hasOwnedRunsFor(state, owner)) {
+      activateTools(pi, ["agent_runs"]);
+    }
+  }
+}
+
+function createRunControlsReconciler(
+  pi: ExtensionAPI,
+  state: RunControlsState,
+  getHistoryIndex: () => Promise<ControlsIndex>,
 ): () => Promise<void> {
-  const { executor, adapt, guidelines, childSafe, asyncByDefault, state } = options;
-  let checking: { owner: string | null | undefined; promise: Promise<void> } | undefined;
-  const checkRuns = (): Promise<void> => {
-    if (pi.getActiveTools().includes("agent_runs") || !state.ownedRuns?.size) {
+  let checking: { readonly owner: string | null; readonly promise: Promise<void> } | undefined;
+  return (): Promise<void> => {
+    if (pi.getActiveTools().includes("agent_runs") || (state.ownedRuns?.size ?? 0) === 0) {
       return Promise.resolve();
     }
     const owner = state.lastUiContext?.sessionManager.getSessionId() ?? state.currentSessionId;
     if (checking?.owner === owner) {
       return checking.promise;
     }
-    const promise = Promise.resolve().then(async () => {
-      try {
-        const index = await runHistoryIndex(state);
-        const needed = await index.needsControls();
-        if (state.historyIndex === index && needed) {
-          activateTools(pi, ["agent_runs"]);
-        }
-      } catch {
-        // An unavailable browse index cannot establish that genuine owned work is inert.
-        if (
-          (state.lastUiContext?.sessionManager.getSessionId() ?? state.currentSessionId) ===
-            owner &&
-          state.ownedRuns?.size
-        ) {
-          activateTools(pi, ["agent_runs"]);
-        }
-      } finally {
+    const promise = activateOwnedControls(pi, state, getHistoryIndex, owner);
+    checking = { owner, promise };
+    promise
+      .finally(() => {
         if (checking?.promise === promise) {
           checking = undefined;
         }
-      }
-    });
-    checking = { owner, promise };
+      })
+      .catch((error: unknown) => {
+        console.error("Could not reconcile owned subagent controls:", error);
+      });
     return promise;
   };
-  const reconcileRuns = () => checkRuns();
-  const onRunsChanged = state.onRunsChanged;
-  state.onRunsChanged = () => {
-    reconcileRuns();
-    onRunsChanged?.();
-  };
-  const asyncDescription = asyncByDefault
+}
+
+function registerDelegate(
+  pi: ExtensionAPI,
+  options: Pick<
+    CompactOptions,
+    "executor" | "adapt" | "guidelines" | "childSafe" | "asyncByDefault"
+  >,
+  checkRuns: () => Promise<void>,
+): void {
+  const asyncDescription = options.asyncByDefault
     ? "Background by default; false waits for the result."
     : "Foreground by default; true detaches work. Use false when the result must appear in your report.";
   pi.registerTool({
     name: "delegate",
     label: "Delegate",
     description: `Delegate one bounded task to a configured agent. For profiles/history, load_subagent({advanced:false}) enables agent_runs. Delegation enables run controls automatically. ${asyncDescription} Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Fresh handoffs must include relevant exact user instructions and settled decisions or readable source references, not just summaries, alongside the bounded task. Advanced workflows remain behind load_subagent.`,
-    ...(childSafe ? { promptGuidelines: [...guidelines] } : {}),
+    ...(options.childSafe === true ? { promptGuidelines: [...options.guidelines] } : {}),
     parameters: Type.Object(
       {
         ...DelegateParams.properties,
@@ -93,21 +123,25 @@ export function registerCompactSubagentTools(
     ),
     async execute(id, params, signal, onUpdate, ctx) {
       const { worktree, context, async: background, ...task } = normalizeEverydayParams(params);
-      const request = worktree
-        ? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
-        : { ...task, context, async: background };
-      const result = await executor.execute(
-        id,
-        normalizeSubagentParamsLike(request),
+      const request =
+        worktree === true
+          ? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
+          : { ...task, context, async: background };
+      const result = await options.executor.execute({
+        toolCallId: id,
+        params: normalizeSubagentParamsLike(request),
         signal,
         onUpdate,
         ctx,
-      );
+      });
       await checkRuns();
-      return adapt(result, ctx);
+      return options.adapt(result, ctx);
     },
     renderResult: renderSubagentResult,
   });
+}
+
+function registerRuns(pi: ExtensionAPI, options: ExecutionOptions, childSafe: boolean): void {
   pi.registerTool({
     name: "agent_runs",
     defaultActive: false,
@@ -116,8 +150,8 @@ export function registerCompactSubagentTools(
     parameters: AgentRunsParams,
     async execute(id, params, signal, onUpdate, ctx) {
       const normalized = normalizeEverydayParams(params, true);
-      if (params.action === "list" && !params.id && options.listRuns) {
-        return adapt(await options.listRuns({ ...normalized, signal }, ctx), ctx);
+      if (params.action === "list" && params.id === undefined && options.listRuns) {
+        return options.adapt(await options.listRuns({ ...normalized, signal }, ctx), ctx);
       }
       const actions = {
         list: "status",
@@ -132,23 +166,37 @@ export function registerCompactSubagentTools(
         answer: "answer",
         review: "review",
       };
-      return adapt(
-        await executor.execute(
-          id,
-          normalizeSubagentParamsLike({ ...normalized, action: actions[params.action] }),
+      return options.adapt(
+        await options.executor.execute({
+          toolCallId: id,
+          params: normalizeSubagentParamsLike({ ...normalized, action: actions[params.action] }),
           signal,
           onUpdate,
           ctx,
-        ),
+        }),
         ctx,
       );
     },
     renderResult: renderSubagentResult,
   });
+}
+
+function requireAvailableTool(pi: ExtensionAPI, name: string, error: string): void {
+  if (
+    !pi.getAllTools().some((tool) => tool.name === name && !("namespace" in tool && tool.namespace))
+  ) {
+    throw new Error(error);
+  }
+}
+
+function registerLoader(
+  pi: ExtensionAPI,
+  options: Pick<CompactOptions, "guidelines" | "childSafe">,
+): void {
   pi.registerTool({
     name: "load_subagent",
     label: "Load Subagent",
-    description: `Enable agent_runs for profiles, history and run controls; advanced:false loads only those controls. By default also enable advanced subagent orchestration: parallel groups, chains, saved workflows, detailed overrides, get, extend and doctor.${childSafe ? " Agent-definition mutations remain blocked." : " Includes agent-definition management."} Ordinary delegation and control use delegate and agent_runs. After loading advanced workflows, call subagent with { action: "list" } before execution.`,
+    description: `Enable agent_runs for profiles, history and run controls; advanced:false loads only those controls. By default also enable advanced subagent orchestration: parallel groups, chains, saved workflows, detailed overrides, get, extend and doctor.${options.childSafe === true ? " Agent-definition mutations remain blocked." : " Includes agent-definition management."} Ordinary delegation and control use delegate and agent_runs. After loading advanced workflows, call subagent with { action: "list" } before execution.`,
     promptSnippet:
       "Discover profiles/history with advanced:false, or load full subagent orchestration by default.",
     parameters: Type.Object({
@@ -161,34 +209,23 @@ export function registerCompactSubagentTools(
     }),
     async execute(_id, params) {
       const advanced = params.advanced !== false;
-      if (
-        advanced &&
-        !pi
-          .getAllTools()
-          .some((tool) => tool.name === "subagent" && !("namespace" in tool && tool.namespace))
-      ) {
-        throw new Error(
-          "Subagent is unavailable because the full tool is excluded from this session.",
-        );
-      }
-      if (
-        !advanced &&
-        !pi
-          .getAllTools()
-          .some((tool) => tool.name === "agent_runs" && !("namespace" in tool && tool.namespace))
-      ) {
-        throw new Error("Run controls are excluded from this session.");
-      }
+      requireAvailableTool(
+        pi,
+        advanced ? "subagent" : "agent_runs",
+        advanced
+          ? "Subagent is unavailable because the full tool is excluded from this session."
+          : "Run controls are excluded from this session.",
+      );
       const added = !pi.getActiveTools().includes(advanced ? "subagent" : "agent_runs");
       activateTools(pi, advanced ? ["agent_runs", "subagent"] : ["agent_runs"]);
       return {
         content: [
           {
-            type: "text" as const,
+            type: "text",
             text: advanced
               ? [
                   `Subagent ${added ? "enabled" : "already enabled"}.`,
-                  ...guidelines.map((line) => `- ${line}`),
+                  ...options.guidelines.map((line) => `- ${line}`),
                 ].join("\n")
               : "Run controls enabled. Use agent_runs({action:'profiles'}) to discover agents; list, history, or search browses owned saved work.",
           },
@@ -197,8 +234,18 @@ export function registerCompactSubagentTools(
       };
     },
   });
-  const reconcile = async (ctx: ExtensionContext) => {
-    if (options.keepAdvancedActive) {
+}
+
+export function registerCompactSubagentTools(
+  pi: ExtensionAPI,
+  options: CompactOptions,
+): () => Promise<void> {
+  const checkRuns = createRunControlsReconciler(pi, options.state, options.getHistoryIndex);
+  registerDelegate(pi, options, checkRuns);
+  registerRuns(pi, options, options.childSafe === true);
+  registerLoader(pi, options);
+  const reconcile = async (ctx: ExtensionContext): Promise<void> => {
+    if (options.keepAdvancedActive === true) {
       activateTools(pi, ["subagent"]);
     }
     await checkRuns();
@@ -211,15 +258,14 @@ export function registerCompactSubagentTools(
       activateTools(pi, ["agent_runs"]);
     }
   };
-  const restore = async (event: { reason?: string }, ctx: ExtensionContext) => {
+  pi.on("session_start", async (event, ctx) => {
     if (event.reason !== "reload") {
       restoreLazyTools(pi, ctx, "load_subagent", ["subagent", "agent_runs"]);
     }
     await reconcile(ctx);
-  };
-  pi.on("session_start", restore);
+  });
   pi.on("session_tree", (_event, ctx) => reconcile(ctx));
   pi.on("session_compact", (_event, ctx) => reconcile(ctx));
   pi.on("before_agent_start", (_event, ctx) => reconcile(ctx));
-  return reconcileRuns;
+  return checkRuns;
 }

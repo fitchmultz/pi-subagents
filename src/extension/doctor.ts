@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import type { ReadonlyInput } from "../shared/types/inputs.ts";
+import { errorMessage } from "../shared/unknown.ts";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERSION as PI_VERSION, getPackageDir } from "@earendil-works/pi-coding-agent";
@@ -19,7 +21,7 @@ interface DoctorReportInput {
   cwd: string;
   nativeSessionCwd?: string;
   config: ExtensionConfig;
-  state: SubagentState;
+  state: Pick<SubagentState, "currentSessionId">;
   requestedSessionDir?: string;
   currentSessionFile?: string | null;
   currentSessionId?: string | null;
@@ -34,7 +36,7 @@ const PI_PACKAGE_DIR = getPackageDir();
 const EXTENSION_MODULE = fileURLToPath(import.meta.url);
 
 function errorText(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return error instanceof Error ? `${error.name}: ${error.message}` : errorMessage(error);
 }
 
 function lineFromCheck(label: string, check: () => string): string {
@@ -61,11 +63,11 @@ function formatExistingDirectory(label: string, dirPath: string): string {
   }
 }
 
-function formatSourceCounts(counts: Record<AgentSource, number>): string {
+function formatSourceCounts(counts: Readonly<Record<AgentSource, number>>): string {
   return `builtin ${counts.builtin}, package ${counts.package}, user ${counts.user}, project ${counts.project}`;
 }
 
-function formatSkillSourceCounts(skills: Array<{ source: SkillSource }>): string {
+function formatSkillSourceCounts(skills: ReadonlyArray<{ readonly source: SkillSource }>): string {
   const counts = new Map<SkillSource, number>();
   for (const skill of skills) {
     counts.set(skill.source, (counts.get(skill.source) ?? 0) + 1);
@@ -87,21 +89,16 @@ function formatSkillSourceCounts(skills: Array<{ source: SkillSource }>): string
   return parts.length > 0 ? parts.join(", ") : "none";
 }
 
-function formatConfiguredSessionDir(input: DoctorReportInput): string {
-  if (input.requestedSessionDir) {
-    return path.resolve(
-      input.expandTilde?.(input.requestedSessionDir) ?? input.requestedSessionDir,
-    );
-  }
-  if (input.config.defaultSessionDir) {
-    return path.resolve(
-      input.expandTilde?.(input.config.defaultSessionDir) ?? input.config.defaultSessionDir,
-    );
+function formatConfiguredSessionDir(input: ReadonlyInput<DoctorReportInput>): string {
+  const dir = input.requestedSessionDir ?? "";
+  const configured = dir.length > 0 ? dir : (input.config.defaultSessionDir ?? "");
+  if (configured.length > 0) {
+    return path.resolve(input.expandTilde?.(configured) ?? configured);
   }
   return "not configured";
 }
 
-function formatSessionLines(input: DoctorReportInput): string[] {
+function formatSessionLines(input: ReadonlyInput<DoctorReportInput>): string[] {
   const sessionFile = input.currentSessionFile ?? null;
   const lines = [
     lineFromCheck(
@@ -109,16 +106,16 @@ function formatSessionLines(input: DoctorReportInput): string[] {
       () => `- configured session dir: ${formatConfiguredSessionDir(input)}`,
     ),
     `- current session file: ${sessionFile ?? "not available"}`,
-    `- current session dir: ${sessionFile ? path.dirname(sessionFile) : "not available"}`,
+    `- current session dir: ${sessionFile !== null && sessionFile.length > 0 ? path.dirname(sessionFile) : "not available"}`,
     `- current session id: ${input.currentSessionId ?? input.state.currentSessionId ?? "not available"}`,
   ];
-  if (input.sessionError) {
+  if (input.sessionError !== undefined && input.sessionError.length > 0) {
     lines.push(`- session manager: failed — ${input.sessionError}`);
   }
   return lines;
 }
 
-function formatDiscovery(input: DoctorReportInput): string[] {
+function formatDiscovery(input: ReadonlyInput<DoctorReportInput>): string[] {
   return [
     lineFromCheck("agents/chains", () => {
       const discovered = discoverAgentsAll(input.cwd, {
@@ -130,13 +127,10 @@ function formatDiscovery(input: DoctorReportInput): string[] {
         user: discovered.user.length,
         project: discovered.project.length,
       };
-      const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>(
-        (counts, chain) => {
-          counts[chain.source] += 1;
-          return counts;
-        },
-        { builtin: 0, package: 0, user: 0, project: 0 },
-      );
+      const chainCounts = { builtin: 0, package: 0, user: 0, project: 0 };
+      for (const chain of discovered.chains) {
+        chainCounts[chain.source] += 1;
+      }
       return [
         `- agents: total ${agentCounts.builtin + agentCounts.package + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
         `- chains: total ${discovered.chains.length} (${formatSourceCounts(chainCounts)})`,
@@ -151,22 +145,40 @@ function formatDiscovery(input: DoctorReportInput): string[] {
   ];
 }
 
-function formatIntercomSection(input: DoctorReportInput): string[] {
+function connectionStatus(
+  connection: Readonly<SubagentIntercomConnection> | undefined,
+  reason: string,
+): string {
+  return `${connection?.status ?? "unknown"}${reason.length > 0 ? ` — ${reason}` : ""}`;
+}
+
+function formatIntercomSection(input: ReadonlyInput<DoctorReportInput>): string[] {
+  const reason = input.connection?.reason ?? "";
+  const target = input.orchestratorTarget?.trim() ?? "";
   return [
     `- bridge: ${input.connection ? "responding" : "unavailable (no live health response)"}`,
-    `- connection: ${input.connection?.status ?? "unknown"}${input.connection?.reason ? ` — ${input.connection.reason}` : ""}`,
+    `- connection: ${connectionStatus(input.connection, reason)}`,
     `- broker session id: ${input.connection?.sessionId ?? "not available"}`,
-    `- orchestrator target: ${input.orchestratorTarget?.trim() || "not available"}`,
+    `- orchestrator target: ${target.length > 0 ? target : "not available"}`,
   ];
 }
 
-export function buildDoctorReport(input: DoctorReportInput): string {
+function formatBuild(): string {
+  const { version, sha256 } = EXTENSION_BUILD;
+  return version !== undefined && sha256 !== undefined && version.length > 0 && sha256.length > 0
+    ? `${version} (runtime SHA-256 ${sha256})`
+    : "unknown (unbuilt source)";
+}
+
+export function buildDoctorReport(input: ReadonlyInput<DoctorReportInput>): string {
   const lines = [
     "Subagents doctor report",
     "",
     "Runtime",
     `- Native session cwd: ${input.nativeSessionCwd ?? input.cwd}`,
-    ...(input.nativeSessionCwd && input.nativeSessionCwd !== input.cwd
+    ...(input.nativeSessionCwd !== undefined &&
+    input.nativeSessionCwd.length > 0 &&
+    input.nativeSessionCwd !== input.cwd
       ? [`- Requested cwd: ${input.cwd}`]
       : []),
     `- Node: ${process.version}`,
@@ -174,7 +186,7 @@ export function buildDoctorReport(input: DoctorReportInput): string {
     `- loaded Pi version: ${PI_VERSION}`,
     `- Pi package directory: ${PI_PACKAGE_DIR} (Pi resource path; may be overridden)`,
     "- native queue contract: not verified (version alone does not identify fork patches)",
-    `- loaded pi-subagents build: ${EXTENSION_BUILD.version && EXTENSION_BUILD.sha256 ? `${EXTENSION_BUILD.version} (runtime SHA-256 ${EXTENSION_BUILD.sha256})` : "unknown (unbuilt source)"}`,
+    `- loaded pi-subagents build: ${formatBuild()}`,
     `- extension module: ${EXTENSION_MODULE}`,
     "- async support: available (Node >=24)",
     ...formatSessionLines(input),

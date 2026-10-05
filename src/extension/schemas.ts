@@ -4,32 +4,21 @@
 
 import { Type } from "../shared/native-typebox.ts";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
-
-const requiredObject = (...required: string[]) => ({ type: "object" as const, required });
-
-const SkillOverride = Type.Unsafe({
-  anyOf: [
-    { type: "array", items: { type: "string", minLength: 1 } },
-    { type: "boolean" },
-    { type: "string" },
-  ],
-  description: "Skill name(s): string, comma-separated string, array, or false to disable",
-});
-
-const OutputOverride = Type.Unsafe({
-  anyOf: [{ type: "string", minLength: 1 }, { type: "boolean" }],
-  description: "Output file path, or false to disable file output.",
-});
-
-const OutputModeOverride = Type.Enum(["inline", "file-only"] as const, {
-  type: "string",
-  description: "inline (default) or file-only; file-only requires output to be a path.",
-});
-
-const ReadsOverride = Type.Unsafe({
-  anyOf: [{ type: "array", items: { type: "string", minLength: 1 } }, { type: "boolean" }],
-  description: "Files to read before running, or false to disable",
-});
+import { AcceptanceOverride } from "./acceptance-schema.ts";
+import { ChainItemSchema } from "./chain-schema.ts";
+import { AgentRunsValidationParams } from "./everyday-schemas.ts";
+import {
+  HistoryQueryFields,
+  JsonSchemaObject,
+  ModelOverride,
+  OutputModeOverride,
+  SkillOverride,
+  TaskItem,
+  requiredObject,
+} from "./schema-overrides.ts";
+export { AcceptanceOverride, DelegateAcceptance } from "./acceptance-schema.ts";
+export { ChainItemSchema } from "./chain-schema.ts";
+export { DelegateParams, AgentRunsValidationParams, AgentRunsParams } from "./everyday-schemas.ts";
 
 const MaxOutputOverride = Type.Object(
   {
@@ -43,390 +32,6 @@ const MaxOutputOverride = Type.Object(
   {
     additionalProperties: false,
     description: "Final output truncation limits. Defaults: 200KB, 5000 lines.",
-  },
-);
-
-const JsonSchemaObject = Type.Unsafe({
-  type: "object",
-  additionalProperties: true,
-  description: "JSON Schema (object root) for strict structured output.",
-});
-
-const AcceptanceEvidenceKind = Type.Enum(
-  [
-    "changed-files",
-    "tests-added",
-    "commands-run",
-    "validation-output",
-    "residual-risks",
-    "no-staged-files",
-    "diff-summary",
-    "review-findings",
-    "manual-notes",
-  ] as const,
-  { type: "string" },
-);
-
-const AcceptanceGateSchema = Type.Object(
-  {
-    id: Type.String({ minLength: 1 }),
-    must: Type.String({ minLength: 1 }),
-    evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
-    severity: Type.Optional(Type.Enum(["required", "recommended"] as const, { type: "string" })),
-  },
-  { additionalProperties: false },
-);
-
-const AcceptanceVerifyCommandSchema = Type.Object(
-  {
-    id: Type.String({ minLength: 1 }),
-    command: Type.String({ minLength: 1 }),
-    timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
-    cwd: Type.Optional(Type.String()),
-    env: Type.Optional(Type.Unsafe({ type: "object", additionalProperties: { type: "string" } })),
-    allowFailure: Type.Optional(Type.Boolean()),
-  },
-  { additionalProperties: false },
-);
-
-export const AcceptanceOverride = Type.Unsafe({
-  type: "object",
-  properties: {
-    criteria: {
-      type: "array",
-      items: {
-        anyOf: [{ type: "string", minLength: 1 }, AcceptanceGateSchema],
-      },
-    },
-    evidence: { type: "array", items: AcceptanceEvidenceKind },
-    verify: { type: "array", items: AcceptanceVerifyCommandSchema },
-    stopRules: { type: "array", items: { type: "string", minLength: 1 } },
-    maxFinalizationTurns: { type: "integer", minimum: 1, maximum: 10 },
-  },
-  additionalProperties: false,
-  description:
-    "Optional acceptance contract. criteria=definition of done, evidence/verify=proof, stopRules=constraints, maxFinalizationTurns=self-review budget; at least one required. no-staged-files requires the entire Git index to be empty, including pre-existing staged paths. Continue/resume/answer overrides apply only to newly started continuations, never to a live child's acceptance. See the pi-subagents skill.",
-});
-
-// The everyday tools use closed acceptance shapes. Advanced callers retain the full contract below.
-export const DelegateAcceptance = Type.Object(
-  {
-    criteria: Type.Optional(Type.Array(AcceptanceGateSchema)),
-    evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
-    verify: Type.Optional(
-      Type.Array(
-        Type.Object(
-          {
-            ...AcceptanceVerifyCommandSchema.properties,
-            env: Type.Optional(
-              Type.Array(
-                Type.Object(
-                  { name: Type.String({ minLength: 1 }), value: Type.String() },
-                  { additionalProperties: false },
-                ),
-              ),
-            ),
-          },
-          { additionalProperties: false },
-        ),
-      ),
-    ),
-    stopRules: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-    maxFinalizationTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
-  },
-  {
-    additionalProperties: false,
-    description:
-      "Acceptance criteria, evidence, verification commands and stop rules. Criteria use objects; verification environment uses unique name/value pairs. Self-review budget: 1–10 turns.",
-  },
-);
-
-const ModelOverride = Type.Optional(
-  Type.String({
-    description:
-      'Profiles are defaults; warranted overrides are allowed subject to user instructions and provider authorization. Use model: "provider/model:high" to pin route/effort (no profile fallbacks; same-choice transport retries remain). Omit for profile fallbacks. No standalone thinking argument.',
-  }),
-);
-
-const TaskItem = Type.Object(
-  {
-    agent: Type.String({ minLength: 1 }),
-    task: Type.String({ minLength: 1 }),
-    label: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description: "Short task label for the Agents strip and conversation.",
-      }),
-    ),
-    cwd: Type.Optional(Type.String()),
-    count: Type.Optional(
-      Type.Integer({ minimum: 1, description: "Repeat this parallel task N times." }),
-    ),
-    outputSchema: Type.Optional(JsonSchemaObject),
-    output: Type.Optional(OutputOverride),
-    outputMode: Type.Optional(OutputModeOverride),
-    reads: Type.Optional(ReadsOverride),
-    progress: Type.Optional(
-      Type.Boolean({ description: "Enable progress.md tracking for this task" }),
-    ),
-    model: ModelOverride,
-    skill: Type.Optional(SkillOverride),
-    acceptance: Type.Optional(AcceptanceOverride),
-  },
-  { additionalProperties: false },
-);
-
-// Parallel task item (within a parallel step)
-const ParallelTaskSchema = Type.Object(
-  {
-    agent: Type.String({ minLength: 1 }),
-    task: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description:
-          "Task template with {task}, {previous}, {chain_dir} variables. Defaults to {previous}.",
-      }),
-    ),
-    phase: Type.Optional(
-      Type.String({ description: "Phase/group label for status and graph rendering." }),
-    ),
-    label: Type.Optional(Type.String({ description: "User-facing label for this parallel task." })),
-    as: Type.Optional(
-      Type.String({ description: "Safe identifier used as {outputs.name} in later chain steps." }),
-    ),
-    outputSchema: Type.Optional(JsonSchemaObject),
-    cwd: Type.Optional(Type.String()),
-    count: Type.Optional(
-      Type.Integer({ minimum: 1, description: "Repeat this parallel task N times." }),
-    ),
-    output: Type.Optional(OutputOverride),
-    outputMode: Type.Optional(OutputModeOverride),
-    reads: Type.Optional(ReadsOverride),
-    progress: Type.Optional(
-      Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" }),
-    ),
-    skill: Type.Optional(SkillOverride),
-    model: ModelOverride,
-    acceptance: Type.Optional(AcceptanceOverride),
-  },
-  { additionalProperties: false },
-);
-
-const DynamicExpandSchema = Type.Object(
-  {
-    from: Type.Object(
-      {
-        output: Type.String({ description: "Prior named structured output to expand from." }),
-        path: Type.String({ description: "JSON Pointer into the structured output, e.g. /items." }),
-      },
-      { additionalProperties: false },
-    ),
-    item: Type.Optional(
-      Type.String({ description: "Template variable name for each item. Defaults to item." }),
-    ),
-    key: Type.Optional(
-      Type.String({ description: "JSON Pointer relative to each item for stable child ids." }),
-    ),
-    maxItems: Type.Optional(
-      Type.Integer({
-        minimum: 0,
-        description: "Required fanout bound unless configured globally.",
-      }),
-    ),
-    onEmpty: Type.Optional(
-      Type.Enum(["skip", "fail"] as const, {
-        type: "string",
-        description: "Empty input behavior. Defaults to skip.",
-      }),
-    ),
-  },
-  { additionalProperties: false },
-);
-
-const DynamicParallelTemplateSchema = Type.Object(
-  {
-    agent: Type.String({ minLength: 1 }),
-    task: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description:
-          "Task template with {item}, {item.path}, {task}, {previous}, {chain_dir}, {outputs.name} variables.",
-      }),
-    ),
-    phase: Type.Optional(
-      Type.String({ description: "Phase/group label for status and graph rendering." }),
-    ),
-    label: Type.Optional(
-      Type.String({ description: "User-facing label; item templates supported." }),
-    ),
-    outputSchema: Type.Optional(JsonSchemaObject),
-    cwd: Type.Optional(Type.String()),
-    output: Type.Optional(OutputOverride),
-    outputMode: Type.Optional(OutputModeOverride),
-    reads: Type.Optional(ReadsOverride),
-    progress: Type.Optional(
-      Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" }),
-    ),
-    skill: Type.Optional(SkillOverride),
-    model: ModelOverride,
-    acceptance: Type.Optional(AcceptanceOverride),
-  },
-  { additionalProperties: false },
-);
-
-const DynamicCollectSchema = Type.Object(
-  {
-    as: Type.String({ description: "Safe output name for the ordered collected result array." }),
-    outputSchema: Type.Optional(JsonSchemaObject),
-  },
-  { additionalProperties: false },
-);
-
-// Flattened so chain steps do not need an object-shape anyOf/oneOf union.
-export const ChainItemSchema = Type.Object(
-  {
-    agent: Type.Optional(Type.String({ minLength: 1, description: "Sequential step agent name" })),
-    task: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description:
-          "Task template: {task}=original request, {previous}=prior step response, {chain_dir}=shared folder, {outputs.name}=prior named output. Required for first step; defaults to '{previous}'.",
-      }),
-    ),
-    phase: Type.Optional(
-      Type.String({ description: "Phase/group label for status and graph rendering." }),
-    ),
-    label: Type.Optional(Type.String({ description: "User-facing label for this chain step." })),
-    as: Type.Optional(
-      Type.String({ description: "Safe identifier used as {outputs.name} in later chain steps." }),
-    ),
-    outputSchema: Type.Optional(JsonSchemaObject),
-    cwd: Type.Optional(Type.String()),
-    output: Type.Optional(OutputOverride),
-    outputMode: Type.Optional(OutputModeOverride),
-    reads: Type.Optional(ReadsOverride),
-    progress: Type.Optional(
-      Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" }),
-    ),
-    skill: Type.Optional(SkillOverride),
-    model: ModelOverride,
-    acceptance: Type.Optional(AcceptanceOverride),
-    parallel: Type.Optional(
-      Type.Unsafe({
-        anyOf: [
-          Type.Array(ParallelTaskSchema, { minItems: 1, description: "Tasks to run in parallel" }),
-          DynamicParallelTemplateSchema,
-        ],
-        description:
-          "Static parallel tasks array, or a single dynamic fanout child template when expand/collect are present.",
-      }),
-    ),
-    expand: Type.Optional(DynamicExpandSchema),
-    collect: Type.Optional(DynamicCollectSchema),
-    concurrency: Type.Optional(
-      Type.Integer({ minimum: 1, description: "Max concurrent tasks (default: 4)" }),
-    ),
-    failFast: Type.Optional(
-      Type.Boolean({ description: "Stop on first failure (default: false)" }),
-    ),
-    worktree: Type.Optional(
-      Type.Boolean({
-        description: "Create isolated git worktrees for each parallel task.",
-      }),
-    ),
-  },
-  {
-    description:
-      "Chain step: {agent, task?} sequential, {parallel: [...]} concurrent, or {expand, parallel: {...}, collect} dynamic fanout.",
-    additionalProperties: false,
-    allOf: [
-      { anyOf: [requiredObject("agent"), requiredObject("parallel")] },
-      {
-        not: {
-          anyOf: [
-            requiredObject("agent", "parallel"),
-            { ...requiredObject("expand"), properties: { parallel: { type: "array", items: {} } } },
-          ],
-        },
-      },
-      {
-        if: requiredObject("expand"),
-        then: {
-          ...requiredObject("parallel", "collect"),
-          properties: { parallel: { type: "object" } },
-        },
-      },
-      {
-        if: requiredObject("collect"),
-        then: {
-          ...requiredObject("expand", "parallel"),
-          properties: { parallel: { type: "object" } },
-        },
-      },
-      {
-        if: { ...requiredObject("parallel"), properties: { parallel: { type: "object" } } },
-        then: requiredObject("expand", "collect"),
-      },
-      {
-        if: requiredObject("agent"),
-        then: {
-          not: {
-            anyOf: [
-              requiredObject("concurrency"),
-              requiredObject("failFast"),
-              requiredObject("worktree"),
-            ],
-          },
-        },
-      },
-      {
-        if: {
-          ...requiredObject("parallel"),
-          properties: { parallel: { type: "array", items: {} } },
-        },
-        then: {
-          not: {
-            anyOf: [
-              requiredObject("task"),
-              requiredObject("phase"),
-              requiredObject("label"),
-              requiredObject("as"),
-              requiredObject("outputSchema"),
-              requiredObject("output"),
-              requiredObject("outputMode"),
-              requiredObject("reads"),
-              requiredObject("progress"),
-              requiredObject("skill"),
-              requiredObject("model"),
-              requiredObject("acceptance"),
-              requiredObject("expand"),
-              requiredObject("collect"),
-            ],
-          },
-        },
-      },
-      {
-        if: { ...requiredObject("parallel"), properties: { parallel: { type: "object" } } },
-        then: {
-          not: {
-            anyOf: [
-              requiredObject("task"),
-              requiredObject("as"),
-              requiredObject("outputSchema"),
-              requiredObject("cwd"),
-              requiredObject("output"),
-              requiredObject("outputMode"),
-              requiredObject("reads"),
-              requiredObject("progress"),
-              requiredObject("skill"),
-              requiredObject("model"),
-              requiredObject("acceptance"),
-              requiredObject("worktree"),
-            ],
-          },
-        },
-      },
-    ],
   },
 );
 
@@ -462,235 +67,6 @@ const ControlOverrides = Type.Object(
           "Notification channels to use when available. Defaults to event, async, and intercom.",
       }),
     ),
-  },
-  { additionalProperties: false },
-);
-
-export const DelegateParams = Type.Object(
-  {
-    agent: TaskItem.properties.agent,
-    task: TaskItem.properties.task,
-    label: TaskItem.properties.label,
-    cwd: TaskItem.properties.cwd,
-    model: TaskItem.properties.model,
-    context: Type.Optional(
-      Type.Enum(["fresh", "fork"] as const, {
-        type: "string",
-        description: "Override the profile's context policy.",
-      }),
-    ),
-    async: Type.Optional(
-      Type.Boolean({ description: "Background by default; false waits for the result." }),
-    ),
-    worktree: Type.Optional(
-      Type.Boolean({
-        description:
-          "Isolate this writer in a Git worktree; return its patch. Requires a clean checkout.",
-      }),
-    ),
-    output: TaskItem.properties.output,
-    acceptance: Type.Optional(DelegateAcceptance),
-  },
-  { additionalProperties: false },
-);
-
-const HistoryQueryFields = {
-  cursor: Type.Optional(
-    Type.String({
-      minLength: 1,
-      description:
-        "Opaque page cursor returned by list/history/search; expires when the indexed snapshot changes.",
-    }),
-  ),
-  sort: Type.Optional(
-    Type.Enum(["attention", "newest", "oldest", "relevance"] as const, {
-      type: "string",
-      description:
-        "List: attention (default), newest, oldest. Search: relevance (default), newest.",
-    }),
-  ),
-  state: Type.Optional(
-    Type.Enum(["live", "completed", "failed", "blocked", "paused", "unknown"] as const, {
-      type: "string",
-      description: "List only: execution-state filter, applied before paging.",
-    }),
-  ),
-  text: Type.Optional(
-    Type.String({
-      minLength: 1,
-      description: "List only: filter saved task/assignment text before paging.",
-    }),
-  ),
-  query: Type.Optional(
-    Type.String({
-      minLength: 1,
-      description:
-        "Search visible saved text using 1–12 lexical words (all must match) or one double-quoted phrase. Operators, punctuation and prefixes are rejected. Thinking, images, tool arguments and hidden data are excluded.",
-    }),
-  ),
-  before: Type.Optional(
-    Type.Integer({
-      minimum: 1,
-      description:
-        "History only: exclusive native-entry position returned by the earlier page; omit for the latest page.",
-    }),
-  ),
-};
-
-export const AgentRunsValidationParams = Type.Object(
-  {
-    action: Type.Enum(
-      [
-        "list",
-        "inspect",
-        "history",
-        "search",
-        "nudge",
-        "stop",
-        "continue",
-        "profiles",
-        "questions",
-        "answer",
-        "review",
-      ] as const,
-      { type: "string" },
-    ),
-    id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
-    questionId: Type.Optional(
-      Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." }),
-    ),
-    async: Type.Optional(
-      Type.Boolean({
-        description: "Continue/answer: false waits for the actual continuation result.",
-      }),
-    ),
-    index: Type.Optional(
-      Type.Integer({ minimum: 0, description: "Child index for a multi-child run." }),
-    ),
-    message: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description:
-          "Guidance, follow-up, answer, or optional parent-only review note. Review notes are not sent to the child; put actionable instructions in continue/nudge. Only continue/answer can start a saved child.",
-      }),
-    ),
-    decision: Type.Optional(
-      Type.Enum(["accepted", "needs_changes"] as const, {
-        type: "string",
-        description:
-          "Parent-only review outcome; not sent to the child. Separate from execution and runtime acceptance checks.",
-      }),
-    ),
-    offset: Type.Optional(
-      Type.Integer({
-        minimum: 0,
-        description: "List offset; history is retained regardless of page size.",
-      }),
-    ),
-    limit: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        maximum: 100,
-        description: "Results per list/search/history page (default 20; history 100).",
-      }),
-    ),
-    ...HistoryQueryFields,
-    full: Type.Optional(
-      Type.Boolean({
-        description:
-          "Inspect only: include the full task and saved launch configuration. Default is a concise report; stored data is unchanged.",
-      }),
-    ),
-    agent: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description:
-          "List/search: filter by child agent. Continue/answer: adopt this current profile, including model, thinking and fallbacks; a separate model override wins. Otherwise keep saved settings. Required for old runs without a saved profile.",
-      }),
-    ),
-    model: TaskItem.properties.model,
-    cwd: TaskItem.properties.cwd,
-    output: TaskItem.properties.output,
-    acceptance: TaskItem.properties.acceptance,
-  },
-  {
-    additionalProperties: false,
-    allOf: [
-      {
-        if: {
-          properties: {
-            action: {
-              enum: ["inspect", "history", "nudge", "stop", "continue", "answer", "review"],
-            },
-          },
-        },
-        then: requiredObject("id"),
-      },
-      { if: { properties: { action: { enum: ["search"] } } }, then: requiredObject("query") },
-      {
-        if: { properties: { action: { enum: ["nudge", "continue", "answer"] } } },
-        then: requiredObject("message"),
-      },
-      { if: { properties: { action: { enum: ["answer"] } } }, then: requiredObject("questionId") },
-      { if: { properties: { action: { enum: ["review"] } } }, then: requiredObject("decision") },
-      {
-        if: {
-          anyOf: [
-            requiredObject("async"),
-            requiredObject("model"),
-            requiredObject("cwd"),
-            requiredObject("output"),
-            requiredObject("acceptance"),
-          ],
-        },
-        then: { properties: { action: { enum: ["continue", "answer"] } } },
-      },
-      {
-        if: requiredObject("agent"),
-        then: { properties: { action: { enum: ["list", "search", "continue", "answer"] } } },
-      },
-      { if: requiredObject("offset"), then: { properties: { action: { enum: ["list"] } } } },
-      {
-        if: requiredObject("limit"),
-        then: { properties: { action: { enum: ["list", "history", "search"] } } },
-      },
-      {
-        if: requiredObject("cursor"),
-        then: { properties: { action: { enum: ["list", "history", "search"] } } },
-      },
-      {
-        if: requiredObject("sort"),
-        then: { properties: { action: { enum: ["list", "search"] } } },
-      },
-      { not: { anyOf: [requiredObject("cursor", "offset"), requiredObject("cursor", "before")] } },
-      {
-        if: { allOf: [{ properties: { action: { enum: ["search"] } } }, requiredObject("index")] },
-        then: requiredObject("id"),
-      },
-      {
-        if: { anyOf: [requiredObject("state"), requiredObject("text")] },
-        then: { properties: { action: { enum: ["list"] } } },
-      },
-      { if: requiredObject("query"), then: { properties: { action: { enum: ["search"] } } } },
-      { if: requiredObject("before"), then: { properties: { action: { enum: ["history"] } } } },
-      {
-        if: { properties: { action: { enum: ["list"] } } },
-        then: { properties: { sort: { enum: ["attention", "newest", "oldest"] } } },
-      },
-      {
-        if: { properties: { action: { enum: ["search"] } } },
-        then: { properties: { sort: { enum: ["relevance", "newest"] } } },
-      },
-      { if: requiredObject("decision"), then: { properties: { action: { enum: ["review"] } } } },
-      { if: requiredObject("full"), then: { properties: { action: { enum: ["inspect"] } } } },
-    ],
-  },
-);
-
-export const AgentRunsParams = Type.Object(
-  {
-    ...AgentRunsValidationParams.properties,
-    acceptance: Type.Optional(DelegateAcceptance),
   },
   { additionalProperties: false },
 );
@@ -893,6 +269,9 @@ export const SubagentParams = Type.Object(
     allOf: [
       {
         if: { ...requiredObject("action"), properties: { action: { enum: ["answer"] } } },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           allOf: [
             requiredObject("questionId", "message"),
@@ -902,6 +281,9 @@ export const SubagentParams = Type.Object(
       },
       {
         if: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           allOf: [
             requiredObject("decision"),
@@ -922,22 +304,37 @@ export const SubagentParams = Type.Object(
       },
       {
         if: requiredObject("decision"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } },
       },
       {
         if: { ...requiredObject("action"), properties: { action: { enum: ["history"] } } },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { anyOf: [requiredObject("id"), requiredObject("runId")] },
       },
       {
         if: { ...requiredObject("action"), properties: { action: { enum: ["search"] } } },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: requiredObject("query"),
       },
       {
         if: requiredObject("offset"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { ...requiredObject("action"), properties: { action: { enum: ["status"] } } },
       },
       {
         if: requiredObject("limit"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           ...requiredObject("action"),
           properties: { action: { enum: ["status", "history", "search"] } },
@@ -945,6 +342,9 @@ export const SubagentParams = Type.Object(
       },
       {
         if: requiredObject("cursor"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           ...requiredObject("action"),
           properties: { action: { enum: ["status", "history", "search"] } },
@@ -952,6 +352,9 @@ export const SubagentParams = Type.Object(
       },
       {
         if: requiredObject("sort"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           ...requiredObject("action"),
           properties: { action: { enum: ["status", "search"] } },
@@ -964,30 +367,51 @@ export const SubagentParams = Type.Object(
             requiredObject("index"),
           ],
         },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { anyOf: [requiredObject("id"), requiredObject("runId")] },
       },
       {
         if: { anyOf: [requiredObject("state"), requiredObject("text")] },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { ...requiredObject("action"), properties: { action: { enum: ["status"] } } },
       },
       {
         if: requiredObject("query"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { ...requiredObject("action"), properties: { action: { enum: ["search"] } } },
       },
       {
         if: requiredObject("before"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { ...requiredObject("action"), properties: { action: { enum: ["history"] } } },
       },
       {
         if: { ...requiredObject("action"), properties: { action: { enum: ["status"] } } },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { properties: { sort: { enum: ["attention", "newest", "oldest"] } } },
       },
       {
         if: { ...requiredObject("action"), properties: { action: { enum: ["search"] } } },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: { properties: { sort: { enum: ["relevance", "newest"] } } },
       },
       {
         if: requiredObject("full"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           allOf: [
             { ...requiredObject("action"), properties: { action: { enum: ["status"] } } },
@@ -995,9 +419,24 @@ export const SubagentParams = Type.Object(
           ],
         },
       },
-      { if: requiredObject("worktree"), then: requiredObject("tasks") },
-      { if: requiredObject("concurrency"), then: requiredObject("tasks") },
-      { if: requiredObject("chainDir"), then: requiredObject("chain") },
+      {
+        if: requiredObject("worktree"),
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
+        then: requiredObject("tasks"),
+      },
+      {
+        if: requiredObject("concurrency"),
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
+        then: requiredObject("tasks"),
+      },
+      {
+        if: requiredObject("chainDir"),
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
+        then: requiredObject("chain"),
+      },
       {
         if: {
           anyOf: [
@@ -1009,6 +448,9 @@ export const SubagentParams = Type.Object(
             requiredObject("progress"),
           ],
         },
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           anyOf: [
             requiredObject("agent"),
@@ -1018,6 +460,9 @@ export const SubagentParams = Type.Object(
       },
       {
         if: requiredObject("acceptance"),
+
+        // JSON Schema's non-callable consequence keyword is not a Promise method.
+        // oxlint-disable-next-line unicorn/no-thenable
         then: {
           anyOf: [
             requiredObject("agent"),

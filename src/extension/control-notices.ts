@@ -9,11 +9,11 @@ import type { ControlEvent } from "../shared/types.ts";
 export const SUBAGENT_CONTROL_MESSAGE_TYPE = "subagent_control_notice";
 
 export interface SubagentControlMessageDetails {
-  event: ControlEvent;
-  source?: "foreground" | "async";
-  asyncDir?: string;
-  childIntercomTarget?: string;
-  noticeText?: string;
+  readonly event: ControlEvent;
+  readonly source?: "foreground" | "async";
+  readonly asyncDir?: string;
+  readonly childIntercomTarget?: string;
+  readonly noticeText?: string;
 }
 
 export function controlNoticeTarget(details: SubagentControlMessageDetails): string | undefined {
@@ -31,12 +31,15 @@ export function formatSubagentControlNotice(
   );
 }
 
-export function handleSubagentControlNotice(input: {
-  pi: Pick<ExtensionAPI, "sendMessage">;
-  visibleControlNotices: Set<string>;
-  details: SubagentControlMessageDetails;
-}): void {
-  if (!input.details?.event || isObsoleteIdleNotice(input.details)) {
+/** The runtime supplies its mutable dedup owner; delivery adds exactly one visible-notice key. */
+interface ControlNoticeDeliveryInput {
+  readonly pi: Pick<ExtensionAPI, "sendMessage">;
+  readonly visibleControlNotices: Set<string>;
+  readonly details: SubagentControlMessageDetails;
+}
+
+export function handleSubagentControlNotice(input: ControlNoticeDeliveryInput): void {
+  if (isObsoleteIdleNotice(input.details)) {
     return;
   }
   const childIntercomTarget = controlNoticeTarget(input.details);

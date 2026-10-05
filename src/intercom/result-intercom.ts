@@ -1,46 +1,42 @@
-import { randomUUID } from "node:crypto";
+import type { ReadonlyInput } from "../shared/types/inputs.ts";
+import { copyDetails, copyResult } from "../extension/result-snapshot.ts";
+import { compactNestedResultChildren, formatNestedResultLines } from "./nested-result-tree.ts";
+export {
+  compactNestedResultChildren,
+  attachNestedChildrenToResultChildren,
+} from "./nested-result-tree.ts";
+export {
+  deliverSubagentResultIntercomEvent,
+  deliverSubagentIntercomMessageEvent,
+} from "./result-delivery.ts";
 import * as fs from "node:fs";
 import { formatRunAction } from "../shared/status-format.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
-import {
-  type Details,
-  type IntercomEventBus,
-  type NestedRunSummary,
-  type PublicNestedRunSummary,
-  type SingleResult,
-  type SubagentResultIntercomChild,
-  type SubagentResultIntercomPayload,
-  type SubagentResultStatus,
-  type SubagentRunMode,
-  SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
-  SUBAGENT_RESULT_INTERCOM_EVENT,
+import type {
+  Details,
+  SingleResult,
+  SubagentResultIntercomChild,
+  SubagentResultIntercomPayload,
+  SubagentResultStatus,
+  SubagentRunMode,
 } from "../shared/types.ts";
 
-export function resolveSubagentResultStatus(input: {
-  exitCode?: number;
-  success?: boolean;
-  state?: string;
-  interrupted?: boolean;
-  detached?: boolean;
-  timedOut?: boolean;
-  acceptance?: SingleResult["acceptance"];
-}): SubagentResultStatus {
-  if (input.detached) {
-    return "detached";
-  }
-  if (input.timedOut || input.state === "timed-out") {
-    return "timed-out";
-  }
-  if (input.interrupted || input.state === "paused") {
-    return "paused";
-  }
-  if (
-    (input.exitCode === undefined || input.exitCode === 0) &&
-    (input.acceptance?.status === "blocked" || input.state === "blocked")
-  ) {
-    return "blocked";
-  }
-  if (typeof input.success === "boolean") {
+function hasText(value: string | undefined): value is string {
+  return value !== undefined && value.length > 0;
+}
+
+interface ResultStatusInput {
+  readonly exitCode?: number;
+  readonly success?: boolean;
+  readonly state?: string;
+  readonly interrupted?: boolean;
+  readonly detached?: boolean;
+  readonly timedOut?: boolean;
+  readonly acceptance?: SingleResult["acceptance"];
+}
+
+function completedStatus(input: ResultStatusInput): SubagentResultStatus {
+  if (input.success !== undefined) {
     return input.success ? "completed" : "failed";
   }
   if (input.state === "complete") {
@@ -49,14 +45,34 @@ export function resolveSubagentResultStatus(input: {
   if (input.state === "failed") {
     return "failed";
   }
-  if (typeof input.exitCode === "number") {
-    return input.exitCode === 0 ? "completed" : "failed";
+  return input.exitCode === 0 ? "completed" : "failed";
+}
+
+function isBlockedResult(input: ResultStatusInput): boolean {
+  return (
+    (input.exitCode === undefined || input.exitCode === 0) &&
+    (input.acceptance?.status === "blocked" || input.state === "blocked")
+  );
+}
+
+export function resolveSubagentResultStatus(input: ResultStatusInput): SubagentResultStatus {
+  if (input.detached === true) {
+    return "detached";
   }
-  return "failed";
+  if (input.timedOut === true || input.state === "timed-out") {
+    return "timed-out";
+  }
+  if (input.interrupted === true || input.state === "paused") {
+    return "paused";
+  }
+  if (isBlockedResult(input)) {
+    return "blocked";
+  }
+  return completedStatus(input);
 }
 
 function countStatuses(
-  children: SubagentResultIntercomChild[],
+  children: readonly SubagentResultIntercomChild[],
 ): Record<SubagentResultStatus, number> {
   const counts: Record<SubagentResultStatus, number> = {
     completed: 0,
@@ -72,24 +88,24 @@ function countStatuses(
   return counts;
 }
 
-function formatStatusCounts(counts: Record<SubagentResultStatus, number>): string {
+function formatStatusCounts(counts: Readonly<Record<SubagentResultStatus, number>>): string {
   const parts = [
-    counts.completed ? `${counts.completed} completed` : undefined,
-    counts.failed ? `${counts.failed} failed` : undefined,
-    counts.blocked ? `${counts.blocked} need human action` : undefined,
-    counts.paused ? `${counts.paused} paused` : undefined,
-    counts.detached ? `${counts.detached} detached` : undefined,
-    counts["timed-out"] ? `${counts["timed-out"]} timed out` : undefined,
-  ].filter((part): part is string => Boolean(part));
-  return parts.length ? parts.join(", ") : "0 results";
+    counts.completed > 0 ? `${counts.completed} completed` : undefined,
+    counts.failed > 0 ? `${counts.failed} failed` : undefined,
+    counts.blocked > 0 ? `${counts.blocked} need human action` : undefined,
+    counts.paused > 0 ? `${counts.paused} paused` : undefined,
+    counts.detached > 0 ? `${counts.detached} detached` : undefined,
+    counts["timed-out"] > 0 ? `${counts["timed-out"]} timed out` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return parts.length > 0 ? parts.join(", ") : "0 results";
 }
 
 function resolveGroupedStatus(
-  children: SubagentResultIntercomChild[],
+  children: readonly SubagentResultIntercomChild[],
   workflowStatus?: SubagentResultStatus,
 ): SubagentResultStatus {
   const counts = countStatuses(children);
-  if (workflowStatus) {
+  if (workflowStatus !== undefined) {
     counts[workflowStatus] += 1;
   }
   if (counts.failed > 0) {
@@ -113,180 +129,23 @@ function resolveGroupedStatus(
   return "failed";
 }
 
-function compactNestedRun(
-  run: NestedRunSummary | PublicNestedRunSummary,
-  depth = 0,
-): PublicNestedRunSummary {
-  return {
-    id: run.id,
-    parentRunId: run.parentRunId,
-    ...(run.parentStepIndex !== undefined ? { parentStepIndex: run.parentStepIndex } : {}),
-    ...(run.parentAgent ? { parentAgent: run.parentAgent } : {}),
-    depth: run.depth,
-    path: run.path.slice(0, 4).map((part) => ({
-      runId: part.runId,
-      ...(part.stepIndex !== undefined ? { stepIndex: part.stepIndex } : {}),
-      ...(part.agent ? { agent: part.agent } : {}),
-    })),
-    ...(run.asyncDir ? { asyncDir: run.asyncDir } : {}),
-    ...(run.sessionId ? { sessionId: run.sessionId } : {}),
-    ...(run.sessionFile ? { sessionFile: run.sessionFile } : {}),
-    ...(run.intercomTarget ? { intercomTarget: run.intercomTarget } : {}),
-    ...(run.ownerIntercomTarget ? { ownerIntercomTarget: run.ownerIntercomTarget } : {}),
-    ...(run.leafIntercomTarget ? { leafIntercomTarget: run.leafIntercomTarget } : {}),
-    ...(run.ownerState ? { ownerState: run.ownerState } : {}),
-    ...(run.mode ? { mode: run.mode } : {}),
-    state: run.state,
-    ...(run.agent ? { agent: run.agent } : {}),
-    ...(run.agents?.length ? { agents: run.agents.slice(0, 12) } : {}),
-    ...(run.currentStep !== undefined ? { currentStep: run.currentStep } : {}),
-    ...(run.chainStepCount !== undefined ? { chainStepCount: run.chainStepCount } : {}),
-    ...(run.parallelGroups?.length ? { parallelGroups: run.parallelGroups.slice(0, 8) } : {}),
-    ...(run.activityState ? { activityState: run.activityState } : {}),
-    ...(run.lastActivityAt !== undefined ? { lastActivityAt: run.lastActivityAt } : {}),
-    ...(run.currentTool ? { currentTool: run.currentTool } : {}),
-    ...(run.currentToolStartedAt !== undefined
-      ? { currentToolStartedAt: run.currentToolStartedAt }
-      : {}),
-    ...(run.currentPath ? { currentPath: run.currentPath } : {}),
-    ...(run.turnCount !== undefined ? { turnCount: run.turnCount } : {}),
-    ...(run.toolCount !== undefined ? { toolCount: run.toolCount } : {}),
-    ...(run.totalTokens ? { totalTokens: run.totalTokens } : {}),
-    ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
-    ...(run.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
-    ...(run.lastUpdate !== undefined ? { lastUpdate: run.lastUpdate } : {}),
-    ...(run.error ? { error: run.error } : {}),
-    ...(run.steps?.length
-      ? {
-          steps: run.steps.slice(0, 12).map((step) => ({
-            agent: step.agent,
-            status: step.status,
-            ...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
-            ...(step.activityState ? { activityState: step.activityState } : {}),
-            ...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
-            ...(step.currentTool ? { currentTool: step.currentTool } : {}),
-            ...(step.currentToolStartedAt !== undefined
-              ? { currentToolStartedAt: step.currentToolStartedAt }
-              : {}),
-            ...(step.currentPath ? { currentPath: step.currentPath } : {}),
-            ...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
-            ...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
-            ...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
-            ...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
-            ...(step.error ? { error: step.error } : {}),
-            ...(depth < 2 && step.children?.length
-              ? {
-                  children: step.children
-                    .slice(0, 8)
-                    .map((child) => compactNestedRun(child, depth + 1)),
-                }
-              : {}),
-          })),
-        }
-      : {}),
-    ...(depth < 2 && run.children?.length
-      ? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) }
-      : {}),
-  };
-}
-
-export function compactNestedResultChildren(
-  children: Array<NestedRunSummary | PublicNestedRunSummary> | undefined,
-): PublicNestedRunSummary[] | undefined {
-  if (!children?.length) {
-    return undefined;
-  }
-  return children.slice(0, 16).map((child) => compactNestedRun(child));
-}
-
-export function attachNestedChildrenToResultChildren(
-  runId: string,
-  children: SubagentResultIntercomChild[],
-  nestedChildren: NestedRunSummary[] | undefined,
-): SubagentResultIntercomChild[] {
-  const compact = compactNestedResultChildren(nestedChildren);
-  if (!compact?.length) {
-    return children.map((child) => ({
-      ...child,
-      children: compactNestedResultChildren(child.children),
-    }));
-  }
-  return children.map((child, index) => {
-    const childIndex = child.index ?? index;
-    const alreadyAttachedIds = new Set(child.children?.map((nested) => nested.id) ?? []);
-    const attached = compact.filter(
-      (nested) =>
-        nested.parentRunId === runId &&
-        nested.parentStepIndex === childIndex &&
-        !alreadyAttachedIds.has(nested.id),
-    );
-    const fallbackAttached =
-      children.length === 1
-        ? compact.filter(
-            (nested) =>
-              nested.parentRunId === runId &&
-              nested.parentStepIndex === undefined &&
-              !alreadyAttachedIds.has(nested.id),
-          )
-        : [];
-    const merged = compactNestedResultChildren([
-      ...(child.children ?? []),
-      ...attached,
-      ...fallbackAttached,
-    ]);
-    return merged?.length ? { ...child, children: merged } : { ...child, children: undefined };
-  });
-}
-
-function formatNestedResultLines(children: PublicNestedRunSummary[] | undefined): string[] {
-  if (!children?.length) {
-    return [];
-  }
-  const lines = ["Nested subagents:"];
-  let remaining = 10;
-  const append = (runs: PublicNestedRunSummary[] | undefined, indent: string): void => {
-    for (const run of runs ?? []) {
-      if (remaining <= 0) {
-        lines.push(`${indent}↳ +more nested runs; inspect status for full tree`);
-        return;
-      }
-      remaining--;
-      const label = run.agent ?? run.agents?.join("+") ?? run.id;
-      lines.push(`${indent}↳ ${label} — ${run.state} [${run.id}]`);
-      if (run.sessionFile) {
-        lines.push(`${indent}  Session: ${run.sessionFile}`);
-      }
-      append(run.children, `${indent}  `);
-      for (const step of run.steps ?? []) {
-        append(step.children, `${indent}    `);
-      }
-    }
-  };
-  append(children, "");
-  return lines;
-}
-
 interface GroupedResultIntercomMessageInput {
-  completionId?: string;
-  to: string;
-  runId: string;
-  mode: SubagentRunMode;
-  source: "foreground" | "async";
-  children: SubagentResultIntercomChild[];
-  status?: SubagentResultStatus;
-  error?: string;
-  resultPath?: string;
-  asyncId?: string;
-  asyncDir?: string;
-  chainSteps?: number;
+  readonly completionId?: string;
+  readonly to: string;
+  readonly runId: string;
+  readonly mode: SubagentRunMode;
+  readonly source: "foreground" | "async";
+  readonly children: readonly SubagentResultIntercomChild[];
+  readonly status?: SubagentResultStatus;
+  readonly error?: string;
+  readonly resultPath?: string;
+  readonly asyncId?: string;
+  readonly asyncDir?: string;
+  readonly chainSteps?: number;
 }
 
-function asyncResumeGuidance(input: {
-  source: "foreground" | "async";
-  children: SubagentResultIntercomChild[];
-  asyncId?: string;
-}): string | undefined {
-  if (input.source !== "async" || !input.asyncId) {
+function asyncResumeGuidance(input: GroupedResultIntercomMessageInput): string | undefined {
+  if (input.source !== "async" || input.asyncId === undefined || input.asyncId.length === 0) {
     return undefined;
   }
   const childSafe =
@@ -297,25 +156,72 @@ function asyncResumeGuidance(input: {
   if (input.children.length === 1 && resumable.length === 1) {
     return `Continue: ${formatRunAction("resume", input.asyncId, { message: "..." }, childSafe)}`;
   }
-  if (resumable.length > 0) {
-    const firstIndex = resumable[0]?.index ?? input.children.indexOf(resumable[0]!);
+  const first = resumable.at(0);
+  if (first) {
+    const firstIndex = first.index ?? input.children.indexOf(first);
     return `Continue child: ${formatRunAction("resume", input.asyncId, { index: firstIndex, message: "..." }, childSafe)}`;
   }
   return "Resume: unavailable; no child session file was persisted.";
 }
 
-function formatSubagentResultIntercomMessage(input: {
-  runId: string;
-  mode: SubagentRunMode;
-  status: SubagentResultStatus;
-  error?: string;
-  source: "foreground" | "async";
-  children: SubagentResultIntercomChild[];
-  resultPath?: string;
-  asyncId?: string;
-  asyncDir?: string;
-  chainSteps?: number;
-}): string {
+function formatChildOutput(
+  child: SubagentResultIntercomChild,
+  source: "foreground" | "async",
+): string[] {
+  const lines: string[] = [];
+  if (hasText(child.intercomTarget)) {
+    lines.push(
+      `${source === "async" ? "Previous intercom target" : "Run intercom target"}: ${child.intercomTarget}`,
+    );
+  }
+  if (hasText(child.artifactPath)) {
+    lines.push(`Output artifact: ${child.artifactPath}`);
+  }
+  if (hasText(child.metadataPath)) {
+    lines.push(
+      `Result metadata (acceptance details when configured): ${child.metadataPath}${fs.existsSync(child.metadataPath) ? "" : " (missing)"}`,
+    );
+  }
+  if (hasText(child.sessionPath)) {
+    lines.push(`Session: ${child.sessionPath}`);
+  }
+  lines.push(...formatNestedResultLines(child.children), "Summary:", child.summary);
+  return lines;
+}
+
+function formatRunLocations(input: GroupedResultIntercomMessageInput): string[] {
+  const lines: string[] = [];
+  if (input.mode === "chain" && input.chainSteps !== undefined) {
+    lines.push(`Chain steps: ${input.chainSteps}`);
+  }
+  for (const [field, label] of [
+    ["resultPath", "Saved result (acceptance details when configured)"],
+    ["asyncId", "Async id"],
+    ["asyncDir", "Async dir"],
+  ] as const) {
+    const value = input[field];
+    if (hasText(value)) {
+      lines.push(`${label}: ${value}`);
+    }
+  }
+  const guidance = asyncResumeGuidance(input);
+  if (hasText(guidance)) {
+    lines.push(guidance);
+  }
+  if (input.children.some((child) => hasText(child.intercomTarget))) {
+    lines.push(
+      "",
+      input.source === "async"
+        ? "Previous intercom targets below identify child sessions used while they were running. Inspect artifacts or session logs if resume is unavailable."
+        : "Intercom targets below identify child sessions used while they were running; completed child sessions may no longer be reachable. Inspect artifacts or session logs for follow-up.",
+    );
+  }
+  return lines;
+}
+
+function formatSubagentResultIntercomMessage(
+  input: GroupedResultIntercomMessageInput & { readonly status: SubagentResultStatus },
+): string {
   const counts = countStatuses(input.children);
   const lines: string[] = [
     "subagent results",
@@ -324,7 +230,7 @@ function formatSubagentResultIntercomMessage(input: {
     `Mode: ${input.mode}`,
     `Status: ${input.status}`,
     `Children: ${formatStatusCounts(counts)}`,
-    ...(input.error
+    ...(hasText(input.error)
       ? [`Workflow ${input.status === "paused" ? "paused" : "error"}: ${input.error}`]
       : []),
   ];
@@ -333,152 +239,79 @@ function formatSubagentResultIntercomMessage(input: {
       "This completes the matching subagent call. Continue the parent task without relaunching the same call.",
     );
   }
-  if (input.mode === "chain" && typeof input.chainSteps === "number") {
-    lines.push(`Chain steps: ${input.chainSteps}`);
-  }
-  if (input.resultPath) {
-    lines.push(`Saved result (acceptance details when configured): ${input.resultPath}`);
-  }
-  if (input.asyncId) {
-    lines.push(`Async id: ${input.asyncId}`);
-  }
-  if (input.asyncDir) {
-    lines.push(`Async dir: ${input.asyncDir}`);
-  }
-  const resumeGuidance = asyncResumeGuidance(input);
-  if (resumeGuidance) {
-    lines.push(resumeGuidance);
-  }
-  if (input.children.some((child) => child.intercomTarget)) {
-    lines.push("");
-    lines.push(
-      input.source === "async"
-        ? "Previous intercom targets below identify child sessions used while they were running. Inspect artifacts or session logs if resume is unavailable."
-        : "Intercom targets below identify child sessions used while they were running; completed child sessions may no longer be reachable. Inspect artifacts or session logs for follow-up.",
-    );
-  }
+  lines.push(...formatRunLocations(input));
 
-  for (let index = 0; index < input.children.length; index++) {
-    const child = input.children[index]!;
-    lines.push("");
-    lines.push(`${index + 1}. ${child.agent} — ${child.status}`);
-    if (child.intercomTarget) {
-      lines.push(
-        `${input.source === "async" ? "Previous intercom target" : "Run intercom target"}: ${child.intercomTarget}`,
-      );
-    }
-    if (child.artifactPath) {
-      lines.push(`Output artifact: ${child.artifactPath}`);
-    }
-    if (child.metadataPath) {
-      lines.push(
-        `Result metadata (acceptance details when configured): ${child.metadataPath}${fs.existsSync(child.metadataPath) ? "" : " (missing)"}`,
-      );
-    }
-    if (child.sessionPath) {
-      lines.push(`Session: ${child.sessionPath}`);
-    }
-    lines.push(...formatNestedResultLines(child.children));
-    lines.push("Summary:");
-    lines.push(child.summary);
+  for (const [index, child] of input.children.entries()) {
+    lines.push(
+      "",
+      `${index + 1}. ${child.agent} — ${child.status}`,
+      ...formatChildOutput(child, input.source),
+    );
   }
 
   return lines.join("\n");
 }
 
-export function buildSubagentResultIntercomPayload(
+function payloadLocations(
   input: GroupedResultIntercomMessageInput,
+): Record<string, string | number> {
+  const locations: Record<string, string | number> = {};
+  for (const key of ["completionId", "error", "resultPath", "asyncId", "asyncDir"] as const) {
+    const value = input[key];
+    if (hasText(value)) {
+      locations[key] = value;
+    }
+  }
+  if (input.chainSteps !== undefined) {
+    locations.chainSteps = input.chainSteps;
+  }
+  return locations;
+}
+
+function firstChildDetails(
+  child: SubagentResultIntercomChild | undefined,
+): Pick<SubagentResultIntercomPayload, "agent" | "index" | "artifactPath" | "sessionPath"> {
+  if (!child) {
+    return {};
+  }
+  return {
+    ...(child.agent.length > 0 ? { agent: child.agent } : {}),
+    ...(child.index !== undefined ? { index: child.index } : {}),
+    ...(hasText(child.artifactPath) ? { artifactPath: child.artifactPath } : {}),
+    ...(hasText(child.sessionPath) ? { sessionPath: child.sessionPath } : {}),
+  };
+}
+
+export function buildSubagentResultIntercomPayload(
+  input: ReadonlyInput<GroupedResultIntercomMessageInput>,
 ): SubagentResultIntercomPayload {
-  const children = input.children.map((child) => ({
-    ...child,
-    summary: child.summary.trim() || "(no output)",
-    children: compactNestedResultChildren(child.children),
-  }));
+  const children = input.children.map((child) =>
+    Object.assign({}, child, {
+      summary: child.summary.trim().length > 0 ? child.summary.trim() : "(no output)",
+      children: compactNestedResultChildren(child.children),
+    }),
+  );
   const status = resolveGroupedStatus(children, input.status);
   const summary = formatStatusCounts(countStatuses(children));
-  const firstChild = children[0];
-  const payload: SubagentResultIntercomPayload = {
-    ...(input.completionId ? { completionId: input.completionId } : {}),
+  const firstChild = children.at(0);
+  const payload = {
+    ...payloadLocations(input),
     to: input.to,
     runId: input.runId,
     mode: input.mode,
     status,
     summary,
-    ...(input.error ? { error: input.error } : {}),
+
     source: input.source,
     children,
-    ...(input.resultPath ? { resultPath: input.resultPath } : {}),
-    ...(input.asyncId ? { asyncId: input.asyncId } : {}),
-    ...(input.asyncDir ? { asyncDir: input.asyncDir } : {}),
-    ...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
-    ...(firstChild?.agent ? { agent: firstChild.agent } : {}),
-    ...(firstChild?.index !== undefined ? { index: firstChild.index } : {}),
-    ...(firstChild?.artifactPath ? { artifactPath: firstChild.artifactPath } : {}),
-    ...(firstChild?.sessionPath ? { sessionPath: firstChild.sessionPath } : {}),
-    message: "",
+    ...firstChildDetails(firstChild),
   };
-  payload.message = formatSubagentResultIntercomMessage(payload);
-  return payload;
+  return { ...payload, message: formatSubagentResultIntercomMessage(payload) };
 }
 
-export async function deliverSubagentResultIntercomEvent(
-  events: IntercomEventBus,
-  payload: SubagentResultIntercomPayload,
-  timeoutMs = 500,
-): Promise<boolean> {
-  return deliverSubagentIntercomMessageEvent(events, payload.to, payload.message, timeoutMs, {
-    ...payload,
-  });
-}
-
-export async function deliverSubagentIntercomMessageEvent(
-  events: IntercomEventBus,
-  to: string,
-  message: string,
-  timeoutMs = 500,
-  extra: Record<string, unknown> = {},
-): Promise<boolean> {
-  if (typeof events.on !== "function" || typeof events.emit !== "function") {
-    return false;
-  }
-  const requestId = typeof extra.requestId === "string" ? extra.requestId : randomUUID();
-  return new Promise((resolve) => {
-    let settled = false;
-    let unsubscribe: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (delivered: boolean) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-      unsubscribe?.();
-      resolve(delivered);
-    };
-    unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
-      if (!data || typeof data !== "object") {
-        return;
-      }
-      const delivery = data as { requestId?: unknown; delivered?: unknown };
-      if (delivery.requestId !== requestId) {
-        return;
-      }
-      finish(delivery.delivered === true);
-    });
-    timer = setTimeout(() => finish(false), timeoutMs);
-    try {
-      events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { ...extra, to, message, requestId });
-    } catch {
-      finish(false);
-    }
-  });
-}
-
-function stripSingleResultOutputs(result: SingleResult): SingleResult {
+function stripSingleResultOutputs(result: ReadonlyInput<SingleResult>): SingleResult {
   return {
-    ...result,
+    ...copyResult(result),
     messages: undefined,
     finalOutput: undefined,
     truncation: undefined,
@@ -486,11 +319,11 @@ function stripSingleResultOutputs(result: SingleResult): SingleResult {
 }
 
 export function stripDetailsOutputsForIntercomReceipt(
-  details: Details,
+  details: ReadonlyInput<Details>,
   delivery?: Details["intercomDelivery"],
 ): Details {
   return {
-    ...details,
+    ...copyDetails(details),
     results: details.results.map(stripSingleResultOutputs),
     ...(delivery ? { intercomDelivery: delivery } : {}),
   };
@@ -502,78 +335,77 @@ function compactReceiptSummary(summary: string): string {
   return normalized.length > 240 ? `${normalized.slice(0, 239)}…` : normalized;
 }
 
-export function formatSubagentResultReceipt(input: {
-  mode: SubagentRunMode;
-  runId: string;
-  payload: SubagentResultIntercomPayload;
-}): string {
-  const counts = countStatuses(input.payload.children);
-  const modeLabel =
-    input.mode === "single"
-      ? "single subagent result"
-      : input.mode === "parallel"
-        ? "parallel subagent results"
-        : "chain subagent results";
-  const lines = [
-    `Delivered ${modeLabel} via intercom.`,
-    "Delivery: succeeded",
-    `Run: ${input.runId}`,
-    `Child outcome: ${input.payload.status}`,
-    `Children: ${formatStatusCounts(counts)}`,
-    ...(input.payload.error
-      ? [
-          `Workflow ${input.payload.status === "paused" ? "paused" : "error"}: ${input.payload.error}`,
-        ]
-      : []),
-  ];
-
-  if (input.payload.resultPath) {
-    lines.push(`Saved result (acceptance details when configured): ${input.payload.resultPath}`);
+function formatChildReferences(
+  children: readonly SubagentResultIntercomChild[],
+  field: "artifactPath" | "intercomTarget" | "sessionPath",
+  heading: string,
+): string[] {
+  const lines: string[] = [];
+  for (const child of children) {
+    const value = child[field];
+    if (typeof value === "string") {
+      lines.push(`- ${child.agent} [${child.status}]: ${value}`);
+    }
   }
-  for (const child of input.payload.children) {
-    if (child.metadataPath) {
+  return lines.length > 0 ? [heading, ...lines] : [];
+}
+
+function formatReceiptReferences(payload: SubagentResultIntercomPayload): string[] {
+  const lines: string[] = [];
+  if (hasText(payload.resultPath)) {
+    lines.push(`Saved result (acceptance details when configured): ${payload.resultPath}`);
+  }
+  for (const child of payload.children) {
+    if (hasText(child.metadataPath)) {
       lines.push(
         `Result metadata (${child.agent}; acceptance details when configured): ${child.metadataPath}${fs.existsSync(child.metadataPath) ? "" : " (missing)"}`,
       );
     }
   }
-
-  const artifacts = input.payload.children.filter(
-    (child) => typeof child.artifactPath === "string",
+  lines.push(
+    ...formatChildReferences(payload.children, "artifactPath", "Artifacts:"),
+    ...formatChildReferences(
+      payload.children,
+      "intercomTarget",
+      "Run intercom targets (may be inactive after completion):",
+    ),
+    ...formatChildReferences(payload.children, "sessionPath", "Sessions:"),
   );
-  if (artifacts.length > 0) {
-    lines.push("Artifacts:");
-    for (const child of artifacts) {
-      lines.push(`- ${child.agent} [${child.status}]: ${child.artifactPath}`);
-    }
-  }
-
-  const intercomTargets = input.payload.children.filter(
-    (child) => typeof child.intercomTarget === "string",
-  );
-  if (intercomTargets.length > 0) {
-    lines.push("Run intercom targets (may be inactive after completion):");
-    for (const child of intercomTargets) {
-      lines.push(`- ${child.agent} [${child.status}]: ${child.intercomTarget}`);
-    }
-  }
-
-  const sessions = input.payload.children.filter((child) => typeof child.sessionPath === "string");
-  if (sessions.length > 0) {
-    lines.push("Sessions:");
-    for (const child of sessions) {
-      lines.push(`- ${child.agent} [${child.status}]: ${child.sessionPath}`);
-    }
-  }
-
-  const nonCompleted = input.payload.children.filter((child) => child.status !== "completed");
+  const nonCompleted = payload.children.filter((child) => child.status !== "completed");
   if (nonCompleted.length > 0) {
     lines.push("Non-completed children:");
     for (const child of nonCompleted) {
       lines.push(`- ${child.agent} [${child.status}]: ${compactReceiptSummary(child.summary)}`);
     }
   }
+  return lines;
+}
 
+export function formatSubagentResultReceipt(input: {
+  readonly mode: SubagentRunMode;
+  readonly runId: string;
+  readonly payload: SubagentResultIntercomPayload;
+}): string {
+  const counts = countStatuses(input.payload.children);
+  const modeLabel = {
+    single: "single subagent result",
+    parallel: "parallel subagent results",
+    chain: "chain subagent results",
+  }[input.mode];
+  const lines = [
+    `Delivered ${modeLabel} via intercom.`,
+    "Delivery: succeeded",
+    `Run: ${input.runId}`,
+    `Child outcome: ${input.payload.status}`,
+    `Children: ${formatStatusCounts(counts)}`,
+    ...(hasText(input.payload.error)
+      ? [
+          `Workflow ${input.payload.status === "paused" ? "paused" : "error"}: ${input.payload.error}`,
+        ]
+      : []),
+  ];
+
+  lines.push(...formatReceiptReferences(input.payload));
   lines.push("Full grouped output was sent over intercom.");
   return lines.join("\n");
 }

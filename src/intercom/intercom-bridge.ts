@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "../agents/agents.ts";
+import type { ReadonlyInput } from "../shared/types/inputs.ts";
+import { isRecord } from "../shared/unknown.ts";
 import {
   SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT,
   SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT,
@@ -42,7 +44,7 @@ export function resolveIntercomSessionTarget(
   sessionId: string,
 ): string {
   const trimmedName = sessionName?.trim();
-  if (trimmedName) {
+  if (trimmedName !== undefined && trimmedName.length > 0) {
     return trimmedName;
   }
   const normalizedSessionId = sessionId.startsWith("session-")
@@ -52,7 +54,7 @@ export function resolveIntercomSessionTarget(
 }
 
 export function resolveOrchestratorIntercomTarget(
-  events: IntercomEventBus,
+  events: ReadonlyInput<IntercomEventBus>,
   fallback: string,
 ): string {
   if (typeof events.on !== "function" || typeof events.emit !== "function") {
@@ -64,14 +66,14 @@ export function resolveOrchestratorIntercomTarget(
   let failed = false;
   try {
     unsubscribe = events.on(SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT, (payload) => {
-      if (!payload || typeof payload !== "object") {
+      if (!isRecord(payload)) {
         return;
       }
-      const response = payload as { requestId?: unknown; sessionId?: unknown };
+      const response = payload;
       if (
         response.requestId === requestId &&
         typeof response.sessionId === "string" &&
-        response.sessionId.trim()
+        response.sessionId.trim().length > 0
       ) {
         exactTarget = response.sessionId;
       }
@@ -90,13 +92,12 @@ export function resolveOrchestratorIntercomTarget(
 }
 
 function sanitizeIntercomTargetPart(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "agent"
-  );
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.length > 0 ? normalized : "agent";
 }
 
 export function resolveSubagentIntercomTarget(
@@ -112,11 +113,13 @@ function isIntercomExtensionEntry(entry: string): boolean {
   return entry.trim().replaceAll("\\", "/").toLowerCase().split("/").includes("pi-intercom");
 }
 
-function extensionSandboxAllowsIntercom(extensions: string[] | undefined): boolean {
+function extensionSandboxAllowsIntercom(extensions: readonly string[] | undefined): boolean {
   return extensions === undefined || extensions.some(isIntercomExtensionEntry);
 }
 
-function resolveBundledIntercomExtensions(extensions: string[] | undefined): string[] | undefined {
+function resolveBundledIntercomExtensions(
+  extensions: readonly string[] | undefined,
+): readonly string[] | undefined {
   if (extensions === undefined) {
     return undefined;
   }
@@ -146,27 +149,30 @@ export function resolveIntercomBridge(orchestratorTarget: string): IntercomBridg
   };
 }
 
+function appendBridgeInstruction(prompt: string, instruction: string): string {
+  const trimmed = prompt.trim();
+  if (trimmed.includes(INTERCOM_BRIDGE_MARKER)) {
+    return trimmed;
+  }
+  return trimmed.length > 0 ? `${trimmed}\n\n${instruction}` : instruction;
+}
+
 export function applyIntercomBridgeToAgent<
-  T extends Pick<AgentConfig, "systemPrompt" | "tools" | "extensions">,
->(agent: T, bridge: IntercomBridgeState): T {
+  T extends ReadonlyInput<Pick<AgentConfig, "systemPrompt" | "tools" | "extensions">>,
+>(agent: T, bridge: Readonly<IntercomBridgeState>): T {
   if (!extensionSandboxAllowsIntercom(agent.extensions)) {
     return agent;
   }
 
   const bridgeTools = ["intercom", "contact_supervisor"];
   const missingTools = agent.tools
-    ? bridgeTools.filter((tool) => !agent.tools?.includes(tool))
+    ? bridgeTools.filter((tool) => agent.tools?.includes(tool) !== true)
     : [];
   const tools =
-    agent.tools && missingTools.length ? [...agent.tools, ...missingTools] : agent.tools;
+    agent.tools && missingTools.length > 0 ? [...agent.tools, ...missingTools] : agent.tools;
   const extensions = resolveBundledIntercomExtensions(agent.extensions);
   const instruction = bridge.instruction;
-  const trimmedPrompt = agent.systemPrompt?.trim() || "";
-  const systemPrompt = trimmedPrompt.includes(INTERCOM_BRIDGE_MARKER)
-    ? trimmedPrompt
-    : trimmedPrompt
-      ? `${trimmedPrompt}\n\n${instruction}`
-      : instruction;
+  const systemPrompt = appendBridgeInstruction(agent.systemPrompt, instruction);
 
   if (
     tools === agent.tools &&

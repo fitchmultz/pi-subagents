@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { ReadonlyInput } from "../shared/types/inputs.ts";
+import { errorMessage, isRecord } from "../shared/unknown.ts";
 
 export interface LiveMessageReceipt {
   delivered: boolean;
@@ -18,15 +20,15 @@ import {
 } from "../shared/types.ts";
 
 export async function sendLiveSubagentMessage(
-  events: IntercomEventBus,
-  input: {
+  events: ReadonlyInput<IntercomEventBus>,
+  input: ReadonlyInput<{
     to: string;
     message: string;
     delivery?: "steer" | "queue";
     timeoutMs?: number;
     signal?: AbortSignal;
     extra?: Record<string, unknown>;
-  },
+  }>,
 ): Promise<LiveMessageReceipt> {
   if (typeof events.on !== "function" || typeof events.emit !== "function") {
     return { delivered: false, reason: "pi-intercom bridge unavailable" };
@@ -34,27 +36,23 @@ export async function sendLiveSubagentMessage(
   const requestId = randomUUID();
   return new Promise((resolve) => {
     let settled = false;
-    let unsubscribe: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (result: LiveMessageReceipt) => {
+    const finish = (result: Readonly<LiveMessageReceipt>) => {
       if (settled) {
         return;
       }
       settled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
+      clearTimeout(timer);
       input.signal?.removeEventListener("abort", abort);
-      unsubscribe?.();
+      unsubscribe();
       resolve(result);
     };
     const abort = () =>
       finish({ delivered: false, reason: "Message view/session closed; delivery not confirmed." });
-    unsubscribe = events.on(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, (data) => {
-      if (!data || typeof data !== "object") {
+    const unsubscribe = events.on(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, (data) => {
+      if (!isRecord(data)) {
         return;
       }
-      const payload = data as LiveMessageReceipt & { requestId?: unknown };
+      const payload = data;
       if (payload.requestId !== requestId) {
         return;
       }
@@ -66,11 +64,11 @@ export async function sendLiveSubagentMessage(
         ...(typeof payload.reason === "string" ? { reason: payload.reason } : {}),
       });
     });
-    timer = setTimeout(
+    const timer = setTimeout(
       () => finish({ delivered: false, reason: "pi-intercom bridge unavailable" }),
       input.timeoutMs ?? 500,
     );
-    if (input.signal?.aborted) {
+    if (input.signal?.aborted === true) {
       abort();
       return;
     }
@@ -84,25 +82,78 @@ export async function sendLiveSubagentMessage(
         delivery: input.delivery ?? "steer",
       });
     } catch (error) {
-      finish({ delivered: false, reason: error instanceof Error ? error.message : String(error) });
+      finish({ delivered: false, reason: errorMessage(error) });
     }
   });
 }
 
+function parseConnection(value: unknown): SubagentIntercomConnection | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { status } = value;
+  if (
+    status !== "connected" &&
+    status !== "disconnected" &&
+    status !== "connecting" &&
+    status !== "unknown"
+  ) {
+    return undefined;
+  }
+  return {
+    status,
+    ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
+    ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+  };
+}
+
+function healthMetadata(
+  value: Readonly<Record<string, unknown>>,
+): Omit<SubagentLiveIntercomHealth, "target" | "status"> {
+  return {
+    ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
+    ...(typeof value.sessionName === "string" ? { sessionName: value.sessionName } : {}),
+    ...(typeof value.sessionStatus === "string" ? { sessionStatus: value.sessionStatus } : {}),
+    ...(typeof value.acceptsAsks === "boolean" ? { acceptsAsks: value.acceptsAsks } : {}),
+    ...(typeof value.pendingAsks === "number" ? { pendingAsks: value.pendingAsks } : {}),
+  };
+}
+
+function parseHealth(value: unknown): SubagentLiveIntercomHealth | undefined {
+  if (!isRecord(value) || typeof value.target !== "string") {
+    return undefined;
+  }
+  const { status } = value;
+  if (
+    status !== "registered" &&
+    status !== "none" &&
+    status !== "missing" &&
+    status !== "ambiguous" &&
+    status !== "prefix_too_short"
+  ) {
+    return undefined;
+  }
+  return {
+    target: value.target,
+    status,
+    ...healthMetadata(value),
+  };
+}
+
 export async function queryLiveIntercomHealth(
-  events: IntercomEventBus,
-  targets: string[],
+  events: ReadonlyInput<IntercomEventBus>,
+  targets: readonly string[],
   timeoutMs = 300,
 ): Promise<Map<string, SubagentLiveIntercomHealth>> {
-  if (!targets.some((target) => target.trim())) {
+  if (!targets.some((target) => target.trim().length > 0)) {
     return new Map();
   }
   return (await queryLiveIntercomStatus(events, targets, timeoutMs)).health;
 }
 
 export async function queryLiveIntercomStatus(
-  events: IntercomEventBus,
-  targets: string[] = [],
+  events: ReadonlyInput<IntercomEventBus>,
+  targets: readonly string[] = [],
   timeoutMs = 300,
 ): Promise<{
   health: Map<string, SubagentLiveIntercomHealth>;
@@ -118,8 +169,8 @@ export async function queryLiveIntercomStatus(
     let unsubscribe: (() => void) | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (
-      items: SubagentLiveIntercomHealth[] = [],
-      connection?: SubagentIntercomConnection,
+      items: ReadonlyInput<SubagentLiveIntercomHealth[]> = [],
+      connection?: Readonly<SubagentIntercomConnection>,
     ) => {
       if (settled) {
         return;
@@ -133,30 +184,19 @@ export async function queryLiveIntercomStatus(
     };
     try {
       unsubscribe = events.on(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, (data) => {
-        if (!data || typeof data !== "object") {
+        if (!isRecord(data)) {
           return;
         }
-        const payload = data as {
-          requestId?: unknown;
-          health?: unknown;
-          connection?: SubagentIntercomConnection;
-        };
+        const payload = data;
         if (payload.requestId !== requestId || !Array.isArray(payload.health)) {
           return;
         }
-        const connection =
-          payload.connection &&
-          ["connected", "disconnected", "connecting", "unknown"].includes(payload.connection.status)
-            ? payload.connection
-            : undefined;
+        const connection = parseConnection(payload.connection);
         finish(
-          payload.health.filter((item): item is SubagentLiveIntercomHealth =>
-            Boolean(
-              item &&
-              typeof item === "object" &&
-              typeof (item as { target?: unknown }).target === "string",
-            ),
-          ),
+          payload.health.flatMap((item: unknown) => {
+            const health = parseHealth(item);
+            return health ? [health] : [];
+          }),
           connection,
         );
       });
