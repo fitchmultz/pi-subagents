@@ -229,7 +229,7 @@ describe("saved output choices", () => {
     }
     const artifactBytes = artifactPath !== undefined ? fs.readFileSync(artifactPath) : undefined;
     const discoveryCount = discoveries;
-    profile.output = "changed-current-profile.md";
+    profile = { ...profile, output: "changed-current-profile.md" };
     mockPi.onCall({ output: "Successor report — new bytes" });
     const continued = await run({
       action: "resume",
@@ -412,9 +412,12 @@ describe("saved output choices", () => {
       for (const override of [undefined, "mock/chosen:high"]) {
         for (const route of launchRoutes(override)) {
           it(`${executionLabel(async)} ${route.name} preserves ${modelPolicyLabel(override)} model policy through revival`, async () => {
-            profile.model = undefined;
-            profile.thinking = "medium";
-            profile.fallbackModels = ["mock/backup:low"];
+            profile = {
+              ...profile,
+              model: undefined,
+              thinking: "medium",
+              fallbackModels: ["mock/backup:low"],
+            };
             const parentModel = { ...fauxProvider().getModel(), provider: "mock", id: "inherited" };
             ctx.model = parentModel;
             if (route.structured === true) {
@@ -426,9 +429,12 @@ describe("saved output choices", () => {
             const expectedModel = override ?? "mock/inherited:medium";
             const expectedCandidates =
               override !== undefined ? [override] : [expectedModel, "mock/backup:low"];
-            profile.model = "mock/updated";
-            profile.thinking = "low";
-            profile.fallbackModels = ["mock/updated-backup"];
+            profile = {
+              ...profile,
+              model: "mock/updated",
+              thinking: "low",
+              fallbackModels: ["mock/updated-backup"],
+            };
             for (const index of route.indices) {
               const launch = savedLaunch(id, index);
               assert.equal(launch.model, expectedModel);
@@ -531,10 +537,10 @@ describe("saved output choices", () => {
       it(`${executionLabel(async)} ${choice} output retains its fixed or disabled contract`, async () => {
         const fixedPath = path.join(tempDir, "fixed.md");
         if (choice === "explicit") {
-          profile.output = "fixed.md";
+          profile = { ...profile, output: "fixed.md" };
         }
         if (choice === "absolute-default") {
-          profile.output = fixedPath;
+          profile = { ...profile, output: fixedPath };
         }
         mockPi.onCall({ output: "First report" });
         const original = await run({
@@ -600,7 +606,7 @@ describe("saved output choices", () => {
   it("explicit continuation output:true selects the saved default instead of an earlier fixed override", async () => {
     mockPi.onCall({ output: "Fixed predecessor" });
     const original = await run({ ...writer, async: true, output: "fixed.md" });
-    profile.output = "changed-current-profile.md";
+    profile = { ...profile, output: "changed-current-profile.md" };
     mockPi.onCall({ output: "New default report" });
     const continued = await run({
       action: "resume",
@@ -622,7 +628,7 @@ describe("saved output choices", () => {
   for (const clarify of [false, true]) {
     for (const output of [undefined, true]) {
       it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${String(output)})`, async () => {
-        profile.output = path.join(tempDir, "absolute.md");
+        profile = { ...profile, output: path.join(tempDir, "absolute.md") };
         ctx.hasUI = clarify;
         acceptBackgroundPreview();
         mockPi.onCall({ output: "Absolute predecessor" });
@@ -631,7 +637,7 @@ describe("saved output choices", () => {
           savedLaunch(text(original.details.asyncId)).generatedOutputFilename,
           undefined,
         );
-        assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute predecessor");
+        assert.equal(fs.readFileSync(text(profile.output), "utf8"), "Absolute predecessor");
         mockPi.onCall({ output: "Absolute successor" });
         const continued = await run({
           action: "resume",
@@ -640,7 +646,7 @@ describe("saved output choices", () => {
           output,
         });
         assert.equal(savedLaunch(text(continued.details.asyncId)).output, profile.output);
-        assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute successor");
+        assert.equal(fs.readFileSync(text(profile.output), "utf8"), "Absolute successor");
       });
     }
   }
@@ -736,11 +742,14 @@ describe("saved output choices", () => {
                 message: "May I continue?",
               })
             : undefined;
-        profile.output = "changed-current-profile.md";
-        profile.model = "mock/current";
-        profile.thinking = "high";
-        profile.fallbackModels = ["mock/backup:low"];
-        profile.systemPrompt = "Use the explicitly selected current profile.";
+        profile = { ...profile, output: "changed-current-profile.md" };
+        profile = {
+          ...profile,
+          model: "mock/current",
+          thinking: "high",
+          fallbackModels: ["mock/backup:low"],
+          systemPrompt: "Use the explicitly selected current profile.",
+        };
         mockPi.onCall({ output: "Current-profile successor report" });
         const continued = await run({
           action,
@@ -865,14 +874,20 @@ describe("saved output choices", () => {
 
   for (const selectProfile of [false, true]) {
     it(`explicit continuation model wins over ${profileLabel(selectProfile)} policy`, async () => {
-      profile.model = "mock/original";
-      profile.thinking = "medium";
-      profile.fallbackModels = ["mock/original-backup:low"];
+      profile = {
+        ...profile,
+        model: "mock/original",
+        thinking: "medium",
+        fallbackModels: ["mock/original-backup:low"],
+      };
       mockPi.onCall({ output: "Original" });
       const original = await run({ ...writer, async: true });
-      profile.model = "mock/current";
-      profile.thinking = "low";
-      profile.fallbackModels = ["mock/current-backup"];
+      profile = {
+        ...profile,
+        model: "mock/current",
+        thinking: "low",
+        fallbackModels: ["mock/current-backup"],
+      };
       const continued = await run({
         action: "resume",
         id: original.details.asyncId,
@@ -905,7 +920,7 @@ describe("saved output choices", () => {
   ] as const) {
     it(`explicit profile selection preserves ${choice} output intent`, async () => {
       if (choice === "absolute-default") {
-        profile.output = path.join(tempDir, "absolute.md");
+        profile = { ...profile, output: path.join(tempDir, "absolute.md") };
       }
       mockPi.onCall({ output: "Predecessor report" });
       const original = await run({
@@ -932,7 +947,7 @@ describe("saved output choices", () => {
         );
       }
       const receipt = contractBytes(id);
-      profile.output = "changed-current-profile.md";
+      profile = { ...profile, output: "changed-current-profile.md" };
       mockPi.onCall({ output: "Current-profile report" });
       const continued = await run({
         action: "resume",
@@ -985,7 +1000,7 @@ describe("saved output choices", () => {
         message: "May I write the follow-up?",
       });
       const receipt = contractBytes(id);
-      profile.output = "changed-current-profile.md";
+      profile = { ...profile, output: "changed-current-profile.md" };
       mockPi.onCall({ output: "Answered report" });
       const continued = await run({
         action,

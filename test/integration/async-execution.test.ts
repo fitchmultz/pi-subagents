@@ -3222,6 +3222,10 @@ describe("async execution utilities", () => {
           assert.match(textAt(result.content), /tracking fault after actual spawn/);
         }
       } finally {
+        const spawned: unknown = spawning.mock.calls[0]?.result;
+        if (spawned instanceof ChildProcess) {
+          launcherPid ??= spawned.pid;
+        }
         t.mock.restoreAll();
         syncBuiltinESMExports();
         fs.writeFileSync(release, "");
