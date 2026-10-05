@@ -82,7 +82,7 @@
         "parallelGroups": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AsyncParallelGroupStatus"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AsyncParallelGroupStatus"
           }
         },
         "workflowGraph": {
@@ -160,7 +160,7 @@
         "results": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AsyncResultChild"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fasync%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AsyncResultChild"
           }
         },
         "outputs": {
@@ -242,7 +242,7 @@
         "children": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ForegroundResumeChild"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ForegroundResumeChild"
           }
         }
       },
@@ -434,7 +434,7 @@
         "parallelGroups": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AsyncParallelGroupStatus"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AsyncParallelGroupStatus"
           }
         },
         "workflowGraph": {
@@ -446,78 +446,7 @@
       }
     },
     "ControlEvent": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "$ref": "#/definitions/ControlEventType"
-        },
-        "from": {
-          "$ref": "#/definitions/ActivityState"
-        },
-        "to": {
-          "$ref": "#/definitions/ActivityState_1"
-        },
-        "ts": {
-          "type": "number"
-        },
-        "agent": {
-          "type": "string"
-        },
-        "index": {
-          "type": "number"
-        },
-        "runId": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "reason": {
-          "enum": ["completion_guard", "idle", "tool_failures"],
-          "type": "string"
-        },
-        "turns": {
-          "type": "number"
-        },
-        "tokens": {
-          "type": "number"
-        },
-        "toolCount": {
-          "type": "number"
-        },
-        "currentTool": {
-          "type": "string"
-        },
-        "currentToolDurationMs": {
-          "type": "number"
-        },
-        "currentPath": {
-          "type": "string"
-        },
-        "elapsedMs": {
-          "type": "number"
-        },
-        "recentFailureSummary": {
-          "type": "string"
-        },
-        "supervisorQuestion": {
-          "type": "object",
-          "properties": {
-            "questionId": {
-              "type": "string"
-            },
-            "state": {
-              "enum": ["answer_pending", "awaiting_input"],
-              "type": "string"
-            },
-            "answer": {
-              "type": "string"
-            }
-          },
-          "required": ["questionId", "state"]
-        }
-      },
-      "required": ["agent", "message", "runId", "to", "ts", "type"]
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent"
     },
     "SupervisorRunContract": {
       "type": "object",
@@ -794,36 +723,10 @@
       ]
     },
     "QuestionAnswer": {
-      "type": "object",
-      "properties": {
-        "message": {
-          "type": "string"
-        },
-        "answeredAt": {
-          "type": "number"
-        },
-        "origin": {
-          "const": "human",
-          "type": "string"
-        }
-      },
-      "required": ["answeredAt", "message"]
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).QuestionAnswer"
     },
     "QuestionDelivery": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "enum": ["live", "revive"],
-          "type": "string"
-        },
-        "runId": {
-          "type": "string"
-        },
-        "deliveredAt": {
-          "type": "number"
-        }
-      },
-      "required": ["deliveredAt", "kind", "runId"]
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).QuestionDelivery"
     },
     "SupervisorQuestionView": {
       "type": "object",
@@ -833,10 +736,10 @@
           "type": "string"
         },
         "answer": {
-          "$ref": "#/definitions/QuestionAnswer_1"
+          "$ref": "#/definitions/QuestionAnswer"
         },
         "delivery": {
-          "$ref": "#/definitions/QuestionDelivery_1"
+          "$ref": "#/definitions/QuestionDelivery"
         },
         "revival": {
           "type": "object",
@@ -1024,7 +927,7 @@
         "questions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SupervisorQuestionView"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionView"
           }
         },
         "matchedChildIndexes": {
@@ -1071,7 +974,7 @@
                   "result": {
                     "allOf": [
                       {
-                        "$ref": "#/definitions/Omit%3C_ReadonlyObjectDeep%3CSingleResult%3E%2C%22artifactPaths%22%3E"
+                        "$ref": "#/definitions/Omit%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult%3E%2C%22artifactPaths%22%3E"
                       },
                       {
                         "type": "object",
@@ -1291,7 +1194,7 @@
         "rows": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/HistoryRunRow"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistoryRunRow"
           }
         },
         "total": {
@@ -1319,125 +1222,10 @@
       "required": ["freshness", "indexedAt", "offset", "rows", "total", "version"]
     },
     "HistoryPage": {
-      "type": "object",
-      "properties": {
-        "entries": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/HistoryEntry"
-          }
-        },
-        "count": {
-          "type": "number"
-        },
-        "hasMore": {
-          "type": "boolean"
-        },
-        "previousBefore": {
-          "type": "number"
-        },
-        "previousCursor": {
-          "type": "string"
-        },
-        "nextAfter": {
-          "type": "number"
-        },
-        "sourceId": {
-          "type": ["null", "string"]
-        },
-        "generation": {
-          "type": ["null", "number"]
-        },
-        "sessionId": {
-          "type": ["null", "string"]
-        },
-        "sourceState": {
-          "type": "string"
-        },
-        "configuration": {
-          "$ref": "#/definitions/HistoryConfiguration_1"
-        },
-        "deliveredMessages": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "items": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "boolean"
-              }
-            ],
-            "minItems": 2,
-            "maxItems": 2
-          }
-        },
-        "latestEntryId": {
-          "type": ["null", "string"]
-        },
-        "unreadAfter": {
-          "type": "boolean"
-        },
-        "terminalSequence": {
-          "type": "number"
-        },
-        "finalResultId": {
-          "description": "Canonical answer match, not a truncated-preview comparison.",
-          "type": "string"
-        },
-        "unavailable": {
-          "type": "string"
-        },
-        "version": {
-          "type": "number"
-        },
-        "indexedAt": {
-          "type": ["null", "number"]
-        },
-        "freshness": {
-          "$ref": "#/definitions/HistoryFreshness"
-        }
-      },
-      "required": [
-        "configuration",
-        "count",
-        "deliveredMessages",
-        "entries",
-        "freshness",
-        "generation",
-        "hasMore",
-        "indexedAt",
-        "latestEntryId",
-        "sessionId",
-        "sourceId",
-        "sourceState",
-        "version"
-      ]
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistoryPage"
     },
     "HistorySearchPage": {
-      "type": "object",
-      "properties": {
-        "matches": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/HistorySearchMatch"
-          }
-        },
-        "nextCursor": {
-          "type": "string"
-        },
-        "version": {
-          "type": "number"
-        },
-        "indexedAt": {
-          "type": ["null", "number"]
-        },
-        "freshness": {
-          "$ref": "#/definitions/HistoryFreshness"
-        }
-      },
-      "required": ["freshness", "indexedAt", "matches", "version"]
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistorySearchPage"
     },
     "HistoryIndexStatus": {
       "type": "object",
@@ -1499,36 +1287,7 @@
       ]
     },
     "HistoryEntry": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "nativeId": {
-          "description": "Missing in older journals; id then identifies the physical byte range.",
-          "type": ["null", "string"]
-        },
-        "parentId": {
-          "type": ["null", "string"]
-        },
-        "sequence": {
-          "type": "number"
-        },
-        "timestamp": {
-          "type": ["null", "number"]
-        },
-        "type": {
-          "type": "string"
-        },
-        "ref": {
-          "$ref": "#/definitions/HistoryByteRef"
-        },
-        "entry": {
-          "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E",
-          "description": "Bounded previews; untrusted detail values require narrowing at their consumer."
-        }
-      },
-      "required": ["entry", "id", "nativeId", "parentId", "ref", "sequence", "timestamp", "type"]
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistoryEntry"
     },
     "HistoryResult": {
       "type": "object",
@@ -1573,7 +1332,7 @@
             "contributions": {
               "type": "array",
               "items": {
-                "$ref": "#/definitions/UsageContribution"
+                "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fusage%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).UsageContribution"
               }
             }
           },
@@ -1589,13 +1348,13 @@
         "results": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SingleResult_1"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult"
           }
         },
         "controlEvents": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlEvent"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent"
           }
         },
         "asyncId": {
@@ -1619,7 +1378,7 @@
         "progress": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AgentProgress_1"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProgress"
           }
         },
         "progressSummary": {
@@ -1637,13 +1396,13 @@
         "managementControls": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ManagementControl_1"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ManagementControl"
           }
         },
         "questions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SupervisorQuestionView"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionView"
           }
         },
         "wait": {
@@ -1673,7 +1432,7 @@
           "items": {
             "allOf": [
               {
-                "$ref": "#/definitions/Pick%3COwnedRunView%2C%22task%22%7C%22mode%22%7C%22state%22%7C%22cwd%22%7C%22runId%22%7C%22updatedAt%22%7C%22review%22%7C%22source%22%7C%22rootRunId%22%7C%22predecessorRunId%22%7C%22predecessorIndex%22%7C%22attention%22%3E"
+                "$ref": "#/definitions/Pick%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).OwnedRunView%2C%22task%22%7C%22mode%22%7C%22state%22%7C%22cwd%22%7C%22runId%22%7C%22updatedAt%22%7C%22review%22%7C%22source%22%7C%22rootRunId%22%7C%22predecessorRunId%22%7C%22predecessorIndex%22%7C%22attention%22%3E"
               },
               {
                 "type": "object",
@@ -1720,10 +1479,10 @@
           "required": ["freshness", "limit", "offset", "total", "version"]
         },
         "history": {
-          "$ref": "#/definitions/HistoryPage_1"
+          "$ref": "#/definitions/HistoryPage"
         },
         "historySearch": {
-          "$ref": "#/definitions/HistorySearchPage_1"
+          "$ref": "#/definitions/HistorySearchPage"
         },
         "intercomDelivery": {
           "type": "object",
@@ -1752,7 +1511,7 @@
             "files": {
               "type": "array",
               "items": {
-                "$ref": "#/definitions/ArtifactPaths_1"
+                "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ArtifactPaths"
               }
             }
           },
@@ -1800,7 +1559,7 @@
     "SubagentExecutionResult": {
       "allOf": [
         {
-          "$ref": "#/definitions/AgentToolResult%3CDetails%3E"
+          "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-agent-core%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentToolResult%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fdetails%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).Details%3E"
         },
         {
           "type": "object",
@@ -1813,6 +1572,213 @@
         }
       ]
     },
+    "SubagentRunConfig": {
+      "description": "Serialized launch data. JSON arrays encode omitted intercom targets as null.",
+      "type": "object",
+      "properties": {
+        "runtimeVersion": {
+          "const": 2,
+          "type": "number"
+        },
+        "timeoutMs": {
+          "type": "number"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).RunnerStep"
+          }
+        },
+        "chainDir": {
+          "type": "string"
+        },
+        "originalTask": {
+          "type": "string"
+        },
+        "resultPath": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "taskIndex": {
+          "type": "number"
+        },
+        "totalTasks": {
+          "type": "number"
+        },
+        "maxOutput": {
+          "$ref": "#/definitions/MaxOutputConfig"
+        },
+        "artifactsDir": {
+          "type": "string"
+        },
+        "share": {
+          "type": "boolean"
+        },
+        "sessionDir": {
+          "type": "string"
+        },
+        "asyncDir": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": ["null", "string"]
+        },
+        "piPackageRoot": {
+          "type": "string"
+        },
+        "worktreeSetupHook": {
+          "type": "string"
+        },
+        "worktreeSetupHookTimeoutMs": {
+          "type": "number"
+        },
+        "controlConfig": {
+          "$ref": "#/definitions/ResolvedControlConfig"
+        },
+        "controlIntercomTarget": {
+          "type": "string"
+        },
+        "childIntercomTargets": {
+          "type": "array",
+          "items": {
+            "type": ["null", "string"]
+          }
+        },
+        "resultMode": {
+          "$ref": "#/definitions/SubagentRunMode_1"
+        },
+        "dynamicFanoutMaxItems": {
+          "type": "number"
+        },
+        "workflowGraph": {
+          "$ref": "#/definitions/WorkflowGraphSnapshot"
+        },
+        "nestedRoute": {
+          "$ref": "#/definitions/NestedRouteInfo"
+        },
+        "nestedSelf": {
+          "type": "object",
+          "properties": {
+            "parentRunId": {
+              "type": "string"
+            },
+            "parentStepIndex": {
+              "type": "number"
+            },
+            "depth": {
+              "type": "number"
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "runId": {
+                    "type": "string"
+                  },
+                  "stepIndex": {
+                    "type": "number"
+                  },
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": ["runId"]
+              }
+            }
+          },
+          "required": ["depth", "parentRunId"]
+        },
+        "projectTrust": {
+          "$ref": "#/definitions/ChildProjectTrustPolicy"
+        }
+      },
+      "required": ["asyncDir", "cwd", "id", "placeholder", "resultPath", "steps"]
+    },
+    "NativeFinalizationConfig": {
+      "type": "object",
+      "properties": {
+        "nonce": {
+          "type": "string"
+        },
+        "acceptance": {
+          "$ref": "#/definitions/ResolvedAcceptanceConfig"
+        },
+        "reportRuntime": {
+          "$ref": "#/definitions/FinalizationReportRuntime"
+        },
+        "publicOutput": {
+          "$ref": "#/definitions/StructuredOutputRuntime"
+        },
+        "outputPath": {
+          "type": "string"
+        },
+        "outputSnapshot": {
+          "$ref": "#/definitions/SingleOutputSnapshot"
+        }
+      },
+      "required": ["acceptance", "nonce", "reportRuntime"]
+    },
+    "NativeFinalizationEvent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "subagent.finalization"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "turn": {
+          "type": "number"
+        },
+        "lastEntryId": {
+          "type": "string"
+        },
+        "messageCount": {
+          "type": "number"
+        },
+        "at": {
+          "type": "number"
+        },
+        "submission": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fruns%2Fshared%2Facceptance-submission%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).FinalizationReportSubmission"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "acceptance": {
+          "$ref": "#/definitions/AcceptanceLedger"
+        },
+        "resolvedOutput": {
+          "$ref": "#/definitions/SingleOutputResolution"
+        },
+        "nextPrompt": {
+          "type": "string"
+        }
+      },
+      "required": ["at", "messageCount", "nonce", "resolvedOutput", "submission", "turn", "type"]
+    },
     "SubagentRunMode": {
       "enum": ["chain", "parallel", "single"],
       "type": "string"
@@ -1821,7 +1787,7 @@
       "const": "needs_attention",
       "type": "string"
     },
-    "AsyncParallelGroupStatus": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/nested\",{with:{\"resolution-mode\":\"import\"}}).AsyncParallelGroupStatus": {
       "type": "object",
       "properties": {
         "start": {
@@ -1837,9 +1803,9 @@
       "required": ["count", "start", "stepIndex"]
     },
     "WorkflowGraphSnapshot": {
-      "$ref": "#/definitions/WorkflowGraphSnapshot_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).WorkflowGraphSnapshot"
     },
-    "WorkflowGraphSnapshot_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).WorkflowGraphSnapshot": {
       "type": "object",
       "properties": {
         "runId": {
@@ -1870,7 +1836,7 @@
         "nodes": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/WorkflowGraphNode"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).WorkflowGraphNode"
           }
         },
         "currentNodeId": {
@@ -1879,7 +1845,7 @@
       },
       "required": ["mode", "nodes", "phases", "runId"]
     },
-    "WorkflowGraphNode": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).WorkflowGraphNode": {
       "type": "object",
       "properties": {
         "id": {
@@ -1910,7 +1876,7 @@
         "children": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/WorkflowGraphNode"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).WorkflowGraphNode"
           }
         },
         "dynamic": {
@@ -2015,7 +1981,7 @@
           "children": {
             "type": "array",
             "items": {
-              "$ref": "#/definitions/NestedRunSummary"
+              "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).NestedRunSummary"
             }
           },
           "sessionFile": {
@@ -2114,7 +2080,7 @@
           "modelAttempts": {
             "type": "array",
             "items": {
-              "$ref": "#/definitions/ModelAttempt"
+              "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ModelAttempt"
             }
           },
           "error": {
@@ -2137,7 +2103,7 @@
         "required": ["agent", "status"]
       }
     },
-    "NestedRunSummary": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/nested\",{with:{\"resolution-mode\":\"import\"}}).NestedRunSummary": {
       "type": "object",
       "properties": {
         "indexedControl": {
@@ -2197,19 +2163,19 @@
         "parallelGroups": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AsyncParallelGroupStatus"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AsyncParallelGroupStatus"
           }
         },
         "steps": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/NestedStepSummary"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).NestedStepSummary"
           }
         },
         "children": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/NestedRunSummary"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).NestedRunSummary"
           }
         },
         "activityState": {
@@ -2296,7 +2262,7 @@
       "enum": ["blocked", "complete", "failed", "paused", "queued", "running"],
       "type": "string"
     },
-    "NestedStepSummary": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/nested\",{with:{\"resolution-mode\":\"import\"}}).NestedStepSummary": {
       "type": "object",
       "properties": {
         "agent": {
@@ -2351,16 +2317,16 @@
         "children": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/NestedRunSummary"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).NestedRunSummary"
           }
         }
       },
       "required": ["agent", "status"]
     },
     "TokenUsage": {
-      "$ref": "#/definitions/TokenUsage_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fusage%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).TokenUsage"
     },
-    "TokenUsage_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/usage\",{with:{\"resolution-mode\":\"import\"}}).TokenUsage": {
       "type": "object",
       "properties": {
         "input": {
@@ -2376,9 +2342,9 @@
       "required": ["input", "output", "total"]
     },
     "AgentProcessExit": {
-      "$ref": "#/definitions/AgentProcessExit_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProcessExit"
     },
-    "AgentProcessExit_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).AgentProcessExit": {
       "type": "object",
       "properties": {
         "pid": {
@@ -2442,7 +2408,7 @@
       },
       "required": ["at", "code", "signal"]
     },
-    "ModelAttempt": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ModelAttempt": {
       "type": "object",
       "properties": {
         "accounting": {
@@ -2477,15 +2443,15 @@
       "required": ["model", "success"]
     },
     "Usage": {
-      "$ref": "#/definitions/Usage_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fusage%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).Usage"
     },
-    "Usage_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/usage\",{with:{\"resolution-mode\":\"import\"}}).Usage": {
       "type": "object",
       "properties": {
         "contributions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UsageContribution"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fusage%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).UsageContribution"
           }
         },
         "input": {
@@ -2509,7 +2475,7 @@
       },
       "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "turns"]
     },
-    "UsageContribution": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/usage\",{with:{\"resolution-mode\":\"import\"}}).UsageContribution": {
       "type": "object",
       "properties": {
         "id": {
@@ -2576,9 +2542,9 @@
       }
     },
     "AcceptanceLedger": {
-      "$ref": "#/definitions/AcceptanceLedger_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceLedger"
     },
-    "AcceptanceLedger_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceLedger": {
       "type": "object",
       "properties": {
         "status": {
@@ -2599,7 +2565,7 @@
         "criteria": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ResolvedAcceptanceGate"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ResolvedAcceptanceGate"
           }
         },
         "childReport": {
@@ -2621,13 +2587,13 @@
         "runtimeChecks": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceRuntimeCheck"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceRuntimeCheck"
           }
         },
         "verifyRuns": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceVerifyResult"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceVerifyResult"
           }
         },
         "finalization": {
@@ -2675,19 +2641,19 @@
         "criteria": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ResolvedAcceptanceGate"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ResolvedAcceptanceGate"
           }
         },
         "evidence": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceEvidenceKind"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceEvidenceKind"
           }
         },
         "verify": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceVerifyCommand"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceVerifyCommand"
           }
         },
         "stopRules": {
@@ -2726,7 +2692,7 @@
       "enum": ["attested", "checked", "none", "verified"],
       "type": "string"
     },
-    "ResolvedAcceptanceGate": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).ResolvedAcceptanceGate": {
       "type": "object",
       "properties": {
         "id": {
@@ -2738,7 +2704,7 @@
         "evidence": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceEvidenceKind"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceEvidenceKind"
           }
         },
         "severity": {
@@ -2748,7 +2714,7 @@
       },
       "required": ["evidence", "id", "must", "severity"]
     },
-    "AcceptanceEvidenceKind": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceEvidenceKind": {
       "enum": [
         "changed-files",
         "commands-run",
@@ -2762,7 +2728,7 @@
       ],
       "type": "string"
     },
-    "AcceptanceVerifyCommand": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceVerifyCommand": {
       "type": "object",
       "properties": {
         "id": {
@@ -2796,9 +2762,9 @@
       "type": "object"
     },
     "AcceptanceReport": {
-      "$ref": "#/definitions/AcceptanceReport_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceReport"
     },
-    "AcceptanceReport_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceReport": {
       "type": "object",
       "properties": {
         "criteriaSatisfied": {
@@ -2897,7 +2863,7 @@
       "additionalProperties": {},
       "type": "object"
     },
-    "AcceptanceRuntimeCheck": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceRuntimeCheck": {
       "type": "object",
       "properties": {
         "id": {
@@ -2916,7 +2882,7 @@
       "enum": ["blocked", "failed", "not-applicable", "passed"],
       "type": "string"
     },
-    "AcceptanceVerifyResult": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceVerifyResult": {
       "type": "object",
       "properties": {
         "id": {
@@ -2948,9 +2914,9 @@
       "required": ["command", "durationMs", "exitCode", "id", "status"]
     },
     "AcceptanceFinalizationLedger": {
-      "$ref": "#/definitions/AcceptanceFinalizationLedger_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceFinalizationLedger"
     },
-    "AcceptanceFinalizationLedger_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceFinalizationLedger": {
       "type": "object",
       "properties": {
         "mode": {
@@ -2967,13 +2933,13 @@
         "turns": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceFinalizationTurn"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceFinalizationTurn"
           }
         }
       },
       "required": ["maxTurns", "mode", "status", "turns"]
     },
-    "AcceptanceFinalizationTurn": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceFinalizationTurn": {
       "type": "object",
       "properties": {
         "turn": {
@@ -3000,13 +2966,13 @@
         "runtimeChecks": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceRuntimeCheck"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceRuntimeCheck"
           }
         },
         "verifyRuns": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceVerifyResult"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceVerifyResult"
           }
         },
         "failureMessage": {
@@ -3016,9 +2982,9 @@
       "required": ["prompt", "runtimeChecks", "status", "turn", "verifyRuns"]
     },
     "ResourceLimitExceeded": {
-      "$ref": "#/definitions/ResourceLimitExceeded_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ResourceLimitExceeded"
     },
-    "ResourceLimitExceeded_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ResourceLimitExceeded": {
       "type": "object",
       "properties": {
         "kind": {
@@ -3038,15 +3004,15 @@
       "required": ["kind", "limit", "message"]
     },
     "ChainOutputMap": {
-      "$ref": "#/definitions/Record%3Cstring%2CChainOutputMapEntry%3E"
+      "$ref": "#/definitions/Record%3Cstring%2Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ChainOutputMapEntry%3E"
     },
-    "Record<string,ChainOutputMapEntry>": {
+    "Record<string,import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).ChainOutputMapEntry>": {
       "additionalProperties": {
-        "$ref": "#/definitions/ChainOutputMapEntry"
+        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ChainOutputMapEntry"
       },
       "type": "object"
     },
-    "ChainOutputMapEntry": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).ChainOutputMapEntry": {
       "type": "object",
       "properties": {
         "text": {
@@ -3063,9 +3029,9 @@
       "required": ["agent", "stepIndex", "text"]
     },
     "MaxOutputConfig": {
-      "$ref": "#/definitions/MaxOutputConfig_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fconfig%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).MaxOutputConfig"
     },
-    "MaxOutputConfig_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/config\",{with:{\"resolution-mode\":\"import\"}}).MaxOutputConfig": {
       "type": "object",
       "properties": {
         "bytes": {
@@ -3076,7 +3042,7 @@
         }
       }
     },
-    "AsyncResultChild": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/async\",{with:{\"resolution-mode\":\"import\"}}).AsyncResultChild": {
       "type": "object",
       "properties": {
         "usage": {
@@ -3124,7 +3090,7 @@
         "modelAttempts": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ModelAttempt"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ModelAttempt"
           }
         },
         "artifactPaths": {
@@ -3202,7 +3168,7 @@
         "toolCalls": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ToolCallSummary"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ToolCallSummary"
           }
         },
         "truncation": {
@@ -3268,9 +3234,9 @@
       "$ref": "#/definitions/__type"
     },
     "ProgressSummary": {
-      "$ref": "#/definitions/ProgressSummary_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ProgressSummary"
     },
-    "ProgressSummary_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ProgressSummary": {
       "type": "object",
       "properties": {
         "toolCount": {
@@ -3353,10 +3319,10 @@
     "Array_1": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E"
+        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E"
       }
     },
-    "_ReadonlyObjectDeep<{tool:string;args:string;endMs:number;}>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{tool:string;args:string;endMs:number;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -3372,7 +3338,7 @@
       },
       "required": ["args", "endMs", "tool"]
     },
-    "ToolCallSummary": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ToolCallSummary": {
       "type": "object",
       "properties": {
         "text": {
@@ -3385,9 +3351,9 @@
       "required": ["expandedText", "text"]
     },
     "TruncationResult": {
-      "$ref": "#/definitions/TruncationResult_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).TruncationResult"
     },
-    "TruncationResult_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).TruncationResult": {
       "type": "object",
       "properties": {
         "text": {
@@ -3413,9 +3379,9 @@
       "type": "string"
     },
     "SavedOutputReference": {
-      "$ref": "#/definitions/SavedOutputReference_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SavedOutputReference"
     },
-    "SavedOutputReference_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).SavedOutputReference": {
       "type": "object",
       "properties": {
         "path": {
@@ -3433,7 +3399,7 @@
       },
       "required": ["bytes", "lines", "message", "path"]
     },
-    "ForegroundResumeChild": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ForegroundResumeChild": {
       "description": "Live continuation owner, retained after foreground detachment.",
       "type": "object",
       "properties": {
@@ -3473,9 +3439,9 @@
     },
     "SingleResult": {
       "description": "Execution owns the result while collecting output, accounting and acceptance evidence.",
-      "$ref": "#/definitions/SingleResult_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult"
     },
-    "SingleResult_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).SingleResult": {
       "description": "Execution owns the result while collecting output, accounting and acceptance evidence.",
       "type": "object",
       "properties": {
@@ -3543,7 +3509,7 @@
         "messages": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ObservedMessage"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fmessages%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ObservedMessage"
           }
         },
         "usage": {
@@ -3561,13 +3527,13 @@
         "modelAttempts": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ModelAttempt"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ModelAttempt"
           }
         },
         "controlEvents": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlEvent"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent"
           }
         },
         "error": {
@@ -3594,7 +3560,7 @@
         "toolCalls": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ToolCallSummary"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ToolCallSummary"
           }
         },
         "artifactPaths": {
@@ -3653,7 +3619,7 @@
       },
       "required": ["agent", "exitCode", "task", "usage"]
     },
-    "ObservedMessage": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/messages\",{with:{\"resolution-mode\":\"import\"}}).ObservedMessage": {
       "anyOf": [
         {
           "allOf": [
@@ -3670,7 +3636,7 @@
                 "content": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/ObservedContent"
+                    "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fmessages%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ObservedContent"
                   }
                 },
                 "api": {
@@ -3717,7 +3683,7 @@
                 "content": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/ObservedContent"
+                    "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fmessages%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ObservedContent"
                   }
                 },
                 "toolCallId": {
@@ -3758,7 +3724,7 @@
                     {
                       "type": "array",
                       "items": {
-                        "$ref": "#/definitions/ObservedContent"
+                        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fmessages%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ObservedContent"
                       }
                     },
                     {
@@ -3768,6 +3734,127 @@
                 }
               },
               "required": ["content", "role"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ObservedMessageMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "const": "custom"
+                },
+                "customType": {
+                  "type": "string"
+                },
+                "content": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fmessages%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ObservedContent"
+                      }
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "display": {
+                  "type": "boolean"
+                },
+                "details": {}
+              },
+              "required": ["content", "customType", "role"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ObservedMessageMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "const": "bashExecution"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "output": {
+                  "type": "string"
+                },
+                "exitCode": {
+                  "type": "number"
+                },
+                "cancelled": {
+                  "type": "boolean"
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "fullOutputPath": {
+                  "type": "string"
+                },
+                "excludeFromContext": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["command", "output", "role"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ObservedMessageMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "const": "branchSummary"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "fromId": {
+                  "type": ["null", "string"]
+                }
+              },
+              "required": ["fromId", "role", "summary"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ObservedMessageMetadata"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "const": "compactionSummary"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "tokensBefore": {
+                  "type": "number"
+                }
+              },
+              "required": ["role", "summary", "tokensBefore"]
             }
           ]
         }
@@ -3781,7 +3868,7 @@
         }
       }
     },
-    "ObservedContent": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/messages\",{with:{\"resolution-mode\":\"import\"}}).ObservedContent": {
       "anyOf": [
         {
           "type": "object",
@@ -3865,6 +3952,110 @@
       "description": "Observations from native journals and external runners are not necessarily complete SDK messages.",
       "$ref": "#/definitions/ObservedUsage"
     },
+    "Usage_1": {
+      "type": "object",
+      "properties": {
+        "contributions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fusage%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).UsageContribution"
+          }
+        },
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        },
+        "cost": {
+          "type": "number"
+        },
+        "turns": {
+          "type": "number"
+        }
+      },
+      "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "turns"]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ControlEvent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/ControlEventType"
+        },
+        "from": {
+          "$ref": "#/definitions/ActivityState"
+        },
+        "to": {
+          "$ref": "#/definitions/ActivityState_1"
+        },
+        "ts": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "reason": {
+          "enum": ["completion_guard", "idle", "tool_failures"],
+          "type": "string"
+        },
+        "turns": {
+          "type": "number"
+        },
+        "tokens": {
+          "type": "number"
+        },
+        "toolCount": {
+          "type": "number"
+        },
+        "currentTool": {
+          "type": "string"
+        },
+        "currentToolDurationMs": {
+          "type": "number"
+        },
+        "currentPath": {
+          "type": "string"
+        },
+        "elapsedMs": {
+          "type": "number"
+        },
+        "recentFailureSummary": {
+          "type": "string"
+        },
+        "supervisorQuestion": {
+          "type": "object",
+          "properties": {
+            "questionId": {
+              "type": "string"
+            },
+            "state": {
+              "enum": ["answer_pending", "awaiting_input"],
+              "type": "string"
+            },
+            "answer": {
+              "type": "string"
+            }
+          },
+          "required": ["questionId", "state"]
+        }
+      },
+      "required": ["agent", "message", "runId", "to", "ts", "type"]
+    },
     "ControlEventType": {
       "type": "string",
       "const": "needs_attention"
@@ -3875,9 +4066,9 @@
     },
     "AgentProgress": {
       "description": "Live progress owner: streaming and tool events update fields and bounded buffers in place.",
-      "$ref": "#/definitions/AgentProgress_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProgress"
     },
-    "AgentProgress_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).AgentProgress": {
       "description": "Live progress owner: streaming and tool events update fields and bounded buffers in place.",
       "type": "object",
       "properties": {
@@ -4000,9 +4191,9 @@
       }
     },
     "ArtifactPaths": {
-      "$ref": "#/definitions/ArtifactPaths_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ArtifactPaths"
     },
-    "ArtifactPaths_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ArtifactPaths": {
       "type": "object",
       "properties": {
         "inputPath": {
@@ -4018,9 +4209,9 @@
       "required": ["inputPath", "metadataPath", "outputPath"]
     },
     "ParentRunReview": {
-      "$ref": "#/definitions/ParentRunReview_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ParentRunReview"
     },
-    "ParentRunReview_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ParentRunReview": {
       "type": "object",
       "properties": {
         "decision": {
@@ -4037,9 +4228,9 @@
       "required": ["decision", "reviewedAt"]
     },
     "NestedRouteInfo": {
-      "$ref": "#/definitions/NestedRouteInfo_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fnested%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).NestedRouteInfo"
     },
-    "NestedRouteInfo_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/nested\",{with:{\"resolution-mode\":\"import\"}}).NestedRouteInfo": {
       "type": "object",
       "properties": {
         "rootRunId": {
@@ -4094,7 +4285,7 @@
           "type": "string"
         },
         "agentProcessExit": {
-          "$ref": "#/definitions/AgentProcessExit_2"
+          "$ref": "#/definitions/AgentProcessExit_1"
         },
         "task": {
           "type": "string"
@@ -4115,7 +4306,7 @@
           "type": "boolean"
         },
         "resourceLimitExceeded": {
-          "$ref": "#/definitions/ResourceLimitExceeded_2"
+          "$ref": "#/definitions/ResourceLimitExceeded_1"
         },
         "messages": {
           "type": "array",
@@ -4131,6 +4322,22 @@
               },
               {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_12",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_13",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_14",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_15",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_16",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               }
             ]
@@ -4151,13 +4358,13 @@
         "modelAttempts": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CModelAttempt%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ModelAttempt%3E"
           }
         },
         "controlEvents": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CControlEvent%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent%3E"
           }
         },
         "error": {
@@ -4176,22 +4383,22 @@
           "type": "string"
         },
         "progress": {
-          "$ref": "#/definitions/AgentProgress_2"
+          "$ref": "#/definitions/AgentProgress_1"
         },
         "progressSummary": {
-          "$ref": "#/definitions/ProgressSummary_2"
+          "$ref": "#/definitions/ProgressSummary_1"
         },
         "toolCalls": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CToolCallSummary%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ToolCallSummary%3E"
           }
         },
         "artifactPaths": {
-          "$ref": "#/definitions/ArtifactPaths_2"
+          "$ref": "#/definitions/ArtifactPaths_1"
         },
         "truncation": {
-          "$ref": "#/definitions/TruncationResult_2"
+          "$ref": "#/definitions/TruncationResult_1"
         },
         "finalOutput": {
           "type": "string"
@@ -4206,13 +4413,13 @@
           "type": "string"
         },
         "outputReference": {
-          "$ref": "#/definitions/SavedOutputReference_2"
+          "$ref": "#/definitions/SavedOutputReference_1"
         },
         "outputSaveError": {
           "type": "string"
         },
         "outputCleanup": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_21",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_25",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "structuredOutput": {},
@@ -4223,7 +4430,7 @@
           "type": "string"
         },
         "acceptance": {
-          "$ref": "#/definitions/AcceptanceLedger_2"
+          "$ref": "#/definitions/AcceptanceLedger_1"
         }
       },
       "required": ["agent", "exitCode", "task", "usage"]
@@ -4245,7 +4452,7 @@
     "_ReadonlyObjectDeep_1": {
       "$ref": "#/definitions/__type_2"
     },
-    "AgentProcessExit_2": {
+    "AgentProcessExit_1": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_2",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
@@ -4317,7 +4524,7 @@
     "_ReadonlyObjectDeep_2": {
       "$ref": "#/definitions/__type_3"
     },
-    "ResourceLimitExceeded_2": {
+    "ResourceLimitExceeded_1": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_3",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
@@ -4677,10 +4884,148 @@
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "const": "custom"
+        },
+        "customType": {
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_5",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_6",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_7",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_8",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  }
+                ]
+              }
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "display": {
+          "type": "boolean"
+        },
+        "details": {}
+      },
+      "required": ["content", "customType", "role"]
+    },
+    "_ReadonlyObjectDeep_13": {
+      "$ref": "#/definitions/__type_15"
+    },
+    "__type_16": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "const": "bashExecution"
+        },
+        "command": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "cancelled": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "fullOutputPath": {
+          "type": "string"
+        },
+        "excludeFromContext": {
+          "type": "boolean"
+        }
+      },
+      "required": ["command", "output", "role"]
+    },
+    "_ReadonlyObjectDeep_14": {
+      "$ref": "#/definitions/__type_16"
+    },
+    "__type_17": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "const": "branchSummary"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "fromId": {
+          "type": ["null", "string"]
+        }
+      },
+      "required": ["fromId", "role", "summary"]
+    },
+    "_ReadonlyObjectDeep_15": {
+      "$ref": "#/definitions/__type_17"
+    },
+    "__type_18": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "const": "compactionSummary"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "tokensBefore": {
+          "type": "number"
+        }
+      },
+      "required": ["role", "summary", "tokensBefore"]
+    },
+    "_ReadonlyObjectDeep_16": {
+      "$ref": "#/definitions/__type_18"
+    },
+    "__type_19": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
         "contributions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CUsageContribution%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fusage%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).UsageContribution%3E"
           }
         },
         "input": {
@@ -4704,7 +5049,7 @@
       },
       "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "turns"]
     },
-    "_ReadonlyObjectDeep<UsageContribution>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/usage\",{with:{\"resolution-mode\":\"import\"}}).UsageContribution>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -4728,14 +5073,14 @@
       "$ref": "#/definitions/__type_11"
     },
     "Usage_2": {
-      "$ref": "#/definitions/__type_15"
+      "$ref": "#/definitions/__type_19"
     },
-    "_ReadonlyObjectDeep<ModelAttempt>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ModelAttempt>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
         "accounting": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_13",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_17",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "model": {
@@ -4756,7 +5101,7 @@
       },
       "required": ["model", "success"]
     },
-    "__type_16": {
+    "__type_20": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -4770,17 +5115,17 @@
       },
       "required": ["state"]
     },
-    "_ReadonlyObjectDeep_13": {
-      "$ref": "#/definitions/__type_16"
+    "_ReadonlyObjectDeep_17": {
+      "$ref": "#/definitions/__type_20"
     },
     "Usage_3": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_14",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_18",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "_ReadonlyObjectDeep_14": {
-      "$ref": "#/definitions/__type_15"
+    "_ReadonlyObjectDeep_18": {
+      "$ref": "#/definitions/__type_19"
     },
-    "_ReadonlyObjectDeep<ControlEvent>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ControlEvent>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -4837,13 +5182,13 @@
           "type": "string"
         },
         "supervisorQuestion": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_15",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_19",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         }
       },
       "required": ["agent", "message", "runId", "to", "ts", "type"]
     },
-    "__type_17": {
+    "__type_21": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -4860,14 +5205,14 @@
       },
       "required": ["questionId", "state"]
     },
-    "_ReadonlyObjectDeep_15": {
-      "$ref": "#/definitions/__type_17"
+    "_ReadonlyObjectDeep_19": {
+      "$ref": "#/definitions/__type_21"
     },
-    "AgentProgress_2": {
+    "AgentProgress_1": {
       "description": "Live progress owner: streaming and tool events update fields and bounded buffers in place.",
-      "$ref": "#/definitions/_ReadonlyObjectDeep_16"
+      "$ref": "#/definitions/_ReadonlyObjectDeep_20"
     },
-    "__type_18": {
+    "__type_22": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -4974,20 +5319,20 @@
     "ReadonlyArray": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E"
+        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E"
       }
     },
     "Array_3": {
       "$ref": "#/definitions/ReadonlyArray"
     },
-    "_ReadonlyObjectDeep_16": {
-      "$ref": "#/definitions/__type_18"
+    "_ReadonlyObjectDeep_20": {
+      "$ref": "#/definitions/__type_22"
     },
-    "ProgressSummary_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_17",
+    "ProgressSummary_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_21",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_19": {
+    "__type_23": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5071,10 +5416,10 @@
     "Array_4": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/_ReadonlyObjectDeep%3C_ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E%3E"
+        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E%3E"
       }
     },
-    "_ReadonlyObjectDeep<_ReadonlyObjectDeep<{tool:string;args:string;endMs:number;}>>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{tool:string;args:string;endMs:number;}>>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5090,10 +5435,10 @@
       },
       "required": ["args", "endMs", "tool"]
     },
-    "_ReadonlyObjectDeep_17": {
-      "$ref": "#/definitions/__type_19"
+    "_ReadonlyObjectDeep_21": {
+      "$ref": "#/definitions/__type_23"
     },
-    "_ReadonlyObjectDeep<ToolCallSummary>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ToolCallSummary>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5106,11 +5451,11 @@
       },
       "required": ["expandedText", "text"]
     },
-    "ArtifactPaths_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_18",
+    "ArtifactPaths_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_22",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_20": {
+    "__type_24": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5126,14 +5471,14 @@
       },
       "required": ["inputPath", "metadataPath", "outputPath"]
     },
-    "_ReadonlyObjectDeep_18": {
-      "$ref": "#/definitions/__type_20"
+    "_ReadonlyObjectDeep_22": {
+      "$ref": "#/definitions/__type_24"
     },
-    "TruncationResult_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_19",
+    "TruncationResult_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_23",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_21": {
+    "__type_25": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5155,14 +5500,14 @@
       },
       "required": ["text", "truncated"]
     },
-    "_ReadonlyObjectDeep_19": {
-      "$ref": "#/definitions/__type_21"
+    "_ReadonlyObjectDeep_23": {
+      "$ref": "#/definitions/__type_25"
     },
-    "SavedOutputReference_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_20",
+    "SavedOutputReference_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_24",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_22": {
+    "__type_26": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5181,10 +5526,10 @@
       },
       "required": ["bytes", "lines", "message", "path"]
     },
-    "_ReadonlyObjectDeep_20": {
-      "$ref": "#/definitions/__type_22"
+    "_ReadonlyObjectDeep_24": {
+      "$ref": "#/definitions/__type_26"
     },
-    "__type_23": {
+    "__type_27": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5204,14 +5549,14 @@
       },
       "required": ["action", "path"]
     },
-    "_ReadonlyObjectDeep_21": {
-      "$ref": "#/definitions/__type_23"
+    "_ReadonlyObjectDeep_25": {
+      "$ref": "#/definitions/__type_27"
     },
-    "AcceptanceLedger_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_22",
+    "AcceptanceLedger_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_26",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_24": {
+    "__type_28": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5233,17 +5578,17 @@
         "criteria": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CResolvedAcceptanceGate%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ResolvedAcceptanceGate%3E"
           }
         },
         "childReport": {
-          "$ref": "#/definitions/AcceptanceReport_2"
+          "$ref": "#/definitions/AcceptanceReport_1"
         },
         "childReportParseError": {
           "type": "string"
         },
         "initialChildReport": {
-          "$ref": "#/definitions/AcceptanceReport_2"
+          "$ref": "#/definitions/AcceptanceReport_1"
         },
         "initialChildReportParseError": {
           "type": "string"
@@ -5255,17 +5600,17 @@
         "runtimeChecks": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceRuntimeCheck%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceRuntimeCheck%3E"
           }
         },
         "verifyRuns": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceVerifyResult%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceVerifyResult%3E"
           }
         },
         "finalization": {
-          "$ref": "#/definitions/AcceptanceFinalizationLedger_2"
+          "$ref": "#/definitions/AcceptanceFinalizationLedger_1"
         }
       },
       "required": [
@@ -5278,7 +5623,7 @@
         "verifyRuns"
       ]
     },
-    "__type_25": {
+    "__type_29": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5297,19 +5642,19 @@
         "criteria": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CResolvedAcceptanceGate%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ResolvedAcceptanceGate%3E"
           }
         },
         "evidence": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceEvidenceKind"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceEvidenceKind"
           }
         },
         "verify": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceVerifyCommand%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceVerifyCommand%3E"
           }
         },
         "stopRules": {
@@ -5319,7 +5664,7 @@
           }
         },
         "finalization": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Breadonlymode%3A%22none%22%7C%22self-review-loop%22%3BreadonlymaxTurns%3Anumber%3B%7D%3E"
+          "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Breadonlymode%3A%22none%22%7C%22self-review-loop%22%3BreadonlymaxTurns%3Anumber%3B%7D%3E"
         }
       },
       "required": [
@@ -5333,7 +5678,7 @@
         "verify"
       ]
     },
-    "_ReadonlyObjectDeep<ResolvedAcceptanceGate>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).ResolvedAcceptanceGate>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5346,7 +5691,7 @@
         "evidence": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/AcceptanceEvidenceKind"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceEvidenceKind"
           }
         },
         "severity": {
@@ -5356,7 +5701,7 @@
       },
       "required": ["evidence", "id", "must", "severity"]
     },
-    "_ReadonlyObjectDeep<AcceptanceVerifyCommand>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceVerifyCommand>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5382,20 +5727,20 @@
       "required": ["command", "id"]
     },
     "Readonly_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_23",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_27",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_26": {
+    "__type_30": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "additionalProperties": {
         "type": "string"
       },
       "type": "object"
     },
-    "_ReadonlyObjectDeep_23": {
-      "$ref": "#/definitions/__type_26"
+    "_ReadonlyObjectDeep_27": {
+      "$ref": "#/definitions/__type_30"
     },
-    "_ReadonlyObjectDeep<{readonlymode:\"none\"|\"self-review-loop\";readonlymaxTurns:number;}>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{readonlymode:\"none\"|\"self-review-loop\";readonlymaxTurns:number;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5410,20 +5755,20 @@
       "required": ["maxTurns", "mode"]
     },
     "ResolvedAcceptanceConfig_2": {
-      "$ref": "#/definitions/__type_25"
+      "$ref": "#/definitions/__type_29"
     },
-    "AcceptanceReport_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_24",
+    "AcceptanceReport_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_28",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_27": {
+    "__type_31": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
         "criteriaSatisfied": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Breadonlyid%3F%3Astring%7Cundefined%3Breadonlystatus%3A%22satisfied%22%7C%22not-satisfied%22%7C%22not-applicable%22%7C%22blocked%22%3Breadonlyevidence%3Astring%3BreadonlyhumanAction%3F%3Astring%7Cundefined%3B%7D%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Breadonlyid%3F%3Astring%7Cundefined%3Breadonlystatus%3A%22satisfied%22%7C%22not-satisfied%22%7C%22not-applicable%22%7C%22blocked%22%3Breadonlyevidence%3Astring%3BreadonlyhumanAction%3F%3Astring%7Cundefined%3B%7D%3E"
           }
         },
         "changedFiles": {
@@ -5441,7 +5786,7 @@
         "commandsRun": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Breadonlycommand%3Astring%3Breadonlyresult%3A%22passed%22%7C%22failed%22%7C%22not-run%22%3Breadonlysummary%3Astring%3B%7D%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Breadonlycommand%3Astring%3Breadonlyresult%3A%22passed%22%7C%22failed%22%7C%22not-run%22%3Breadonlysummary%3Astring%3B%7D%3E"
           }
         },
         "validationOutput": {
@@ -5467,7 +5812,7 @@
           "items": {
             "anyOf": [
               {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_25",
+                "$ref": "#/definitions/_ReadonlyObjectDeep_29",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               },
               {
@@ -5484,7 +5829,7 @@
         }
       }
     },
-    "_ReadonlyObjectDeep<{readonlyid?:string|undefined;readonlystatus:\"satisfied\"|\"not-satisfied\"|\"not-applicable\"|\"blocked\";readonlyevidence:string;readonlyhumanAction?:string|undefined;}>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{readonlyid?:string|undefined;readonlystatus:\"satisfied\"|\"not-satisfied\"|\"not-applicable\"|\"blocked\";readonlyevidence:string;readonlyhumanAction?:string|undefined;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5504,7 +5849,7 @@
       },
       "required": ["evidence", "status"]
     },
-    "_ReadonlyObjectDeep<{readonlycommand:string;readonlyresult:\"passed\"|\"failed\"|\"not-run\";readonlysummary:string;}>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{readonlycommand:string;readonlyresult:\"passed\"|\"failed\"|\"not-run\";readonlysummary:string;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5521,13 +5866,13 @@
       },
       "required": ["command", "result", "summary"]
     },
-    "_ReadonlyObjectDeep_25": {
+    "_ReadonlyObjectDeep_29": {
       "$ref": "#/definitions/__type_10"
     },
-    "_ReadonlyObjectDeep_24": {
-      "$ref": "#/definitions/__type_27"
+    "_ReadonlyObjectDeep_28": {
+      "$ref": "#/definitions/__type_31"
     },
-    "_ReadonlyObjectDeep<AcceptanceRuntimeCheck>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceRuntimeCheck>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5543,7 +5888,7 @@
       },
       "required": ["id", "message", "status"]
     },
-    "_ReadonlyObjectDeep<AcceptanceVerifyResult>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceVerifyResult>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5575,11 +5920,11 @@
       },
       "required": ["command", "durationMs", "exitCode", "id", "status"]
     },
-    "AcceptanceFinalizationLedger_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_26",
+    "AcceptanceFinalizationLedger_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_30",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_28": {
+    "__type_32": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5597,13 +5942,13 @@
         "turns": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceFinalizationTurn%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceFinalizationTurn%3E"
           }
         }
       },
       "required": ["maxTurns", "mode", "status", "turns"]
     },
-    "_ReadonlyObjectDeep<AcceptanceFinalizationTurn>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/acceptance\",{with:{\"resolution-mode\":\"import\"}}).AcceptanceFinalizationTurn>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -5623,7 +5968,7 @@
           "type": "string"
         },
         "report": {
-          "$ref": "#/definitions/AcceptanceReport_2"
+          "$ref": "#/definitions/AcceptanceReport_1"
         },
         "parseError": {
           "type": "string"
@@ -5631,13 +5976,13 @@
         "runtimeChecks": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceRuntimeCheck%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceRuntimeCheck%3E"
           }
         },
         "verifyRuns": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceVerifyResult%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Facceptance%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AcceptanceVerifyResult%3E"
           }
         },
         "failureMessage": {
@@ -5646,11 +5991,11 @@
       },
       "required": ["prompt", "runtimeChecks", "status", "turn", "verifyRuns"]
     },
+    "_ReadonlyObjectDeep_30": {
+      "$ref": "#/definitions/__type_32"
+    },
     "_ReadonlyObjectDeep_26": {
       "$ref": "#/definitions/__type_28"
-    },
-    "_ReadonlyObjectDeep_22": {
-      "$ref": "#/definitions/__type_24"
     },
     "_ReadonlyObjectDeep": {
       "$ref": "#/definitions/__type_1"
@@ -5660,9 +6005,9 @@
     },
     "SavedLaunchConfig": {
       "description": "Persisted launch snapshot. Resume consumers must not modify the original launch.",
-      "$ref": "#/definitions/SavedLaunchConfig_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Flaunch%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SavedLaunchConfig"
     },
-    "SavedLaunchConfig_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/launch\",{with:{\"resolution-mode\":\"import\"}}).SavedLaunchConfig": {
       "description": "Persisted launch snapshot. Resume consumers must not modify the original launch.",
       "type": "object",
       "properties": {
@@ -5906,9 +6251,9 @@
       "type": "string"
     },
     "ResolvedControlConfig": {
-      "$ref": "#/definitions/ResolvedControlConfig_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fconfig%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ResolvedControlConfig"
     },
-    "ResolvedControlConfig_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/config\",{with:{\"resolution-mode\":\"import\"}}).ResolvedControlConfig": {
       "type": "object",
       "properties": {
         "enabled": {
@@ -5930,7 +6275,7 @@
         "notifyChannels": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlNotificationChannel"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fconfig%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlNotificationChannel"
           }
         }
       },
@@ -5942,7 +6287,7 @@
         "notifyOn"
       ]
     },
-    "ControlNotificationChannel": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/config\",{with:{\"resolution-mode\":\"import\"}}).ControlNotificationChannel": {
       "enum": ["async", "event", "intercom"],
       "type": "string"
     },
@@ -5953,7 +6298,7 @@
     "Pick": {
       "$ref": "#/definitions/Pick_1"
     },
-    "__type_29": {
+    "__type_33": {
       "type": "object",
       "properties": {
         "model": {
@@ -5969,19 +6314,235 @@
       }
     },
     "Pick_1": {
-      "$ref": "#/definitions/__type_29"
+      "$ref": "#/definitions/__type_33"
     },
-    "QuestionAnswer_1": {
-      "$ref": "#/definitions/QuestionAnswer"
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/questions\",{with:{\"resolution-mode\":\"import\"}}).QuestionAnswer": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "answeredAt": {
+          "type": "number"
+        },
+        "origin": {
+          "const": "human",
+          "type": "string"
+        }
+      },
+      "required": ["answeredAt", "message"]
     },
-    "QuestionDelivery_1": {
-      "$ref": "#/definitions/QuestionDelivery"
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/questions\",{with:{\"resolution-mode\":\"import\"}}).QuestionDelivery": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": ["live", "revive"],
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "deliveredAt": {
+          "type": "number"
+        }
+      },
+      "required": ["deliveredAt", "kind", "runId"]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/questions\",{with:{\"resolution-mode\":\"import\"}}).SupervisorQuestionView": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": ["answer_pending", "answered", "awaiting_input", "cancelled"],
+          "type": "string"
+        },
+        "answer": {
+          "$ref": "#/definitions/QuestionAnswer"
+        },
+        "delivery": {
+          "$ref": "#/definitions/QuestionDelivery"
+        },
+        "revival": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "pid": {
+              "type": "number"
+            },
+            "startedAt": {
+              "type": "number"
+            }
+          },
+          "required": ["pid", "runId", "startedAt"]
+        },
+        "questionId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "ownerSessionId": {
+          "type": "string"
+        },
+        "ownerTarget": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "childSessionId": {
+          "type": "string"
+        },
+        "childTarget": {
+          "type": "string"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "reason": {
+          "enum": ["interview_request", "need_decision"],
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "interview": {},
+        "legacySource": {
+          "type": "string"
+        },
+        "recordVersion": {
+          "description": "Readers migrate v1/v2 owner records; all new publications use v3.",
+          "enum": [1, 2, 3],
+          "type": "number"
+        },
+        "nativeSessionId": {
+          "type": "string"
+        },
+        "terminalLeafId": {
+          "type": ["null", "string"]
+        },
+        "terminalEntryId": {
+          "type": "string"
+        },
+        "attemptBaseline": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "baselineSource": {
+          "const": "native-migration",
+          "type": "string"
+        },
+        "effectiveConfiguration": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "thinking": {
+              "type": "string"
+            },
+            "modelRecordedAt": {
+              "type": "number"
+            }
+          }
+        },
+        "accounting": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": ["complete", "incomplete"],
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": ["state"]
+        },
+        "auditPath": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/ReadonlySingleResult"
+        },
+        "effectiveAcceptance": {
+          "$ref": "#/definitions/ResolvedAcceptanceConfig_1"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "const": false,
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "outputMode": {
+          "$ref": "#/definitions/OutputMode"
+        },
+        "outputSchema": {
+          "$ref": "#/definitions/JsonSchemaObject"
+        },
+        "launch": {
+          "$ref": "#/definitions/SavedLaunchConfig"
+        },
+        "modelSelection": {
+          "$ref": "#/definitions/Pick",
+          "description": "Retained independently of progress after detachment."
+        },
+        "processIdentity": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "agent",
+        "childSessionId",
+        "childTarget",
+        "createdAt",
+        "cwd",
+        "index",
+        "message",
+        "ownerSessionId",
+        "ownerTarget",
+        "pid",
+        "questionId",
+        "reason",
+        "runId",
+        "sessionFile",
+        "state"
+      ]
     },
     "ManagementRunState": {
       "enum": ["blocked", "completed", "failed", "live", "paused", "unknown"],
       "type": "string"
     },
-    "Omit<_ReadonlyObjectDeep<SingleResult>,\"artifactPaths\">": {
+    "Omit<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).SingleResult>,\"artifactPaths\">": {
       "type": "object",
       "properties": {
         "detached": {
@@ -6034,7 +6595,7 @@
           "type": "string"
         },
         "agentProcessExit": {
-          "$ref": "#/definitions/AgentProcessExit_2"
+          "$ref": "#/definitions/AgentProcessExit_1"
         },
         "exitCode": {
           "type": "number"
@@ -6049,7 +6610,7 @@
           "type": "boolean"
         },
         "resourceLimitExceeded": {
-          "$ref": "#/definitions/ResourceLimitExceeded_2"
+          "$ref": "#/definitions/ResourceLimitExceeded_1"
         },
         "messages": {
           "type": "array",
@@ -6065,6 +6626,22 @@
               },
               {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_12",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_13",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_14",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_15",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_16",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               }
             ]
@@ -6082,32 +6659,32 @@
         "modelAttempts": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CModelAttempt%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ModelAttempt%3E"
           }
         },
         "controlEvents": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CControlEvent%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent%3E"
           }
         },
         "skillsWarning": {
           "type": "string"
         },
         "progress": {
-          "$ref": "#/definitions/AgentProgress_2"
+          "$ref": "#/definitions/AgentProgress_1"
         },
         "progressSummary": {
-          "$ref": "#/definitions/ProgressSummary_2"
+          "$ref": "#/definitions/ProgressSummary_1"
         },
         "toolCalls": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/_ReadonlyObjectDeep%3CToolCallSummary%3E"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ToolCallSummary%3E"
           }
         },
         "truncation": {
-          "$ref": "#/definitions/TruncationResult_2"
+          "$ref": "#/definitions/TruncationResult_1"
         },
         "finalOutput": {
           "type": "string"
@@ -6122,13 +6699,13 @@
           "type": "string"
         },
         "outputReference": {
-          "$ref": "#/definitions/SavedOutputReference_2"
+          "$ref": "#/definitions/SavedOutputReference_1"
         },
         "outputSaveError": {
           "type": "string"
         },
         "outputCleanup": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_21",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_25",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "structuredOutput": {},
@@ -6139,7 +6716,7 @@
           "type": "string"
         },
         "acceptance": {
-          "$ref": "#/definitions/AcceptanceLedger_2"
+          "$ref": "#/definitions/AcceptanceLedger_1"
         }
       },
       "required": ["agent", "exitCode", "task", "usage"]
@@ -6147,7 +6724,7 @@
     "Partial_2": {
       "$ref": "#/definitions/Partial_3"
     },
-    "__type_30": {
+    "__type_34": {
       "type": "object",
       "properties": {
         "status": {
@@ -6188,12 +6765,12 @@
       }
     },
     "Partial_3": {
-      "$ref": "#/definitions/__type_30"
+      "$ref": "#/definitions/__type_34"
     },
     "HistoryConfiguration": {
-      "$ref": "#/definitions/HistoryConfiguration_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistoryConfiguration"
     },
-    "HistoryConfiguration_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/history\",{with:{\"resolution-mode\":\"import\"}}).HistoryConfiguration": {
       "type": "object",
       "properties": {
         "model": {
@@ -6206,6 +6783,276 @@
           "type": "number"
         }
       }
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/history\",{with:{\"resolution-mode\":\"import\"}}).HistoryRunRow": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionView"
+          }
+        },
+        "matchedChildIndexes": {
+          "description": "Children satisfying the combined filters, before run pagination.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "index": {
+                    "type": "number"
+                  },
+                  "workflowNodeId": {
+                    "type": "string"
+                  },
+                  "task": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "sessionFile": {
+                    "type": "string"
+                  }
+                },
+                "required": ["agent", "index"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "$ref": "#/definitions/ManagementRunState"
+                  },
+                  "result": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/Omit%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult%3E%2C%22artifactPaths%22%3E"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "artifactPaths": {
+                            "$ref": "#/definitions/Partial"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "launch": {
+                    "$ref": "#/definitions/SavedLaunchConfig"
+                  },
+                  "configuration": {
+                    "enum": ["legacy-partial", "saved"],
+                    "type": "string"
+                  },
+                  "missingSession": {
+                    "type": "boolean"
+                  },
+                  "identityUnavailable": {
+                    "type": "boolean"
+                  },
+                  "modelSelection": {
+                    "$ref": "#/definitions/Pick"
+                  },
+                  "activity": {
+                    "$ref": "#/definitions/Partial_2"
+                  }
+                },
+                "required": ["configuration", "state"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "savedConfiguration": {
+                    "$ref": "#/definitions/HistoryConfiguration"
+                  },
+                  "nativeConfiguration": {
+                    "$ref": "#/definitions/HistoryConfiguration"
+                  },
+                  "humanAction": {
+                    "type": "string"
+                  },
+                  "acceptanceStatus": {
+                    "$ref": "#/definitions/AcceptanceLedgerStatus"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "continuations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "predecessorRunId": {
+                "type": "string"
+              },
+              "predecessorIndex": {
+                "type": "number"
+              }
+            },
+            "required": ["predecessorRunId", "runId"]
+          }
+        },
+        "resultPath": {
+          "type": "string"
+        },
+        "canInterrupt": {
+          "type": "boolean"
+        },
+        "diagnosis": {
+          "type": "string"
+        },
+        "recoveryError": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "ownerSessionId": {
+          "type": "string"
+        },
+        "source": {
+          "enum": ["async", "foreground"],
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubagentRunMode"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "rootRunId": {
+          "type": "string"
+        },
+        "predecessorRunId": {
+          "type": "string"
+        },
+        "predecessorIndex": {
+          "type": "number"
+        },
+        "asyncDir": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "review": {
+          "$ref": "#/definitions/ParentRunReview"
+        },
+        "completion": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "state": {
+              "enum": ["dropped", "journaled", "pending", "queued"],
+              "type": "string"
+            },
+            "channel": {
+              "enum": ["intercom", "notification"],
+              "type": "string"
+            },
+            "queuedAt": {
+              "type": "number"
+            },
+            "entryId": {
+              "type": "string"
+            }
+          },
+          "required": ["id", "state"]
+        },
+        "accounting": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": ["complete", "incomplete", "pending"],
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": ["state"]
+        },
+        "delivery": {
+          "type": "object",
+          "properties": {
+            "notifiedAt": {
+              "type": "number"
+            },
+            "intercomDelivered": {
+              "type": "boolean"
+            },
+            "completionId": {
+              "type": "string"
+            },
+            "entryId": {
+              "type": "string"
+            }
+          },
+          "required": ["intercomDelivered", "notifiedAt"]
+        },
+        "legacy": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attention",
+        "canInterrupt",
+        "children",
+        "continuations",
+        "cwd",
+        "mode",
+        "ownerSessionId",
+        "rootRunId",
+        "runId",
+        "source",
+        "startedAt",
+        "state",
+        "task",
+        "updatedAt"
+      ]
     },
     "HistoryFreshness": {
       "type": "object",
@@ -6231,6 +7078,38 @@
       },
       "required": ["authoritative", "errors", "indexedAt", "pending", "state"]
     },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/history\",{with:{\"resolution-mode\":\"import\"}}).HistoryEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "nativeId": {
+          "description": "Missing in older journals; id then identifies the physical byte range.",
+          "type": ["null", "string"]
+        },
+        "parentId": {
+          "type": ["null", "string"]
+        },
+        "sequence": {
+          "type": "number"
+        },
+        "timestamp": {
+          "type": ["null", "number"]
+        },
+        "type": {
+          "type": "string"
+        },
+        "ref": {
+          "$ref": "#/definitions/HistoryByteRef"
+        },
+        "entry": {
+          "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E",
+          "description": "Bounded previews; untrusted detail values require narrowing at their consumer."
+        }
+      },
+      "required": ["entry", "id", "nativeId", "parentId", "ref", "sequence", "timestamp", "type"]
+    },
     "HistoryByteRef": {
       "type": "object",
       "properties": {
@@ -6252,7 +7131,21 @@
       },
       "required": ["digest", "end", "generation", "sourceId", "start"]
     },
-    "HistorySearchMatch": {
+    "HistoryConfiguration_1": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelRecordedAt": {
+          "type": "number"
+        }
+      }
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/history\",{with:{\"resolution-mode\":\"import\"}}).HistorySearchMatch": {
       "type": "object",
       "properties": {
         "id": {
@@ -6321,9 +7214,9 @@
       ]
     },
     "ManagementControl": {
-      "$ref": "#/definitions/ManagementControl_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ManagementControl"
     },
-    "ManagementControl_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ManagementControl": {
       "type": "object",
       "properties": {
         "state": {
@@ -6335,7 +7228,7 @@
         "capabilities": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ManagementAction"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ManagementAction"
           }
         },
         "nextActions": {
@@ -6371,14 +7264,18 @@
       },
       "required": ["capabilities", "nextActions", "runId", "state"]
     },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ManagementAction": {
+      "enum": ["extend", "interrupt", "nudge", "resume", "review", "status"],
+      "type": "string"
+    },
     "ManagementAction": {
       "enum": ["extend", "interrupt", "nudge", "resume", "review", "status"],
       "type": "string"
     },
     "Readonly_3": {
-      "$ref": "#/definitions/Partial%3CRecord%3CManagementAction%2Cstring%3E%3E"
+      "$ref": "#/definitions/Partial%3CRecord%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ManagementAction%2Cstring%3E%3E"
     },
-    "Partial<Record<ManagementAction,string>>": {
+    "Partial<Record<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ManagementAction,string>>": {
       "type": "object",
       "properties": {
         "status": {
@@ -6402,9 +7299,9 @@
       }
     },
     "OwnedRunView": {
-      "$ref": "#/definitions/OwnedRunView_1"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).OwnedRunView"
     },
-    "OwnedRunView_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).OwnedRunView": {
       "type": "object",
       "properties": {
         "state": {
@@ -6456,7 +7353,7 @@
                   "result": {
                     "allOf": [
                       {
-                        "$ref": "#/definitions/Omit%3C_ReadonlyObjectDeep%3CSingleResult%3E%2C%22artifactPaths%22%3E"
+                        "$ref": "#/definitions/Omit%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult%3E%2C%22artifactPaths%22%3E"
                       },
                       {
                         "type": "object",
@@ -6641,7 +7538,7 @@
         "updatedAt"
       ]
     },
-    "Pick<OwnedRunView,\"task\"|\"mode\"|\"state\"|\"cwd\"|\"runId\"|\"updatedAt\"|\"review\"|\"source\"|\"rootRunId\"|\"predecessorRunId\"|\"predecessorIndex\"|\"attention\">": {
+    "Pick<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).OwnedRunView,\"task\"|\"mode\"|\"state\"|\"cwd\"|\"runId\"|\"updatedAt\"|\"review\"|\"source\"|\"rootRunId\"|\"predecessorRunId\"|\"predecessorIndex\"|\"attention\">": {
       "type": "object",
       "properties": {
         "task": {
@@ -6697,13 +7594,128 @@
         "updatedAt"
       ]
     },
-    "HistoryPage_1": {
-      "$ref": "#/definitions/HistoryPage"
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/history\",{with:{\"resolution-mode\":\"import\"}}).HistoryPage": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistoryEntry"
+          }
+        },
+        "count": {
+          "type": "number"
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "previousBefore": {
+          "type": "number"
+        },
+        "previousCursor": {
+          "type": "string"
+        },
+        "nextAfter": {
+          "type": "number"
+        },
+        "sourceId": {
+          "type": ["null", "string"]
+        },
+        "generation": {
+          "type": ["null", "number"]
+        },
+        "sessionId": {
+          "type": ["null", "string"]
+        },
+        "sourceState": {
+          "type": "string"
+        },
+        "configuration": {
+          "$ref": "#/definitions/HistoryConfiguration_1"
+        },
+        "deliveredMessages": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "latestEntryId": {
+          "type": ["null", "string"]
+        },
+        "unreadAfter": {
+          "type": "boolean"
+        },
+        "terminalSequence": {
+          "type": "number"
+        },
+        "finalResultId": {
+          "description": "Canonical answer match, not a truncated-preview comparison.",
+          "type": "string"
+        },
+        "unavailable": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        },
+        "freshness": {
+          "$ref": "#/definitions/HistoryFreshness"
+        }
+      },
+      "required": [
+        "configuration",
+        "count",
+        "deliveredMessages",
+        "entries",
+        "freshness",
+        "generation",
+        "hasMore",
+        "indexedAt",
+        "latestEntryId",
+        "sessionId",
+        "sourceId",
+        "sourceState",
+        "version"
+      ]
     },
-    "HistorySearchPage_1": {
-      "$ref": "#/definitions/HistorySearchPage"
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/history\",{with:{\"resolution-mode\":\"import\"}}).HistorySearchPage": {
+      "type": "object",
+      "properties": {
+        "matches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fhistory%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).HistorySearchMatch"
+          }
+        },
+        "nextCursor": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number"
+        },
+        "indexedAt": {
+          "type": ["null", "number"]
+        },
+        "freshness": {
+          "$ref": "#/definitions/HistoryFreshness"
+        }
+      },
+      "required": ["freshness", "indexedAt", "matches", "version"]
     },
-    "AgentToolResult<Details>": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/@earendil-works/pi-agent-core/dist/types\",{with:{\"resolution-mode\":\"import\"}}).AgentToolResult<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/details\",{with:{\"resolution-mode\":\"import\"}}).Details>": {
       "description": "Final or partial result produced by a tool.",
       "type": "object",
       "properties": {
@@ -6713,10 +7725,10 @@
           "items": {
             "anyOf": [
               {
-                "$ref": "#/definitions/TextContent"
+                "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).TextContent"
               },
               {
-                "$ref": "#/definitions/ImageContent"
+                "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ImageContent"
               }
             ]
           }
@@ -6744,7 +7756,7 @@
       },
       "required": ["content", "details"]
     },
-    "TextContent": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/@earendil-works/pi-ai/dist/types\",{with:{\"resolution-mode\":\"import\"}}).TextContent": {
       "type": "object",
       "properties": {
         "type": {
@@ -6760,7 +7772,7 @@
       },
       "required": ["text", "type"]
     },
-    "ImageContent": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/@earendil-works/pi-ai/dist/types\",{with:{\"resolution-mode\":\"import\"}}).ImageContent": {
       "type": "object",
       "properties": {
         "type": {
@@ -6785,7 +7797,7 @@
         {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/JsonValue_1"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).JsonValue"
           }
         },
         {
@@ -6796,12 +7808,12 @@
         }
       ]
     },
-    "JsonValue_1": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/@earendil-works/pi-ai/dist/types\",{with:{\"resolution-mode\":\"import\"}}).JsonValue": {
       "anyOf": [
         {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/JsonValue_1"
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).JsonValue"
           }
         },
         {
@@ -6812,19 +7824,19 @@
         }
       ]
     },
-    "__type_31": {
+    "__type_35": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "#/definitions/JsonValue_1"
+        "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).JsonValue"
       }
     },
     "JsonObject": {
-      "$ref": "#/definitions/__type_31"
+      "$ref": "#/definitions/__type_35"
     },
     "Usage_4": {
-      "$ref": "#/definitions/Usage_5"
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).Usage"
     },
-    "Usage_5": {
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/@earendil-works/pi-ai/dist/types\",{with:{\"resolution-mode\":\"import\"}}).Usage": {
       "type": "object",
       "properties": {
         "input": {
@@ -6873,6 +7885,513 @@
         }
       },
       "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "totalTokens"]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).RunnerStep": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).RunnerSubagentStep"
+        },
+        {
+          "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ParallelStepGroup"
+        },
+        {
+          "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).DynamicRunnerGroup"
+        }
+      ]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).RunnerSubagentStep": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "outputName": {
+          "type": "string"
+        },
+        "structured": {
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelCandidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubagents": {
+          "type": "boolean"
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mcpDirectTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "completionGuard": {
+          "type": "boolean"
+        },
+        "systemPrompt": {
+          "type": ["null", "string"]
+        },
+        "systemPromptMode": {
+          "enum": ["append", "replace"],
+          "type": "string"
+        },
+        "inheritProjectContext": {
+          "type": "boolean"
+        },
+        "inheritSkills": {
+          "type": "boolean"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outputPath": {
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "const": false,
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "outputMode": {
+          "$ref": "#/definitions/OutputMode"
+        },
+        "outputPathFromAgentDefault": {
+          "type": "boolean"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "maxSubagentDepth": {
+          "type": "number"
+        },
+        "maxExecutionTimeMs": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number"
+        },
+        "structuredOutput": {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E"
+            },
+            "schemaPath": {
+              "type": "string"
+            },
+            "outputPath": {
+              "type": "string"
+            }
+          },
+          "required": ["outputPath", "schema", "schemaPath"]
+        },
+        "structuredOutputSchema": {
+          "$ref": "#/definitions/JsonSchemaObject"
+        },
+        "effectiveAcceptance": {
+          "$ref": "#/definitions/ResolvedAcceptanceConfig_1"
+        },
+        "launch": {
+          "$ref": "#/definitions/SavedLaunchConfig"
+        }
+      },
+      "required": ["agent", "inheritProjectContext", "inheritSkills", "task"]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).ParallelStepGroup": {
+      "type": "object",
+      "properties": {
+        "parallel": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).RunnerSubagentStep"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "concurrency": {
+          "type": "number"
+        },
+        "failFast": {
+          "type": "boolean"
+        },
+        "worktree": {
+          "type": "boolean"
+        }
+      },
+      "required": ["parallel"]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/shared/types/workflow\",{with:{\"resolution-mode\":\"import\"}}).DynamicRunnerGroup": {
+      "type": "object",
+      "properties": {
+        "expand": {
+          "$ref": "#/definitions/DynamicExpandSpec"
+        },
+        "parallel": {
+          "$ref": "#/definitions/RunnerSubagentStep"
+        },
+        "collect": {
+          "$ref": "#/definitions/DynamicCollectSpec"
+        },
+        "concurrency": {
+          "type": "number"
+        },
+        "failFast": {
+          "type": "boolean"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "sessionFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["collect", "expand", "parallel"]
+    },
+    "DynamicExpandSpec": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "object",
+          "properties": {
+            "output": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": ["output", "path"]
+        },
+        "item": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "maxItems": {
+          "type": "number"
+        },
+        "onEmpty": {
+          "enum": ["fail", "skip"],
+          "type": "string"
+        }
+      },
+      "required": ["from"]
+    },
+    "RunnerSubagentStep": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "outputName": {
+          "type": "string"
+        },
+        "structured": {
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelCandidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubagents": {
+          "type": "boolean"
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mcpDirectTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "completionGuard": {
+          "type": "boolean"
+        },
+        "systemPrompt": {
+          "type": ["null", "string"]
+        },
+        "systemPromptMode": {
+          "enum": ["append", "replace"],
+          "type": "string"
+        },
+        "inheritProjectContext": {
+          "type": "boolean"
+        },
+        "inheritSkills": {
+          "type": "boolean"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outputPath": {
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "const": false,
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "outputMode": {
+          "$ref": "#/definitions/OutputMode"
+        },
+        "outputPathFromAgentDefault": {
+          "type": "boolean"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "maxSubagentDepth": {
+          "type": "number"
+        },
+        "maxExecutionTimeMs": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number"
+        },
+        "structuredOutput": {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E"
+            },
+            "schemaPath": {
+              "type": "string"
+            },
+            "outputPath": {
+              "type": "string"
+            }
+          },
+          "required": ["outputPath", "schema", "schemaPath"]
+        },
+        "structuredOutputSchema": {
+          "$ref": "#/definitions/JsonSchemaObject"
+        },
+        "effectiveAcceptance": {
+          "$ref": "#/definitions/ResolvedAcceptanceConfig_1"
+        },
+        "launch": {
+          "$ref": "#/definitions/SavedLaunchConfig"
+        }
+      },
+      "required": ["agent", "inheritProjectContext", "inheritSkills", "task"]
+    },
+    "DynamicCollectSpec": {
+      "type": "object",
+      "properties": {
+        "as": {
+          "type": "string"
+        },
+        "outputSchema": {
+          "$ref": "#/definitions/JsonSchemaObject"
+        }
+      },
+      "required": ["as"]
+    },
+    "FinalizationReportRuntime": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fnode_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fruns%2Fshared%2Fstructured-output%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).StructuredOutputRuntime%3E"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "publicOutputSchema": {
+              "$ref": "#/definitions/JsonSchemaObject"
+            }
+          }
+        }
+      ]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/runs/shared/structured-output\",{with:{\"resolution-mode\":\"import\"}}).StructuredOutputRuntime>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "schema": {
+          "$ref": "#/definitions/JsonSchemaObject_1"
+        },
+        "schemaPath": {
+          "type": "string"
+        },
+        "outputPath": {
+          "type": "string"
+        }
+      },
+      "required": ["outputPath", "schema", "schemaPath"]
+    },
+    "__type_36": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "additionalProperties": {},
+      "type": "object"
+    },
+    "JsonSchemaObject_1": {
+      "$ref": "#/definitions/__type_36"
+    },
+    "StructuredOutputRuntime": {
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fruns%2Fshared%2Fstructured-output%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).StructuredOutputRuntime"
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/runs/shared/structured-output\",{with:{\"resolution-mode\":\"import\"}}).StructuredOutputRuntime": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E"
+        },
+        "schemaPath": {
+          "type": "string"
+        },
+        "outputPath": {
+          "type": "string"
+        }
+      },
+      "required": ["outputPath", "schema", "schemaPath"]
+    },
+    "SingleOutputSnapshot": {
+      "$ref": "#/definitions/import(%22%2Fprivate%2Fvar%2Ffolders%2F_x%2Fwn2r0t5n66123_vzb9cty7nw0000gn%2FT%2Fpi-subagents-uid-501%2Fworktrees%2Fpi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0%2Fsrc%2Fruns%2Fshared%2Fsingle-output%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleOutputSnapshot"
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/runs/shared/single-output\",{with:{\"resolution-mode\":\"import\"}}).SingleOutputSnapshot": {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "mtimeMs": {
+          "type": "number"
+        },
+        "ctimeMs": {
+          "type": "number"
+        },
+        "size": {
+          "type": "number"
+        },
+        "ino": {
+          "type": "number"
+        }
+      },
+      "required": ["exists"]
+    },
+    "import(\"/private/var/folders/_x/wn2r0t5n66123_vzb9cty7nw0000gn/T/pi-subagents-uid-501/worktrees/pi-worktree-ad393d6f-e866-43cf-b1d0-0ac65c98fddd-s0-0/src/runs/shared/acceptance-submission\",{with:{\"resolution-mode\":\"import\"}}).FinalizationReportSubmission": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "structuredOutput": {},
+        "report": {
+          "$ref": "#/definitions/AcceptanceReport"
+        },
+        "reportSubmissionError": {
+          "type": "string"
+        },
+        "unconfirmedOutput": {
+          "type": "string"
+        }
+      },
+      "required": ["output"]
+    },
+    "SingleOutputResolution": {
+      "type": "object",
+      "properties": {
+        "fullOutput": {
+          "type": "string"
+        },
+        "savedPath": {
+          "type": "string"
+        },
+        "saveError": {
+          "type": "string"
+        },
+        "writtenSnapshot": {
+          "$ref": "#/definitions/SingleOutputSnapshot"
+        }
+      },
+      "required": ["fullOutput"]
     }
   }
 }

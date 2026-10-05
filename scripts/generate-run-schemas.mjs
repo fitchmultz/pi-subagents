@@ -20,10 +20,22 @@ if (mode === "--help" || mode === "-h") {
     "src/shared/types/questions.ts",
     "src/shared/types/history.ts",
     "src/shared/types/details.ts",
+    "src/runs/background/runner-config.ts",
+    "src/runs/shared/native-finalization-types.ts",
   ].map((file) => path.join(root, file));
   const program = TJS.getProgramFromFiles(
     inputs,
-    { strict: true, noImplicitReturns: true, skipLibCheck: true },
+    {
+      strict: true,
+      noImplicitReturns: true,
+      skipLibCheck: true,
+      target: "ESNext",
+      lib: ["ESNext"],
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      allowImportingTsExtensions: true,
+      resolveJsonModule: true,
+    },
     root,
   );
   const generator = TJS.buildGenerator(program, {
@@ -55,6 +67,9 @@ if (mode === "--help" || mode === "-h") {
     "HistoryResult",
     "Details",
     "SubagentExecutionResult",
+    "SubagentRunConfig",
+    "NativeFinalizationConfig",
+    "NativeFinalizationEvent",
   ];
   const schema = generator.getSchemaForSymbols(names);
   const target = path.join(root, "src/runs/background/schemas/RunContracts.json");

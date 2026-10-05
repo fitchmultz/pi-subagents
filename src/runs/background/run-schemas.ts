@@ -1,6 +1,11 @@
 import { Ajv } from "ajv";
 import { validateStatusForSummary } from "./async-status-validation.ts";
 import { isRecord } from "./async-value.ts";
+import type { SubagentRunConfig } from "./runner-config.ts";
+import type {
+  NativeFinalizationConfig,
+  NativeFinalizationEvent,
+} from "../shared/native-finalization-types.ts";
 import runSchema from "./schemas/RunContracts.json" with { type: "json" };
 import type {
   AsyncStatus,
@@ -67,6 +72,37 @@ const details = validator.compile<Details>({ $ref: "run#/definitions/Details" })
 const executionResult = validator.compile<SubagentExecutionResult>({
   $ref: "run#/definitions/SubagentExecutionResult",
 });
+
+const runnerConfig = validator.compile<SubagentRunConfig>({
+  $ref: "run#/definitions/SubagentRunConfig",
+});
+const finalizationConfig = validator.compile<NativeFinalizationConfig>({
+  $ref: "run#/definitions/NativeFinalizationConfig",
+});
+const finalizationEvent = validator.compile<NativeFinalizationEvent>({
+  $ref: "run#/definitions/NativeFinalizationEvent",
+});
+
+export function parseNativeFinalizationConfig(value: unknown): NativeFinalizationConfig {
+  if (!finalizationConfig(value)) {
+    throw new SyntaxError("Invalid native finalization configuration");
+  }
+  return value;
+}
+
+export function parseNativeFinalizationEvent(value: unknown): NativeFinalizationEvent {
+  if (!finalizationEvent(value)) {
+    throw new SyntaxError("Invalid native finalization boundary");
+  }
+  return value;
+}
+
+export function parseSubagentRunConfig(value: unknown): SubagentRunConfig {
+  if (!runnerConfig(value)) {
+    throw new Error(`Invalid runner config: ${validator.errorsText(runnerConfig.errors)}.`);
+  }
+  return value;
+}
 
 export function parseDetails(value: unknown): Details {
   if (!details(value)) {
