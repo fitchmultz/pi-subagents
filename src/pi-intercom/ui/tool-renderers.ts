@@ -1,13 +1,9 @@
 import { keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type {
-  ContactSupervisorToolParams,
-  IntercomToolParams,
-  ToolRenderContext,
-} from "../runtime-types.ts";
+import type { ToolRenderContext } from "../runtime-types.ts";
 import { previewText } from "../message-format.ts";
 import { firstTextContent } from "../tool-results.ts";
-import { isRecord } from "../validation.ts";
+import { isRecord, isUnknownArray } from "../validation.ts";
 interface RenderResult {
   readonly content?: readonly { readonly type: string; readonly text?: string }[];
   readonly details?: unknown;
@@ -28,10 +24,11 @@ function contactColor(reason: string): "warning" | "muted" | "accent" {
   }
   return reason === "progress_update" ? "muted" : "accent";
 }
-export function renderContactCall(args: ContactSupervisorToolParams, theme: Theme): Text {
-  const reason = args.reason;
-  const preview = previewText(args.message, 96);
-  const interview = isRecord(args.interview) ? args.interview : undefined;
+export function renderContactCall(args: unknown, theme: Theme): Text {
+  const record = isRecord(args) ? args : {};
+  const reason = typeof record.reason === "string" ? record.reason : "contact";
+  const preview = previewText(record.message, 96);
+  const interview = isRecord(record.interview) ? record.interview : undefined;
   let text =
     theme.fg("toolTitle", theme.bold("contact_supervisor ")) +
     theme.fg(contactColor(reason), reason);
@@ -67,20 +64,20 @@ export function renderContactResult(
   }
   return new Text(text, 0, 0);
 }
-function actionColor(action: IntercomToolParams["action"]): "warning" | "success" | "accent" {
+function actionColor(action: string): "warning" | "success" | "accent" {
   if (action === "ask") {
     return "warning";
   }
   return action === "reply" ? "success" : "accent";
 }
-export function renderIntercomCall(args: IntercomToolParams, theme: Theme): Text {
-  const target = args.to?.trim();
-  const preview = previewText(args.message, 96);
-  const count = args.attachments?.length ?? 0;
-  let text =
-    theme.fg("toolTitle", theme.bold("intercom ")) +
-    theme.fg(actionColor(args.action), args.action);
-  if (target !== undefined && target !== "") {
+export function renderIntercomCall(args: unknown, theme: Theme): Text {
+  const record = isRecord(args) ? args : {};
+  const action = typeof record.action === "string" ? record.action : "intercom";
+  const target = typeof record.to === "string" ? record.to.trim() : "";
+  const preview = previewText(record.message, 96);
+  const count = isUnknownArray(record.attachments) ? record.attachments.length : 0;
+  let text = theme.fg("toolTitle", theme.bold("intercom ")) + theme.fg(actionColor(action), action);
+  if (target !== "") {
     text += ` ${theme.fg("muted", "→")} ${theme.fg("accent", target)}`;
   }
   if (count > 0) {

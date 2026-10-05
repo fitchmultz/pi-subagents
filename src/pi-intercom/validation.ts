@@ -1,5 +1,3 @@
-import { format } from "node:util";
-
 /** JSON objects are untrusted at the broker and journal boundaries. */
 export function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -13,10 +11,26 @@ export function errorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
-  if (typeof error === "string") {
-    return error;
+  if (error === null) {
+    return "null";
   }
-  return format("%s", error);
+  switch (typeof error) {
+    case "string":
+      return error;
+    case "undefined":
+      return "undefined";
+    case "boolean":
+    case "number":
+    case "bigint":
+    case "symbol":
+      return String(error);
+    case "object":
+    case "function":
+      // Do not inspect arbitrary thrown objects: they can contain private state.
+      return Object.prototype.toString.call(error);
+    default:
+      return "Unknown error";
+  }
 }
 
 export function asError(error: unknown): Error {
