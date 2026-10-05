@@ -2,127 +2,87 @@
  * Chain behavior, template resolution, and directory management
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentConfig } from "../agents/agents.ts";
+import type { AgentConfig } from "./types/config.ts";
+import type {
+  ChainStep,
+  ParallelStep,
+  DynamicParallelStep,
+  ParallelTaskItem,
+  ResolvedStepBehavior,
+  StepOverrides,
+} from "./types/workflow.ts";
+export type {
+  ChainStep,
+  ParallelStep,
+  DynamicParallelStep,
+  ParallelTaskItem,
+  ResolvedStepBehavior,
+  StepOverrides,
+  DynamicExpandSpec,
+  DynamicParallelTemplate,
+  DynamicCollectSpec,
+  SequentialStep,
+} from "./types/workflow.ts";
+import type { ReadonlyInput } from "./types/inputs.ts";
 import { normalizeSkillInput } from "../agents/skills.ts";
-import {
-  CHAIN_RUNS_DIR,
-  type AcceptanceInput,
-  type JsonSchemaObject,
-  type OutputMode,
-} from "./types.ts";
-import { ensureSafeTempPath, ensureTempRoot } from "./temp-root.ts";
-const CHAIN_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const INITIAL_PROGRESS_CONTENT =
-  "# Progress\n\n## Status\nIn Progress\n\n## Tasks\n\n## Files Changed\n\n## Notes\n";
+export {
+  createChainDir,
+  removeChainDir,
+  cleanupOldChainDirs,
+  writeInitialProgressFile,
+} from "./chain-files.ts";
+export {
+  resolveTaskTextForFileUpdatePolicy,
+  taskDisallowsFileUpdates,
+  suppressProgressForReadOnlyTask,
+} from "./task-file-policy.ts";
 
 // =============================================================================
 // Behavior Resolution Types
 // =============================================================================
 
-export interface ResolvedStepBehavior {
-  output: string | false;
-  outputMode: OutputMode;
-  reads: string[] | false;
-  progress: boolean;
-  skills: string[] | false;
-  model?: string;
-}
-
-export type StepOverrides = Partial<ResolvedStepBehavior>;
-
 function normalizeOutputOverride(output: string | false | undefined): string | false | undefined {
   return output === "false" ? false : output;
+}
+
+function resolveStepSkills(
+  agentSkills: readonly string[] | undefined,
+  overrideSkills: readonly string[] | false | undefined,
+  chainSkills: readonly string[] | false | undefined,
+): string[] | false {
+  if (chainSkills === false || overrideSkills === false) {
+    return false;
+  }
+  const skills = [...(overrideSkills ?? agentSkills ?? [])];
+  return chainSkills !== undefined && chainSkills.length > 0
+    ? [...new Set([...skills, ...chainSkills])]
+    : skills;
 }
 
 // =============================================================================
 // Chain Step Types
 // =============================================================================
 
-/** Sequential step: single agent execution */
-export interface SequentialStep {
-  agent: string;
-  task?: string;
-  phase?: string;
-  label?: string;
-  as?: string;
-  outputSchema?: JsonSchemaObject;
-  cwd?: string;
-  output?: string | false;
-  outputMode?: OutputMode;
-  outputFromAgentDefault?: boolean;
-  reads?: string[] | false;
-  progress?: boolean;
-  skill?: string | string[] | false;
-  model?: string;
-  acceptance?: AcceptanceInput;
-}
-
-/** Parallel task item within a parallel step */
-export interface ParallelTaskItem extends SequentialStep {
-  count?: number;
-}
-
-export interface DynamicExpandSpec {
-  from: {
-    output: string;
-    path: string;
-  };
-  item?: string;
-  key?: string;
-  maxItems?: number;
-  onEmpty?: "skip" | "fail";
-}
-
-export type DynamicParallelTemplate = Omit<ParallelTaskItem, "as" | "count">;
-
-export interface DynamicCollectSpec {
-  as: string;
-  outputSchema?: JsonSchemaObject;
-}
-
-export interface DynamicParallelStep {
-  expand: DynamicExpandSpec;
-  parallel: DynamicParallelTemplate;
-  collect: DynamicCollectSpec;
-  concurrency?: number;
-  failFast?: boolean;
-  phase?: string;
-  label?: string;
-}
-
-/** Parallel step: multiple agents running concurrently */
-export interface ParallelStep {
-  parallel: ParallelTaskItem[];
-  concurrency?: number;
-  failFast?: boolean;
-  worktree?: boolean;
-  cwd?: string;
-}
-
-/** Union type for chain steps */
-export type ChainStep = SequentialStep | ParallelStep | DynamicParallelStep;
-
-// =============================================================================
 // Type Guards
 // =============================================================================
 
-export function isParallelStep(step: ChainStep): step is ParallelStep {
-  return "parallel" in step && Array.isArray((step as ParallelStep).parallel);
+export function isParallelStep(
+  step: ReadonlyInput<ChainStep>,
+): step is ReadonlyInput<ParallelStep> {
+  return "parallel" in step && Array.isArray(step.parallel);
 }
 
-export function isDynamicParallelStep(step: ChainStep): step is DynamicParallelStep {
+export function isDynamicParallelStep(
+  step: ReadonlyInput<ChainStep>,
+): step is ReadonlyInput<DynamicParallelStep> {
   return (
-    "expand" in step &&
-    "collect" in step &&
-    "parallel" in step &&
-    !Array.isArray((step as { parallel?: unknown }).parallel)
+    "expand" in step && "collect" in step && "parallel" in step && !Array.isArray(step.parallel)
   );
 }
 
 /** Get all agent names in a step (single for sequential, multiple for parallel) */
-export function getStepAgents(step: ChainStep): string[] {
+export function getStepAgents(step: ReadonlyInput<ChainStep>): string[] {
   if (isParallelStep(step)) {
     return step.parallel.map((t) => t.agent);
   }
@@ -132,13 +92,15 @@ export function getStepAgents(step: ChainStep): string[] {
   return [step.agent];
 }
 
-export function collectInvocationAgentNames(params: {
-  agent?: string;
-  tasks?: Array<{ agent: string }>;
-  chain?: ChainStep[];
-}): string[] {
+export function collectInvocationAgentNames(
+  params: ReadonlyInput<{
+    agent?: string;
+    tasks?: Array<{ agent: string }>;
+    chain?: ChainStep[];
+  }>,
+): string[] {
   const names: string[] = [];
-  if (params.agent) {
+  if (params.agent !== undefined && params.agent.length > 0) {
     names.push(params.agent);
   }
   for (const task of params.tasks ?? []) {
@@ -154,52 +116,6 @@ export function collectInvocationAgentNames(params: {
 // Chain Directory Management
 // =============================================================================
 
-export function createChainDir(runId: string, baseDir?: string, cwd = process.cwd()): string {
-  if (!baseDir) {
-    ensureTempRoot();
-  }
-  const chainDir = path.join(baseDir ? path.resolve(cwd, baseDir) : CHAIN_RUNS_DIR, runId);
-  if (!baseDir) {
-    ensureSafeTempPath(chainDir);
-  }
-  fs.mkdirSync(chainDir, { recursive: true });
-  return chainDir;
-}
-
-export function removeChainDir(chainDir: string): void {
-  try {
-    fs.rmSync(chainDir, { recursive: true });
-  } catch {
-    // Chain cleanup is best-effort. Runs can already have cleaned their temp dir.
-  }
-}
-
-export async function cleanupOldChainDirs(): Promise<void> {
-  ensureSafeTempPath(CHAIN_RUNS_DIR);
-  const now = Date.now();
-  let dirs: string[];
-  try {
-    dirs = await fs.promises.readdir(CHAIN_RUNS_DIR);
-  } catch {
-    // Startup cleanup is best-effort. If the scoped temp root is unreadable,
-    // skip cleanup instead of failing extension startup.
-    return;
-  }
-
-  for (const dir of dirs) {
-    try {
-      const dirPath = path.join(CHAIN_RUNS_DIR, dir);
-      const stat = await fs.promises.lstat(dirPath);
-      if (stat.isDirectory() && now - stat.mtimeMs > CHAIN_DIR_MAX_AGE_MS) {
-        await fs.promises.rm(dirPath, { recursive: true });
-      }
-    } catch {
-      // Skip directories that can't be processed; continue with others
-    }
-  }
-}
-
-// =============================================================================
 // Template Resolution
 // =============================================================================
 
@@ -210,12 +126,12 @@ export type ResolvedTemplates = (string | string[])[];
  * Resolve templates for a chain with parallel step support.
  * Returns string for sequential steps, string[] for parallel steps.
  */
-export function resolveChainTemplates(steps: ChainStep[]): ResolvedTemplates {
+export function resolveChainTemplates(steps: readonly ChainStep[]): ResolvedTemplates {
   return steps.map((step, i) => {
     if (isParallelStep(step)) {
       // Parallel step: resolve each task's template
       return step.parallel.map((task) => {
-        if (task.task) {
+        if (task.task !== undefined && task.task.length > 0) {
           return task.task;
         }
         // Default for parallel tasks is {previous}
@@ -226,8 +142,8 @@ export function resolveChainTemplates(steps: ChainStep[]): ResolvedTemplates {
       return step.parallel.task ?? "{previous}";
     }
     // Sequential step: existing logic
-    const seq = step as SequentialStep;
-    if (seq.task) {
+    const seq = step;
+    if (seq.task !== undefined && seq.task.length > 0) {
       return seq.task;
     }
     // Default: first step uses {task}, others use {previous}
@@ -246,7 +162,7 @@ export function resolveChainTemplates(steps: ChainStep[]): ResolvedTemplates {
 export function resolveStepBehavior(
   agentConfig: AgentConfig,
   stepOverrides: StepOverrides,
-  chainSkills?: string[] | false,
+  chainSkills?: readonly string[] | false,
 ): ResolvedStepBehavior {
   // Output: step override > frontmatter > false (no output)
   const stepOutput = normalizeOutputOverride(stepOverrides.output);
@@ -263,61 +179,13 @@ export function resolveStepBehavior(
       ? stepOverrides.progress
       : (agentConfig.defaultProgress ?? false);
 
-  let skills: string[] | false;
-  if (chainSkills === false || stepOverrides.skills === false) {
-    skills = false;
-  } else if (stepOverrides.skills !== undefined) {
-    skills = [...stepOverrides.skills];
-    if (chainSkills && chainSkills.length > 0) {
-      skills = [...new Set([...skills, ...chainSkills])];
-    }
-  } else {
-    skills = agentConfig.skills ? [...agentConfig.skills] : [];
-    if (chainSkills && chainSkills.length > 0) {
-      skills = [...new Set([...skills, ...chainSkills])];
-    }
-  }
+  const skills = resolveStepSkills(agentConfig.skills, stepOverrides.skills, chainSkills);
 
   const outputMode = stepOverrides.outputMode ?? "inline";
   const model = stepOverrides.model ?? agentConfig.model;
   return { output, outputMode, reads, progress, skills, model };
 }
 
-export function resolveTaskTextForFileUpdatePolicy(
-  task: string | undefined,
-  originalTask?: string,
-): string | undefined {
-  if (!task) {
-    return originalTask;
-  }
-  return originalTask ? task.replaceAll("{task}", () => originalTask) : task;
-}
-
-export function taskDisallowsFileUpdates(task: string | undefined): boolean {
-  if (!task) {
-    return false;
-  }
-  return (
-    /\breview[- ]only\b/i.test(task) ||
-    /\bread[- ]only\s+(?:review|audit|inspection|pass)\b/i.test(task) ||
-    /\b(?:no|without)\s+(?:file\s+)?edits?\b/i.test(task) ||
-    /\b(?:do not|don't|must not)\s+(?:edit|modify|write|touch)\b/i.test(task) ||
-    /\bleave\s+files?\s+unchanged\b/i.test(task)
-  );
-}
-
-export function suppressProgressForReadOnlyTask(
-  behavior: ResolvedStepBehavior,
-  task: string | undefined,
-  originalTask?: string,
-): ResolvedStepBehavior {
-  const policyTask = resolveTaskTextForFileUpdatePolicy(task, originalTask);
-  return behavior.progress && taskDisallowsFileUpdates(policyTask)
-    ? { ...behavior, progress: false }
-    : behavior;
-}
-
-// =============================================================================
 // Chain Instruction Injection
 // =============================================================================
 
@@ -332,20 +200,6 @@ function resolveChainPath(filePath: string, chainDir: string): string {
  * Build chain instructions from resolved behavior.
  * These are appended to the task to tell the agent what to read/write.
  */
-export function writeInitialProgressFile(progressDir: string): void {
-  fs.mkdirSync(progressDir, { recursive: true });
-  try {
-    fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT, {
-      encoding: "utf-8",
-      flag: "wx",
-    });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
-    }
-  }
-}
-
 export function buildChainInstructions(
   behavior: ResolvedStepBehavior,
   chainDir: string,
@@ -355,13 +209,13 @@ export function buildChainInstructions(
   const suffixParts: string[] = [];
 
   // READS - prepend to override any hardcoded filenames in task text
-  if (behavior.reads && behavior.reads.length > 0) {
+  if (behavior.reads !== false && behavior.reads.length > 0) {
     const files = behavior.reads.map((f) => resolveChainPath(f, chainDir));
     prefixParts.push(`[Read from: ${files.join(", ")}]`);
   }
 
   // OUTPUT - prepend so agent knows where to write
-  if (behavior.output) {
+  if (behavior.output !== false && behavior.output.length > 0) {
     const outputPath = resolveChainPath(behavior.output, chainDir);
     prefixParts.push(`[Write to: ${outputPath}]`);
   }
@@ -392,10 +246,10 @@ export function buildChainInstructions(
  * Creates namespaced output paths to avoid collisions.
  */
 export function resolveParallelBehaviors(
-  tasks: ParallelTaskItem[],
-  agentConfigs: AgentConfig[],
+  tasks: readonly ParallelTaskItem[],
+  agentConfigs: readonly AgentConfig[],
   stepIndex: number,
-  chainSkills?: string[] | false,
+  chainSkills?: readonly string[] | false,
 ): ResolvedStepBehavior[] {
   return tasks.map((task, taskIndex) => {
     const config = agentConfigs.find((a) => a.name === task.agent);
@@ -428,11 +282,12 @@ export function namespaceParallelOutput(
   stepIndex: number,
   taskIndex: number,
 ): string | false {
-  return output
-    ? path.isAbsolute(output)
-      ? output
-      : path.join(`parallel-${stepIndex}`, `${taskIndex}-${agent}`, output)
-    : false;
+  if (output === undefined || output === false || output.length === 0) {
+    return false;
+  }
+  return path.isAbsolute(output)
+    ? output
+    : path.join(`parallel-${stepIndex}`, `${taskIndex}-${agent}`, output);
 }
 
 export type { ParallelTaskResult } from "../runs/shared/parallel-utils.ts";

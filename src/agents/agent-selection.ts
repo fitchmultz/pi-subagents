@@ -1,10 +1,10 @@
-import type { AgentScope, AgentConfig } from "./agents.ts";
+import type { AgentScope, AgentConfig } from "../shared/types/config.ts";
 
 export function mergeAgentsForScope(
   scope: AgentScope,
-  userAgents: AgentConfig[],
-  projectAgents: AgentConfig[],
-  builtinAgents: AgentConfig[] = [],
+  userAgents: readonly AgentConfig[],
+  projectAgents: readonly AgentConfig[],
+  builtinAgents: readonly AgentConfig[] = [],
 ): AgentConfig[] {
   const agentMap = new Map<string, AgentConfig>();
 

@@ -1,7 +1,7 @@
-import type { AgentConfig } from "./agents.ts";
+import type { AgentConfig } from "../shared/types/config.ts";
 import { frontmatterNameForConfig } from "./identity.ts";
 
-export const KNOWN_FIELDS = new Set([
+export const KNOWN_FIELDS: ReadonlySet<string> = new Set([
   "name",
   "package",
   "description",
@@ -26,112 +26,65 @@ export const KNOWN_FIELDS = new Set([
   "maxTokens",
   "completionGuard",
 ]);
-
-function joinComma(values: string[] | undefined): string | undefined {
-  if (!values || values.length === 0) {
-    return undefined;
-  }
-  return values.join(", ");
+function stringLine(field: string, value: string | undefined): string[] {
+  return value !== undefined && value.length > 0 ? [`${field}: ${value}`] : [];
 }
-
+function listLine(field: string, values: readonly string[] | undefined): string[] {
+  return values !== undefined && values.length > 0 ? [`${field}: ${values.join(", ")}`] : [];
+}
+function limitLine(field: string, value: number | undefined, minimum: number): string[] {
+  return value !== undefined && Number.isInteger(value) && value >= minimum
+    ? [`${field}: ${value}`]
+    : [];
+}
+function identityLines(config: AgentConfig): string[] {
+  return [
+    `name: ${frontmatterNameForConfig(config)}`,
+    ...stringLine("package", config.packageName),
+    `description: ${config.description}`,
+  ];
+}
+function modelAndContextLines(config: AgentConfig): string[] {
+  return [
+    ...stringLine("model", config.model),
+    ...listLine("fallbackModels", config.fallbackModels),
+    ...stringLine("thinking", config.thinking === "off" ? undefined : config.thinking),
+    `systemPromptMode: ${config.systemPromptMode}`,
+    `inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`,
+    `inheritSkills: ${config.inheritSkills ? "true" : "false"}`,
+    ...stringLine("defaultContext", config.defaultContext),
+  ];
+}
+function resourceLines(config: AgentConfig): string[] {
+  return [
+    ...listLine("skills", config.skills),
+    ...(config.extensions === undefined ? [] : [`extensions: ${config.extensions.join(", ")}`]),
+    ...stringLine("output", config.output),
+    ...listLine("defaultReads", config.defaultReads),
+    ...(config.defaultProgress === true ? ["defaultProgress: true"] : []),
+    ...(config.interactive === true ? ["interactive: true"] : []),
+    ...limitLine("maxSubagentDepth", config.maxSubagentDepth, 0),
+    ...limitLine("maxExecutionTimeMs", config.maxExecutionTimeMs, 1),
+    ...limitLine("maxTokens", config.maxTokens, 1),
+    ...(config.completionGuard === undefined ? [] : [`completionGuard: ${config.completionGuard}`]),
+  ];
+}
 export function serializeAgent(config: AgentConfig): string {
-  const lines: string[] = [];
-  lines.push("---");
-  lines.push(`name: ${frontmatterNameForConfig(config)}`);
-  if (config.packageName) {
-    lines.push(`package: ${config.packageName}`);
-  }
-  lines.push(`description: ${config.description}`);
-
   const tools = [
     ...(config.tools ?? []),
     ...(config.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
   ];
-  const toolsValue = joinComma(tools);
-  if (toolsValue) {
-    lines.push(`tools: ${toolsValue}`);
-  }
-  if (config.allowSubagents) {
-    lines.push("allowSubagents: true");
-  }
-
-  if (config.model) {
-    lines.push(`model: ${config.model}`);
-  }
-  const fallbackModelsValue = joinComma(config.fallbackModels);
-  if (fallbackModelsValue) {
-    lines.push(`fallbackModels: ${fallbackModelsValue}`);
-  }
-  if (config.thinking && config.thinking !== "off") {
-    lines.push(`thinking: ${config.thinking}`);
-  }
-  lines.push(`systemPromptMode: ${config.systemPromptMode}`);
-  lines.push(`inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`);
-  lines.push(`inheritSkills: ${config.inheritSkills ? "true" : "false"}`);
-  if (config.defaultContext) {
-    lines.push(`defaultContext: ${config.defaultContext}`);
-  }
-
-  const skillsValue = joinComma(config.skills);
-  if (skillsValue) {
-    lines.push(`skills: ${skillsValue}`);
-  }
-
-  if (config.extensions !== undefined) {
-    const extensionsValue = joinComma(config.extensions);
-    lines.push(`extensions: ${extensionsValue ?? ""}`);
-  }
-
-  if (config.output) {
-    lines.push(`output: ${config.output}`);
-  }
-
-  const readsValue = joinComma(config.defaultReads);
-  if (readsValue) {
-    lines.push(`defaultReads: ${readsValue}`);
-  }
-
-  if (config.defaultProgress) {
-    lines.push("defaultProgress: true");
-  }
-  if (config.interactive) {
-    lines.push("interactive: true");
-  }
-  const maxSubagentDepth = config.maxSubagentDepth;
-  if (
-    typeof maxSubagentDepth === "number" &&
-    Number.isInteger(maxSubagentDepth) &&
-    maxSubagentDepth >= 0
-  ) {
-    lines.push(`maxSubagentDepth: ${maxSubagentDepth}`);
-  }
-  const maxExecutionTimeMs = config.maxExecutionTimeMs;
-  if (
-    typeof maxExecutionTimeMs === "number" &&
-    Number.isInteger(maxExecutionTimeMs) &&
-    maxExecutionTimeMs >= 1
-  ) {
-    lines.push(`maxExecutionTimeMs: ${maxExecutionTimeMs}`);
-  }
-  const maxTokens = config.maxTokens;
-  if (typeof maxTokens === "number" && Number.isInteger(maxTokens) && maxTokens >= 1) {
-    lines.push(`maxTokens: ${maxTokens}`);
-  }
-  if (config.completionGuard !== undefined) {
-    lines.push(`completionGuard: ${config.completionGuard}`);
-  }
-
-  if (config.extraFields) {
-    for (const [key, value] of Object.entries(config.extraFields)) {
-      if (KNOWN_FIELDS.has(key)) {
-        continue;
-      }
-      lines.push(`${key}: ${value}`);
-    }
-  }
-
-  lines.push("---");
-
-  const body = config.systemPrompt ?? "";
-  return `${lines.join("\n")}\n\n${body}\n`;
+  const lines = [
+    "---",
+    ...identityLines(config),
+    ...listLine("tools", tools),
+    ...(config.allowSubagents === true ? ["allowSubagents: true"] : []),
+    ...modelAndContextLines(config),
+    ...resourceLines(config),
+    ...Object.entries(config.extraFields ?? {})
+      .filter(([key]) => !KNOWN_FIELDS.has(key))
+      .map(([key, value]) => `${key}: ${value}`),
+    "---",
+  ];
+  return `${lines.join("\n")}\n\n${config.systemPrompt}\n`;
 }

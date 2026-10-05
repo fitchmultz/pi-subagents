@@ -1,5 +1,5 @@
 export function parseFrontmatter(content: string): {
-  frontmatter: Record<string, string>;
+  frontmatter: Partial<Record<string, string>>;
   body: string;
 } {
   const frontmatter: Record<string, string> = {};
