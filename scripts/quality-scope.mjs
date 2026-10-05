@@ -193,7 +193,7 @@ function checkDeclaredType(directory, type, names) {
       ts.ScriptTarget.Latest,
       true,
     );
-    const declarations = new Set();
+    const declarations = new Map();
     function visit(node) {
       if (
         (ts.isClassDeclaration(node) ||
@@ -201,7 +201,7 @@ function checkDeclaredType(directory, type, names) {
           ts.isTypeAliasDeclaration(node)) &&
         node.name !== undefined
       ) {
-        declarations.add(node.name.text);
+        declarations.set(node.name.text, node);
       }
       ts.forEachChild(node, visit);
     }
@@ -209,8 +209,14 @@ function checkDeclaredType(directory, type, names) {
     names.set(path, declarations);
   }
   for (const name of [type.name].flat()) {
-    if (!names.get(path).has(name)) {
+    const declaration = names.get(path).get(name);
+    if (declaration === undefined) {
       throw new Error(`Qualified readonly declaration does not exist: ${type.path}#${name}`);
+    }
+    if (ts.isTypeAliasDeclaration(declaration) && declaration.typeParameters?.length > 0) {
+      throw new Error(
+        `Generic readonly alias is not an approved fixed contract: ${type.path}#${name}`,
+      );
     }
   }
 }

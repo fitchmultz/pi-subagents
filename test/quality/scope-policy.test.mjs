@@ -236,6 +236,18 @@ await test("scope rejects nonexistent owners, nonexistent origins and missing na
       () => checkScope(dir),
       /Qualified readonly declaration does not exist: .*#NonexistentOwner/,
     );
+    put(dir, boundary, `${source}\nexport type GenericPayload<T> = { values: T[] };\n`);
+    const generic = structuredClone(config);
+    generic.rules["typescript/prefer-readonly-parameter-types"][1].allow.push({
+      from: "file",
+      path: `./${boundary}`,
+      name: ["GenericPayload"],
+    });
+    put(dir, ".oxlintrc.json", JSON.stringify(generic));
+    assert.throws(
+      () => checkScope(dir),
+      /Generic readonly alias is not an approved fixed contract:/,
+    );
   } finally {
     remove(dir);
   }

@@ -11616,6 +11616,8 @@
         "test/fixtures/runner-clock.mjs",
         "test/quality/allowances.test.mjs",
         "test/quality/boundaries.test.mjs",
+        "test/quality/native-aliases.test.mjs",
+        "test/quality/native-containers.test.mjs",
         "test/quality/options.test.mjs",
         "test/quality/probe-support.mjs",
         "test/quality/remaining-rules.test.mjs",

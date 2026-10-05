@@ -77,6 +77,8 @@ Every boundary file and file-qualified readonly origin must exist, and every all
 identify an actual class, interface or type-alias declaration in that origin. The CLI keeper also
 copies and exercises the real runner declaration; synthetic isolation shapes alone do not prove that
 an owner path is correct.
+File-qualified type aliases must be nongeneric, so an approved fixed native alias cannot silently
+become permission for arbitrary mutable application type arguments.
 
 Only fixed **nongeneric** native result/message aliases can receive local file-qualified permissions;
 mutable application type arguments are not waived through broad generic SDK names. Framework-owned
