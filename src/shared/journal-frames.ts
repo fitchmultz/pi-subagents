@@ -188,7 +188,10 @@ export function readJsonProjection(file: string, select: Projection): UnknownRec
     }
     return value;
   } catch (error) {
-    throw new SyntaxError(`Invalid JSON file ${file}: ${errorMessage(error)}`, { cause: error });
+    throw new SyntaxError(
+      `Invalid JSON file ${file}: ${error instanceof Error ? error.toString() : errorMessage(error)}`,
+      { cause: error },
+    );
   } finally {
     fs.closeSync(fd);
   }
