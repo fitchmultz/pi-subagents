@@ -8,7 +8,12 @@ import { createHash } from "node:crypto";
 import { test, type TestContext } from "node:test";
 import { observeReads } from "../support/runtime-fs.ts";
 import { record, textAt as firstText } from "../support/assertions.ts";
-import { JournalFrames, NativeJournal, readOutputPage } from "../../src/shared/journal-reader.ts";
+import {
+  JournalFrames,
+  JsonProjection,
+  NativeJournal,
+  readOutputPage,
+} from "../../src/shared/journal-reader.ts";
 import { readNativeUsage, snapshotNativeBaseline } from "../../src/runs/shared/native-usage.ts";
 
 const usage = {
@@ -50,6 +55,14 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
   );
   skipped.write(Buffer.from('{"id":"x","ignored":{"bad":truX}}'));
   assert.throws(() => skipped.finish(), SyntaxError);
+  const projection = new JsonProjection((keys) => {
+    if (keys.length === 0) {
+      return true;
+    }
+    return keys[0] === "text" ? 3 : Number.NaN;
+  });
+  projection.write('{"skip":{"x":"ignored"},"text":"abcdef","number":1234}');
+  assert.deepEqual(projection.finish(), { text: "abc" });
 });
 
 test("sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records", (t) => {

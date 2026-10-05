@@ -45,7 +45,7 @@ const originalEnv = {
 const originalCwd = process.cwd();
 const tempRoots: string[] = [];
 
-function buildPiArgs(input: ReadonlyInput<Parameters<typeof buildArgs>[0]>) {
+function buildPiArgs(input: Parameters<typeof buildArgs>[0]) {
   const built = buildArgs(input);
   if (built.tempDir !== undefined && built.tempDir.length > 0) {
     tempRoots.push(built.tempDir);
