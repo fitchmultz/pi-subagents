@@ -1,871 +1,55 @@
-import { randomUUID } from "node:crypto";
-import { formatRunIdAmbiguity } from "../shared/run-id-ambiguity.ts";
-import { resolveRootSessionId, resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import {
-  writeAsyncControlRequest,
-  writeAsyncInterruptRequest,
-} from "../background/async-control.ts";
-import {
-  getRunMetadataDir,
-  listSupervisorQuestions,
-  questionProcessAlive,
-  readQuestionContract,
-  readRunJson,
-  recordQuestionDelivery,
-  saveQuestionOwner,
-  type SupervisorQuestionView,
-  type SupervisorRunContract,
-} from "../shared/supervisor-questions.ts";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type AgentScope } from "../../agents/agents.ts";
-import { providerQualifiedModelId, toModelInfo } from "../../shared/model-info.ts";
-import { normalizeSkillInput } from "../../agents/skills.ts";
-import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
-import { executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
-import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
-import { requestChildExecutionCwd } from "../shared/child-execution-cwd.ts";
-import {
-  resolveIntercomBridge,
-  resolveIntercomSessionTarget,
-  resolveOrchestratorIntercomTarget,
-  resolveSubagentIntercomTarget,
-} from "../../intercom/intercom-bridge.ts";
-import { resolveControlConfig } from "../shared/subagent-control.ts";
-import { readStatus } from "../../shared/utils.ts";
+import { errorMessage } from "../../shared/unknown.ts";
+import { listSupervisorQuestions, readQuestionContract } from "../shared/supervisor-questions.ts";
 import { deliverSubagentIntercomMessageEvent } from "../../intercom/result-intercom.ts";
-import { sendLiveSubagentMessage } from "../../intercom/live-intercom.ts";
-import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
-import {
-  readNestedControlResults,
-  resolveInheritedNestedRouteFromEnv,
-  resolveNestedAsyncDir,
-  resolveNestedParentAddressFromEnv,
-  writeNestedControlRequest,
-  type NestedRunResolutionScope,
-} from "../shared/nested-events.ts";
-import { inspectSubagentStatus } from "../background/run-status.ts";
-import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
+import { resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { buildManagementControl, formatRunAction } from "../../shared/status-format.ts";
-import { acceptanceInputFromResolved } from "../shared/acceptance.ts";
+import { ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
+import type { SubagentExecutionResult, OwnedRun, OwnedRunView } from "../../shared/types.ts";
+import type { ExecutorReadDeps, SubagentParamsLike } from "./subagent-params.ts";
+import { nestedResolutionScopeForExecutor } from "./execution-routing.ts";
 import {
-  ownedRunStatusResult,
-  ownedRunView,
-  rememberOwnedRun,
-  resolveOwnedRun,
-} from "../shared/run-records.ts";
-import {
-  ASYNC_DIR,
-  getAsyncConfigPath,
-  RUNNER_ERROR_LOG_FILE,
-  type SubagentExecutionResult,
-  type ForegroundResumeRun,
-  type NestedRunSummary,
-  type ResolvedAcceptanceConfig,
-  type SubagentState,
-  checkSubagentDepth,
-  resolveCurrentMaxSubagentDepth,
-} from "../../shared/types.ts";
-
-import { type ExecutorDeps, type SubagentParamsLike } from "./subagent-params.ts";
+  resolveResumeTarget,
+  resolveNestedResumeTarget,
+  type ResumeSourceTarget,
+} from "./resume-target.ts";
+import { LIVE_ACCEPTANCE_OVERRIDE_NOTICE, resumeLiveNestedRun } from "./nested-control.ts";
+import { nudgeSubagentRun } from "./run-nudge.ts";
+import { reviveSavedSubagent, type RevivalInput, type RevivalTarget } from "./saved-revival.ts";
+import { continueQuestionSession } from "./question-continuation.ts";
 
 export { writeAsyncInterruptRequest } from "../background/async-control.ts";
-export const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
+export {
+  MUTATING_MANAGEMENT_ACTIONS,
+  resolveRequestedCwd,
+  nestedResolutionScopeForExecutor,
+} from "./execution-routing.ts";
+export {
+  rememberedForegroundStatusResult,
+  resolveRememberedForegroundRun,
+} from "./foreground-memory.ts";
+export { extendAsyncTimeoutResult, interruptAsyncRun } from "./run-interrupt.ts";
+export { interruptNestedRun } from "./nested-control.ts";
+export { nudgeSubagentRun } from "./run-nudge.ts";
+export { reviveSavedSubagent } from "./saved-revival.ts";
 
-export function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | undefined): string {
-  return requestedCwd ? path.resolve(runtimeCwd, requestedCwd) : runtimeCwd;
-}
-
-export function nestedResolutionScopeForExecutor(
-  deps: ExecutorDeps,
-): NestedRunResolutionScope | undefined {
-  if (deps.allowMutatingManagementActions !== false) {
-    return undefined;
-  }
-  const route = resolveInheritedNestedRouteFromEnv();
-  const address = route ? resolveNestedParentAddressFromEnv() : undefined;
+type ReadResumeInput = Readonly<Omit<RevivalInput, "deps">> & { readonly deps: ExecutorReadDeps };
+type Resolution =
+  | { readonly kind: "result"; readonly result: SubagentExecutionResult }
+  | { readonly kind: "target"; readonly target: ResumeSourceTarget };
+function failure(text: string): SubagentExecutionResult {
   return {
-    routes: route ? [route] : [],
-    ...(address
-      ? {
-          descendantOf: {
-            parentRunId: address.parentRunId,
-            ...(address.parentStepIndex !== undefined
-              ? { parentStepIndex: address.parentStepIndex }
-              : {}),
-          },
-        }
-      : {}),
-  };
-}
-
-const LATEST_FOREGROUND_ALIASES = new Set(["last", "latest"]);
-
-export function resolveRememberedForegroundRun(
-  requested: string | undefined,
-  state: SubagentState,
-): ForegroundResumeRun | undefined {
-  if (!requested || !state.foregroundRuns?.size) {
-    return undefined;
-  }
-  const normalized = requested.trim();
-  if (!normalized) {
-    return undefined;
-  }
-  if (LATEST_FOREGROUND_ALIASES.has(normalized)) {
-    return [...state.foregroundRuns.values()].sort(
-      (left, right) => right.updatedAt - left.updatedAt,
-    )[0];
-  }
-  const direct = state.foregroundRuns.get(normalized);
-  const matches = direct
-    ? [direct]
-    : [...state.foregroundRuns.values()].filter((run) => run.runId.startsWith(normalized));
-  if (matches.length === 0) {
-    return undefined;
-  }
-  if (matches.length > 1) {
-    throw new Error(
-      formatRunIdAmbiguity(
-        "foreground",
-        normalized,
-        matches.map((run) => run.runId),
-      ),
-    );
-  }
-  return matches[0]!;
-}
-
-function foregroundResumeGuidance(run: ForegroundResumeRun, childSafe: boolean): string {
-  const childWithSession = run.children.find(
-    (child) => child.sessionFile && child.status !== "detached",
-  );
-  if (!childWithSession && run.children.some((child) => child.status === "detached")) {
-    return `Completion unconfirmed. Check ${formatRunAction("questions", run.runId, {}, childSafe)} before continuing.`;
-  }
-  if (run.children.length === 1 && childWithSession) {
-    return `Continue: ${formatRunAction("resume", run.runId, { message: "..." }, childSafe)}`;
-  }
-  if (!childWithSession) {
-    return "Revive: unavailable; no child session file was persisted.";
-  }
-  return `Continue child: ${formatRunAction("resume", run.runId, { index: childWithSession.index, message: "..." }, childSafe)}`;
-}
-
-function compactStatusText(value: string, maxLength = 240): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
-}
-
-function foregroundResultChildren(run: ForegroundResumeRun) {
-  return run.children.map((child) => ({ child, finalOutput: child.summary }));
-}
-
-function rememberedForegroundState(
-  children: ReturnType<typeof foregroundResultChildren>,
-): "completed" | "paused" | "blocked" | "failed" | "unknown" {
-  if (children.some(({ child }) => child.status === "failed" || child.status === "timed-out")) {
-    return "failed";
-  }
-  if (children.some(({ child }) => child.status === "blocked")) {
-    return "blocked";
-  }
-  if (children.some(({ child }) => child.status === "paused")) {
-    return "paused";
-  }
-  return children.some(({ child }) => child.status === "detached") ? "unknown" : "completed";
-}
-
-export function rememberedForegroundStatusResult(
-  run: ForegroundResumeRun,
-  childSafe = false,
-): SubagentExecutionResult {
-  const children = foregroundResultChildren(run);
-  const childState = rememberedForegroundState(children);
-  const state = run.error
-    ? "failed"
-    : childState === "completed" && run.pausedReason
-      ? "paused"
-      : childState;
-  const resumable = children.find(
-    ({ child }) => child.sessionFile && child.status !== "detached",
-  )?.child;
-  const lines = [
-    `Run: ${run.runId}`,
-    "State: remembered foreground",
-    `Outcome: ${state}`,
-    ...(run.error
-      ? [`Error: ${run.error}`]
-      : state === "paused" && run.pausedReason
-        ? [run.pausedReason]
-        : []),
-    `Mode: ${run.mode}`,
-    `Updated: ${new Date(run.updatedAt).toISOString()}`,
-    `Launch cwd: ${run.cwd}`,
-    "Children:",
-    ...children.map(
-      ({ child, finalOutput }) =>
-        `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}${child.artifactPath ? `, artifact: ${child.artifactPath}` : ""}${finalOutput ? `, final: ${compactStatusText(finalOutput)}` : ""}`,
-    ),
-    foregroundResumeGuidance(run, childSafe),
-    `Status: ${formatRunAction("status", run.runId, {}, childSafe)}`,
-  ];
-  return {
-    content: [{ type: "text", text: lines.join("\n") }],
-    details: {
-      mode: "management",
-      results: [],
-      managementControl: buildManagementControl({
-        state,
-        runId: run.runId,
-        index: resumable?.index,
-        canResume: Boolean(resumable),
-      }),
-    },
-  };
-}
-
-function resolveForegroundResumeTarget(
-  params: SubagentParamsLike,
-  state: SubagentState,
-):
-  | {
-      runId: string;
-      mode: "single" | "parallel" | "chain";
-      state: "complete";
-      agent: string;
-      index: number;
-      intercomTarget: string;
-      cwd: string;
-      sessionFile: string;
-      effectiveAcceptance?: ResolvedAcceptanceConfig;
-    }
-  | undefined {
-  const requested = (params.id ?? params.runId)?.trim();
-  const run = resolveRememberedForegroundRun(requested, state);
-  if (!run) {
-    return undefined;
-  }
-  if (run.children.length > 1 && params.index === undefined) {
-    throw new Error(
-      `Foreground run '${run.runId}' has ${run.children.length} children. Provide index to choose one.`,
-    );
-  }
-  const index = params.index ?? 0;
-  if (!Number.isInteger(index)) {
-    throw new Error(`Foreground run '${run.runId}' index must be an integer.`);
-  }
-  if (index < 0 || index >= run.children.length) {
-    throw new Error(
-      `Foreground run '${run.runId}' has ${run.children.length} children. Index ${index} is out of range.`,
-    );
-  }
-  const child = run.children[index]!;
-  if (child.status === "detached") {
-    throw new Error(
-      `Foreground run '${run.runId}' child ${index} is detached for intercom coordination and cannot be revived safely from the remembered foreground state. Reply to the supervisor request first; after the child exits, start a fresh follow-up if needed.`,
-    );
-  }
-  if (!child.sessionFile) {
-    throw new Error(
-      `Foreground run '${run.runId}' child ${index} does not have a persisted session file to resume from.`,
-    );
-  }
-  if (path.extname(child.sessionFile) !== ".jsonl") {
-    throw new Error(
-      `Foreground run '${run.runId}' child ${index} session file must be a .jsonl file: ${child.sessionFile}`,
-    );
-  }
-  const sessionFile = path.resolve(child.sessionFile);
-  if (!fs.existsSync(sessionFile)) {
-    throw new Error(
-      `Foreground run '${run.runId}' child ${index} session file does not exist: ${child.sessionFile}`,
-    );
-  }
-  return {
-    runId: run.runId,
-    mode: run.mode,
-    state: "complete",
-    agent: child.agent,
-    index,
-    intercomTarget: resolveSubagentIntercomTarget(run.runId, child.agent, index),
-    cwd: run.cwd,
-    sessionFile,
-    effectiveAcceptance: child.effectiveAcceptance,
-  };
-}
-
-type AsyncResumeSourceTarget = ReturnType<typeof resolveAsyncResumeTarget> & { source: "async" };
-type ForegroundResumeSourceTarget = NonNullable<
-  ReturnType<typeof resolveForegroundResumeTarget>
-> & { kind: "revive"; source: "foreground" };
-type NestedResumeSourceTarget = {
-  kind: "revive";
-  source: "nested";
-  runId: string;
-  state: "complete" | "failed" | "blocked" | "paused";
-  agent: string;
-  index: number;
-  intercomTarget: string;
-  cwd?: string;
-  sessionFile: string;
-  effectiveAcceptance?: ResolvedAcceptanceConfig;
-};
-type ResumeSourceTarget =
-  | AsyncResumeSourceTarget
-  | ForegroundResumeSourceTarget
-  | NestedResumeSourceTarget;
-
-function isAsyncRunNotFound(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith("Async run not found.");
-}
-
-function isResumeAmbiguity(error: unknown): boolean {
-  return error instanceof Error && /Ambiguous .*run id prefix/.test(error.message);
-}
-
-function resumeTargetExact(target: { runId: string } | undefined, requested: string): boolean {
-  return target?.runId === requested;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function isExactResumeError(
-  error: unknown,
-  source: "async" | "foreground",
-  requested: string,
-): boolean {
-  if (!(error instanceof Error) || !requested) {
-    return false;
-  }
-  return new RegExp(`\\b${source} run '${escapeRegExp(requested)}'`, "i").test(error.message);
-}
-
-function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState): ResumeSourceTarget {
-  const requested = (params.id ?? params.runId)?.trim() ?? "";
-  let foregroundTarget: ForegroundResumeSourceTarget | undefined;
-  let foregroundError: unknown;
-  let asyncTarget: AsyncResumeSourceTarget | undefined;
-  let asyncError: unknown;
-
-  try {
-    const target = resolveForegroundResumeTarget(params, state);
-    if (target) {
-      foregroundTarget = { kind: "revive", source: "foreground", ...target };
-    }
-  } catch (error) {
-    foregroundError = error;
-  }
-  try {
-    asyncTarget = { source: "async", ...resolveAsyncResumeTarget(params) };
-  } catch (error) {
-    asyncError = error;
-  }
-
-  if (foregroundTarget && asyncTarget) {
-    const foregroundExact = resumeTargetExact(foregroundTarget, requested);
-    const asyncExact = resumeTargetExact(asyncTarget, requested);
-    if (foregroundExact && !asyncExact) {
-      return foregroundTarget;
-    }
-    if (asyncExact && !foregroundExact) {
-      return asyncTarget;
-    }
-    throw new Error(
-      `Resume id '${requested}' is ambiguous between foreground run '${foregroundTarget.runId}' and async run '${asyncTarget.runId}'. Provide a full run id.`,
-    );
-  }
-  if (foregroundTarget) {
-    if (isExactResumeError(asyncError, "async", requested)) {
-      throw asyncError;
-    }
-    if (isResumeAmbiguity(asyncError) && !resumeTargetExact(foregroundTarget, requested)) {
-      throw asyncError;
-    }
-    return foregroundTarget;
-  }
-  if (asyncTarget) {
-    if (isExactResumeError(foregroundError, "foreground", requested)) {
-      throw foregroundError;
-    }
-    if (isResumeAmbiguity(foregroundError) && !resumeTargetExact(asyncTarget, requested)) {
-      throw foregroundError;
-    }
-    return asyncTarget;
-  }
-  if (foregroundError && !isAsyncRunNotFound(asyncError)) {
-    throw foregroundError;
-  }
-  if (foregroundError) {
-    throw foregroundError;
-  }
-  if (asyncError) {
-    throw asyncError;
-  }
-  throw new Error("Run not found. Provide id or runId.");
-}
-
-function getAsyncInterruptTarget(
-  state: SubagentState,
-  runId: string | undefined,
-): { asyncId: string; asyncDir: string } | undefined {
-  if (runId) {
-    const direct = state.asyncJobs.get(runId);
-    if (direct) {
-      return { asyncId: direct.asyncId, asyncDir: direct.asyncDir };
-    }
-    const owned = resolveOwnedRun(state, runId);
-    return owned?.asyncDir ? { asyncId: owned.runId, asyncDir: owned.asyncDir } : undefined;
-  }
-  let newest: { asyncId: string; asyncDir: string; updatedAt: number } | undefined;
-  for (const job of state.asyncJobs.values()) {
-    if (job.status !== "running") {
-      continue;
-    }
-    if (!newest || (job.updatedAt ?? 0) > newest.updatedAt) {
-      newest = { asyncId: job.asyncId, asyncDir: job.asyncDir, updatedAt: job.updatedAt ?? 0 };
-    }
-  }
-  for (const run of state.ownedRuns?.values() ?? []) {
-    if (!run.asyncDir || (newest && run.startedAt <= newest.updatedAt)) {
-      continue;
-    }
-    const status = readStatus(run.asyncDir);
-    if (
-      status
-        ? status.state !== "running" && status.state !== "queued"
-        : !run.pid || !questionProcessAlive({ pid: run.pid })
-    ) {
-      continue;
-    }
-    newest = { asyncId: run.runId, asyncDir: run.asyncDir, updatedAt: run.startedAt };
-  }
-  return newest ? { asyncId: newest.asyncId, asyncDir: newest.asyncDir } : undefined;
-}
-
-export function extendAsyncTimeoutResult(
-  state: SubagentState,
-  runId: string | undefined,
-  extendMs: number,
-): SubagentExecutionResult {
-  const target = getAsyncInterruptTarget(state, runId);
-  const status = target && readStatus(target.asyncDir);
-  const launch =
-    target &&
-    readRunJson<{ runtimeVersion?: number; timeoutMs?: number }>(
-      path.join(target.asyncDir, "launch.json"),
-    );
-  const extendable = status
-    ? status.runtimeVersion === 2 &&
-      status.state === "running" &&
-      !status.timedOut &&
-      status.timeoutAt
-    : launch?.runtimeVersion === 2 && launch.timeoutMs;
-  if (!target || !extendable) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: "No live run with an extendable timeout was found. No extension was requested.",
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  try {
-    writeAsyncControlRequest(target.asyncDir, target.asyncId, "extend", undefined, extendMs);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Requested ${extendMs}ms more for run ${target.asyncId}. Inspect status for the owner's updated deadline.`,
-        },
-      ],
-      details: {
-        mode: "management",
-        results: [],
-        managementControl: buildManagementControl({
-          state: "live",
-          runId: target.asyncId,
-          canInterrupt: true,
-          canExtend: true,
-        }),
-      },
-    };
-  } catch (error) {
-    return {
-      content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-}
-
-export function interruptAsyncRun(
-  state: SubagentState,
-  runId: string | undefined,
-  index?: number,
-): SubagentExecutionResult | null {
-  const target = getAsyncInterruptTarget(state, runId);
-  if (!target) {
-    return null;
-  }
-  const status = readStatus(target.asyncDir);
-  if (!status || status.runId !== target.asyncId || status.state !== "running") {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `No running async run with a matching control channel was found for '${runId ?? "current"}'.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  if (index !== undefined && !status.indexedControl && (status.steps?.length ?? 0) > 1) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: "This older runner does not support selected-child stop. No stop was sent; whole-run stop remains an explicit separate action.",
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  if (
-    index !== undefined &&
-    (!Number.isSafeInteger(index) || index < 0 || status.steps?.[index]?.status !== "running")
-  ) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Async run ${target.asyncId} has no running child at index ${index}. No siblings were stopped.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  try {
-    writeAsyncInterruptRequest(target.asyncDir, target.asyncId, index);
-    const tracked = state.asyncJobs.get(target.asyncId);
-    if (tracked) {
-      tracked.activityState = undefined;
-      tracked.updatedAt = Date.now();
-    }
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Interrupt requested for async run ${target.asyncId}${index !== undefined ? ` child ${index} only` : ""}. Agent and command exit are not yet confirmed.`,
-        },
-      ],
-      details: {
-        mode: "management",
-        results: [],
-        managementControl: buildManagementControl({ state: "live", runId: target.asyncId }),
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      content: [
-        { type: "text", text: `Failed to interrupt async run ${target.asyncId}: ${message}` },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-}
-
-function nestedRunSessionFile(run: NestedRunSummary): string | undefined {
-  return run.sessionFile ?? (run.steps?.length === 1 ? run.steps[0]?.sessionFile : undefined);
-}
-
-function nestedRunAgent(run: NestedRunSummary): string | undefined {
-  return (
-    run.agent ?? run.agents?.[0] ?? (run.steps?.length === 1 ? run.steps[0]?.agent : undefined)
-  );
-}
-
-function pathWithin(base: string, candidate: string): boolean {
-  const resolvedBase = path.resolve(base);
-  const resolvedCandidate = path.resolve(candidate);
-  return (
-    resolvedCandidate === resolvedBase || resolvedCandidate.startsWith(`${resolvedBase}${path.sep}`)
-  );
-}
-
-function validateNestedSessionFile(run: NestedRunSummary, trustedSessionRoots: string[]): string {
-  const sessionFile = nestedRunSessionFile(run);
-  if (!sessionFile) {
-    throw new Error(
-      `Nested run '${run.id}' does not have a persisted session file to resume from.`,
-    );
-  }
-  if (path.extname(sessionFile) !== ".jsonl") {
-    throw new Error(`Nested run '${run.id}' session file must be a .jsonl file: ${sessionFile}`);
-  }
-  const resolved = path.resolve(sessionFile);
-  if (!path.isAbsolute(sessionFile)) {
-    throw new Error(`Nested run '${run.id}' session file must be absolute: ${sessionFile}`);
-  }
-  if (!fs.existsSync(resolved)) {
-    throw new Error(`Nested run '${run.id}' session file does not exist: ${sessionFile}`);
-  }
-  const stat = fs.lstatSync(resolved);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`Nested run '${run.id}' session file is not a regular file: ${sessionFile}`);
-  }
-  const realSessionFile = fs.realpathSync(resolved);
-  const trustedRoots = trustedSessionRoots
-    .filter((root) => fs.existsSync(root))
-    .map((root) => fs.realpathSync(root));
-  if (!trustedRoots.some((root) => pathWithin(root, realSessionFile))) {
-    throw new Error(
-      `Nested run '${run.id}' session file is outside trusted nested session roots: ${sessionFile}`,
-    );
-  }
-  if (!realSessionFile.split(path.sep).includes(run.id)) {
-    throw new Error(
-      `Nested run '${run.id}' session file is not under that nested run's session directory: ${sessionFile}`,
-    );
-  }
-  return realSessionFile;
-}
-
-function resolveNestedResumeTarget(
-  match: ResolvedSubagentRunId & { kind: "nested" },
-  trustedSessionRoots: string[],
-): NestedResumeSourceTarget {
-  const run = match.match.run;
-  if (run.state === "running" || run.state === "queued") {
-    throw new Error(
-      `Nested run '${run.id}' is live; route the follow-up to the owner process instead.`,
-    );
-  }
-  const agent = nestedRunAgent(run);
-  if (!agent) {
-    throw new Error(`Could not determine child agent for nested run '${run.id}'.`);
-  }
-  const state =
-    run.state === "complete" ||
-    run.state === "failed" ||
-    run.state === "blocked" ||
-    run.state === "paused"
-      ? run.state
-      : "failed";
-  const asyncDir = resolveNestedAsyncDir(match.match.rootRunId, run);
-  const effectiveAcceptance = asyncDir
-    ? readStatus(asyncDir)?.steps?.[0]?.acceptance?.effectiveAcceptance
-    : undefined;
-  return {
-    kind: "revive",
-    source: "nested",
-    runId: run.id,
-    state,
-    agent,
-    index: 0,
-    intercomTarget: resolveSubagentIntercomTarget(run.id, agent, 0),
-    cwd: asyncDir ? path.dirname(asyncDir) : undefined,
-    sessionFile: validateNestedSessionFile(run, trustedSessionRoots),
-    effectiveAcceptance,
-  };
-}
-
-async function waitForNestedControlResult(
-  target: ResolvedSubagentRunId & { kind: "nested" },
-  requestId: string,
-  timeoutMs = 1_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = readNestedControlResults(target.match.route).find(
-      (candidate) =>
-        candidate.requestId === requestId && candidate.targetRunId === target.match.run.id,
-    );
-    if (result) {
-      return result;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return undefined;
-}
-
-async function sendNestedControlRequest(
-  target: ResolvedSubagentRunId & { kind: "nested" },
-  action: "interrupt" | "resume",
-  message?: string,
-  index?: number,
-) {
-  const requestId = randomUUID();
-  const targetChildIndex =
-    target.match.run.path?.[0]?.stepIndex ?? target.match.run.parentStepIndex;
-  writeNestedControlRequest(target.match.route, {
-    ts: Date.now(),
-    requestId,
-    targetRunId: target.match.run.id,
-    ...(targetChildIndex !== undefined ? { targetChildIndex } : {}),
-    action,
-    ...(index !== undefined ? { index } : {}),
-    ...(message ? { message } : {}),
-  });
-  return waitForNestedControlResult(target, requestId);
-}
-
-function directNestedAsyncInterrupt(
-  target: ResolvedSubagentRunId & { kind: "nested" },
-  index?: number,
-): SubagentExecutionResult | undefined {
-  const run = target.match.run;
-  const asyncDir = resolveNestedAsyncDir(target.match.rootRunId, run);
-  if (!asyncDir) {
-    return undefined;
-  }
-  const status = readStatus(asyncDir);
-  if (!status || status.runId !== run.id || status.state !== "running") {
-    return undefined;
-  }
-  if (index !== undefined && !status.indexedControl && (status.steps?.length ?? 0) > 1) {
-    return undefined;
-  }
-  if (index !== undefined && status.steps?.[index]?.status !== "running") {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `No running nested child at index ${index}. No siblings were stopped.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  try {
-    writeAsyncInterruptRequest(asyncDir, run.id, index);
-    return {
-      content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }],
-      details: {
-        mode: "management",
-        results: [],
-        managementControl: buildManagementControl({
-          state: "live",
-          runId: run.id,
-          intercomTarget: run.intercomTarget ?? run.leafIntercomTarget,
-          canInterrupt: true,
-        }),
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      content: [
-        { type: "text", text: `Failed to interrupt nested async run ${run.id}: ${message}` },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-}
-
-export async function interruptNestedRun(
-  target: ResolvedSubagentRunId & { kind: "nested" },
-  index?: number,
-): Promise<SubagentExecutionResult> {
-  const run = target.match.run;
-  if (run.state === "complete") {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Nested run ${run.id} is already complete and cannot be interrupted.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  if (run.state === "failed") {
-    return {
-      content: [
-        { type: "text", text: `Nested run ${run.id} has failed and cannot be interrupted.` },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  if (run.state === "paused") {
-    return {
-      content: [{ type: "text", text: `Nested run ${run.id} is already paused.` }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  if (index !== undefined && run.indexedControl !== true) {
-    return (
-      directNestedAsyncInterrupt(target, index) ?? {
-        content: [
-          {
-            type: "text",
-            text: "This nested owner does not advertise selected-child stop. No stop was sent; inspect the child or explicitly stop the whole run.",
-          },
-        ],
-        isError: true,
-        details: { mode: "management", results: [] },
-      }
-    );
-  }
-  const result = await sendNestedControlRequest(target, "interrupt", undefined, index);
-  if (result?.ok) {
-    return {
-      content: [{ type: "text", text: result.message }],
-      details: {
-        mode: "management",
-        results: [],
-        managementControl: buildManagementControl({
-          state: "live",
-          runId: run.id,
-          intercomTarget: run.intercomTarget ?? run.leafIntercomTarget,
-          canResume: true,
-          canInterrupt: true,
-        }),
-      },
-    };
-  }
-  const direct = directNestedAsyncInterrupt(target, index);
-  if (direct) {
-    return direct;
-  }
-  if (result) {
-    return {
-      content: [{ type: "text", text: result.message }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  return {
-    content: [
-      {
-        type: "text",
-        text: `Nested run ${run.id} owner is not reachable and no safe direct async interrupt fallback is available.`,
-      },
-    ],
+    content: [{ type: "text", text }],
     isError: true,
     details: { mode: "management", results: [] },
   };
 }
-
-const LIVE_ACCEPTANCE_OVERRIDE_NOTICE =
-  "Acceptance override applies only to revive and was not applied to this live delivery.";
-
+function requestedOwnedId(params: SubagentParamsLike): string | undefined {
+  const id = params.id ?? params.runId;
+  return id !== undefined && id.length > 0 && (params.dir === undefined || params.dir.length === 0)
+    ? id
+    : undefined;
+}
 export function liveLaunchOverrideNotice(params: SubagentParamsLike): string | undefined {
   if (params.acceptance !== undefined) {
     return LIVE_ACCEPTANCE_OVERRIDE_NOTICE;
@@ -886,343 +70,246 @@ export function liveLaunchOverrideNotice(params: SubagentParamsLike): string | u
     ? "Launch overrides change a newly started continuation, not this live child. No launch settings were changed."
     : undefined;
 }
-
-async function resumeLiveNestedRun(input: {
-  target: ResolvedSubagentRunId & { kind: "nested" };
-  message: string;
-  index?: number;
-  acceptanceOverrideSupplied: boolean;
-  pi: ExtensionAPI;
-  childSafe: boolean;
-}): Promise<SubagentExecutionResult> {
-  const run = input.target.match.run;
-  const result = await sendNestedControlRequest(input.target, "resume", input.message, input.index);
-  if (result?.ok) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: [
-            result.message,
-            input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-      details: { mode: "management", results: [] },
-    };
+function withLiveNotice(
+  result: SubagentExecutionResult,
+  params: SubagentParamsLike,
+): SubagentExecutionResult {
+  const notice = liveLaunchOverrideNotice(params);
+  if (notice !== undefined) {
+    result.content.push({ type: "text", text: notice });
   }
-  const asyncDir =
-    input.index !== undefined
-      ? resolveNestedAsyncDir(input.target.match.rootRunId, run)
-      : undefined;
-  const selected = asyncDir ? readStatus(asyncDir)?.steps?.[input.index!] : undefined;
-  const directTarget =
-    input.index === undefined
-      ? (run.leafIntercomTarget ?? run.intercomTarget)
-      : selected?.status === "running"
-        ? resolveSubagentIntercomTarget(run.id, selected.agent, input.index)
-        : undefined;
-  if (directTarget) {
-    const delivered = await deliverSubagentIntercomMessageEvent(
-      input.pi.events,
-      directTarget,
-      `Follow-up for nested run ${run.id}:\n\n${input.message}`,
-      500,
-      {
-        source: "nested-resume-fallback",
-        runId: run.id,
-        agent: run.agent,
-        index: input.index ?? run.currentStep,
-      },
-    );
-    if (delivered) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `Delivered follow-up directly to live nested run ${run.id}.`,
-              input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined,
-            ]
-              .filter(Boolean)
-              .join("\n"),
-          },
-        ],
-        details: { mode: "management", results: [] },
-      };
-    }
-  }
-  if (result) {
-    return {
-      content: [{ type: "text", text: result.message }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  return {
-    content: [
-      {
-        type: "text",
-        text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry ${formatRunAction("resume", run.id, { message: "..." }, input.childSafe)}.`,
-      },
-    ],
-    isError: true,
-    details: { mode: "management", results: [] },
-  };
+  return result;
 }
-
-function terminalNudgeResult(
+function normalizedFollowUp(params: SubagentParamsLike): string {
+  return (params.message ?? params.task ?? "").trim();
+}
+function usesSession(candidate: OwnedRun, deps: ExecutorReadDeps, sessionFile: string): boolean {
+  return (
+    candidate.children.some((child) => child.sessionFile === sessionFile) ||
+    deps.state.asyncJobs.get(candidate.runId)?.sessionFile === sessionFile
+  );
+}
+function nudgeContinuation(
+  input: ReadResumeInput,
   runId: string,
-  deps: ExecutorDeps,
-): SubagentExecutionResult | undefined {
-  const owned = resolveOwnedRun(deps.state, runId);
-  if (owned) {
-    const result = ownedRunStatusResult(owned, deps.state, undefined, {
-      childSafe: Boolean(nestedResolutionScopeForExecutor(deps)),
-    });
-    const state = result.details.run!.state;
-    if (state === "live") {
-      return undefined;
+  sessionFile: string | undefined,
+): Promise<SubagentExecutionResult> | undefined {
+  if (sessionFile === undefined || sessionFile.length === 0) {
+    return;
+  }
+  for (const candidate of input.deps.state.ownedRuns?.values() ?? []) {
+    if (candidate.runId === runId) {
+      continue;
     }
-    return {
-      ...result,
-      content: [
-        {
-          type: "text",
-          text: `Nudge not sent: ${state === "unknown" ? "completion is unconfirmed" : `run is already ${state}`}. No child was restarted.\n\n${result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n")}`,
-        },
-      ],
-    };
-  }
-  const remembered = deps.state.foregroundRuns?.get(runId);
-  const status = remembered
-    ? rememberedForegroundStatusResult(remembered, Boolean(nestedResolutionScopeForExecutor(deps)))
-    : inspectSubagentStatus(
-        { id: runId },
-        { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) },
-      );
-  const state = status.details.managementControl?.state;
-  if (status.isError || !state || state === "live" || state === "unknown") {
-    return undefined;
-  }
-  return {
-    ...status,
-    content: [
-      {
-        type: "text",
-        text: `Nudge not sent: run is already ${state}. No child was restarted.\n\n${status.content
-          .filter((part) => part.type === "text")
-          .map((part) => part.text)
-          .join("\n")}`,
+    if (!usesSession(candidate, input.deps, sessionFile)) {
+      continue;
+    }
+    const active = ownedRunView(candidate, input.deps.state, {
+      readConfiguration: false,
+    }).children.find((child) => child.sessionFile === sessionFile && child.state === "live");
+    if (!active) {
+      continue;
+    }
+    return nudgeSubagentRun({
+      params: {
+        ...input.params,
+        dir: undefined,
+        id: candidate.runId,
+        index: active.index,
+        message: normalizedFollowUp(input.params),
       },
-    ],
+      deps: input.deps,
+      ctx: input.ctx,
+    }).then((result) => withLiveNotice(result, input.params));
+  }
+  return;
+}
+async function resumeOwned(
+  // Owned continuation may persist a new run; deps retains the actual session mutation owner.
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
+  input: RevivalInput,
+  owned: OwnedRun,
+): Promise<SubagentExecutionResult> {
+  const view = ownedRunView(owned, input.deps.state);
+  if (view.children.length > 1 && input.params.index === undefined) {
+    throw new Error(
+      `Run '${owned.runId}' has ${view.children.length} children. Provide index to choose one.`,
+    );
+  }
+  const child = view.children.find((entry) => entry.index === (input.params.index ?? 0));
+  if (!child) {
+    throw new Error(`Run '${owned.runId}' has no child at index ${input.params.index ?? 0}.`);
+  }
+  if (child.state === "live") {
+    return withLiveNotice(
+      await nudgeSubagentRun({
+        params: {
+          ...input.params,
+          id: owned.runId,
+          message: normalizedFollowUp(input.params),
+        },
+        deps: input.deps,
+        ctx: input.ctx,
+      }),
+      input.params,
+    );
+  }
+  const liveContinuation = nudgeContinuation(input, owned.runId, child.sessionFile);
+  if (liveContinuation) {
+    return await liveContinuation;
+  }
+  return reviveSavedSubagent(input, ownedRevivalTarget(owned, child));
+}
+function ownedRevivalTarget(
+  owned: OwnedRun,
+  child: OwnedRunView["children"][number],
+): RevivalTarget {
+  const contract = readQuestionContract(owned.runId, child.index);
+  return {
+    ...contract,
+    runId: owned.runId,
+    agent: child.agent,
+    index: child.index,
+    source: owned.source,
+    cwd: child.launch?.cwd ?? owned.cwd,
+    sessionFile: child.sessionFile,
+    effectiveAcceptance:
+      contract?.effectiveAcceptance ?? child.result?.acceptance?.effectiveAcceptance,
+    model: child.result?.model,
   };
 }
-
-export async function nudgeSubagentRun(input: {
-  params: SubagentParamsLike;
-  deps: ExecutorDeps;
-  ctx?: ExtensionContext;
-}): Promise<SubagentExecutionResult> {
-  const message =
-    input.params.message?.trim() ||
-    "What are you blocked on? Reply with the smallest next step, or state the exact decision you need.";
-  const requestedId = input.params.id ?? input.params.runId;
-  let runId: string;
-  let agent: string;
-  let index: number;
-  let target: string;
-  let resolvedRunId: string | undefined;
-
-  try {
-    const owned = input.params.dir
-      ? undefined
-      : resolveOwnedRun(
-          input.deps.state,
-          requestedId ?? getAsyncInterruptTarget(input.deps.state, undefined)?.asyncId ?? "latest",
-        );
-    if (owned) {
-      resolvedRunId = owned.runId;
-      const terminal = terminalNudgeResult(owned.runId, input.deps);
-      if (terminal) {
-        return terminal;
-      }
-      const view = ownedRunView(owned, input.deps.state);
-      const children = view.children.filter(
-        (child) =>
-          child.state === "live" &&
-          (input.params.index === undefined || input.params.index === child.index),
-      );
-      if (children.length !== 1) {
-        throw new Error(
-          `Run '${owned.runId}' has ${children.length} matching live children. Provide index to choose one.`,
-        );
-      }
-      const child = children[0]!;
-      if (child.activity?.status === "pending") {
-        throw new Error(
-          `Child ${child.index} is waiting to start in run ${owned.runId}. No message was sent and no continuation was started.`,
-        );
-      }
-      runId = owned.runId;
-      agent = child.agent;
-      index = child.index;
-      target = resolveSubagentIntercomTarget(runId, agent, index);
-    } else {
-      const resolved = requestedId
-        ? resolveSubagentRunId(requestedId, {
-            state: input.deps.state,
-            nested: nestedResolutionScopeForExecutor(input.deps),
-          })
-        : undefined;
-      const remembered =
-        !resolved && requestedId
-          ? resolveRememberedForegroundRun(requestedId, input.deps.state)
-          : undefined;
-      resolvedRunId = resolved?.id ?? remembered?.runId;
-      const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
-      if (terminal) {
-        return terminal;
-      }
-      if (resolved?.kind === "nested") {
-        const run = resolved.match.run;
-        const state =
-          run.state === "running" || run.state === "queued"
-            ? "live"
-            : run.state === "complete"
-              ? "completed"
-              : run.state === "paused" || run.state === "blocked" || run.state === "failed"
-                ? run.state
-                : "unknown";
-        const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
-        const childSafe = Boolean(nestedResolutionScopeForExecutor(input.deps));
-        const valid = [formatRunAction("status", run.id, {}, childSafe)];
-        if (state === "live" || run.sessionFile) {
-          valid.push(formatRunAction("resume", run.id, { message: "..." }, childSafe));
-        }
-        if (state === "live") {
-          valid.push(formatRunAction("interrupt", run.id, {}, childSafe));
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Nested run ${run.id} cannot be nudged. Valid actions: ${valid.join(" or ")}${intercomTarget ? `. Intercom target: ${intercomTarget}` : "."}`,
-            },
-          ],
-          isError: true,
-          details: {
-            mode: "management",
-            results: [],
-            managementControl: buildManagementControl({
-              state,
-              runId: run.id,
-              intercomTarget,
-              canNudge: false,
-              canResume: state === "live" || Boolean(run.sessionFile),
-              canInterrupt: state === "live",
-              unavailableActions: {
-                nudge:
-                  "Nested runs do not support nudge; use an advertised exact action or intercom target.",
-              },
-            }),
-          },
-        };
-      }
-      if (remembered) {
-        return rememberedForegroundStatusResult(
-          remembered,
-          Boolean(nestedResolutionScopeForExecutor(input.deps)),
-        );
-      }
-      const asyncTarget = resolveAsyncResumeTarget({
-        id:
-          input.params.id ??
-          (!requestedId
-            ? getAsyncInterruptTarget(input.deps.state, undefined)?.asyncId
-            : undefined),
-        runId: input.params.runId,
-        dir: input.params.dir,
-        index: input.params.index,
-      });
-      if (asyncTarget.kind !== "live") {
-        return (
-          terminalNudgeResult(asyncTarget.runId, input.deps) ??
-          inspectSubagentStatus(
-            { id: asyncTarget.runId },
-            { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) },
-          )
-        );
-      }
-      runId = asyncTarget.runId;
-      agent = asyncTarget.agent;
-      index = asyncTarget.index;
-      target = asyncTarget.intercomTarget;
-    }
-  } catch (error) {
-    const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
-    if (terminal) {
-      return terminal;
-    }
-    const text = error instanceof Error ? error.message : String(error);
-    return {
-      content: [{ type: "text", text }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
+function trustedSessionRoots(
+  input: ReadResumeInput,
+  parentSessionFile: string | null,
+): readonly string[] {
+  const roots: string[] = [];
+  const configured = input.deps.config.defaultSessionDir;
+  if (configured !== undefined && configured.length > 0) {
+    roots.push(path.resolve(input.deps.expandTilde(configured)));
   }
-
-  const result = await sendLiveSubagentMessage(input.deps.pi.events, {
-    to: target,
-    message: `Nudge for subagent run ${runId} (${agent}${index !== undefined ? ` step ${index + 1}` : ""}):\n\n${message}`,
-    delivery: "steer",
-    extra: { source: "subagent-nudge", runId, agent, index },
+  if (parentSessionFile !== null && parentSessionFile.length > 0) {
+    roots.push(input.deps.getSubagentSessionRoot(parentSessionFile));
+  }
+  return roots;
+}
+function resolveRequestedRun(
+  params: SubagentParamsLike,
+  deps: ExecutorReadDeps,
+): ReturnType<typeof resolveSubagentRunId> {
+  const id = params.id ?? params.runId;
+  if (id === undefined || id.length === 0) {
+    return;
+  }
+  return resolveSubagentRunId(id, {
+    state: deps.state,
+    nested: nestedResolutionScopeForExecutor(deps),
   });
-  if (!result.delivered) {
-    const terminal = terminalNudgeResult(runId, input.deps);
-    if (terminal) {
-      return terminal;
-    }
+}
+async function resolveContinuation(
+  // Resolution includes question/owned revival, whose durable updates belong to this session owner.
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
+  input: RevivalInput,
+  parentSessionFile: string | null,
+): Promise<Resolution> {
+  const requested = requestedOwnedId(input.params);
+  const questions =
+    requested !== undefined
+      ? listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), requested).filter(
+          (question) => question.state === "awaiting_input" || question.state === "answer_pending",
+        )
+      : [];
+  if (questions.length > 0) {
+    return { kind: "result", result: continueQuestionSession(input, questions) };
+  }
+  const owned = requested !== undefined ? resolveOwnedRun(input.deps.state, requested) : undefined;
+  if (owned) {
+    return { kind: "result", result: await resumeOwned(input, owned) };
+  }
+  const resolved = resolveRequestedRun(input.params, input.deps);
+  if (resolved?.kind !== "nested") {
+    return { kind: "target", target: resolveResumeTarget(input.params, input.deps.state) };
+  }
+  if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
     return {
-      content: [
-        {
-          type: "text",
-          text: [
-            `Nudge was not delivered.`,
-            `Run: ${runId}`,
-            `Intercom target: ${target}`,
-            result.reason ? `Reason: ${result.reason}` : undefined,
-          ]
-            .filter((line): line is string => Boolean(line))
-            .join("\n"),
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
+      kind: "result",
+      result: await resumeLiveNestedRun({
+        target: resolved,
+        message: normalizedFollowUp(input.params),
+        index: input.params.index,
+        acceptanceOverrideSupplied: input.params.acceptance !== undefined,
+        pi: input.deps.pi,
+        childSafe: nestedResolutionScopeForExecutor(input.deps) !== undefined,
+      }),
     };
   }
   return {
-    content: [
-      {
-        type: "text",
-        text: [
-          `Nudge delivered to live subagent.`,
-          `Run: ${runId}`,
-          `Agent: ${agent}`,
-          `Intercom target: ${target}`,
-        ].join("\n"),
-      },
-    ],
+    kind: "target",
+    target: resolveNestedResumeTarget(resolved, trustedSessionRoots(input, parentSessionFile)),
+  };
+}
+function lookupFailure(
+  // Recovery may revive a saved question; the real dependency state remains owned, not frozen.
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
+  input: RevivalInput,
+  error: unknown,
+): SubagentExecutionResult {
+  const message = errorMessage(error),
+    requested = requestedOwnedId(input.params);
+  const recoverable =
+    (error instanceof Error && error.message.startsWith("Async run not found.")) ||
+    message.includes("is detached for intercom coordination");
+  if (requested !== undefined && recoverable) {
+    try {
+      const questions = listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), requested);
+      if (questions.length > 0) {
+        return continueQuestionSession(input, questions);
+      }
+    } catch (questionError) {
+      return failure(errorMessage(questionError));
+    }
+  }
+  return failure(message);
+}
+async function deliverLiveContinuation(
+  input: ReadResumeInput,
+  target: Extract<ResumeSourceTarget, { readonly kind: "live" }>,
+): Promise<SubagentExecutionResult> {
+  const followUp = normalizedFollowUp(input.params);
+  const delivered = await deliverSubagentIntercomMessageEvent(
+    input.deps.pi.events,
+    target.intercomTarget,
+    `Follow-up for async run ${target.runId} (${target.agent}):\n\n${followUp}`,
+    500,
+    { source: "async-resume", runId: target.runId, agent: target.agent, index: target.index },
+  );
+  if (!delivered) {
+    return failure(
+      [
+        "Async child appears live but its intercom target is not registered.",
+        `Run: ${target.runId}`,
+        `Intercom target: ${target.intercomTarget}`,
+        `Wait for completion, then retry ${formatRunAction("resume", target.runId, { message: "..." }, nestedResolutionScopeForExecutor(input.deps) !== undefined)}.`,
+      ].join("\n"),
+    );
+  }
+  const lines = [
+    "Delivered follow-up to live async child.",
+    `Run: ${target.runId}`,
+    `Intercom target: ${target.intercomTarget}`,
+  ];
+  if (input.params.acceptance !== undefined) {
+    lines.push(LIVE_ACCEPTANCE_OVERRIDE_NOTICE);
+  }
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
     details: {
       mode: "management",
       results: [],
       managementControl: buildManagementControl({
         state: "live",
-        runId,
-        index,
-        intercomTarget: target,
+        runId: target.runId,
+        index: target.index,
+        intercomTarget: target.intercomTarget,
         canNudge: true,
         canResume: true,
         canInterrupt: true,
@@ -1230,556 +317,30 @@ export async function nudgeSubagentRun(input: {
     },
   };
 }
-
-export async function resumeAsyncRun(input: {
-  params: SubagentParamsLike;
-  requestCwd: string;
-  ctx: ExtensionContext;
-  deps: ExecutorDeps;
-}): Promise<SubagentExecutionResult> {
-  const followUp = (input.params.message ?? input.params.task ?? "").trim();
-  if (!followUp) {
-    return {
-      content: [{ type: "text", text: "action='resume' requires message." }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
+/** Pending question, owned/live continuation, then saved session revival—in that order. */
+export async function resumeAsyncRun(
+  // Resume owns durable question delivery and newly launched continuation state through its helpers.
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
+  input: RevivalInput,
+): Promise<SubagentExecutionResult> {
+  if (normalizedFollowUp(input.params).length === 0) {
+    return failure("action='resume' requires message.");
   }
-
-  let target: ResumeSourceTarget;
   const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
-  const nudgeContinuation = (runId: string, sessionFile?: string) => {
-    if (!sessionFile) {
-      return;
-    }
-    for (const candidate of input.deps.state.ownedRuns?.values() ?? []) {
-      if (candidate.runId === runId) {
-        continue;
-      }
-      if (
-        !candidate.children.some((child) => child.sessionFile === sessionFile) &&
-        input.deps.state.asyncJobs.get(candidate.runId)?.sessionFile !== sessionFile
-      ) {
-        continue;
-      }
-      const active = ownedRunView(candidate, input.deps.state, {
-        readConfiguration: false,
-      }).children.find((entry) => entry.sessionFile === sessionFile && entry.state === "live");
-      if (!active) {
-        continue;
-      }
-      return nudgeSubagentRun({
-        params: {
-          ...input.params,
-          dir: undefined,
-          id: candidate.runId,
-          index: active.index,
-          message: followUp,
-        },
-        deps: input.deps,
-        ctx: input.ctx,
-      }).then((result) => {
-        const notice = liveLaunchOverrideNotice(input.params);
-        if (notice) {
-          result.content.push({ type: "text", text: notice });
-        }
-        return result;
-      });
-    }
-  };
+  let resolution: Resolution;
   try {
-    const requestedId = input.params.id ?? input.params.runId;
-    const pendingQuestions =
-      requestedId && !input.params.dir
-        ? listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), requestedId).filter(
-            (question) =>
-              question.state === "awaiting_input" || question.state === "answer_pending",
-          )
-        : [];
-    if (pendingQuestions.length) {
-      return continueQuestionSession(input, pendingQuestions);
-    }
-    const owned =
-      requestedId && !input.params.dir ? resolveOwnedRun(input.deps.state, requestedId) : undefined;
-    if (owned) {
-      const view = ownedRunView(owned, input.deps.state);
-      if (view.children.length > 1 && input.params.index === undefined) {
-        throw new Error(
-          `Run '${owned.runId}' has ${view.children.length} children. Provide index to choose one.`,
-        );
-      }
-      const child = view.children.find((entry) => entry.index === (input.params.index ?? 0));
-      if (!child) {
-        throw new Error(`Run '${owned.runId}' has no child at index ${input.params.index ?? 0}.`);
-      }
-      if (child.state === "live") {
-        const result = await nudgeSubagentRun({
-          params: { ...input.params, id: owned.runId, message: followUp },
-          deps: input.deps,
-          ctx: input.ctx,
-        });
-        const notice = liveLaunchOverrideNotice(input.params);
-        if (notice) {
-          result.content.push({ type: "text", text: notice });
-        }
-        return result;
-      }
-      const continuation = nudgeContinuation(owned.runId, child.sessionFile);
-      if (continuation) {
-        return await continuation;
-      }
-      const contract = readQuestionContract(owned.runId, child.index);
-      return reviveSavedSubagent(input, {
-        ...contract,
-        runId: owned.runId,
-        agent: child.agent,
-        index: child.index,
-        source: owned.source,
-        cwd: child.launch?.cwd ?? owned.cwd,
-        sessionFile: child.sessionFile,
-        effectiveAcceptance:
-          contract?.effectiveAcceptance ?? child.result?.acceptance?.effectiveAcceptance,
-        model: child.result?.model,
-      });
-    }
-    const resolved = requestedId
-      ? resolveSubagentRunId(requestedId, {
-          state: input.deps.state,
-          nested: nestedResolutionScopeForExecutor(input.deps),
-        })
-      : undefined;
-    if (resolved?.kind === "nested") {
-      if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
-        return resumeLiveNestedRun({
-          target: resolved,
-          message: followUp,
-          index: input.params.index,
-          acceptanceOverrideSupplied: input.params.acceptance !== undefined,
-          pi: input.deps.pi,
-          childSafe: Boolean(nestedResolutionScopeForExecutor(input.deps)),
-        });
-      }
-      const trustedSessionRoots = [
-        ...(input.deps.config.defaultSessionDir
-          ? [path.resolve(input.deps.expandTilde(input.deps.config.defaultSessionDir))]
-          : []),
-        ...(parentSessionFile ? [input.deps.getSubagentSessionRoot(parentSessionFile)] : []),
-      ];
-      target = resolveNestedResumeTarget(resolved, trustedSessionRoots);
-    } else {
-      target = resolveResumeTarget(input.params, input.deps.state);
-    }
+    resolution = await resolveContinuation(input, parentSessionFile);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const requestedId = input.params.id ?? input.params.runId;
-    if (
-      requestedId &&
-      !input.params.dir &&
-      (isAsyncRunNotFound(error) || message.includes("is detached for intercom coordination"))
-    ) {
-      try {
-        const questions = listSupervisorQuestions(
-          input.ctx.sessionManager.getSessionId(),
-          requestedId,
-        );
-        if (questions.length) {
-          return continueQuestionSession(input, questions);
-        }
-      } catch (questionError) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: questionError instanceof Error ? questionError.message : String(questionError),
-            },
-          ],
-          isError: true,
-          details: { mode: "management", results: [] },
-        };
-      }
-    }
-    return {
-      content: [{ type: "text", text: message }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
+    return lookupFailure(input, error);
   }
-
+  if (resolution.kind === "result") {
+    return resolution.result;
+  }
+  const { target } = resolution;
   if (target.kind === "live") {
-    const delivered = await deliverSubagentIntercomMessageEvent(
-      input.deps.pi.events,
-      target.intercomTarget,
-      `Follow-up for async run ${target.runId} (${target.agent}):\n\n${followUp}`,
-      500,
-      { source: "async-resume", runId: target.runId, agent: target.agent, index: target.index },
-    );
-    if (delivered) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `Delivered follow-up to live async child.`,
-              `Run: ${target.runId}`,
-              `Intercom target: ${target.intercomTarget}`,
-              input.params.acceptance !== undefined ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined,
-            ]
-              .filter(Boolean)
-              .join("\n"),
-          },
-        ],
-        details: {
-          mode: "management",
-          results: [],
-          managementControl: buildManagementControl({
-            state: "live",
-            runId: target.runId,
-            index: target.index,
-            intercomTarget: target.intercomTarget,
-            canNudge: true,
-            canResume: true,
-            canInterrupt: true,
-          }),
-        },
-      };
-    }
-    return {
-      content: [
-        {
-          type: "text",
-          text: [
-            `Async child appears live but its intercom target is not registered.`,
-            `Run: ${target.runId}`,
-            `Intercom target: ${target.intercomTarget}`,
-            `Wait for completion, then retry ${formatRunAction("resume", target.runId, { message: "..." }, Boolean(nestedResolutionScopeForExecutor(input.deps)))}.`,
-          ].join("\n"),
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
+    return deliverLiveContinuation(input, target);
   }
-
-  return nudgeContinuation(target.runId, target.sessionFile) ?? reviveSavedSubagent(input, target);
-}
-
-function continueQuestionSession(
-  input: Parameters<typeof reviveSavedSubagent>[0],
-  questions: SupervisorQuestionView[],
-): SubagentExecutionResult {
-  if (
-    input.params.index === undefined &&
-    new Set(questions.map((question) => question.index)).size > 1
-  ) {
-    throw new Error("Provide index to choose which child question to continue.");
-  }
-  const question = questions.findLast(
-    (entry) => input.params.index === undefined || entry.index === input.params.index,
+  return (
+    nudgeContinuation(input, target.runId, target.sessionFile) ?? reviveSavedSubagent(input, target)
   );
-  if (!question) {
-    throw new Error("No saved question for that child index.");
-  }
-  if (questionProcessAlive(question)) {
-    throw new Error(
-      "The question's child is still alive. Answer the question or stop it before continuing.",
-    );
-  }
-  if (question.delivery?.kind === "revive") {
-    throw new Error(`Use continue with the answer's continuation run ${question.delivery.runId}.`);
-  }
-  const revival = question.revival;
-  const prior = revival
-    ? resolveSubagentRunId(revival.runId, {
-        state: input.deps.state,
-        nested: nestedResolutionScopeForExecutor(input.deps),
-      })
-    : undefined;
-  const priorExists =
-    prior?.kind === "async"
-      ? prior.location.resultPath ||
-        (prior.location.asyncDir &&
-          fs.existsSync(path.join(prior.location.asyncDir, "status.json")))
-      : Boolean(prior);
-  if (
-    revival &&
-    (questionProcessAlive(revival) ||
-      priorExists ||
-      fs.existsSync(getAsyncConfigPath(revival.runId)) ||
-      fs.existsSync(path.join(getRunMetadataDir(revival.runId), "launch.json")) ||
-      fs.existsSync(path.join(ASYNC_DIR, revival.runId, RUNNER_ERROR_LOG_FILE)))
-  ) {
-    throw new Error(
-      `Continuation ${revival.runId} may already have launched. Inspect or continue that run; the original question was not restarted.`,
-    );
-  }
-  const message = [
-    input.params.message ?? input.params.task,
-    question.answer
-      ? `Saved supervisor answer:\n${question.answer.message}\n\nOriginal question:\n${question.message}`
-      : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  const result = reviveSavedSubagent(
-    { ...input, params: { ...input.params, message } },
-    { ...question, source: "question" },
-  );
-  if (!result.isError && question.answer && !question.delivery) {
-    recordQuestionDelivery(question, {
-      kind: "revive",
-      runId: result.details.asyncId!,
-      deliveredAt: Date.now(),
-    });
-  }
-  return result;
-}
-
-export function reviveSavedSubagent(
-  input: {
-    params: SubagentParamsLike;
-    requestCwd: string;
-    ctx: ExtensionContext;
-    deps: ExecutorDeps;
-  },
-  target: Pick<
-    ResumeSourceTarget,
-    "runId" | "agent" | "index" | "cwd" | "sessionFile" | "effectiveAcceptance"
-  > &
-    SupervisorRunContract & { source: string; model?: string },
-  runId: string = randomUUID(),
-): SubagentExecutionResult {
-  const followUp = (input.params.message ?? input.params.task ?? "").trim();
-  const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
-  if (
-    !target.sessionFile ||
-    path.extname(target.sessionFile) !== ".jsonl" ||
-    !fs.existsSync(target.sessionFile)
-  ) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Saved child session file is unavailable: ${target.sessionFile ?? "none"}. No child was started; any saved answer remains pending.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  const { blocked, depth, maxDepth } = checkSubagentDepth(input.deps.config.maxSubagentDepth);
-  if (blocked) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Nested subagent resume blocked (depth=${depth}, max=${maxDepth}). Complete the follow-up directly instead.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-
-  input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
-  const contract = readQuestionContract(target.runId, target.index) ?? target;
-  const savedLaunch =
-    input.params.agent === undefined && contract.launch
-      ? { ...contract.launch, ...contract.effectiveConfiguration }
-      : undefined;
-  const generatedOutputFilename =
-    input.params.output === undefined ? contract.launch?.generatedOutputFilename : undefined;
-  const effectiveCwd = input.params.cwd ?? savedLaunch?.cwd ?? target.cwd ?? input.requestCwd;
-  const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
-  if (!savedLaunch && !input.params.agent) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Run '${target.runId}' predates saved launch configuration. Its session and known result remain available, but the original profile cannot be reconstructed safely. Continue with agent: '${target.agent}' to explicitly use that profile's current configuration, including model and thinking; known output and acceptance are retained unless overridden.`,
-        },
-      ],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-  const discoveredAgents = savedLaunch
-    ? [savedLaunch.agent]
-    : input.deps.discoverAgents(effectiveCwd, scope, {
-        projectTrusted: input.ctx.isProjectTrusted(),
-      }).agents;
-  const fallbackTarget = resolveIntercomSessionTarget(
-    input.deps.pi.getSessionName(),
-    input.ctx.sessionManager.getSessionId(),
-  );
-  const orchestratorTarget = resolveOrchestratorIntercomTarget(
-    input.deps.pi.events,
-    fallbackTarget,
-  );
-  const intercomBridge = resolveIntercomBridge(orchestratorTarget);
-  const inheritedModel = providerQualifiedModelId(input.ctx.model?.provider, input.ctx.model?.id);
-  const agents = savedLaunch
-    ? discoveredAgents
-    : discoveredAgents.map((agent) =>
-        agent.model || !inheritedModel ? agent : { ...agent, model: inheritedModel },
-      );
-  const selectedAgent = input.params.agent ?? target.agent;
-  const profile = agents.find((agent) => agent.name === selectedAgent);
-  const agentConfig =
-    profile && savedLaunch
-      ? {
-          ...profile,
-          thinking: savedLaunch.thinking ?? profile.thinking,
-          maxExecutionTimeMs: savedLaunch.maxExecutionTimeMs,
-          maxTokens: savedLaunch.maxTokens,
-        }
-      : profile;
-  if (!agentConfig) {
-    return {
-      content: [{ type: "text", text: `Unknown agent for resume: ${selectedAgent}` }],
-      isError: true,
-      details: { mode: "management", results: [] },
-    };
-  }
-
-  saveQuestionOwner(runId, input.ctx.sessionManager.getSessionId());
-  const prior = input.deps.state.ownedRuns?.get(target.runId);
-  rememberOwnedRun(input.deps.state, {
-    runId,
-    ownerSessionId: input.ctx.sessionManager.getSessionId(),
-    rootRunId: prior?.rootRunId ?? target.runId,
-    predecessorRunId: target.runId,
-    predecessorIndex: target.index,
-    source: "async",
-    mode: "single",
-    cwd: effectiveCwd,
-    task: followUp,
-    startedAt: Date.now(),
-    children: [
-      {
-        agent: selectedAgent,
-        index: 0,
-        task: followUp,
-        label: prior?.children.find((child) => child.index === target.index)?.label,
-        sessionFile: target.sessionFile,
-      },
-    ],
-  });
-  const modelOverride = input.params.model;
-  const skill = normalizeSkillInput(input.params.skill);
-  const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
-  const launchInput: Parameters<typeof executeAsyncSingle>[1] = {
-    agent: selectedAgent,
-    task: buildRevivedAsyncTask(target, followUp, input.params.messageOrigin),
-    agentConfig,
-    ctx: {
-      pi: input.deps.pi,
-      cwd: input.requestCwd,
-      currentSessionId: input.deps.state.currentSessionId,
-      rootSessionId: resolveRootSessionId(input.ctx.sessionManager),
-      currentModelProvider: input.ctx.model?.provider,
-      projectTrusted: input.ctx.isProjectTrusted(),
-    },
-    cwd: effectiveCwd,
-    maxOutput: input.params.maxOutput ?? savedLaunch?.maxOutput,
-    artifactsDir:
-      input.params.artifacts === false ||
-      (input.params.artifacts === undefined && savedLaunch?.artifacts === false)
-        ? undefined
-        : (savedLaunch?.artifactsDir ?? input.deps.tempArtifactsDir),
-    shareEnabled: input.params.share ?? savedLaunch?.share ?? false,
-    sessionRoot: input.deps.getSubagentSessionRoot(parentSessionFile),
-    sessionFile: target.sessionFile,
-    maxSubagentDepth:
-      savedLaunch?.maxSubagentDepth ??
-      resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth),
-    worktreeSetupHook: input.deps.config.worktreeSetupHook,
-    worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
-    controlConfig: resolveControlConfig(
-      savedLaunch?.controlConfig ?? input.deps.config.control,
-      input.params.control,
-    ),
-    controlIntercomTarget: intercomBridge.orchestratorTarget,
-    childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(runId, agent, index),
-    availableModels,
-    savedLaunch,
-    modelOverride,
-    skills: skill,
-    acceptance:
-      input.params.acceptance ??
-      acceptanceInputFromResolved(contract.effectiveAcceptance ?? savedLaunch?.effectiveAcceptance),
-    output:
-      input.params.output ??
-      (generatedOutputFilename ? true : (savedLaunch?.output ?? contract.output)),
-    generatedOutputFilename,
-    outputMode: input.params.outputMode ?? savedLaunch?.outputMode ?? contract.outputMode,
-    outputSchema: input.params.outputSchema ?? savedLaunch?.outputSchema ?? contract.outputSchema,
-    projectTrust:
-      savedLaunch?.projectTrust ??
-      resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
-  };
-  const undoCwdRequest =
-    input.params.cwd !== undefined
-      ? requestChildExecutionCwd(target.sessionFile, effectiveCwd)
-      : undefined;
-  let result: ReturnType<typeof executeAsyncSingle>;
-  try {
-    result = executeAsyncSingle(runId, launchInput);
-  } catch (error) {
-    undoCwdRequest?.();
-    throw error;
-  }
-  if (result.isError) {
-    undoCwdRequest?.();
-  }
-  const owned = input.deps.state.ownedRuns?.get(runId);
-  if (owned) {
-    rememberOwnedRun(input.deps.state, {
-      ...owned,
-      asyncDir: result.details.asyncDir,
-      pid: result.details.asyncPid ?? input.deps.state.asyncJobs.get(runId)?.pid,
-      ...(result.isError ? { error: result.content.map((part) => part.text).join("\n") } : {}),
-    });
-  }
-  if (result.isError) {
-    return result;
-  }
-
-  const revivedId = result.details.asyncId ?? runId;
-  const revivedTarget = resolveSubagentIntercomTarget(revivedId, selectedAgent, 0);
-  const sourceLabel = target.source;
-  const lines = [
-    `Revived ${sourceLabel} subagent from ${target.runId}.`,
-    `Run mapping: ${target.runId} -> ${revivedId}`,
-    `Revived run: ${revivedId}`,
-    `Agent: ${selectedAgent}`,
-    `Configuration: ${savedLaunch ? "saved effective launch" : "explicitly selected current profile"}${modelOverride ? `; model ${modelOverride}` : ""}`,
-    `Root: ${prior?.rootRunId ?? target.runId}`,
-    `Session: ${target.sessionFile}`,
-    result.details.asyncDir ? `Async dir: ${result.details.asyncDir}` : undefined,
-    revivedTarget ? `Intercom target: ${revivedTarget} (if registered)` : undefined,
-    `Prior pending-reply context for ${target.runId} is invalid; use the revived run and target only.`,
-    `Status if needed: ${formatRunAction("status", revivedId, {}, Boolean(nestedResolutionScopeForExecutor(input.deps)))}`,
-  ].filter((line): line is string => Boolean(line));
-  return {
-    content: [
-      {
-        type: "text",
-        text: formatAsyncStartedMessage(
-          lines.join("\n"),
-          Boolean(nestedResolutionScopeForExecutor(input.deps)),
-        ),
-      },
-    ],
-    details: {
-      ...result.details,
-      managementControl: buildManagementControl({
-        state: "live",
-        runId: revivedId,
-        index: 0,
-        intercomTarget: revivedTarget,
-        canInterrupt: true,
-        revivedFromRunId: target.runId,
-      }),
-    },
-  };
 }

@@ -1,14 +1,8 @@
 import * as path from "node:path";
-import { type AgentConfig } from "../../agents/agents.ts";
-import { loadRunsForAgent } from "../shared/run-history.ts";
-import {
-  getStepAgents,
-  isParallelStep,
-  isDynamicParallelStep,
-  type ChainStep,
-  type ResolvedStepBehavior,
-  type SequentialStep,
-} from "../../shared/settings.ts";
+import type { ChainStep, ResolvedStepBehavior } from "../../shared/types/workflow.ts";
+import { errorMessage } from "../../shared/unknown.ts";
+import type { AgentConfig } from "../../shared/types/config.ts";
+import { getStepAgents, isParallelStep, isDynamicParallelStep } from "../../shared/settings.ts";
 import { findDuplicateOutputPath, resolveSingleOutputPath } from "../shared/single-output.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
 import { validateAcceptanceInput } from "../shared/acceptance.ts";
@@ -17,195 +11,173 @@ import {
   formatWorktreeTaskCwdConflict,
   type WorktreeSetup,
 } from "../shared/worktree.ts";
-import { type Details, type SubagentExecutionResult } from "../../shared/types.ts";
-import { type SubagentParamsLike, type TaskParam } from "./subagent-params.ts";
+import type { Details, SubagentExecutionResult, ReadonlyInput } from "../../shared/types.ts";
+import type { SubagentParamsLike, TaskParam } from "./subagent-params.ts";
+import { resolveForegroundTimeoutMs } from "./execution-timeout.ts";
+export { resolveForegroundTimeoutMs, normalizeRoleForegroundTimeout } from "./execution-timeout.ts";
+export { normalizeRepeatedParallelCounts } from "./invocation-expansion.ts";
 
-function validationErrorResult(mode: Details["mode"], text: string): SubagentExecutionResult {
+function validationError(mode: Details["mode"], text: string): SubagentExecutionResult {
   return { content: [{ type: "text", text }], isError: true, details: { mode, results: [] } };
 }
-
-const MIN_REVIEWER_FOREGROUND_TIMEOUT_MS = 900_000;
-const LONG_RUNNING_HISTORY_SAMPLE_SIZE = 20;
-const LONG_RUNNING_HISTORY_MIN_SAMPLES = 3;
-const LONG_RUNNING_HISTORY_HEADROOM = 1.25;
-const LONG_RUNNING_HISTORY_MAX_TIMEOUT_MS = 1_800_000;
-
-type TimeoutRole = "reviewer" | "planner" | "researcher";
-
-function resolveTimeoutRole(agentName: string | undefined): TimeoutRole | undefined {
-  if (typeof agentName !== "string") {
-    return undefined;
-  }
-  if (/(^|[._-])reviewer($|[._-])/i.test(agentName)) {
-    return "reviewer";
-  }
-  if (/(^|[._-])planner($|[._-])/i.test(agentName)) {
-    return "planner";
-  }
-  if (/(^|[._-])researcher($|[._-])/i.test(agentName)) {
-    return "researcher";
-  }
-  return undefined;
-}
-
-function historicalForegroundTimeoutFloor(agentName: string): number | undefined {
-  const durations = loadRunsForAgent(agentName)
-    .filter(
-      (entry) => entry.status === "ok" && Number.isFinite(entry.duration) && entry.duration > 0,
-    )
-    .slice(0, LONG_RUNNING_HISTORY_SAMPLE_SIZE)
-    .map((entry) => entry.duration)
-    .sort((left, right) => left - right);
-  if (durations.length < LONG_RUNNING_HISTORY_MIN_SAMPLES) {
-    return undefined;
-  }
-  const p75 = durations[Math.ceil(durations.length * 0.75) - 1];
-  return p75
-    ? Math.min(LONG_RUNNING_HISTORY_MAX_TIMEOUT_MS, Math.ceil(p75 * LONG_RUNNING_HISTORY_HEADROOM))
-    : undefined;
-}
-
-function roleForegroundTimeoutFloor(agentName: string): number | undefined {
-  const role = resolveTimeoutRole(agentName);
-  if (!role) {
-    return undefined;
-  }
-  const historical = historicalForegroundTimeoutFloor(agentName);
-  if (role === "reviewer") {
-    return Math.max(MIN_REVIEWER_FOREGROUND_TIMEOUT_MS, historical ?? 0);
-  }
-  return historical;
-}
-
-export function resolveForegroundTimeoutMs(params: SubagentParamsLike): {
-  timeoutMs?: number;
-  error?: string;
-} {
-  const rawTimeout = (params as { timeoutMs?: unknown }).timeoutMs;
-  const rawMaxRuntime = (params as { maxRuntimeMs?: unknown }).maxRuntimeMs;
-  for (const [name, value] of [
-    ["timeoutMs", rawTimeout],
-    ["maxRuntimeMs", rawMaxRuntime],
-  ] as const) {
-    if (
-      value !== undefined &&
-      (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-    ) {
-      return { error: `${name} must be a positive integer.` };
+function acceptanceForStep(step: ChainStep, index: number): string | undefined {
+  const prefix = `chain[${index}]`;
+  if (isParallelStep(step)) {
+    if (Object.hasOwn(step, "acceptance")) {
+      return `${prefix}.acceptance is not supported on static parallel groups; set acceptance on each parallel task.`;
     }
-  }
-  if (rawTimeout !== undefined && rawMaxRuntime !== undefined && rawTimeout !== rawMaxRuntime) {
-    return {
-      error: "timeoutMs and maxRuntimeMs are aliases; provide only one or use identical values.",
-    };
-  }
-  const timeoutMs =
-    typeof rawTimeout === "number"
-      ? rawTimeout
-      : typeof rawMaxRuntime === "number"
-        ? rawMaxRuntime
-        : undefined;
-  return timeoutMs === undefined ? {} : { timeoutMs };
-}
-
-function timeoutRoleAgentsInRequest(params: SubagentParamsLike): string[] {
-  const names = new Set<string>();
-  if ((params.chain?.length ?? 0) > 0) {
-    for (const step of params.chain ?? []) {
-      for (const agent of getStepAgents(step as ChainStep)) {
-        if (resolveTimeoutRole(agent)) {
-          names.add(agent);
-        }
-      }
-    }
-    return [...names];
-  }
-  if ((params.tasks?.length ?? 0) > 0) {
-    for (const task of params.tasks ?? []) {
-      if (resolveTimeoutRole(task.agent)) {
-        names.add(task.agent);
-      }
-    }
-    return [...names];
-  }
-  if (resolveTimeoutRole(params.agent)) {
-    names.add(params.agent!);
-  }
-  return [...names];
-}
-
-export function normalizeRoleForegroundTimeout(
-  params: SubagentParamsLike,
-  timeoutMs: number | undefined,
-): number | undefined {
-  if (timeoutMs === undefined) {
-    return timeoutMs;
-  }
-  let normalized = timeoutMs;
-  for (const agentName of timeoutRoleAgentsInRequest(params)) {
-    const floor = roleForegroundTimeoutFloor(agentName);
-    if (floor !== undefined && normalized < floor) {
-      normalized = floor;
-    }
-  }
-  return normalized;
-}
-
-function validateAcceptanceForExecution(
-  params: SubagentParamsLike,
-): SubagentExecutionResult | null {
-  const topLevelErrors = validateAcceptanceInput(params.acceptance);
-  if (topLevelErrors.length > 0) {
-    return validationErrorResult("single", topLevelErrors.join(" "));
-  }
-  for (const [index, task] of (params.tasks ?? []).entries()) {
-    const errors = validateAcceptanceInput(task.acceptance, `tasks[${index}].acceptance`);
-    if (errors.length > 0) {
-      return validationErrorResult("parallel", errors.join(" "));
-    }
-  }
-  for (const [stepIndex, step] of (params.chain ?? []).entries()) {
-    if (isParallelStep(step)) {
-      if (Object.hasOwn(step, "acceptance")) {
-        return validationErrorResult(
-          "chain",
-          `chain[${stepIndex}].acceptance is not supported on static parallel groups; set acceptance on each parallel task.`,
-        );
-      }
-      for (const [taskIndex, task] of step.parallel.entries()) {
-        const errors = validateAcceptanceInput(
-          task.acceptance,
-          `chain[${stepIndex}].parallel[${taskIndex}].acceptance`,
-        );
-        if (errors.length > 0) {
-          return validationErrorResult("chain", errors.join(" "));
-        }
-      }
-    } else if (isDynamicParallelStep(step)) {
-      if (Object.hasOwn(step, "acceptance")) {
-        return validationErrorResult(
-          "chain",
-          `chain[${stepIndex}].acceptance is not supported on dynamic fanout groups; set acceptance on chain[${stepIndex}].parallel.acceptance for each materialized child.`,
-        );
-      }
+    for (const [taskIndex, task] of step.parallel.entries()) {
       const errors = validateAcceptanceInput(
-        step.parallel.acceptance,
-        `chain[${stepIndex}].parallel.acceptance`,
+        task.acceptance,
+        `${prefix}.parallel[${taskIndex}].acceptance`,
       );
       if (errors.length > 0) {
-        return validationErrorResult("chain", errors.join(" "));
+        return errors.join(" ");
       }
-    } else {
-      const stepErrors = validateAcceptanceInput(step.acceptance, `chain[${stepIndex}].acceptance`);
-      if (stepErrors.length > 0) {
-        return validationErrorResult("chain", stepErrors.join(" "));
-      }
+    }
+    return;
+  }
+  if (isDynamicParallelStep(step)) {
+    if (Object.hasOwn(step, "acceptance")) {
+      return `${prefix}.acceptance is not supported on dynamic fanout groups; set acceptance on ${prefix}.parallel.acceptance for each materialized child.`;
+    }
+    const errors = validateAcceptanceInput(
+      step.parallel.acceptance,
+      `${prefix}.parallel.acceptance`,
+    );
+    return errors.length > 0 ? errors.join(" ") : undefined;
+  }
+  const errors = validateAcceptanceInput(step.acceptance, `${prefix}.acceptance`);
+  return errors.length > 0 ? errors.join(" ") : undefined;
+}
+function validateAcceptance(params: SubagentParamsLike): SubagentExecutionResult | undefined {
+  const errors = validateAcceptanceInput(params.acceptance);
+  if (errors.length > 0) {
+    return validationError("single", errors.join(" "));
+  }
+  for (const [index, task] of (params.tasks ?? []).entries()) {
+    const taskErrors = validateAcceptanceInput(task.acceptance, `tasks[${index}].acceptance`);
+    if (taskErrors.length > 0) {
+      return validationError("parallel", taskErrors.join(" "));
+    }
+  }
+  for (const [index, step] of (params.chain ?? []).entries()) {
+    const error = acceptanceForStep(step, index);
+    if (error !== undefined) {
+      return validationError("chain", error);
+    }
+  }
+  return;
+}
+interface InvocationModes {
+  readonly hasChain: boolean;
+  readonly hasTasks: boolean;
+  readonly hasSingle: boolean;
+  readonly allowClarifyTaskPrompt: boolean;
+}
+function validateMode(
+  params: SubagentParamsLike,
+  agents: readonly AgentConfig[],
+  modes: InvocationModes,
+): SubagentExecutionResult | undefined {
+  if (params.tasks?.length === 0) {
+    return validationError("parallel", "tasks must contain at least one task.");
+  }
+  if (params.worktree !== undefined && !modes.hasTasks) {
+    return validationError(
+      getRequestedModeLabel(params),
+      "Top-level worktree is supported only with tasks parallel mode.",
+    );
+  }
+  if (modes.hasSingle && params.task !== undefined && invalidTask(params.task)) {
+    return validationError("single", "task must be a non-empty string when provided.");
+  }
+  if (Number(modes.hasChain) + Number(modes.hasTasks) + Number(modes.hasSingle) !== 1) {
+    const names = agents.map((agent) => agent.name).join(", ");
+    return validationError(
+      "single",
+      `Provide exactly one mode. Agents: ${names.length > 0 ? names : "none"}`,
+    );
+  }
+  return;
+}
+export function validateExecutionInput(
+  params: SubagentParamsLike,
+  agents: readonly AgentConfig[],
+  modes: InvocationModes,
+): SubagentExecutionResult | null {
+  const error = validateAcceptance(params) ?? validateMode(params, agents, modes);
+  if (error) {
+    return error;
+  }
+  const timeout = resolveForegroundTimeoutMs(params);
+  if (timeout.error !== undefined) {
+    return validationError(getRequestedModeLabel(params), timeout.error);
+  }
+  const agentError = modes.hasSingle ? validateSingleAgent(params.agent, agents) : undefined;
+  if (agentError) {
+    return agentError;
+  }
+  if (modes.hasTasks && params.tasks) {
+    return validateTasks(params.tasks, agents);
+  }
+  if (modes.hasChain && params.chain) {
+    return validateChain(params, agents, modes.allowClarifyTaskPrompt);
+  }
+  return null;
+}
+function validateSingleAgent(
+  name: string | undefined,
+  agents: readonly AgentConfig[],
+): SubagentExecutionResult | undefined {
+  if (name !== undefined && name.length > 0 && !agents.some((agent) => agent.name === name)) {
+    return validationError("single", `Unknown agent: ${name}`);
+  }
+  return;
+}
+function invalidTask(task: unknown): boolean {
+  return typeof task !== "string" || task.trim().length === 0;
+}
+function validateTasks(
+  tasks: readonly TaskParam[],
+  agents: readonly AgentConfig[],
+): SubagentExecutionResult | null {
+  for (const [index, task] of tasks.entries()) {
+    if (invalidTask(task.task)) {
+      return validationError("parallel", `tasks[${index}].task must be a non-empty string.`);
+    }
+    if (!agents.some((agent) => agent.name === task.agent)) {
+      return validationError("parallel", `Unknown agent: ${task.agent} (task ${index + 1})`);
     }
   }
   return null;
 }
-
-const SEQUENTIAL_CHAIN_STEP_KEYS = new Set([
+function firstStepError(
+  step: ChainStep,
+  params: SubagentParamsLike,
+  clarify: boolean,
+): string | undefined {
+  if (isParallelStep(step)) {
+    const missing = step.parallel.findIndex(
+      (task) => task.task === undefined || task.task.length === 0,
+    );
+    return missing < 0
+      ? undefined
+      : `First parallel step: task ${missing + 1} must have a task (no previous output to reference)`;
+  }
+  if (isDynamicParallelStep(step)) {
+    return "First step in chain cannot be dynamic fanout; expand.from requires a prior structured named output";
+  }
+  if (
+    (step.task === undefined || step.task.length === 0) &&
+    (params.task === undefined || params.task.length === 0) &&
+    !clarify
+  ) {
+    return "First step in chain must have a task";
+  }
+  return;
+}
+const SEQUENTIAL_KEYS = new Set([
   "agent",
   "task",
   "phase",
@@ -221,14 +193,8 @@ const SEQUENTIAL_CHAIN_STEP_KEYS = new Set([
   "model",
   "acceptance",
 ]);
-const STATIC_PARALLEL_STEP_KEYS = new Set([
-  "parallel",
-  "concurrency",
-  "failFast",
-  "worktree",
-  "cwd",
-]);
-const DYNAMIC_PARALLEL_STEP_KEYS = new Set([
+const PARALLEL_KEYS = new Set(["parallel", "concurrency", "failFast", "worktree", "cwd"]);
+const DYNAMIC_KEYS = new Set([
   "expand",
   "parallel",
   "collect",
@@ -237,192 +203,72 @@ const DYNAMIC_PARALLEL_STEP_KEYS = new Set([
   "phase",
   "label",
 ]);
-
-function unsupportedChainStepFields(step: object, allowed: Set<string>): string[] {
-  return Object.keys(step).filter((key) => !allowed.has(key));
+function allowedStepKeys(step: ChainStep): ReadonlySet<string> {
+  if (isParallelStep(step)) {
+    return PARALLEL_KEYS;
+  }
+  return isDynamicParallelStep(step) ? DYNAMIC_KEYS : SEQUENTIAL_KEYS;
 }
-
-export function validateExecutionInput(
-  params: SubagentParamsLike,
-  agents: AgentConfig[],
-  hasChain: boolean,
-  hasTasks: boolean,
-  hasSingle: boolean,
-  allowClarifyTaskPrompt: boolean,
-): SubagentExecutionResult | null {
-  const acceptanceError = validateAcceptanceForExecution(params);
-  if (acceptanceError) {
-    return acceptanceError;
+function stepTaskError(step: ChainStep, index: number): string | undefined {
+  if ("task" in step && Object.hasOwn(step, "task") && invalidTask(step.task)) {
+    return `chain[${index}].task must be a non-empty string when provided.`;
   }
-
-  if (params.tasks && params.tasks.length === 0) {
-    return validationErrorResult("parallel", "tasks must contain at least one task.");
-  }
-  if (params.worktree !== undefined && !hasTasks) {
-    return validationErrorResult(
-      getRequestedModeLabel(params),
-      "Top-level worktree is supported only with tasks parallel mode.",
+  if (isParallelStep(step)) {
+    const empty = step.parallel.findIndex(
+      (task) => Object.hasOwn(task, "task") && invalidTask(task.task),
     );
+    if (empty >= 0) {
+      return `chain[${index}].parallel[${empty}].task must be a non-empty string when provided.`;
+    }
   }
   if (
-    hasSingle &&
-    params.task !== undefined &&
-    (typeof params.task !== "string" || params.task.trim().length === 0)
+    isDynamicParallelStep(step) &&
+    Object.hasOwn(step.parallel, "task") &&
+    invalidTask(step.parallel.task)
   ) {
-    return validationErrorResult("single", "task must be a non-empty string when provided.");
+    return `chain[${index}].parallel.task must be a non-empty string when provided.`;
   }
-
-  if (Number(hasChain) + Number(hasTasks) + Number(hasSingle) !== 1) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Provide exactly one mode. Agents: ${agents.map((a) => a.name).join(", ") || "none"}`,
-        },
-      ],
-      isError: true,
-      details: { mode: "single" as const, results: [] },
-    };
+  return;
+}
+function validateChain(
+  params: SubagentParamsLike,
+  agents: readonly AgentConfig[],
+  clarify: boolean,
+): SubagentExecutionResult | null {
+  const chain = params.chain ?? [];
+  const first = chain.at(0);
+  if (!first) {
+    return validationError("chain", "Chain must have at least one step");
   }
-
-  const timeoutResolution = resolveForegroundTimeoutMs(params);
-  if (timeoutResolution.error) {
-    return validationErrorResult(getRequestedModeLabel(params), timeoutResolution.error);
+  const firstError = firstStepError(first, params, clarify);
+  if (firstError !== undefined) {
+    return validationError("chain", firstError);
   }
-
-  if (hasSingle && params.agent && !agents.find((agent) => agent.name === params.agent)) {
-    return {
-      content: [{ type: "text", text: `Unknown agent: ${params.agent}` }],
-      isError: true,
-      details: { mode: "single" as const, results: [] },
-    };
-  }
-
-  if (hasTasks && params.tasks) {
-    for (let i = 0; i < params.tasks.length; i++) {
-      const task = params.tasks[i]!;
-      if (typeof task.task !== "string" || task.task.trim().length === 0) {
-        return validationErrorResult("parallel", `tasks[${i}].task must be a non-empty string.`);
-      }
-      if (!agents.find((agent) => agent.name === task.agent)) {
-        return {
-          content: [{ type: "text", text: `Unknown agent: ${task.agent} (task ${i + 1})` }],
-          isError: true,
-          details: { mode: "parallel" as const, results: [] },
-        };
-      }
+  for (const [index, step] of chain.entries()) {
+    const allowed = allowedStepKeys(step);
+    const unsupported = Object.keys(step).filter((key) => !allowed.has(key));
+    if (unsupported.length > 0) {
+      return validationError(
+        "chain",
+        `chain[${index}] fields are not supported for this step mode: ${unsupported.join(", ")}.`,
+      );
+    }
+    const taskError = stepTaskError(step, index);
+    if (taskError !== undefined) {
+      return validationError("chain", taskError);
+    }
+    const missing = getStepAgents(step).find(
+      (name) => !agents.some((agent) => agent.name === name),
+    );
+    if (missing !== undefined) {
+      return validationError("chain", `Unknown agent: ${missing} (step ${index + 1})`);
+    }
+    if (isParallelStep(step) && step.parallel.length === 0) {
+      return validationError("chain", `Parallel step ${index + 1} must have at least one task`);
     }
   }
-
-  if (hasChain && params.chain) {
-    if (params.chain.length === 0) {
-      return {
-        content: [{ type: "text", text: "Chain must have at least one step" }],
-        isError: true,
-        details: { mode: "chain" as const, results: [] },
-      };
-    }
-    const firstStep = params.chain[0] as ChainStep;
-    if (isParallelStep(firstStep)) {
-      const missingTaskIndex = firstStep.parallel.findIndex((t) => !t.task);
-      if (missingTaskIndex !== -1) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `First parallel step: task ${missingTaskIndex + 1} must have a task (no previous output to reference)`,
-            },
-          ],
-          isError: true,
-          details: { mode: "chain" as const, results: [] },
-        };
-      }
-    } else if (isDynamicParallelStep(firstStep)) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "First step in chain cannot be dynamic fanout; expand.from requires a prior structured named output",
-          },
-        ],
-        isError: true,
-        details: { mode: "chain" as const, results: [] },
-      };
-    } else if (!(firstStep as SequentialStep).task && !params.task && !allowClarifyTaskPrompt) {
-      return {
-        content: [{ type: "text", text: "First step in chain must have a task" }],
-        isError: true,
-        details: { mode: "chain" as const, results: [] },
-      };
-    }
-    for (let i = 0; i < params.chain.length; i++) {
-      const step = params.chain[i] as ChainStep;
-      const allowedKeys = isParallelStep(step)
-        ? STATIC_PARALLEL_STEP_KEYS
-        : isDynamicParallelStep(step)
-          ? DYNAMIC_PARALLEL_STEP_KEYS
-          : SEQUENTIAL_CHAIN_STEP_KEYS;
-      const unsupportedFields = unsupportedChainStepFields(step, allowedKeys);
-      if (unsupportedFields.length > 0) {
-        return validationErrorResult(
-          "chain",
-          `chain[${i}] fields are not supported for this step mode: ${unsupportedFields.join(", ")}.`,
-        );
-      }
-      if (
-        Object.hasOwn(step, "task") &&
-        (typeof (step as { task?: unknown }).task !== "string" ||
-          !(step as { task: string }).task.trim())
-      ) {
-        return validationErrorResult(
-          "chain",
-          `chain[${i}].task must be a non-empty string when provided.`,
-        );
-      }
-      if (isParallelStep(step)) {
-        const emptyTaskIndex = step.parallel.findIndex(
-          (task) =>
-            Object.hasOwn(task, "task") && (typeof task.task !== "string" || !task.task.trim()),
-        );
-        if (emptyTaskIndex >= 0) {
-          return validationErrorResult(
-            "chain",
-            `chain[${i}].parallel[${emptyTaskIndex}].task must be a non-empty string when provided.`,
-          );
-        }
-      } else if (
-        isDynamicParallelStep(step) &&
-        Object.hasOwn(step.parallel, "task") &&
-        (typeof step.parallel.task !== "string" || !step.parallel.task.trim())
-      ) {
-        return validationErrorResult(
-          "chain",
-          `chain[${i}].parallel.task must be a non-empty string when provided.`,
-        );
-      }
-      const stepAgents = getStepAgents(step);
-      for (const agentName of stepAgents) {
-        if (!agents.find((a) => a.name === agentName)) {
-          return {
-            content: [{ type: "text", text: `Unknown agent: ${agentName} (step ${i + 1})` }],
-            isError: true,
-            details: { mode: "chain" as const, results: [] },
-          };
-        }
-      }
-      if (isParallelStep(step) && step.parallel.length === 0) {
-        return {
-          content: [{ type: "text", text: `Parallel step ${i + 1} must have at least one task` }],
-          isError: true,
-          details: { mode: "chain" as const, results: [] },
-        };
-      }
-    }
-  }
-
   return null;
 }
-
 function getRequestedModeLabel(params: SubagentParamsLike): Details["mode"] {
   if ((params.chain?.length ?? 0) > 0) {
     return "chain";
@@ -430,251 +276,126 @@ function getRequestedModeLabel(params: SubagentParamsLike): Details["mode"] {
   if ((params.tasks?.length ?? 0) > 0) {
     return "parallel";
   }
-  if (params.agent) {
-    return "single";
-  }
   return "single";
 }
-
 export function buildRequestedModeError(
   params: SubagentParamsLike,
   message: string,
 ): SubagentExecutionResult {
-  return withForkContext(
-    {
-      content: [{ type: "text", text: message }],
-      isError: true,
-      details: { mode: getRequestedModeLabel(params), results: [] },
-    },
-    params.context,
-  );
+  return withForkContext(validationError(getRequestedModeLabel(params), message), params.context);
 }
-
-function expandTopLevelTaskCounts(tasks: TaskParam[]): { tasks?: TaskParam[]; error?: string } {
-  const expanded: TaskParam[] = [];
-  for (let taskIndex = 0; taskIndex < tasks.length; taskIndex++) {
-    const task = tasks[taskIndex]!;
-    const rawCount = (task as TaskParam & { count?: unknown }).count;
-    if (
-      rawCount !== undefined &&
-      (typeof rawCount !== "number" || !Number.isInteger(rawCount) || rawCount < 1)
-    ) {
-      return { error: `tasks[${taskIndex}].count must be an integer >= 1` };
-    }
-    const { count, ...concreteTask } = task;
-    for (let repeat = 0; repeat < (rawCount ?? 1); repeat++) {
-      expanded.push({ ...concreteTask });
-    }
-  }
-  return { tasks: expanded };
-}
-
-function expandChainParallelCounts(chain: ChainStep[]): { chain?: ChainStep[]; error?: string } {
-  const expandedChain: ChainStep[] = [];
-  for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
-    const step = chain[stepIndex]!;
-    if (!isParallelStep(step)) {
-      expandedChain.push(step);
-      continue;
-    }
-    const expandedParallel = [];
-    for (let taskIndex = 0; taskIndex < step.parallel.length; taskIndex++) {
-      const task = step.parallel[taskIndex]!;
-      const rawCount = (task as typeof task & { count?: unknown }).count;
-      if (
-        rawCount !== undefined &&
-        (typeof rawCount !== "number" || !Number.isInteger(rawCount) || rawCount < 1)
-      ) {
-        return {
-          error: `chain[${stepIndex}].parallel[${taskIndex}].count must be an integer >= 1`,
-        };
-      }
-      const { count, ...concreteTask } = task;
-      for (let repeat = 0; repeat < (rawCount ?? 1); repeat++) {
-        expandedParallel.push({ ...concreteTask });
-      }
-    }
-    expandedChain.push({ ...step, parallel: expandedParallel });
-  }
-  return { chain: expandedChain };
-}
-
-export function normalizeRepeatedParallelCounts(params: SubagentParamsLike): {
-  params?: SubagentParamsLike;
-  error?: SubagentExecutionResult;
-} {
-  if (params.tasks) {
-    const expandedTasks = expandTopLevelTaskCounts(params.tasks);
-    if (expandedTasks.error) {
-      return { error: buildRequestedModeError(params, expandedTasks.error) };
-    }
-    return { params: { ...params, tasks: expandedTasks.tasks } };
-  }
-  if (params.chain) {
-    const expandedChain = expandChainParallelCounts(params.chain);
-    if (expandedChain.error) {
-      return { error: buildRequestedModeError(params, expandedChain.error) };
-    }
-    return { params: { ...params, chain: expandedChain.chain } };
-  }
-  return { params };
-}
-
 export function withForkContext(
   result: SubagentExecutionResult,
   context: SubagentParamsLike["context"],
 ): SubagentExecutionResult {
-  if (context !== "fork" || !result.details) {
+  if (context !== "fork") {
     return result;
   }
-  return {
-    ...result,
-    details: {
-      ...result.details,
-      context: "fork",
-    },
-  };
+  return { ...result, details: { ...result.details, context: "fork" } };
 }
-
 export function toExecutionErrorResult(
   params: SubagentParamsLike,
   error: unknown,
   context: SubagentParamsLike["context"] = params.context,
 ): SubagentExecutionResult {
-  const message = error instanceof Error ? error.message : String(error);
-  return withForkContext(
-    {
-      content: [{ type: "text", text: message }],
-      isError: true,
-      details: { mode: getRequestedModeLabel(params), results: [] },
-    },
-    context,
-  );
+  const message = errorMessage(error);
+  return withForkContext(validationError(getRequestedModeLabel(params), message), context);
 }
-
-export function collectChainSessionFiles(
-  chain: ChainStep[],
-  sessionFileForIndex: (idx?: number) => string | undefined,
-  sessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined,
-  dynamicFanoutMaxItems?: number,
-): (string | undefined)[] {
-  const sessionFiles: (string | undefined)[] = [];
-  let flatIndex = 0;
-  for (const step of chain) {
-    if (isParallelStep(step)) {
-      for (let i = 0; i < step.parallel.length; i++) {
-        const agentName = step.parallel[i]?.agent;
-        sessionFiles.push(
-          sessionFileForAgentIndex(agentName, flatIndex) ?? sessionFileForIndex(flatIndex),
-        );
-        flatIndex++;
-      }
-      continue;
-    }
-    if (isDynamicParallelStep(step)) {
-      const maxItems = step.expand.maxItems ?? dynamicFanoutMaxItems ?? 0;
-      for (let i = 0; i < maxItems; i++) {
-        sessionFiles.push(
-          sessionFileForAgentIndex(step.parallel.agent, flatIndex) ??
-            sessionFileForIndex(flatIndex),
-        );
-        flatIndex++;
-      }
-      continue;
-    }
-    const agentName = getStepAgents(step)[0];
-    sessionFiles.push(
-      sessionFileForAgentIndex(agentName, flatIndex) ?? sessionFileForIndex(flatIndex),
-    );
-    flatIndex++;
+function sessionAgents(step: ChainStep, maximum: number): readonly (string | undefined)[] {
+  if (isParallelStep(step)) {
+    return step.parallel.map((task) => task.agent);
   }
-  return sessionFiles;
+  if (isDynamicParallelStep(step)) {
+    return Array.from({ length: step.expand.maxItems ?? maximum }, () => step.parallel.agent);
+  }
+  return [getStepAgents(step)[0]];
 }
-
+export function collectChainSessionFiles(
+  chain: readonly ChainStep[],
+  sessionFileForIndex: (index?: number) => string | undefined,
+  sessionFileForAgentIndex: (agent: string | undefined, index?: number) => string | undefined,
+  dynamicFanoutMaxItems = 0,
+): (string | undefined)[] {
+  return chain
+    .flatMap((step) => sessionAgents(step, dynamicFanoutMaxItems))
+    .map((agent, index) => sessionFileForAgentIndex(agent, index) ?? sessionFileForIndex(index));
+}
 export function buildParallelModeError(message: string): SubagentExecutionResult {
-  return {
-    content: [{ type: "text", text: message }],
-    isError: true,
-    details: { mode: "parallel" as const, results: [] },
-  };
+  return validationError("parallel", message);
 }
-
 export function buildParallelWorktreeTaskCwdError(
-  tasks: ReadonlyArray<{ agent: string; cwd?: string }>,
+  tasks: ReadonlyArray<{ readonly agent: string; readonly cwd?: string }>,
   sharedCwd: string,
 ): string | undefined {
   const conflict = findWorktreeTaskCwdConflict(tasks, sharedCwd);
-  if (!conflict) {
-    return undefined;
-  }
-  return formatWorktreeTaskCwdConflict(conflict, sharedCwd);
+  return conflict ? formatWorktreeTaskCwdConflict(conflict, sharedCwd) : undefined;
 }
-
 export function buildChainWorktreeTaskCwdError(
-  chain: ChainStep[],
+  chain: readonly ChainStep[],
   sharedCwd: string,
 ): string | undefined {
-  for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
-    const step = chain[stepIndex]!;
-    if (!isParallelStep(step) || !step.worktree) {
+  for (const [index, step] of chain.entries()) {
+    if (!isParallelStep(step) || step.worktree !== true) {
       continue;
     }
-    const stepCwd = resolveChildCwd(sharedCwd, step.cwd);
-    const conflict = findWorktreeTaskCwdConflict(step.parallel, stepCwd);
-    if (!conflict) {
-      continue;
+    const cwd = resolveChildCwd(sharedCwd, step.cwd);
+    const conflict = findWorktreeTaskCwdConflict(step.parallel, cwd);
+    if (conflict) {
+      return `parallel chain step ${index + 1}: ${formatWorktreeTaskCwdConflict(conflict, cwd)}`;
     }
-    const detail = formatWorktreeTaskCwdConflict(conflict, stepCwd);
-    return `parallel chain step ${stepIndex + 1}: ${detail}`;
   }
-  return undefined;
+  return;
 }
-
 export function resolveParallelTaskCwd(
   task: TaskParam,
-  paramsCwd: string,
-  worktreeSetup: WorktreeSetup | undefined,
+  cwd: string,
+  worktree: ReadonlyInput<WorktreeSetup> | undefined,
   index: number,
 ): string {
-  if (worktreeSetup) {
-    return worktreeSetup.worktrees[index]!.agentCwd;
+  if (!worktree) {
+    return resolveChildCwd(cwd, task.cwd);
   }
-  return resolveChildCwd(paramsCwd, task.cwd);
+  const assigned = worktree.worktrees.at(index);
+  if (!assigned) {
+    throw new Error(`Missing worktree assignment for child ${index}.`);
+  }
+  return assigned.agentCwd;
 }
-
 export function findDuplicateParallelOutputPath(input: {
-  tasks: TaskParam[];
-  behaviors: ResolvedStepBehavior[];
-  paramsCwd: string;
-  ctxCwd: string;
-  worktreeSetup?: WorktreeSetup;
+  readonly tasks: readonly TaskParam[];
+  readonly behaviors: readonly ResolvedStepBehavior[];
+  readonly paramsCwd: string;
+  readonly ctxCwd: string;
+  readonly worktreeSetup?: ReadonlyInput<WorktreeSetup>;
 }): string | undefined {
   return findDuplicateOutputPath(
     input.tasks.map((task, index) => {
-      const behavior = input.behaviors[index];
-      if (!behavior?.output) {
+      const output = input.behaviors.at(index)?.output;
+      if (output === false || output === undefined || output.length === 0) {
         return { agent: task.agent };
       }
-      const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
       return {
         agent: task.agent,
-        outputPath: resolveSingleOutputPath(behavior.output, input.ctxCwd, taskCwd),
+        outputPath: resolveSingleOutputPath(
+          output,
+          input.ctxCwd,
+          resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index),
+        ),
       };
     }),
   );
 }
-
 export function findDuplicateAbsoluteParallelOutputPath(input: {
-  tasks: TaskParam[];
-  behaviors: ResolvedStepBehavior[];
+  readonly tasks: readonly TaskParam[];
+  readonly behaviors: readonly ResolvedStepBehavior[];
 }): string | undefined {
   return findDuplicateOutputPath(
     input.tasks.map((task, index) => {
-      const behavior = input.behaviors[index];
-      if (typeof behavior?.output !== "string" || !path.isAbsolute(behavior.output)) {
+      const output = input.behaviors.at(index)?.output;
+      if (typeof output !== "string" || !path.isAbsolute(output)) {
         return { agent: task.agent };
       }
-      return { agent: task.agent, outputPath: path.resolve(behavior.output) };
+      return { agent: task.agent, outputPath: path.resolve(output) };
     }),
   );
 }
