@@ -238,6 +238,13 @@ export const mutationBoundaries = [
     contract:
       "The native sandbox adapter sets SDK event cwd/path and directory-bus results before dispatch.",
   },
+  {
+    file: "test/fixtures/native-cwd-delegation.mjs",
+    parameters: ["request"],
+    types: [],
+    contract:
+      "The native resolve-execution-cwd listener synchronously writes its directory response to the caller's request.result before launch.",
+  },
 ];
 
 export function boundaryOverrides(config) {

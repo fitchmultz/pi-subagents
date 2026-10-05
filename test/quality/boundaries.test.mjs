@@ -4,12 +4,37 @@ import { relative, dirname, resolve } from "node:path";
 import { mutationBoundaries, boundaryOverrides } from "../../scripts/quality-boundaries.mjs";
 import { config, fixture, lint, put, remove, compiler } from "./probe-support.mjs";
 
+function probeMutationBoundary(dir, boundary, selected, javascript = false) {
+  const mutationRule = "no-param-reassign";
+  const parameter = boundary.parameters[0] ?? "ordinary";
+  const annotation = javascript ? "" : ": {value:number}";
+  put(
+    dir,
+    boundary.file,
+    `export function permitted(${parameter}${annotation}) { ${parameter}.value=1; }\nexport function unrelated(other${annotation}) {other.value=1;}\n`,
+  );
+  const mutationChanges = {
+    overrides: [{ ...selected, rules: { [mutationRule]: selected.rules[mutationRule] } }],
+  };
+  assert.deepEqual(
+    lint(dir, [mutationRule], [boundary.file], mutationChanges).map((entry) => entry.line),
+    boundary.parameters.length > 0 ? [2] : [1, 2],
+  );
+  const outsider = javascript ? "outsider.mjs" : "outsider.ts";
+  put(dir, outsider, `export function outside(${parameter}${annotation}) {${parameter}.value=1;}`);
+  assert.equal(lint(dir, [mutationRule], [outsider], mutationChanges).length, 1);
+}
+
 function probeBoundary(boundary) {
   const dir = fixture();
   const readonlyRule = "typescript/prefer-readonly-parameter-types";
-  const mutationRule = "no-param-reassign";
   try {
     const selected = boundaryOverrides(config).find((entry) => entry.files[0] === boundary.file);
+    if (boundary.file.endsWith(".mjs")) {
+      assert.deepEqual(boundary.types, [], "Unchecked JS has no readonly-type permissions");
+      probeMutationBoundary(dir, boundary, selected, true);
+      return;
+    }
     let declarations = "";
     const declarationFiles = new Map();
     const imports = [];
@@ -80,25 +105,7 @@ function probeBoundary(boundary) {
         "Wrong existing origin must remove every intended owner exemption",
       );
     }
-    const parameter = boundary.parameters[0] ?? "ordinary";
-    put(
-      dir,
-      boundary.file,
-      `export function permitted(${parameter}: {value:number}) { ${parameter}.value=1; }\nexport function unrelated(other: {value:number}) {other.value=1;}\n`,
-    );
-    const mutationChanges = {
-      overrides: [{ ...selected, rules: { [mutationRule]: selected.rules[mutationRule] } }],
-    };
-    assert.deepEqual(
-      lint(dir, [mutationRule], [boundary.file], mutationChanges).map((entry) => entry.line),
-      boundary.parameters.length > 0 ? [2] : [1, 2],
-    );
-    put(
-      dir,
-      "outsider.ts",
-      `export function outside(${parameter}: {value:number}) {${parameter}.value=1;}`,
-    );
-    assert.equal(lint(dir, [mutationRule], ["outsider.ts"], mutationChanges).length, 1);
+    probeMutationBoundary(dir, boundary, selected);
     if (boundary.argumentPresence !== undefined) {
       const undefinedRule = "unicorn/no-useless-undefined";
       const presenceChanges = {
