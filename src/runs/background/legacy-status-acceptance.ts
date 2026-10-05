@@ -1,5 +1,5 @@
 import { isRecord, isUnknownArray } from "../../shared/unknown.ts";
-import { DEFAULT_FINALIZATION_MAX_TURNS } from "../shared/acceptance-contract.ts";
+import { DEFAULT_FINALIZATION_MAX_TURNS } from "../shared/acceptance-defaults.ts";
 
 function normalizeLegacyStep(value: unknown): unknown {
   if (!isRecord(value) || !isRecord(value.acceptance)) {

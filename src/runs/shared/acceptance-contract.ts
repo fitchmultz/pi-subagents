@@ -2,6 +2,7 @@ import { isRecord, isUnknownArray, recordAt } from "../../shared/unknown.ts";
 import { Compile } from "../../shared/native-typebox.ts";
 import { AcceptanceOverride } from "../../extension/schemas.ts";
 import { formatAcceptanceReportExample } from "./acceptance-reports.ts";
+import { DEFAULT_FINALIZATION_MAX_TURNS } from "./acceptance-defaults.ts";
 import type {
   AcceptanceConfig,
   AcceptanceEvidenceKind,
@@ -11,7 +12,6 @@ import type {
   ResolvedAcceptanceGate,
 } from "../../shared/types.ts";
 
-export const DEFAULT_FINALIZATION_MAX_TURNS = 3;
 const MAX_FINALIZATION_TURNS = 10;
 
 const VALID_EVIDENCE = new Set<AcceptanceEvidenceKind>([
