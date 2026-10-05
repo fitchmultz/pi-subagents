@@ -1,4 +1,4 @@
-import type { SubagentExecutionResult } from "../../src/shared/types.ts";
+import { hasErrorCode } from "../../src/shared/unknown.ts";
 import { createSubagentState } from "../support/background-fixtures.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
 import { assertDefined, parseJson, textAt, record, numberValue } from "../support/assertions.ts";
@@ -13,6 +13,7 @@ import * as path from "node:path";
 import {
   INTERCOM_DETACH_REQUEST_EVENT,
   SUBAGENT_ASYNC_STARTED_EVENT,
+  type SubagentExecutionResult,
 } from "../../src/shared/types.ts";
 import { parseAsyncStatus, parseAsyncStartedEvent } from "../../src/runs/background/run-schemas.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
@@ -20,7 +21,6 @@ import { createSubagentExecutor } from "../../src/runs/foreground/subagent-execu
 import {
   type MockPi,
   createEventBus,
-  createNativeSessionFixture,
   createMockPi,
   createTempDir,
   events,
@@ -28,13 +28,6 @@ import {
   makeMinimalCtx,
   removeTempDir,
 } from "../support/helpers.ts";
-
-const nativeRoot = createTempDir("parallel-sdk-");
-const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
-after(async () => {
-  await native.dispose();
-  removeTempDir(nativeRoot);
-});
 
 describe("parallel agent execution", () => {
   let tempDir: string;
@@ -61,8 +54,10 @@ describe("parallel agent execution", () => {
   function git(cwd: string, args: readonly string[]): string {
     const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
     if (result.status !== 0) {
+      const stderr = result.stderr.trim();
+      const stdout = result.stdout.trim();
       const message =
-        result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`;
+        [stderr, stdout].find((text) => text !== "") ?? `git ${args.join(" ")} failed`;
       throw new Error(message);
     }
     return result.stdout.trim();
@@ -77,22 +72,9 @@ describe("parallel agent execution", () => {
     git(cwd, ["commit", "-m", "initial commit"]);
   }
 
-  function bestEffortRemovePreservedWorktree(
-    repoDir: string,
-    worktreePath: string,
-    branch: string,
-  ): void {
-    try {
-      spawnSync("git", ["-C", repoDir, "worktree", "remove", "--force", worktreePath], {
-        encoding: "utf-8",
-      });
-    } catch {}
-    try {
-      spawnSync("git", ["-C", repoDir, "branch", "-D", branch], { encoding: "utf-8" });
-    } catch {}
-    try {
-      fs.rmSync(worktreePath, { recursive: true, force: true });
-    } catch {}
+  function removePreservedWorktree(repoDir: string, worktreePath: string, branch: string): void {
+    git(repoDir, ["worktree", "remove", "--force", worktreePath]);
+    git(repoDir, ["branch", "-D", branch]);
   }
 
   function makeExecutor(
@@ -102,7 +84,6 @@ describe("parallel agent execution", () => {
   ) {
     return createSubagentExecutor({
       pi: {
-        ...native.pi,
         events: eventBus,
         getSessionName: () => {
           /* The fixture does not need getSessionName side effects. */
@@ -161,7 +142,7 @@ describe("parallel agent execution", () => {
     assert.equal(result.details.results[1].timedOut, true);
   });
 
-  it("extends a top-level foreground parallel timeout", async () => {
+  it("extends a top-level foreground parallel timeout", async (t) => {
     const release = path.join(tempDir, "release-child");
     const clockFile = path.join(tempDir, "runner-clock.json");
     const savedEnv = {
@@ -230,139 +211,133 @@ describe("parallel agent execution", () => {
         process.kill(pid, 0);
         return true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        if (hasErrorCode(error, "ESRCH")) {
           return false;
         }
         throw error;
       }
     };
+    const stopOwner = () => {
+      try {
+        if (runnerPid !== undefined && alive(runnerPid)) {
+          process.kill(runnerPid, "SIGTERM");
+        } else if (launcherPid !== undefined && alive(launcherPid)) {
+          process.kill(-launcherPid, "SIGTERM");
+        }
+      } catch (error) {
+        if (!hasErrorCode(error, "ESRCH")) {
+          throw error;
+        }
+      }
+    };
+    const failures: unknown[] = [];
     try {
       process.env.NODE_OPTIONS = `${savedEnv.NODE_OPTIONS ?? ""} --import=${preload}`;
       process.env.PI_TEST_RUNNER_CLOCK = clockFile;
-      try {
-        resultPromise = executor
-          .execute({
-            toolCallId: "parallel-extend",
-            params: {
-              tasks: [
-                { agent: "slow", task: "Need more time" },
-                { agent: "second", task: "Starts after extension" },
-              ],
-              concurrency: 1,
-              timeoutMs: 250,
-            },
-            signal: new AbortController().signal,
-            ctx: makeMinimalCtx(tempDir),
-          })
-          .then((value) => {
-            result = value;
-            return value;
-          });
-        await waitFor(() => {
-          const current = status();
-          runnerPid = current?.pid ?? runnerPid;
-          return (
-            current?.runtimeVersion === 2 &&
-            current.state === "running" &&
-            current.timeoutAt !== undefined &&
-            current.timeoutAt !== 0 &&
-            mockPi.callCount() === 1
-          );
-        }, "actual owner deadline and first child are ready");
-        const initial = status();
-        assertDefined(initial);
-        const initialTimeout = initial.timeoutAt;
-        const initialStart = initial.startedAt;
-        assertDefined(initialTimeout);
-        assertDefined(initialStart);
-        assert.equal(initialTimeout - initialStart, 250);
-        const extension = await executor.execute({
-          toolCallId: "parallel-extend-control",
-          params: { action: "extend", id: runId, extendMs: 1500 },
+      resultPromise = executor
+        .execute({
+          toolCallId: "parallel-extend",
+          params: {
+            tasks: [
+              { agent: "slow", task: "Need more time" },
+              { agent: "second", task: "Starts after extension" },
+            ],
+            concurrency: 1,
+            timeoutMs: 250,
+          },
           signal: new AbortController().signal,
           ctx: makeMinimalCtx(tempDir),
+        })
+        .then((value) => {
+          result = value;
+          return value;
         });
-        assert.equal(extension.isError, undefined, JSON.stringify(extension));
-        assert.match(textAt(extension.content), /Requested 1500ms more for run/);
-        await tick(100);
-        await waitFor(
-          () =>
-            status()?.timeoutAt === initialTimeout + 1500 &&
-            (readEvidence("events.jsonl") ?? "")
-              .trim()
-              .split("\n")
-              .filter(Boolean)
-              .map((line) => record(parseJson(line)))
-              .some(
-                (event) =>
-                  event.type === "subagent.run.extended" &&
-                  event.runId === runId &&
-                  event.timeoutAt === initialTimeout + 1500,
-              ),
-          "owner applies the requested extension",
+      await waitFor(() => {
+        const current = status();
+        runnerPid = current?.pid ?? runnerPid;
+        return (
+          current?.runtimeVersion === 2 &&
+          current.state === "running" &&
+          current.timeoutAt !== undefined &&
+          current.timeoutAt !== 0 &&
+          mockPi.callCount() === 1
         );
-        assert.equal(
-          await tick(350),
-          initialStart + 450,
-          "owner crosses the original 250ms deadline",
-        );
-        assert.equal(status()?.state, "running");
-        assert.equal(status()?.timedOut, undefined);
-        assert.equal(mockPi.callCount(), 1, "queued second child has not started");
-        fs.writeFileSync(release, "go");
-        await waitFor(
-          () => result !== undefined,
-          "parallel result settles after both real child exits",
-        );
-        await resultPromise;
-        assertDefined(result);
-        assert.equal(result.isError, undefined, JSON.stringify(result));
-        assertDefined(result);
-        assert.equal(result.details.results.length, 2);
-        assertDefined(result);
-        for (const child of result.details.results) {
-          assert.equal(child.exitCode, 0);
-          assert.equal(child.agentProcessExit?.code, 0, "actual child process exited successfully");
-        }
-        assert.equal(mockPi.callCount(), 2);
-        completed = true;
-      } finally {
-        fs.writeFileSync(release, "cleanup");
-        if (!completed) {
-          // Switch back to native timers for cancellation if a clock assertion failed.
-          clockCommand({ resume: true });
-          try {
-            if (Boolean(runnerPid) && alive(runnerPid)) {
-              assertDefined(runnerPid);
-              process.kill(runnerPid, "SIGTERM");
-            } else if (alive(launcherPid)) {
-              const defined10811_0 = launcherPid;
-              assertDefined(defined10811_0);
-              process.kill(-defined10811_0, "SIGTERM");
-            }
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-              throw error;
-            }
-          }
-        }
-        await waitFor(
-          () => !alive(launcherPid === undefined ? undefined : -launcherPid) && !alive(runnerPid),
-          "owned launcher group and runner exit before fixture teardown",
-        );
-        await waitFor(() => result !== undefined, "foreground wait settles after owner exit");
-        await resultPromise;
-      }
-    } catch (error) {
-      throw new Error(
-        `Parallel extension failed: ${JSON.stringify({
-          result,
-          status: readEvidence("status.json"),
-          events: readEvidence("events.jsonl"),
-          runnerErrors: readEvidence("runner-error.log"),
-        })}`,
-        { cause: error },
+      }, "actual owner deadline and first child are ready");
+      const initial = status();
+      assertDefined(initial);
+      const initialTimeout = initial.timeoutAt;
+      const initialStart = initial.startedAt;
+      assertDefined(initialTimeout);
+      assertDefined(initialStart);
+      assert.equal(initialTimeout - initialStart, 250);
+      const extension = await executor.execute({
+        toolCallId: "parallel-extend-control",
+        params: { action: "extend", id: runId, extendMs: 1500 },
+        signal: new AbortController().signal,
+        ctx: makeMinimalCtx(tempDir),
+      });
+      assert.equal(extension.isError, undefined, JSON.stringify(extension));
+      assert.match(textAt(extension.content), /Requested 1500ms more for run/);
+      await tick(100);
+      await waitFor(
+        () =>
+          status()?.timeoutAt === initialTimeout + 1500 &&
+          (readEvidence("events.jsonl") ?? "")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => record(parseJson(line)))
+            .some(
+              (event) =>
+                event.type === "subagent.run.extended" &&
+                event.runId === runId &&
+                event.timeoutAt === initialTimeout + 1500,
+            ),
+        "owner applies the requested extension",
       );
+      assert.equal(
+        await tick(350),
+        initialStart + 450,
+        "owner crosses the original 250ms deadline",
+      );
+      assert.equal(status()?.state, "running");
+      assert.equal(status()?.timedOut, undefined);
+      assert.equal(mockPi.callCount(), 1, "queued second child has not started");
+      fs.writeFileSync(release, "go");
+      await waitFor(
+        () => result !== undefined,
+        "parallel result settles after both real child exits",
+      );
+      await resultPromise;
+      assertDefined(result);
+      assert.equal(result.isError, undefined, JSON.stringify(result));
+      assertDefined(result);
+      assert.equal(result.details.results.length, 2);
+      assertDefined(result);
+      for (const child of result.details.results) {
+        assert.equal(child.exitCode, 0);
+        assert.equal(child.agentProcessExit?.code, 0, "actual child process exited successfully");
+      }
+      assert.equal(mockPi.callCount(), 2);
+      completed = true;
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      fs.writeFileSync(release, "cleanup");
+      if (!completed) {
+        // Switch back to native timers for cancellation if a clock assertion failed.
+        clockCommand({ resume: true });
+        stopOwner();
+      }
+      await waitFor(
+        () => !alive(launcherPid === undefined ? undefined : -launcherPid) && !alive(runnerPid),
+        "owned launcher group and runner exit before fixture teardown",
+      );
+      await waitFor(() => result !== undefined, "foreground wait settles after owner exit");
+      await resultPromise;
+    } catch (error) {
+      failures.push(error);
     } finally {
       for (const [key, value] of Object.entries(savedEnv)) {
         if (value === undefined) {
@@ -371,6 +346,18 @@ describe("parallel agent execution", () => {
           process.env[key] = value;
         }
       }
+    }
+    if (failures.length > 0) {
+      t.diagnostic(JSON.stringify({ cleanupFailures: failures.slice(1) }));
+      throw new Error(
+        `Parallel extension failed: ${JSON.stringify({
+          result,
+          status: readEvidence("status.json"),
+          events: readEvidence("events.jsonl"),
+          runnerErrors: readEvidence("runner-error.log"),
+        })}`,
+        { cause: failures[0] },
+      );
     }
   });
 
@@ -393,7 +380,6 @@ describe("parallel agent execution", () => {
     const bus = createEventBus();
     const executor = createSubagentExecutor({
       pi: {
-        ...native.pi,
         events: bus,
         getSessionName: () => {
           /* The fixture does not need getSessionName side effects. */
@@ -422,9 +408,8 @@ describe("parallel agent execution", () => {
         if (
           detached ||
           !(
-            update.details?.progress?.some(
-              (entry) => entry.currentTool === "contact_supervisor",
-            ) === true
+            update.details.progress?.some((entry) => entry.currentTool === "contact_supervisor") ===
+            true
           )
         ) {
           return;
@@ -464,7 +449,6 @@ describe("parallel agent execution", () => {
       false,
       "worktree should be cleaned after detached completion",
     );
-    const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
     assertDefined(result.details.wait);
     const patch = fs.readFileSync(
       path.join(
@@ -488,7 +472,11 @@ describe("parallel agent execution", () => {
     const eventBus = createEventBus();
     eventBus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
       const started = parseAsyncStartedEvent(event);
-      assert.ok(started.asyncDir, "owner must publish its artifact directory");
+      assert.ok(
+        started.asyncDir !== undefined && started.asyncDir.length > 0,
+        "owner must publish its artifact directory",
+      );
+      assertDefined(started.asyncDir);
       fs.writeFileSync(path.join(started.asyncDir, "worktree-diffs"), "not a directory\n", "utf-8");
     });
     mockPi.onCall({ output: "Fast result" });
@@ -526,7 +514,7 @@ describe("parallel agent execution", () => {
       assert.equal(fs.existsSync(preservedWorktree), true, "worktree should remain for recovery");
     } finally {
       if (Boolean(preservedWorktree) && Boolean(preservedBranch)) {
-        bestEffortRemovePreservedWorktree(tempDir, preservedWorktree, preservedBranch);
+        removePreservedWorktree(tempDir, preservedWorktree, preservedBranch);
       }
       removeTempDir(sessionRoot);
     }

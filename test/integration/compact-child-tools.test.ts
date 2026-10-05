@@ -6,8 +6,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { after, test } from "node:test";
+import { importSelectedNative } from "../../src/shared/native-import.ts";
 
 // Keep the canonical storage root fixed across SDK sessions: both native and Jiti
 // modules retain storage paths from their first import.
@@ -29,14 +30,12 @@ const defined927_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.m
 assertDefined(defined927_0);
 const sdkRoot = process.env.PI_COMPACT_TEST_HOST ?? path.dirname(defined927_0);
 process.env.PI_PACKAGE_DIR = sdkRoot;
-const installedPackage = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
-assertDefined(installedPackage);
-assert.equal(
-  fs.realpathSync(sdkRoot),
-  fs.realpathSync(path.dirname(installedPackage)),
-  "selected host must match the installed SDK graph",
+const sdk = await importSelectedNative(
+  import.meta.url,
+  "@earendil-works/pi-coding-agent",
+  pathToFileURL(path.join(sdkRoot, "dist/index.js")).href,
+  () => import("@earendil-works/pi-coding-agent"),
 );
-const sdk = await import("@earendil-works/pi-coding-agent");
 const extensionPath = fileURLToPath(
   new URL("../../src/extension/fanout-child.ts", import.meta.url),
 );
@@ -120,9 +119,9 @@ test("native child startup reduces serialized definitions and preserves lazy, le
           new AbortController().signal,
         );
         assert.equal(session.getActiveToolNames().includes("subagent"), false);
-        // Each scenario owns shared fixture state; complete it before starting the next one.
-        // oxlint-disable-next-line no-await-in-loop
         const list = parseSubagentExecutionResult(
+          // Native controls must be enabled before their list request is dispatched.
+          // oxlint-disable-next-line no-await-in-loop
           await activeTool(session, "agent_runs").execute(
             "child-list",
             { action: "list" },
@@ -140,9 +139,9 @@ test("native child startup reduces serialized definitions and preserves lazy, le
         );
         assert.ok(Boolean(activeTool(session, "subagent")));
       }
-      // Each scenario owns shared fixture state; complete it before starting the next one.
-      // oxlint-disable-next-line no-await-in-loop
       const blocked = parseSubagentExecutionResult(
+        // Child-safe rejection is checked on the current session before disposing it.
+        // oxlint-disable-next-line no-await-in-loop
         await activeTool(session, "subagent").execute(
           "blocked",
           { action: "create", config: { name: "forbidden" } },

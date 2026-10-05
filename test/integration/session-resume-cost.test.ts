@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, test } from "node:test";
+import { spy } from "sinon";
+import { pathToFileURL } from "node:url";
+import { importSelectedNative } from "../../src/shared/native-import.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { createSubagentState } from "../support/background-fixtures.ts";
 import type { TrackedOwnedRun } from "../../src/shared/types.ts";
@@ -16,13 +19,13 @@ const defined565_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.m
 assertDefined(defined565_0);
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(defined565_0);
 process.env.PI_PACKAGE_DIR = sdkRoot;
-assert.equal(
-  fs.realpathSync(sdkRoot),
-  fs.realpathSync(path.dirname(defined565_0)),
-  "selected host must match the installed SDK graph",
-);
 const { SessionManager, DefaultResourceLoader, SettingsManager, createAgentSession } =
-  await import("@earendil-works/pi-coding-agent");
+  await importSelectedNative(
+    import.meta.url,
+    "@earendil-works/pi-coding-agent",
+    pathToFileURL(path.join(sdkRoot, "dist/index.js")).href,
+    () => import("@earendil-works/pi-coding-agent"),
+  );
 const nativeRoot = fs.mkdtempSync(path.join(tmpdir(), "resume-cost-sdk-"));
 const native = await createNativeSessionFixture({ cwd: nativeRoot, agentDir: nativeRoot });
 after(async () => {
@@ -280,34 +283,19 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
   const sessionFile = manager.getSessionFile();
   assertDefined(sessionFile);
   const fileBytes = fs.statSync(sessionFile).size;
-  let parsedChars = 0,
-    historicalLookups = 0,
+  let historicalLookups = 0,
     historicalBodyReads = 0,
     guardedHistoricalEntries = 0,
     ownerWrites = 0,
     sent = 0,
     ownerWritesAtInput: number | undefined;
-  const write: unknown = Reflect.get(JsonProjection.prototype, "write");
-  assert.ok(typeof write === "function");
-  t.mock.method(
-    JsonProjection.prototype,
-    "write",
-    function (this: InstanceType<typeof JsonProjection>, chunk: string | symbol) {
-      if (typeof chunk === "string") {
-        parsedChars += chunk.length;
-      }
-      Reflect.apply(write, this, [chunk]);
-    },
-  );
+  const writes = spy(JsonProjection.prototype, "write");
+  t.after(() => writes.restore());
   const getEntry = manager.getEntry.bind(manager);
   const getEntries = manager.getEntries.bind(manager),
     guarded = new WeakMap<SessionEntry, SessionEntry>();
-  const guard = (entry: SessionEntry | undefined) => {
-    if (
-      !entry ||
-      !historicalIds.has(entry.id) ||
-      !Object.getOwnPropertyDescriptor(entry, "message")?.get
-    ) {
+  const guard = (entry: SessionEntry): SessionEntry => {
+    if (!historicalIds.has(entry.id) || !Object.getOwnPropertyDescriptor(entry, "message")?.get) {
       return entry;
     }
     let proxy = guarded.get(entry);
@@ -317,7 +305,8 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
           if (key === "message") {
             historicalBodyReads++;
           }
-          return Reflect.get(target, key, receiver);
+          const value: unknown = Reflect.get(target, key, receiver);
+          return value;
         },
       });
       guarded.set(entry, proxy);
@@ -330,7 +319,8 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     if (historicalIds.has(id)) {
       historicalLookups++;
     }
-    return guard(getEntry(id));
+    const entry = getEntry(id);
+    return entry === undefined ? undefined : guard(entry);
   });
   const pi = {
     ...native.pi,
@@ -375,6 +365,10 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
       await delay(10);
     }
     delivery.stop();
+    const parsedChars = writes.args.reduce(
+      (total, [chunk]) => total + (typeof chunk === "string" ? chunk.length : 0),
+      0,
+    );
     assert.equal(ownerWrites, 16, "each legacy run saves delivery identity and accounting once");
     assert.ok(
       ownerWritesAtInput !== undefined && ownerWritesAtInput < 16,
@@ -584,11 +578,11 @@ test("awaited delivery refreshes verified receipts even when only external journ
     intercomTarget: "parent",
   });
   const events = createEventBus();
-  let relay: { requestId: string } | undefined,
-    notices = 0;
+  const relay = Promise.withResolvers<{ readonly requestId: string }>();
+  let notices = 0;
   events.on("subagent:result-intercom", (request) => {
     const payload = record(request);
-    relay = { requestId: text(payload.requestId) };
+    relay.resolve({ requestId: text(payload.requestId) });
   });
   const pi = {
     ...native.pi,
@@ -608,11 +602,16 @@ test("awaited delivery refreshes verified receipts even when only external journ
   try {
     delivery.start();
     const deadline = performance.now() + 5000;
-    while (!relay) {
-      assert.ok(performance.now() < deadline, "delivery enters its async tail");
-      // Observe the owner publication before advancing this lifecycle transition.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(10);
+    // Retain the existing five-second publication failure bound, but await the
+    // actual relay callback rather than polling a closure-mutated local.
+    const publicationTimeout = setTimeout(() => {
+      relay.reject(new Error("delivery enters its async tail"));
+    }, 5000);
+    let request;
+    try {
+      request = await relay.promise;
+    } finally {
+      clearTimeout(publicationTimeout);
     }
     const leaf = manager.getLeafId(),
       count = manager.getEntryCount();
@@ -637,7 +636,7 @@ test("awaited delivery refreshes verified receipts even when only external journ
       "external publication did not update the in-memory manager",
     );
     events.emit("subagent:result-intercom-delivery", {
-      requestId: relay.requestId,
+      requestId: request.requestId,
       delivered: true,
     });
     assertDefined(state.ownedRuns);

@@ -252,11 +252,11 @@ describe("subagent lazy activation with SDK tool filters", () => {
           };
           const defined8951_0 = activeTool(session, route === "subagent" ? "subagent" : "delegate");
           assertDefined(defined8951_0);
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const result =
             route === "slash" || route === "template"
-              ? await new Promise((resolve, reject) => {
+              ? // The bridge must finish before resetting the shared child fixture for the next route.
+                // oxlint-disable-next-line no-await-in-loop
+                await new Promise((resolve, reject) => {
                   const timeout = setTimeout(() => {
                     unsubscribe();
                     reject(new Error(`No ${route} response`));
@@ -285,7 +285,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
                         },
                   );
                 })
-              : await defined8951_0.execute(route, params, new AbortController().signal);
+              : // The launch must finish before resetting the shared child fixture for the next route.
+                // oxlint-disable-next-line no-await-in-loop
+                await defined8951_0.execute(route, params, new AbortController().signal);
           assert.match(JSON.stringify(result), /COMPACT_DONE/);
           assert.ok(
             activeTool(session, "agent_runs"),
@@ -346,9 +348,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
         );
         assert.deepEqual(first.details.questions, repeated.details.questions);
         for (const tool of [compact, compatible]) {
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const listed = parseSubagentExecutionResult(
+            // The current tool must finish before the next shared question transition.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "questions",
               { action: "questions", id: runId },
@@ -357,9 +359,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
           );
           assertDefined(listed.details.questions);
           assert.equal(listed.details.questions[0].state, "answer_pending");
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const conflict = parseSubagentExecutionResult(
+            // Check conflict against the answer published earlier in this lifecycle.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "conflict",
               { ...params, message: "Use another path." },
@@ -368,9 +370,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
           );
           assert.equal("isError" in conflict && conflict.isError, true);
           assert.match(JSON.stringify(conflict.content), /different saved answer/);
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const missing = parseSubagentExecutionResult(
+            // Validate the current tool before advancing to the compatibility route.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "missing",
               { ...params, questionId: undefined },
@@ -379,9 +381,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
           );
           assert.equal("isError" in missing && missing.isError, true);
           assert.match(JSON.stringify(missing.content), /questionId/);
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const blank = parseSubagentExecutionResult(
+            // Validate the current tool before advancing to the compatibility route.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute("blank", { ...params, message: " " }, new AbortController().signal),
           );
           assert.equal("isError" in blank && blank.isError, true);
@@ -462,9 +464,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
           let result;
           const deadline = Date.now() + 10_000;
           do {
-            // Observe the owner publication before advancing this lifecycle transition.
-            // oxlint-disable-next-line no-await-in-loop
             result = parseSubagentExecutionResult(
+              // Poll the index owner serially until its current publication is witnessed.
+              // oxlint-disable-next-line no-await-in-loop
               await tool.execute(
                 "history",
                 { action: "history", id: runId, index: 0, limit: 10 },
@@ -483,13 +485,15 @@ describe("subagent lazy activation with SDK tool filters", () => {
             await new Promise((resolve) => {
               setTimeout(resolve, 10);
             });
-          } while (true);
+          } while (Date.now() < deadline);
+          assertDefined(result.details.history);
+          assert.equal(result.details.history.freshness.state, "current");
           assert.equal(result.details.history.count, 140);
           assert.equal(result.details.history.entries.length, 10);
           assert.equal(result.details.history.freshness.authoritative, false);
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const earlier = parseSubagentExecutionResult(
+            // Page the witnessed current publication before advancing the shared session.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "earlier",
               {
@@ -507,9 +511,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
             earlier.details.history.entries[0].id,
             result.details.history.entries[0].id,
           );
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const search = parseSubagentExecutionResult(
+            // Search the current tool route before advancing the shared session.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "search",
               { action: "search", query: "uniqueregisteredword", limit: 1 },
@@ -520,9 +524,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
           assert.equal(search.details.historySearch.matches.length, 1);
           assertDefined(search.details.historySearch);
           assert.equal(search.details.historySearch.matches[0].runId, runId);
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const denied = parseSubagentExecutionResult(
+            // Complete this route's ownership check before advancing the shared session.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "foreign",
               { action: "history", id: "not-owned", index: 0 },
@@ -530,9 +534,9 @@ describe("subagent lazy activation with SDK tool filters", () => {
             ),
           );
           assert.equal(denied.isError, true);
-          // Each scenario owns shared fixture state; complete it before starting the next one.
-          // oxlint-disable-next-line no-await-in-loop
           const invalid = parseSubagentExecutionResult(
+            // Complete this route's validation check before advancing the shared session.
+            // oxlint-disable-next-line no-await-in-loop
             await tool.execute(
               "grammar",
               { action: "search", query: "word*" },
