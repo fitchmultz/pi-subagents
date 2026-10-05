@@ -114,7 +114,7 @@ export function publishStepOutput(
     ? cleanupSingleOutputFile(originalPath, output, undefined)
     : undefined;
   const savedPath = relocateOutput(ctx, originalPath, cleanup);
-  const reference = outputReference(savedPath, output, cleanup);
+  const reference = outputReference(savedPath, state.resolvedOutput.fullOutput, cleanup);
   const displayOutput = finalizeSingleOutput({
     fullOutput:
       state.attemptNotes.length > 0

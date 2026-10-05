@@ -662,6 +662,8 @@ describe("parallel agent execution", () => {
       assertDefined(child.savedOutputPath);
       assert.equal(fs.readFileSync(child.savedOutputPath, "utf8"), report);
       assert.equal(child.outputReference?.path, child.savedOutputPath);
+      assert.equal(child.outputReference.bytes, Buffer.byteLength(report));
+      assert.equal(child.outputReference.lines, 1);
       assert.equal(child.artifactPaths, undefined);
       if (outputMode === "file-only") {
         assertDefined(child.finalOutput);
@@ -669,6 +671,8 @@ describe("parallel agent execution", () => {
         assert.ok(child.finalOutput.includes(child.savedOutputPath));
         assertDefined(child.savedOutputPath);
         assert.ok(textAt(result.content).includes(child.savedOutputPath));
+      } else {
+        assert.equal(child.finalOutput, "ONLY_COPY_OF_THE_REQUESTED_REPORT");
       }
     });
   }
