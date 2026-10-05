@@ -1,3 +1,4 @@
+import { isRecord, isUnknownArray, recordAt } from "../../shared/unknown.ts";
 import { Compile } from "../../shared/native-typebox.ts";
 import { AcceptanceOverride } from "../../extension/schemas.ts";
 import { formatAcceptanceReportExample } from "./acceptance-reports.ts";
@@ -25,11 +26,7 @@ const VALID_EVIDENCE = new Set<AcceptanceEvidenceKind>([
   "manual-notes",
 ]);
 
-const ACCEPTANCE_KEYS = new Set(
-  Object.keys(
-    (AcceptanceOverride as unknown as { properties: Record<string, unknown> }).properties,
-  ),
-);
+const ACCEPTANCE_KEYS = new Set(Object.keys(recordAt(AcceptanceOverride, "properties") ?? {}));
 
 const REMOVED_ACCEPTANCE_KEYS = new Set(["level", "finalization", "reason", "review"]);
 const ACCEPTANCE_VALIDATOR = Compile(AcceptanceOverride);
@@ -48,12 +45,14 @@ const EVIDENCE_REPORT_FIELDS: Record<AcceptanceEvidenceKind, string> = {
   "manual-notes": "manualNotes: string for manual notes or external evidence",
 };
 
-export function formatEvidenceReportFieldMapping(evidence: AcceptanceEvidenceKind[]): string[] {
+export function formatEvidenceReportFieldMapping(
+  evidence: readonly AcceptanceEvidenceKind[],
+): string[] {
   return evidence.map((kind) => `- ${kind} -> ${EVIDENCE_REPORT_FIELDS[kind]}`);
 }
 
 function hasArrayItems(value: unknown): boolean {
-  return Array.isArray(value) && value.length > 0;
+  return isUnknownArray(value) && value.length > 0;
 }
 
 function acceptanceErrorPath(pathLabel: string, instancePath: string): string {
@@ -66,20 +65,10 @@ function acceptanceErrorPath(pathLabel: string, instancePath: string): string {
     }, pathLabel);
 }
 
-export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"): string[] {
-  if (input === undefined) {
-    return [];
-  }
-  if (input === false || typeof input === "string") {
-    return [
-      `${pathLabel} must be an object. Public acceptance levels and false disables are no longer supported.`,
-    ];
-  }
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return [`${pathLabel} must be an object.`];
-  }
-
-  const value = input as Record<string, unknown>;
+function unsupportedAcceptanceFields(
+  value: Readonly<Record<string, unknown>>,
+  pathLabel: string,
+): string[] {
   const errors: string[] = [];
   if (Object.hasOwn(value, "level")) {
     errors.push(
@@ -107,99 +96,170 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
     }
   }
 
+  return errors;
+}
+
+type SchemaError = ReturnType<typeof ACCEPTANCE_VALIDATOR.Errors>[number];
+
+function ignoreCriterionAlternative(
+  error: Readonly<Pick<SchemaError, "keyword" | "schemaPath" | "instancePath">>,
+  criteria: unknown,
+): boolean {
+  const match = error.instancePath.match(/^\/criteria\/(\d+)$/);
+  if (!match) {
+    return false;
+  }
+  const criterion: unknown = isUnknownArray(criteria) ? criteria[Number(match[1])] : undefined;
+  if (isRecord(criterion)) {
+    return error.keyword === "anyOf" || error.schemaPath.includes("/anyOf/0");
+  }
+  if (typeof criterion === "string") {
+    return error.keyword === "anyOf" || error.schemaPath.includes("/anyOf/1");
+  }
+  return error.keyword !== "anyOf";
+}
+
+function schemaTypeSuffix(expected: string, instancePath: string): string {
+  if (/^\/stopRules\/\d+$/.test(instancePath)) {
+    return "a non-empty string";
+  }
+  return expected === "array" || expected === "object" ? `an ${expected}` : `a ${expected}`;
+}
+
+interface SchemaErrorDetail {
+  readonly keyword: string;
+  readonly instancePath: string;
+  readonly message: string;
+  readonly params: unknown;
+}
+function schemaErrorProperties(params: unknown, key: string): string[] {
+  if (!isRecord(params) || !isUnknownArray(params[key])) {
+    return [];
+  }
+  return params[key].filter((property) => typeof property === "string");
+}
+
+function schemaErrorDetail(error: SchemaErrorDetail, pathLabel: string): string[] {
+  const errorPath = acceptanceErrorPath(pathLabel, error.instancePath);
+  if (error.instancePath.endsWith("/timeoutMs")) {
+    return [`${errorPath} must be a positive integer.`];
+  }
+  if (error.instancePath === "/maxFinalizationTurns") {
+    return [`${errorPath} must be an integer from 1 to ${MAX_FINALIZATION_TURNS}.`];
+  }
+  switch (error.keyword) {
+    case "anyOf":
+      return [`${errorPath} must be a string or object.`];
+    case "required":
+      return schemaErrorProperties(error.params, "requiredProperties").map(
+        (property) => `${errorPath}.${property} is required.`,
+      );
+    case "additionalProperties":
+      return schemaErrorProperties(error.params, "additionalProperties").map((property) =>
+        error.instancePath.endsWith("/env")
+          ? `${errorPath}.${property} must be a string.`
+          : `${errorPath}.${property} is not supported.`,
+      );
+    case "enum":
+      if (error.instancePath.includes("/evidence/")) {
+        return [`${errorPath} is not a supported evidence kind.`];
+      }
+      if (error.instancePath.endsWith("/severity")) {
+        return [`${errorPath} must be required or recommended.`];
+      }
+      return [`${errorPath} ${error.message}.`];
+    case "type": {
+      const type = recordAt(error, "params")?.type;
+      const expected = typeof type === "string" ? type : "unknown";
+      return [`${errorPath} must be ${schemaTypeSuffix(expected, error.instancePath)}.`];
+    }
+    default:
+      return [`${errorPath} ${error.message}.`];
+  }
+}
+
+function acceptanceSchemaErrors(
+  value: Readonly<Record<string, unknown>>,
+  pathLabel: string,
+): string[] {
   const structuralValue = Object.fromEntries(
     Object.entries(value).filter(([key]) => ACCEPTANCE_KEYS.has(key)),
   );
-  const schemaErrors = [...ACCEPTANCE_VALIDATOR.Errors(structuralValue)];
-  for (const error of schemaErrors) {
-    const criterionMatch = error.instancePath.match(/^\/criteria\/(\d+)$/);
-    if (criterionMatch) {
-      const criterion = Array.isArray(value.criteria)
-        ? value.criteria[Number(criterionMatch[1])]
-        : undefined;
-      if (criterion && typeof criterion === "object" && !Array.isArray(criterion)) {
-        if (error.keyword === "anyOf" || error.schemaPath.includes("/anyOf/0")) {
-          continue;
-        }
-      } else if (typeof criterion === "string") {
-        if (error.keyword === "anyOf" || error.schemaPath.includes("/anyOf/1")) {
-          continue;
-        }
-      } else if (error.keyword !== "anyOf") {
-        continue;
-      }
+  return ACCEPTANCE_VALIDATOR.Errors(structuralValue).flatMap((error) => {
+    if (error.keyword === "minLength" || ignoreCriterionAlternative(error, value.criteria)) {
+      return [];
     }
-    if (error.keyword === "minLength") {
-      continue;
-    }
-    const errorPath = acceptanceErrorPath(pathLabel, error.instancePath);
-    if (error.keyword === "anyOf" && criterionMatch) {
-      errors.push(`${errorPath} must be a string or object.`);
-    } else if (error.keyword === "required") {
-      for (const property of error.params.requiredProperties as string[]) {
-        errors.push(`${errorPath}.${property} is required.`);
-      }
-    } else if (error.keyword === "enum" && error.instancePath.includes("/evidence/")) {
-      errors.push(`${errorPath} is not a supported evidence kind.`);
-    } else if (error.keyword === "enum" && error.instancePath.endsWith("/severity")) {
-      errors.push(`${errorPath} must be required or recommended.`);
-    } else if (error.instancePath.endsWith("/timeoutMs")) {
-      errors.push(`${errorPath} must be a positive integer.`);
-    } else if (error.instancePath === "/maxFinalizationTurns") {
-      errors.push(`${errorPath} must be an integer from 1 to ${MAX_FINALIZATION_TURNS}.`);
-    } else if (error.keyword === "additionalProperties") {
-      for (const property of error.params.additionalProperties as string[]) {
-        errors.push(
-          error.instancePath.endsWith("/env")
-            ? `${errorPath}.${property} must be a string.`
-            : `${errorPath}.${property} is not supported.`,
-        );
-      }
-    } else if (error.keyword === "type") {
-      const expected = String(error.params.type);
-      const suffix = error.instancePath.match(/^\/stopRules\/\d+$/)
-        ? "a non-empty string"
-        : expected === "array" || expected === "object"
-          ? `an ${expected}`
-          : `a ${expected}`;
-      errors.push(`${errorPath} must be ${suffix}.`);
-    } else {
-      errors.push(`${errorPath} ${error.message}.`);
-    }
-  }
+    return schemaErrorDetail(error, pathLabel);
+  });
+}
 
-  for (const [index, criterion] of Array.isArray(value.criteria) ? value.criteria.entries() : []) {
-    if (typeof criterion === "string" && !criterion.trim()) {
+function emptyCriteriaFields(value: unknown, pathLabel: string): string[] {
+  const errors: string[] = [];
+  for (const [index, criterion] of isUnknownArray(value) ? value.entries() : []) {
+    if (typeof criterion === "string" && criterion.trim().length === 0) {
       errors.push(`${pathLabel}.criteria[${index}] must not be empty.`);
     }
-    if (criterion && typeof criterion === "object" && !Array.isArray(criterion)) {
-      const item = criterion as Record<string, unknown>;
-      if (typeof item.id === "string" && !item.id.trim()) {
+    if (isRecord(criterion)) {
+      const item = criterion;
+      if (typeof item.id === "string" && item.id.trim().length === 0) {
         errors.push(`${pathLabel}.criteria[${index}].id is required.`);
       }
-      if (typeof item.must === "string" && !item.must.trim()) {
+      if (typeof item.must === "string" && item.must.trim().length === 0) {
         errors.push(`${pathLabel}.criteria[${index}].must is required.`);
       }
     }
   }
-  for (const [index, command] of Array.isArray(value.verify) ? value.verify.entries() : []) {
-    if (!command || typeof command !== "object" || Array.isArray(command)) {
+  return errors;
+}
+
+function emptyVerificationFields(value: unknown, pathLabel: string): string[] {
+  const errors: string[] = [];
+  for (const [index, command] of isUnknownArray(value) ? value.entries() : []) {
+    if (!isRecord(command)) {
       continue;
     }
-    const item = command as Record<string, unknown>;
-    if (typeof item.id === "string" && !item.id.trim()) {
+    const item = command;
+    if (typeof item.id === "string" && item.id.trim().length === 0) {
       errors.push(`${pathLabel}.verify[${index}].id is required.`);
     }
-    if (typeof item.command === "string" && !item.command.trim()) {
+    if (typeof item.command === "string" && item.command.trim().length === 0) {
       errors.push(`${pathLabel}.verify[${index}].command is required.`);
     }
   }
-  for (const [index, rule] of Array.isArray(value.stopRules) ? value.stopRules.entries() : []) {
-    if (typeof rule === "string" && !rule.trim()) {
+  return errors;
+}
+
+function emptyStopRules(value: unknown, pathLabel: string): string[] {
+  const errors: string[] = [];
+  for (const [index, rule] of isUnknownArray(value) ? value.entries() : []) {
+    if (typeof rule === "string" && rule.trim().length === 0) {
       errors.push(`${pathLabel}.stopRules[${index}] must be a non-empty string.`);
     }
   }
 
+  return errors;
+}
+
+export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"): string[] {
+  if (input === undefined) {
+    return [];
+  }
+  if (input === false || typeof input === "string") {
+    return [
+      `${pathLabel} must be an object. Public acceptance levels and false disables are no longer supported.`,
+    ];
+  }
+  if (!isRecord(input)) {
+    return [`${pathLabel} must be an object.`];
+  }
+  const value = input;
+  const errors = [
+    ...unsupportedAcceptanceFields(value, pathLabel),
+    ...acceptanceSchemaErrors(value, pathLabel),
+    ...emptyCriteriaFields(value.criteria, pathLabel),
+    ...emptyVerificationFields(value.verify, pathLabel),
+    ...emptyStopRules(value.stopRules, pathLabel),
+  ];
   if (
     !hasArrayItems(value.criteria) &&
     !hasArrayItems(value.evidence) &&
@@ -215,7 +275,7 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 
 function normalizeCriteria(
   criteria: AcceptanceConfig["criteria"],
-  evidence: AcceptanceEvidenceKind[],
+  evidence: readonly AcceptanceEvidenceKind[],
 ): ResolvedAcceptanceGate[] {
   return (criteria ?? [])
     .map((criterion, index) => {
@@ -234,7 +294,7 @@ function normalizeCriteria(
         severity: criterion.severity ?? "required",
       };
     })
-    .filter((criterion) => criterion.must.trim());
+    .filter((criterion) => criterion.must.trim().length > 0);
 }
 
 function deriveAcceptanceLevel(config: AcceptanceConfig): AcceptanceProvenanceLevel {
@@ -245,7 +305,7 @@ function deriveAcceptanceLevel(config: AcceptanceConfig): AcceptanceProvenanceLe
 }
 
 export function resolveEffectiveAcceptance(input: {
-  explicit?: AcceptanceInput;
+  readonly explicit?: AcceptanceInput;
 }): ResolvedAcceptanceConfig {
   if (input.explicit === undefined) {
     return {
@@ -287,16 +347,16 @@ export function resolveEffectiveAcceptance(input: {
 export function acceptanceInputFromResolved(
   acceptance: ResolvedAcceptanceConfig | undefined,
 ): AcceptanceInput | undefined {
-  if (!acceptance?.explicit) {
+  if (acceptance?.explicit !== true) {
     return undefined;
   }
-  const maxTurns = acceptance.finalization?.maxTurns;
+  const maxTurns = acceptance.finalization.maxTurns;
   return {
     criteria: acceptance.criteria,
     evidence: acceptance.evidence,
     verify: acceptance.verify,
     stopRules: acceptance.stopRules,
-    ...(maxTurns !== undefined ? { maxFinalizationTurns: maxTurns } : {}),
+    maxFinalizationTurns: maxTurns,
   };
 }
 
@@ -321,6 +381,26 @@ export function acceptanceSelfReviewConfig(
   };
 }
 
+export function formatAcceptanceRequirements(
+  criteria: readonly ResolvedAcceptanceGate[],
+  evidence: readonly AcceptanceEvidenceKind[],
+  emptyCriteria: string,
+): string[] {
+  const criteriaLines =
+    criteria.length > 0
+      ? criteria.map(
+          (criterion) =>
+            `- ${criterion.id}: ${criterion.must}${criterion.evidence.length > 0 ? ` (evidence: ${criterion.evidence.join(", ")})` : ""}`,
+        )
+      : [emptyCriteria];
+  return [
+    "Criteria:",
+    ...criteriaLines,
+    "",
+    `Required evidence: ${evidence.length > 0 ? evidence.join(", ") : "none explicitly requested"}`,
+  ];
+}
+
 export function formatAcceptancePrompt(
   acceptance: ResolvedAcceptanceConfig,
   nativeReport = false,
@@ -343,17 +423,11 @@ export function formatAcceptancePrompt(
     "After the initial response, the runtime will continue this same session for a bounded self-review/repair loop before accepting the run.",
     "For an observed human-only boundary (such as Touch ID or an unavailable MFA code), report the affected criterion as blocked with concrete evidence and a nonempty humanAction stating the exact user action. Retain completed evidence. This leaves acceptance incomplete and stops finalization/verification until explicit Continue. Do not use blocked for ordinary errors, missing unrelated evidence, or work you can fix.",
     "",
-    "Criteria:",
-    ...(acceptance.criteria.length
-      ? acceptance.criteria.map(
-          (criterion) =>
-            `- ${criterion.id}: ${criterion.must}${criterion.evidence.length ? ` (evidence: ${criterion.evidence.join(", ")})` : ""}`,
-        )
-      : [
-          "- No explicit criteria were configured; satisfy the requested task and the required evidence/checks below.",
-        ]),
-    "",
-    `Required evidence: ${evidence.join(", ") || "none explicitly requested"}`,
+    ...formatAcceptanceRequirements(
+      acceptance.criteria,
+      evidence,
+      "- No explicit criteria were configured; satisfy the requested task and the required evidence/checks below.",
+    ),
   ];
   if (evidence.length > 0) {
     lines.push(

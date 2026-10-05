@@ -1,5 +1,7 @@
-import type { DynamicParallelStep, ParallelTaskItem } from "../../shared/settings.ts";
+import { isRecord, isUnknownArray, recordAt } from "../../shared/unknown.ts";
+import type { DynamicParallelStep, ParallelTaskItem } from "../../shared/types/workflow.ts";
 import type {
+  ReadonlyInput,
   ArtifactPaths,
   ChainOutputMap,
   JsonSchemaObject,
@@ -8,18 +10,32 @@ import type {
 import { getSingleResultOutput } from "../../shared/utils.ts";
 import { validateStructuredOutputValue } from "./structured-output.ts";
 
-export class DynamicFanoutError extends Error {}
+import {
+  DynamicFanoutError,
+  assertJsonPointer,
+  resolveJsonPointer,
+  scalarToKey,
+  normalizeItemKeyForId,
+  resolveItemTemplate,
+} from "./dynamic-item.ts";
+export {
+  DynamicFanoutError,
+  assertJsonPointer,
+  resolveJsonPointer,
+  normalizeItemKeyForId,
+  resolveItemTemplate,
+} from "./dynamic-item.ts";
 
 export interface DynamicFanoutConfig {
-  maxItems?: number;
-  allowRunnerFields?: boolean;
+  readonly maxItems?: number;
+  readonly allowRunnerFields?: boolean;
 }
 
 export interface DynamicMaterializedItem {
-  index: number;
-  key: string;
-  idKey: string;
-  item: unknown;
+  readonly index: number;
+  readonly key: string;
+  readonly idKey: string;
+  readonly item: unknown;
 }
 
 export interface DynamicCollectedResult {
@@ -44,7 +60,7 @@ const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ITEM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ITEM_REF_PATTERN = /\{([A-Za-z_][A-Za-z0-9_]*)(?:\.([^{}]+))?\}/g;
 const RESERVED_TEMPLATE_NAMES = new Set(["task", "previous", "chain_dir", "outputs"]);
-const DYNAMIC_STEP_KEYS = new Set([
+const DYNAMIC_STEP_KEYS = [
   "expand",
   "parallel",
   "collect",
@@ -53,15 +69,11 @@ const DYNAMIC_STEP_KEYS = new Set([
   "phase",
   "label",
   "acceptance",
-]);
-const RUNNER_DYNAMIC_STEP_KEYS = new Set([
-  ...DYNAMIC_STEP_KEYS,
-  "effectiveAcceptance",
-  "sessionFiles",
-]);
-const DYNAMIC_EXPAND_KEYS = new Set(["from", "item", "key", "maxItems", "onEmpty"]);
-const DYNAMIC_EXPAND_FROM_KEYS = new Set(["output", "path"]);
-const DYNAMIC_PARALLEL_KEYS = new Set([
+];
+const RUNNER_DYNAMIC_STEP_KEYS = [...DYNAMIC_STEP_KEYS, "effectiveAcceptance", "sessionFiles"];
+const DYNAMIC_EXPAND_KEYS = ["from", "item", "key", "maxItems", "onEmpty"];
+const DYNAMIC_EXPAND_FROM_KEYS = ["output", "path"];
+const DYNAMIC_PARALLEL_KEYS = [
   "agent",
   "task",
   "phase",
@@ -75,8 +87,8 @@ const DYNAMIC_PARALLEL_KEYS = new Set([
   "skill",
   "model",
   "acceptance",
-]);
-const RUNNER_DYNAMIC_PARALLEL_KEYS = new Set([
+];
+const RUNNER_DYNAMIC_PARALLEL_KEYS = [
   ...DYNAMIC_PARALLEL_KEYS,
   "outputName",
   "structured",
@@ -102,135 +114,50 @@ const RUNNER_DYNAMIC_PARALLEL_KEYS = new Set([
   "maxExecutionTimeMs",
   "maxTokens",
   "launch",
-]);
-const DYNAMIC_COLLECT_KEYS = new Set(["as", "outputSchema"]);
+];
+const DYNAMIC_COLLECT_KEYS = ["as", "outputSchema"];
 
 export function isSafeOutputName(name: string): boolean {
   return SAFE_OUTPUT_NAME_PATTERN.test(name);
 }
 
-export function assertJsonPointer(pointer: string, label: string): void {
-  if (pointer === "") {
-    return;
-  }
-  if (!pointer.startsWith("/")) {
-    throw new DynamicFanoutError(`${label} must be a JSON Pointer starting with '/'.`);
-  }
-  for (const segment of pointer.slice(1).split("/")) {
-    if (/~(?![01])/.test(segment)) {
-      throw new DynamicFanoutError(`${label} contains invalid JSON Pointer escape.`);
-    }
-  }
-}
-
-function decodePointerSegment(segment: string): string {
-  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
-}
-
-export function resolveJsonPointer(value: unknown, pointer: string, label: string): unknown {
-  assertJsonPointer(pointer, label);
-  if (pointer === "") {
-    return value;
-  }
-  let current = value;
-  for (const rawSegment of pointer.slice(1).split("/")) {
-    const segment = decodePointerSegment(rawSegment);
-    if (Array.isArray(current)) {
-      if (!/^(0|[1-9][0-9]*)$/.test(segment)) {
-        throw new DynamicFanoutError(
-          `${label} segment '${segment}' does not address an array index.`,
-        );
-      }
-      const index = Number(segment);
-      if (index >= current.length) {
-        throw new DynamicFanoutError(`${label} does not exist.`);
-      }
-      current = current[index];
-      continue;
-    }
-    if (!current || typeof current !== "object") {
-      throw new DynamicFanoutError(`${label} does not exist.`);
-    }
-    const record = current as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(record, segment)) {
-      throw new DynamicFanoutError(`${label} does not exist.`);
-    }
-    current = record[segment];
-  }
-  return current;
-}
-
-function scalarToKey(value: unknown, label: string): string {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const key = String(value);
-    if (!key.trim()) {
-      throw new DynamicFanoutError(`${label} resolved to an empty key.`);
-    }
-    if (/[\u0000-\u001F\u007F]/.test(key)) {
-      throw new DynamicFanoutError(`${label} resolved to an unsafe key.`);
-    }
-    if (key.length > 200) {
-      throw new DynamicFanoutError(`${label} resolved to a key longer than 200 characters.`);
-    }
-    return key;
-  }
-  throw new DynamicFanoutError(`${label} must resolve to a string, number, or boolean.`);
-}
-
-export function normalizeItemKeyForId(key: string): string {
-  const normalized = key
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return normalized || "item";
-}
-
-function valueToTemplateText(value: unknown, reference: string): string {
-  if (value === undefined) {
-    throw new DynamicFanoutError(`Unresolved item reference '${reference}'.`);
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean" || value === null) {
-    return String(value);
-  }
-  return JSON.stringify(value);
-}
-
-function resolveItemPath(item: unknown, pathText: string | undefined, reference: string): unknown {
-  if (!pathText) {
-    return item;
-  }
-  const pointer = `/${pathText
-    .split(".")
-    .map((segment) => segment.replace(/~/g, "~0").replace(/\//g, "~1"))
-    .join("/")}`;
-  return resolveJsonPointer(item, pointer, reference);
-}
-
-export function resolveItemTemplate(template: string, itemName: string, item: unknown): string {
-  return template.replace(ITEM_REF_PATTERN, (raw, name: string, pathText: string | undefined) => {
-    if (name !== itemName) {
-      return raw;
-    }
-    if (pathText !== undefined && (!pathText.trim() || pathText.includes(".."))) {
-      throw new DynamicFanoutError(`Invalid item reference '${raw}'.`);
-    }
-    return valueToTemplateText(resolveItemPath(item, pathText, raw), raw);
-  });
-}
-
-function assertOnlyKeys(value: unknown, allowed: Set<string>, label: string): void {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+function assertOnlyKeys(value: unknown, allowed: readonly string[], label: string): void {
+  if (!isRecord(value)) {
     throw new DynamicFanoutError(`${label} must be an object.`);
   }
   for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) {
+    if (!allowed.includes(key)) {
       throw new DynamicFanoutError(`${label} does not support field '${key}'.`);
     }
   }
+}
+
+const VALID_ITEM_REF_PATTERN = new RegExp(ITEM_REF_PATTERN.source);
+
+function validateTemplateReference(
+  raw: string,
+  reference: string,
+  itemName: string,
+  label: string,
+): void {
+  if (reference === itemName || reference.startsWith(`${itemName}.`)) {
+    if (
+      !VALID_ITEM_REF_PATTERN.test(raw) ||
+      reference === `${itemName}.` ||
+      reference.includes("..")
+    ) {
+      throw new DynamicFanoutError(`Invalid item reference '${raw}' in ${label}.`);
+    }
+    return;
+  }
+  const name = reference.match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+  if (name === itemName) {
+    throw new DynamicFanoutError(`Invalid item reference '${raw}' in ${label}.`);
+  }
+  if (name === undefined || RESERVED_TEMPLATE_NAMES.has(name)) {
+    return;
+  }
+  throw new DynamicFanoutError(`Unsupported template reference '${raw}' in ${label}.`);
 }
 
 export function assertNoUnresolvedItemReferences(
@@ -239,28 +166,8 @@ export function assertNoUnresolvedItemReferences(
   label: string,
 ): void {
   for (const match of template.matchAll(/\{([^{}]*)\}/g)) {
-    const raw = match[0]!;
-    const reference = match[1]!;
-    if (reference === itemName || reference.startsWith(`${itemName}.`)) {
-      if (!ITEM_REF_PATTERN.test(raw) || reference === `${itemName}.` || reference.includes("..")) {
-        throw new DynamicFanoutError(`Invalid item reference '${raw}' in ${label}.`);
-      }
-      ITEM_REF_PATTERN.lastIndex = 0;
-      continue;
-    }
-    ITEM_REF_PATTERN.lastIndex = 0;
-    const name = reference.match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
-    if (name === itemName) {
-      throw new DynamicFanoutError(`Invalid item reference '${raw}' in ${label}.`);
-    }
-    if (name && RESERVED_TEMPLATE_NAMES.has(name)) {
-      continue;
-    }
-    if (name) {
-      throw new DynamicFanoutError(`Unsupported template reference '${raw}' in ${label}.`);
-    }
+    validateTemplateReference(match[0], match[1], itemName, label);
   }
-  ITEM_REF_PATTERN.lastIndex = 0;
   if (
     template.includes(`{${itemName}.}`) ||
     new RegExp(`\\{${itemName}(?:\\.|$)[^}]*$`).test(template)
@@ -271,31 +178,24 @@ export function assertNoUnresolvedItemReferences(
 
 export function hasDynamicFanoutFields(step: unknown): boolean {
   return (
-    !!step &&
-    typeof step === "object" &&
-    !Array.isArray(step) &&
+    isRecord(step) &&
     (Object.prototype.hasOwnProperty.call(step, "expand") ||
       Object.prototype.hasOwnProperty.call(step, "collect"))
   );
 }
 
-export function validateDynamicStepShape(
-  step: DynamicParallelStep,
-  stepIndex: number,
-  config: DynamicFanoutConfig = {},
-): void {
-  const prefix = `Dynamic chain step ${stepIndex + 1}`;
-  if (Object.hasOwn(step, "acceptance") || Object.hasOwn(step, "effectiveAcceptance")) {
-    throw new DynamicFanoutError(
-      `Dynamic fanout step ${stepIndex + 1} does not support group-level acceptance; set acceptance on the child template instead.`,
-    );
+function validateItemLimit(value: number | undefined, label: string): void {
+  if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+    throw new DynamicFanoutError(`${label} must be an integer >= 0.`);
   }
-  assertOnlyKeys(
-    step,
-    config.allowRunnerFields ? RUNNER_DYNAMIC_STEP_KEYS : DYNAMIC_STEP_KEYS,
-    prefix,
-  );
-  if (!step.expand || !step.expand.from) {
+}
+
+function validateExpansion(
+  step: ReadonlyInput<DynamicParallelStep>,
+  prefix: string,
+  config: DynamicFanoutConfig,
+): void {
+  if (!recordAt(step, "expand") || !recordAt(step.expand, "from")) {
     throw new DynamicFanoutError(`${prefix} requires expand.from.`);
   }
   assertOnlyKeys(step.expand, DYNAMIC_EXPAND_KEYS, `${prefix} expand`);
@@ -318,58 +218,80 @@ export function validateDynamicStepShape(
       `${prefix} requires expand.maxItems or config.chain.dynamicFanout.maxItems.`,
     );
   }
-  if (
-    step.expand.maxItems !== undefined &&
-    (!Number.isInteger(step.expand.maxItems) || step.expand.maxItems < 0)
-  ) {
-    throw new DynamicFanoutError(`${prefix} expand.maxItems must be an integer >= 0.`);
-  }
-  if (
-    config.maxItems !== undefined &&
-    (!Number.isInteger(config.maxItems) || config.maxItems < 0)
-  ) {
-    throw new DynamicFanoutError("config.chain.dynamicFanout.maxItems must be an integer >= 0.");
-  }
-  if (!step.parallel || Array.isArray(step.parallel)) {
+  validateItemLimit(step.expand.maxItems, `${prefix} expand.maxItems`);
+  validateItemLimit(config.maxItems, "config.chain.dynamicFanout.maxItems");
+}
+
+function validateParallelTemplate(
+  step: ReadonlyInput<DynamicParallelStep>,
+  prefix: string,
+  config: DynamicFanoutConfig,
+): void {
+  if (!recordAt(step, "parallel")) {
     throw new DynamicFanoutError(
       `${prefix} requires a single parallel template object and cannot mix dynamic expand/collect with static parallel arrays.`,
     );
   }
   assertOnlyKeys(
     step.parallel,
-    config.allowRunnerFields ? RUNNER_DYNAMIC_PARALLEL_KEYS : DYNAMIC_PARALLEL_KEYS,
+    config.allowRunnerFields === true ? RUNNER_DYNAMIC_PARALLEL_KEYS : DYNAMIC_PARALLEL_KEYS,
     `${prefix} parallel`,
   );
-  if ("expand" in (step.parallel as object)) {
+  if ("expand" in step.parallel) {
     throw new DynamicFanoutError(`${prefix} does not support nested dynamic fanout.`);
   }
-  if (!step.parallel.agent) {
+  if (step.parallel.agent.length === 0) {
     throw new DynamicFanoutError(`${prefix} parallel.agent is required.`);
   }
-  if (!step.collect?.as || !isSafeOutputName(step.collect.as)) {
-    throw new DynamicFanoutError(`${prefix} requires collect.as with a safe output name.`);
-  }
-  assertOnlyKeys(step.collect, DYNAMIC_COLLECT_KEYS, `${prefix} collect`);
+  const itemName = step.expand.item ?? "item";
   for (const [label, template] of [
     ["parallel.task", step.parallel.task],
     ["parallel.label", step.parallel.label],
   ] as const) {
-    if (template) {
+    if (template !== undefined && template.length > 0) {
       assertNoUnresolvedItemReferences(template, itemName, `${prefix} ${label}`);
     }
   }
 }
 
+function validateCollection(step: ReadonlyInput<DynamicParallelStep>, prefix: string): void {
+  if (!recordAt(step, "collect") || !isSafeOutputName(step.collect.as)) {
+    throw new DynamicFanoutError(`${prefix} requires collect.as with a safe output name.`);
+  }
+  assertOnlyKeys(step.collect, DYNAMIC_COLLECT_KEYS, `${prefix} collect`);
+}
+
+export function validateDynamicStepShape(
+  step: ReadonlyInput<DynamicParallelStep>,
+  stepIndex: number,
+  config: DynamicFanoutConfig = {},
+): void {
+  const prefix = `Dynamic chain step ${stepIndex + 1}`;
+  if (Object.hasOwn(step, "acceptance") || Object.hasOwn(step, "effectiveAcceptance")) {
+    throw new DynamicFanoutError(
+      `Dynamic fanout step ${stepIndex + 1} does not support group-level acceptance; set acceptance on the child template instead.`,
+    );
+  }
+  assertOnlyKeys(
+    step,
+    config.allowRunnerFields === true ? RUNNER_DYNAMIC_STEP_KEYS : DYNAMIC_STEP_KEYS,
+    prefix,
+  );
+  validateExpansion(step, prefix, config);
+  validateParallelTemplate(step, prefix, config);
+  validateCollection(step, prefix);
+}
+
 export function resolveDynamicFanoutItems(
-  step: DynamicParallelStep,
-  outputs: ChainOutputMap,
+  step: ReadonlyInput<DynamicParallelStep>,
+  outputs: ReadonlyInput<ChainOutputMap>,
   stepIndex: number,
   config: DynamicFanoutConfig = {},
 ): DynamicMaterializedItem[] {
   validateDynamicStepShape(step, stepIndex, config);
   const sourceName = step.expand.from.output;
   const source = outputs[sourceName];
-  if (!source) {
+  if (!Object.hasOwn(outputs, sourceName)) {
     throw new DynamicFanoutError(
       `Dynamic chain step ${stepIndex + 1} references unknown output '${sourceName}'.`,
     );
@@ -384,7 +306,7 @@ export function resolveDynamicFanoutItems(
     step.expand.from.path,
     `Dynamic chain step ${stepIndex + 1} expand.from.path`,
   );
-  if (!Array.isArray(value)) {
+  if (!isUnknownArray(value)) {
     throw new DynamicFanoutError(
       `Dynamic chain step ${stepIndex + 1} expand.from.path must resolve to an array.`,
     );
@@ -402,7 +324,7 @@ export function resolveDynamicFanoutItems(
   }
   const seen = new Set<string>();
   const seenIds = new Set<string>();
-  return value.map((item, index) => {
+  return value.map((item: unknown, index) => {
     const key =
       step.expand.key === undefined
         ? String(index)
@@ -432,8 +354,8 @@ export function resolveDynamicFanoutItems(
 }
 
 export function materializeDynamicParallelStep(
-  step: DynamicParallelStep,
-  outputs: ChainOutputMap,
+  step: ReadonlyInput<DynamicParallelStep>,
+  outputs: ReadonlyInput<ChainOutputMap>,
   stepIndex: number,
   config: DynamicFanoutConfig = {},
 ): DynamicMaterializedGroup {
@@ -447,9 +369,10 @@ export function materializeDynamicParallelStep(
   const itemName = step.expand.item ?? "item";
   const parallel = items.map((entry) => {
     const task = resolveItemTemplate(step.parallel.task ?? "{previous}", itemName, entry.item);
-    const label = step.parallel.label
-      ? resolveItemTemplate(step.parallel.label, itemName, entry.item)
-      : undefined;
+    const label =
+      (step.parallel.label ?? "").length > 0
+        ? resolveItemTemplate(step.parallel.label ?? "", itemName, entry.item)
+        : undefined;
     return {
       ...step.parallel,
       task,
@@ -459,41 +382,48 @@ export function materializeDynamicParallelStep(
   return { items, parallel };
 }
 
+type CollectionChild = ReadonlyInput<
+  Pick<
+    SingleResult,
+    "agent" | "error" | "structuredOutput" | "artifactPaths" | "savedOutputPath" | "messages"
+  > & { exitCode: number | null; output?: string; finalOutput?: string }
+>;
+
+function collectionText(result: CollectionChild): string {
+  return typeof result.output === "string" ? result.output : getSingleResultOutput(result);
+}
+
+function collectionMetadata(result: CollectionChild): Partial<DynamicCollectedResult> {
+  return {
+    ...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
+    ...((result.error ?? "").length > 0 ? { error: result.error } : {}),
+    ...((result.savedOutputPath ?? "").length > 0 ? { outputPath: result.savedOutputPath } : {}),
+    ...(result.artifactPaths ? { artifactPaths: result.artifactPaths } : {}),
+  };
+}
+
 export function collectDynamicResults(
-  step: DynamicParallelStep,
-  items: DynamicMaterializedItem[],
-  results: Array<
-    Pick<
-      SingleResult,
-      "agent" | "error" | "structuredOutput" | "artifactPaths" | "savedOutputPath"
-    > & { exitCode: number | null; output?: string; finalOutput?: string }
-  >,
+  step: ReadonlyInput<DynamicParallelStep>,
+  items: readonly DynamicMaterializedItem[],
+  results: readonly CollectionChild[],
 ): DynamicCollectedResult[] {
   return items.map((entry, index) => {
-    const result = results[index];
-    const text = result
-      ? "output" in result && typeof result.output === "string"
-        ? result.output
-        : getSingleResultOutput(result as SingleResult)
-      : "";
+    const result = Object.hasOwn(results, index) ? results[index] : undefined;
     return {
       key: entry.key,
       index: entry.index,
       item: entry.item,
       agent: result?.agent ?? step.parallel.agent,
       exitCode: result?.exitCode ?? null,
-      text,
-      ...(result?.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
-      ...(result?.error ? { error: result.error } : {}),
-      ...(result?.savedOutputPath ? { outputPath: result.savedOutputPath } : {}),
-      ...(result?.artifactPaths ? { artifactPaths: result.artifactPaths } : {}),
+      text: result ? collectionText(result) : "",
+      ...(result ? collectionMetadata(result) : {}),
     };
   });
 }
 
 export function validateDynamicCollection(
-  schema: JsonSchemaObject | undefined,
-  value: DynamicCollectedResult[],
+  schema: ReadonlyInput<JsonSchemaObject> | undefined,
+  value: readonly ReadonlyInput<DynamicCollectedResult>[],
 ): void {
   if (!schema) {
     return;
