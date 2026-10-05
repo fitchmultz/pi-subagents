@@ -5,23 +5,23 @@ argument-hint: "[work-scope]"
 
 Run a parent-orchestrated review loop for the requested work.
 
-Use the `subagent` tool. Keep the parent session as the loop controller and final decision-maker. Child subagents must receive concrete role-specific tasks; they must not launch more subagents or manage the loop themselves.
+Use the `subagent` tool. Keep the parent session as the loop controller and final decision-maker. Child subagents must receive concrete role-specific tasks. Bundled profiles are leaf agents, so routine fanout stays in the parent. Only an explicitly delegation-enabled profile may use helpers within its assigned scope, role authority, and native depth budget; it must not take over the parent's review loop.
 
 Default to a maximum of 3 review rounds unless I specify a different cap. Count a review round each time fresh-context reviewers inspect the current diff after a worker pass. Stop early when reviewers find no blockers or fixes worth doing now.
 
-If the invocation includes an implementation request, first launch one default-async `worker` to implement the approved scope. If the current diff is already the target, start with review. Keep the loop in the parent as follow-up runs after each completion; do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions. Use only one writer against the active worktree at a time unless I explicitly ask for isolated worktrees.
+If the invocation includes an implementation request, first launch one default-async `worker` to implement the approved scope. If the current diff is already the target, start with review. Keep the loop in the parent as follow-up runs after each completion; do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions. Use only one writer against a shared active worktree at a time; use isolated worktrees for independent parallel writers when helpful.
 
 For each review round, launch fresh-context `reviewer` agents as separate async runs so each completion wakes the parent. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. This also applies when an incomplete active Pi goal needs reviewer evidence: resume the goal after automatic completion delivery, not before the evidence arrives. Omit `acceptance` from review-only tasks unless I explicitly request a same-session acceptance contract; it adds a finalization turn and does not provide independent review. A timed-out reviewer is incomplete review, never sign-off. Reviewers must inspect the repository, relevant instructions, and current diff directly from files and commands. They must not rely on the main conversation history and must not edit files.
 
 Choose review angles from the actual change. Common angles are correctness/regressions, tests/validation, and simplicity/maintainability. Add security, performance, docs/API contracts, or user-flow validation when the work calls for it. Prefer three strong reviewers over many vague reviewers.
 
 After reviewers return, synthesize their feedback into:
-- blockers or scope/product/architecture decisions that need user approval;
+- concrete blockers or decisions outside the existing authority;
 - fixes worth doing now;
 - optional improvements;
 - feedback to ignore or defer, with a short reason.
 
-Do not blindly apply every reviewer suggestion. If reviewers surface an unapproved product, scope, or architecture decision, pause and ask me before launching a fix worker.
+Do not blindly apply every reviewer suggestion. Make ordinary reversible fix decisions within the existing implementation authority. Ask only when a finding requires unavailable information or authority, changes the owner's settled outcome or scope, or crosses a concrete irreversible-loss, private-data, or substantial new-cost boundary.
 
 When an async implementation worker completes, treat its handoff as the transition into review, not as final completion, unless I explicitly asked for worker-only work, review-only output, or to stop after implementation.
 
@@ -32,7 +32,7 @@ After a fix worker returns, run another review round only when it made material 
 Stop and summarize when one of these is true:
 - reviewers find no blockers or fixes worth doing now;
 - remaining feedback is optional, speculative, or intentionally deferred;
-- reviewers surface an unapproved decision that needs me;
+- reviewers surface a concrete decision outside the existing authority that needs me;
 - the max review-round cap is reached.
 
 On completion, inspect the final diff yourself, run or confirm focused validation where appropriate, and summarize the loop: rounds run, fixes applied, validation, remaining deferred items, and why the loop stopped.

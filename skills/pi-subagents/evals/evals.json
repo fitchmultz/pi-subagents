@@ -18,7 +18,7 @@
     {
       "id": "failure-ordinary-child-nesting",
       "prompt": "An ordinary reviewer child should use the pi-subagents skill and launch its own reviewers if needed.",
-      "expected_output": "The agent rejects that pattern: the pi-subagents skill is parent-orchestrator only, child subagents must not launch more subagents, and any needed fanout stays in the parent session."
+      "expected_output": "The agent does not pass the parent-only pi-subagents skill to a child. An ordinary bundled reviewer remains a leaf, so needed fanout stays in the parent. Only an explicitly delegation-enabled custom profile may use helpers within its assigned scope, role authority, and native depth budget; the agent does not change nesting settings without user authorization. The original parent retains integration and final delivery."
     },
     {
       "id": "failure-agent-skill-maintenance",
