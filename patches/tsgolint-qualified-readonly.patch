@@ -1,0 +1,75 @@
+diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
+index 1590568..79e7cde 100644
+--- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
++++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
+@@ -293,6 +293,18 @@ func isTypeReadonlyRecurser(
+ ) readonlyness {
+ 	seenTypes[t] = struct{}{}
+ 
++	if utils.IsIntersectionType(t) {
++		for _, subType := range t.Types() {
++			if _, ok := seenTypes[subType]; ok {
++				continue
++			}
++			if isTypeReadonlyRecurser(program, typeChecker, subType, opts, seenTypes) != readonlynessReadonly {
++				return readonlynessMutable
++			}
++		}
++		return readonlynessReadonly
++	}
++
+ 	if utils.TypeMatchesSomeSpecifier(t, opts.allow, program) {
+ 		return readonlynessReadonly
+ 	}
+@@ -309,33 +321,6 @@ func isTypeReadonlyRecurser(
+ 		return readonlynessReadonly
+ 	}
+ 
+-	if utils.IsIntersectionType(t) {
+-		hasArrayOrTuple := false
+-		for _, subType := range t.Types() {
+-			if checker.Checker_isArrayType(typeChecker, subType) || checker.IsTupleType(subType) {
+-				hasArrayOrTuple = true
+-				break
+-			}
+-		}
+-
+-		if hasArrayOrTuple {
+-			for _, subType := range t.Types() {
+-				if _, ok := seenTypes[subType]; ok {
+-					continue
+-				}
+-				if isTypeReadonlyRecurser(program, typeChecker, subType, opts, seenTypes) != readonlynessReadonly {
+-					return readonlynessMutable
+-				}
+-			}
+-			return readonlynessReadonly
+-		}
+-
+-		readonlyObject := isTypeReadonlyObject(program, typeChecker, t, opts, seenTypes)
+-		if readonlyObject != readonlynessUnknown {
+-			return readonlyObject
+-		}
+-	}
+-
+ 	if !utils.IsObjectType(t) {
+ 		return readonlynessReadonly
+ 	}
+diff --git a/internal/utils/type_matches_specifier.go b/internal/utils/type_matches_specifier.go
+index cfcaaab..96609ce 100644
+--- a/internal/utils/type_matches_specifier.go
++++ b/internal/utils/type_matches_specifier.go
+@@ -385,11 +385,8 @@ func typeMatchesSpecifier(
+ 	}
+ 
+ 	symbol := checker.Type_symbol(t)
+-	if symbol == nil {
+-		alias := checker.Type_alias(t)
+-		if alias != nil {
+-			symbol = alias.Symbol()
+-		}
++	if alias := checker.Type_alias(t); alias != nil {
++		symbol = alias.Symbol()
+ 	}
+ 	var declarations []*ast.Node
+ 	if symbol != nil {

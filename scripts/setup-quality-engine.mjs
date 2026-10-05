@@ -21,6 +21,7 @@ const revision = "eb9339115edde6811ca94c3433adf69ea9852880";
 const typescriptRevision = "2bd066d87f5bafd315be9f40889d0a60b9e58e0b";
 const patch = join(root, "patches/tsgolint-safe-call.patch");
 const readonlyPatch = join(root, "patches/tsgolint-readonly-collections.patch");
+const qualifierPatch = join(root, "patches/tsgolint-qualified-readonly.patch");
 const cache = join(root, "node_modules/.cache/pi-quality-engine");
 const binary = join(cache, "tsgolint");
 const manifestPath = join(cache, "manifest.json");
@@ -72,8 +73,8 @@ function prepareSources(source) {
       cpSync(join(tsSource, "internal/collections", name), join(collections, name));
     }
   }
-  run("git", ["apply", "--check", patch, readonlyPatch], source);
-  run("git", ["apply", patch, readonlyPatch], source);
+  run("git", ["apply", "--check", patch, readonlyPatch, qualifierPatch], source);
+  run("git", ["apply", patch, readonlyPatch, qualifierPatch], source);
 }
 
 function parseCommand() {
@@ -103,6 +104,7 @@ function setup() {
     typescriptRevision,
     patchSha256: digest(patch),
     readonlyPatchSha256: digest(readonlyPatch),
+    qualifierPatchSha256: digest(qualifierPatch),
     platform: process.platform,
     arch: process.arch,
   };

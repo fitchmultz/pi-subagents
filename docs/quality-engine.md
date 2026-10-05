@@ -37,12 +37,13 @@ Build inputs:
 - TypeScript Go submodule: `2bd066d87f5bafd315be9f40889d0a60b9e58e0b`
 - Upstream TypeScript patches: the ordered `patches/*.patch` at that exact tsgolint
   revision, applied as in its canonical `just init` build
-- Local corrections: `patches/tsgolint-safe-call.patch` and
-  `patches/tsgolint-readonly-collections.patch`
+- Local corrections, applied in order: `patches/tsgolint-safe-call.patch`,
+  `patches/tsgolint-readonly-collections.patch`, and
+  `patches/tsgolint-qualified-readonly.patch`
 - Dependencies: upstream `go.mod`, `go.sum`, `go.work`, and `go.work.sum`; build uses
   `-mod=readonly`, `-trimpath`, `-buildvcs=false`, and `CGO_ENABLED=0`
 
-The cache manifest records source/submodule revisions, both local patch SHA-256 hashes,
+The cache manifest records source/submodule revisions, all three local patch SHA-256 hashes,
 host platform/architecture, Go version, and binary SHA-256. Setup rebuilds when
 inputs change or the cached executable's digest differs. `--force` rebuilds from
 fresh sources; `--help` documents invocation. Cache artifacts live under
@@ -100,10 +101,32 @@ The separate `tsgolint-readonly-collections.patch` closes those negative paths:
   with the existing readonly checker and cycle tracking. This also works through
   outer `Readonly`, `Partial`, `Required`, `Pick`, and repository type aliases.
 - Retain ordinary method/property ownership checks: raw native readonly maps/sets
-  still report under `treatMethodsAsReadonly: false`. Neither patch adds a blanket
+  still report under `treatMethodsAsReadonly: false`. No patch adds a blanket
   container allowance or changes general callback-result/purity semantics.
 
 The native regression matrix accepts primitive/deeply readonly wrapped containers,
 including nested arrays, objects, maps, sets and recursive types, while rejecting
 mutable containers, keys, values, nested arrays and mutable attached callback state.
 This is an input-contract check, not proof of callback purity or runtime freezing.
+
+## Qualified readonly alias and intersection integrity
+
+`tsgolint-qualified-readonly.patch` fixes two additional origin/scope defects:
+
+- The matcher selected an alias's name but its underlying generic interface's
+  source file. It now uses the alias symbol's declarations when the alias supplied
+  the matched name, so an exact file-qualified, non-generic native wrapper can
+  pass without granting permission to every instantiation of the SDK generic.
+- Native approval previously short-circuited an entire intersection when any part
+  was approved. The readonly rule now checks every intersection constituent before
+  the approval shortcut. `Theme & { state: string[] }` therefore reports while
+  `Theme & { readonly labels: readonly string[] }` retains native permission.
+
+For a fixed alias such as `SubagentExecutionResult = AgentToolResult<ReadonlyDetails>`,
+qualify its actual declaration file, not the `AgentToolResult` SDK generic. Probe
+import/re-export aliases, local shadows, foreign declarations with the same filename
+or name, wrong existing paths, direct mutable generic payloads, and mutable versus
+readonly intersection attachments. A broad native generic allowance still accepts
+all its instantiations; it must not be used to bypass owned payload contracts.
+Neither this correction nor the configuration adds generic SDK-argument permission
+or changes general callback-result checks.
