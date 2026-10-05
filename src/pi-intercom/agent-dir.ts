@@ -6,8 +6,10 @@ export function getPiAgentDir(): string {
   if (configured === "~") {
     return homedir();
   }
-  if (configured?.startsWith("~/")) {
+  if (configured?.startsWith("~/") === true) {
     return join(homedir(), configured.slice(2));
   }
-  return configured || join(homedir(), ".pi", "agent");
+  return configured === undefined || configured === ""
+    ? join(homedir(), ".pi", "agent")
+    : configured;
 }

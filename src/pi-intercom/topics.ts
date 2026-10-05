@@ -1,6 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, ScrollView, Text, matchesKey } from "@earendil-works/pi-tui";
-import { actionHints } from "../tui/action-hints.ts";
 import {
   isTopicSubscription,
   isTopicUpdate,
@@ -9,34 +7,88 @@ import {
   type TopicSubscription,
   type TopicUpdate,
 } from "./types.ts";
-
+import { isRecord, isUnknownArray } from "./validation.ts";
+import { createTopicView } from "./ui/topic-view.ts";
 interface TopicRecord {
-  from: Pick<SessionInfo, "id" | "name">;
-  update: TopicUpdate;
-  connected: boolean;
-  notifiedRevision?: number;
+  readonly from: Pick<SessionInfo, "id" | "name">;
+  readonly update: TopicUpdate;
+  readonly connected: boolean;
+  readonly notifiedRevision?: number;
 }
+/** Snapshot-oriented consumer contract; the topic owner retains its map implementations. */
+export type TopicOwner = Readonly<Omit<IntercomTopics, "published" | "subscriptions">>;
 const TOPIC_ENTRY = "intercom-topic";
-
-/** Latest inspectable state plus native audit entries; routine updates never enter model context. */
+function isTopicRecord(value: unknown): value is TopicRecord {
+  return (
+    isRecord(value) &&
+    isRecord(value.from) &&
+    typeof value.from.id === "string" &&
+    (value.from.name === undefined || typeof value.from.name === "string") &&
+    isTopicUpdate(value.update) &&
+    typeof value.connected === "boolean" &&
+    (value.notifiedRevision === undefined || typeof value.notifiedRevision === "number")
+  );
+}
+function quietUpdate(update: TopicUpdate, subscription: TopicSubscription): boolean {
+  return (
+    update.event === "update" || (update.event === "release" && subscription.awaitRelease !== true)
+  );
+}
+function resourceText(record: TopicRecord): string {
+  const { update, connected } = record;
+  if (update.resource === undefined || update.resource === "") {
+    return "";
+  }
+  return `Resource: ${update.resource} · declared ${update.ownership ?? "state unknown"}${!connected && update.ownership !== "released" ? "; disconnect is not release" : ""}\n`;
+}
+function recordText(record: TopicRecord): string {
+  const { from, update, connected } = record;
+  return `\n${update.topic} · ${from.name ?? from.id} · ${connected ? "connected" : "disconnected / unavailable"}\n${resourceText(record)}${new Date(update.updatedAt).toISOString()} · ${update.event}\n${update.text}`;
+}
+/** Owns latest quiet state, subscriptions and durable native audit entries. */
 export class IntercomTopics {
-  private pi: ExtensionAPI;
-  private getContext: () => ExtensionContext | null;
-  private records = new Map<string, TopicRecord>();
-  private disconnectedOwners = new Set<string>();
+  private readonly pi: ExtensionAPI;
+  private readonly getContext: () => ExtensionContext | null;
+  private readonly records = new Map<string, TopicRecord>();
+  private readonly disconnectedOwners = new Set<string>();
   private render?: () => void;
-  private hydrate = new Set<string>();
-  readonly subscriptions = new Map<string, TopicSubscription>();
-  readonly published = new Map<string, TopicUpdate>();
+  private readonly hydrate = new Set<string>();
+  private readonly subscriptionState = new Map<string, TopicSubscription>();
+  private readonly publicationState = new Map<string, TopicUpdate>();
   constructor(pi: ExtensionAPI, getContext: () => ExtensionContext | null) {
     this.pi = pi;
     this.getContext = getContext;
   }
-
-  private save(data: object): void {
+  get subscriptions(): ReadonlyMap<string, TopicSubscription> {
+    return this.subscriptionState;
+  }
+  get published(): ReadonlyMap<string, TopicUpdate> {
+    return this.publicationState;
+  }
+  private save(data: Readonly<Record<string, unknown>>): void {
     const ctx = this.getContext();
     if (ctx) {
       this.pi.appendEntry(TOPIC_ENTRY, { sessionId: ctx.sessionManager.getSessionId(), ...data });
+    }
+  }
+  private restore(data: unknown, sessionId: string): void {
+    if (!isRecord(data) || data.sessionId !== sessionId) {
+      return;
+    }
+    if (isUnknownArray(data.subscriptions) && data.subscriptions.every(isTopicSubscription)) {
+      this.subscriptionState.clear();
+      for (const subscription of data.subscriptions) {
+        this.subscriptionState.set(subscription.topic, subscription);
+      }
+    }
+    if (isTopicUpdate(data.published)) {
+      this.publicationState.set(data.published.topic, data.published);
+    }
+    if (isTopicRecord(data.record)) {
+      this.records.set(`${data.record.from.id}:${data.record.update.topic}`, {
+        ...data.record,
+        connected: false,
+      });
     }
   }
   start(ctx: ExtensionContext): void {
@@ -44,59 +96,38 @@ export class IntercomTopics {
     this.records.clear();
     this.disconnectedOwners.clear();
     this.hydrate.clear();
-    this.subscriptions.clear();
-    this.published.clear();
+    this.subscriptionState.clear();
+    this.publicationState.clear();
     for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type !== "custom" || entry.customType !== TOPIC_ENTRY) {
-        continue;
-      }
-      const data = entry.data as {
-        sessionId?: string;
-        subscriptions?: TopicSubscription[];
-        published?: TopicUpdate;
-        record?: TopicRecord;
-      };
-      if (data?.sessionId !== ctx.sessionManager.getSessionId()) {
-        continue;
-      }
-      if (Array.isArray(data.subscriptions) && data.subscriptions.every(isTopicSubscription)) {
-        this.subscriptions.clear();
-        for (const subscription of data.subscriptions) {
-          this.subscriptions.set(subscription.topic, subscription);
-        }
-      }
-      if (isTopicUpdate(data.published)) {
-        this.published.set(data.published.topic, data.published);
-      }
-      if (data.record && isTopicUpdate(data.record.update)) {
-        this.records.set(`${data.record.from.id}:${data.record.update.topic}`, {
-          ...data.record,
-          connected: false,
-        });
+      if (entry.type === "custom" && entry.customType === TOPIC_ENTRY) {
+        this.restore(entry.data, ctx.sessionManager.getSessionId());
       }
     }
-    for (const topic of this.subscriptions.keys()) {
+    for (const topic of this.subscriptionState.keys()) {
       this.hydrate.add(topic);
     }
   }
   subscribe(topic: string, awaitRelease?: boolean): void {
-    this.subscriptions.set(topic, { topic, ...(awaitRelease ? { awaitRelease } : {}) });
+    this.subscriptionState.set(topic, {
+      topic,
+      ...(awaitRelease === true ? { awaitRelease } : {}),
+    });
     this.hydrate.add(topic);
-    this.save({ subscriptions: [...this.subscriptions.values()] });
+    this.save({ subscriptions: [...this.subscriptionState.values()] });
   }
   unsubscribe(topic: string): void {
-    this.subscriptions.delete(topic);
-    this.save({ subscriptions: [...this.subscriptions.values()] });
+    this.subscriptionState.delete(topic);
+    this.save({ subscriptions: [...this.subscriptionState.values()] });
   }
   publish(update: TopicUpdate, from: Pick<SessionInfo, "id" | "name">): void {
-    this.published.set(update.topic, update);
+    this.publicationState.set(update.topic, update);
     this.save({ published: update });
     this.record(from, update);
   }
   presence(): Required<Pick<SessionInfo, "subscriptions" | "topics">> {
     return {
-      subscriptions: [...this.subscriptions.values()],
-      topics: [...this.published.values()],
+      subscriptions: [...this.subscriptionState.values()],
+      topics: [...this.publicationState.values()],
     };
   }
   private record(
@@ -104,8 +135,8 @@ export class IntercomTopics {
     update: TopicUpdate,
     connected = true,
   ): boolean {
-    const key = `${from.id}:${update.topic}`,
-      previous = this.records.get(key);
+    const key = `${from.id}:${update.topic}`;
+    const previous = this.records.get(key);
     if (previous && previous.update.revision >= update.revision) {
       return false;
     }
@@ -120,13 +151,12 @@ export class IntercomTopics {
     this.render?.();
     return true;
   }
-  /** True means handled as quiet state (or unsubscribed/obsolete), not a conversation message. */
   receive(from: SessionInfo, message: Message): boolean {
     const update = message.topic;
     if (!update) {
       return false;
     }
-    const subscription = this.subscriptions.get(update.topic);
+    const subscription = this.subscriptionState.get(update.topic);
     if (!subscription) {
       return true;
     }
@@ -135,152 +165,106 @@ export class IntercomTopics {
       return true;
     }
     this.record(from, update);
-    if (update.event === "update" || (update.event === "release" && !subscription.awaitRelease)) {
+    if (quietUpdate(update, subscription)) {
       return true;
     }
-    const record = this.records.get(key)!;
-    if ((record.notifiedRevision ?? 0) >= update.revision) {
+    const record = this.records.get(key);
+    if (!record || (record.notifiedRevision ?? 0) >= update.revision) {
       return true;
     }
-    record.notifiedRevision = update.revision;
-    this.save({ record });
+    const notified = { ...record, notifiedRevision: update.revision };
+    this.records.set(key, notified);
+    this.save({ record: notified });
     return false;
   }
-  refresh(sessions: SessionInfo[]): void {
+  private refreshPublication(session: SessionInfo, update: TopicUpdate): void {
+    if (!this.subscriptionState.has(update.topic)) {
+      return;
+    }
+    this.record(session, update);
+    const key = `${session.id}:${update.topic}`;
+    const record = this.records.get(key);
+    if (
+      record &&
+      this.hydrate.has(update.topic) &&
+      (record.notifiedRevision ?? 0) < update.revision
+    ) {
+      const notified = { ...record, notifiedRevision: update.revision };
+      this.records.set(key, notified);
+      this.save({ record: notified });
+    }
+  }
+  refresh(sessions: readonly SessionInfo[]): void {
     for (const session of sessions) {
       this.disconnectedOwners.delete(session.id);
     }
-    for (const record of this.records.values()) {
-      record.connected = sessions.some((session) => session.id === record.from.id);
+    for (const [key, record] of this.records) {
+      this.records.set(key, {
+        ...record,
+        connected: sessions.some((session) => session.id === record.from.id),
+      });
     }
     for (const session of sessions) {
       for (const update of session.topics ?? []) {
-        if (this.subscriptions.has(update.topic)) {
-          this.record(session, update);
-          const record = this.records.get(`${session.id}:${update.topic}`)!;
-          if (this.hydrate.has(update.topic) && (record.notifiedRevision ?? 0) < update.revision) {
-            record.notifiedRevision = update.revision;
-            this.save({ record });
-          }
-        }
+        this.refreshPublication(session, update);
       }
     }
     this.hydrate.clear();
   }
   disconnected(id?: string): void {
-    if (id) {
+    if (id !== undefined && id !== "") {
       this.disconnectedOwners.add(id);
     }
-    for (const record of this.records.values()) {
-      if (!id || record.from.id === id) {
-        record.connected = false;
+    for (const [key, record] of this.records) {
+      if (id === undefined || id === "" || record.from.id === id) {
+        this.records.set(key, { ...record, connected: false });
         this.disconnectedOwners.add(record.from.id);
       }
     }
     this.render?.();
   }
   inspect(topic?: string): string {
-    const subscriptions = [...this.subscriptions.values()].filter(
-      (item) => !topic || item.topic === topic,
+    const unfiltered = topic === undefined || topic === "";
+    const subscriptions = [...this.subscriptionState.values()].filter(
+      (item) => unfiltered || item.topic === topic,
     );
     const records = [...this.records.values()]
-      .filter((record) => !topic || record.update.topic === topic)
+      .filter((record) => unfiltered || record.update.topic === topic)
       .sort((a, b) => b.update.updatedAt - a.update.updatedAt);
+    const labels = subscriptions
+      .map((item) => `${item.topic}${item.awaitRelease === true ? " (awaiting release)" : ""}`)
+      .join(", ");
     return [
       "Intercom topics · latest self-contained state (not a work queue or exclusive lock)",
-      `Subscriptions: ${subscriptions.map((item) => `${item.topic}${item.awaitRelease ? " (awaiting release)" : ""}`).join(", ") || "none"}`,
-      ...records.map(
-        ({ from, update, connected }) =>
-          `\n${update.topic} · ${from.name ?? from.id} · ${connected ? "connected" : "disconnected / unavailable"}\n${update.resource ? `Resource: ${update.resource} · declared ${update.ownership ?? "state unknown"}${!connected && update.ownership !== "released" ? "; disconnect is not release" : ""}\n` : ""}${new Date(update.updatedAt).toISOString()} · ${update.event}\n${update.text}`,
-      ),
-      ...(!records.length
+      `Subscriptions: ${labels === "" ? "none" : labels}`,
+      ...records.map(recordText),
+      ...(records.length === 0
         ? ["No current records. Subscribe to an exact topic or publish a self-contained update."]
         : []),
     ].join("\n");
   }
   async open(ctx: ExtensionContext, notice?: string): Promise<void> {
-    await ctx.ui.custom(
+    await ctx.ui.custom<null>(
       (tui, _theme, _keys, done) => {
-        const text = new Text("", 0, 0);
-        const scroll = new ScrollView(text, { follow: "none", scrollbar: "hidden" });
-        const render = () => tui.requestRender();
-        this.render = render;
-        let closed = false;
-        const act = (delta?: number) => {
-          if (closed) {
-            return;
-          }
-          if (delta === undefined) {
-            done(undefined);
-          } else {
-            scroll.scrollBy(delta);
-          }
-          tui.requestRender();
-        };
-        const view = new Container();
-        view.addChild({
-          invalidate() {
-            scroll.invalidate();
+        let attached: (() => void) | undefined;
+        return createTopicView({
+          tui,
+          done: () => {
+            done(null);
           },
-          render: (width) => {
-            text.setText([notice, this.inspect()].filter(Boolean).join("\n\n"));
-            const lines = scroll.render(width);
-            const height = Math.max(1, tui.terminal.rows - 2);
-            scroll.updateLayout(lines.length, height, render);
-            return lines.slice(scroll.scrollTop, scroll.scrollTop + height);
-          },
-        });
-        view.addChild(
-          actionHints(
-            [
-              { text: "↑", run: () => act(-1) },
-              "/",
-              { text: "↓", run: () => act(1) },
-              " ",
-              { text: "PgUp", run: () => act(-scroll.viewportHeight) },
-              "/",
-              { text: "PgDn Read", run: () => act(scroll.viewportHeight) },
-              " · ",
-              { text: "Esc Back", run: () => act() },
-            ],
-            undefined,
-            "...",
-          ),
-        );
-        return {
-          invalidate() {
-            view.invalidate();
-          },
-          dispose: () => {
-            closed = true;
-            if (this.render === render) {
+          inspect: () =>
+            [notice, this.inspect()]
+              .filter((value) => value !== undefined && value !== "")
+              .join("\n\n"),
+          attach: (render) => {
+            if (render) {
+              attached = render;
+              this.render = render;
+            } else if (this.render === attached) {
               this.render = undefined;
             }
           },
-          render: (width) => view.render(width),
-          handleInput(data) {
-            act(
-              matchesKey(data, "escape")
-                ? undefined
-                : matchesKey(data, "pageUp")
-                  ? -scroll.viewportHeight
-                  : matchesKey(data, "pageDown")
-                    ? scroll.viewportHeight
-                    : matchesKey(data, "up")
-                      ? -1
-                      : matchesKey(data, "down")
-                        ? 1
-                        : 0,
-            );
-          },
-          handleMouse(event) {
-            if (event.type === "wheel") {
-              act(event.wheelDelta ?? 0);
-              return { handled: true };
-            }
-            return view.handleMouse(event);
-          },
-        };
+        });
       },
       { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" } },
     );
