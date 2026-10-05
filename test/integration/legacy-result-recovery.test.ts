@@ -5,9 +5,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, it } from "node:test";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SubagentState } from "../../src/shared/types.ts";
-import { events } from "../support/helpers.ts";
+import type { AcceptanceReport } from "../../src/shared/types.ts";
+import { events, makeMinimalCtx } from "../support/helpers.ts";
+import { assertDefined } from "../support/assertions.ts";
+import { createSubagentState, readResult } from "../support/background-fixtures.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-legacy-reviewed-output-"));
 const previous = {
@@ -39,7 +40,7 @@ const report = {
   criteriaSatisfied: [
     { id: "criterion-1", status: "satisfied", evidence: "Reviewed the final report" },
   ],
-};
+} satisfies AcceptanceReport;
 const legacyReport = `FINAL_REVIEWED_REPORT\n\n\`\`\`acceptance-report\n${JSON.stringify(report)}\n\`\`\``;
 
 for (const scenario of [
@@ -61,7 +62,7 @@ for (const scenario of [
     const startedAt = Date.now();
     child.appendMessage(events.assistantMessage("INITIAL_DRAFT").message);
     if (scenario.endsWith("tool")) {
-      const value =
+      const value: { report: string } | { answer: string; report: typeof report } =
         scenario === "legacy-tool"
           ? { report: legacyReport }
           : { answer: "FINAL_REVIEWED_REPORT", report };
@@ -98,7 +99,8 @@ for (const scenario of [
       timestamp: Date.now(),
     });
     child.appendMessage(events.assistantMessage("LATER_UNRELATED_ANSWER").message);
-    const sessionFile = child.getSessionFile()!;
+    const sessionFile = child.getSessionFile();
+    assertDefined(sessionFile);
     const id = `legacy-reviewed-${scenario}`,
       dir = path.join(ASYNC_DIR, id);
     fs.mkdirSync(dir, { recursive: true });
@@ -158,13 +160,9 @@ for (const scenario of [
         ],
       }),
     );
-    const state = {
-      ownedRuns: new Map(),
-      foregroundRuns: new Map(),
-      asyncJobs: new Map(),
-    } as SubagentState;
-    const ctx = { cwd, sessionManager: parent } as ExtensionContext;
-    restoreOwnedRuns(state, ctx, { strict: true });
+    const state = createSubagentState(cwd);
+    const ctx = makeMinimalCtx(cwd, { sessionManager: parent });
+    restoreOwnedRuns(state, ctx);
     const expected = [
       "failed-tool",
       "unfinished-followup",
@@ -173,17 +171,19 @@ for (const scenario of [
     ].includes(scenario)
       ? ""
       : "FINAL_REVIEWED_REPORT";
-    const view = ownedRunView(state.ownedRuns!.get(id)!, state);
-    assert.equal(view.children[0]!.result?.finalOutput, expected);
+    assertDefined(state.ownedRuns);
+    const run = state.ownedRuns.get(id);
+    assertDefined(run);
+    const view = ownedRunView(run, state);
+    assert.equal(view.children[0].result?.finalOutput, expected);
     const resultPath = path.join(getRunMetadataDir(id), "result.json");
     const frozen = fs.readFileSync(resultPath);
-    assert.equal(JSON.parse(frozen.toString()).results[0].output, expected);
+    assert.equal(readResult(resultPath).results[0].output, expected);
     fs.rmSync(dir, { recursive: true });
-    restoreOwnedRuns(state, ctx, { strict: true });
-    assert.equal(
-      ownedRunView(state.ownedRuns!.get(id)!, state).children[0]!.result?.finalOutput,
-      expected,
-    );
+    restoreOwnedRuns(state, ctx);
+    const restored = state.ownedRuns.get(id);
+    assertDefined(restored);
+    assert.equal(ownedRunView(restored, state).children[0].result?.finalOutput, expected);
     assert.deepEqual(
       fs.readFileSync(resultPath),
       frozen,

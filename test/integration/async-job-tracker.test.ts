@@ -5,7 +5,17 @@ import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { randomUUID } from "node:crypto";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
+import { createTestTerminal } from "../support/terminal.ts";
+import {
+  asyncJob,
+  ownedRun,
+  createSubagentState,
+  readResult,
+  readStatusFile,
+} from "../support/background-fixtures.ts";
+import { assertDefined, record, readJson, text } from "../support/assertions.ts";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
 import { restoreOwnedRuns } from "../../src/runs/shared/run-records.ts";
 import {
@@ -25,26 +35,20 @@ import {
   RESULTS_DIR,
   SLASH_RESULT_TYPE,
   TEMP_ROOT_DIR,
+  type AsyncStatus,
 } from "../../src/shared/types.ts";
 import { buildWidgetLines } from "../../src/tui/render.ts";
-import { createTempDir, removeTempDir } from "../support/helpers.ts";
+import {
+  createEventBus,
+  createTempDir,
+  makeMinimalCtx,
+  removeTempDir,
+} from "../support/helpers.ts";
+
+initTheme("dark", false);
 
 function createState() {
-  return {
-    baseCwd: "/repo",
-    currentSessionId: null,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear: () => {},
-    },
-  };
+  return createSubagentState("/repo");
 }
 
 function createEventRecorder() {
@@ -52,6 +56,7 @@ function createEventRecorder() {
   return {
     pi: {
       events: {
+        ...createEventBus(),
         emit: (channel: string, data: unknown) => {
           events.push({ channel, data });
         },
@@ -62,30 +67,24 @@ function createEventRecorder() {
 }
 
 function pidGone(): never {
-  const error = new Error("missing") as NodeJS.ErrnoException;
-  error.code = "ESRCH";
-  throw error;
+  throw Object.assign(new Error("missing"), { code: "ESRCH" });
 }
 
 function createUiContext() {
-  const widgets: unknown[] = [];
+  const base = makeMinimalCtx("/repo", { mode: "tui", hasUI: true });
+  const widgets: Array<string[] | Parameters<ExtensionContext["ui"]["setWidget"]>[1]> = [];
   let renderRequests = 0;
-  const ctx = {
-    mode: "tui",
-    hasUI: true,
-    ui: {
-      theme: {
-        fg: (_theme: string, text: string) => text,
-      },
-      getToolsExpanded: () => false,
-      setWidget: (_key: string, value: unknown) => {
-        widgets.push(value);
-      },
-      requestRender: () => {
-        renderRequests += 1;
-      },
+  const ui: ExtensionContext["ui"] & { requestRender: () => void } = {
+    ...base.ui,
+    getToolsExpanded: () => false,
+    setWidget: (_key, value) => {
+      widgets.push(value);
+    },
+    requestRender: () => {
+      renderRequests += 1;
     },
   };
+  const ctx: ExtensionContext = { ...base, ui };
   return {
     ctx,
     get widgets() {
@@ -146,22 +145,25 @@ describe("async job tracker", () => {
       );
       const state = createState(),
         recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       try {
-        tracker.resetJobs(createUiContext().ctx as never);
+        tracker.resetJobs(createUiContext().ctx);
         tracker.handleStarted({ id: "large", asyncDir: runDir, agent: "worker" });
         t.mock.timers.tick(POLL_INTERVAL_MS);
-        assert.equal(state.asyncJobs.get("large").controlEventCursor, boundary);
+        assert.equal(asyncJob(state.asyncJobs.get("large")).controlEventCursor, boundary);
         assert.deepEqual(
-          recorder.events.map(({ data }) => (data as { event: { message: string } }).event.message),
+          recorder.events.map(({ data }) => record(record(data).event).message),
           ["before aggregate"],
         );
         fs.appendFileSync(file, tail.slice(-1));
         t.mock.timers.tick(POLL_INTERVAL_MS);
-        assert.equal(state.asyncJobs.get("large").controlEventCursor, fs.statSync(file).size);
+        assert.equal(
+          asyncJob(state.asyncJobs.get("large")).controlEventCursor,
+          fs.statSync(file).size,
+        );
         t.mock.timers.tick(POLL_INTERVAL_MS);
         assert.deepEqual(
-          recorder.events.map(({ data }) => (data as { event: { message: string } }).event.message),
+          recorder.events.map(({ data }) => record(record(data).event).message),
           ["before aggregate", "after tail"],
         );
       } finally {
@@ -179,7 +181,7 @@ describe("async job tracker", () => {
       ui = createUiContext(),
       recorder = createEventRecorder();
     const ctx = { ...ui.ctx, cwd: "/repo", sessionManager: manager };
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, ASYNC_DIR);
+    const tracker = createAsyncJobTracker(recorder.pi, state, ASYNC_DIR);
     const ids: string[] = [],
       selected: string[] = [],
       foreign: string[] = [];
@@ -194,7 +196,7 @@ describe("async job tracker", () => {
       ids.push(id);
       const dir = durable ? getRunMetadataDir(id) : path.join(ASYNC_DIR, id);
       fs.mkdirSync(dir, { recursive: true });
-      if (sidecar) {
+      if (sidecar !== undefined) {
         saveQuestionOwner(id, sidecar);
       }
       fs.writeFileSync(
@@ -244,10 +246,11 @@ describe("async job tracker", () => {
       manager.appendCustomMessageEntry(SLASH_RESULT_TYPE, "Saved slash receipt", false, {
         result: { details: { mode: "single", asyncId: slashId, results: [] } },
       });
-      const canonical = selected[0]!;
+      const canonical = selected[0];
       fs.mkdirSync(path.join(ASYNC_DIR, canonical), { recursive: true });
       fs.writeFileSync(path.join(ASYNC_DIR, canonical, "status.json"), "{", "utf8");
-      const legacy = selected.find((id) => id.endsWith("-missing-owner"))!;
+      const legacy = selected.find((id) => id.endsWith("-missing-owner"));
+      assertDefined(legacy);
       saveRunStatus(legacy, {
         runId: legacy,
         sessionId: owner,
@@ -258,19 +261,25 @@ describe("async job tracker", () => {
 
       const parse = JSON.parse,
         decodes = new Map<string, number>();
-      t.mock.method(JSON, "parse", (...args) => {
-        const value = parse(...args);
-        if (value?._discoveryFixture) {
-          decodes.set(value.runId, (decodes.get(value.runId) ?? 0) + 1);
+      t.mock.method(JSON, "parse", (input: string, ...args: readonly unknown[]) => {
+        const value: unknown = Reflect.apply(parse, JSON, [input, ...args]);
+        if (
+          typeof value === "object" &&
+          value !== null &&
+          "_discoveryFixture" in value &&
+          value._discoveryFixture === true
+        ) {
+          const runId = text(record(value).runId);
+          decodes.set(runId, (decodes.get(runId) ?? 0) + 1);
         }
         return value;
       });
       const reads = t.mock.method(fs, "readFileSync");
       const writes = t.mock.method(fs, "writeFileSync");
       syncBuiltinESMExports();
-      const restoration = restoreOwnedRuns(state as never, ctx as never);
-      tracker.restoreJobs(owner, ctx as never, restoration);
-      const isForeignPayload = (file: unknown) =>
+      const restoration = restoreOwnedRuns(state, ctx);
+      tracker.restoreJobs(owner, ctx, restoration);
+      const isForeignPayload = (file: fs.PathOrFileDescriptor) =>
         foreign.some((id) => String(file).includes(`${id}${path.sep}`)) &&
         !String(file).endsWith("question-owner.json");
       assert.equal(
@@ -283,15 +292,18 @@ describe("async job tracker", () => {
         0,
         "restoration must not repair foreign execution records",
       );
-      assert.deepEqual([...state.ownedRuns.keys()].sort(), selected.sort());
-      assert.equal(state.ownedRuns.get(receiptId).review.decision, "accepted");
+      assert.deepEqual(
+        [...state.ownedRuns.keys()].sort((a, b) => a.localeCompare(b)),
+        selected.sort((a, b) => a.localeCompare(b)),
+      );
+      assert.equal(ownedRun(state.ownedRuns.get(receiptId)).review?.decision, "accepted");
       assert.equal(
         state.asyncJobs.size,
         selected.length,
         "receipt and UUID-owned live work must be ready together",
       );
-      assert.equal(state.ownedRuns.get(canonical).asyncDir, getRunMetadataDir(canonical));
-      assert.equal(state.ownedRuns.get(legacy).asyncDir, path.join(ASYNC_DIR, legacy));
+      assert.equal(ownedRun(state.ownedRuns.get(canonical)).asyncDir, getRunMetadataDir(canonical));
+      assert.equal(ownedRun(state.ownedRuns.get(legacy)).asyncDir, path.join(ASYNC_DIR, legacy));
       assert.deepEqual(
         [...decodes.values()],
         selected.map(() => 1),
@@ -310,20 +322,16 @@ describe("async job tracker", () => {
       t.mock.restoreAll();
       syncBuiltinESMExports();
       assert.equal(
-        JSON.parse(
-          fs.readFileSync(path.join(getRunMetadataDir(receiptId), "question-owner.json"), "utf8"),
-        ).sessionId,
+        record(readJson(path.join(getRunMetadataDir(receiptId), "question-owner.json"))).sessionId,
         other,
         "receipt recovery must not transfer sidecar identity",
       );
       assert.equal(
-        JSON.parse(
-          fs.readFileSync(path.join(getRunMetadataDir(slashId), "question-owner.json"), "utf8"),
-        ).sessionId,
+        record(readJson(path.join(getRunMetadataDir(slashId), "question-owner.json"))).sessionId,
         other,
         "legacy receipts also leave established sidecar identity intact",
       );
-      const foreignId = foreign[0]!;
+      const foreignId = foreign[0];
       assert.equal(
         resolveAsyncRunLocation({ id: foreignId }, ASYNC_DIR, RESULTS_DIR).resolvedId,
         foreignId,
@@ -357,18 +365,18 @@ describe("async job tracker", () => {
       ui = createUiContext(),
       recorder = createEventRecorder();
     const ctx = { ...ui.ctx, cwd: "/repo", sessionManager: manager };
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, ASYNC_DIR);
-    const theme = { ...ui.ctx.ui.theme, bold: (text: string) => text };
+    const tracker = createAsyncJobTracker(recorder.pi, state, ASYNC_DIR);
     const widgetText = () => {
       const widget = ui.widgets.at(-1);
       assert.equal(typeof widget, "function", "selected jobs must install a widget");
-      return (
-        widget as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] }
-      )(undefined, theme)
+      if (typeof widget !== "function") {
+        assert.fail("selected jobs must install a native widget factory");
+      }
+      return widget(new TuiMainScreen(createTestTerminal()), ui.ctx.ui.theme)
         .render(120)
         .join("\n");
     };
-    const status = (id: string, agent: string, sessionId = owner) => ({
+    const status = (id: string, agent: string, sessionId: string = owner): AsyncStatus => ({
       runtimeVersion: 2,
       runId: id,
       sessionId,
@@ -392,25 +400,31 @@ describe("async job tracker", () => {
         },
       })}\n`;
     try {
-      saveQuestionOwner(ids[0]!, owner);
-      saveRunStatus(ids[0]!, status(ids[0]!, "initial"));
-      saveQuestionOwner(ids[1]!, owner);
-      saveRunStatus(ids[2]!, status(ids[2]!, "late-owner", "unresolved-legacy-path"));
-      const eventsFile = path.join(getRunMetadataDir(ids[0]!), "events.jsonl");
-      fs.writeFileSync(eventsFile, event(ids[0]!, 9_999, "historical"));
+      saveQuestionOwner(ids[0], owner);
+      saveRunStatus(ids[0], status(ids[0], "initial"));
+      saveQuestionOwner(ids[1], owner);
+      saveRunStatus(ids[2], status(ids[2], "late-owner", "unresolved-legacy-path"));
+      const eventsFile = path.join(getRunMetadataDir(ids[0]), "events.jsonl");
+      fs.writeFileSync(eventsFile, event(ids[0], 9_999, "historical"));
       const read = fs.readFileSync;
       let appended = false;
-      t.mock.method(fs, "readFileSync", (...args) => {
-        if (!appended && String(args[0]) === path.join(getRunMetadataDir(ids[0]!), "status.json")) {
-          appended = true;
-          fs.appendFileSync(eventsFile, event(ids[0]!, Date.now(), "during discovery"));
-        }
-        return read(...args);
-      });
+      t.mock.method(
+        fs,
+        "readFileSync",
+        (file: fs.PathOrFileDescriptor, ...args: readonly unknown[]) => {
+          if (!appended && String(file) === path.join(getRunMetadataDir(ids[0]), "status.json")) {
+            appended = true;
+            fs.appendFileSync(eventsFile, event(ids[0], Date.now(), "during discovery"));
+          }
+          const value: unknown = Reflect.apply(read, fs, [file, ...args]);
+          assert.ok(typeof value === "string" || Buffer.isBuffer(value));
+          return value;
+        },
+      );
       syncBuiltinESMExports();
-      const restoration = restoreOwnedRuns(state as never, ctx as never);
+      const restoration = restoreOwnedRuns(state, ctx);
       assert.equal(appended, true);
-      tracker.restoreJobs(owner, ctx as never, restoration);
+      tracker.restoreJobs(owner, ctx, restoration);
       const initialWidget = widgetText();
       assert.match(initialWidget, /\binitial\b/, "initial selected job is visible");
       assert.doesNotMatch(
@@ -420,26 +434,29 @@ describe("async job tracker", () => {
       );
       t.mock.timers.tick(1_999);
       assert.deepEqual(
-        recorder.events.map(({ data }) => data.event.message),
+        recorder.events.map(({ data }) => record(record(data).event).message),
         ["during discovery"],
       );
-      const cursor = state.asyncJobs.get(ids[0]).controlEventCursor;
-      restoreOwnedRuns(state as never, ctx as never, { strict: true });
+      const cursor = asyncJob(state.asyncJobs.get(ids[0])).controlEventCursor;
+      restoreOwnedRuns(state, ctx);
       assert.equal(
-        state.asyncJobs.get(ids[0]).controlEventCursor,
+        asyncJob(state.asyncJobs.get(ids[0])).controlEventCursor,
         cursor,
         "fresh checkpoint evidence must not reset delivery cursors",
       );
       const rendersBeforePublication = ui.renderRequests;
-      saveRunStatus(ids[1]!, status(ids[1]!, "late-status"));
-      saveQuestionOwner(ids[2]!, owner);
+      saveRunStatus(ids[1], status(ids[1], "late-status"));
+      saveQuestionOwner(ids[2], owner);
       fs.writeFileSync(
-        path.join(getRunMetadataDir(ids[1]!), "events.jsonl"),
-        event(ids[1]!, Date.now(), "before late discovery"),
+        path.join(getRunMetadataDir(ids[1]), "events.jsonl"),
+        event(ids[1], Date.now(), "before late discovery"),
       );
       t.mock.timers.setTime(12_001);
       t.mock.timers.tick(101);
-      assert.deepEqual([...state.asyncJobs.keys()].sort(), [...ids].sort());
+      assert.deepEqual(
+        [...state.asyncJobs.keys()].sort((a, b) => a.localeCompare(b)),
+        [...ids].sort((a, b) => a.localeCompare(b)),
+      );
       const lateWidget = widgetText();
       assert.match(
         lateWidget,
@@ -454,12 +471,12 @@ describe("async job tracker", () => {
       assert.match(lateWidget, /\binitial\b/, "late discovery keeps the initial job visible");
       assert.ok(ui.renderRequests > rendersBeforePublication, "late discovery requests a rerender");
       assert.deepEqual(
-        [...state.ownedRuns.keys()].sort(),
-        [...ids].sort(),
+        [...state.ownedRuns.keys()].sort((a, b) => a.localeCompare(b)),
+        [...ids].sort((a, b) => a.localeCompare(b)),
         "late job discovery also makes the owned handle available",
       );
       assert.deepEqual(
-        recorder.events.map(({ data }) => data.event.message),
+        recorder.events.map(({ data }) => record(record(data).event).message),
         ["during discovery", "before late discovery"],
       );
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -488,8 +505,8 @@ describe("async job tracker", () => {
       const state = createState();
       const ui = createUiContext();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({
         id: "run-1",
         asyncDir: path.join(asyncRoot, "run-1"),
@@ -517,8 +534,8 @@ describe("async job tracker", () => {
       const state = createState();
       const ui = createUiContext();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({
         id: "run-paused",
         asyncDir: path.join(asyncRoot, "run-paused"),
@@ -625,24 +642,28 @@ describe("async job tracker", () => {
     let eventsStatAttempts = 0;
     const stat = fs.statSync;
     t.mock.method(process, "kill", () => true);
-    t.mock.method(fs, "statSync", function (file, ...args) {
-      if (String(file).endsWith("events.jsonl") && eventsStatAttempts++ === 0) {
-        const error = new Error("temporarily unavailable") as NodeJS.ErrnoException;
-        error.code = "EACCES";
-        throw error;
-      }
-      return Reflect.apply(stat, fs, [file, ...args]);
-    });
+    t.mock.method(
+      fs,
+      "statSync",
+      function (file: fs.PathLike, options?: Readonly<fs.StatSyncOptions>) {
+        if (String(file).endsWith("events.jsonl") && eventsStatAttempts++ === 0) {
+          throw Object.assign(new Error("temporarily unavailable"), { code: "EACCES" });
+        }
+        return stat(file, options);
+      },
+    );
     syncBuiltinESMExports();
     t.after(() => {
       t.mock.restoreAll();
       syncBuiltinESMExports();
     });
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+    const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
     const originalError = console.error;
-    console.error = () => {};
+    console.error = () => {
+      // Malformed fixture statuses are expected; widget assertions verify rejection.
+    };
     try {
-      tracker.restoreJobs(currentSession, ui.ctx as never);
+      tracker.restoreJobs(currentSession, ui.ctx);
 
       assert.deepEqual([...state.asyncJobs.keys()], ["run-current"]);
       assert.equal(state.asyncJobs.get("run-current")?.pid, 12345);
@@ -680,10 +701,7 @@ describe("async job tracker", () => {
         1,
         "restoration should emit only post-boundary control events",
       );
-      assert.equal(
-        (recorder.events[0]?.data as { event?: { message?: string } }).event?.message,
-        "new",
-      );
+      assert.equal(record(record(recorder.events[0]?.data).event).message, "new");
     } finally {
       console.error = originalError;
       tracker.resetJobs();
@@ -722,7 +740,7 @@ describe("async job tracker", () => {
     const ui = createUiContext();
     const recorder = createEventRecorder();
     t.mock.method(process, "kill", pidGone);
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+    const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
     const readDirectory = t.mock.method(fs, "readdirSync");
     const listingsOf = (dir: string) =>
       readDirectory.mock.calls.filter((call) => String(call.arguments[0]) === dir).length;
@@ -730,7 +748,7 @@ describe("async job tracker", () => {
     try {
       writeRun("foreign-a", "/sessions/other.jsonl", "complete");
       writeRun("foreign-b", "/sessions/other.jsonl", "complete");
-      tracker.restoreJobs(currentSession, ui.ctx as never);
+      tracker.restoreJobs(currentSession, ui.ctx);
       assert.equal(state.asyncJobs.size, 0);
       const foreignNestedListings = [listingsOf(NESTED_EVENTS_DIR)];
 
@@ -771,7 +789,10 @@ describe("async job tracker", () => {
         },
       });
       t.mock.timers.tick(1_000);
-      assert.deepEqual([...state.asyncJobs.keys()].sort(), [runId, "run-queued"].sort());
+      assert.deepEqual(
+        [...state.asyncJobs.keys()].sort((a, b) => a.localeCompare(b)),
+        [runId, "run-queued"].sort((a, b) => a.localeCompare(b)),
+      );
       assert.equal(state.asyncJobs.get(runId)?.status, "running");
       assert.equal(state.asyncJobs.get("run-queued")?.status, "queued");
       assert.equal(state.asyncJobs.get(runId)?.steps?.[0]?.children?.[0]?.state, "failed");
@@ -815,11 +836,13 @@ describe("async job tracker", () => {
     const state = createState();
     const ui = createUiContext();
     const recorder = createEventRecorder();
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+    const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
     const originalError = console.error;
-    console.error = () => {};
+    console.error = () => {
+      // Malformed fixture statuses are expected; widget assertions verify rejection.
+    };
     try {
-      tracker.restoreJobs(status.sessionId, ui.ctx as never);
+      tracker.restoreJobs(status.sessionId, ui.ctx);
       fs.writeFileSync(
         statusPath,
         JSON.stringify({
@@ -830,8 +853,9 @@ describe("async job tracker", () => {
       );
       t.mock.timers.tick(POLL_INTERVAL_MS);
       const job = state.asyncJobs.get("run-current");
-      assert.equal(job?.status, "failed");
-      assert.equal(job?.steps?.[0]?.error, undefined);
+      assertDefined(job);
+      assert.equal(job.status, "failed");
+      assert.equal(job.steps?.[0]?.error, undefined);
     } finally {
       console.error = originalError;
       tracker.resetJobs();
@@ -858,9 +882,9 @@ describe("async job tracker", () => {
     const state = createState(),
       ui = createUiContext(),
       recorder = createEventRecorder();
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+    const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
     try {
-      tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+      tracker.restoreJobs("/sessions/current.jsonl", ui.ctx);
       assert.equal(
         state.asyncJobs.size,
         0,
@@ -887,9 +911,9 @@ describe("async job tracker", () => {
     const state = createState();
     const ui = createUiContext();
     const recorder = createEventRecorder();
-    const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+    const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
     try {
-      tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+      tracker.restoreJobs("/sessions/current.jsonl", ui.ctx);
       t.mock.timers.tick(2_000);
       assert.equal(state.poller, null);
     } finally {
@@ -907,7 +931,7 @@ describe("async job tracker", () => {
     try {
       const state = createState();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
 
       tracker.handleStarted({
         id: "run-parallel-start",
@@ -920,11 +944,12 @@ describe("async job tracker", () => {
       });
 
       const job = state.asyncJobs.get("run-parallel-start");
-      assert.deepEqual(job?.agents, ["scout", "reviewer", "worker"]);
-      assert.equal(job?.chainStepCount, 2);
-      assert.deepEqual(job?.parallelGroups, [{ start: 0, count: 3, stepIndex: 0 }]);
-      assert.equal(job?.stepsTotal, 3);
-      assert.equal(job?.activeParallelGroup, true);
+      assertDefined(job);
+      assert.deepEqual(job.agents, ["scout", "reviewer", "worker"]);
+      assert.equal(job.chainStepCount, 2);
+      assert.deepEqual(job.parallelGroups, [{ start: 0, count: 3, stepIndex: 0 }]);
+      assert.equal(job.stepsTotal, 3);
+      assert.equal(job.activeParallelGroup, true);
     } finally {
       removeTempDir(asyncRoot);
     }
@@ -967,8 +992,8 @@ describe("async job tracker", () => {
       const state = createState();
       const ui = createUiContext();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({
         id: "run-chain",
         asyncDir: runDir,
@@ -979,21 +1004,23 @@ describe("async job tracker", () => {
       t.mock.timers.tick(POLL_INTERVAL_MS);
 
       const job = state.asyncJobs.get("run-chain");
+      assertDefined(job);
+      assertDefined(job.steps);
       assert.deepEqual(
-        job?.steps?.map((step: { index?: number }) => step.index),
+        job.steps.map((step) => step.index),
         [1, 2],
       );
-      assert.deepEqual(job?.agents, ["reviewer", "auditor"]);
-      assert.equal(job?.steps?.[0]?.currentTool, "read");
-      assert.equal(job?.steps?.[0]?.currentToolArgs, "src/tui/render.ts");
+      assert.deepEqual(job.agents, ["reviewer", "auditor"]);
+      assert.equal(job.steps[0].currentTool, "read");
+      assert.equal(job.steps[0].currentToolArgs, "src/tui/render.ts");
       assert.deepEqual(
-        job?.steps?.[0]?.recentTools?.map((tool: { tool: string; args: string }) => ({
+        job.steps[0].recentTools?.map((tool) => ({
           tool: tool.tool,
           args: tool.args,
         })),
         [{ tool: "grep", args: "async widget" }],
       );
-      assert.deepEqual(job?.steps?.[0]?.recentOutput, ["reviewer line"]);
+      assert.deepEqual(job.steps[0].recentOutput, ["reviewer line"]);
     } finally {
       removeTempDir(asyncRoot);
     }
@@ -1024,8 +1051,8 @@ describe("async job tracker", () => {
       const state = createState();
       const ui = createUiContext();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({ id: "run-unchanged", asyncDir: runDir, agent: "worker" });
 
       const requestsAfterStart = ui.renderRequests;
@@ -1096,8 +1123,8 @@ describe("async job tracker", () => {
       const state = createState();
       const ui = createUiContext();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({ id: "run-2", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -1141,20 +1168,14 @@ describe("async job tracker", () => {
       const ui = createUiContext();
       const recorder = createEventRecorder();
       t.mock.method(process, "kill", pidGone);
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({ id: "run-stale", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
       assert.equal(state.asyncJobs.get("run-stale")?.status, "failed");
-      assert.equal(
-        JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8")).state,
-        "failed",
-      );
-      assert.equal(
-        JSON.parse(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8")).success,
-        false,
-      );
+      assert.equal(readStatusFile(path.join(runDir, "status.json")).state, "failed");
+      assert.equal(readResult(path.join(resultsDir, "run-stale.json")).success, false);
       t.mock.timers.tick(10_000);
       assert.equal(state.asyncJobs.size, 0);
       assert.ok(ui.renderRequests > 0, "expected stale repair cleanup to request a rerender");
@@ -1173,8 +1194,8 @@ describe("async job tracker", () => {
       const ui = createUiContext();
       const recorder = createEventRecorder();
       t.mock.method(process, "kill", pidGone);
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({
         id: "run-no-status",
         asyncDir: runDir,
@@ -1190,18 +1211,17 @@ describe("async job tracker", () => {
       t.mock.timers.tick(10_000);
 
       assert.equal(state.asyncJobs.size, 0);
-      const status = JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8"));
-      const result = JSON.parse(
-        fs.readFileSync(path.join(resultsDir, "run-no-status.json"), "utf-8"),
-      );
+      const status = readStatusFile(path.join(runDir, "status.json"));
+      const result = readResult(path.join(resultsDir, "run-no-status.json"));
       assert.equal(status.state, "failed");
       assert.equal(status.sessionId, "session-current");
       assert.equal(status.mode, "parallel");
       assert.equal(status.currentStep, 0);
       assert.equal(status.chainStepCount, 1);
       assert.deepEqual(status.parallelGroups, [{ start: 0, count: 3, stepIndex: 0 }]);
+      assertDefined(status.steps);
       assert.deepEqual(
-        status.steps.map((step: { agent: string; status: string }) => [step.agent, step.status]),
+        status.steps.map((step) => [step.agent, step.status]),
         [
           ["scout", "failed"],
           ["reviewer", "failed"],
@@ -1229,8 +1249,8 @@ describe("async job tracker", () => {
       const state = createState();
       const ui = createUiContext();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
-      tracker.resetJobs(ui.ctx as never);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+      tracker.resetJobs(ui.ctx);
       tracker.handleStarted({ id: "run-bad-status", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -1248,14 +1268,16 @@ describe("async job tracker", () => {
     const asyncRoot = createTempDir("pi-async-job-bad-status-nested-");
     let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
     const originalError = console.error;
-    console.error = () => {};
+    console.error = () => {
+      // Malformed fixture statuses are expected; widget assertions verify rejection.
+    };
     try {
       const runDir = path.join(asyncRoot, "run-bad-status-nested");
       fs.mkdirSync(runDir, { recursive: true });
       fs.writeFileSync(path.join(runDir, "status.json"), "{", "utf-8");
       const state = createState();
       const recorder = createEventRecorder();
-      tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({ id: "run-bad-status-nested", asyncDir: runDir, agent: "worker" });
       const job = state.asyncJobs.get("run-bad-status-nested");
       assert.ok(job);
@@ -1288,7 +1310,9 @@ describe("async job tracker", () => {
     const asyncRoot = createTempDir("pi-async-job-nested-refresh-um");
     let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
     const originalError = console.error;
-    console.error = () => {};
+    console.error = () => {
+      // Malformed fixture statuses are expected; widget assertions verify rejection.
+    };
     try {
       const runDir = path.join(asyncRoot, "run-nested-refresh");
       fs.mkdirSync(runDir, { recursive: true });
@@ -1307,7 +1331,7 @@ describe("async job tracker", () => {
 
       const state = createState();
       const recorder = createEventRecorder();
-      tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({
         id: "run-nested-refresh",
         asyncDir: runDir,
@@ -1340,7 +1364,7 @@ describe("async job tracker", () => {
       fs.mkdirSync(runDir, { recursive: true });
       const state = createState();
       const recorder = createEventRecorder();
-      tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({ id: "run-recovered", asyncDir: runDir, agent: "worker" });
       tracker.handleComplete({ id: "run-recovered", success: true });
       assert.equal(state.cleanupTimers.has("run-recovered"), true);
@@ -1393,13 +1417,14 @@ describe("async job tracker", () => {
 
       const state = createState();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({ id: "run-clear-tool", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
       let job = state.asyncJobs.get("run-clear-tool");
-      assert.equal(job?.currentTool, "edit");
-      assert.equal(job?.currentPath, "src/runs/background/subagent-runner.ts");
+      assertDefined(job);
+      assert.equal(job.currentTool, "edit");
+      assert.equal(job.currentPath, "src/runs/background/subagent-runner.ts");
 
       fs.writeFileSync(
         path.join(runDir, "status.json"),
@@ -1416,9 +1441,10 @@ describe("async job tracker", () => {
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
       job = state.asyncJobs.get("run-clear-tool");
-      assert.equal(job?.currentTool, undefined);
-      assert.equal(job?.currentToolStartedAt, undefined);
-      assert.equal(job?.currentPath, undefined);
+      assertDefined(job);
+      assert.equal(job.currentTool, undefined);
+      assert.equal(job.currentToolStartedAt, undefined);
+      assert.equal(job.currentPath, undefined);
     } finally {
       removeTempDir(asyncRoot);
     }
@@ -1465,7 +1491,7 @@ describe("async job tracker", () => {
 
       const state = createState();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({ id: "run-channels", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -1520,7 +1546,7 @@ describe("async job tracker", () => {
 
       const state = createState();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({ id: "run-stale-active", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -1579,7 +1605,7 @@ describe("async job tracker", () => {
 
       const state = createState();
       const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.handleStarted({ id: "run-3", asyncDir: runDir, agent: "worker" });
 
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -1588,16 +1614,13 @@ describe("async job tracker", () => {
         (event) => event.channel === "subagent:control-event",
       );
       assert.ok(controlEvent);
-      assert.match(
-        (controlEvent.data as { noticeText?: string }).noticeText ?? "",
-        /subagent-worker-run-3-1/,
-      );
+      assert.match(text(record(controlEvent.data).noticeText), /subagent-worker-run-3-1/);
       const intercomEvent = recorder.events.find(
         (event) => event.channel === "subagent:control-intercom",
       );
       assert.ok(intercomEvent);
       assert.match(
-        (intercomEvent.data as { message?: string }).message ?? "",
+        text(record(intercomEvent.data).message),
         /intercom\({ action: "ask", to: "subagent-worker-run-3-1", delivery: "steer"/,
       );
     } finally {

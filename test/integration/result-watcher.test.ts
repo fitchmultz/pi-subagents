@@ -13,44 +13,65 @@ import type { SubagentState } from "../../src/shared/types.ts";
 import { createEventBus } from "../support/helpers.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { randomUUID } from "node:crypto";
+import { createSubagentState } from "../support/background-fixtures.ts";
+import { record, records, readJson, text } from "../support/assertions.ts";
 
-async function waitFor(check: () => boolean, message: string) {
-  const deadline = performance.now() + 5_000;
+async function waitFor(check: () => boolean, message: string, timeoutMs = 5_000) {
+  const deadline = performance.now() + timeoutMs;
   while (!check()) {
     assert.ok(performance.now() < deadline, message);
+    // Poll actual owner publication before making completion or negative assertions.
+    // oxlint-disable-next-line no-await-in-loop
     await delay(5);
   }
 }
 
 function errno(code: string): NodeJS.ErrnoException {
-  const error = new Error(code) as NodeJS.ErrnoException;
-  error.code = code;
-  return error;
+  return Object.assign(new Error(code), { code });
 }
 
 function createState(): SubagentState {
-  return {
-    baseCwd: "/repo",
-    currentSessionId: null,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear: () => {},
+  return createSubagentState("/repo");
+}
+
+interface RecordedEvent {
+  readonly event: string;
+  readonly data: unknown;
+}
+
+function eventData(events: readonly RecordedEvent[], event: string): Record<string, unknown> {
+  return record(events.find((entry) => entry.event === event)?.data);
+}
+
+function createRecorder(acknowledgeDelivery = false) {
+  const emitted: RecordedEvent[] = [];
+  const bus = createEventBus();
+  const pi = {
+    events: {
+      ...bus,
+      emit(event: string, data: unknown) {
+        emitted.push({ event, data });
+        bus.emit(event, data);
+      },
     },
   };
+  if (acknowledgeDelivery) {
+    bus.on("subagent:result-intercom", (data) => {
+      const requestId = text(record(data).requestId);
+      setImmediate(() => {
+        pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true });
+      });
+    });
+  }
+  return { pi, emitted };
 }
 
 function observeReads(t: TestContext) {
   const reads = new Map<string, number>();
   const open = fs.openSync;
-  t.mock.method(fs, "openSync", function (file, ...args) {
-    const fd = Reflect.apply(open, fs, [file, ...args]);
+  t.mock.method(fs, "openSync", function (file: fs.PathLike, ...args: readonly unknown[]) {
+    const fd: unknown = Reflect.apply(open, fs, [file, ...args]);
+    assert.ok(typeof fd === "number");
     if (args[0] === "r") {
       reads.set(String(file), (reads.get(String(file)) ?? 0) + 1);
     }
@@ -98,26 +119,34 @@ describe("result watcher", () => {
     let reads = 0,
       completedProbes = 0,
       stamps = 0;
-    events.on("subagent:async-complete", (data) => emitted.push(data));
+    events.on("subagent:async-complete", (data) => {
+      emitted.push(data);
+    });
     const open = fs.openSync,
       exists = fs.existsSync,
       stat = fs.statSync;
-    t.mock.method(fs, "openSync", function (...args) {
+    t.mock.method(fs, "openSync", function (...args: readonly unknown[]) {
       if (args[1] === "r") {
         reads++;
       }
-      return Reflect.apply(open, fs, args);
+      const fd: unknown = Reflect.apply(open, fs, args);
+      assert.ok(typeof fd === "number");
+      return fd;
     });
-    t.mock.method(fs, "existsSync", function (file) {
+    t.mock.method(fs, "existsSync", function (file: fs.PathLike) {
       if (String(file).includes("delivered-")) {
         completedProbes++;
       }
       return exists(file);
     });
-    t.mock.method(fs, "statSync", function (...args) {
-      stamps++;
-      return Reflect.apply(stat, fs, args);
-    });
+    t.mock.method(
+      fs,
+      "statSync",
+      function (...args: readonly [file: fs.PathLike, options?: Readonly<fs.StatSyncOptions>]) {
+        stamps++;
+        return stat(...args);
+      },
+    );
     syncBuiltinESMExports();
     t.after(() => {
       t.mock.restoreAll();
@@ -143,6 +172,8 @@ describe("result watcher", () => {
     try {
       write("other");
       for (let index = 0; index < 3; index++) {
+        // Observe each real scan to verify unchanged identities do not decode again.
+        // oxlint-disable-next-line no-await-in-loop
         await scan(index === 0);
       }
       assert.equal(reads, 1, "foreign content is decoded once, not on every safety poll");
@@ -265,24 +296,32 @@ describe("result watcher", () => {
       );
       let canonicalReads = 0;
       const open = fs.openSync;
-      t.mock.method(fs, "openSync", function (file, ...args) {
+      t.mock.method(fs, "openSync", function (file: fs.PathLike, ...args: readonly unknown[]) {
         if (file === canonical) {
           canonicalReads++;
         }
         if (file === hint && hintKind === "unreadable") {
           throw errno("EACCES");
         }
-        return Reflect.apply(open, fs, [file, ...args]);
+        const fd: unknown = Reflect.apply(open, fs, [file, ...args]);
+        assert.ok(typeof fd === "number");
+        return fd;
       });
       syncBuiltinESMExports();
       const watcher = createResultWatcher({ events }, state, resultsDir);
-      events.on("subagent:async-complete", (event) => completed.push(event));
+      events.on("subagent:async-complete", (event) => {
+        completed.push(event);
+      });
       try {
         watcher.primeExistingResults();
+        // Each fault variant owns its files and patched native reader until cleanup.
+        // oxlint-disable-next-line no-await-in-loop
         await waitFor(() => completed.length === 1, "canonical recovery must publish");
+        // Finish this variant's recovery before restoring its native reader.
+        // oxlint-disable-next-line no-await-in-loop
         await watcher.joinInFlight();
         assert.equal(completed.length, 1, hintKind);
-        assert.equal((completed[0] as { summary: string }).summary, "Canonical output");
+        assert.equal(record(completed[0]).summary, "Canonical output");
         assert.equal(
           canonicalReads,
           1,
@@ -304,7 +343,7 @@ describe("result watcher", () => {
     }
   });
 
-  it("live durable polls avoid parent receipt scans until an actual result exists", async () => {
+  it("live durable polls avoid parent receipt scans until an actual result exists", async (t) => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-live-")),
       runId = randomUUID();
     const state = createState(),
@@ -327,17 +366,16 @@ describe("result watcher", () => {
         },
       ],
     ]);
-    let scans = 0;
-    state.isRunResultConsumed = () => {
-      scans++;
-      return false;
-    };
-    events.on("subagent:async-complete", (event) => completed.push(event));
+    const receiptScans = t.mock.fn(() => false);
+    state.isRunResultConsumed = receiptScans;
+    events.on("subagent:async-complete", (event) => {
+      completed.push(event);
+    });
     const watcher = createResultWatcher({ events }, state, resultsDir);
     try {
       watcher.primeExistingResults();
       watcher.primeExistingResults();
-      assert.equal(scans, 0, "live polls perform no parent receipt I/O");
+      assert.equal(receiptScans.mock.callCount(), 0, "live polls perform no parent receipt I/O");
       fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
       fs.writeFileSync(
         path.join(getRunMetadataDir(runId), "result.json"),
@@ -353,7 +391,7 @@ describe("result watcher", () => {
       watcher.primeExistingResults();
       await waitFor(() => completed.length === 1, "saved result must complete");
       await watcher.joinInFlight();
-      assert.ok(scans > 0, "completed work still checks parent receipts");
+      assert.ok(receiptScans.mock.callCount() > 0, "completed work still checks parent receipts");
       assert.equal(completed.length, 1);
     } finally {
       watcher.stopResultWatcher();
@@ -366,15 +404,7 @@ describe("result watcher", () => {
     const processed = observeReads(t);
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-session-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const pi = {
-        events: {
-          on: () => () => {},
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       const resultPath = path.join(resultsDir, "session-run.json");
       fs.writeFileSync(
@@ -419,19 +449,22 @@ describe("result watcher", () => {
     events.on("subagent:intercom-identity-request", (payload) => {
       identityRequests++;
       events.emit("subagent:intercom-identity-response", {
-        requestId: (payload as { requestId: string }).requestId,
+        requestId: text(record(payload).requestId),
         sessionId: "current-owner-runtime",
       });
     });
     events.on("subagent:result-intercom", (payload) => {
-      const delivery = payload as { to: string; requestId: string };
+      const data = record(payload);
+      const delivery = { to: text(data.to), requestId: text(data.requestId) };
       deliveries.push(delivery);
       events.emit("subagent:result-intercom-delivery", {
         requestId: delivery.requestId,
         delivered: true,
       });
     });
-    events.on("subagent:async-complete", (payload) => completions.push(payload));
+    events.on("subagent:async-complete", (payload) => {
+      completions.push(payload);
+    });
     const state = createState();
     state.currentSessionId = "different-parent";
     state.ownedRuns = new Map([
@@ -472,7 +505,7 @@ describe("result watcher", () => {
         0,
         "matching cwd or a copied run cannot bypass an explicit different owner",
       );
-      assert.deepEqual(deliveries, []);
+      assert.deepEqual([...deliveries], []);
       assert.deepEqual(completions, []);
 
       state.currentSessionId = "saved-parent";
@@ -521,17 +554,9 @@ describe("result watcher", () => {
       });
       assert.equal(repair.repaired, true);
       const resultPath = path.join(resultsDir, "legacy-stale.json");
-      assert.equal(JSON.parse(fs.readFileSync(resultPath, "utf-8")).cwd, "/repo-current");
+      assert.equal(record(readJson(resultPath)).cwd, "/repo-current");
 
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const pi = {
-        events: {
-          on: () => () => {},
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const foreignState = createState();
       foreignState.baseCwd = "/repo-foreign";
       const foreignWatcher = createResultWatcher(pi, foreignState, resultsDir);
@@ -584,15 +609,7 @@ describe("result watcher", () => {
     t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-corrected-"));
     try {
-      const emitted: Array<{ event: string; data: { success?: boolean; summary?: string } }> = [];
-      const pi = {
-        events: {
-          on: () => () => {},
-          emit(event: string, data: { success?: boolean; summary?: string }) {
-            emitted.push({ event, data });
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       state.currentSessionId = "parent";
       const watcher = createResultWatcher(pi, state, resultsDir);
@@ -643,11 +660,11 @@ describe("result watcher", () => {
 
       const completes = emitted.filter((entry) => entry.event === "subagent:async-complete");
       assert.deepEqual(
-        completes.map((entry) => entry.data.summary),
+        completes.map((entry) => record(entry.data).summary),
         ["old", "next"],
       );
       assert.deepEqual(
-        completes.map((entry) => entry.data.success),
+        completes.map((entry) => record(entry.data).success),
         [false, true],
       );
     } finally {
@@ -659,21 +676,13 @@ describe("result watcher", () => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
       fs.writeFileSync(path.join(resultsDir, "bad.json"), "{bad-json", "utf-8");
-      const emitted: unknown[] = [];
-      const pi = {
-        events: {
-          on: () => () => {},
-          emit(_event: string, data: unknown) {
-            emitted.push(data);
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       const watcher = createResultWatcher(pi, state, resultsDir);
       const originalError = console.error;
       const logged: unknown[][] = [];
-      console.error = (...args: unknown[]) => {
-        logged.push(args);
+      console.error = (...args: readonly unknown[]) => {
+        logged.push([...args]);
       };
       try {
         watcher.primeExistingResults();
@@ -686,9 +695,7 @@ describe("result watcher", () => {
 
       assert.equal(emitted.length, 0);
       assert.ok(
-        logged.some((entry) =>
-          /Failed to process subagent result file/.test(String(entry[0] ?? "")),
-        ),
+        logged.some((entry) => /Failed to process subagent result file/.test(text(entry[0]))),
         "expected watcher error to be logged",
       );
     } finally {
@@ -699,24 +706,14 @@ describe("result watcher", () => {
   it("periodically scans result files when fs.watch stays quiet", async (t) => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-quiet-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const pi = {
-        events: {
-          on: () => () => {},
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       state.currentSessionId = "session-1";
-      const fakeWatcher = {
-        on() {
-          return fakeWatcher;
-        },
-        close() {},
-        unref() {},
-      } as fs.FSWatcher;
+      // A real native handle with no change listener models a missed watch event.
+      const fakeWatcher = fs.watch(resultsDir, { persistent: false });
+      const closed = new Promise<void>((resolve) => {
+        fakeWatcher.once("close", resolve);
+      });
       t.mock.method(fs, "watch", () => fakeWatcher);
       syncBuiltinESMExports();
       t.after(() => {
@@ -748,6 +745,7 @@ describe("result watcher", () => {
         await watcher.joinInFlight();
       } finally {
         watcher.stopResultWatcher();
+        await closed;
       }
 
       assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
@@ -760,42 +758,10 @@ describe("result watcher", () => {
   it("falls back to polling when fs.watch throws EMFILE and preserves grouped intercom delivery", async (t) => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, handler: (payload: unknown) => void) {
-            const eventListeners = listeners.get(event) ?? new Set();
-            eventListeners.add(handler);
-            listeners.set(event, eventListeners);
-            return () => eventListeners.delete(handler);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const handler of listeners.get(event) ?? []) {
-              handler(data);
-            }
-            if (event === "subagent:result-intercom") {
-              const requestId =
-                data && typeof data === "object"
-                  ? (data as { requestId?: unknown }).requestId
-                  : undefined;
-              if (typeof requestId === "string") {
-                setImmediate(() =>
-                  pi.events.emit("subagent:result-intercom-delivery", {
-                    requestId,
-                    delivered: true,
-                  }),
-                );
-              }
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder(true);
       const state = createState();
       state.currentSessionId = "session-1";
-      const emfile = new Error("too many open files") as NodeJS.ErrnoException;
-      emfile.code = "EMFILE";
+      const emfile = Object.assign(new Error("too many open files"), { code: "EMFILE" });
       t.mock.method(fs, "watch", () => {
         throw emfile;
       });
@@ -808,7 +774,9 @@ describe("result watcher", () => {
       const watcher = createResultWatcher(pi, state, resultsDir);
       const originalError = console.error;
       const childSessionPath = path.join(resultsDir, "a-session.jsonl");
-      console.error = () => {};
+      console.error = () => {
+        // The injected watcher fault is expected; fallback assertions retain its outcome.
+      };
       try {
         watcher.startResultWatcher();
         assert.equal(state.watcher, null);
@@ -864,26 +832,20 @@ describe("result watcher", () => {
         true,
       );
       assert.equal(fs.existsSync(path.join(resultsDir, "async-fallback.json")), false);
-      const payload = intercomEvents[0]?.data as {
-        mode?: string;
-        status?: string;
-        message?: string;
-        children?: Array<{ status?: string; summary?: string; sessionPath?: string }>;
-      };
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as
-        | { results?: Array<{ status?: string; summary?: string; sessionPath?: string }> }
-        | undefined;
+      const payload = record(intercomEvents[0]?.data);
+      const completion = eventData(emitted, "subagent:async-complete");
+      const children = records(payload.children);
+      const results = records(completion.results);
       assert.equal(payload.mode, "parallel");
       assert.equal(payload.status, "failed");
-      assert.match(String(payload.message ?? ""), /Run: run-fallback/);
-      assert.match(String(payload.message ?? ""), /Children: 1 completed, 1 failed/);
-      assert.equal(payload.children?.[0]?.sessionPath, childSessionPath);
-      assert.equal(completion?.results?.[0]?.sessionPath, childSessionPath);
-      assert.equal(payload.children?.[1]?.status, "failed");
-      assert.equal(completion?.results?.[1]?.status, "failed");
-      assert.equal(payload.children?.[1]?.summary, "B failed\n\nOutput:\nResult from b");
-      assert.equal(completion?.results?.[1]?.summary, "B failed\n\nOutput:\nResult from b");
+      assert.match(text(payload.message), /Run: run-fallback/);
+      assert.match(text(payload.message), /Children: 1 completed, 1 failed/);
+      assert.equal(children[0].sessionPath, childSessionPath);
+      assert.equal(results[0].sessionPath, childSessionPath);
+      assert.equal(children[1].status, "failed");
+      assert.equal(results[1].status, "failed");
+      assert.equal(children[1].summary, "B failed\n\nOutput:\nResult from b");
+      assert.equal(results[1].summary, "B failed\n\nOutput:\nResult from b");
     } finally {
       fs.rmSync(resultsDir, { recursive: true, force: true });
     }
@@ -892,28 +854,13 @@ describe("result watcher", () => {
   it("falls back to polling when an active fs.watch emits ENOSPC", async (t) => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const pi = {
-        events: {
-          on: () => () => {},
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       state.currentSessionId = "session-1";
-      let emitWatcherError: ((error: NodeJS.ErrnoException) => void) | undefined;
-      const fakeWatcher = {
-        on(event: string, handler: (error: NodeJS.ErrnoException) => void) {
-          if (event === "error") {
-            emitWatcherError = handler;
-          }
-          return fakeWatcher;
-        },
-        close() {},
-        unref() {},
-      } as fs.FSWatcher;
+      const fakeWatcher = fs.watch(resultsDir, { persistent: false });
+      const closed = new Promise<void>((resolve) => {
+        fakeWatcher.once("close", resolve);
+      });
       t.mock.method(fs, "watch", () => fakeWatcher);
       syncBuiltinESMExports();
       t.after(() => {
@@ -923,13 +870,14 @@ describe("result watcher", () => {
       t.mock.timers.enable({ apis: ["setInterval"] });
       const watcher = createResultWatcher(pi, state, resultsDir);
       const originalError = console.error;
-      console.error = () => {};
+      console.error = () => {
+        // The injected watcher fault is expected; fallback assertions retain its outcome.
+      };
       try {
         watcher.startResultWatcher();
         assert.equal(state.watcher, fakeWatcher);
-        const enospc = new Error("inotify limit reached") as NodeJS.ErrnoException;
-        enospc.code = "ENOSPC";
-        emitWatcherError?.(enospc);
+        const enospc = Object.assign(new Error("inotify limit reached"), { code: "ENOSPC" });
+        fakeWatcher.emit("error", enospc);
         assert.equal(state.watcher, null);
         assert.notEqual(state.watcherRestartTimer, null);
 
@@ -947,6 +895,7 @@ describe("result watcher", () => {
       } finally {
         console.error = originalError;
         watcher.stopResultWatcher();
+        await closed;
       }
 
       assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
@@ -959,38 +908,7 @@ describe("result watcher", () => {
   it("emits async completion plus one grouped intercom result event when an intercom target is present", async () => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, handler: (payload: unknown) => void) {
-            const eventListeners = listeners.get(event) ?? new Set();
-            eventListeners.add(handler);
-            listeners.set(event, eventListeners);
-            return () => eventListeners.delete(handler);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const handler of listeners.get(event) ?? []) {
-              handler(data);
-            }
-            if (event === "subagent:result-intercom") {
-              const requestId =
-                data && typeof data === "object"
-                  ? (data as { requestId?: unknown }).requestId
-                  : undefined;
-              if (typeof requestId === "string") {
-                setImmediate(() =>
-                  pi.events.emit("subagent:result-intercom-delivery", {
-                    requestId,
-                    delivered: true,
-                  }),
-                );
-              }
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder(true);
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
@@ -1045,23 +963,18 @@ describe("result watcher", () => {
 
       const intercomEvents = emitted.filter((entry) => entry.event === "subagent:result-intercom");
       assert.equal(intercomEvents.length, 1);
-      const eventData = intercomEvents[0]?.data as {
-        message?: string;
-        mode?: string;
-        status?: string;
-      };
-      assert.equal(eventData.mode, "parallel");
-      assert.equal(eventData.status, "failed");
-      const message = String(eventData.message ?? "");
+      const payload = record(intercomEvents[0]?.data);
+      assert.equal(payload.mode, "parallel");
+      assert.equal(payload.status, "failed");
+      const message = text(payload.message);
       assert.match(
         message,
         /Continue child: agent_runs\(\{ action: "continue", id: "async-1", index: 0, message: "\.\.\." \}\)/,
       );
       assert.ok(message.includes(`Session: ${firstSession}`));
       assert.equal(message.includes(missingSession), false);
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as { intercomResultDelivered?: boolean } | undefined;
-      assert.equal(completion?.intercomResultDelivered, true);
+      const completion = eventData(emitted, "subagent:async-complete");
+      assert.equal(completion.intercomResultDelivered, true);
     } finally {
       fs.rmSync(resultsDir, { recursive: true, force: true });
     }
@@ -1087,38 +1000,7 @@ describe("result watcher", () => {
           sessionFile: path.join(resultsDir, "nested-child.jsonl"),
         },
       });
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, handler: (payload: unknown) => void) {
-            const eventListeners = listeners.get(event) ?? new Set();
-            eventListeners.add(handler);
-            listeners.set(event, eventListeners);
-            return () => eventListeners.delete(handler);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const handler of listeners.get(event) ?? []) {
-              handler(data);
-            }
-            if (event === "subagent:result-intercom") {
-              const requestId =
-                data && typeof data === "object"
-                  ? (data as { requestId?: unknown }).requestId
-                  : undefined;
-              if (typeof requestId === "string") {
-                setImmediate(() =>
-                  pi.events.emit("subagent:result-intercom-delivery", {
-                    requestId,
-                    delivered: true,
-                  }),
-                );
-              }
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder(true);
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
@@ -1151,28 +1033,15 @@ describe("result watcher", () => {
       }
 
       assert.equal(fs.existsSync(resultPath), false);
-      const intercomPayload = emitted.find((entry) => entry.event === "subagent:result-intercom")
-        ?.data as
-        | {
-            children?: Array<{
-              children?: Array<{ id?: string; controlInbox?: string; capabilityToken?: string }>;
-            }>;
-            message?: string;
-          }
-        | undefined;
-      assert.equal(intercomPayload?.children?.[0]?.children?.[0]?.id, "nested-child");
-      assert.equal(intercomPayload?.children?.[0]?.children?.[0]?.controlInbox, undefined);
-      assert.equal(intercomPayload?.children?.[0]?.children?.[0]?.capabilityToken, undefined);
-      assert.match(String(intercomPayload?.message ?? ""), /Nested subagents:/);
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as
-        | {
-            nestedChildren?: Array<{ id?: string }>;
-            results?: Array<{ children?: Array<{ id?: string }> }>;
-          }
-        | undefined;
-      assert.equal(completion?.nestedChildren?.[0]?.id, "nested-child");
-      assert.equal(completion?.results?.[0]?.children?.[0]?.id, "nested-child");
+      const intercomPayload = eventData(emitted, "subagent:result-intercom");
+      const nestedChild = records(records(intercomPayload.children)[0].children)[0];
+      assert.equal(nestedChild.id, "nested-child");
+      assert.equal(nestedChild.controlInbox, undefined);
+      assert.equal(nestedChild.capabilityToken, undefined);
+      assert.match(text(intercomPayload.message), /Nested subagents:/);
+      const completion = eventData(emitted, "subagent:async-complete");
+      assert.equal(records(completion.nestedChildren)[0].id, "nested-child");
+      assert.equal(records(records(completion.results)[0].children)[0].id, "nested-child");
     } finally {
       fs.rmSync(resultsDir, { recursive: true, force: true });
       fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
@@ -1184,46 +1053,15 @@ describe("result watcher", () => {
       path.join(os.tmpdir(), "pi-result-watcher-nested-malformed-"),
     );
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, handler: (payload: unknown) => void) {
-            const eventListeners = listeners.get(event) ?? new Set();
-            eventListeners.add(handler);
-            listeners.set(event, eventListeners);
-            return () => eventListeners.delete(handler);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const handler of listeners.get(event) ?? []) {
-              handler(data);
-            }
-            if (event === "subagent:result-intercom") {
-              const requestId =
-                data && typeof data === "object"
-                  ? (data as { requestId?: unknown }).requestId
-                  : undefined;
-              if (typeof requestId === "string") {
-                setImmediate(() =>
-                  pi.events.emit("subagent:result-intercom-delivery", {
-                    requestId,
-                    delivered: true,
-                  }),
-                );
-              }
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder(true);
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
       const resultPath = path.join(resultsDir, "async-explicit-nested.json");
       const originalError = console.error;
       const logged: unknown[][] = [];
-      console.error = (...args: unknown[]) => {
-        logged.push(args);
+      console.error = (...args: readonly unknown[]) => {
+        logged.push([...args]);
       };
       try {
         fs.writeFileSync(
@@ -1286,32 +1124,28 @@ describe("result watcher", () => {
       assert.ok(
         logged.some(
           (entry) =>
-            String(entry[0] ?? "").includes(resultPath) &&
-            /invalid nested child record/.test(String(entry[0] ?? "")),
+            text(entry[0]).includes(resultPath) &&
+            /invalid nested child record/.test(text(entry[0])),
         ),
       );
-      const intercomPayload = emitted.find((entry) => entry.event === "subagent:result-intercom")
-        ?.data as { children?: Array<{ children?: Array<{ id?: string }> }> } | undefined;
-      const intercomNestedIds =
-        intercomPayload?.children?.[0]?.children?.map((child) => child.id) ?? [];
-      assert.deepEqual(
-        intercomNestedIds.sort(),
-        ["child-explicit-good", "top-explicit-good"].sort(),
+      const intercomPayload = eventData(emitted, "subagent:result-intercom");
+      const intercomNestedIds = records(records(intercomPayload.children)[0].children).map(
+        (child) => text(child.id),
       );
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as
-        | {
-            results?: Array<{ children?: Array<{ id?: string }> }>;
-            nestedChildren?: Array<{ id?: string }>;
-          }
-        | undefined;
       assert.deepEqual(
-        completion?.nestedChildren?.map((child) => child.id),
+        intercomNestedIds.sort((a, b) => a.localeCompare(b)),
+        ["child-explicit-good", "top-explicit-good"].sort((a, b) => a.localeCompare(b)),
+      );
+      const completion = eventData(emitted, "subagent:async-complete");
+      assert.deepEqual(
+        records(completion.nestedChildren).map((child) => child.id),
         ["top-explicit-good"],
       );
       assert.deepEqual(
-        completion?.results?.[0]?.children?.map((child) => child.id)?.sort(),
-        ["child-explicit-good", "top-explicit-good"].sort(),
+        records(records(completion.results)[0].children)
+          .map((child) => text(child.id))
+          .sort((a, b) => a.localeCompare(b)),
+        ["child-explicit-good", "top-explicit-good"].sort((a, b) => a.localeCompare(b)),
       );
     } finally {
       fs.rmSync(resultsDir, { recursive: true, force: true });
@@ -1339,32 +1173,15 @@ describe("result watcher", () => {
           agent: "child",
         },
       });
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, listener: (payload: unknown) => void) {
-            const set = listeners.get(event) ?? new Set();
-            set.add(listener);
-            listeners.set(event, set);
-            return () => set.delete(listener);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const listener of listeners.get(event) ?? []) {
-              listener(data);
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
       const resultPath = path.join(resultsDir, "async-nested-retry.json");
       const originalError = console.error;
       const logged: unknown[][] = [];
-      console.error = (...args: unknown[]) => {
-        logged.push(args);
+      console.error = (...args: readonly unknown[]) => {
+        logged.push([...args]);
       };
       try {
         fs.writeFileSync(
@@ -1383,7 +1200,7 @@ describe("result watcher", () => {
         );
         watcher.primeExistingResults();
         await waitFor(
-          () => logged.some((entry) => /will retry later/.test(String(entry[0]))),
+          () => logged.some((entry) => /will retry later/.test(text(entry[0]))),
           "nested enrichment failure must be processed",
         );
         await watcher.joinInFlight();
@@ -1391,7 +1208,7 @@ describe("result watcher", () => {
         assert.equal(fs.existsSync(resultPath), true);
         assert.equal(emitted.length, 0);
         assert.ok(
-          logged.some((entry) => /will retry later/.test(String(entry[0] ?? ""))),
+          logged.some((entry) => /will retry later/.test(text(entry[0]))),
           "expected nested enrichment retry warning to be logged",
         );
 
@@ -1408,16 +1225,14 @@ describe("result watcher", () => {
       }
 
       assert.equal(fs.existsSync(resultPath), false);
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as { nestedChildren?: Array<{ id?: string }> } | undefined;
+      const completion = eventData(emitted, "subagent:async-complete");
       assert.deepEqual(
-        completion?.nestedChildren?.map((child) => child.id),
+        records(completion.nestedChildren).map((child) => child.id),
         ["nested-retry-child"],
       );
-      const intercomPayload = emitted.find((entry) => entry.event === "subagent:result-intercom")
-        ?.data as { children?: Array<{ children?: Array<{ id?: string }> }> } | undefined;
+      const intercomPayload = eventData(emitted, "subagent:result-intercom");
       assert.deepEqual(
-        intercomPayload?.children?.[0]?.children?.map((child) => child.id),
+        records(records(intercomPayload.children)[0].children).map((child) => child.id),
         ["nested-retry-child"],
       );
     } finally {
@@ -1429,25 +1244,7 @@ describe("result watcher", () => {
   it("does not advertise indexed revive from only a top-level async session file", async () => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          emit: (event: string, data: unknown) => {
-            emitted.push({ event, data });
-            for (const listener of listeners.get(event) ?? []) {
-              listener(data);
-            }
-            return true;
-          },
-          on: (event: string, listener: (payload: unknown) => void) => {
-            const set = listeners.get(event) ?? new Set();
-            set.add(listener);
-            listeners.set(event, set);
-            return () => set.delete(listener);
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
@@ -1479,12 +1276,10 @@ describe("result watcher", () => {
         watcher.stopResultWatcher();
       }
 
-      const eventData = emitted.find((entry) => entry.event === "subagent:result-intercom")
-        ?.data as { message?: string } | undefined;
-      assert.ok(eventData);
-      assert.doesNotMatch(String(eventData.message ?? ""), /Revive child:/);
+      const payload = eventData(emitted, "subagent:result-intercom");
+      assert.doesNotMatch(text(payload.message), /Revive child:/);
       assert.match(
-        String(eventData.message ?? ""),
+        text(payload.message),
         /Resume: unavailable; no child session file was persisted/,
       );
     } finally {
@@ -1495,38 +1290,7 @@ describe("result watcher", () => {
   it("preserves child outcomes when a grouped async result is paused", async () => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, handler: (payload: unknown) => void) {
-            const eventListeners = listeners.get(event) ?? new Set();
-            eventListeners.add(handler);
-            listeners.set(event, eventListeners);
-            return () => eventListeners.delete(handler);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const handler of listeners.get(event) ?? []) {
-              handler(data);
-            }
-            if (event === "subagent:result-intercom") {
-              const requestId =
-                data && typeof data === "object"
-                  ? (data as { requestId?: unknown }).requestId
-                  : undefined;
-              if (typeof requestId === "string") {
-                setImmediate(() =>
-                  pi.events.emit("subagent:result-intercom-delivery", {
-                    requestId,
-                    delivered: true,
-                  }),
-                );
-              }
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder(true);
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
@@ -1580,33 +1344,27 @@ describe("result watcher", () => {
 
       const intercomEvents = emitted.filter((entry) => entry.event === "subagent:result-intercom");
       assert.equal(intercomEvents.length, 1);
-      const payload = intercomEvents[0]?.data as {
-        mode?: string;
-        status?: string;
-        message?: string;
-        children?: Array<{ status?: string; summary?: string }>;
-      };
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as
-        | { state?: string; results?: Array<{ status?: string; summary?: string }> }
-        | undefined;
+      const payload = record(intercomEvents[0]?.data);
+      const completion = eventData(emitted, "subagent:async-complete");
+      const children = records(payload.children);
+      const results = records(completion.results);
       assert.equal(payload.mode, "chain");
       assert.equal(payload.status, "failed");
-      assert.equal(completion?.state, "paused");
+      assert.equal(completion.state, "paused");
       assert.deepEqual(
-        payload.children?.map((child) => child.status),
+        children.map((child) => child.status),
         ["completed", "paused", "failed"],
       );
       assert.deepEqual(
-        completion?.results?.map((child) => child.status),
+        results.map((child) => child.status),
         ["completed", "paused", "failed"],
       );
-      assert.equal(payload.children?.[2]?.summary, "C failed\n\nOutput:\nFailed before interrupt");
-      assert.match(String(payload.message ?? ""), /Status: failed/);
-      assert.match(String(payload.message ?? ""), /Children: 1 completed, 1 failed, 1 paused/);
-      assert.match(String(payload.message ?? ""), /1\. a — completed/);
-      assert.match(String(payload.message ?? ""), /2\. b — paused/);
-      assert.match(String(payload.message ?? ""), /3\. c — failed/);
+      assert.equal(children[2].summary, "C failed\n\nOutput:\nFailed before interrupt");
+      assert.match(text(payload.message), /Status: failed/);
+      assert.match(text(payload.message), /Children: 1 completed, 1 failed, 1 paused/);
+      assert.match(text(payload.message), /1\. a — completed/);
+      assert.match(text(payload.message), /2\. b — paused/);
+      assert.match(text(payload.message), /3\. c — failed/);
     } finally {
       fs.rmSync(resultsDir, { recursive: true, force: true });
     }
@@ -1616,24 +1374,7 @@ describe("result watcher", () => {
     const processed = observeReads(t);
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-race-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const listeners = new Map<string, Set<(payload: unknown) => void>>();
-      const pi = {
-        events: {
-          on(event: string, handler: (payload: unknown) => void) {
-            const handlers = listeners.get(event) ?? new Set();
-            handlers.add(handler);
-            listeners.set(event, handlers);
-            return () => handlers.delete(handler);
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-            for (const handler of listeners.get(event) ?? []) {
-              handler(data);
-            }
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const resultPath = path.join(resultsDir, "async-race.json");
       fs.writeFileSync(
         resultPath,
@@ -1651,7 +1392,9 @@ describe("result watcher", () => {
       state.currentSessionId = "parent";
       const watcher = createResultWatcher(pi, state, resultsDir);
       const originalError = console.error;
-      console.error = () => {};
+      console.error = () => {
+        // The injected watcher fault is expected; fallback assertions retain its outcome.
+      };
       try {
         watcher.primeExistingResults();
         await waitFor(
@@ -1679,24 +1422,14 @@ describe("result watcher", () => {
   it("keeps an unacknowledged grouped async delivery quiet and emits one fallback completion", async () => {
     const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
     try {
-      const emitted: Array<{ event: string; data: unknown }> = [];
-      const pi = {
-        events: {
-          on(_event: string, _handler: (payload: unknown) => void) {
-            return () => {};
-          },
-          emit(event: string, data: unknown) {
-            emitted.push({ event, data });
-          },
-        },
-      };
+      const { pi, emitted } = createRecorder();
       const state = createState();
       state.currentSessionId = "session-1";
       const watcher = createResultWatcher(pi, state, resultsDir);
       const originalError = console.error;
       const logged: unknown[][] = [];
-      console.error = (...args: unknown[]) => {
-        logged.push(args);
+      console.error = (...args: readonly unknown[]) => {
+        logged.push([...args]);
       };
       try {
         fs.writeFileSync(
@@ -1714,23 +1447,20 @@ describe("result watcher", () => {
           "utf-8",
         );
         watcher.primeExistingResults();
-        const deadline = Date.now() + 1000;
-        while (true) {
-          const sawCompletion = emitted.some((entry) => entry.event === "subagent:async-complete");
-          if (sawCompletion || Date.now() > deadline) {
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
+        await waitFor(
+          () => emitted.some((entry) => entry.event === "subagent:async-complete"),
+          "unacknowledged delivery must publish one fallback completion",
+          1000,
+        );
+        await watcher.joinInFlight();
       } finally {
         console.error = originalError;
         watcher.stopResultWatcher();
       }
 
       assert.equal(emitted.filter((entry) => entry.event === "subagent:result-intercom").length, 1);
-      const completion = emitted.find((entry) => entry.event === "subagent:async-complete")
-        ?.data as { intercomResultDelivered?: boolean } | undefined;
-      assert.equal(completion?.intercomResultDelivered, false);
+      const completion = eventData(emitted, "subagent:async-complete");
+      assert.equal(completion.intercomResultDelivered, false);
       assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
       assert.equal(fs.existsSync(path.join(resultsDir, "async-2.json")), false);
       assert.deepEqual(logged, [], "ordinary fallback must not write over the editor");

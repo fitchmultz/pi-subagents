@@ -1,14 +1,29 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ReadonlyDeep } from "type-fest";
 import { dirname } from "node:path";
-import { readAsyncResultFile, type ParsedAsyncResultFile } from "../../src/runs/background/async-result-file.ts";
+import {
+  readAsyncResultFile,
+  type ParsedAsyncResultFile,
+} from "../../src/runs/background/async-result-file.ts";
 import { readStatus } from "../../src/shared/utils.ts";
-import type { AsyncJobState, AsyncStatus, AsyncResultChild, OwnedRun, SubagentState } from "../../src/shared/types.ts";
+import type {
+  AsyncJobState,
+  AsyncStatus,
+  AsyncResultChild,
+  ForegroundResumeRun,
+  OwnedRun,
+  SubagentState,
+} from "../../src/shared/types.ts";
 import { assertDefined } from "./assertions.ts";
 
+type BackgroundFixtureState = SubagentState & {
+  ownedRuns: Map<string, OwnedRun>;
+  foregroundRuns: Map<string, ForegroundResumeRun>;
+};
+
 /** Complete extension-owned state without claiming a native receipt or persisted run. */
-export function createSubagentState(cwd: string): SubagentState {
-  const state: SubagentState = {
+export function createSubagentState(cwd: string): BackgroundFixtureState {
+  const state: BackgroundFixtureState = {
     baseCwd: cwd,
     currentSessionId: null,
     asyncJobs: new Map(),
@@ -45,10 +60,15 @@ export function readResult(file: string): ParsedAsyncResultFile & { results: Asy
 }
 
 export function toolText(content: ReadonlyDeep<readonly (TextContent | ImageContent)[]>): string {
-  return content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+  return content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
 }
 
-export function asyncJob(job: ReadonlyDeep<AsyncJobState> | undefined): ReadonlyDeep<AsyncJobState> {
+export function asyncJob(
+  job: ReadonlyDeep<AsyncJobState> | undefined,
+): ReadonlyDeep<AsyncJobState> {
   assertDefined(job);
   return job;
 }

@@ -8,6 +8,8 @@ import * as path from "node:path";
 import { after, test } from "node:test";
 import { createTempDir, removeTempDir } from "../support/helpers.ts";
 import type { OwnedRun, SubagentState } from "../../src/shared/types.ts";
+import { assertDefined } from "../support/assertions.ts";
+import { createSubagentState, toolText } from "../support/background-fixtures.ts";
 
 const root = createTempDir("owned-list-");
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -31,34 +33,13 @@ const {
 after(() => removeTempDir(root));
 
 function ownerState(currentSessionId = "parent"): SubagentState {
-  return {
-    baseCwd: root,
-    currentSessionId,
-    ownedRuns: new Map(),
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: { schedule: () => false, clear() {} },
-  };
+  const state = createSubagentState(root);
+  state.currentSessionId = currentSessionId;
+  return state;
 }
 
-test("indexed owned pages skip off-page filesystem work while keeping fresh selected controls, questions, review and lineage", async (t) => {
+function seedRetainedRuns(sessionFile: string): SubagentState {
   const state = ownerState();
-  const sessionFile = path.join(root, "child.jsonl");
-  const nativeHeader =
-    JSON.stringify({
-      type: "session",
-      version: 3,
-      id: "child",
-      timestamp: new Date().toISOString(),
-      cwd: root,
-    }) + "\n";
-  fs.writeFileSync(sessionFile, nativeHeader);
-  t.after(() => closeRunHistory(state));
   for (let index = 0; index < 65; index++) {
     const runId = `page-${String(index).padStart(2, "0")}`;
     const run: OwnedRun = {
@@ -125,6 +106,22 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
       });
     }
   }
+  return state;
+}
+
+test("indexed owned pages skip off-page filesystem work while keeping fresh selected controls, questions, review and lineage", async (t) => {
+  const sessionFile = path.join(root, "child.jsonl");
+  const nativeHeader =
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "child",
+      timestamp: new Date().toISOString(),
+      cwd: root,
+    }) + "\n";
+  fs.writeFileSync(sessionFile, nativeHeader);
+  const state = seedRetainedRuns(sessionFile);
+  t.after(() => closeRunHistory(state));
   // A live pre-update waiter can still write its answer to the legacy directory.
   saveQuestionOwner("page-03", "parent", LEGACY_QUESTIONS_DIR);
   const question = createSupervisorQuestion(
@@ -153,51 +150,65 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
   const readFile = fs.readFileSync,
     readDirectory = fs.readdirSync,
     stat = fs.statSync;
-  t.mock.method(fs, "statSync", (...args: Parameters<typeof fs.statSync>) => {
-    const file = String(args[0]);
-    if (
-      file.startsWith(`${QUESTIONS_DIR}/`) &&
-      !["page-03", "page-00"].some((id) => file.startsWith(`${getRunMetadataDir(id)}/`))
-    ) {
-      offPageStats++;
-    }
-    return Reflect.apply(stat, fs, args);
-  });
-  t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
-    const value = Reflect.apply(readFile, fs, args);
-    const file = String(args[0]);
-    if (file.startsWith(QUESTIONS_DIR)) {
-      reads.set(file, (reads.get(file) ?? 0) + 1);
-    }
-    return value;
-  });
-  t.mock.method(fs, "readdirSync", (...args: Parameters<typeof fs.readdirSync>) => {
-    if (String(args[0]) === QUESTIONS_DIR) {
-      metadataScans++;
-    }
-    if (String(args[0]) === LEGACY_QUESTIONS_DIR) {
-      migrationScans++;
-    }
-    return Reflect.apply(readDirectory, fs, args);
-  });
+  t.mock.method(
+    fs,
+    "statSync",
+    (...args: readonly [file: fs.PathLike, options?: Readonly<fs.StatSyncOptions>]) => {
+      const file = String(args[0]);
+      if (
+        file.startsWith(`${QUESTIONS_DIR}/`) &&
+        !["page-03", "page-00"].some((id) => file.startsWith(`${getRunMetadataDir(id)}/`))
+      ) {
+        offPageStats++;
+      }
+      return stat(...args);
+    },
+  );
+  t.mock.method(
+    fs,
+    "readFileSync",
+    (input: fs.PathOrFileDescriptor, ...args: readonly unknown[]) => {
+      const value: unknown = Reflect.apply(readFile, fs, [input, ...args]);
+      assert.ok(typeof value === "string" || Buffer.isBuffer(value));
+      const file = String(input);
+      if (file.startsWith(QUESTIONS_DIR)) {
+        reads.set(file, (reads.get(file) ?? 0) + 1);
+      }
+      return value;
+    },
+  );
+  t.mock.method(
+    fs,
+    "readdirSync",
+    (
+      ...args: readonly [file: fs.PathLike, options: Readonly<Parameters<typeof fs.readdirSync>[1]>]
+    ) => {
+      if (String(args[0]) === QUESTIONS_DIR) {
+        metadataScans++;
+      }
+      if (String(args[0]) === LEGACY_QUESTIONS_DIR) {
+        migrationScans++;
+      }
+      return readDirectory(...args);
+    },
+  );
   syncBuiltinESMExports();
   t.after(() => {
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
   const page = () => ownedRunList(state, { limit: 2 });
-  assert.deepEqual(
-    (await page()).details.runs?.map((run) => run.runId),
-    ["page-03", "page-00"],
-  );
+  const pageIds = async () => {
+    const runs = (await page()).details.runs;
+    assertDefined(runs);
+    return runs.map((run) => run.runId);
+  };
+  assert.deepEqual(await pageIds(), ["page-03", "page-00"]);
   reads.clear();
   metadataScans = 0;
   migrationScans = 0;
   offPageStats = 0;
-  assert.deepEqual(
-    (await page()).details.runs?.map((run) => run.runId),
-    ["page-03", "page-00"],
-  );
+  assert.deepEqual(await pageIds(), ["page-03", "page-00"]);
   const offPageReads = [...reads].filter(
     ([file]) =>
       /\/(?:result|foreground)\.json$|\/contracts\//.test(file) &&
@@ -226,7 +237,7 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
   });
   await index.refresh("page-02");
   assert.deepEqual(
-    (await page()).details.runs?.map((run) => run.runId),
+    await pageIds(),
     ["page-03", "page-02"],
     "a caught-up child completion moves into attention",
   );
@@ -243,54 +254,58 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
     LEGACY_QUESTIONS_DIR,
   );
   await index.refresh("page-03");
-  assert.deepEqual(
-    (await page()).details.runs?.map((run) => run.runId),
-    ["page-02", "page-00"],
-  );
+  assert.deepEqual(await pageIds(), ["page-02", "page-00"]);
+  assertDefined(state.ownedRuns);
+  const firstRun = state.ownedRuns.get("page-00");
+  assertDefined(firstRun);
   rememberOwnedRun(state, {
-    ...state.ownedRuns!.get("page-00")!,
+    ...firstRun,
     review: { decision: "accepted", reviewedAt: Date.now() },
   });
   await state.historyReady;
   await index.refresh("page-00");
   assert.deepEqual(
-    (await page()).details.runs?.map((run) => run.runId),
+    await pageIds(),
     ["page-02", "page-01"],
     "review changes reorder without replacing execution outcomes",
   );
-  assert.match((await page()).content[0]!.text, /Legacy saved foreground evidence/);
+  assert.match(toolText((await page()).content), /Legacy saved foreground evidence/);
   fs.unlinkSync(sessionFile);
-  assert.ok(
-    !(await page()).details.managementControls
-      ?.find((control) => control.runId === "page-01")
-      ?.capabilities.includes("resume"),
-    "selected controls must notice a removed session file even before index catch-up",
-  );
-  fs.writeFileSync(sessionFile, nativeHeader);
-  assert.ok(
+  assert.notEqual(
     (await page()).details.managementControls
       ?.find((control) => control.runId === "page-01")
       ?.capabilities.includes("resume"),
+    true,
+    "selected controls must notice a removed session file even before index catch-up",
+  );
+  fs.writeFileSync(sessionFile, nativeHeader);
+  assert.equal(
+    (await page()).details.managementControls
+      ?.find((control) => control.runId === "page-01")
+      ?.capabilities.includes("resume"),
+    true,
   );
 
   const all: string[] = [];
   for (let offset = 0; offset < 65; offset += 7) {
+    // Pages are observed in offset order to detect repeated or missing history rows.
+    // oxlint-disable-next-line no-await-in-loop
     const result = await ownedRunList(state, { offset, limit: 7 });
     assert.equal(result.details.runList?.total, 65);
-    all.push(...result.details.runs!.map((run) => run.runId));
+    assertDefined(result.details.runs);
+    all.push(...result.details.runs.map((run) => run.runId));
   }
   assert.equal(new Set(all).size, 65, "paging does not cap history or repeat runs");
+  const lastRun = state.ownedRuns.get("page-64");
+  assertDefined(lastRun);
   assert.equal(
-    ownedRunStatusResult(
-      state.ownedRuns!.get("page-64")!,
-      state,
-    ).details.run?.children[0]?.result?.finalOutput?.startsWith("Result 64:"),
+    ownedRunStatusResult(lastRun, state).details.run?.children[0]?.result?.finalOutput?.startsWith(
+      "Result 64:",
+    ),
     true,
   );
   assert.deepEqual(
-    ownedRunStatusResult(state.ownedRuns!.get("page-00")!, state).details.run?.continuations.map(
-      (run) => run.runId,
-    ),
+    ownedRunStatusResult(firstRun, state).details.run?.continuations.map((run) => run.runId),
     ["page-60", "page-61", "page-62", "page-63", "page-64"],
   );
 });
@@ -298,12 +313,13 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
 test("a stopped browse worker stays unavailable through background requests until explicit retry", async (t) => {
   const state = ownerState("stopped-worker"),
     fork = childProcess.fork;
-  let child: childProcess.ChildProcess;
-  const starts = t.mock.method(
-    childProcess,
-    "fork",
-    (...args) => (child = Reflect.apply(fork, childProcess, args)),
-  );
+  const children: childProcess.ChildProcess[] = [];
+  const starts = t.mock.method(childProcess, "fork", (...args: readonly unknown[]) => {
+    const child: unknown = Reflect.apply(fork, childProcess, args);
+    assert.ok(child instanceof childProcess.ChildProcess);
+    children.push(child);
+    return child;
+  });
   syncBuiltinESMExports();
   t.after(async () => {
     await closeRunHistory(state);
@@ -312,18 +328,21 @@ test("a stopped browse worker stays unavailable through background requests unti
   });
   const index = await runHistoryIndex(state);
   assert.equal((await index.listRuns()).total, 0);
-  const exited = once(child!, "exit");
-  child!.kill("SIGKILL");
+  const child = children[0];
+  assertDefined(child);
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
   await exited;
   for (let update = 0; update < 3; update++) {
-    await assert.rejects(
-      async () => (await runHistoryIndex(state)).listRuns(),
-      (error: any) => error.code === "UNAVAILABLE",
-    );
+    // Each failed background request observes the same stopped worker before retry.
+    // oxlint-disable-next-line no-await-in-loop
+    await assert.rejects(async () => (await runHistoryIndex(state)).listRuns(), {
+      code: "UNAVAILABLE",
+    });
   }
   await assert.rejects(
     index.listRuns(),
-    (error: any) => error.code === "UNAVAILABLE",
+    { code: "UNAVAILABLE" },
     "cached queries must not bypass the failure",
   );
   const remembered: OwnedRun = {
@@ -338,7 +357,8 @@ test("a stopped browse worker stays unavailable through background requests unti
     children: [{ agent: "worker", index: 0 }],
   };
   rememberOwnedRun(state, remembered);
-  await assert.rejects(state.historyReady, (error: any) => error.code === "UNAVAILABLE");
+  assertDefined(state.historyReady);
+  await assert.rejects(state.historyReady, { code: "UNAVAILABLE" });
   assert.equal(starts.mock.callCount(), 1);
   const recovered = await (await runHistoryIndex(state, true)).listRuns();
   assert.deepEqual(
@@ -350,20 +370,28 @@ test("a stopped browse worker stays unavailable through background requests unti
 });
 
 for (const failed of [false, true]) {
-  for (const boundary of ["owner change", "shutdown"])
+  for (const boundary of ["owner change", "shutdown"]) {
     test(`${failed ? "failed" : "healthy"} history retry cannot cross ${boundary}`, async (t) => {
       const state = ownerState("previous-owner");
       t.after(() => closeRunHistory(state));
       const index = await runHistoryIndex(state);
       await index.listRuns();
-      if (failed) index.cancel();
+      if (failed) {
+        index.cancel();
+      }
       const pending = runHistoryIndex(state, true);
-      if (boundary === "owner change") state.currentSessionId = "replacement-owner";
+      if (boundary === "owner change") {
+        state.currentSessionId = "replacement-owner";
+      }
       const closing = closeRunHistory(state);
       const replacement = boundary === "owner change" ? runHistoryIndex(state) : undefined;
       await assert.rejects(pending, /Owning session changed|History index is closed/);
       await closing;
-      if (replacement) assert.equal((await (await replacement).listRuns()).total, 0);
-      else assert.equal(state.historyIndex, undefined, "cleanup must not admit another worker");
+      if (replacement) {
+        assert.equal((await (await replacement).listRuns()).total, 0);
+      } else {
+        assert.equal(state.historyIndex, undefined, "cleanup must not admit another worker");
+      }
     });
+  }
 }

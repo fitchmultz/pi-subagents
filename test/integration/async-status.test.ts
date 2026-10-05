@@ -4,6 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
+import type { ReadonlyDeep } from "type-fest";
+import { assertDefined } from "../support/assertions.ts";
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const isolatedAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-agent-"));
 process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
@@ -18,7 +20,11 @@ after(() => {
   fs.rmSync(isolatedAgentDir, { recursive: true, force: true });
 });
 
-function createAsyncDir(root: string, id: string, status: Record<string, unknown>): string {
+function createAsyncDir(
+  root: string,
+  id: string,
+  status: ReadonlyDeep<Record<string, unknown>>,
+): string {
   const dir = path.join(root, id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(status), "utf-8");
@@ -86,7 +92,10 @@ describe("async status helpers", () => {
         runtimeVersion: 2,
       });
       const runs = listAsyncRuns(root);
-      assert.deepEqual(runs.map((run) => run.id).sort(), ["durable-union", "legacy-union"]);
+      assert.deepEqual(
+        runs.map((run) => run.id).sort((a, b) => a.localeCompare(b)),
+        ["durable-union", "legacy-union"],
+      );
       assert.equal(
         runs.find((run) => run.id === "durable-union")?.asyncDir,
         path.join(QUESTIONS_DIR, "durable-union"),
@@ -112,8 +121,9 @@ describe("async status helpers", () => {
       };
       const dir = createAsyncDir(root, "run-empty", status);
       const [summary] = listAsyncRuns(root);
-      assert.equal(summary?.chainStepCount, 2);
-      assert.equal(summary?.steps.length, 1);
+      assertDefined(summary);
+      assert.equal(summary.chainStepCount, 2);
+      assert.equal(summary.steps.length, 1);
       for (const chainStepCount of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
         assert.throws(
           () => asyncStatusToSummary(dir, { ...status, chainStepCount }),
@@ -358,9 +368,7 @@ describe("async status helpers", () => {
         states: ["running"],
         resultsDir,
         kill: () => {
-          const error = new Error("missing") as NodeJS.ErrnoException;
-          error.code = "ESRCH";
-          throw error;
+          throw Object.assign(new Error("missing"), { code: "ESRCH" });
         },
         now: () => 200,
       });
