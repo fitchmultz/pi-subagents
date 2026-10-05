@@ -2,6 +2,7 @@
  * Async execution logic for subagent tool
  */
 
+import type { ReadonlyDeep } from "type-fest";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -140,7 +141,7 @@ interface AsyncExecutionContext {
   projectTrusted?: boolean;
 }
 
-interface AsyncChainParams {
+interface AsyncChainOptions {
   timeoutMs?: number;
   chain: ChainStep[];
   task?: string;
@@ -167,7 +168,7 @@ interface AsyncChainParams {
   projectTrust?: ChildProjectTrustPolicy;
 }
 
-interface AsyncSingleParams {
+interface AsyncSingleOptions {
   timeoutMs?: number;
   agent: string;
   task?: string;
@@ -200,9 +201,16 @@ interface AsyncSingleParams {
   projectTrust?: ChildProjectTrustPolicy;
 }
 
+type AsyncChainParams = ReadonlyDeep<Omit<AsyncChainOptions, "ctx">> & {
+  readonly ctx: Readonly<AsyncExecutionContext>;
+};
+type AsyncSingleParams = ReadonlyDeep<Omit<AsyncSingleOptions, "ctx">> & {
+  readonly ctx: Readonly<AsyncExecutionContext>;
+};
+
 function withSavedLaunch(
   step: RunnerSubagentStep,
-  agent: AgentConfig,
+  agent: ReadonlyDeep<AgentConfig>,
   params: AsyncChainParams | AsyncSingleParams,
   generatedOutputFilename?: string,
 ): RunnerSubagentStep {
@@ -244,11 +252,11 @@ function withSavedLaunch(
 }
 
 function resolveLaunchModel(
-  agent: AgentConfig,
+  agent: ReadonlyDeep<AgentConfig>,
   modelOverride: string | undefined,
-  availableModels: AvailableModelInfo[] | undefined,
+  availableModels: readonly ReadonlyDeep<AvailableModelInfo>[] | undefined,
   preferredProvider: string | undefined,
-  savedLaunch?: SavedLaunchConfig,
+  savedLaunch?: ReadonlyDeep<SavedLaunchConfig>,
 ) {
   const primary = modelOverride ?? savedLaunch?.model ?? agent.model;
   const thinking = savedLaunch?.thinking ?? agent.thinking;
@@ -380,7 +388,7 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
         ? firstStep.parallel[0]?.task
         : isDynamicParallelStep(firstStep)
           ? firstStep.parallel.task
-          : (firstStep as SequentialStep).task
+          : firstStep.task
       : undefined);
   try {
     validateChainOutputBindings(chain, { maxItems: params.dynamicFanoutMaxItems });
@@ -398,7 +406,7 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
       ? s.parallel.map((t) => t.agent)
       : isDynamicParallelStep(s)
         ? [s.parallel.agent]
-        : [(s as SequentialStep).agent];
+        : [s.agent];
     for (const agentName of stepAgents) {
       if (!agents.find((x) => x.name === agentName)) {
         return {
@@ -622,9 +630,7 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
           }
           const taskProgressPrecreated =
             progressPrecreated ||
-            (resultMode !== "chain" &&
-              parallelBehaviors[taskIndex]?.progress === true &&
-              !s.worktree);
+            (resultMode !== "chain" && parallelBehaviors[taskIndex]?.progress && !s.worktree);
           if (taskProgressPrecreated && !progressPrecreated) {
             const progressCwd = resolveChildCwd(groupCwd, t.cwd);
             try {
@@ -779,12 +785,12 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
       ? firstStep.parallel.map((t) => t.agent)
       : isDynamicParallelStep(firstStep)
         ? [firstStep.parallel.agent]
-        : [(firstStep as SequentialStep).agent];
+        : [firstStep.agent];
     const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
     const flatAgents: string[] = [];
     let flatStepStart = 0;
     for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
-      const step = chain[stepIndex]!;
+      const step = chain[stepIndex];
       if (isParallelStep(step)) {
         parallelGroups.push({ start: flatStepStart, count: step.parallel.length, stepIndex });
         flatAgents.push(...step.parallel.map((task) => task.agent));
@@ -794,7 +800,7 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
         flatAgents.push(step.parallel.agent);
         flatStepStart++;
       } else {
-        flatAgents.push((step as SequentialStep).agent);
+        flatAgents.push(step.agent);
         flatStepStart++;
       }
     }
@@ -843,13 +849,13 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
         ? firstStep.parallel[0]?.task?.slice(0, 50)
         : isDynamicParallelStep(firstStep)
           ? firstStep.parallel.task?.slice(0, 50)
-          : (firstStep as SequentialStep).task?.slice(0, 50),
+          : firstStep.task?.slice(0, 50),
       chain: chain.map((s) =>
         isParallelStep(s)
           ? `[${s.parallel.map((t) => t.agent).join("+")}]`
           : isDynamicParallelStep(s)
             ? `expand:${s.parallel.agent}`
-            : (s as SequentialStep).agent,
+            : s.agent,
       ),
       chainStepCount: chain.length,
       parallelGroups,
@@ -866,7 +872,7 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
         ? `[${s.parallel.map((t) => t.agent).join("+")}]`
         : isDynamicParallelStep(s)
           ? `expand:${s.parallel.agent}`
-          : (s as SequentialStep).agent,
+          : s.agent,
     )
     .join(" -> ");
 
