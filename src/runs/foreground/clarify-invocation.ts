@@ -136,7 +136,7 @@ function preparePreview(params: SubagentParamsLike, agents: readonly AgentConfig
     originalTask: params.task ?? (mode === "chain" ? (templates[0] ?? "") : ""),
   };
 }
-function canPreview(params: SubagentParamsLike, ctx: ExtensionContext): boolean {
+export function canClarifyInvocation(params: SubagentParamsLike, ctx: ExtensionContext): boolean {
   return (
     params.clarify === true &&
     ctx.hasUI &&
@@ -152,7 +152,7 @@ export async function clarifyInvocation(input: {
   readonly runId: string;
 }): Promise<SubagentParamsLike | undefined> {
   const { params, agents, ctx, cwd, runId } = input;
-  if (!canPreview(params, ctx)) {
+  if (!canClarifyInvocation(params, ctx)) {
     return params;
   }
   const preview = preparePreview(params, agents);

@@ -42,7 +42,7 @@ import {
   withForkContext,
 } from "./execution-input.ts";
 import { runAsyncPath } from "./run-async-path.ts";
-import { clarifyInvocation } from "./clarify-invocation.ts";
+import { canClarifyInvocation, clarifyInvocation } from "./clarify-invocation.ts";
 import { waitForOwnedRun } from "./wait-run.ts";
 
 export interface ExecutionInvocation {
@@ -104,21 +104,8 @@ function invocationModes(params: SubagentParamsLike, ctx: ExtensionContext) {
     hasChain,
     hasTasks,
     hasSingle: !hasChain && !hasTasks && params.agent !== undefined && params.agent.length > 0,
-    allowClarifyTaskPrompt: canPromptForChainTask(params, ctx, hasChain),
+    allowClarifyTaskPrompt: hasChain && canClarifyInvocation(params, ctx),
   };
-}
-function canPromptForChainTask(
-  params: SubagentParamsLike,
-  ctx: ExtensionContext,
-  hasChain: boolean,
-): boolean {
-  return (
-    hasChain &&
-    params.clarify === true &&
-    ctx.hasUI &&
-    ctx.mode === "tui" &&
-    params.chain?.some(isParallelStep) !== true
-  );
 }
 /** Owns launch planning and its durable registration, not management or existing-run waits. */
 export class InvocationExecution {
