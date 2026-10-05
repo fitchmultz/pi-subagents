@@ -12,6 +12,13 @@ export interface SingleOutputSnapshot {
   readonly ino?: number;
 }
 
+export interface SingleOutputResolution {
+  readonly fullOutput: string;
+  readonly savedPath?: string;
+  readonly saveError?: string;
+  readonly writtenSnapshot?: SingleOutputSnapshot;
+}
+
 export interface SingleOutputCleanupResult {
   readonly path: string;
   readonly action: "deleted" | "already-missing" | "skipped";
@@ -246,12 +253,7 @@ export function resolveSingleOutput(
   outputPath: string | undefined,
   fallbackOutput: string,
   beforeRun: SingleOutputSnapshot | undefined,
-): {
-  fullOutput: string;
-  savedPath?: string;
-  saveError?: string;
-  writtenSnapshot?: SingleOutputSnapshot;
-} {
+): SingleOutputResolution {
   if (!nonempty(outputPath)) {
     return { fullOutput: fallbackOutput };
   }
