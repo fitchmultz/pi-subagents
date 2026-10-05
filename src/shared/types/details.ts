@@ -1,5 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { HistoryFreshness, HistoryPage, HistorySearchPage } from "./history.ts";
+import type { ReadonlyInput } from "./inputs.ts";
 import type { ManagementControl, OwnedRunView } from "./owned-runs.ts";
 import type {
   AgentProgress,
@@ -92,3 +93,5 @@ export type SubagentExecutionResult = AgentToolResult<Details> & {
   /** Executor marker transferred through Pi's native tool_result hook. */
   isError?: boolean;
 };
+
+export type ReadonlyDetails = ReadonlyInput<Details>;

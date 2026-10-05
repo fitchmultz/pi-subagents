@@ -1,8 +1,13 @@
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AsyncJobState } from "./async.ts";
+import type { AsyncJobState, ReadonlyAsyncJobState } from "./async.ts";
 import type { HistoryIndexHandle } from "./history.ts";
-import type { ForegroundResumeRun, OwnedRun, TrackedOwnedRun } from "./owned-runs.ts";
+import type {
+  ForegroundResumeRun,
+  OwnedRun,
+  ReadonlyForegroundResumeRun,
+  TrackedOwnedRun,
+} from "./owned-runs.ts";
 
 /** Session lifecycle owner. Only owner boundaries may update maps, timers, handles and projections. */
 export interface SubagentState {
@@ -29,3 +34,23 @@ export interface SubagentState {
     readonly clear: () => void;
   };
 }
+
+/** Read-only application state around genuine native handles, which retain their SDK contracts. */
+export type ReadonlySubagentState = Readonly<
+  Omit<
+    SubagentState,
+    | "asyncJobs"
+    | "waitingRuns"
+    | "foregroundRuns"
+    | "ownedRuns"
+    | "cleanupTimers"
+    | "completionSeen"
+  >
+> & {
+  readonly asyncJobs: ReadonlyMap<string, ReadonlyAsyncJobState>;
+  readonly waitingRuns?: ReadonlyMap<string, number>;
+  readonly foregroundRuns?: ReadonlyMap<string, ReadonlyForegroundResumeRun>;
+  readonly ownedRuns?: ReadonlyMap<string, OwnedRun>;
+  readonly cleanupTimers: ReadonlyMap<string, ReturnType<typeof setTimeout>>;
+  readonly completionSeen: ReadonlyMap<string, number>;
+};

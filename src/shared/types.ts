@@ -50,7 +50,7 @@ function sanitizeTempScopeSegment(value: string): string {
     .trim()
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return sanitized || "unknown";
+  return sanitized.length > 0 ? sanitized : "unknown";
 }
 
 export function resolveTempScopeId(): string {
@@ -60,28 +60,32 @@ export function resolveTempScopeId(): string {
 
   for (const key of ["USERNAME", "USER", "LOGNAME"] as const) {
     const value = process.env[key];
-    if (value) {
+    if (value !== undefined && value.length > 0) {
       return `user-${sanitizeTempScopeSegment(value)}`;
     }
   }
 
   try {
     const username = os.userInfo().username;
-    if (username) {
+    if (username.length > 0) {
       return `user-${sanitizeTempScopeSegment(username)}`;
     }
   } catch {
     // Fall through to home-directory-based scoping.
   }
 
+  return resolveHomeTempScopeId();
+}
+
+function resolveHomeTempScopeId(): string {
   const homedir = process.env.HOME;
-  if (homedir) {
+  if (homedir !== undefined && homedir.length > 0) {
     return `home-${sanitizeTempScopeSegment(homedir)}`;
   }
 
   try {
     const fallbackHomedir = os.homedir();
-    if (fallbackHomedir) {
+    if (fallbackHomedir.length > 0) {
       return `home-${sanitizeTempScopeSegment(fallbackHomedir)}`;
     }
   } catch {
@@ -96,7 +100,7 @@ export const MAX_CONCURRENCY = 4;
 
 export function resolveTempRootDir(configured = process.env.PI_SUBAGENT_TEMP_ROOT): string {
   const fallback = path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
-  if (!configured?.trim()) {
+  if (configured === undefined || configured.trim().length === 0) {
     return fallback;
   }
   const resolved = path.resolve(configured);
@@ -148,8 +152,12 @@ export const DEFAULT_FORK_PREAMBLE =
   "Your sole job is to execute the task below and return a focused result for that task using your tools.";
 
 function normalizeTopLevelParallelValue(value: unknown): number | undefined {
-  const parsed =
-    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  let parsed = NaN;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    parsed = Number(value);
+  }
   if (!Number.isInteger(parsed) || parsed < 1) {
     return undefined;
   }
@@ -192,8 +200,12 @@ export function wrapForkTask(task: string, preamble?: string | false): string {
 // ============================================================================
 
 export function normalizeMaxSubagentDepth(value: unknown): number | undefined {
-  const parsed =
-    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  let parsed = NaN;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    parsed = Number(value);
+  }
   if (!Number.isInteger(parsed) || parsed < 0) {
     return undefined;
   }
@@ -297,7 +309,7 @@ export function truncateOutput(
   }
 
   const keptLines = result.split("\n").length;
-  const marker = `[TRUNCATED: showing first ${keptLines} of ${lines.length} lines, ${formatBytes(Buffer.byteLength(result))} of ${formatBytes(bytes)}${artifactPath ? ` - full output at ${artifactPath}` : ""}]\n`;
+  const marker = `[TRUNCATED: showing first ${keptLines} of ${lines.length} lines, ${formatBytes(Buffer.byteLength(result))} of ${formatBytes(bytes)}${artifactPath !== undefined && artifactPath.length > 0 ? ` - full output at ${artifactPath}` : ""}]\n`;
 
   return {
     text: marker + result,
