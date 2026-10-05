@@ -1,63 +1,67 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Message } from "@earendil-works/pi-ai";
-import { NativeJournal, readOutputPage } from "../../shared/journal-reader.ts";
+import { NativeJournal } from "../../shared/journal-reader.ts";
 import { snapshotNativeUsage } from "./native-usage.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { runCooperatively, runSynchronously } from "../../shared/cooperative.ts";
-import { getFinalOutput } from "../../shared/utils.ts";
-import { readAsyncResultFile } from "../background/async-result-file.ts";
+import { errorMessage, isRecord, recordAt } from "../../shared/unknown.ts";
 import type { AsyncRunRecord } from "../background/async-resume.ts";
 import { createAsyncRunDiscovery } from "../background/async-status.ts";
-import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
-import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
+import {
+  parseDetails,
+  parseForegroundResumeRun,
+  parseOwnedRun,
+  parseSubagentExecutionResult,
+} from "../background/run-schemas.ts";
 import { collectInvocationAgentNames } from "../../shared/settings.ts";
-import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
+import {
+  normalizeSubagentParamsLike,
+  type SubagentParamsLike,
+} from "../foreground/subagent-params.ts";
 import {
   getRunMetadataDir,
   migrateSupervisorQuestionSteps,
   readRunJson,
-  saveAsyncRunResult,
-  saveRunStatus,
   saveQuestionOwner,
 } from "./supervisor-questions.ts";
 import {
   ASYNC_DIR,
-  RESULTS_DIR,
   SLASH_RESULT_TYPE,
-  type Details,
-  type ForegroundResumeRun,
+  type ReadonlyDetails,
+  type ReadonlyInput,
   type OwnedRun,
-  type SingleResult,
-  type SubagentExecutionResult,
   type SubagentState,
 } from "../../shared/types.ts";
-import {
-  OWNED_RUN_ENTRY,
-  rememberOwnedRun,
-  saveForegroundRun,
-  workflowChildren,
-} from "./run-persistence.ts";
+import { OWNED_RUN_ENTRY, rememberOwnedRun, saveForegroundRun } from "./run-persistence.ts";
 import {
   resetOwnedRuns,
   setOwnedRun,
   setForegroundRun,
   suspendRunChanges,
 } from "./run-state-owner.ts";
-import { savedWorkflowNodes } from "./owned-run-view.ts";
+import { recoverOutput } from "./legacy-output-recovery.ts";
+import { recoveredAsyncRun, repairLegacyAsyncResult } from "./legacy-async-recovery.ts";
 
-function receiptDetails(entry: SessionEntry): Details | undefined {
-  if (
-    entry.type === "message" &&
-    entry.message.role === "toolResult" &&
-    ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)
-  ) {
-    return entry.message.details as Details | undefined;
-  }
-  if (entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE) {
-    const details = entry.details as { result?: SubagentExecutionResult } | undefined;
-    return details?.result?.details;
+type Invocation = ReadonlyInput<SubagentParamsLike>;
+type Calls = Readonly<ReadonlyMap<string, Invocation>>;
+type Discovery = { readonly steps: () => Generator<void, AsyncRunRecord[]> };
+
+function receiptDetails(entry: SessionEntry): ReadonlyDetails | undefined {
+  try {
+    if (
+      entry.type === "message" &&
+      entry.message.role === "toolResult" &&
+      ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)
+    ) {
+      return parseDetails(entry.message.details);
+    }
+    if (entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE) {
+      const result = recordAt(entry.details, "result");
+      return result ? parseSubagentExecutionResult(result).details : undefined;
+    }
+  } catch {
+    // Invalid legacy payloads do not grant ownership or establish completion.
   }
   return undefined;
 }
@@ -66,120 +70,337 @@ function sessionFiles(root: string): string[] {
   if (!fs.existsSync(root)) {
     return [];
   }
-  return fs
-    .readdirSync(root, { withFileTypes: true })
-    .flatMap((entry) =>
-      entry.isDirectory()
-        ? sessionFiles(path.join(root, entry.name))
-        : entry.name.endsWith(".jsonl")
-          ? [path.join(root, entry.name)]
-          : [],
-    );
+  return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const file = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      return sessionFiles(file);
+    }
+    return entry.name.endsWith(".jsonl") ? [file] : [];
+  });
 }
 
-function recoverOutput(
-  sessionFile: string | undefined,
-  outputFile: string | undefined,
-  endedAt: number,
-): string | undefined {
-  if (outputFile && fs.existsSync(outputFile)) {
-    return readOutputPage(outputFile).text;
-  }
-  if (!sessionFile || !fs.existsSync(sessionFile)) {
-    return undefined;
-  }
-  const journal = new NativeJournal(sessionFile);
-  for (const record of journal.branch(undefined, endedAt).reverse()) {
-    if (record.value.type !== "message" || record.value.message?.role !== "assistant") {
+function* restoreDeclaredRuns(
+  state: SubagentState,
+  ctx: ExtensionContext,
+  entries: readonly SessionEntry[],
+): Generator<void> {
+  const owner = ctx.sessionManager.getSessionId();
+  for (const entry of entries) {
+    yield;
+    if (entry.type !== "custom" || entry.customType !== OWNED_RUN_ENTRY) {
       continue;
     }
-    const output = getFinalOutput([journal.body(record).message]);
-    if (output) {
-      return output;
+    const stored = ctx.sessionManager.getEntry(entry.id);
+    if (stored?.type !== "custom") {
+      continue;
+    }
+    try {
+      const run = parseOwnedRun(stored.data);
+      if (run.ownerSessionId === owner && run.runId !== "") {
+        setOwnedRun(state, run);
+      }
+    } catch {
+      // Unvalidated copied or damaged metadata is not an ownership handle.
     }
   }
 }
 
-function recoverLegacyTerminalOutput(
-  sessionFile: string | undefined,
-  startedAt: number,
-  endedAt: number | undefined,
-  acceptance: SingleResult["acceptance"],
-): string | undefined {
-  const review = acceptance?.finalization;
-  const reviewedOutput =
-    review?.status === "completed" ? review.turns.at(-1)?.rawOutput : undefined;
-  if (reviewedOutput?.trim()) {
-    return resolveFinalizationOutput(reviewedOutput, "") || undefined;
+function* recoveredReceipts(
+  ctx: ExtensionContext,
+  entries: readonly SessionEntry[],
+): Generator<void, SessionEntry[]> {
+  const receipts: SessionEntry[] = [];
+  for (const entry of entries) {
+    yield;
+    const tool =
+      entry.type === "message" &&
+      entry.message.role === "toolResult" &&
+      ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName);
+    const slash = entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE;
+    if (!tool && !slash) {
+      continue;
+    }
+    const receipt = ctx.sessionManager.getEntry(entry.id);
+    if (receipt) {
+      receipts.push(receipt);
+    }
   }
-  // Live and finalization logs are separate, mutable streams, not a final-answer receipt.
-  if (
-    endedAt === undefined ||
-    !Number.isFinite(endedAt) ||
-    !sessionFile ||
-    !fs.existsSync(sessionFile)
-  ) {
-    return;
+  return receipts;
+}
+
+function invocationCalls(entry: SessionEntry): Array<readonly [string, Invocation]> {
+  if (entry.type !== "message" || entry.message.role !== "assistant") {
+    return [];
   }
-  const journal = new NativeJournal(sessionFile);
-  const records = journal
-    .branch(undefined, endedAt)
-    .filter(({ value }) => value.type === "message" && Date.parse(value.timestamp) >= startedAt);
-  const lastAssistant = records.findLastIndex(({ value }) => value.message?.role === "assistant");
-  const messages: Message[] = records.map((record, index) =>
-    index === lastAssistant ? journal.body(record).message : record.value.message,
-  );
-  const index = messages.findLastIndex((message) => message.role === "assistant");
-  const last = messages[index];
-  if (
-    last?.role !== "assistant" ||
-    last.errorMessage ||
-    !["stop", "toolUse"].includes(last.stopReason) ||
-    !Array.isArray(last.content)
-  ) {
-    return;
+  return entry.message.content.flatMap((part): Array<readonly [string, Invocation]> => {
+    if (
+      part.type !== "toolCall" ||
+      !["subagent", "delegate"].includes(part.name) ||
+      !isRecord(part.arguments)
+    ) {
+      return [];
+    }
+    return [[part.id, normalizeSubagentParamsLike(part.arguments)]];
+  });
+}
+
+function* legacyCalls(
+  ctx: ExtensionContext,
+  entries: readonly SessionEntry[],
+): Generator<void, Map<string, Invocation>> {
+  const calls = new Map<string, Invocation>();
+  for (const metadata of entries) {
+    yield;
+    if (metadata.type !== "message" || metadata.message.role !== "assistant") {
+      continue;
+    }
+    const entry = ctx.sessionManager.getEntry(metadata.id);
+    for (const [id, invocation] of entry ? invocationCalls(entry) : []) {
+      calls.set(id, invocation);
+    }
   }
-  const calls = last.content.filter((part) => part.type === "toolCall");
-  if (!calls.length) {
-    return index === messages.length - 1 && last.stopReason === "stop"
-      ? resolveFinalizationOutput(getFinalOutput([last]), "") || undefined
+  return calls;
+}
+
+function inheritedReceipts(ctx: ExtensionContext): Readonly<ReadonlySet<string>> | undefined {
+  const parent = ctx.sessionManager.getHeader()?.parentSession;
+  if (parent === undefined || parent === "") {
+    return new Set();
+  }
+  // A missing fork source cannot prove which copied receipts are genuinely new.
+  return fs.existsSync(parent) ? new Set(snapshotNativeUsage(parent)) : undefined;
+}
+
+function receiptRunId(details: ReadonlyDetails | undefined): string | undefined {
+  return details?.runId ?? details?.asyncId;
+}
+
+function legacyChildren(
+  details: ReadonlyDetails,
+  request: Invocation | undefined,
+): OwnedRun["children"] {
+  return details.results.length > 0
+    ? details.results.map((result, index) => ({
+        agent: result.agent,
+        index,
+        task: result.task,
+        sessionFile: result.sessionFile,
+      }))
+    : collectInvocationAgentNames(request ?? {}).map((agent, index) => ({ agent, index }));
+}
+
+function legacyLineage(
+  details: ReadonlyDetails,
+  runId: string,
+): Pick<OwnedRun, "rootRunId" | "predecessorRunId" | "source"> {
+  return {
+    rootRunId: details.managementControl?.revivedFromRunId ?? runId,
+    predecessorRunId: details.managementControl?.revivedFromRunId,
+    source: (details.asyncId ?? "") !== "" ? "async" : "foreground",
+  };
+}
+
+function invocationCwd(ctx: ExtensionContext, request: Invocation | undefined): string {
+  const cwd = request?.cwd;
+  return cwd !== undefined && cwd !== "" ? path.resolve(ctx.cwd, cwd) : ctx.cwd;
+}
+
+function legacyRun(
+  ctx: ExtensionContext,
+  entry: SessionEntry,
+  details: ReadonlyDetails,
+  calls: Calls,
+): OwnedRun {
+  const runId = receiptRunId(details);
+  if (runId === undefined || runId === "" || details.mode === "management") {
+    throw new Error("Legacy receipt has no execution identity.");
+  }
+  const request =
+    entry.type === "message" && entry.message.role === "toolResult"
+      ? calls.get(entry.message.toolCallId)
       : undefined;
+  return {
+    runId,
+    ownerSessionId: ctx.sessionManager.getSessionId(),
+    ...legacyLineage(details, runId),
+    mode: details.mode,
+    cwd: invocationCwd(ctx, request),
+    task: details.results.at(0)?.task ?? request?.task ?? "Recovered delegated run",
+    startedAt: Date.parse(entry.timestamp),
+    asyncDir: details.asyncDir,
+    legacy: true,
+    children: legacyChildren(details, request),
+  };
+}
+
+function nativeLaunchCwd(run: OwnedRun, details: ReadonlyDetails): OwnedRun {
+  const file = details.results.find((result) => (result.sessionFile ?? "") !== "")?.sessionFile;
+  if (file === undefined || file === "" || !fs.existsSync(file)) {
+    return run;
   }
-  if (calls.length !== 1 || calls[0].name !== "structured_output") {
+  const header = new NativeJournal(file).records.at(0)?.value;
+  return header?.type === "session" && typeof header.cwd === "string" && header.cwd !== ""
+    ? { ...run, cwd: header.cwd }
+    : run;
+}
+
+function repairQuestionOwner(run: OwnedRun): void {
+  let owner: unknown;
+  try {
+    owner = readRunJson(path.join(getRunMetadataDir(run.runId), "question-owner.json"));
+  } catch {
+    // A genuine receipt can repair unusable supplemental metadata.
+  }
+  const sessionId = isRecord(owner) ? owner.sessionId : undefined;
+  if (typeof sessionId !== "string" || sessionId.trim() === "") {
+    saveQuestionOwner(run.runId, run.ownerSessionId);
+  }
+}
+
+function saveLegacyForeground(run: OwnedRun, details: ReadonlyDetails): void {
+  if (run.source !== "foreground") {
     return;
   }
-  const following = messages.slice(index + 1);
-  const result = following.at(-1);
+  const results = details.results.map((result) => {
+    const finalOutput =
+      result.finalOutput ??
+      recoverOutput(result.sessionFile, result.artifactPaths?.outputPath, run.startedAt);
+    return { ...result, finalOutput };
+  });
+  saveForegroundRun({ ...run, results });
+}
+
+function* restoreLegacyReceipts(
+  state: SubagentState,
+  ctx: ExtensionContext,
+  entries: readonly SessionEntry[],
+): Generator<void> {
+  const receipts = yield* recoveredReceipts(ctx, entries);
+  const needsCalls = receipts.some((entry) => {
+    const details = receiptDetails(entry);
+    return details !== undefined && state.ownedRuns?.has(receiptRunId(details) ?? "") !== true;
+  });
+  const calls = needsCalls ? yield* legacyCalls(ctx, entries) : new Map<string, Invocation>();
+  const inherited = inheritedReceipts(ctx);
+  for (const entry of receipts) {
+    yield;
+    if (!inherited || inherited.has(entry.id)) {
+      continue;
+    }
+    recoverLegacyReceipt(state, ctx, entry, calls);
+  }
+}
+
+function recoverLegacyReceipt(
+  state: SubagentState,
+  ctx: ExtensionContext,
+  entry: SessionEntry,
+  calls: Calls,
+): void {
+  const details = receiptDetails(entry);
+  const runId = receiptRunId(details);
   if (
-    following.some((message) => message.role !== "toolResult") ||
-    result?.role !== "toolResult" ||
-    result.toolCallId !== calls[0].id ||
-    result.toolName !== "structured_output" ||
-    result.isError
+    !details ||
+    runId === undefined ||
+    runId === "" ||
+    details.mode === "management" ||
+    state.ownedRuns?.has(runId) === true
   ) {
     return;
   }
-  const value = calls[0].arguments.value;
-  if (!value || typeof value !== "object" || !("report" in value)) {
-    return;
+  const run = legacyRun(ctx, entry, details, calls);
+  try {
+    const recovered = nativeLaunchCwd(run, details);
+    saveLegacyForeground(recovered, details);
+    repairQuestionOwner(recovered);
+    rememberOwnedRun(state, recovered);
+  } catch (error) {
+    // Receipt ownership survives incomplete supplemental child recovery.
+    rememberOwnedRun(state, {
+      ...run,
+      recoveryError: `Saved child recovery remains incomplete: ${errorMessage(error)}`,
+    });
+    console.error(`Could not recover legacy receipt ${runId}: ${errorMessage(error)}`);
   }
-  if (typeof value.report === "string" && parseAcceptanceReport(value.report).report) {
-    return resolveFinalizationOutput(value.report, "") || undefined;
+}
+
+function* discoverOwnedAsync(
+  state: SubagentState,
+  ctx: ExtensionContext,
+  scan: Discovery,
+): Generator<void, AsyncRunRecord[]> {
+  const records = yield* scan.steps();
+  const owner = { ownerSessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
+  for (const record of records) {
+    yield;
+    try {
+      const old = record.status ? state.ownedRuns?.get(record.status.runId) : undefined;
+      const run = recoveredAsyncRun(record, old, owner);
+      if (run) {
+        rememberOwnedRun(state, run);
+        repairLegacyAsyncResult(record);
+      }
+    } catch (error) {
+      console.error(
+        `Could not recover owned async metadata for '${record.location.resolvedId ?? "unknown"}':`,
+        error,
+      );
+    }
   }
+  return records;
+}
+
+function recoveredForegroundSessions(
+  run: OwnedRun,
+  ownerFile: string | undefined,
+): OwnedRun | undefined {
   if (
-    "answer" in value &&
-    typeof value.answer === "string" &&
-    value.answer.trim() &&
-    !validateAcceptanceReportShape(value.report)
+    run.children.some((child) => (child.sessionFile ?? "") !== "") ||
+    run.legacy !== true ||
+    ownerFile === undefined ||
+    ownerFile === ""
   ) {
-    return value.answer;
+    return undefined;
+  }
+  const root = path.join(path.dirname(ownerFile), path.basename(ownerFile, ".jsonl"), run.runId);
+  const files = sessionFiles(root).sort();
+  return files.length > 0
+    ? {
+        ...run,
+        children: files.map((sessionFile, index) => ({
+          agent: run.children[index]?.agent ?? "unknown",
+          index,
+          sessionFile,
+        })),
+      }
+    : undefined;
+}
+
+function* restoreForegroundHandles(state: SubagentState, ctx: ExtensionContext): Generator<void> {
+  for (const run of state.ownedRuns?.values() ?? []) {
+    yield;
+    try {
+      const stored = readRunJson(
+        path.join(getRunMetadataDir(run.runId), "foreground.json"),
+        parseForegroundResumeRun,
+      );
+      if (stored) {
+        setForegroundRun(state, stored);
+      }
+      const recovered = recoveredForegroundSessions(run, ctx.sessionManager.getSessionFile());
+      if (recovered) {
+        rememberOwnedRun(state, recovered);
+      }
+    } catch (error) {
+      console.error(`Could not recover foreground owner ${run.runId}: ${errorMessage(error)}`);
+    }
   }
 }
 
 export interface OwnedRunRestoration {
-  startedAt: number;
-  records: AsyncRunRecord[];
-  discover: () => AsyncRunRecord[];
+  readonly startedAt: number;
+  readonly records: AsyncRunRecord[];
+  readonly discover: () => AsyncRunRecord[];
 }
 
 export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): OwnedRunRestoration {
@@ -190,7 +411,7 @@ export async function restoreOwnedRunsAsync(
   state: SubagentState,
   ctx: ExtensionContext,
 ): Promise<OwnedRunRestoration> {
-  // Publish readiness once restoration is complete, before starting browse/UI work.
+  // Publish readiness only after restoration, before browse/UI work can consume it.
   const releaseNotifications = suspendRunChanges(state);
   try {
     return await runCooperatively(restoreOwnedRunSteps(state, ctx));
@@ -208,297 +429,17 @@ function* restoreOwnedRunSteps(
   const entries = ctx.sessionManager.getEntries();
   resetOwnedRuns(state);
   yield* migrateSupervisorQuestionSteps(ownerSessionId);
-  for (const entry of entries) {
-    yield;
-    if (entry.type !== "custom" || entry.customType !== OWNED_RUN_ENTRY) {
-      continue;
-    }
-    const run = (ctx.sessionManager.getEntry(entry.id) as typeof entry | undefined)?.data as
-      | OwnedRun
-      | undefined;
-    if (run?.ownerSessionId === ownerSessionId && run.runId && Array.isArray(run.children)) {
-      setOwnedRun(state, run);
-    }
-  }
-  // Forks copy old entries. Their old receipts are evidence, not ownership for the new parent.
-  const inheritedIds = new Set<string>();
-  const parentFile = ctx.sessionManager.getHeader()?.parentSession;
-  if (parentFile && fs.existsSync(parentFile)) {
-    for (const id of snapshotNativeUsage(parentFile)) {
-      inheritedIds.add(id);
-    }
-  }
-  const recoveredReceipts: SessionEntry[] = [];
-  for (const entry of entries) {
-    yield;
-    if (
-      !(
-        (entry.type === "message" &&
-          entry.message.role === "toolResult" &&
-          ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)) ||
-        (entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE)
-      )
-    ) {
-      continue;
-    }
-    const receipt = ctx.sessionManager.getEntry(entry.id);
-    if (receipt) {
-      recoveredReceipts.push(receipt);
-    }
-  }
-  const calls = new Map<string, SubagentParamsLike>();
-  const needsLegacyCalls = recoveredReceipts.some((entry) => {
-    const details = receiptDetails(entry);
-    return details && !state.ownedRuns!.has(details.runId ?? details.asyncId ?? "");
-  });
-  for (const metadata of needsLegacyCalls ? entries : []) {
-    yield;
-    if (metadata.type !== "message" || metadata.message.role !== "assistant") {
-      continue;
-    }
-    const entry = ctx.sessionManager.getEntry(metadata.id);
-    if (
-      entry?.type !== "message" ||
-      entry.message.role !== "assistant" ||
-      !Array.isArray(entry.message.content)
-    ) {
-      continue;
-    }
-    for (const part of entry.message.content) {
-      if (part.type === "toolCall" && ["subagent", "delegate"].includes(part.name)) {
-        calls.set(part.id, part.arguments);
-      }
-    }
-  }
-  for (const entry of recoveredReceipts) {
-    yield;
-    if (inheritedIds.has(entry.id) || (parentFile && !fs.existsSync(parentFile))) {
-      continue;
-    }
-    const details = receiptDetails(entry);
-    const runId = details?.runId ?? details?.asyncId;
-    if (
-      !runId ||
-      !details ||
-      !Array.isArray(details.results) ||
-      (details.mode !== "single" && details.mode !== "parallel" && details.mode !== "chain") ||
-      state.ownedRuns.has(runId)
-    ) {
-      continue;
-    }
-    const cwd = details.results.find((result) => result.sessionFile)?.sessionFile;
-    const request =
-      entry.type === "message" && entry.message.role === "toolResult"
-        ? calls.get(entry.message.toolCallId)
-        : undefined;
-    const run: OwnedRun = {
-      runId,
-      ownerSessionId,
-      rootRunId: details.managementControl?.revivedFromRunId ?? runId,
-      predecessorRunId: details.managementControl?.revivedFromRunId,
-      source: details.asyncId ? "async" : "foreground",
-      mode: details.mode,
-      cwd: request?.cwd ? path.resolve(ctx.cwd, request.cwd) : ctx.cwd,
-      task: details.results[0]?.task ?? request?.task ?? "Recovered delegated run",
-      startedAt: Date.parse(entry.timestamp),
-      asyncDir: details.asyncDir,
-      legacy: true,
-      children: details.results.length
-        ? details.results.map((result, index) => ({
-            agent: result.agent,
-            index,
-            task: result.task,
-            sessionFile: result.sessionFile,
-          }))
-        : collectInvocationAgentNames(request ?? {}).map((agent, index) => ({ agent, index })),
-    };
-    try {
-      if (cwd && fs.existsSync(cwd)) {
-        const header = new NativeJournal(cwd).records[0]?.value;
-        if (header?.type === "session" && header.cwd) {
-          run.cwd = header.cwd;
-        }
-      }
-      if (run.source === "foreground") {
-        saveForegroundRun({
-          ...run,
-          results: details.results.map((result) => ({
-            ...result,
-            finalOutput:
-              result.finalOutput ??
-              recoverOutput(
-                result.sessionFile,
-                result.artifactPaths?.outputPath,
-                Date.parse(entry.timestamp),
-              ),
-          })),
-        });
-      }
-      let owner: { sessionId?: unknown } | undefined;
-      try {
-        owner = readRunJson(path.join(getRunMetadataDir(runId), "question-owner.json"));
-      } catch {
-        /* Unusable metadata can be repaired from the genuine receipt. */
-      }
-      if (typeof owner?.sessionId !== "string" || !owner.sessionId.trim()) {
-        saveQuestionOwner(runId, ownerSessionId);
-      }
-      rememberOwnedRun(state, run);
-    } catch (error) {
-      // The genuine receipt still establishes ownership. Keep completion
-      // unconfirmed when its supplemental output/context cannot be recovered.
-      rememberOwnedRun(state, {
-        ...run,
-        recoveryError: `Saved child recovery remains incomplete: ${String(error)}`,
-      });
-      console.error(`Could not recover legacy receipt ${runId}: ${String(error)}`);
-    }
-  }
-  // Pre-update background runs may have no parent tool receipt (for example slash launches).
+  yield* restoreDeclaredRuns(state, ctx, entries);
+  yield* restoreLegacyReceipts(state, ctx, entries);
+  // The retained discovery owner admits old slash launches without inventing tool receipts.
   const scan = createAsyncRunDiscovery(ASYNC_DIR, {
     sessionId: ctx.sessionManager.getSessionFile() ?? resolveCurrentSessionId(ctx.sessionManager),
     ownerSessionId,
-    receiptRunIds: () => state.ownedRuns!.keys(),
+    receiptRunIds: () => state.ownedRuns?.keys() ?? [],
     skipInvalid: true,
   });
-  function* discoverSteps(): Generator<void, AsyncRunRecord[]> {
-    const records = yield* scan.steps();
-    for (const { location, status, durable } of records) {
-      yield;
-      try {
-        const asyncDir = location.asyncDir;
-        if (!asyncDir || !status) {
-          continue;
-        }
-        const terminal = !["running", "queued"].includes(status.state);
-        if (!durable && terminal) {
-          saveRunStatus(status.runId, status);
-        }
-        const old = state.ownedRuns!.get(status.runId);
-        const nodes = savedWorkflowNodes(status);
-        const declared =
-          status.mode === "chain" && nodes && !old?.children.some((child) => child.workflowNodeId)
-            ? []
-            : (old?.children ?? []);
-        const children = workflowChildren(declared, nodes ? status.workflowGraph : undefined);
-        rememberOwnedRun(state, {
-          ...old,
-          runId: status.runId,
-          ownerSessionId,
-          rootRunId: old?.rootRunId ?? status.runId,
-          source: "async",
-          mode: status.mode,
-          cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
-          task: old?.task ?? "Recovered background run",
-          startedAt: status.startedAt,
-          asyncDir,
-          pid: status.pid,
-          legacy: old?.legacy ?? !durable,
-          children: (status.steps ?? []).map((step, index) => ({
-            ...children.find((child) => child.index === index),
-            agent: step.agent,
-            index,
-            ...(status.mode === "chain" && nodes?.[index]
-              ? { workflowNodeId: nodes[index].id }
-              : {}),
-            label: step.label ?? children[index]?.label,
-            sessionFile:
-              step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined),
-          })),
-        });
-        const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
-        if (
-          !durable &&
-          terminal &&
-          !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))
-        ) {
-          if (fs.existsSync(resultPath)) {
-            saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
-          } else if (
-            status.steps?.length &&
-            status.steps.every((step) => !["running", "pending"].includes(step.status))
-          ) {
-            const endedAt = status.endedAt ?? status.lastUpdate ?? status.startedAt;
-            const results = status.steps.map((step) => {
-              const sessionFile =
-                step.sessionFile ?? (status.steps!.length === 1 ? status.sessionFile : undefined);
-              return {
-                agent: step.agent,
-                sessionFile,
-                model: step.model,
-                acceptance: step.acceptance,
-                exitCode: step.exitCode,
-                agentProcessExit: step.agentProcessExit,
-                success: step.status === "complete" || step.status === "completed",
-                interrupted: step.status === "paused" || undefined,
-                timedOut: step.status === "timed-out" || undefined,
-                error: step.error,
-                output:
-                  recoverLegacyTerminalOutput(
-                    sessionFile,
-                    step.startedAt ?? status.startedAt,
-                    step.endedAt ?? status.endedAt,
-                    step.acceptance,
-                  ) ?? "",
-              };
-            });
-            saveAsyncRunResult(status.runId, {
-              id: status.runId,
-              sessionId: status.sessionId,
-              mode: status.mode,
-              state: status.state,
-              success: status.state === "complete",
-              error: status.error,
-              timestamp: endedAt,
-              cwd: status.cwd,
-              asyncDir,
-              sessionFile: status.sessionFile,
-              results,
-            });
-          }
-        }
-      } catch (error) {
-        console.error(
-          `Could not recover owned async metadata for '${location.resolvedId}':`,
-          error,
-        );
-      }
-    }
-    return records;
-  }
-  const discover = () => runSynchronously(discoverSteps());
-  const records = yield* discoverSteps();
-  for (const run of state.ownedRuns.values()) {
-    yield;
-    try {
-      const stored = readRunJson<ForegroundResumeRun>(
-        path.join(getRunMetadataDir(run.runId), "foreground.json"),
-      );
-      if (stored) {
-        setForegroundRun(state, stored);
-      }
-      if (run.children.some((child) => child.sessionFile) || !run.legacy) {
-        continue;
-      }
-      const file = ctx.sessionManager.getSessionFile();
-      if (!file) {
-        continue;
-      }
-      const root = path.join(path.dirname(file), path.basename(file, ".jsonl"), run.runId);
-      const files = sessionFiles(root).sort();
-      if (files.length) {
-        rememberOwnedRun(state, {
-          ...run,
-          children: files.map((sessionFile, index) => ({
-            agent: run.children[index]?.agent ?? "unknown",
-            index,
-            sessionFile,
-          })),
-        });
-      }
-    } catch (error) {
-      console.error(`Could not recover foreground owner ${run.runId}: ${String(error)}`);
-    }
-  }
+  const discover = () => runSynchronously(discoverOwnedAsync(state, ctx, scan));
+  const records = yield* discoverOwnedAsync(state, ctx, scan);
+  yield* restoreForegroundHandles(state, ctx);
   return { startedAt, records, discover };
 }

@@ -1,4 +1,4 @@
-import type { ForegroundResumeRun, OwnedRun, SubagentState } from "../../shared/types.ts";
+import type { ReadonlyForegroundResumeRun, OwnedRun, SubagentState } from "../../shared/types.ts";
 
 /** Explicit state-management boundary: these operations alone publish owner maps. */
 export function resetOwnedRuns(state: SubagentState): void {
@@ -14,8 +14,11 @@ export function setOwnedRun(state: SubagentState, run: OwnedRun): OwnedRun | und
   return previous;
 }
 
-export function setForegroundRun(state: SubagentState, run: ForegroundResumeRun): void {
-  (state.foregroundRuns ??= new Map()).set(run.runId, run);
+export function setForegroundRun(state: SubagentState, run: ReadonlyForegroundResumeRun): void {
+  (state.foregroundRuns ??= new Map()).set(run.runId, {
+    ...run,
+    children: run.children.map((child) => ({ ...child })),
+  });
 }
 
 /** Restoration owns notification suspension; the returned release restores the same hook. */

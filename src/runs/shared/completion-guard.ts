@@ -1,6 +1,5 @@
-import type { Message } from "@earendil-works/pi-ai";
+import type { ObservedMessage } from "../../shared/types/messages.ts";
 import { createMutationCompletionTracker } from "./mutating-tool-guard.ts";
-import { isRecord } from "../../shared/unknown.ts";
 
 export type CompletionPolicy = "none" | "mutation-guard" | "acceptance-contract";
 
@@ -15,7 +14,7 @@ export function resolveCompletionPolicy(input: {
 }
 
 function recordAssistantCalls(
-  message: Extract<Message, { role: "assistant" }>,
+  message: Extract<ObservedMessage, { role: "assistant" }>,
   tracker: ReturnType<typeof createMutationCompletionTracker>,
 ): void {
   for (const part of message.content) {
@@ -23,13 +22,13 @@ function recordAssistantCalls(
       tracker.recordToolStart({
         id: part.id,
         toolName: part.name,
-        args: isRecord(part.arguments) ? part.arguments : {},
+        args: part.arguments,
       });
     }
   }
 }
 
-export function hasCompletedMutationToolCall(messages: readonly Message[]): boolean {
+export function hasCompletedMutationToolCall(messages: readonly ObservedMessage[]): boolean {
   const tracker = createMutationCompletionTracker();
   for (const message of messages) {
     if (message.role === "assistant") {

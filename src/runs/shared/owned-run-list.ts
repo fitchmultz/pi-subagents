@@ -1,15 +1,22 @@
 import { runHistoryIndex } from "./history-index.ts";
 import { getSingleResultOutput } from "../../shared/utils.ts";
+import { errorMessage } from "../../shared/unknown.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
+import type { HistoryRunPage } from "../../shared/types/history.ts";
 import type {
   OwnedRun,
   OwnedRunView,
   SubagentExecutionResult,
   SubagentState,
-  ReadonlyInput,
 } from "../../shared/types.ts";
+import type { OwnedRunReadState } from "./owned-run-read-state.ts";
 import { ownedRunView } from "./owned-run-view.ts";
 import { compact, ownedRunControl } from "./owned-run-status.ts";
+
+type ListOptions = Readonly<
+  Pick<SubagentParamsLike, "offset" | "limit" | "cursor" | "sort" | "agent" | "state" | "text">
+> & { readonly signal?: AbortSignal };
+type ListRun = NonNullable<SubagentExecutionResult["details"]["runs"]>[number];
 
 function unavailableRunView(run: OwnedRun, error: unknown): OwnedRunView {
   return {
@@ -24,25 +31,13 @@ function unavailableRunView(run: OwnedRun, error: unknown): OwnedRunView {
       state: "unknown",
       configuration: "legacy-partial",
     })),
-    diagnosis: `Saved owner records unavailable: ${String(error)}. Completion is unconfirmed.`,
+    diagnosis: `Saved owner records unavailable: ${errorMessage(error)}. Completion is unconfirmed.`,
   };
 }
 
-export async function ownedRunList(
-  state: SubagentState,
-  params: Pick<
-    SubagentParamsLike,
-    "offset" | "limit" | "cursor" | "sort" | "agent" | "state" | "text"
-  > & { signal?: AbortSignal },
-): Promise<SubagentExecutionResult> {
-  const limit = params.limit ?? 20,
-    sort = params.sort;
-  if (sort === "relevance") {
-    throw new Error("Run list sort must be attention, newest, or oldest.");
-  }
-  const indexed = await (await runHistoryIndex(state, true)).listRuns({ ...params, sort });
-  // The index orders observations; only the bounded selected page gets authoritative controls.
-  const page = indexed.rows.map((row) => {
+function selectedPage(state: OwnedRunReadState, indexed: HistoryRunPage): OwnedRunView[] {
+  // The index orders observations; only this bounded selected page gets authoritative controls.
+  return indexed.rows.map((row) => {
     const run = state.ownedRuns?.get(row.runId);
     if (!run || run.ownerSessionId !== row.ownerSessionId) {
       throw new Error("Owning session changed while listing runs.");
@@ -53,82 +48,125 @@ export async function ownedRunList(
       return unavailableRunView(run, error);
     }
   });
-  const owned = [...(state.ownedRuns?.values() ?? [])];
-  const runs = page.map(
-    ({
-      runId,
-      source,
-      mode,
-      cwd,
-      task,
-      state: runState,
-      updatedAt,
-      attention,
-      review,
-      rootRunId,
-      predecessorRunId,
-      predecessorIndex,
-      children,
-    }) => ({
-      runId,
-      source,
-      mode,
-      cwd,
-      task: compact(task, 2048),
-      state: runState,
-      updatedAt,
-      attention,
-      review,
-      rootRunId,
-      predecessorRunId,
-      predecessorIndex,
-      continuations: owned
-        .filter((candidate) => candidate.predecessorRunId === runId)
-        .map((candidate) => candidate.runId),
-      summary: compact(
-        children
-          .map((child) =>
-            child.result ? getSingleResultOutput(child.result) || child.result.error || "" : "",
-          )
-          .filter(Boolean)
-          .join(" | "),
-      ),
-    }),
-  );
-  const controls = page.map(ownedRunControl);
-  const { offset, nextOffset, nextCursor, total, freshness, version } = indexed;
-  const next = nextCursor
-    ? {
-        action: "list",
-        cursor: nextCursor,
-        limit,
-        ...(sort ? { sort } : {}),
-        ...(params.agent ? { agent: params.agent } : {}),
-        ...(params.state ? { state: params.state } : {}),
-        ...(params.text ? { text: params.text } : {}),
-      }
-    : undefined;
+}
+
+function runSummary(view: OwnedRunView, owned: readonly OwnedRun[]): ListRun {
+  const {
+    runId,
+    source,
+    mode,
+    cwd,
+    task,
+    state,
+    updatedAt,
+    attention,
+    review,
+    rootRunId,
+    predecessorRunId,
+    predecessorIndex,
+  } = view;
+  const outputs = view.children.map((child) => {
+    if (!child.result) {
+      return "";
+    }
+    const output = getSingleResultOutput(child.result);
+    return output !== "" ? output : (child.result.error ?? "");
+  });
   return {
-    content: [
-      {
-        type: "text",
-        text: total
-          ? [
-              `Owned runs: ${total} (showing ${page.length ? `${offset + 1}–${offset + page.length}` : "none"}; ${params.sort ?? "attention"} order)`,
-              ...(freshness.state !== "current"
-                ? [
-                    `Browse index: ${freshness.state}; ordering/filter observations may be incomplete. Selected controls are checked against owner records.`,
-                  ]
-                : []),
-              ...runs.map(
-                (run) =>
-                  `- ${run.runId} | ${run.state}${run.attention.length ? ` | ${run.attention.join(", ")}` : ""} | ${compact(run.task)}${run.summary ? ` | ${run.summary}` : ""} | Launch cwd: ${run.cwd}${run.predecessorRunId ? ` | from ${run.predecessorRunId}:${run.predecessorIndex ?? 0}` : ""}${run.continuations.length ? ` | continued as ${run.continuations.join(", ")} (separate results/reviews)` : ""}`,
-              ),
-              ...(next ? [`Next: agent_runs(${JSON.stringify(next)})`] : []),
-            ].join("\n")
-          : "No delegated runs match in this owning session.",
-      },
-    ],
+    runId,
+    source,
+    mode,
+    cwd,
+    task: compact(task, 2048),
+    state,
+    updatedAt,
+    attention,
+    review,
+    rootRunId,
+    predecessorRunId,
+    predecessorIndex,
+    continuations: owned
+      .filter((candidate) => candidate.predecessorRunId === runId)
+      .map((candidate) => candidate.runId),
+    summary: compact(outputs.filter((output) => output !== "").join(" | ")),
+  };
+}
+
+function continuationDescription(run: ListRun): string[] {
+  const continuations = run.continuations ?? [];
+  return continuations.length > 0
+    ? [`continued as ${continuations.join(", ")} (separate results/reviews)`]
+    : [];
+}
+
+function runLine(run: ListRun): string {
+  return [
+    `- ${run.runId} | ${run.state}`,
+    ...(run.attention.length > 0 ? [run.attention.join(", ")] : []),
+    compact(run.task),
+    ...((run.summary ?? "") !== "" ? [run.summary ?? ""] : []),
+    `Launch cwd: ${run.cwd}`,
+    ...((run.predecessorRunId ?? "") !== ""
+      ? [`from ${run.predecessorRunId ?? ""}:${run.predecessorIndex ?? 0}`]
+      : []),
+    ...continuationDescription(run),
+  ].join(" | ");
+}
+
+function nextPage(indexed: HistoryRunPage, params: ListOptions): string[] {
+  if (indexed.nextCursor === undefined || indexed.nextCursor === "") {
+    return [];
+  }
+  const next = {
+    action: "list",
+    cursor: indexed.nextCursor,
+    limit: params.limit ?? 20,
+    ...(params.sort !== undefined ? { sort: params.sort } : {}),
+    ...((params.agent ?? "") !== "" ? { agent: params.agent } : {}),
+    ...(params.state !== undefined ? { state: params.state } : {}),
+    ...((params.text ?? "") !== "" ? { text: params.text } : {}),
+  };
+  return [`Next: agent_runs(${JSON.stringify(next)})`];
+}
+
+function listDescription(
+  indexed: HistoryRunPage,
+  runs: readonly ListRun[],
+  params: ListOptions,
+): string {
+  if (indexed.total === 0) {
+    return "No delegated runs match in this owning session.";
+  }
+  const range = runs.length > 0 ? `${indexed.offset + 1}–${indexed.offset + runs.length}` : "none";
+  return [
+    `Owned runs: ${indexed.total} (showing ${range}; ${params.sort ?? "attention"} order)`,
+    ...(indexed.freshness.state !== "current"
+      ? [
+          `Browse index: ${indexed.freshness.state}; ordering/filter observations may be incomplete. Selected controls are checked against owner records.`,
+        ]
+      : []),
+    ...runs.map(runLine),
+    ...nextPage(indexed, params),
+  ].join("\n");
+}
+
+export async function ownedRunList(
+  state: SubagentState,
+  params: ListOptions,
+): Promise<SubagentExecutionResult> {
+  const sort = params.sort;
+  if (sort === "relevance") {
+    throw new Error("Run list sort must be attention, newest, or oldest.");
+  }
+  const index = await runHistoryIndex(state, true);
+  const indexed = await index.listRuns({ ...params, sort });
+  const page = selectedPage(state, indexed);
+  const owned = [...(state.ownedRuns?.values() ?? [])];
+  const runs = page.map((view) => runSummary(view, owned));
+  const controls = page.map(ownedRunControl);
+  const { total, offset, nextOffset, nextCursor, freshness, version } = indexed;
+  return {
+    content: [{ type: "text", text: listDescription(indexed, runs, params) }],
     details: {
       mode: "management",
       results: [],
@@ -138,11 +176,11 @@ export async function ownedRunList(
       runList: {
         total,
         offset,
-        limit,
+        limit: params.limit ?? 20,
         version,
         freshness,
         ...(nextOffset !== undefined ? { nextOffset } : {}),
-        ...(nextCursor ? { nextCursor } : {}),
+        ...(nextCursor !== undefined && nextCursor !== "" ? { nextCursor } : {}),
       },
     },
   };

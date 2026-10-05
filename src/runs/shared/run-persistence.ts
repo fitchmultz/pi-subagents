@@ -19,7 +19,8 @@ import {
 import type {
   ForegroundResumeRun,
   OwnedRun,
-  SingleResult,
+  ReadonlySingleResult,
+  ReadonlyAsyncResultChild,
   SubagentState,
   WorkflowGraphSnapshot,
 } from "../../shared/types.ts";
@@ -29,6 +30,74 @@ import { setOwnedRun } from "./run-state-owner.ts";
 export const OWNED_RUN_ENTRY = "subagent-run";
 const failedAccountingSources = new Map<string, string>();
 
+function accountingSource(
+  run: OwnedRun,
+  index: number,
+  child: ReadonlyAsyncResultChild,
+):
+  | {
+      readonly key: string;
+      readonly stamp: string;
+      readonly source: string;
+      readonly terminalEntryId: string;
+      readonly baseline: readonly string[];
+    }
+  | undefined {
+  const contract = readQuestionContract(run.runId, index, undefined, { readConfiguration: false });
+  if (!contract?.attemptBaseline) {
+    return undefined;
+  }
+  const terminalEntryId = child.terminalEntryId ?? contract.terminalEntryId ?? "";
+  const source = child.sessionFile ?? contract.sessionFile ?? "";
+  if (terminalEntryId === "" || source === "") {
+    return undefined;
+  }
+  const stat = fs.statSync(source, { bigint: true, throwIfNoEntry: false });
+  return {
+    key: `${run.runId}:${index}`,
+    stamp: `${stat ? journalStamp(stat) : "missing"}:${terminalEntryId}:${JSON.stringify(contract.attemptBaseline)}`,
+    source,
+    terminalEntryId,
+    baseline: contract.attemptBaseline,
+  };
+}
+
+function repairChildAccounting(
+  run: OwnedRun,
+  index: number,
+  child: ReadonlyAsyncResultChild,
+): ReadonlyAsyncResultChild {
+  if (child.accounting?.state !== "incomplete") {
+    return child;
+  }
+  const evidence = accountingSource(run, index, child);
+  if (!evidence || failedAccountingSources.get(evidence.key) === evidence.stamp) {
+    return child;
+  }
+  let usage;
+  try {
+    usage = readNativeUsage(evidence.source, new Set(evidence.baseline), [], {
+      terminalEntryId: evidence.terminalEntryId,
+    })?.[0];
+  } catch (error) {
+    failedAccountingSources.set(evidence.key, evidence.stamp);
+    throw error;
+  }
+  if (!usage) {
+    return child;
+  }
+  failedAccountingSources.delete(evidence.key);
+  const repaired: ReadonlyAsyncResultChild = { ...child, usage, accounting: { state: "complete" } };
+  const contract = readQuestionContract(run.runId, index, undefined, { readConfiguration: false });
+  if (contract?.result) {
+    saveQuestionContract(run.runId, index, {
+      accounting: repaired.accounting,
+      result: { ...contract.result, usage, accounting: repaired.accounting },
+    });
+  }
+  return repaired;
+}
+
 /** Repair only recorded native billing evidence; never execute or verify work again. */
 export function repairOwnedRunAccounting(run: OwnedRun): void {
   const file = path.join(getRunMetadataDir(run.runId), "result.json");
@@ -36,53 +105,10 @@ export function repairOwnedRunAccounting(run: OwnedRun): void {
     return;
   }
   const saved = readAsyncResultFile(file);
-  let changed = false;
-  saved.results?.forEach((child, index) => {
-    if (child.accounting?.state !== "incomplete") {
-      return;
-    }
-    const contract = readQuestionContract(run.runId, index, undefined, {
-      readConfiguration: false,
-    });
-    const terminalEntryId = child.terminalEntryId ?? contract?.terminalEntryId;
-    if (!contract?.attemptBaseline || terminalEntryId === undefined || terminalEntryId === "") {
-      return;
-    }
-    const source = child.sessionFile ?? contract.sessionFile;
-    if (source === undefined || source === "") {
-      return;
-    }
-    const stat = fs.statSync(source, { bigint: true, throwIfNoEntry: false });
-    const key = `${run.runId}:${index}`,
-      stamp = `${stat ? journalStamp(stat) : "missing"}:${terminalEntryId}:${JSON.stringify(contract.attemptBaseline)}`;
-    if (failedAccountingSources.get(key) === stamp) {
-      return;
-    }
-    let usage;
-    try {
-      usage = readNativeUsage(source, new Set(contract.attemptBaseline), [], {
-        terminalEntryId,
-      })?.[0];
-    } catch (error) {
-      failedAccountingSources.set(key, stamp);
-      throw error;
-    }
-    if (!usage) {
-      return;
-    }
-    failedAccountingSources.delete(key);
-    child.usage = usage;
-    child.accounting = { state: "complete" };
-    changed = true;
-    if (contract.result) {
-      saveQuestionContract(run.runId, index, {
-        accounting: child.accounting,
-        result: { ...contract.result, usage, accounting: child.accounting },
-      });
-    }
-  });
-  if (changed) {
-    saveAsyncRunResult(run.runId, saved);
+  const children = saved.results ?? [];
+  const results = children.map((child, index) => repairChildAccounting(run, index, child));
+  if (results.some((child, index) => child !== children[index])) {
+    saveAsyncRunResult(run.runId, { ...saved, results });
   }
 }
 
@@ -120,12 +146,12 @@ export function resolveOwnedRun(state: OwnedRunReadState, requested: string): Ow
 }
 
 export function saveForegroundRun(input: {
-  runId: string;
-  mode: ForegroundResumeRun["mode"];
-  cwd: string;
-  results: SingleResult[];
-  error?: string;
-  pausedReason?: string;
+  readonly runId: string;
+  readonly mode: ForegroundResumeRun["mode"];
+  readonly cwd: string;
+  readonly results: readonly ReadonlySingleResult[];
+  readonly error?: string;
+  readonly pausedReason?: string;
 }): ForegroundResumeRun {
   const run: ForegroundResumeRun = {
     runId: input.runId,
@@ -166,14 +192,16 @@ export function workflowChildren(
   ) {
     return children;
   }
-  return workflowAgentNodes(graph).map((node, index) => {
+  const result: OwnedRun["children"][number][] = [];
+  for (const [index, node] of workflowAgentNodes(graph).entries()) {
     const declared = children.find((child) => child.workflowNodeId === node.id);
-    return {
+    result.push({
       ...declared,
       index,
       workflowNodeId: node.id,
       agent: node.agent ?? declared?.agent ?? "unknown",
       ...(node.itemKey !== undefined ? { label: node.label } : {}),
-    };
-  });
+    });
+  }
+  return result;
 }
