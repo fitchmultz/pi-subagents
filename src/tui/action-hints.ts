@@ -37,15 +37,27 @@ export function withMouseExpansion<T>(renderer: MessageRenderer<T>): MessageRend
   };
 }
 
-/** Declare action spans while building text; native Text owns wrapping and clipping. */
-export function actionHints(
-  parts: Array<string | { text: string; run: () => void }>,
-  style: (text: string) => string = (text) => text,
-  ellipsis?: string,
-): Component {
+type ActionPart = string | { readonly text: string; readonly run: () => void };
+interface ActionRange {
+  readonly start: number;
+  readonly length: number;
+  readonly run: () => void;
+}
+interface ActionHit {
+  readonly row: number;
+  readonly start: number;
+  readonly end: number;
+  readonly run: () => void;
+}
+
+function actionSource(parts: readonly ActionPart[]): {
+  text: string;
+  source: string;
+  ranges: ActionRange[];
+} {
   let text = "",
     source = "";
-  const ranges: Array<{ start: number; length: number; run: () => void }> = [];
+  const ranges: ActionRange[] = [];
   for (const part of parts) {
     const displayed =
       typeof part === "string"
@@ -60,9 +72,42 @@ export function actionHints(
     text += displayed;
     source += plain;
   }
-  text = style(text);
-  const content = new Text("", 0, 0);
-  let hits: Array<{ row: number; start: number; end: number; run: () => void }> = [];
+  return { text, source, ranges };
+}
+
+function lineHits(
+  shown: string,
+  from: number,
+  ranges: readonly ActionRange[],
+  row: number,
+): ActionHit[] {
+  const hits: ActionHit[] = [];
+  const to = from + shown.length;
+  for (const range of ranges) {
+    const start = Math.max(from, range.start),
+      end = Math.min(to, range.start + range.length);
+    if (start < end) {
+      hits.push({
+        row,
+        start: visibleWidth(shown.slice(0, start - from)),
+        end: visibleWidth(shown.slice(0, end - from)),
+        run: range.run,
+      });
+    }
+  }
+  return hits;
+}
+
+/** Declare action spans while building text; native Text owns wrapping and clipping. */
+export function actionHints(
+  parts: readonly ActionPart[],
+  style: (text: string) => string = (text) => text,
+  ellipsis?: string,
+): Component {
+  const { text: raw, source, ranges } = actionSource(parts);
+  const text = style(raw),
+    content = new Text("", 0, 0);
+  let hits: ActionHit[] = [];
   return new MouseRegion(
     {
       invalidate() {
@@ -78,26 +123,14 @@ export function actionHints(
         for (const [row, line] of lines.entries()) {
           const visible = stripTerminalSequences(line).trimEnd();
           const shown = clipped
-            ? visible.slice(0, Math.max(0, visible.length - ellipsis!.length))
+            ? visible.slice(0, Math.max(0, visible.length - (ellipsis?.length ?? 0)))
             : visible;
           const from = source.indexOf(shown, offset);
-          if (!shown || from < 0) {
+          if (shown.length === 0 || from < 0) {
             continue;
           }
-          const to = from + shown.length;
-          for (const range of ranges) {
-            const start = Math.max(from, range.start),
-              end = Math.min(to, range.start + range.length);
-            if (start < end) {
-              hits.push({
-                row,
-                start: visibleWidth(shown.slice(0, start - from)),
-                end: visibleWidth(shown.slice(0, end - from)),
-                run: range.run,
-              });
-            }
-          }
-          offset = to;
+          hits.push(...lineHits(shown, from, ranges, row));
+          offset = from + shown.length;
         }
         return lines;
       },
@@ -107,7 +140,8 @@ export function actionHints(
         return;
       }
       const hit = hits.find(
-        (hit) => hit.row === event.y && event.x >= hit.start && event.x < hit.end,
+        (candidate) =>
+          candidate.row === event.y && event.x >= candidate.start && event.x < candidate.end,
       );
       if (!hit) {
         return;
