@@ -12,5 +12,10 @@
   "sortPackageJson": false,
   "sortTailwindcss": false,
   "jsdoc": false,
-  "ignorePatterns": ["package-lock.json", "dist/**", "dist.staging*/**"]
+  "ignorePatterns": [
+    "package-lock.json",
+    "dist/**",
+    "dist.staging*/**",
+    "src/runs/background/schemas/RunContracts.json"
+  ]
 }

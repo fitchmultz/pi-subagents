@@ -27,6 +27,24 @@ env:
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ">=24.21.0 <25"
+          package-manager-cache: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
+      - run: npm ci --ignore-scripts
+      - run: npm run quality
+
   resolve:
     uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
     with:
@@ -89,6 +107,10 @@ jobs:
           node-version: ">=24.21.0 <25"
           check-latest: true
           package-manager-cache: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
       - name: Install native test prerequisites
         shell: bash
         run: |
@@ -119,13 +141,14 @@ jobs:
         run: node extension/.github/scripts/ci-host.mjs fork "$RUNNER_TEMP/fork-package" automation extension
 
   compatibility:
-    needs: [resolve, editor, qualification]
+    needs: [quality, resolve, editor, qualification]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected host gate
         env:
+          QUALITY: ${{ needs.quality.result }}
           RESOLVE: ${{ needs.resolve.result }}
           EDITOR: ${{ needs.editor.result }}
           QUALIFICATION: ${{ needs.qualification.result }}
-        run: test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success
+        run: test "$QUALITY" = success && test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success

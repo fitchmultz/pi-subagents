@@ -1,0 +1,3 @@
+# Unified patch context is byte-sensitive, including blank-context spaces and Go tabs.
+patches/tsgolint-*.patch whitespace=-blank-at-eol,-space-before-tab
+patches/npm/*.patch whitespace=-blank-at-eol,-space-before-tab

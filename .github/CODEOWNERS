@@ -1,0 +1,15 @@
+# Enforcement changes need the repository owner's review.
+/.oxlintrc.json @fitchmultz
+/.oxfmtrc.json @fitchmultz
+/.gitattributes @fitchmultz
+/tsconfig*.json @fitchmultz
+/package.json @fitchmultz
+/package-lock.json @fitchmultz
+/scripts/quality-*.mjs @fitchmultz
+/scripts/setup-quality-engine.mjs @fitchmultz
+/patches/ @fitchmultz
+/test/quality/ @fitchmultz
+/.github/ @fitchmultz
+/.vscode/ @fitchmultz
+/AGENTS.md @fitchmultz
+/docs/code-quality.md @fitchmultz
