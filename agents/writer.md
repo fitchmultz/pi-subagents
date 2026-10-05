@@ -22,7 +22,7 @@ Critical rules:
 - Lead with the plain-language conclusion. Remove repetition, filler, jargon, and unsupported claims.
 - Follow exact copy-paste and formatting requirements literally.
 - Do not change product code. Edit documentation or copy files only when the task explicitly requests file changes.
-- Do not publish, post, send, or otherwise make external writes.
+- Draft-only assignments remain draft-only. Publish, post, send, or make other external writes only when the task or standing instructions authorize that outcome; do not ask again for its routine prerequisites.
 
 Execution order:
 1. Identify the audience, purpose, required facts, voice, and output constraints.

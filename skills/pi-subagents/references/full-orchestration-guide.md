@@ -12,7 +12,7 @@ Use this skill when the parent orchestrator needs to launch a specialized subage
 ## When to Use
 
 - **Advisory review**: use fresh-context `reviewer` agents for adversarial code review, or fork to `oracle` when inherited decisions and drift matter
-- **Implementation handoff**: have `oracle` advise, then `worker` implement only after an approved direction
+- **Implementation handoff**: use `oracle` advice when helpful, then `worker` implements within existing authority
 - **Recon and planning**: use `scout` or `context-builder`, then `planner`
 - **Parallel exploration**: run multiple non-conflicting tasks concurrently
 - **Long-running work**: launch async/background runs and inspect them later
@@ -66,7 +66,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. An incomplete active Pi goal follows the same async workflow: yield when child evidence gates the next step, then resume the goal after automatic completion delivery. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish. Helpers may delegate within their assigned work; the original agent decides the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. An incomplete active Pi goal follows the same async workflow: yield when child evidence gates the next step, then resume the goal after automatic completion delivery. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, a concrete decision outside the existing authority appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish. Helpers may delegate within their assigned work; the original agent decides the loop outcome.
 
 ### Parallel research technique
 
@@ -117,7 +117,7 @@ Use this at the start of non-trivial work when material ambiguity remains. Launc
 
 ### Parallel cleanup technique
 
-Use this after implementation when the user wants cleanup review or when a final pass would reduce AI-slop. Launch two fresh-context `reviewer` tasks with `output: false` and `progress: false`: one deslop pass and one verbosity pass. If the `deslop` or `verbosity-cleaner` skills are available, pass the relevant skill to that reviewer; otherwise inline the criteria. Both reviewers are review-only and should flag concrete issues with severity, file/line references, and smallest safe fixes. Phrase the constraint as “Do not modify project/source files; returning findings through the configured output artifact is allowed” when you use `output` or `outputMode: "file-only"`. The parent decides what to apply and asks before making changes unless cleanup was already authorized.
+Use this after implementation when the user wants cleanup review or when a final pass would reduce AI-slop. Launch two fresh-context `reviewer` tasks with `output: false` and `progress: false`: one deslop pass and one verbosity pass. If the `deslop` or `verbosity-cleaner` skills are available, pass the relevant skill to that reviewer; otherwise inline the criteria. Both reviewers are review-only and should flag concrete issues with severity, file/line references, and smallest safe fixes. Phrase the constraint as “Do not modify project/source files; returning findings through the configured output artifact is allowed” when you use `output` or `outputMode: "file-only"`. The parent applies worthwhile fixes when cleanup or implementation is already authorized; review-only requests remain read-only.
 
 ### Staged fix orchestration technique
 
@@ -144,7 +144,7 @@ subagent({
       { agent: "reviewer", phase: "Planning", label: "Scheduler contract", as: "schedulerPlan", task: "Plan fixes for scheduler contract. Inspect the current diff. Do not modify project/source files; returning findings via the configured output artifact is allowed.", output: "plans/scheduler.md", outputMode: "file-only" },
       { agent: "reviewer", phase: "Planning", label: "Sandbox/security", as: "sandboxPlan", task: "Plan fixes for sandbox/security. Inspect the current diff. Do not modify project/source files; returning findings via the configured output artifact is allowed.", output: "plans/sandbox.md", outputMode: "file-only" }
     ], concurrency: 3 },
-    { agent: "worker", phase: "Implementation", label: "Apply accepted fixes", as: "workerResult", task: "Apply only the accepted fixes from these planning summaries. You are the sole writer for the active worktree.\n\nDeploy plan:\n{outputs.deployPlan}\n\nScheduler plan:\n{outputs.schedulerPlan}\n\nSandbox plan:\n{outputs.sandboxPlan}", acceptance: { criteria: ["Accepted fixes from each planning summary are applied", "Focused validation for changed behavior passes", "Changed files, validation commands, failures, and residual risks are reported"], evidence: ["changed-files", "commands-run", "validation-output", "residual-risks"], stopRules: ["Do not expand product scope beyond accepted fixes", "Stop and report if a fix requires an unapproved decision"], maxFinalizationTurns: 3 }, output: "worker/fixes.md", outputMode: "file-only", progress: true },
+    { agent: "worker", phase: "Implementation", label: "Apply accepted fixes", as: "workerResult", task: "Apply only the accepted fixes from these planning summaries. You are the sole writer for the active worktree.\n\nDeploy plan:\n{outputs.deployPlan}\n\nScheduler plan:\n{outputs.schedulerPlan}\n\nSandbox plan:\n{outputs.sandboxPlan}", acceptance: { criteria: ["Accepted fixes from each planning summary are applied", "Focused validation for changed behavior passes", "Changed files, validation commands, failures, and residual risks are reported"], evidence: ["changed-files", "commands-run", "validation-output", "residual-risks"], stopRules: ["Do not expand product scope beyond accepted fixes", "Stop and report if a fix requires information or authority you cannot obtain"], maxFinalizationTurns: 3 }, output: "worker/fixes.md", outputMode: "file-only", progress: true },
     { parallel: [
       { agent: "reviewer", phase: "Validation", label: "Deploy/scheduler validation", task: "Validate the post-worker diff for deploy and scheduler fixes. Start from the worker result: {outputs.workerResult}. Do not modify project/source files; returning findings via the configured output artifact is allowed.", output: "validation/deploy-scheduler.md", outputMode: "file-only" },
       { agent: "reviewer", phase: "Validation", label: "Sandbox validation", task: "Validate the post-worker diff for sandbox/security fixes. Start from the worker result: {outputs.workerResult}. Do not modify project/source files; returning findings via the configured output artifact is allowed.", output: "validation/sandbox.md", outputMode: "file-only" }
@@ -183,7 +183,7 @@ A strong subagent prompt usually includes:
 
 Avoid carrying over old prompt habits that over-specify every step. Use `must`, `always`, and `never` for real invariants; for judgment calls, give decision rules. For example, tell a reviewer to inspect the staged diff directly and report only evidence-backed findings, rather than prescribing every file or command. Tell a researcher the retrieval budget: start with broad targeted searches, fetch only the strongest sources, search again only when a required fact is missing, then stop.
 
-For implementation handoffs, name the approved scope and success criteria more clearly than the process. Good prompts say what to change, what not to change, where the evidence lives, how to validate, and when to escalate. They should not ask the child to create another subagent plan or continue the parent conversation.
+For implementation handoffs, name the approved scope and success criteria more clearly than the process. Good prompts say what to change, what not to change, where the evidence lives, how to validate, and when to escalate. Useful helpers may split the assigned work within native limits; they must not take over the parent's workflow or continue its conversation.
 
 Settings locations:
 - User scope: `~/.pi/agent/settings.json`
@@ -455,8 +455,8 @@ The intended oracle loop is:
 1. the main agent forks to `oracle`
 2. `oracle` reviews direction, drift, assumptions, and risks
 3. `oracle` can coordinate back through `contact_supervisor` when the bridge injects it
-4. the main agent decides what direction to approve
-5. only then should `worker` implement
+4. the main agent chooses an in-scope direction under existing authority
+5. `worker` implements when the task already authorizes implementation; planning-only requests and explicit holds remain read-only
 
 ```typescript
 // Advisory review in a branched thread. Oracle defaults to forked context.
@@ -465,7 +465,7 @@ subagent({
   task: "Review my current direction, challenge assumptions, and propose the best next move."
 })
 
-// Implementation only after explicit approval. Worker defaults to fresh context.
+// Existing implementation authority is sufficient. Worker defaults to fresh context.
 subagent({
   agent: "worker",
   task: "Implement the approved approach: ..."
@@ -657,8 +657,7 @@ Give subagents specific tasks rather than vague mandates.
 
 ### Escalate decisions upward
 
-If a subagent encounters an unapproved product, architecture, or scope choice,
-it should coordinate back via `intercom` instead of deciding alone.
+Make ordinary reversible architecture and implementation choices within the assigned outcome. Coordinate back only when required information or authority is unavailable or a choice would change the owner's settled outcome or scope.
 
 ### Intervene only on clear control signals
 
@@ -688,11 +687,11 @@ When you are the orchestrating agent for a new feature or non-trivial change, us
 
 Keep effective agent defaults for routine runs; ordinary launches retain configured fallbacks. Warranted overrides remain subject to user instructions and provider authorization; see [Agent selection](../SKILL.md#agent-selection) for the per-run syntax and pinning policy. Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
 
-When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
+Use the existing task authority to launch helpful subagents and write a role-specific handoff; no separate launch or handoff approval is needed. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 
 - Gather context and clarify: launch `scout` and, when needed, `researcher`; synthesize findings; then use the available clarification tool (`ask_question` in pi) for unresolved material questions.
 - Parallel review: launch fresh-context `reviewer` agents with distinct review angles; synthesize the feedback before applying anything.
-- Review loop: keep the parent in charge of worker → fresh reviewers → synthesized fix worker cycles until no fixes worth doing now remain, an unapproved decision appears, or the review-round cap is reached.
+- Review loop: keep the parent in charge of worker → fresh reviewers → synthesized fix worker cycles until no fixes worth doing now remain, a concrete decision outside the existing authority appears, or the review-round cap is reached.
 - Parallel research: combine local `scout` context with external `researcher` evidence when current docs, ecosystem behavior, or API details matter.
 - Parallel context build: run a chain-mode parallel group of `context-builder` agents with distinct temp output paths, then synthesize their context and meta-prompt sections.
 - Parallel handoff plan: run external `researcher` plus local/strategy `context-builder` passes, then a synthesis `context-builder` that writes an implementation handoff plan and implementation-ready meta-prompt.
@@ -731,14 +730,14 @@ subagent({
     verify: [{ id: "focused", command: "npm test -- --runInBand" }],
     stopRules: [
       "Do not edit unrelated files",
-      "Stop and report if the plan requires an unapproved product decision"
+      "Stop and report if the plan requires a decision outside the assigned authority"
     ],
     maxFinalizationTurns: 3
   }
 })
 ```
 
-The first `worker` implements the approved plan. The parent continues with independent inspection or validation prep while it runs only when the worker is async; do not make parallel edits to the same worktree. When an async worker completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Launch parallel reviewers as separate async runs so each completion wakes the parent. Validators check behavior with the best available evidence: commands, tests, browser/CLI interaction, screenshots, logs, or manual reproduction notes. The final `worker` applies synthesized review fixes, then the parent looks over the final diff before completing. Keep these as parent-launched follow-up runs after each completion; do not hide reviewer panels inside an initial async chain. Under an incomplete active Pi goal, a fixed sequence with no intervening parent decision may instead use a bounded foreground chain. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a decision that needs approval first.
+The first `worker` implements the approved plan. The parent continues with independent inspection or validation prep while it runs only when the worker is async; do not make parallel edits to the same worktree. When an async worker completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Launch parallel reviewers as separate async runs so each completion wakes the parent. Validators check behavior with the best available evidence: commands, tests, browser/CLI interaction, screenshots, logs, or manual reproduction notes. The final `worker` applies synthesized review fixes, then the parent looks over the final diff before completing. Keep these as parent-launched follow-up runs after each completion; do not hide reviewer panels inside an initial async chain. Under an incomplete active Pi goal, a fixed sequence with no intervening parent decision may instead use a bounded foreground chain. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a concrete decision outside the existing authority.
 
 For complex work, risky changes, broad refactors, or many changed lines, increase review and validation fanout rather than trusting one reviewer. Use distinct angles such as correctness/regressions, tests/validation, simplicity/maintainability, security/privacy, performance, docs/API contracts, and user-flow behavior. When reviewers find non-trivial issues or the fix worker touches many lines, run another focused review round before final validation.
 
@@ -746,15 +745,15 @@ When review has already produced concrete findings across several independent ar
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review/validation, a fix pass, and parent acceptance before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, review, and validation only.
 
-Keep final integration and delivery with the original agent. Helpers with native delegation enabled may split their assigned work using the child-safe `subagent` tool. Parent-only management controls and inherited orchestration records remain filtered by the runtime. Configure `allowSubagents` and the native depth budget to support the intended delegation; do not add a blanket role-level prohibition. Implementation helpers must use real edit/write tools.
+Keep final integration and delivery with the original agent. Bundled children remain leaf agents; launch routine fanout from the parent. Helpers may split their assigned work using the child-safe `subagent` tool only when the user explicitly authorized nesting and their profile/native depth budget already permits it. Parent-only management controls and inherited orchestration records remain filtered by the runtime. Do not infer permission to change `allowSubagents` or the depth budget. Implementation helpers must use real edit/write tools.
 
 1. Clarify only material uncertainty. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
-3. Plan when useful. Use existing authorization and make routine implementation decisions directly. Ask only when missing information prevents correct work or a decision would change the approved outcome, scope, cost, permissions, or acceptance.
+3. Plan when useful. Use existing authorization and make routine implementation decisions directly. Ask only when required information or authority cannot be obtained, a decision would change the owner's settled outcome or scope, or it crosses a concrete irreversible-loss, private-data, or substantial new-cost boundary.
 4. Implement with one writer. Launch `worker` under the existing authorization with the requirements, relevant context, plan path or summary, validation expectations, and required output. Packaged `worker` defaults to fresh context. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful worker handoff. Ask the worker to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
 6. Review after implementation. After the worker completes, launch fresh-context `reviewer` agents for correctness/regressions, tests/validation, and simplicity/maintainability as separate async runs so each completion wakes the parent. Add security, performance, docs/API, domain-specific, or user-flow validators for complex work, risky changes, broad refactors, or many changed lines. Use `output: false` unless review artifacts are explicitly needed.
-7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async `worker` to apply fixes worth doing now when the workflow is implementation-authorized. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
+7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async `worker` to apply fixes worth doing now when the workflow is implementation-authorized. Make ordinary reversible fixes within existing authority; escalate only a concrete blocker or decision outside the owner's outcome and scope.
 8. Review again when warranted. If the fix worker made substantial changes or addressed non-trivial findings, run another focused parallel review round before final validation.
 9. Validate and complete. After the fix worker and any follow-up review return, inspect the final diff yourself, run or confirm focused validation, update docs/changelog when relevant, and summarize what changed and why.
 
@@ -787,7 +786,7 @@ Example fix worker after parallel reviews:
 ```typescript
 subagent({
   agent: "worker",
-  task: "Apply the synthesized reviewer feedback below. Only apply fixes worth doing now; preserve user-approved scope; ask before unapproved product or architecture changes. Run focused validation and summarize what changed.\n\nReviewer synthesis:\n..."
+  task: "Apply the synthesized reviewer feedback below. Only apply fixes worth doing now; preserve user-approved scope; make ordinary reversible choices; escalate only concrete decisions outside the assigned authority. Run focused validation and summarize what changed.\n\nReviewer synthesis:\n..."
   // Async is the default; set async: false for explicitly chosen foreground execution.
 })
 ```
@@ -798,7 +797,7 @@ Do not treat review as the final step for implementation work. Run reviewers and
 
 When an async implementation worker completes, treat the worker handoff as an intermediate state. The next parent action is separate async review runs, then synthesis, then an async fix worker if reviewers found fixes worth doing now. Keep these as parent-launched follow-up runs so each reviewer completion wakes the parent; do not put the review panel inside one async chain.
 
-For explicit review-loop requests, repeat worker → fresh-reviewer → synthesized-fix-worker cycles until reviewers find no blockers or fixes worth doing now, remaining feedback is optional or intentionally deferred, an unapproved product/scope/architecture decision needs the user, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. For complex work, many changed lines, or any fix pass that materially changes the diff, run another focused review round before the parent’s final look; otherwise stop instead of chasing optional polish.
+For explicit review-loop requests, repeat worker → fresh-reviewer → synthesized-fix-worker cycles until reviewers find no blockers or fixes worth doing now, remaining feedback is optional or intentionally deferred, a concrete decision outside existing authority needs the user, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. For complex work, many changed lines, or any fix pass that materially changes the diff, run another focused review round before the parent’s final look; otherwise stop instead of chasing optional polish.
 
 ### Parallel non-conflicting analysis
 
