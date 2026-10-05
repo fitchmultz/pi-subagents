@@ -1,25 +1,55 @@
 import { writeFileSync } from "node:fs";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type JsonObject,
+  type JsonValue,
+} from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { assertArray, assertRecord, parseJson } from "../support/assertions.ts";
+import { isRecord, isUnknownArray } from "../../src/shared/unknown.ts";
 
-export default function (pi: ExtensionAPI) {
-  const script = JSON.parse(process.env.PI_CWD_FIXTURE_SCRIPT!) as Array<{
-    name: string;
-    input: Record<string, unknown>;
-  }>;
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (isUnknownArray(value)) {
+    return value.every(isJsonValue);
+  }
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return isRecord(value) && isJsonValue(value);
+}
+
+export default function (pi: ExtensionAPI): void {
+  const scriptText = process.env.PI_CWD_FIXTURE_SCRIPT;
+  const outputPath = process.env.PI_CWD_FIXTURE_OUTPUT;
+  if (scriptText === undefined || outputPath === undefined) {
+    throw new Error("PI_CWD_FIXTURE_SCRIPT and PI_CWD_FIXTURE_OUTPUT are required.");
+  }
+  const script = parseJson(scriptText);
+  assertArray(script);
+  const responses = script.map((call) => {
+    assertRecord(call);
+    if (typeof call.name !== "string" || !isJsonObject(call.input)) {
+      throw new Error("Fixture calls require a string name and JSON object input.");
+    }
+    return fauxAssistantMessage([fauxToolCall(call.name, call.input)], { stopReason: "toolUse" });
+  });
   const faux = fauxProvider();
-  faux.setResponses([
-    ...script.map(({ name, input }) =>
-      fauxAssistantMessage([fauxToolCall(name, input)], { stopReason: "toolUse" }),
-    ),
-    fauxAssistantMessage("done"),
-  ]);
+  faux.setResponses([...responses, fauxAssistantMessage("done")]);
   pi.registerProvider("faux", {
     api: faux.api,
     baseUrl: faux.getModel().baseUrl,
     apiKey: "fixture",
     models: faux.models,
-    streamSimple: faux.provider.streamSimple,
+    streamSimple: (model, context, options) => faux.provider.streamSimple(model, context, options),
   });
   const results: unknown[] = [];
   pi.on("tool_result", (event) => {
@@ -27,7 +57,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", (_event, ctx) => {
     writeFileSync(
-      process.env.PI_CWD_FIXTURE_OUTPUT!,
+      outputPath,
       JSON.stringify({
         calls: faux.state.callCount,
         results,

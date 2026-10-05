@@ -8,6 +8,7 @@ import {
   type AgentSession,
   type ExtensionAPI,
   type ExtensionContext,
+  type Extension,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 
@@ -15,6 +16,7 @@ export interface NativeSessionFixture {
   readonly session: AgentSession;
   readonly pi: ExtensionAPI;
   readonly context: ExtensionContext;
+  readonly extensions: readonly Extension[];
   readonly dispose: () => Promise<void>;
 }
 
@@ -23,6 +25,7 @@ export interface NativeSessionOptions {
   readonly agentDir: string;
   readonly configure?: ExtensionFactory;
   readonly sessionManager?: SessionManager;
+  readonly bindExtensions?: boolean;
 }
 
 /** Real registration/dispatch boundary; no synthetic receipts or settled events. */
@@ -78,7 +81,12 @@ export async function createNativeSessionFixture(
     noTools: "builtin",
   });
   try {
-    await session.bindExtensions({ mode: "print" });
+    if (options.bindExtensions !== false) {
+      await session.bindExtensions({ mode: "print" });
+    } else {
+      // Cold-registration tests own when session_start is dispatched.
+      context = session.extensionRunner.createContext();
+    }
     if (api === undefined || context === undefined) {
       throw new Error("Native extension registration or session_start did not complete.");
     }
@@ -86,6 +94,7 @@ export async function createNativeSessionFixture(
       session,
       pi: api,
       context,
+      extensions: loader.getExtensions().extensions,
       dispose: async () => {
         // This is direct SDK disposal, not an emulation of runtime session_shutdown.
         await session.abort();
