@@ -64,17 +64,21 @@ export function createTopicView(
     },
   });
   view.addChild(
-    actionHints([
-      { text: "↑", run: () => act(-1) },
-      "/",
-      { text: "↓", run: () => act(1) },
-      " ",
-      { text: "PgUp", run: () => act(-scroll.viewportHeight) },
-      "/",
-      { text: "PgDn Read", run: () => act(scroll.viewportHeight) },
-      " · ",
-      { text: "Esc Back", run: () => act() },
-    ]),
+    actionHints(
+      [
+        { text: "↑", run: () => act(-1) },
+        "/",
+        { text: "↓", run: () => act(1) },
+        " ",
+        { text: "PgUp", run: () => act(-scroll.viewportHeight) },
+        "/",
+        { text: "PgDn Read", run: () => act(scroll.viewportHeight) },
+        " · ",
+        { text: "Esc Back", run: () => act() },
+      ],
+      (hint) => hint,
+      "...",
+    ),
   );
   return {
     invalidate() {

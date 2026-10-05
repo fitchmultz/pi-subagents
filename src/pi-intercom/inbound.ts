@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomConfig } from "./config.ts";
 import type { Lifecycle } from "./lifecycle.ts";
@@ -13,7 +12,7 @@ import type { ChildOrchestratorMetadata, InboundMessageEntry } from "./runtime-t
 import type { Message, SessionInfo } from "./types.ts";
 import { requestedDelivery, isBlockingSupervisorMessage } from "./inbound-record.ts";
 import { formatAttachments } from "./message-format.ts";
-import { getRunMetadataDir, readRunJson } from "../runs/shared/supervisor-questions.ts";
+import { readQuestionOwner } from "../runs/shared/supervisor-questions.ts";
 
 interface InboundOwners {
   readonly journal: Journal;
@@ -40,9 +39,7 @@ export class IntercomInbound {
     if (!origin || !child || origin.runId !== child.runId || origin.index !== Number(child.index)) {
       return false;
     }
-    const owner = readRunJson<{ readonly sessionId?: string }>(
-      path.join(getRunMetadataDir(origin.runId), "question-owner.json"),
-    );
+    const owner = readQuestionOwner(origin.runId);
     return (
       owner?.sessionId === origin.ownerSessionId &&
       from.id ===
