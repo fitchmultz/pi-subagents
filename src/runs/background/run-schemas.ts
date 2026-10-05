@@ -1,4 +1,6 @@
 import { Ajv } from "ajv";
+import { validateStatusForSummary } from "./async-status-validation.ts";
+import { isRecord } from "./async-value.ts";
 import runSchema from "./schemas/RunContracts.json" with { type: "json" };
 import type {
   AsyncStatus,
@@ -19,6 +21,8 @@ import type {
   HistoryIndexStatus,
   HistoryEntry,
   HistoryResult,
+  Details,
+  SubagentExecutionResult,
 } from "../../shared/types.ts";
 
 // Typed guards are compiled from generated canonical declarations, not assertion casts.
@@ -59,6 +63,23 @@ const historyStatus = validator.compile<HistoryIndexStatus>({
 const historyEntry = validator.compile<HistoryEntry>({ $ref: "run#/definitions/HistoryEntry" });
 const historyResult = validator.compile<HistoryResult>({ $ref: "run#/definitions/HistoryResult" });
 
+const details = validator.compile<Details>({ $ref: "run#/definitions/Details" });
+const executionResult = validator.compile<SubagentExecutionResult>({
+  $ref: "run#/definitions/SubagentExecutionResult",
+});
+
+export function parseDetails(value: unknown): Details {
+  if (!details(value)) {
+    throw new Error(`Invalid run details: ${validator.errorsText(details.errors)}.`);
+  }
+  return value;
+}
+export function parseSubagentExecutionResult(value: unknown): SubagentExecutionResult {
+  if (!executionResult(value)) {
+    throw new Error(`Invalid run result: ${validator.errorsText(executionResult.errors)}.`);
+  }
+  return value;
+}
 export function parseHistoryRunRow(value: unknown): HistoryRunRow {
   if (!historyRow(value)) {
     throw new Error(`Invalid history run: ${validator.errorsText(historyRow.errors)}.`);
@@ -103,15 +124,38 @@ export function parseHistoryResult(value: unknown): HistoryResult {
 }
 
 export function parseAsyncStatus(value: unknown): AsyncStatus {
+  validateStatusForSummary(value, "status.json");
   if (!status(value)) {
     throw new Error(`Invalid async status: ${validator.errorsText(status.errors)}.`);
   }
   return value;
 }
 
+function resultErrors(errors: readonly unknown[]): string {
+  return errors
+    .map((error) => {
+      if (
+        !isRecord(error) ||
+        typeof error.instancePath !== "string" ||
+        typeof error.message !== "string"
+      ) {
+        return "invalid shape";
+      }
+      const field = error.instancePath
+        .split("/")
+        .slice(1)
+        .map((part, index) =>
+          /^\d+$/.test(part) ? `[${part}]` : `${index === 0 ? "" : "."}${part}`,
+        )
+        .join("");
+      return `${field} ${error.message.replace("must be string", "must be a string")}`;
+    })
+    .join("; ");
+}
+
 export function parseAsyncResult(value: unknown): AsyncResultFile {
   if (!result(value)) {
-    throw new Error(`Invalid async result: ${validator.errorsText(result.errors)}.`);
+    throw new Error(`Invalid async result: ${resultErrors(result.errors ?? [])}.`);
   }
   return value;
 }

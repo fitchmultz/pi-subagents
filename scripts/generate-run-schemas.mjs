@@ -19,6 +19,7 @@ if (mode === "--help" || mode === "-h") {
     "src/shared/types/owned-runs.ts",
     "src/shared/types/questions.ts",
     "src/shared/types/history.ts",
+    "src/shared/types/details.ts",
   ].map((file) => path.join(root, file));
   const program = TJS.getProgramFromFiles(
     inputs,
@@ -52,6 +53,8 @@ if (mode === "--help" || mode === "-h") {
     "HistoryIndexStatus",
     "HistoryEntry",
     "HistoryResult",
+    "Details",
+    "SubagentExecutionResult",
   ];
   const schema = generator.getSchemaForSymbols(names);
   const target = path.join(root, "src/runs/background/schemas/RunContracts.json");

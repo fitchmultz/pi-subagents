@@ -1541,6 +1541,274 @@
       },
       "required": ["text", "timestamp"]
     },
+    "Details": {
+      "description": "Tool producer assembles details; nested published records retain their own readonly contracts.",
+      "type": "object",
+      "properties": {
+        "accounting": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "incomplete"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": ["error", "state"]
+        },
+        "mode": {
+          "enum": ["chain", "management", "parallel", "single"],
+          "type": "string"
+        },
+        "parentUsage": {
+          "description": "Receipt only on native tool result with matching top-level usage.",
+          "type": "object",
+          "properties": {
+            "contributions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/UsageContribution"
+              }
+            }
+          },
+          "required": ["contributions"]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "context": {
+          "enum": ["fork", "fresh"],
+          "type": "string"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SingleResult_1"
+          }
+        },
+        "controlEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ControlEvent"
+          }
+        },
+        "asyncId": {
+          "type": "string"
+        },
+        "asyncDir": {
+          "type": "string"
+        },
+        "asyncPid": {
+          "type": "number"
+        },
+        "shareUrl": {
+          "type": "string"
+        },
+        "gistUrl": {
+          "type": "string"
+        },
+        "shareError": {
+          "type": "string"
+        },
+        "progress": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AgentProgress_1"
+          }
+        },
+        "progressSummary": {
+          "$ref": "#/definitions/ProgressSummary"
+        },
+        "intercomTargets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "managementControl": {
+          "$ref": "#/definitions/ManagementControl"
+        },
+        "managementControls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ManagementControl_1"
+          }
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorQuestionView"
+          }
+        },
+        "wait": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "completionId": {
+              "type": "string"
+            },
+            "index": {
+              "type": "number"
+            },
+            "status": {
+              "enum": ["awaiting_input", "cancelled", "completed", "unavailable", "yielded"],
+              "type": "string"
+            }
+          },
+          "required": ["runId", "status"]
+        },
+        "run": {
+          "$ref": "#/definitions/OwnedRunView"
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Pick%3COwnedRunView%2C%22task%22%7C%22mode%22%7C%22state%22%7C%22cwd%22%7C%22runId%22%7C%22updatedAt%22%7C%22review%22%7C%22source%22%7C%22rootRunId%22%7C%22predecessorRunId%22%7C%22predecessorIndex%22%7C%22attention%22%3E"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "summary": {
+                    "type": "string"
+                  },
+                  "continuations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "runList": {
+          "type": "object",
+          "properties": {
+            "total": {
+              "type": "number"
+            },
+            "offset": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            },
+            "nextOffset": {
+              "type": "number"
+            },
+            "nextCursor": {
+              "type": "string"
+            },
+            "version": {
+              "type": "number"
+            },
+            "freshness": {
+              "$ref": "#/definitions/HistoryFreshness"
+            }
+          },
+          "required": ["freshness", "limit", "offset", "total", "version"]
+        },
+        "history": {
+          "$ref": "#/definitions/HistoryPage_1"
+        },
+        "historySearch": {
+          "$ref": "#/definitions/HistorySearchPage_1"
+        },
+        "intercomDelivery": {
+          "type": "object",
+          "properties": {
+            "delivered": {
+              "type": "boolean"
+            },
+            "to": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/definitions/SubagentResultStatus"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": ["delivered", "status", "summary", "to"]
+        },
+        "artifacts": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ArtifactPaths_1"
+              }
+            }
+          },
+          "required": ["dir", "files"]
+        },
+        "truncation": {
+          "type": "object",
+          "properties": {
+            "truncated": {
+              "type": "boolean"
+            },
+            "originalBytes": {
+              "type": "number"
+            },
+            "originalLines": {
+              "type": "number"
+            },
+            "artifactPath": {
+              "type": "string"
+            }
+          },
+          "required": ["truncated"]
+        },
+        "chainAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "totalSteps": {
+          "type": "number"
+        },
+        "currentStepIndex": {
+          "type": "number"
+        },
+        "workflowGraph": {
+          "$ref": "#/definitions/WorkflowGraphSnapshot"
+        },
+        "outputs": {
+          "$ref": "#/definitions/ChainOutputMap"
+        }
+      },
+      "required": ["mode", "results"]
+    },
+    "SubagentExecutionResult": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AgentToolResult%3CDetails%3E"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "isError": {
+              "description": "Executor marker transferred through Pi's native tool_result hook.",
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
     "SubagentRunMode": {
       "enum": ["chain", "parallel", "single"],
       "type": "string"
@@ -6020,6 +6288,560 @@
         "textStart",
         "timestamp"
       ]
+    },
+    "ManagementControl": {
+      "$ref": "#/definitions/ManagementControl_1"
+    },
+    "ManagementControl_1": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ManagementAction"
+          }
+        },
+        "nextActions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "$ref": "#/definitions/ManagementAction"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "index": {
+                "type": "number"
+              },
+              "intercomTarget": {
+                "type": "string"
+              }
+            },
+            "required": ["action", "runId"]
+          }
+        },
+        "unavailableActions": {
+          "$ref": "#/definitions/Readonly_3"
+        },
+        "revivedFromRunId": {
+          "type": "string"
+        },
+        "pendingReplyContextValid": {
+          "type": "boolean"
+        }
+      },
+      "required": ["capabilities", "nextActions", "runId", "state"]
+    },
+    "ManagementAction": {
+      "enum": ["extend", "interrupt", "nudge", "resume", "review", "status"],
+      "type": "string"
+    },
+    "Readonly_3": {
+      "$ref": "#/definitions/Partial%3CRecord%3CManagementAction%2Cstring%3E%3E"
+    },
+    "Partial<Record<ManagementAction,string>>": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "nudge": {
+          "type": "string"
+        },
+        "resume": {
+          "type": "string"
+        },
+        "interrupt": {
+          "type": "string"
+        },
+        "extend": {
+          "type": "string"
+        },
+        "review": {
+          "type": "string"
+        }
+      }
+    },
+    "OwnedRunView": {
+      "$ref": "#/definitions/OwnedRunView_1"
+    },
+    "OwnedRunView_1": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "index": {
+                    "type": "number"
+                  },
+                  "workflowNodeId": {
+                    "type": "string"
+                  },
+                  "task": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "sessionFile": {
+                    "type": "string"
+                  }
+                },
+                "required": ["agent", "index"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "$ref": "#/definitions/ManagementRunState"
+                  },
+                  "result": {
+                    "allOf": [
+                      {
+                        "$ref": "#/definitions/Omit%3C_ReadonlyObjectDeep%3CSingleResult%3E%2C%22artifactPaths%22%3E"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "artifactPaths": {
+                            "$ref": "#/definitions/Partial"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "launch": {
+                    "$ref": "#/definitions/SavedLaunchConfig"
+                  },
+                  "configuration": {
+                    "enum": ["legacy-partial", "saved"],
+                    "type": "string"
+                  },
+                  "missingSession": {
+                    "type": "boolean"
+                  },
+                  "identityUnavailable": {
+                    "type": "boolean"
+                  },
+                  "modelSelection": {
+                    "$ref": "#/definitions/Pick"
+                  },
+                  "activity": {
+                    "$ref": "#/definitions/Partial_2"
+                  }
+                },
+                "required": ["configuration", "state"]
+              }
+            ]
+          }
+        },
+        "continuations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "predecessorRunId": {
+                "type": "string"
+              },
+              "predecessorIndex": {
+                "type": "number"
+              }
+            },
+            "required": ["predecessorRunId", "runId"]
+          }
+        },
+        "resultPath": {
+          "type": "string"
+        },
+        "canInterrupt": {
+          "type": "boolean"
+        },
+        "diagnosis": {
+          "type": "string"
+        },
+        "recoveryError": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "ownerSessionId": {
+          "type": "string"
+        },
+        "source": {
+          "enum": ["async", "foreground"],
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubagentRunMode"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "rootRunId": {
+          "type": "string"
+        },
+        "predecessorRunId": {
+          "type": "string"
+        },
+        "predecessorIndex": {
+          "type": "number"
+        },
+        "asyncDir": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "review": {
+          "$ref": "#/definitions/ParentRunReview"
+        },
+        "completion": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "state": {
+              "enum": ["dropped", "journaled", "pending", "queued"],
+              "type": "string"
+            },
+            "channel": {
+              "enum": ["intercom", "notification"],
+              "type": "string"
+            },
+            "queuedAt": {
+              "type": "number"
+            },
+            "entryId": {
+              "type": "string"
+            }
+          },
+          "required": ["id", "state"]
+        },
+        "accounting": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": ["complete", "incomplete", "pending"],
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": ["state"]
+        },
+        "delivery": {
+          "type": "object",
+          "properties": {
+            "notifiedAt": {
+              "type": "number"
+            },
+            "intercomDelivered": {
+              "type": "boolean"
+            },
+            "completionId": {
+              "type": "string"
+            },
+            "entryId": {
+              "type": "string"
+            }
+          },
+          "required": ["intercomDelivered", "notifiedAt"]
+        },
+        "legacy": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attention",
+        "canInterrupt",
+        "children",
+        "continuations",
+        "cwd",
+        "mode",
+        "ownerSessionId",
+        "rootRunId",
+        "runId",
+        "source",
+        "startedAt",
+        "state",
+        "task",
+        "updatedAt"
+      ]
+    },
+    "Pick<OwnedRunView,\"task\"|\"mode\"|\"state\"|\"cwd\"|\"runId\"|\"updatedAt\"|\"review\"|\"source\"|\"rootRunId\"|\"predecessorRunId\"|\"predecessorIndex\"|\"attention\">": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubagentRunMode"
+        },
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "review": {
+          "$ref": "#/definitions/ParentRunReview"
+        },
+        "source": {
+          "enum": ["async", "foreground"],
+          "type": "string"
+        },
+        "rootRunId": {
+          "type": "string"
+        },
+        "predecessorRunId": {
+          "type": "string"
+        },
+        "predecessorIndex": {
+          "type": "number"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "attention",
+        "cwd",
+        "mode",
+        "rootRunId",
+        "runId",
+        "source",
+        "state",
+        "task",
+        "updatedAt"
+      ]
+    },
+    "HistoryPage_1": {
+      "$ref": "#/definitions/HistoryPage"
+    },
+    "HistorySearchPage_1": {
+      "$ref": "#/definitions/HistorySearchPage"
+    },
+    "AgentToolResult<Details>": {
+      "description": "Final or partial result produced by a tool.",
+      "type": "object",
+      "properties": {
+        "content": {
+          "description": "Text or image content returned to the model.",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TextContent"
+              },
+              {
+                "$ref": "#/definitions/ImageContent"
+              }
+            ]
+          }
+        },
+        "details": {
+          "$ref": "#/definitions/AgentToolResult.T",
+          "description": "Arbitrary structured details for logs or UI rendering."
+        },
+        "structuredContent": {
+          "$ref": "#/definitions/JsonValue",
+          "description": "Machine-readable result matching the tool's `outputSchema`, for programmatic callers. Not sent\nto the model; `content` remains the model-facing result."
+        },
+        "usage": {
+          "$ref": "#/definitions/Usage_4",
+          "description": "Usage from the final tool execution itself, if available. Not used for main LLM context accounting."
+        },
+        "isError": {
+          "description": "Report a failure without throwing. The model sees `content` as an error result, like a thrown\nerror, but `details` and `structuredContent` are kept for the UI and programmatic callers.",
+          "type": "boolean"
+        },
+        "terminate": {
+          "description": "Hint that the agent should stop after the current tool batch.\nEarly termination only happens when every finalized tool result in the batch sets this to true.",
+          "type": "boolean"
+        }
+      },
+      "required": ["content", "details"]
+    },
+    "TextContent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        },
+        "textSignature": {
+          "type": "string"
+        }
+      },
+      "required": ["text", "type"]
+    },
+    "ImageContent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "image"
+        },
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "required": ["data", "mimeType", "type"]
+    },
+    "AgentToolResult.T": {
+      "$ref": "#/definitions/Details",
+      "description": "Tool producer assembles details; nested published records retain their own readonly contracts."
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/JsonValue_1"
+          }
+        },
+        {
+          "$ref": "#/definitions/JsonObject"
+        },
+        {
+          "type": ["null", "string", "number", "boolean"]
+        }
+      ]
+    },
+    "JsonValue_1": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/JsonValue_1"
+          }
+        },
+        {
+          "$ref": "#/definitions/JsonObject"
+        },
+        {
+          "type": ["null", "string", "number", "boolean"]
+        }
+      ]
+    },
+    "__type_31": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/JsonValue_1"
+      }
+    },
+    "JsonObject": {
+      "$ref": "#/definitions/__type_31"
+    },
+    "Usage_4": {
+      "$ref": "#/definitions/Usage_5"
+    },
+    "Usage_5": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        },
+        "cacheWrite1h": {
+          "description": "Subset of `cacheWrite` written with 1h retention. Only Anthropic reports this split.",
+          "type": "number"
+        },
+        "reasoning": {
+          "description": "Reasoning/thinking tokens, when the provider reports them. This is a subset of\n`output`: `output` already includes these tokens. Set to a number (possibly 0) by\nproviders that expose a reasoning breakdown; left undefined by providers that don't.",
+          "type": "number"
+        },
+        "totalTokens": {
+          "type": "number"
+        },
+        "cost": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number"
+            },
+            "output": {
+              "type": "number"
+            },
+            "cacheRead": {
+              "type": "number"
+            },
+            "cacheWrite": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": ["cacheRead", "cacheWrite", "input", "output", "total"]
+        }
+      },
+      "required": ["cacheRead", "cacheWrite", "cost", "input", "output", "totalTokens"]
     }
   }
 }
