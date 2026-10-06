@@ -88,7 +88,7 @@ export class SubagentHistoryIndex {
 		await this.ready;
 	}
 	/** Arms an ordinary deadline only in the continuation that saw the current admission and worker settle, never behind a replacement admission. */
-	private async admitted<T>(method: string, input?: any, signal?: AbortSignal, timeout?: number): Promise<T> {
+	private async admitted<T>(method: string, input?: unknown, signal?: AbortSignal, timeout?: number): Promise<T> {
 		await this.ensure();
 		const ready = this.ready, child = this.process;
 		await ready;
