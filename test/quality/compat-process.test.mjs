@@ -240,9 +240,84 @@ function signalNativeFixture(entry, signal) {
   if (current?.identity !== entry.identity || current.uid !== process.getuid() || current.exited) {
     return false;
   }
-  process.kill(entry.pid, signal);
-  return true;
+  try {
+    process.kill(entry.pid, signal);
+    return true;
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      throw error;
+    }
+    return false; // The authenticated incarnation can exit before delivery.
+  }
 }
+
+function authenticatedGuardianConsumer(consumer, guardian) {
+  return (
+    consumer &&
+    !consumer.exited &&
+    consumer.uid === guardian.uid &&
+    consumer.sid === guardian.sid &&
+    consumer.environmentVisible
+  );
+}
+
+async function terminateNativeGuardian(guardian, token) {
+  if (process.platform !== "darwin" || !guardian) {
+    await terminateNativeFixture(guardian);
+    return;
+  }
+  const consumers = [];
+  const errors = await collectFixtureTeardown([
+    async () => {
+      if (!signalNativeFixture(guardian, "SIGSTOP")) {
+        return;
+      }
+      const deadline = Date.now() + 5000;
+      while (true) {
+        const current = fixtureIdentity(guardian.pid);
+        if (
+          current?.identity !== guardian.identity ||
+          current.uid !== guardian.uid ||
+          current.exited
+        ) {
+          return; // Gone incarnation is not a failed stop or new signal authority.
+        }
+        if (current.status === 4) {
+          break;
+        }
+        assert.ok(Date.now() < deadline, "Fixture guardian did not actually stop");
+        // Only an observed stopped producer cannot launch another rescue query.
+        // oxlint-disable-next-line no-await-in-loop
+        await delay(1);
+      }
+      const data = Buffer.alloc(4096);
+      const bytes = fixtureInteger(nativeAPI().listpids(6, guardian.pid, data, data.length));
+      assert.ok(bytes >= 0 && bytes < data.length && bytes % 4 === 0);
+      for (let offset = 0; offset < bytes; offset += 4) {
+        const consumer = nativeFixture(data.readInt32LE(offset), token);
+        // Ordinary protected WORK and exited/zombie children are not query
+        // authentication failures. Their separately registered fixtures are reaped below.
+        if (authenticatedGuardianConsumer(consumer, guardian)) {
+          consumers.push(consumer);
+        }
+      }
+      console.log(`Native guardian consumers: ${JSON.stringify(consumers)}`);
+    },
+    () => terminateNativeFixture(guardian),
+    async () => {
+      const consumerErrors = await collectFixtureTeardown(
+        consumers.map((consumer) => () => terminateNativeFixture(consumer)),
+      );
+      if (consumerErrors.length > 0) {
+        throw new AggregateError(consumerErrors, "Native guardian consumer reaping failed");
+      }
+    },
+  ]);
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Native guardian fallback failed");
+  }
+}
+
 function fixturePresent(pid) {
   try {
     process.kill(pid, 0);
@@ -251,6 +326,41 @@ function fixturePresent(pid) {
     assert.equal(error.code, "ESRCH");
     return false;
   }
+}
+
+async function finishNativeOwner(owner, outcome, stopAttempted) {
+  await outcome; // WORK return is not guardian release.
+  if (!stopAttempted) {
+    await owner.stop();
+  }
+}
+
+async function collectFixtureTeardown(operations) {
+  const errors = [];
+  for (const operation of operations) {
+    try {
+      // Cleanup is ordered, but one failure must not strand the remaining fixtures.
+      // oxlint-disable-next-line no-await-in-loop
+      await operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
+function reportFixtureTeardown(errors, originalFailure) {
+  if (errors.length === 0) {
+    return;
+  }
+  const error = new AggregateError(
+    errors,
+    "Native fixture teardown failed; retaining uncertain roots",
+  );
+  if (!originalFailure) {
+    throw error;
+  }
+  console.error(error); // Report once; never replace the original caught Error.
 }
 
 for (const fast of [false, true]) {
@@ -282,11 +392,18 @@ for (const fast of [false, true]) {
       );
       let owned;
       let foreign;
+      let guardian;
+      let token;
+      let failure;
+      let stopAttempted = false;
       try {
         const receipt = await published(ready);
+        owned = nativeFixture(receipt.childPid);
+        guardian = nativeFixture(receipt.guardianPid);
         assert.equal(typeof receipt.owners, "string");
         assert.ok(receipt.owners.length > 0);
-        owned = nativeFixture(receipt.childPid, receipt.owners.split(",").at(-1));
+        token = receipt.owners.split(",").at(-1);
+        owned = nativeFixture(receipt.childPid, token);
         assert.ok(owned);
         assert.equal(owned.uid, process.getuid());
         assert.equal(owned.sid, receipt.guardianPid, "Actual private guardian reserves the SID");
@@ -316,6 +433,7 @@ for (const fast of [false, true]) {
           assert.equal(orphan.identity, owned.identity);
           assert.equal(orphan.ppid, 1);
           assert.equal(orphan.exited, false);
+          stopAttempted = true;
           await owner.stop();
         } else {
           const result = await outcome;
@@ -331,12 +449,25 @@ for (const fast of [false, true]) {
           true,
           "Foreign same-UID SID with argv marker must survive",
         );
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
-        writeFileSync(release, "fixture teardown");
-        await outcome;
-        await terminateNativeFixture(owned);
-        await terminateNativeFixture(foreign);
-        rmSync(root, { recursive: true, force: true });
+        const errors = await collectFixtureTeardown([
+          () => writeFileSync(release, "fixture teardown"),
+          () => (fast ? finishNativeOwner(owner, outcome, stopAttempted) : outcome),
+          () => terminateNativeGuardian(guardian, token),
+          () => terminateNativeFixture(owned),
+          () => terminateNativeFixture(foreign),
+        ]);
+        if (errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
+        }
+        reportFixtureTeardown(errors, failure);
       }
     },
   );
@@ -615,76 +746,173 @@ test("only exact environment receipts authorize owned-process cleanup", async ()
   }
 });
 
-test(
-  "a live guardian covers a late protected fork that is orphaned before exec",
-  { skip: process.platform !== "darwin" },
-  async () => {
-    const root = mkdtempSync(join(tmpdir(), "ps-late-protected-proof-"));
-    const initial = join(root, "initial.json");
-    const ready = join(root, "ready.json");
-    const launch = join(root, "launch");
-    const exec = join(root, "exec");
-    const owner = new OwnedProcesses();
-    const command = `
+for (const failAfterPublication of [false, true]) {
+  test(
+    failAfterPublication
+      ? "late native fixture preserves a post-publication failure through genuine owner teardown"
+      : "a live guardian covers a late protected fork that is orphaned before exec",
+    { skip: process.platform !== "darwin" },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ps-late-protected-proof-"));
+      const initial = join(root, "initial.json");
+      const ready = join(root, "ready.json");
+      const launch = join(root, "launch");
+      const exec = join(root, "exec");
+      const owner = new OwnedProcesses();
+      const command = `
       /bin/sleep 0.01
-      printf '{"pid":%s,"guardian":%s}\\n' "$$" "\${PI_COMPAT_GUARDIAN_PID:-$$}" > '${initial}'
+      printf '{"pid":%s,"guardian":%s,"root":"%s"}\\n' "$$" "\${PI_COMPAT_GUARDIAN_PID:-$$}" "$PI_COMPAT_GUARDIAN_ROOT" > '${initial}'
       while [ ! -f '${launch}' ]; do :; done
       /bin/sh -c 'while [ ! -f "${exec}" ]; do :; done; exec /bin/sleep 180' </dev/null >/dev/null 2>&1 &
       printf '{"pid":%s,"owners":"%s"}\\n' "$!" "$PI_COMPAT_PROCESS_OWNERS" > '${ready}.tmp'
       /bin/mv '${ready}.tmp' '${ready}'`;
-    const operation = owner.execute(
-      "/bin/sh",
-      ["-c", command],
-      { quiet: true },
-      new AbortController().signal,
-    );
-    const outcome = operation.then(
-      (output) => ({ output }),
-      (error) => ({ error }),
-    );
-    let owned;
-    try {
-      const first = await published(initial);
-      assert.ok(active(first.pid), "Actual command is waiting before the late fork");
-      writeFileSync(launch, "launch");
-      const receipt = await published(ready);
-      assert.equal((await outcome).error, undefined);
-      owned = nativeFixture(receipt.pid, receipt.owners.split(",").at(-1));
-      assert.ok(owned);
-      assert.equal(owned.ppid, 1, "Child was orphaned before its exec");
-      assert.equal(owned.sid, first.guardian);
-      assert.equal(owned.exited, false);
-      writeFileSync(exec, "exec");
-      const deadline = Date.now() + 5000;
-      while (
-        spawnSync("/bin/ps", ["-p", String(owned.pid), "-o", "comm="], {
-          encoding: "utf8",
-        }).stdout.trim() !== "/bin/sleep"
-      ) {
-        assert.ok(Date.now() < deadline, "Orphan did not exec the protected Apple binary");
-        // Observe actual native exec, not a guessed scheduling sleep.
-        // oxlint-disable-next-line no-await-in-loop
-        await delay(20);
+      const operation = owner.execute(
+        "/bin/sh",
+        ["-c", command],
+        { quiet: true },
+        new AbortController().signal,
+      );
+      const outcome = operation.then(
+        (output) => ({ output }),
+        (error) => ({ error }),
+      );
+      let owned;
+      let guardian;
+      let work;
+      let first;
+      let failure;
+      let stopAttempted = false;
+      let teardownComplete = false;
+      const originalFailure = new Error("Intentional late fixture pre-transition failure");
+      const exercise = async () => {
+        try {
+          first = await published(initial);
+          guardian = nativeFixture(first.guardian);
+          work = nativeFixture(first.pid);
+          assert.equal(typeof first.root, "string");
+          assert.ok(first.root.length > 0, "WORK publishes the actual nonempty receipt root");
+          assert.equal(existsSync(first.root), true, "Actual receipt root exists at publication");
+          assert.ok(active(first.pid), "Actual command is waiting before the late fork");
+          writeFileSync(launch, "launch");
+          const receipt = await published(ready);
+          owned = nativeFixture(receipt.pid, receipt.owners.split(",").at(-1));
+          assert.equal((await outcome).error, undefined);
+          assert.ok(owned);
+          assert.equal(owned.ppid, 1, "Child was orphaned before its exec");
+          assert.equal(owned.sid, first.guardian);
+          assert.equal(owned.exited, false);
+          writeFileSync(exec, "exec");
+          const deadline = Date.now() + 5000;
+          while (
+            spawnSync("/bin/ps", ["-p", String(owned.pid), "-o", "comm="], {
+              encoding: "utf8",
+            }).stdout.trim() !== "/bin/sleep"
+          ) {
+            assert.ok(Date.now() < deadline, "Orphan did not exec the protected Apple binary");
+            // Observe actual native exec, not a guessed scheduling sleep.
+            // oxlint-disable-next-line no-await-in-loop
+            await delay(20);
+          }
+          const executed = nativeFixture(owned.pid, receipt.owners.split(",").at(-1));
+          if (failAfterPublication) {
+            console.log(
+              `Native lifecycle publication: ${JSON.stringify({ case: "late", root: first.root, fixtures: [owned, work, guardian] })}`,
+            );
+            throw originalFailure;
+          }
+          assert.equal(executed.identity, owned.identity);
+          assert.equal(executed.ppid, 1);
+          assert.equal(executed.environmentVisible, false);
+          stopAttempted = true;
+          await owner.stop();
+          assert.equal(active(owned.pid), false, "Late orphan-then-exec must quiesce");
+        } catch (error) {
+          failure = error;
+          throw error;
+        } finally {
+          const errors = await collectFixtureTeardown([
+            () => writeFileSync(launch, "teardown"),
+            () => writeFileSync(exec, "teardown"),
+            async () => {
+              await finishNativeOwner(owner, outcome, stopAttempted);
+              if (failAfterPublication) {
+                for (const entry of [owned, work, guardian]) {
+                  assert.equal(
+                    fixtureIdentity(entry.pid),
+                    undefined,
+                    "Real WORK and guardian absence precede fallback teardown",
+                  );
+                }
+              }
+            },
+          ]);
+          teardownComplete = errors.length === 0;
+          reportFixtureTeardown(errors, failure);
+        }
+      };
+      try {
+        if (failAfterPublication) {
+          await assert.rejects(exercise, (error) => {
+            assert.equal(
+              error,
+              originalFailure,
+              "Teardown preserves the exact pre-transition error",
+            );
+            return true;
+          });
+          failure = undefined; // assert.rejects consumed the intentional failure, not outer cleanup.
+          assert.equal(teardownComplete, true, "Original error cannot hide a teardown failure");
+          console.log(
+            `Native lifecycle returned: ${JSON.stringify({ case: "late", root: first.root, rootPresent: existsSync(first.root), guardian: fixtureIdentity(guardian.pid) })}`,
+          );
+          assert.equal(
+            fixtureIdentity(guardian.pid),
+            undefined,
+            "Genuine owner teardown releases the late guardian",
+          );
+          assert.equal(
+            existsSync(first.root),
+            false,
+            "Only genuine settlement removes the healthy owner root",
+          );
+        } else {
+          await exercise();
+        }
+      } catch (error) {
+        failure = error;
+        throw error;
+      } finally {
+        const errors = await collectFixtureTeardown([
+          () =>
+            terminateNativeGuardian(
+              guardian,
+              owner.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1),
+            ),
+          () => terminateNativeFixture(owned),
+          () => terminateNativeFixture(work),
+        ]);
+        if (teardownComplete && errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
+        }
+        reportFixtureTeardown(errors, failure);
       }
-      const executed = nativeFixture(owned.pid, receipt.owners.split(",").at(-1));
-      assert.equal(executed.identity, owned.identity);
-      assert.equal(executed.ppid, 1);
-      assert.equal(executed.environmentVisible, false);
-      await owner.stop();
-      assert.equal(active(owned.pid), false, "Late orphan-then-exec must quiesce");
-    } finally {
-      writeFileSync(launch, "teardown");
-      writeFileSync(exec, "teardown");
-      await outcome;
-      await terminateNativeFixture(owned);
-      rmSync(root, { recursive: true, force: true });
-    }
-  },
-);
+    },
+  );
+}
 
-for (const nested of [false, true]) {
+for (const [nested, failAfterPublication] of [
+  [false, false],
+  [true, false],
+  [true, true],
+]) {
   test(
-    `unexpected ${nested ? "inner" : "direct"} guardian loss retains roots without false settlement`,
+    failAfterPublication
+      ? "nested native fixture preserves a post-publication failure through genuine owner teardown"
+      : `unexpected ${nested ? "inner" : "direct"} guardian loss retains roots without false settlement`,
     { skip: process.platform !== "darwin" },
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ps-guardian-loss-proof-"));
@@ -692,20 +920,21 @@ for (const nested of [false, true]) {
       const release = join(root, "release");
       const command = `
         /bin/sleep 180 </dev/null >/dev/null 2>&1 &
-        printf '{"child":%s,"guardian":%s,"root":"%s","owners":"%s"}\\n' "$!" "$PI_COMPAT_GUARDIAN_PID" "$PI_COMPAT_GUARDIAN_ROOT" "$PI_COMPAT_PROCESS_OWNERS" > '${ready}.tmp'
+        printf '{"child":%s,"work":%s,"guardian":%s,"root":"%s","owners":"%s"}\\n' "$!" "$$" "$PI_COMPAT_GUARDIAN_PID" "$PI_COMPAT_GUARDIAN_ROOT" "$PI_COMPAT_PROCESS_OWNERS" > '${ready}.tmp'
         /bin/mv '${ready}.tmp' '${ready}'
         while [ ! -f '${release}' ]; do :; done`;
       writeFileSync(
         join(root, "actor.mjs"),
         `
         import { run } from ${JSON.stringify(runner)};
-        import { writeFileSync } from "node:fs";
-        writeFileSync(${JSON.stringify(join(root, "outer.json"))}, JSON.stringify({ pid: Number(process.env.PI_COMPAT_GUARDIAN_PID) }));
+        import { existsSync, writeFileSync } from "node:fs";
+        writeFileSync(${JSON.stringify(join(root, "outer.json"))}, JSON.stringify({ pid: Number(process.env.PI_COMPAT_GUARDIAN_PID), work: process.pid, root: process.env.PI_COMPAT_GUARDIAN_ROOT }));
         try { await run("/bin/sh", ["-c", ${JSON.stringify(command)}], { quiet: true }); }
         catch (error) {
           writeFileSync(${JSON.stringify(join(root, "inner-failed.json"))}, JSON.stringify({ cleanupFailed: error.cleanupFailed }));
           process.exitCode = 23;
-        }`,
+        }
+        writeFileSync(${JSON.stringify(join(root, "consumer-returned.json"))}, JSON.stringify({ root: process.env.PI_COMPAT_GUARDIAN_ROOT, rootPresent: existsSync(process.env.PI_COMPAT_GUARDIAN_ROOT), pid: process.pid }));`,
       );
       const owner = new OwnedProcesses();
       const operation = nested
@@ -722,43 +951,141 @@ for (const nested of [false, true]) {
       );
       const fixtures = [];
       let receipt;
+      let outerGuardian;
+      let outerPublication;
+      let failure;
+      let stopAttempted = false;
+      let teardownComplete = false;
+      const originalFailure = new Error("Intentional nested fixture pre-transition failure");
+      const exercise = async () => {
+        try {
+          if (nested) {
+            outerPublication = await published(join(root, "outer.json"));
+            outerGuardian = nativeFixture(outerPublication.pid);
+            fixtures.push(nativeFixture(outerPublication.work), outerGuardian);
+          }
+          receipt = await published(ready);
+          const child = nativeFixture(receipt.child, receipt.owners.split(",").at(-1));
+          const guardian = nativeFixture(receipt.guardian);
+          fixtures.push(child, nativeFixture(receipt.work), guardian);
+          assert.equal(typeof receipt.root, "string");
+          assert.ok(receipt.root.length > 0, "WORK publishes the actual nonempty receipt root");
+          assert.equal(existsSync(receipt.root), true, "Actual receipt root exists at publication");
+          if (nested) {
+            assert.equal(
+              outerPublication.root,
+              receipt.root,
+              "Nested owners share the actual receipt root",
+            );
+          }
+          if (failAfterPublication) {
+            console.log(
+              `Native lifecycle publication: ${JSON.stringify({ case: "nested", root: receipt.root, fixtures })}`,
+            );
+            throw originalFailure;
+          }
+          assert.ok(child && guardian);
+          assert.equal(child.sid, guardian.pid);
+          assert.equal(child.environmentVisible, false);
+          assert.equal(guardian.sid, guardian.pid);
+          await terminateNativeFixture(guardian);
+          writeFileSync(release, "allow work exit");
+          assert.ok((await outcome).error instanceof Error);
+          if (nested) {
+            assert.equal((await published(join(root, "inner-failed.json"))).cleanupFailed, true);
+          }
+          stopAttempted = true;
+          await assert.rejects(owner.stop(), /guardian|quiesce/i);
+          assert.equal(
+            existsSync(receipt.root),
+            true,
+            "Unsettled private lifecycle receipts must survive",
+          );
+          assert.equal(active(child.pid), true, "Unproven protected SID must never become success");
+        } catch (error) {
+          failure = error;
+          throw error;
+        } finally {
+          const errors = await collectFixtureTeardown([
+            () => writeFileSync(release, "teardown"),
+            async () => {
+              await finishNativeOwner(owner, outcome, stopAttempted);
+              if (failAfterPublication) {
+                const returned = await published(join(root, "consumer-returned.json"));
+                assert.equal(
+                  returned.root,
+                  receipt.root,
+                  "Consumer return witnesses the published receipt root",
+                );
+                assert.equal(
+                  returned.rootPresent,
+                  true,
+                  "Inner consumer retains the real root through its return",
+                );
+                for (const entry of fixtures) {
+                  assert.equal(
+                    fixtureIdentity(entry.pid),
+                    undefined,
+                    "All native WORK/inner/outer lifetimes finish before fallback teardown",
+                  );
+                }
+              }
+            },
+          ]);
+          teardownComplete = errors.length === 0;
+          reportFixtureTeardown(errors, failure);
+        }
+      };
       try {
-        receipt = await published(ready);
-        const child = nativeFixture(receipt.child, receipt.owners.split(",").at(-1));
-        const guardian = nativeFixture(receipt.guardian);
-        fixtures.push(child, guardian);
-        assert.ok(child && guardian);
-        assert.equal(child.sid, guardian.pid);
-        assert.equal(child.environmentVisible, false);
-        assert.equal(guardian.sid, guardian.pid);
-        if (nested) {
-          fixtures.push(nativeFixture((await published(join(root, "outer.json"))).pid));
+        if (failAfterPublication) {
+          await assert.rejects(exercise, (error) => {
+            assert.equal(
+              error,
+              originalFailure,
+              "Teardown preserves the exact pre-transition error",
+            );
+            return true;
+          });
+          failure = undefined; // assert.rejects consumed the intentional failure, not outer cleanup.
+          assert.equal(teardownComplete, true, "Original error cannot hide a teardown failure");
+          console.log(
+            `Native lifecycle returned: ${JSON.stringify({ case: "nested", root: receipt.root, rootPresent: existsSync(receipt.root), guardian: fixtureIdentity(outerGuardian.pid) })}`,
+          );
+          assert.equal(
+            fixtureIdentity(outerGuardian.pid),
+            undefined,
+            "Genuine owner teardown releases the outer guardian",
+          );
+          assert.equal(
+            existsSync(receipt.root),
+            false,
+            "Healthy nested settlement removes its root",
+          );
+        } else {
+          await exercise();
         }
-        await terminateNativeFixture(guardian);
-        writeFileSync(release, "allow work exit");
-        assert.ok((await outcome).error instanceof Error);
-        if (nested) {
-          assert.equal((await published(join(root, "inner-failed.json"))).cleanupFailed, true);
-        }
-        await assert.rejects(owner.stop(), /guardian|quiesce/i);
-        assert.equal(
-          existsSync(receipt.root),
-          true,
-          "Unsettled private lifecycle receipts must survive",
-        );
-        assert.equal(active(child.pid), true, "Unproven protected SID must never become success");
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
-        writeFileSync(release, "teardown");
-        await outcome;
-        for (const entry of fixtures) {
-          // Each native fixture must be reaped before the next teardown signal.
-          // oxlint-disable-next-line no-await-in-loop
-          await terminateNativeFixture(entry);
+        const errors = await collectFixtureTeardown([
+          () =>
+            terminateNativeGuardian(
+              outerGuardian,
+              owner.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1),
+            ),
+          ...fixtures.map((entry) => () => terminateNativeFixture(entry)),
+        ]);
+        // A deliberately lost guardian never authenticates settlement. Retain
+        // its uncertain receipt root even after independent fixture reaping.
+        if (teardownComplete && errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
         }
-        if (receipt) {
-          rmSync(receipt.root, { recursive: true, force: true });
-        }
-        rmSync(root, { recursive: true, force: true });
+        reportFixtureTeardown(errors, failure);
       }
     },
   );
@@ -786,7 +1113,7 @@ for (const pauseQuery of [false, true]) {
       '${process.execPath}' '${join(root, "writer.mjs")}' </dev/null >/dev/null 2>&1 &
       while [ ! -f '${writerReady}' ]; do :; done
       /bin/sleep 180 </dev/null >/dev/null 2>&1 &
-      printf '{"child":%s,"guardian":%s,"root":"%s","owners":"%s"}\\n' "$!" "$PI_COMPAT_GUARDIAN_PID" "$PI_COMPAT_GUARDIAN_ROOT" "$PI_COMPAT_PROCESS_OWNERS" > '${ready}.tmp'
+      printf '{"child":%s,"work":%s,"guardian":%s,"root":"%s","owners":"%s"}\\n' "$!" "$$" "$PI_COMPAT_GUARDIAN_PID" "$PI_COMPAT_GUARDIAN_ROOT" "$PI_COMPAT_PROCESS_OWNERS" > '${ready}.tmp'
       /bin/mv '${ready}.tmp' '${ready}'
       while :; do :; done`;
       const wrapper = spawn(
@@ -806,11 +1133,18 @@ for (const pauseQuery of [false, true]) {
       let guardian;
       let writer;
       let foreign;
+      let work;
       let queryHelper;
+      let failure;
+      let stopAttempted = false;
+      let settledProof = false;
       try {
+        const writerReceipt = await published(writerReady);
+        writer = nativeFixture(writerReceipt.pid);
         receipt = await published(ready);
         child = nativeFixture(receipt.child, receipt.owners.split(",").at(-1));
         guardian = nativeFixture(receipt.guardian);
+        work = nativeFixture(receipt.work);
         assert.ok(child && guardian && wrapperIdentity);
         assert.equal(child.environmentVisible, false);
         assert.equal(child.sid, guardian.pid);
@@ -818,13 +1152,11 @@ for (const pauseQuery of [false, true]) {
         assert.equal(readChildProcessIdentity(wrapper.pid), wrapperIdentity);
         assert.equal(fixtureIdentity(wrapper.pid).identity, wrapperNative.identity);
         assert.equal(fixtureIdentity(wrapper.pid).uid, process.getuid());
-        const writerReceipt = await published(writerReady);
         assert.equal(
           writerReceipt.directory,
           null,
           "Ordinary work must not inherit guardian-internal authentication metadata",
         );
-        writer = nativeFixture(writerReceipt.pid);
         assert.ok(writer && !writer.exited);
         const unowned = { ...process.env };
         delete unowned.PI_COMPAT_PROCESS_OWNERS;
@@ -890,6 +1222,7 @@ for (const pauseQuery of [false, true]) {
         };
         let cleanupFailure;
         try {
+          stopAttempted = true;
           await outer.stop();
         } catch (error) {
           cleanupFailure = error;
@@ -932,18 +1265,36 @@ for (const pauseQuery of [false, true]) {
         assert.equal(settled.uid, guardian.uid);
         assert.equal(settled.identity, guardian.identity);
         assert.equal(active(child.pid), false);
+        settledProof = true;
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
-        await terminateNativeFixture(wrapperNative);
-        await exited;
-        await terminateNativeFixture(child);
-        await terminateNativeFixture(writer);
-        await terminateNativeFixture(queryHelper);
-        await terminateNativeFixture(guardian);
-        await terminateNativeFixture(foreign);
-        if (receipt) {
-          rmSync(receipt.root, { recursive: true, force: true });
+        const errors = await collectFixtureTeardown([
+          () => terminateNativeFixture(wrapperNative),
+          () => finishNativeOwner(outer, exited, stopAttempted),
+          () =>
+            terminateNativeGuardian(
+              guardian,
+              outer.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1),
+            ),
+          ...[child, work, writer, queryHelper, foreign].map(
+            (entry) => () => terminateNativeFixture(entry),
+          ),
+        ]);
+        if (errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => {
+                if (receipt && settledProof) {
+                  rmSync(receipt.root, { recursive: true, force: true });
+                }
+              },
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
         }
-        rmSync(root, { recursive: true, force: true });
+        reportFixtureTeardown(errors, failure);
       }
     },
   );
@@ -1435,8 +1786,8 @@ async function nativeExecFixture(root, owner, binary, argv, environment, name) {
     { env: owner.environment, detached: true, stdio: ["ignore", "ignore", "inherit", "pipe"] },
   );
   const native = nativeFixture(child.pid);
-  assert.ok(native && native.uid === process.getuid() && !native.exited);
   try {
+    assert.ok(native && native.uid === process.getuid() && !native.exited);
     const receipt = await published(publication);
     assert.equal(receipt.pid, child.pid);
     assert.equal(receipt.uid, native.uid);
@@ -1461,7 +1812,11 @@ async function nativeExecFixture(root, owner, binary, argv, environment, name) {
     assert.equal(current.sid, native.sid);
     return { child, native: current, receipt, target };
   } catch (error) {
-    await terminateNativeFixture(native);
+    try {
+      await terminateNativeFixture(native);
+    } catch (teardownError) {
+      reportFixtureTeardown([teardownError], error);
+    }
     throw error;
   }
 }
@@ -1523,6 +1878,8 @@ for (const mode of ["precut", "fresh-session", "caller-session", "owned-session"
         owner = new OwnedProcesses(mode === "owned-session" ? env : process.env);
       }
       let outcome;
+      let failure;
+      let stopAttempted = false;
       try {
         if (mode === "owned-session") {
           outcome = owner
@@ -1552,6 +1909,9 @@ for (const mode of ["precut", "fresh-session", "caller-session", "owned-session"
           assert.equal(publication.pid, child.pid);
         }
         native = nativeFixture(publication.pid);
+        if (mode === "owned-session") {
+          guardian = nativeFixture(native.sid);
+        }
         assert.equal(native.uid, process.getuid());
         assert.equal(native.exited, false);
         assert.throws(() => readFileSync(`/proc/${native.pid}/environ`), { code: "EACCES" });
@@ -1562,11 +1922,11 @@ for (const mode of ["precut", "fresh-session", "caller-session", "owned-session"
           owner = new OwnedProcesses();
         }
         if (mode === "owned-session") {
-          guardian = nativeFixture(native.sid);
           assert.notEqual(native.pid, guardian.pid);
           assert.equal(guardian.sid, guardian.pid);
           const result = await outcome;
           assert.equal(result.error.code, "ETIMEDOUT");
+          stopAttempted = true;
           await owner.stop();
           assert.equal(
             active(native.pid),
@@ -1586,6 +1946,7 @@ for (const mode of ["precut", "fresh-session", "caller-session", "owned-session"
           );
           const work = await published(join(root, "work.json"));
           guardian = nativeFixture(work.guardian);
+          stopAttempted = true;
           if (mode === "precut") {
             await stopWithoutForeignSignals(owner, native);
             assert.equal(existsSync(work.root), false);
@@ -1609,16 +1970,25 @@ for (const mode of ["precut", "fresh-session", "caller-session", "owned-session"
           assert.equal(live.sid, native.sid);
           assert.equal(live.exited, false, "Negative evidence never authorizes foreign signals");
           console.log(`Linux opaque survivor: ${JSON.stringify(live)}`);
-          await terminateNativeFixture(guardian);
-          rmSync(work.root, { recursive: true, force: true });
         }
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
-        await terminateNativeFixture(native);
-        await terminateNativeFixture(guardian);
-        if (outcome) {
-          await outcome;
+        const errors = await collectFixtureTeardown([
+          () => finishNativeOwner(owner, outcome, stopAttempted || !owner),
+          () => terminateNativeFixture(native),
+          () => terminateNativeFixture(guardian),
+        ]);
+        // Unknown or deliberately vetoed receipt roots remain diagnostic proof.
+        if (errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
         }
-        rmSync(root, { recursive: true, force: true });
+        reportFixtureTeardown(errors, failure);
       }
     },
   );
@@ -2059,6 +2429,8 @@ for (const forged of [false, true]) {
       let escape;
       let guardian;
       let actor;
+      let failure;
+      let stopAttempted = false;
       try {
         receipt = await published(ready);
         guardian = nativeFixture(receipt.guardian);
@@ -2120,6 +2492,7 @@ for (const forged of [false, true]) {
           assert.equal(genuine.processes[0].complete, true);
           assert.notEqual(genuine.processes[0].baselineHash, state.baselineHash);
         }
+        stopAttempted = true;
         await assert.rejects(owner.stop(), /retain private roots/);
         const deadline = Date.now() + 13000;
         const expected = forged
@@ -2138,19 +2511,31 @@ for (const forged of [false, true]) {
           JSON.parse(readFileSync(join(receipt.directory, "state.json"), "utf8")).state,
           "ready",
         );
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
-        writeFileSync(go, "teardown");
-        await outcome;
-        for (const entry of [escape, actor, guardian]) {
-          // Reap only independently authenticated fixture incarnations.
-          // oxlint-disable-next-line no-await-in-loop
-          await terminateNativeFixture(entry);
+        const errors = await collectFixtureTeardown([
+          () => writeFileSync(go, "teardown"),
+          () => finishNativeOwner(owner, outcome, stopAttempted),
+          () =>
+            terminateNativeGuardian(
+              guardian,
+              owner.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1),
+            ),
+          ...[escape, actor, guardian].map((entry) => () => terminateNativeFixture(entry)),
+          () => closeSync(fd),
+        ]);
+        // Failed original-cut authentication is never settlement, even after
+        // fixture reaping. Keep its actual receipt root for diagnosis.
+        if (errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
         }
-        closeSync(fd);
-        if (receipt) {
-          rmSync(receipt.receiptRoot, { recursive: true, force: true });
-        }
-        rmSync(root, { recursive: true, force: true });
+        reportFixtureTeardown(errors, failure);
       }
     },
   );

@@ -66,6 +66,22 @@ OWNER, a changed UID or an established foreign service boundary requires stronge
 The keeper isolates its destructive fixtures from inherited receipt placement while retaining enclosing
 OWNER tokens, and verifies both ordinary and genuinely nested execution.
 
+Keeper publication registers WORK and nested guardians before assertions. An early fixture failure
+still completes the healthy owner's actual stop/release after gates open and command return; a lost
+guardian is not settlement, so uncertain receipt roots remain diagnostic evidence. Teardown attempts
+all registered fixture reaping, collects failures and reports them once without replacing the original
+error; without an unconsumed original failure, cleanup errors fail the row. Darwin fallback observes
+the stopped guardian before discovering live authenticated query consumers; protected WORK and exited
+children do not grant query signal authority. Receipt-root removal assertions first prove the actual
+nonempty root exists, and nested return witnesses bind to that same root. Native query children are
+birth/UID-bound and reaped before any manual removal of a proven settled root.
+
+Darwin protected-environment omission depends on the actual host and observer privileges, not an
+Apple binary pathname. Local keeper passes do not qualify a remote runner's omission behavior.
+Qualification must preserve the protected argv-alignment/empty-argv expectations and independently
+establish native OWNER omission; a host exposing that environment requires provisioning, not weaker
+expectations, erased OWNER, synthetic bytes or changed cleanup deadlines.
+
 ## Coverage
 
 The scope owner is `scripts/quality-scope.mjs`. Its inventory is Git-maintained code, including new
