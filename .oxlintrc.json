@@ -11584,6 +11584,8 @@
         "scripts/compat-process-receipt.mjs",
         "scripts/compat-process.mjs",
         "scripts/generate-run-schemas.mjs",
+        "scripts/intercom-bridge-credentials.mjs",
+        "scripts/intercom-remote.mjs",
         "scripts/local-install-smoke.mjs",
         "scripts/native-package-smoke.mjs",
         "scripts/package-smoke.mjs",

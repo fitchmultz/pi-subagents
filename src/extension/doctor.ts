@@ -3,7 +3,7 @@ import type { ReadonlyInput } from "../shared/types/inputs.ts";
 import { errorMessage } from "../shared/unknown.ts";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { VERSION as PI_VERSION, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { VERSION as PI_SDK_VERSION, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { EXTENSION_BUILD } from "./build-info.ts";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
@@ -32,7 +32,7 @@ interface DoctorReportInput {
   projectTrusted?: boolean;
 }
 
-const PI_PACKAGE_DIR = getPackageDir();
+const PI_SDK_RESOURCE_DIR = getPackageDir();
 const EXTENSION_MODULE = fileURLToPath(import.meta.url);
 
 function errorText(error: unknown): string {
@@ -183,8 +183,8 @@ export function buildDoctorReport(input: ReadonlyInput<DoctorReportInput>): stri
       : []),
     `- Node: ${process.version}`,
     `- process: ${process.pid} (${process.execPath})`,
-    `- loaded Pi version: ${PI_VERSION}`,
-    `- Pi package directory: ${PI_PACKAGE_DIR} (Pi resource path; may be overridden)`,
+    `- imported Pi SDK version: ${PI_SDK_VERSION} (not proof of the executing CLI version)`,
+    `- Pi SDK resource directory: ${PI_SDK_RESOURCE_DIR} (may be overridden; not executable provenance)`,
     "- native queue contract: not verified (version alone does not identify fork patches)",
     `- loaded pi-subagents build: ${formatBuild()}`,
     `- extension module: ${EXTENSION_MODULE}`,

@@ -256,8 +256,14 @@ describe("doctor action executor routing", () => {
       );
       assert.ok(text.includes(`- Node: ${process.version}`));
       assert.ok(text.includes(`- process: ${process.pid} (${process.execPath})`));
-      assert.match(text, /- loaded Pi version: \S+/);
-      assert.match(text, /- Pi package directory:/);
+      assert.match(
+        text,
+        /- imported Pi SDK version: \S+ \(not proof of the executing CLI version\)/,
+      );
+      assert.match(
+        text,
+        /- Pi SDK resource directory: .* \(may be overridden; not executable provenance\)/,
+      );
       assert.match(text, /- native queue contract: not verified/);
       assert.match(text, /- loaded pi-subagents build: unknown \(unbuilt source\)/);
       assert.doesNotMatch(text, /wiring: active/);
