@@ -60,7 +60,7 @@ function verifyAcceptanceFailures() {
     if (baseline.status !== 0) {
       throw new Error(`Clean integrated acceptance must pass before sabotage verification: ${log}`);
     }
-    sabotage(directory, "syntactic", "export {};\ndebugger;\n", /no-debugger/);
+    sabotage(directory, "syntactic", "debugger;\n", /no-debugger/);
     sabotage(
       directory,
       "semantic",
