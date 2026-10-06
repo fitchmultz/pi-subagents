@@ -6,6 +6,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+extern char **environ;
 
 static int publish_receipt(const char *path, const char *owner) {
   size_t size = strlen(path) + sizeof(".tmp");
@@ -26,7 +30,17 @@ int main(int argc, char **argv) {
   const char *hold = getenv("FIXTURE_HOLD");
   if (!hold && argc >= 3 && !strcmp(argv[argc - 2], "--hold")) hold = argv[argc - 1];
   if (hold) {
+#ifdef __linux__
+    /* Publish only after the real kernel denies same-UID environ readers. */
+    if (getenv("FIXTURE_NONDUMPABLE") && prctl(PR_SET_DUMPABLE, 0)) return 23;
+#endif
     const char *ready = getenv("FIXTURE_READY");
+    if (getenv("FIXTURE_TRUNCATE")) {
+      /* Keep the kernel env extent but corrupt its final NUL, not a mock read. */
+      char **last = environ;
+      while (last[1]) last++;
+      last[0][strlen(last[0])] = 'X';
+    }
     if (ready) {
       int result = publish_receipt(ready, getenv("PI_COMPAT_PROCESS_OWNERS"));
       if (result) return 20 + result;
@@ -56,6 +70,9 @@ int main(int argc, char **argv) {
       env[i] = malloc(size);
       if (!env[i]) return 7;
       snprintf(env[i], size, "PI_COMPAT_PROCESS_OWNERS=%s", owner);
+    } else if (!strcmp(entry, "@INVALID_DIRECTORY")) {
+      env[i] = strdup("PI_COMPAT_GUARDIAN_DIRECTORY=\xff");
+      if (!env[i]) return 7;
     } else env[i] = (char *)entry;
   }
   int result = publish_receipt(argv[1], owner);

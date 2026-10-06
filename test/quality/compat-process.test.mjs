@@ -10,6 +10,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -67,9 +68,13 @@ function fixtureIdentity(pid) {
     try {
       const text = readFileSync(`/proc/${pid}/stat`, "utf8");
       const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+      const uids = readFileSync(`/proc/${pid}/status`, "utf8").match(
+        /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/m,
+      );
+      assert.ok(uids, "Kernel status publishes actual process credentials");
       return {
         pid,
-        uid: statSync(`/proc/${pid}`).uid,
+        uid: Number(uids[2]),
         ppid: Number(fields[1]),
         pgid: Number(fields[2]),
         sid: Number(fields[3]),
@@ -1438,6 +1443,11 @@ async function nativeExecFixture(root, owner, binary, argv, environment, name) {
     assert.equal(receipt.sid, native.sid);
     assert.equal(receipt.owners, owner.environment.PI_COMPAT_PROCESS_OWNERS);
     child.stdio[3].end("x"); // The C fixture reads exactly one acknowledgement byte.
+    const targetReady = environment.find((entry) => entry.startsWith("FIXTURE_READY="));
+    const target =
+      targetReady === undefined
+        ? undefined
+        : await published(targetReady.slice("FIXTURE_READY=".length));
     const deadline = Date.now() + 5000;
     while (fixtureArgumentCount(child.pid) !== argv.length) {
       assert.ok(Date.now() < deadline, "Actual execve argv was not published by the kernel");
@@ -1449,21 +1459,199 @@ async function nativeExecFixture(root, owner, binary, argv, environment, name) {
     assert.equal(current.identity, native.identity);
     assert.equal(current.uid, native.uid);
     assert.equal(current.sid, native.sid);
-    return { child, native: current, receipt };
+    return { child, native: current, receipt, target };
   } catch (error) {
     await terminateNativeFixture(native);
     throw error;
   }
 }
 
-test("native exec table distinguishes protected omissions from complete empty argv and empty environments", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ps-native-exec-proof-"));
+function compileNativeExec(root) {
   const launcher = join(root, "native-exec");
   const source = new URL("./fixtures/native-exec.c", import.meta.url).pathname;
   const compiled = spawnSync("cc", ["-Wall", "-Wextra", "-Werror", source, "-o", launcher], {
     encoding: "utf8",
   });
   assert.equal(compiled.status, 0, compiled.stderr);
+  return launcher;
+}
+
+async function stopWithoutForeignSignals(owner, foreign) {
+  const originalKill = process.kill;
+  const attempts = [];
+  process.kill = (pid, signal) => {
+    if (pid === foreign.pid && signal !== 0) {
+      attempts.push({ ...fixtureIdentity(pid), signal });
+    }
+    return originalKill(pid, signal);
+  };
+  try {
+    await owner.stop();
+  } finally {
+    process.kill = originalKill;
+    console.log(`Linux foreign signal attempts: ${JSON.stringify(attempts)}`);
+    assert.deepEqual(attempts, [], "An opaque foreign process must never receive a signal");
+  }
+}
+
+for (const mode of ["precut", "fresh-session", "caller-session", "owned-session"]) {
+  test(
+    `Linux non-dumpable ${mode} preserves native cleanup boundaries`,
+    { skip: process.platform !== "linux" },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ps-linux-opaque-proof-"));
+      const launcher = compileNativeExec(root);
+      const fifo = join(root, "hold");
+      assert.equal(spawnSync("/usr/bin/mkfifo", [fifo]).status, 0);
+      const ready = join(root, "ready.json");
+      const env = { ...process.env, FIXTURE_NONDUMPABLE: "1", FIXTURE_READY: ready };
+      for (const key of [
+        "PI_COMPAT_PROCESS_OWNERS",
+        "PI_COMPAT_GUARDIAN_ROOT",
+        "PI_COMPAT_GUARDIAN_PID",
+        "PI_COMPAT_GUARDIAN_DIRECTORY",
+        "PI_COMPAT_BASELINE_HASH",
+      ]) {
+        delete env[key];
+      }
+      let owner;
+      let child;
+      let native;
+      let guardian;
+      let publication;
+      if (mode !== "precut") {
+        owner = new OwnedProcesses(mode === "owned-session" ? env : process.env);
+      }
+      let outcome;
+      try {
+        if (mode === "owned-session") {
+          outcome = owner
+            .execute(
+              launcher,
+              ["--hold", fifo],
+              {
+                env,
+                quiet: true,
+                timeout: 1000,
+              },
+              new AbortController().signal,
+            )
+            .then(
+              (output) => ({ output }),
+              (error) => ({ error }),
+            );
+        } else {
+          child = spawn(launcher, ["--hold", fifo], {
+            env,
+            detached: mode !== "caller-session",
+            stdio: "ignore",
+          });
+        }
+        publication = await published(ready);
+        if (child) {
+          assert.equal(publication.pid, child.pid);
+        }
+        native = nativeFixture(publication.pid);
+        assert.equal(native.uid, process.getuid());
+        assert.equal(native.exited, false);
+        assert.throws(() => readFileSync(`/proc/${native.pid}/environ`), { code: "EACCES" });
+        console.log(
+          `Linux non-dumpable precondition: ${JSON.stringify({ ...native, kernelUidRow: readFileSync(`/proc/${native.pid}/status`, "utf8").match(/^Uid:.*$/m)[0], procUid: statSync(`/proc/${native.pid}`).uid, environUid: statSync(`/proc/${native.pid}/environ`).uid, error: "EACCES" })}`,
+        );
+        if (mode === "precut") {
+          owner = new OwnedProcesses();
+        }
+        if (mode === "owned-session") {
+          guardian = nativeFixture(native.sid);
+          assert.notEqual(native.pid, guardian.pid);
+          assert.equal(guardian.sid, guardian.pid);
+          const result = await outcome;
+          assert.equal(result.error.code, "ETIMEDOUT");
+          await owner.stop();
+          assert.equal(
+            active(native.pid),
+            false,
+            "Opaque members of an admitted live SID remain owned",
+          );
+        } else {
+          // Allocate a real guardian/root before the negative cleanup transition.
+          await owner.execute(
+            process.execPath,
+            [
+              "-e",
+              `require("node:fs").writeFileSync(${JSON.stringify(join(root, "work.json"))}, JSON.stringify({ root: process.env.PI_COMPAT_GUARDIAN_ROOT, guardian: Number(process.env.PI_COMPAT_GUARDIAN_PID) }))`,
+            ],
+            { quiet: true },
+            new AbortController().signal,
+          );
+          const work = await published(join(root, "work.json"));
+          guardian = nativeFixture(work.guardian);
+          if (mode === "precut") {
+            await stopWithoutForeignSignals(owner, native);
+            assert.equal(existsSync(work.root), false);
+          } else {
+            await assert.rejects(stopWithoutForeignSignals(owner, native), (error) => {
+              assert.match(
+                error.cause.message,
+                new RegExp(`Unanchored opaque native process ${native.pid} `),
+              );
+              return true;
+            });
+            assert.equal(
+              existsSync(work.root),
+              true,
+              "Fresh unknown opacity retains the real private root",
+            );
+          }
+          const live = fixtureIdentity(native.pid);
+          assert.equal(live.identity, native.identity);
+          assert.equal(live.uid, native.uid);
+          assert.equal(live.sid, native.sid);
+          assert.equal(live.exited, false, "Negative evidence never authorizes foreign signals");
+          console.log(`Linux opaque survivor: ${JSON.stringify(live)}`);
+          await terminateNativeFixture(guardian);
+          rmSync(work.root, { recursive: true, force: true });
+        }
+      } finally {
+        await terminateNativeFixture(native);
+        await terminateNativeFixture(guardian);
+        if (outcome) {
+          await outcome;
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
+function nativeExecEnvironment(root, row) {
+  if (!row.libcOwner && !row.uncertainty) {
+    return row.environment;
+  }
+  return [
+    ...row.environment,
+    `FIXTURE_READY=${join(root, `${row.name}-target.json`)}`,
+    "FIXTURE_END=1",
+  ];
+}
+
+function assertNativeExecTarget(row, executed, owner) {
+  if (!row.libcOwner && !row.uncertainty) {
+    return;
+  }
+  const target = executed.target;
+  assert.equal(target.pid, executed.native.pid);
+  assert.equal(target.uid, process.getuid());
+  assert.equal(target.sid, executed.native.sid);
+  assert.equal(
+    target.owners,
+    row.libcOwner === "foreign" ? "foreign" : owner.environment.PI_COMPAT_PROCESS_OWNERS,
+  );
+}
+
+test("native exec table distinguishes protected omissions from complete empty argv and empty environments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ps-native-exec-proof-"));
+  const launcher = compileNativeExec(root);
   const fifo = join(root, "hold");
   assert.equal(spawnSync("/usr/bin/mkfifo", [fifo]).status, 0);
   const owner = new OwnedProcesses();
@@ -1573,11 +1761,41 @@ test("native exec table distinguishes protected omissions from complete empty ar
       environment: ["@OWNER", "PI_COMPAT_BASELINE_HASH=first", "PI_COMPAT_BASELINE_HASH=second"],
       uncertainty: "Duplicate native baseline hash",
     },
+    {
+      name: "invalid-directory-utf8",
+      binary: launcher,
+      argv: [launcher, "--hold", fifo],
+      environment: ["@OWNER", "@INVALID_DIRECTORY"],
+      uncertainty: "The encoded data was not valid for encoding utf-8",
+      linuxOnly: true,
+    },
+    {
+      name: "truncated-environment",
+      binary: launcher,
+      argv: [launcher, "--hold", fifo],
+      environment: ["@OWNER", "FIXTURE_TRUNCATE=1"],
+      uncertainty: "Incomplete native environment snapshot",
+      linuxOnly: true,
+    },
+    {
+      name: "oversized-environment",
+      binary: launcher,
+      argv: [launcher, "--hold", fifo],
+      environment: [
+        "@OWNER",
+        ...Array.from({ length: 9 }, (_, index) => `PAYLOAD_${index}=${"x".repeat(120000)}`),
+      ],
+      uncertainty: "Native environment exceeds the native-response bound",
+      linuxOnly: true,
+    },
   );
   try {
     for (const row of rows) {
-      if (process.platform !== "darwin" && (row.opaque || row.uncertainty)) {
-        continue; // Protected omissions and internal digest ambiguity are Darwin contracts.
+      if (
+        (process.platform !== "darwin" && row.opaque) ||
+        (process.platform !== "linux" && row.linuxOnly)
+      ) {
+        continue; // Protected omissions are Darwin-only; procfs byte corruption is Linux-only.
       }
       // Each fixture owns a FIFO/exec lifetime and must finish before the next.
       // oxlint-disable-next-line no-await-in-loop
@@ -1586,30 +1804,17 @@ test("native exec table distinguishes protected omissions from complete empty ar
         owner,
         row.binary,
         row.argv,
-        row.libcOwner
-          ? [...row.environment, `FIXTURE_READY=${join(root, `${row.name}-target.json`)}`]
-          : row.environment,
+        nativeExecEnvironment(root, row),
         row.name,
       );
       try {
-        if (row.libcOwner) {
-          // Actual libc getenv observes this hand-built envp before the next exec.
-          // oxlint-disable-next-line no-await-in-loop
-          const target = await published(join(root, `${row.name}-target.json`));
-          assert.equal(target.pid, executed.native.pid);
-          assert.equal(target.uid, process.getuid());
-          assert.equal(target.sid, executed.native.sid);
-          assert.equal(
-            target.owners,
-            row.libcOwner === "token" ? owner.environment.PI_COMPAT_PROCESS_OWNERS : "foreign",
-          );
-        }
+        assertNativeExecTarget(row, executed, owner);
         const snapshot = processSnapshot(token, executed.native.pid, Date.now() + 3000);
         if (row.uncertainty) {
           assert.equal(snapshot.uncertainties.length, 1, row.name);
           assert.equal(snapshot.uncertainties[0].pid, executed.native.pid);
           assert.equal(snapshot.uncertainties[0].identity, executed.native.identity);
-          assert.equal(snapshot.uncertainties[0].message, row.uncertainty);
+          assert.equal(snapshot.uncertainties[0].message, row.uncertainty, row.name);
           assert.equal(active(executed.native.pid), true);
           continue;
         }
@@ -1645,12 +1850,17 @@ test("native exec table distinguishes protected omissions from complete empty ar
 
 test(
   "a surviving pre-WORK nonleader reserves a foreign session without granting signal authority",
-  { skip: process.platform !== "darwin" },
+  {},
   async () => {
     const root = mkdtempSync(join(tmpdir(), "ps-foreign-reservation-proof-"));
     const ready = join(root, "anchor.json");
     const childReady = join(root, "child.json");
     const launch = join(root, "launch");
+    const launcher = process.platform === "linux" ? compileNativeExec(root) : undefined;
+    const fifo = join(root, "hold");
+    if (launcher) {
+      assert.equal(spawnSync("/usr/bin/mkfifo", [fifo]).status, 0);
+    }
     const env = { ...process.env };
     for (const key of [
       "PI_COMPAT_PROCESS_OWNERS",
@@ -1664,8 +1874,12 @@ test(
     const anchorCommand = `
       printf '{"pid":%s,"owners":"%s"}' "$$" "\${PI_COMPAT_PROCESS_OWNERS:-}" > '${ready}'
       while [ ! -f '${launch}' ]; do :; done
-      /bin/sleep 180 </dev/null >/dev/null 2>&1 &
-      printf '{"pid":%s}' "$!" > '${childReady}'
+      ${
+        launcher
+          ? `FIXTURE_NONDUMPABLE=1 FIXTURE_READY='${childReady}' '${launcher}' --hold '${fifo}' </dev/null >/dev/null 2>&1 &`
+          : `/bin/sleep 180 </dev/null >/dev/null 2>&1 &
+      printf '{"pid":%s}' "$!" > '${childReady}'`
+      }
       while :; do :; done`;
     const script = join(root, "anchor.sh");
     writeFileSync(script, anchorCommand);
@@ -1696,6 +1910,9 @@ test(
       child = nativeFixture((await published(childReady)).pid);
       assert.equal(child.sid, anchor.sid);
       assert.equal(child.uid, process.getuid());
+      if (process.platform === "linux") {
+        assert.throws(() => readFileSync(`/proc/${child.pid}/environ`), { code: "EACCES" });
+      }
       const snapshot = processSnapshot(
         owner.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1),
         child.pid,
@@ -1767,7 +1984,7 @@ test(
 for (const forged of [false, true]) {
   test(
     `${forged ? "forged baseline pair is rejected" : "original pre-WORK cut vetoes an opaque escape"} on normal borrow and disconnect rescue`,
-    { skip: process.platform !== "darwin" },
+    {},
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ps-original-cut-proof-"));
       const ready = join(root, "ready.json");
@@ -1776,6 +1993,14 @@ for (const forged of [false, true]) {
       const borrow = join(root, "borrow.json");
       const log = join(root, "rescue.log");
       const fd = openSync(log, "w");
+      const launcher = process.platform === "linux" ? compileNativeExec(root) : undefined;
+      const fifo = join(root, "hold");
+      if (launcher) {
+        assert.equal(spawnSync("/usr/bin/mkfifo", [fifo]).status, 0);
+      }
+      const escapeLaunch = launcher
+        ? `spawn(${JSON.stringify(launcher)}, ["--hold", ${JSON.stringify(fifo)}], { env: { ...process.env, FIXTURE_NONDUMPABLE: "1", FIXTURE_READY: ${JSON.stringify(escapeReady)} }, detached: true, stdio: "ignore" })`
+        : `spawn("/bin/sh", ["-c", ${JSON.stringify(`printf '{"pid":%s,"owners":"%s"}' "$$" "$PI_COMPAT_PROCESS_OWNERS" > '${escapeReady}'; while :; do :; done`)}], { detached: true, stdio: "ignore" })`;
       writeFileSync(
         join(root, "actor.mjs"),
         `
@@ -1785,7 +2010,7 @@ for (const forged of [false, true]) {
         import { join } from "node:path";
         import { setTimeout as delay } from "node:timers/promises";
         import { OwnedProcesses } from ${JSON.stringify(runner)};
-        const escape = spawn("/bin/sh", ["-c", ${JSON.stringify(`printf '{"pid":%s,"owners":"%s"}' "$$" "$PI_COMPAT_PROCESS_OWNERS" > '${escapeReady}'; while :; do :; done`)}], { detached: true, stdio: "ignore" });
+        const escape = ${escapeLaunch};
         escape.unref();
         const receiptRoot = process.env.PI_COMPAT_GUARDIAN_ROOT;
         const guardian = Number(process.env.PI_COMPAT_GUARDIAN_PID);
@@ -1843,10 +2068,14 @@ for (const forged of [false, true]) {
         assert.equal(inherited.owners, owner.environment.PI_COMPAT_PROCESS_OWNERS);
         assert.equal(escape.uid, process.getuid());
         assert.equal(escape.sid, escape.pid);
-        assert.equal(
-          fixtureEnvironmentVisible(escape.pid, inherited.owners.split(",").at(-1)),
-          false,
-        );
+        if (process.platform === "linux") {
+          assert.throws(() => readFileSync(`/proc/${escape.pid}/environ`), { code: "EACCES" });
+        } else {
+          assert.equal(
+            fixtureEnvironmentVisible(escape.pid, inherited.owners.split(",").at(-1)),
+            false,
+          );
+        }
         assert.equal(receipt.internalHash, null);
         assert.equal(receipt.internalDirectory, null);
         const baseline = JSON.parse(readFileSync(join(receipt.directory, "baseline.json"), "utf8"));
@@ -1939,7 +2168,7 @@ for (const [mode, forgery] of [
     forgery
       ? `NO-WORK ${mode} rejects forged ${forgery} despite matching native PID and UID`
       : `genuine NO-WORK ${mode} disconnect publishes native settlement before root removal`,
-    { skip: forgery === "baselineHash" && process.platform !== "darwin" },
+    {},
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ps-no-work-proof-"));
       const ready = join(root, "ready.json");
@@ -1975,7 +2204,7 @@ for (const [mode, forgery] of [
           const native = JSON.parse(readFileSync(${JSON.stringify(release)}, "utf8"));
           const forged = { pid: native.pid, uid: native.uid, sid: native.sid, identity: native.identity,
             owners: publication.owners, capability: basename(directory), state: "ready", rescuing: false,
-            ...(process.platform === "darwin" ? { baselineHash: createHash("sha256").update(readFileSync(join(directory, "baseline.json"))).digest("hex") } : {}) };
+            baselineHash: createHash("sha256").update(readFileSync(join(directory, "baseline.json"))).digest("hex") };
           const field = ${JSON.stringify(forgery)};
           if (field === "identity") forged.identity = process.platform === "darwin" ? "AAAAAAAAAAAAAAAAAAAAAA==" : "0";
           if (field === "sid") forged.sid = process.pid;
@@ -2011,7 +2240,8 @@ for (const [mode, forgery] of [
         assert.equal(guardian.sid, guardian.pid);
         assert.equal(guardian.pgid, guardian.pid);
         assert.equal(guardian.exited, false);
-        writeFileSync(release, JSON.stringify(guardian));
+        writeFileSync(`${release}.tmp`, JSON.stringify(guardian));
+        renameSync(`${release}.tmp`, release);
         assert.equal((await outcome).error, undefined);
         if (forgery) {
           await assertRejectedNoWork(outer, receipt, guardian, failure, forgery);
@@ -2107,19 +2337,15 @@ async function assertNoWorkSettlement(outer, receipt, guardian, root) {
   assert.equal(settled.rescuing, receipt.admitted !== null);
   assert.deepEqual(settled.owners, receipt.owners);
   assert.ok(settled.owners.includes(outer.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1)));
-  if (process.platform === "darwin") {
-    assert.equal(
-      createHash("sha256")
-        .update(readFileSync(join(receipt.directory, "baseline.json")))
-        .digest("hex"),
-      settled.baselineHash,
-    );
-  }
+  assert.equal(
+    createHash("sha256")
+      .update(readFileSync(join(receipt.directory, "baseline.json")))
+      .digest("hex"),
+    settled.baselineHash,
+  );
   if (receipt.admitted) {
     assert.equal(receipt.admitted.identity, settled.identity);
-    if (process.platform === "darwin") {
-      assert.equal(receipt.admitted.baselineHash, settled.baselineHash);
-    }
+    assert.equal(receipt.admitted.baselineHash, settled.baselineHash);
   }
   while (fixturePresent(settled.pid)) {
     assert.ok(Date.now() < deadline, "Settled no-work guardian did not exit");

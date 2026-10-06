@@ -114,7 +114,7 @@ export class OwnedProcesses {
     this.#receiptRoot = env[GUARDIAN_ROOT] ?? process.env[GUARDIAN_ROOT];
     // Capture before environment exposure. Rescue instead imports the original
     // cut through inherit(), never a fresh post-escape baseline.
-    if (process.platform === "darwin" && arguments.length < 2) {
+    if (arguments.length < 2) {
       this.#setBaseline(captureBaseline());
     }
   }
@@ -130,14 +130,12 @@ export class OwnedProcesses {
     if (!guardian) {
       throw new Error("Inherited compatibility root requires a live authenticated guardian");
     }
-    if (process.platform === "darwin") {
-      if (guardian.pid === process.pid && process.env[BASELINE_HASH] !== guardian.baselineHash) {
-        throw new Error("Guardian original baseline digest changed");
-      }
-      this.#setBaseline(readBaseline(guardian.directory, guardian.baselineHash));
-      if (this.#serializedBaseline.hash !== guardian.baselineHash) {
-        throw new Error("Original baseline does not round-trip");
-      }
+    if (guardian.pid === process.pid && process.env[BASELINE_HASH] !== guardian.baselineHash) {
+      throw new Error("Guardian original baseline digest changed");
+    }
+    this.#setBaseline(readBaseline(guardian.directory, guardian.baselineHash));
+    if (this.#serializedBaseline.hash !== guardian.baselineHash) {
+      throw new Error("Original baseline does not round-trip");
     }
     this.#enclosures.set(guardian.pid, guardian);
     this.#borrowed.add(guardian.pid);
@@ -155,10 +153,8 @@ export class OwnedProcesses {
       [GUARDIAN_ROOT]: this.#receiptRoot,
       [GUARDIAN_DIRECTORY]: directory,
     };
-    if (this.#serializedBaseline) {
-      publishBaseline(directory, this.#serializedBaseline);
-      environment[BASELINE_HASH] = this.#serializedBaseline.hash;
-    }
+    publishBaseline(directory, this.#serializedBaseline);
+    environment[BASELINE_HASH] = this.#serializedBaseline.hash;
     return environment;
   }
   #admit(pid, directory) {
@@ -183,7 +179,7 @@ export class OwnedProcesses {
       capability: directory.split("/").at(-1),
       state: "ready",
       rescuing: false,
-      ...(this.#serializedBaseline ? { baselineHash: this.#serializedBaseline.hash } : {}),
+      baselineHash: this.#serializedBaseline.hash,
     });
     this.#enclosures.set(pid, admittedGuardian(entry, directory, [this.#token], receipt));
   }
@@ -294,9 +290,6 @@ export class OwnedProcesses {
   // ponytail: anchored foreign namespaces remain the service boundary, including
   // explicit OWNER transfer into them. Universal containment needs an OS sandbox.
   #unanchoredOpaque(snapshot, receipts) {
-    if (!this.#baseline) {
-      return [];
-    }
     const live = new Set(snapshot.identities.filter((entry) => !entry.exited).map(birthKey));
     const exact = new Set();
     const sessions = new Set();

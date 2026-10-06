@@ -55,7 +55,10 @@ immutable fork metadata before settlement; existing receipts enter rescue phase 
 Mismatched metadata retains the live reservation and private roots. Ordinary WORK cannot exempt itself
 by copying the guardian directory or baseline hash.
 
-On macOS, the original pre-WORK native cut is digest-bound to the live guardian. Unknown opaque work
+On Linux and macOS, the original pre-WORK native cut is digest-bound to the live guardian. Linux
+uses the kernel's actual effective UID, not proc-directory ownership (which can change for non-dumpable
+processes). Stable same-UID denied environments are opaque, not signal authority; other native errors
+and unstable incarnations remain uncertainties. Unknown opaque work
 with neither an exact pre-WORK birth nor a still-reserved foreign SID vetoes success without being
 signalled. Exact OWNER entries outside a trustworthy environment boundary also veto success; they are
 not argv-based ownership. This is not an adversarial sandbox. An intentional new session with erased

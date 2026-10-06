@@ -61,7 +61,7 @@ function nativeSelfAdmission() {
     capability: basename(directory),
     state: "ready",
     rescuing: false,
-    ...(process.platform === "darwin" ? { baselineHash: process.env[BASELINE_HASH] } : {}),
+    baselineHash: process.env[BASELINE_HASH],
   };
 }
 let started = false;

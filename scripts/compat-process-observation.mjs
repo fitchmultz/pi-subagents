@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs";
 import { darwinSnapshot } from "./compat-process-darwin.mjs";
 
 export const OWNER = "PI_COMPAT_PROCESS_OWNERS";
@@ -9,20 +9,51 @@ export const GUARDIAN_PID = "PI_COMPAT_GUARDIAN_PID";
 export const BASELINE_HASH = "PI_COMPAT_BASELINE_HASH";
 
 function linuxIdentity(pid) {
-  const base = `/proc/${pid}`;
+  // Pin this proc inode while reading credentials and birth; a reused numeric
+  // PID must not splice another process's status into the original stat.
+  const fd = openSync(`/proc/${pid}`, "r");
+  try {
+    return linuxIdentityAt(pid, `/proc/self/fd/${fd}`);
+  } finally {
+    closeSync(fd);
+  }
+}
+function linuxIdentityAt(pid, base) {
   const stat = readFileSync(`${base}/stat`, "utf8");
   const fields = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
+  // Proc metadata ownership can change for non-dumpable processes without a
+  // credential change. Kernel status supplies the actual effective UID.
+  const uids = readFileSync(`${base}/status`, "utf8").match(/^Uid:\s+\d+\s+(\d+)\s+\d+\s+\d+$/m);
+  if (!uids || !Number.isSafeInteger(Number(uids[1]))) {
+    throw new Error(`Invalid native credentials for PID ${pid}`);
+  }
   return {
     pid,
-    uid: statSync(base).uid,
+    uid: Number(uids[1]),
     exited: ["Z", "X"].includes(fields[0]),
     pgid: Number(fields[2]),
     sid: Number(fields[3]),
     identity: fields[19],
   };
 }
+function linuxEnvironment(pid) {
+  const fd = openSync(`/proc/${pid}/environ`, "r");
+  try {
+    const raw = Buffer.alloc(1024 * 1024 + 1);
+    const length = readSync(fd, raw);
+    if (length === raw.length || readSync(fd, Buffer.alloc(1)) !== 0) {
+      throw new Error("Native environment exceeds the native-response bound");
+    }
+    if (length !== 0 && raw[length - 1] !== 0) {
+      throw new Error("Incomplete native environment snapshot");
+    }
+    return raw.subarray(0, length);
+  } finally {
+    closeSync(fd);
+  }
+}
 function linuxReceipt(pid, tokens) {
-  const entries = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+  const entries = linuxEnvironment(pid).toString("latin1").split("\0");
   const owned = entries.some(
     (entry) =>
       entry.startsWith(`${OWNER}=`) &&
@@ -36,11 +67,23 @@ function linuxReceipt(pid, tokens) {
   if (!owned) {
     return;
   }
-  return (
-    entries
-      .find((entry) => entry.startsWith(`${GUARDIAN_DIRECTORY}=`))
-      ?.slice(GUARDIAN_DIRECTORY.length + 1) ?? ""
-  );
+  return {
+    pid,
+    directory: linuxMetadata(entries, GUARDIAN_DIRECTORY, "guardian directory") ?? "",
+    baselineHash: linuxMetadata(entries, BASELINE_HASH, "baseline hash"),
+    complete: true,
+  };
+}
+function linuxMetadata(entries, key, label) {
+  const values = entries.filter((entry) => entry.startsWith(`${key}=`));
+  if (values.length > 1) {
+    throw new Error(`Duplicate native ${label}`);
+  }
+  const value = values[0]?.slice(key.length + 1);
+  if (key === GUARDIAN_DIRECTORY && value !== undefined) {
+    return new TextDecoder("utf8", { fatal: true }).decode(Buffer.from(value, "latin1"));
+  }
+  return value;
 }
 function validateStable(before, after) {
   if (after.identity !== before.identity || after.uid !== before.uid || after.sid !== before.sid) {
@@ -52,26 +95,48 @@ function linuxCandidate(pid, tokens, identityOnly) {
   try {
     before = linuxIdentity(pid);
     if (identityOnly || before.uid !== process.getuid() || before.exited) {
-      return { identities: [before], processes: [], uncertainties: [] };
+      return { identities: [before], processes: [], opaque: [], uncertainties: [] };
     }
-    const directory = linuxReceipt(pid, tokens);
+    const receipt = linuxReceipt(pid, tokens);
     const after = linuxIdentity(pid);
     validateStable(before, after);
     return {
       identities: [after],
-      processes: directory === undefined ? [] : [{ pid, identity: after.identity, directory }],
+      processes: receipt === undefined ? [] : [{ ...receipt, identity: after.identity }],
+      opaque: [],
       uncertainties: [],
     };
   } catch (error) {
-    if (["ENOENT", "ESRCH"].includes(error.code)) {
-      return { identities: [], processes: [], uncertainties: [] };
-    }
-    return {
-      identities: before ? [before] : [],
-      processes: [],
-      uncertainties: [{ pid, identity: before?.identity, message: error.message }],
-    };
+    return linuxFailure(pid, before, error);
   }
+}
+function linuxFailure(pid, before, error) {
+  if (["ENOENT", "ESRCH"].includes(error.code)) {
+    return { identities: [], processes: [], opaque: [], uncertainties: [] };
+  }
+  let failure = error;
+  if (before && error.code === "EACCES") {
+    try {
+      // A denied environment is opaque only for the SAME live birth/UID/SID.
+      // Native failures or a changed incarnation never gain cut exemptions.
+      const after = linuxIdentity(pid);
+      validateStable(before, after);
+      return {
+        identities: [after],
+        processes: [],
+        opaque: after.exited ? [] : [{ pid, identity: after.identity, sid: after.sid }],
+        uncertainties: [],
+      };
+    } catch (afterError) {
+      failure = afterError;
+    }
+  }
+  return {
+    identities: before ? [before] : [],
+    processes: [],
+    opaque: [],
+    uncertainties: [{ pid, identity: before?.identity, message: failure.message }],
+  };
 }
 export function processSnapshot(token, pid, deadline, identityOnly = false) {
   if (process.platform === "darwin") {
@@ -96,6 +161,7 @@ export function processSnapshot(token, pid, deadline, identityOnly = false) {
   return {
     identities: snapshots.flatMap((entry) => entry.identities),
     processes: snapshots.flatMap((entry) => entry.processes),
+    opaque: snapshots.flatMap((entry) => entry.opaque),
     uncertainties: snapshots.flatMap((entry) => entry.uncertainties),
   };
 }

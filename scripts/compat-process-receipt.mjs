@@ -12,7 +12,6 @@ import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 
 const BASELINE_BYTES = 1024 * 1024; // The existing native-response bound.
-const DARWIN = process.platform === "darwin";
 
 function controlledDirectory(path) {
   const stat = lstatSync(path);
@@ -26,7 +25,7 @@ function validateReceipt(receipt, directory) {
     !["ready", "settled"].includes(receipt.state) ||
     typeof receipt.rescuing !== "boolean" ||
     !Array.isArray(receipt.owners) ||
-    (DARWIN && !/^[0-9a-f]{64}$/.test(receipt.baselineHash))
+    !/^[0-9a-f]{64}$/.test(receipt.baselineHash)
   ) {
     throw new Error("Invalid compatibility guardian receipt");
   }
@@ -63,12 +62,11 @@ function authenticateBaseline(entry, directory, receipt, nativeReceipt) {
   // admission, borrow and rediscovery binds to the live guardian's complete
   // native fork environment, never a WORK marker or a newly captured cut.
   if (
-    DARWIN &&
-    (nativeReceipt?.pid !== entry.pid ||
-      nativeReceipt.identity !== entry.identity ||
-      nativeReceipt.directory !== directory ||
-      nativeReceipt.complete !== true ||
-      nativeReceipt.baselineHash !== receipt.baselineHash)
+    nativeReceipt?.pid !== entry.pid ||
+    nativeReceipt.identity !== entry.identity ||
+    nativeReceipt.directory !== directory ||
+    nativeReceipt.complete !== true ||
+    nativeReceipt.baselineHash !== receipt.baselineHash
   ) {
     throw new Error(
       `Guardian ${entry.pid} original baseline digest changed or native environment incomplete`,
@@ -122,7 +120,7 @@ export function publishGuardianReceipt(directory, receipt) {
   writeFileSync(temp, JSON.stringify(receipt), { mode: 0o600 });
   renameSync(temp, join(directory, "state.json"));
 }
-// The Darwin pre-WORK cut is plain bounded JSON in the private directory.
+// The original pre-WORK cut is plain bounded JSON in the private directory.
 export function serializeBaseline(baseline) {
   const text = JSON.stringify(baseline);
   if (Buffer.byteLength(text) > BASELINE_BYTES) {
@@ -148,7 +146,9 @@ function validBaseline(value) {
         member.sid > 0 &&
         member.uid === process.getuid() &&
         typeof member.identity === "string" &&
-        /^[A-Za-z0-9+/]{22}==$/.test(member.identity),
+        (process.platform === "linux"
+          ? /^\d+$/.test(member.identity)
+          : /^[A-Za-z0-9+/]{22}==$/.test(member.identity)),
     )
   );
 }
