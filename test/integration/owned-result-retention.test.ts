@@ -615,11 +615,12 @@ describe("unified owner result retention through actual router", () => {
         PI_INTERCOM_TEST_SDK: process.env.PI_INTERCOM_TEST_SDK,
       };
       const bin = path.join(cwd, "bin"),
-        input = path.join(cwd, "native.json");
+        input = path.join(cwd, "native.json"),
+        launchReceipt = path.join(cwd, "launch-pid");
       fs.mkdirSync(bin);
       fs.writeFileSync(
         path.join(bin, "pi"),
-        `#!/bin/sh\nexec '${process.execPath}' '${nativeCli(sdkRoot)}' "$@"\n`,
+        `#!/bin/sh\numask 077\nprintf '%s\\n' "$$" > '${launchReceipt}' || exit 1\nexec '${process.execPath}' '${nativeCli(sdkRoot)}' "$@"\n`,
         { mode: 0o755 },
       );
       fs.writeFileSync(
@@ -699,6 +700,13 @@ describe("unified owner result retention through actual router", () => {
           assert.ok(question);
           const receipt = record(readJson(path.join(cwd, "receipt.json")));
           assert.equal(receipt.calls, scenario === "question-initial" ? 1 : 2);
+          // The manifest CLI may supervise an SDK worker with a different PID.
+          // Observe the actual OS-launched shim before exec, independently of owner receipts.
+          const launcherPid = Number(fs.readFileSync(launchReceipt, "utf8").trim());
+          assert.ok(Number.isSafeInteger(launcherPid));
+          assert.ok(launcherPid > 0);
+          assert.equal(question.pid, receipt.pid);
+          assert.equal(questionProcessAlive({ pid: launcherPid }), true);
           assert.equal(questionProcessAlive({ pid: numberValue(receipt.pid) }), true);
           assert.equal(fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")), false);
           saveQuestionAnswer(question, "Proceed with the fixture.");
@@ -717,7 +725,9 @@ describe("unified owner result retention through actual router", () => {
           assertDefined(finalization);
           assertDefined(processExit);
           assert.equal(finalization.turns.length, 1);
-          assert.equal(processExit.pid, receipt.pid);
+          assert.equal(processExit.pid, launcherPid);
+          assert.equal(questionProcessAlive({ pid: launcherPid }), false);
+          assert.equal(questionProcessAlive({ pid: numberValue(receipt.pid) }), false);
           const terminalEvents = fs
             .readFileSync(path.join(getRunMetadataDir(runId), "events.jsonl"), "utf8")
             .trim()
