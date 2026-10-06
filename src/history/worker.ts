@@ -17,9 +17,19 @@ if (agentDir === undefined || agentDir.length === 0) {
   throw new HistoryIndexError("INVALID", "History worker requires an agent directory.");
 }
 process.umask(0o077);
+function shutdown(): void {
+  worker.close();
+  process.exit(0);
+}
 function send(response: Response): void {
   if (process.connected && process.send !== undefined) {
-    process.send(response);
+    // The parent can disconnect after process.connected was read; then this and later replies are
+    // undeliverable, so stop as on disconnect.
+    process.send(response, undefined, undefined, (error: Readonly<Error> | null) => {
+      if (error) {
+        shutdown();
+      }
+    });
   }
 }
 const worker = new HistoryWorker(agentDir, send);
@@ -86,7 +96,4 @@ process.on("message", (value: unknown) => {
     // Invalid envelopes have no trustworthy request ID. Drop them without logging private payloads.
   }
 });
-process.on("disconnect", () => {
-  worker.close();
-  process.exit(0);
-});
+process.on("disconnect", shutdown);

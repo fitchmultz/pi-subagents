@@ -10,8 +10,9 @@ import {
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { fork } from "node:child_process";
+import childProcess, { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { readSavedOutput } from "../../src/history/canonical-result.ts";
@@ -455,6 +456,225 @@ test("owned compact run ordering, filtering and seek pagination do not adopt orp
   await assert.rejects(f.index.listRuns({ cursor: first.nextCursor }), code("STALE_CURSOR"));
   await f.index.setOwner({ ownerSessionId: "fork", runs: [] });
   assert.equal((await f.index.listRuns()).total, 0);
+});
+
+// Forks the index's real worker with a native phase gate (test/fixtures/history-ipc-gate.ts) and records its IPC.
+function gatedWorker(t: TestContext, gate: string) {
+  const wire: string[] = [],
+    original = childProcess.fork,
+    started = Promise.withResolvers<ChildProcess>(),
+    exited = Promise.withResolvers<readonly [number | null, NodeJS.Signals | null]>();
+  let worker: ChildProcess | undefined,
+    channel: Socket | undefined,
+    released = false;
+  const entered: PromiseWithResolvers<void> = Promise.withResolvers();
+  t.mock.method(
+    childProcess,
+    "fork",
+    (
+      modulePath: string,
+      args: readonly string[],
+      options: Readonly<{
+        env?: Readonly<NodeJS.ProcessEnv>;
+        serialization?: childProcess.SerializationType;
+        stdio?: readonly string[];
+        execArgv?: readonly string[];
+      }>,
+    ) => {
+      const { stdio, execArgv, ...forwarded } = options;
+      assert.deepEqual([stdio, execArgv], [["ignore", "ignore", "ignore", "ipc"], []]);
+      const child = original(modulePath, [...args, gate], {
+        ...forwarded,
+        // Keep the index's stdio and IPC channel; fd 4 is the gate's private native pipe.
+        stdio: ["ignore", "ignore", "ignore", "ipc", "pipe"],
+        execArgv: ["--import", new URL("../fixtures/history-ipc-gate.ts", import.meta.url).href],
+      });
+      const send = child.send.bind(child);
+      t.mock.method(
+        child,
+        "send",
+        (payload: unknown, callback?: (error: Readonly<Error> | null) => void) => {
+          const request = objectRecord(payload);
+          wire.push(`send ${stringValue(request.method)}#${numberValue(request.id)}`);
+          return send(request, callback);
+        },
+      );
+      child.on("message", (response: unknown) => {
+        const { id } = objectRecord(response);
+        if (typeof id === "number") {
+          wire.push(`ack #${id}`);
+        }
+      });
+      const gateChannel = child.stdio[4];
+      assert.ok(gateChannel instanceof Socket, "the gate owns a native fd 4 pipe");
+      gateChannel.once("data", () => {
+        wire.push("gate entered");
+        entered.resolve();
+      });
+      child.once("exit", (exitCode, signal) => {
+        exited.resolve([exitCode, signal]);
+      });
+      worker = child;
+      channel = gateChannel;
+      started.resolve(child);
+      return child;
+    },
+  );
+  syncBuiltinESMExports();
+  // Only a live worker can be released; a deadline or cancellation may already have killed it.
+  const release = () => {
+    if (
+      released ||
+      !worker ||
+      !channel ||
+      worker.killed ||
+      worker.exitCode !== null ||
+      worker.signalCode !== null
+    ) {
+      return;
+    }
+    released = true;
+    channel.write(Buffer.from([1]));
+  };
+  t.after(() => {
+    release();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  return {
+    wire,
+    entered: entered.promise,
+    release,
+    worker: started.promise,
+    exited: exited.promise,
+  };
+}
+const queryRow = (database: DatabaseSync, sql: string) => objectRecord(database.prepare(sql).get());
+
+test(
+  "a browse racing owner replacement waits for the current admission instead of expiring behind it",
+  { timeout: 30_000 },
+  async (t) => {
+    const f = fixture(t),
+      metadataRoot = path.join(f.agentDir, "sessions", "subagent-runs");
+    fs.mkdirSync(metadataRoot, { recursive: true });
+    const initial = run(
+      "initial",
+      f.file("initial.jsonl", [header(), message("initial-entry", "initialword")]),
+    );
+    const replacement = Array.from({ length: 227 }, (_, index) => run(`replacement-${index}`));
+    const gate = gatedWorker(t, `admission:${replacement[0].runId}`);
+    await owned(f.index, [initial]);
+    const before = await f.index.listRuns();
+    assert.deepEqual(
+      [before.total, before.rows[0].runId, before.freshness.state],
+      [1, "initial", "current"],
+      "initial owner publication is observed first",
+    );
+    const { databaseFile } = await f.index.status();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const start = gate.wire.length;
+      // One turn: browse resumes from already settled readiness while setOwner replaces it.
+      const outcomes = Promise.allSettled([
+        f.index.listRuns(),
+        f.index.setOwner({ ownerSessionId: "parent", runs: replacement }),
+      ]);
+      await gate.entered;
+      const admission = gate.wire.slice(start).find((event) => event.startsWith("send setOwner#"));
+      assertDefined(admission);
+      assert.equal(
+        gate.wire.includes(`ack #${admission.split("#")[1]}`),
+        false,
+        "admission is held at its native watch before reply",
+      );
+      t.diagnostic(
+        `Wire before the original ordinary deadline elapses: ${gate.wire.slice(start).join(", ")}`,
+      );
+      t.mock.timers.tick(3000);
+      gate.release();
+      const [browse, admitted] = await outcomes;
+      assert.deepEqual(
+        [browse, admitted].map((outcome) =>
+          outcome.status === "fulfilled" ? "fulfilled" : objectRecord(outcome.reason).code,
+        ),
+        ["fulfilled", "fulfilled"],
+        "browse waits for current owner admission rather than expiring its ordinary deadline and killing the admission",
+      );
+      assert.ok(browse.status === "fulfilled");
+      assert.equal(browse.value.total, 227);
+      assert.ok(
+        browse.value.rows.every((page) => page.runId.startsWith("replacement-")),
+        "browse observes the current owned run set",
+      );
+    } finally {
+      t.mock.timers.reset();
+      gate.release();
+    }
+    await f.index.refresh();
+    assert.equal(
+      (await f.index.listRuns()).total,
+      227,
+      "the admitted worker keeps projecting and serving",
+    );
+    await f.index.close();
+    assert.deepEqual(await gate.exited, [0, null], "the history worker exits through close");
+    const database = new DatabaseSync(databaseFile, { readOnly: true });
+    try {
+      assert.equal(queryRow(database, "PRAGMA quick_check").quick_check, "ok");
+      assert.equal(queryRow(database, "SELECT COUNT(*) AS count FROM runs").count, 227);
+      assert.equal(
+        queryRow(database, "SELECT COUNT(*) AS count FROM runs WHERE id='initial'").count,
+        0,
+      );
+    } finally {
+      database.close();
+    }
+  },
+);
+
+test("closing while background projection publishes a change exits the worker cleanly and closes SQLite", async (t) => {
+  const f = fixture(t),
+    runs = Array.from({ length: 3 }, (_, index) =>
+      seed(f, `projected-${index}`, "completed", [], 100 + index),
+    );
+  const gate = gatedWorker(t, `changed:${runs[0].runId}`);
+  await owned(f.index, [seed(f, "earlier", "completed", [], 50)]);
+  const { databaseFile } = await f.index.status();
+  await f.index.setOwner({ ownerSessionId: "parent", runs });
+  await gate.entered;
+  const published = new DatabaseSync(databaseFile, { readOnly: true });
+  try {
+    assert.equal(
+      queryRow(published, "SELECT COUNT(*) AS count FROM runs WHERE state='completed'").count,
+      1,
+      "one projection committed before its change notification",
+    );
+  } finally {
+    published.close();
+  }
+  const disconnected = once(await gate.worker, "disconnect");
+  const closing = f.index.close();
+  await disconnected;
+  gate.release();
+  await closing;
+  assert.deepEqual(
+    await gate.exited,
+    [0, null],
+    "a notification interrupted by parent disconnect still shuts the worker down cleanly",
+  );
+  assert.equal(
+    fs.existsSync(`${databaseFile}-wal`),
+    false,
+    "the worker closed its SQLite connection",
+  );
+  const database = new DatabaseSync(databaseFile, { readOnly: true });
+  try {
+    assert.equal(queryRow(database, "PRAGMA quick_check").quick_check, "ok");
+    assert.equal(queryRow(database, "SELECT COUNT(*) AS count FROM runs").count, 3);
+  } finally {
+    database.close();
+  }
 });
 
 test("a full Agents page retains deep native branch configuration within the history process deadline", async (t) => {

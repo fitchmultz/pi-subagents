@@ -255,6 +255,23 @@ export class SubagentHistoryIndex {
     }
     await this.ready;
   }
+  /** Arms an ordinary deadline only in the continuation that saw the current admission and worker settle, never behind a replacement admission. */
+  private async admitted<T>(
+    method: string,
+    input: unknown,
+    decode: (value: unknown) => T,
+    options: SendOptions = {},
+  ): Promise<T> {
+    await this.ensure();
+    const ready = this.ready;
+    const child = this.process;
+    await ready;
+    // setOwner() or a restart may have replaced readiness during either await; wait for the replacement.
+    if (!child || ready !== this.ready || child !== this.process) {
+      return this.admitted(method, input, decode, options);
+    }
+    return this.send(method, input, decode, options);
+  }
   async setOwner(input: HistoryOwner): Promise<void> {
     if (this.closed) {
       throw new HistoryIndexError("CLOSED", "History index is closed.");
@@ -299,7 +316,7 @@ export class SubagentHistoryIndex {
     }
     const copy = structuredClone(run);
     const fg = foreground === undefined ? undefined : structuredClone(foreground);
-    await this.send("updateRun", { run: copy, foreground: fg }, parseNothing);
+    await this.admitted("updateRun", { run: copy, foreground: fg }, parseNothing);
     const current = this.owner;
     if (!current || current.ownerSessionId !== owner.ownerSessionId) {
       throw new HistoryIndexError("OWNER_CHANGED", "History owner changed during run update.");
@@ -322,13 +339,11 @@ export class SubagentHistoryIndex {
     input: { readonly signal?: AbortSignal },
     decode: (value: unknown) => T,
   ): Promise<T> {
-    await this.ensure();
     const { signal, ...wire } = input;
-    return this.send(method, wire, decode, { signal });
+    return this.admitted(method, wire, decode, { signal });
   }
   async needsControls(): Promise<boolean> {
-    await this.ensure();
-    return this.send("needsControls", undefined, parseBoolean, { timeout: 15_000 });
+    return this.admitted("needsControls", undefined, parseBoolean, { timeout: 15_000 });
   }
   listRuns(options: HistoryRunOptions = {}): Promise<HistoryRunPage> {
     return this.query("listRuns", options, parseRunPage);
@@ -365,8 +380,7 @@ export class SubagentHistoryIndex {
     if (!this.closed) {
       this.unavailable = undefined;
     }
-    await this.ensure();
-    return this.send("refresh", { runId }, parseNothing, {
+    return this.admitted("refresh", { runId }, parseNothing, {
       signal: options.signal,
       timeout: 120_000,
     });
