@@ -28,7 +28,10 @@ const controlQueries: number[] = [];
 function replyControls(id: number): void {
 	send({ id, value: Boolean(store!.get("SELECT id FROM runs WHERE attention<4 OR state='live' LIMIT 1")) });
 }
-function send(response: Response): void { if (process.connected) process.send!(response); }
+function send(response: Response): void {
+	// The parent can disconnect after process.connected was read; then this and later replies are undeliverable, so stop as on disconnect.
+	if (process.connected) process.send!(response, undefined, undefined, (error) => { if (error) shutdown(); });
+}
 function changed(): void { send({ changed: true }); }
 function errorReply(id: number, error: unknown): void {
 	const code = error instanceof HistoryIndexError ? error.code : "UNAVAILABLE";
@@ -314,4 +317,5 @@ async function handle(request: Request): Promise<void> {
 	} catch (error) { errorReply(request.id, error); }
 }
 process.on("message", (request: Request) => { void handle(request); });
-process.on("disconnect", () => { closed = true; clearInterval(timer); clear(); process.exit(0); });
+function shutdown(): void { closed = true; clearInterval(timer); clear(); process.exit(0); }
+process.on("disconnect", shutdown);
