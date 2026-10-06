@@ -36,16 +36,16 @@ export class SourceWatches {
       }
       const watcher = fs.watch(directory, { recursive }, (event, name) => {
         const filename = name?.toString() ?? null;
-        if (
-          event === "rename" &&
-          filename === path.basename(directory) &&
-          handles.get(directory) === watcher
-        ) {
+        const selfRename = event === "rename" && filename === path.basename(directory);
+        if (selfRename && handles.get(directory) === watcher) {
           this.identities.delete(watcher);
           this.handle(directory, recursive, listener, source);
           listener(null);
         } else {
           listener(filename);
+        }
+        if (!source) {
+          this.notifySources(directory, selfRename ? null : filename);
         }
         this.events.schedule();
       });
@@ -85,19 +85,22 @@ export class SourceWatches {
       this.events.source(id);
     }
   }
+  private notifySources(directory: string, name: string | null): void {
+    for (const [id, filename] of this.sources.get(directory) ?? []) {
+      if (name === null || name.length === 0 || filename === name) {
+        this.events.source(id);
+      }
+    }
+  }
   sourceDirectory(directory: string): void {
-    if (!this.sources.has(directory)) {
+    if (!this.sources.has(directory) || this.watchers.has(directory)) {
       return;
     }
     this.handle(
       directory,
       false,
       (name) => {
-        for (const [id, filename] of this.sources.get(directory) ?? []) {
-          if (name === null || name.length === 0 || filename === name) {
-            this.events.source(id);
-          }
-        }
+        this.notifySources(directory, name);
       },
       true,
     );
