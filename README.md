@@ -450,6 +450,8 @@ The files in `prompts/` document common workflows without registering additional
 
 ## Bundled intercom
 
+For a remote agent on Linux, the optional [secure remote bridge](docs/intercom-bridge.md) provides a loopback-only mTLS HTTPS API over an SSH reverse forward. It registers a certificate-bound peer such as `grok-bot` and permits only messaging operations; the private Unix broker socket remains local. The guide includes setup, remote commands, credential rotation and revocation.
+
 The same `pi-subagents` install registers the intercom extension and skill. `load_intercom({})` exposes the full peer tool explicitly; actionable peer inbound and recovered reply needs also expose it before use. Presence, passive breadcrumbs, routine subagent notices, and human messages answered in chat do not. Broker presence and delivery continue even with the schema hidden. Managed children get a private coordination channel back to the parent Pi session unless an explicit agent extension allowlist excludes it. See [the intercom guide](docs/intercom.md) for direct peer messaging, keyboard UI, tool actions, configuration, and broker details.
 
 If you previously installed the standalone package, remove that old settings entry once to avoid loading two intercom extensions:
