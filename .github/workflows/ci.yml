@@ -122,6 +122,9 @@ jobs:
             brew install fd ripgrep
           fi
       - run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')"
+      - name: Install the compatibility owner's native runtime
+        working-directory: extension
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Build the resolved fork on this platform
         if: matrix.host == 'fork'
         working-directory: fork
