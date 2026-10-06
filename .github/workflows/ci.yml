@@ -74,7 +74,10 @@ jobs:
           - { os: ubuntu-latest, host: fork }
           - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # check:compat 58m + its owner cleanup (round to 59m), host/development
+    # preparation 30m, production installs/smokes 15m, fork/tooling 15m,
+    # and final settlement 1m. See scripts/compat-process.mjs for stage math.
+    timeout-minutes: 120
     env:
       PI_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
       PI_EDITOR_RECEIPT_TEST_ROOT: ${{ github.workspace }}/editor

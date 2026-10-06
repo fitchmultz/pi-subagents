@@ -26,6 +26,43 @@ installed-CLI probes, lint, formatting, root TypeScript 7 checking and effective
 `ci` adds the build and the existing package/install smokes and complete test suites. CI qualifies
 actual official Pi and fork installations separately; equal version strings are not runtime proof.
 
+### Acceptance budgets and process ownership
+
+The full acceptance stages are sequential: cold quality (15 minutes), build and install/package
+smokes (5), unit tests (5), integration tests (15), then owner settlement (1). The outer CI command
+therefore has a 41-minute budget. Compatibility qualification adds editor cloning (5), installation
+(5), metadata checks (1), native smoke (5) and settlement (1), for 58 minutes. The host job reserves
+120 minutes for that qualification, host/development preparation, production installs and fork/tooling
+work. Unit (300000 ms), integration (900000 ms), individual-test and process-cleanup (10 seconds)
+limits remain independent; an ancestor timeout must not cut off a permitted child stage.
+
+`scripts/compat-process.mjs` owns commands and private receipt lifetimes. A genuine fork/IPC session
+guardian acknowledges cancellation before observation, reserves the command's SID during cleanup and
+publishes settlement only after WORK quiesces. Linux uses procfs identities and exact environment
+receipts; macOS uses bounded Koffi public-SDK queries for native birth/UID/SID and environment bytes.
+Each native query runs in one preemptible same-session child and is reaped on timeout. Streaming output
+is decoded across pipe chunks without changing forwarded bytes or caller descriptors.
+
+PID, native birth and UID are revalidated before signalling. Arguments, executable names, role-shaped
+metadata and filesystem receipts alone never authorize a signal. Root deletion waits for actual
+quiescence and settled guardian lifetimes; observation uncertainty or lost settlement retains the
+private roots and propagates `cleanupFailed`, rather than concealing the original command failure.
+Nested cleanup defers only current authenticated enclosures whose guardian published its rescue phase
+before launching cleanup queries. Connected nested WORK remains signalable, and its original command
+owner performs normal cleanup/release. The phase is not quiescence proof: pending lifetimes still need
+settlement and actual exit. Even NO-WORK disconnects authenticate the actual native incarnation and
+immutable fork metadata before settlement; existing receipts enter rescue phase before that query.
+Mismatched metadata retains the live reservation and private roots. Ordinary WORK cannot exempt itself
+by copying the guardian directory or baseline hash.
+
+On macOS, the original pre-WORK native cut is digest-bound to the live guardian. Unknown opaque work
+with neither an exact pre-WORK birth nor a still-reserved foreign SID vetoes success without being
+signalled. Exact OWNER entries outside a trustworthy environment boundary also veto success; they are
+not argv-based ownership. This is not an adversarial sandbox. An intentional new session with erased
+OWNER, a changed UID or an established foreign service boundary requires stronger OS containment.
+The keeper isolates its destructive fixtures from inherited receipt placement while retaining enclosing
+OWNER tokens, and verifies both ordinary and genuinely nested execution.
+
 ## Coverage
 
 The scope owner is `scripts/quality-scope.mjs`. Its inventory is Git-maintained code, including new

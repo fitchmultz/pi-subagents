@@ -2,6 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
@@ -146,7 +147,13 @@ it("rejects malformed typed evidence even when valid legacy prose is also presen
   }
 });
 
-it("does only structural checks at the native boundary, leaving Git and verification to the owner", async () => {
+it("does only structural checks at the native boundary, leaving Git and verification to the owner", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-typed-acceptance-"));
+  t.after(() => {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+  const initialized = spawnSync("git", ["init", "--quiet"], { cwd, encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
   const config = resolveEffectiveAcceptance({
     explicit: {
       criteria: ["Deliver fixture"],
@@ -166,9 +173,13 @@ it("does only structural checks at the native boundary, leaving Git and verifica
     acceptance: config,
     output: answer,
     report: claimed,
-    cwd: process.cwd(),
+    cwd,
   });
   assert.equal(verified.status, "rejected");
+  assert.equal(
+    verified.runtimeChecks.find((check) => check.id === "no-staged-files")?.status,
+    "passed",
+  );
   assert.equal(verified.verifyRuns[0]?.exitCode, 7);
 });
 
