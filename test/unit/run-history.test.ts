@@ -233,6 +233,47 @@ test("timing-history reads preserve other agents and an acknowledged concurrent 
   );
 });
 
+test("a paused legacy migration admits a concurrent timing sample and imports the snapshot only once", (t) => {
+  const f = fixture(t);
+  const original =
+    JSON.stringify({ agent: "other", task: "Legacy sample", ts: 1, status: "ok", duration: 1 }) +
+    "\n";
+  fs.writeFileSync(f.file, original);
+  let writer: ReturnType<typeof spawnSync> | undefined;
+  observeReads(t, () => {
+    if (writer === undefined) {
+      // Hold the actual migration read until another process completes native write admission.
+      writer = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { recordRun, loadRunsForAgent } from ${JSON.stringify(writerModule)}; recordRun("requested", "Concurrent sample", 0, 7); if (loadRunsForAgent("requested")[0]?.task !== "Concurrent sample") process.exit(1);`,
+        ],
+        { env: process.env, encoding: "utf8", timeout: 5000 },
+      );
+    }
+  });
+  try {
+    recordRun("requested", "Original sample", 0, 8);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+  assert.ok(writer, "the migration reached the native filesystem read");
+  assert.equal(writer.status, 0, text(writer.stderr));
+  assert.deepEqual(
+    loadRunsForAgent("requested").map((row) => row.task),
+    ["Original sample", "Concurrent sample"],
+  );
+  assert.deepEqual(
+    loadRunsForAgent("other").map((row) => row.task),
+    ["Legacy sample"],
+    "the transaction rechecks a competing migration's commit",
+  );
+  assert.equal(fs.readFileSync(f.file, "utf8"), original);
+});
+
 test("timing history bounds legacy reads and retains the latest 1000 samples per agent under concurrent writers", async (t) => {
   const f = fixture(t),
     rows = Array.from({ length: 1500 }, (_, index) =>

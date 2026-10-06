@@ -141,6 +141,14 @@ export function recordRun(agent: string, task: string, exitCode: number, duratio
     fs.mkdirSync(agentDir, { recursive: true });
     db = openHistoryDatabase(path.join(historyDirectory(agentDir), TIMING_DATABASE));
     const connection = db;
+    const imported =
+      connection
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='timing_meta'")
+        .get() !== undefined &&
+      connection.prepare("SELECT key FROM timing_meta WHERE key='legacy-imported'").get() !==
+        undefined;
+    // Filesystem reads and JSON parsing must not consume another writer's admission budget.
+    const legacy = imported ? [] : legacySamples(agentDir).reverse();
     historyTransaction(connection, () => {
       connection.exec(`CREATE TABLE IF NOT EXISTS timing_meta(key TEXT PRIMARY KEY);
 				CREATE TABLE IF NOT EXISTS samples(sequence INTEGER PRIMARY KEY,agent TEXT NOT NULL,task TEXT NOT NULL,ts INTEGER NOT NULL,status TEXT NOT NULL,duration REAL NOT NULL,exit INTEGER);
@@ -158,7 +166,8 @@ export function recordRun(agent: string, task: string, exitCode: number, duratio
           sample.exit ?? null,
         );
       if (!connection.prepare("SELECT key FROM timing_meta WHERE key='legacy-imported'").get()) {
-        for (const sample of legacySamples(agentDir).reverse()) {
+        // Another writer may have imported while this snapshot was being read.
+        for (const sample of legacy) {
           save(sample);
         }
         connection.exec("INSERT INTO timing_meta VALUES ('legacy-imported')");
