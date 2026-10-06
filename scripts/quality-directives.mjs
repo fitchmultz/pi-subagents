@@ -16,7 +16,7 @@ const scopedRules = new Map([
   ],
 ]);
 const sdkLoads = {
-  "src/shared/native-session.ts": { sessionModule: "@earendil-works/pi-coding-agent" },
+  "src/shared/native-session-loader.ts": { sessionModule: "@earendil-works/pi-coding-agent" },
   "src/shared/native-typebox.ts": {
     typebox: "typebox",
     compile: "typebox/compile",
@@ -128,21 +128,17 @@ function approvedSdkLoad(source, line, file) {
   if (loads === undefined) {
     return false;
   }
-  return source.statements
-    .filter(
-      (statement) =>
-        ts.isVariableStatement(statement) &&
-        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0,
-    )
-    .some((statement) =>
-      statement.declarationList.declarations.some(
-        (node) =>
-          ts.isIdentifier(node.name) &&
-          Object.hasOwn(loads, node.name.text) &&
-          source.getLineAndCharacterOfPosition(node.name.getStart(source)).line + 1 === line &&
-          typedSdkLoad(node, loads[node.name.text], source),
-      ),
-    );
+  return descendants(
+    source,
+    (node) =>
+      ts.isVariableDeclaration(node) &&
+      ts.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      ts.isIdentifier(node.name) &&
+      Object.hasOwn(loads, node.name.text) &&
+      source.getLineAndCharacterOfPosition(node.name.getStart(source)).line + 1 === line &&
+      typedSdkLoad(node, loads[node.name.text], source),
+  );
 }
 
 export function approvedScopedDirective(rule, source, line, file) {

@@ -159,7 +159,7 @@ Additional user-approved exceptions are confined to their actual boundary syntax
 
 - Noncallable JSONSchema `then` data in the exact handwritten schema/report modules.
 - Optional native event-bus unsubscribe `void | (() => void)` in the two retained slash adapters.
-- Five explicitly typed selected-host SDK namespace loads in native-session/typebox/tui adapters.
+- Five explicitly typed selected-host SDK namespace loads in native-session-loader/typebox/tui adapters (the session loader is lazy and accepts an explicitly pinned trusted host).
   Their computed native URLs preserve actual Node/Jiti host identity; arbitrary assignments, other
   declarations, wrong namespaces and untyped loads remain forbidden. Remove the exception when loader
   declaration identity is preserved and the native qualification probes pass.
