@@ -23,7 +23,7 @@ process.env.PI_PACKAGE_DIR = hostRoot;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    `Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both compiled dist extension entrypoints load as native ES modules\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`,
+    `Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both compiled dist extension entrypoints load as native ES modules\n  - the installed credential CLI provides usage help from its node_modules path\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`,
   );
   process.exit(0);
 }
@@ -178,6 +178,18 @@ function installProduction(packed) {
   const installedRoot = join(installDir, "node_modules", packageJson.name);
   if (!existsSync(installedRoot)) {
     throw new Error(`production install is missing ${packageJson.name}`);
+  }
+  const credentialHelp = run(
+    process.execPath,
+    [join(installedRoot, "scripts/intercom-bridge-credentials.mjs"), "--help"],
+    installDir,
+  );
+  if (
+    !credentialHelp.includes(
+      "Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke>",
+    )
+  ) {
+    throw new Error("installed credential CLI did not provide usage help");
   }
   const gitPackageRoot = join(productionRoot, "git-package");
   cpSync(installedRoot, gitPackageRoot, { recursive: true });

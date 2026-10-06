@@ -142,6 +142,8 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
         ],
       ],
       ["node:net", ["Socket"]],
+      ["node:http", ["IncomingMessage", "ServerResponse"]],
+      ["node:tls", ["TLSSocket"]],
       ["node:buffer", ["Buffer"]],
       ["node:child_process", ["ChildProcess", "ChildProcessByStdio", "SpawnOptions"]],
       ["node:fs", ["FSWatcher", "Stats"]],
@@ -153,6 +155,7 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       ["node:test", ["TestContext"]],
     ];
     const webNames = [
+      "RegExp",
       "Request",
       "RequestInit",
       "Response",
@@ -181,10 +184,22 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       "UsageEntry",
       "AgentMessage",
       "EventBus",
+      "IncomingMessage",
+      "ServerResponse",
+      "TLSSocket",
+      "RegExp",
     ];
     const foreignDeclarations = isolatedNames
       .map((name) => `export interface ${name} { values: string[]; }`)
       .join("\n");
+    const nativeHandleNames = ["IncomingMessage", "ServerResponse", "TLSSocket", "RegExp"];
+    put(
+      dir,
+      "native-handles.ts",
+      `export type { IncomingMessage, ServerResponse } from "node:http";
+export type { TLSSocket } from "node:tls";
+export type RegExp = globalThis.RegExp;`,
+    );
     put(dir, "foreign-sdk.ts", foreignDeclarations);
     put(
       dir,
@@ -197,6 +212,9 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
     );
     imports.push(
       'import type {KeybindingsManager as CodingKeybindingsManager} from "@earendil-works/pi-coding-agent";',
+      'import type {IncomingMessage as AliasIncomingMessage, ServerResponse as AliasServerResponse} from "node:http";',
+      'import type {TLSSocket as AliasTLSSocket} from "node:tls"; type AliasRegExp = globalThis.RegExp;',
+      `import type {${nativeHandleNames.map((name) => `${name} as Reexported${name}`).join(",")}} from "./native-handles.js";`,
     );
     for (const [source, prefix] of [
       ["./foreign-sdk.js", "Foreign"],
@@ -223,6 +241,11 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       "URL",
       "URLSearchParams",
       "AbortSignal",
+      ...nativeHandleNames.flatMap((name) => [
+        `Alias${name}`,
+        `Reexported${name}`,
+        `{ readonly handle: ${name}; readonly labels: readonly string[] }`,
+      ]),
     ].map(
       (name, index) =>
         `export function positive${index}(value: ${parameterTypes[name] ?? name}) { return value; }`,
@@ -248,6 +271,12 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
           (name) =>
             `export function negative${prefix}${name}(value: ${prefix}${name}) { return value; }`,
         ),
+      );
+    }
+    for (const name of nativeHandleNames) {
+      negatives.push(
+        `export function attached${name}(value: ${name} & { values: string[] }) { return value; }`,
+        `export function nested${name}(value: { readonly handle: ${name}; readonly app: { values: string[] } }) { return value; }`,
       );
     }
     put(
@@ -280,6 +309,44 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       actual.map((entry) => entry.line),
       Array.from({ length: negatives.length + 8 }, (_, index) => first + index),
     );
+    const nativeLines = positives.flatMap((code, index) =>
+      nativeHandleNames.some((name) => code.includes(name)) ? [imports.length + index + 1] : [],
+    );
+    const options = config.rules[rule][1];
+    const otherAllowances = options.allow.map((entry) => ({
+      ...entry,
+      name: entry.name.filter((name) => !nativeHandleNames.includes(name)),
+    }));
+    const absent = lint(dir, [rule], ["main.ts"], {
+      rules: { [rule]: ["error", { ...options, allow: otherAllowances }] },
+    });
+    assert.deepEqual(
+      absent.map((entry) => entry.line),
+      [...nativeLines, ...actual.map((entry) => entry.line)].sort((left, right) => left - right),
+    );
+    const wrongOrigin = lint(dir, [rule], ["main.ts"], {
+      rules: {
+        [rule]: [
+          "error",
+          {
+            ...options,
+            allow: [
+              ...otherAllowances,
+              {
+                from: "package",
+                package: "quality-foreign-sdk",
+                name: ["IncomingMessage", "ServerResponse", "TLSSocket"],
+              },
+              { from: "file", path: "./foreign-sdk.ts", name: ["RegExp"] },
+            ],
+          },
+        ],
+      },
+    });
+    assert.ok(
+      nativeLines.every((line) => wrongOrigin.some((entry) => entry.line === line)),
+      "Wrong declaration origins must revoke every native input exemption",
+    );
     // Raw ReadonlyMap methods themselves are assignable, unlike the Readonly-wrapped contract.
     // Keep both unsuppressed cases; never blanket-allow generic containers.
     const project = ts.createProgram([resolve(dir, "main.ts")], {
@@ -299,7 +366,9 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
         continue;
       }
       for (const binding of statement.importClause.namedBindings.elements) {
-        const symbol = checker.getAliasedSymbol(checker.getSymbolAtLocation(binding.name));
+        const symbol =
+          checker.getTypeAtLocation(binding.name).getSymbol() ??
+          checker.getAliasedSymbol(checker.getSymbolAtLocation(binding.name));
         assert.ok(
           symbol.declarations?.some((declaration) =>
             declaration.getSourceFile().fileName.includes("node_modules/"),
