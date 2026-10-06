@@ -1600,15 +1600,22 @@ test("native concurrent selected stops survive one runner poll without stopping 
     await waitFor(() => existsSync(resultPath), "all selected-stop fixture children settle");
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   });
-  await waitFor(() => status()?.steps?.length === 3 && status().steps.every((step) => step.currentTool === "bash"), "three real native tools before the first control poll");
   await waitFor(() => existsSync(`${pollRelease}.held`), "the private runner's poll clock is held");
   assert.equal(existsSync(pollRelease), false);
+  // Detached admission is not native startup. Observe each SDK tool receipt before
+  // asking the owner to publish its coalesced projection of those events.
+  await Promise.all([0, 1, 2].map((index) => waitFor(() => {
+    const receiptPath = `${childRelease.replace("{index}", String(index))}.json`;
+    return existsSync(receiptPath) && JSON.parse(readFileSync(receiptPath, "utf8")).events
+      .some((event) => event.type === "tool_execution_start" && event.toolName === "bash");
+  }, `native child ${index} tool publication`)));
+  await waitFor(() => status()?.steps?.length === 3 && status().steps.every((step) => step.currentTool === "bash"), "three real native tools before the first control poll");
   const state = { asyncJobs: new Map([[id, { asyncId: id, asyncDir: started.details.asyncDir!, status: "running" }]]) };
   const receipts = [interruptAsyncRun(state, id, 0), interruptAsyncRun(state, id, 1)];
   assert.ok(receipts.every((receipt) => receipt && !receipt.isError));
   writeFileSync(pollRelease, "released");
   await waitFor(() => status().steps[1].status === "paused", "second selected child pauses");
-  await sleep(200);
+  await waitFor(() => status().steps[0].agentProcessExit?.at && status().steps[1].agentProcessExit?.at, "both selected native agent process exits");
   const observed = status().steps.map((step) => ({ status: step.status, currentTool: step.currentTool, agentProcessExit: step.agentProcessExit }));
   writeFileSync(path.join(directory, "observation.json"), JSON.stringify({ receipts, observed }, null, 2));
   t.diagnostic(JSON.stringify({ observed }));
