@@ -3571,6 +3571,23 @@ test("native concurrent selected stops survive one runner poll without stopping 
       }
     }
   });
+  await waitFor(() => existsSync(`${pollRelease}.held`), "the private runner's poll clock is held");
+  assert.equal(existsSync(pollRelease), false);
+  // Detached admission is not native startup. Observe each SDK tool receipt before
+  // asking the owner to publish its coalesced projection of those events.
+  await Promise.all(
+    [0, 1, 2].map((index) =>
+      waitFor(() => {
+        const receiptPath = `${childRelease.replace("{index}", String(index))}.json`;
+        return (
+          existsSync(receiptPath) &&
+          records(json(readFileSync(receiptPath, "utf8")).events).some(
+            (event) => event.type === "tool_execution_start" && event.toolName === "bash",
+          )
+        );
+      }, `native child ${index} tool publication`),
+    ),
+  );
   await waitFor(() => {
     const current = status()?.steps;
     return (
@@ -3584,8 +3601,6 @@ test("native concurrent selected stops survive one runner poll without stopping 
     assertDefined(current);
     return current;
   };
-  await waitFor(() => existsSync(`${pollRelease}.held`), "the private runner's poll clock is held");
-  assert.equal(existsSync(pollRelease), false);
   const state = fixtureState(directory);
   state.asyncJobs.set(id, {
     asyncId: id,

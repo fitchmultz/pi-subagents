@@ -41,6 +41,7 @@ import {
 } from "../support/assertions.ts";
 import { createSubagentState, readResult } from "../support/background-fixtures.ts";
 import { nativeSdkRoot, nativeCli } from "../support/native-sdk.ts";
+import { parseAsyncStatus } from "../../src/runs/background/run-schemas.ts";
 
 const repo = path.resolve(".");
 const sdkRoot = nativeSdkRoot(process.env.PI_INTERCOM_TEST_SDK);
@@ -185,19 +186,27 @@ describe("unified owner result retention through actual router", () => {
 
   for (const mode of ["parallel", "chain"] as const) {
     it(`${mode} timeout keeps configured deadline, partial output and completed siblings`, async () => {
+      const clockFile = path.join(cwd, "owner-clock.json");
+      const release = path.join(cwd, "release-slow");
+      const previous = {
+        NODE_OPTIONS: process.env.NODE_OPTIONS,
+        PI_TEST_RUNNER_CLOCK: process.env.PI_TEST_RUNNER_CLOCK,
+      };
+      process.env.NODE_OPTIONS = `${previous.NODE_OPTIONS ?? ""} --import=${new URL("../fixtures/runner-clock.mjs", import.meta.url).href}`;
+      process.env.PI_TEST_RUNNER_CLOCK = clockFile;
       mock.onCall({ matchArgsIncludes: "Fast", output: "Completed sibling evidence" });
       mock.onCall({
         matchArgsIncludes: "Slow",
         steps: [
           { jsonl: [events.assistantMessage("Partial slow evidence")] },
-          { delay: 3000, jsonl: [events.assistantMessage("Too late")] },
+          { waitForFile: release, jsonl: [events.assistantMessage("Too late")] },
         ],
       });
       const tasks = [
         { agent: "worker", task: "Fast" },
         { agent: "worker", task: "Slow" },
       ];
-      const result = await executor().execute({
+      const pending = executor().execute({
         toolCallId: "timeout",
         params: {
           ...(mode === "parallel" ? { tasks, concurrency: 1 } : { chain: tasks }),
@@ -205,6 +214,80 @@ describe("unified owner result retention through actual router", () => {
         },
         ctx: makeMinimalCtx(cwd),
       });
+      const waitFor = async (check: () => boolean, description: string) => {
+        const deadline = Date.now() + 5_000;
+        while (!check()) {
+          assert.ok(Date.now() < deadline, `Timed out waiting for ${description}`);
+          // Observe actual owner publication before advancing its clock.
+          // oxlint-disable-next-line no-await-in-loop
+          await delay(5);
+        }
+      };
+      let sequence = 0;
+      const tick = async (amount: number) => {
+        fs.writeFileSync(
+          `${clockFile}.tmp`,
+          JSON.stringify({ sequence: ++sequence, tick: amount }),
+        );
+        fs.renameSync(`${clockFile}.tmp`, clockFile);
+        await waitFor(
+          () =>
+            fs.existsSync(`${clockFile}.ack`) &&
+            record(readJson(`${clockFile}.ack`)).sequence === sequence,
+          "owner clock acknowledgement",
+        );
+        return numberValue(record(readJson(`${clockFile}.ack`)).now);
+      };
+      let result: SubagentExecutionResult | undefined;
+      try {
+        await waitFor(() => mock.callCount() === 2, "both real child processes start");
+        const run = state.ownedRuns?.values().next().value;
+        assertDefined(run);
+        const directory = getRunMetadataDir(run.runId);
+        const status = () => parseAsyncStatus(readJson(path.join(directory, "status.json")));
+        const initial = status();
+        assertDefined(initial.startedAt);
+        assertDefined(initial.timeoutAt);
+        assert.equal(initial.timeoutAt - initial.startedAt, 600);
+        await waitFor(
+          () =>
+            fs.existsSync(path.join(directory, "output-1.log")) &&
+            fs
+              .readFileSync(path.join(directory, "output-1.log"), "utf8")
+              .includes("Partial slow evidence"),
+          "owner receives partial slow output",
+        );
+        // Cold child startup must not race the owner deadline under suite load.
+        assert.equal(await tick(599), initial.startedAt + 599);
+        await waitFor(
+          () => status().steps?.[1]?.recentOutput?.includes("Partial slow evidence") === true,
+          "owner publishes parsed partial output",
+        );
+        assert.equal(status().timedOut, undefined);
+        assert.equal(status().steps?.[0]?.status, "complete");
+        assert.equal(await tick(1), initial.timeoutAt);
+        result = await pending;
+      } finally {
+        try {
+          try {
+            if (result === undefined) {
+              await tick(600);
+            }
+          } finally {
+            fs.writeFileSync(release, "cleanup");
+          }
+          await pending;
+        } finally {
+          for (const [key, value] of Object.entries(previous)) {
+            if (value === undefined) {
+              delete process.env[key];
+            } else {
+              process.env[key] = value;
+            }
+          }
+        }
+      }
+      assertDefined(result);
       assert.equal(result.isError, true);
       assert.match(
         textAt(result.content),
