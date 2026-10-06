@@ -550,7 +550,11 @@ test("native Doctor reports broker registration and loaded compiled identity, no
   assert.ok(before.includes(`- broker session id: ${registered.id}`));
   assert.ok(before.includes(`- Node: ${process.version}`));
   assert.ok(before.includes(`- process: ${process.pid} (${process.execPath})`));
-  assert.ok(before.includes(`- Pi package directory: ${sdkRoot}`));
+  assert.ok(
+    before.includes(
+      `- Pi SDK resource directory: ${sdkRoot} (may be overridden; not executable provenance)`,
+    ),
+  );
   assert.ok(
     before.includes(`- extension module: ${path.join(packageCopy, "dist/extension/doctor.js")}`),
   );
