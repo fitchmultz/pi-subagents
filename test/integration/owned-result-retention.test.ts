@@ -102,10 +102,64 @@ describe("unified owner result retention through actual router", () => {
 	});
 
 	for (const mode of ["parallel", "chain"] as const) it(`${mode} timeout keeps configured deadline, partial output and completed siblings`, async () => {
+		const clockFile = path.join(cwd, "owner-clock.json"), release = path.join(cwd, "release-slow");
+		const previous = { NODE_OPTIONS: process.env.NODE_OPTIONS, PI_TEST_RUNNER_CLOCK: process.env.PI_TEST_RUNNER_CLOCK };
+		process.env.NODE_OPTIONS = `${previous.NODE_OPTIONS ?? ""} --import=${new URL("../fixtures/runner-clock.mjs", import.meta.url).href}`;
+		process.env.PI_TEST_RUNNER_CLOCK = clockFile;
 		mock.onCall({ matchArgsIncludes: "Fast", output: "Completed sibling evidence" });
-		mock.onCall({ matchArgsIncludes: "Slow", steps: [{ jsonl: [events.assistantMessage("Partial slow evidence")] }, { delay: 3000, jsonl: [events.assistantMessage("Too late")] }] });
+		mock.onCall({ matchArgsIncludes: "Slow", steps: [{ jsonl: [events.assistantMessage("Partial slow evidence")] }, { waitForFile: release, jsonl: [events.assistantMessage("Too late")] }] });
 		const tasks = [{ agent: "worker", task: "Fast" }, { agent: "worker", task: "Slow" }];
-		const result = await executor().execute("timeout", { ...(mode === "parallel" ? { tasks, concurrency: 1 } : { chain: tasks }), timeoutMs: 600 }, undefined, undefined, makeMinimalCtx(cwd));
+		const pending = executor().execute("timeout", { ...(mode === "parallel" ? { tasks, concurrency: 1 } : { chain: tasks }), timeoutMs: 600 }, undefined, undefined, makeMinimalCtx(cwd));
+		const waitFor = async (check: () => boolean, description: string) => {
+			const deadline = Date.now() + 5_000;
+			while (!check()) {
+				assert.ok(Date.now() < deadline, `Timed out waiting for ${description}`);
+				// Observe actual owner publication before advancing its clock.
+				await delay(5);
+			}
+		};
+		let sequence = 0;
+		const tick = async (amount: number) => {
+			fs.writeFileSync(`${clockFile}.tmp`, JSON.stringify({ sequence: ++sequence, tick: amount }));
+			fs.renameSync(`${clockFile}.tmp`, clockFile);
+			await waitFor(() => fs.existsSync(`${clockFile}.ack`)
+				&& JSON.parse(fs.readFileSync(`${clockFile}.ack`, "utf8")).sequence === sequence, "owner clock acknowledgement");
+			const now = JSON.parse(fs.readFileSync(`${clockFile}.ack`, "utf8")).now;
+			assert.equal(typeof now, "number");
+			return now;
+		};
+		let result: Awaited<typeof pending> | undefined;
+		try {
+			await waitFor(() => mock.callCount() === 2, "both real child processes start");
+			const run = [...state.ownedRuns.values()][0];
+			assert.ok(run);
+			const directory = getRunMetadataDir(run.runId);
+			const status = () => JSON.parse(fs.readFileSync(path.join(directory, "status.json"), "utf8"));
+			const initial = status();
+			assert.equal(typeof initial.startedAt, "number");
+			assert.equal(typeof initial.timeoutAt, "number");
+			assert.equal(initial.timeoutAt - initial.startedAt, 600);
+			await waitFor(() => fs.existsSync(path.join(directory, "output-1.log"))
+				&& fs.readFileSync(path.join(directory, "output-1.log"), "utf8").includes("Partial slow evidence"), "owner receives partial slow output");
+			// Cold child startup must not race the owner deadline under suite load.
+			assert.equal(await tick(599), initial.startedAt + 599);
+			await waitFor(() => status().steps?.[1]?.recentOutput?.includes("Partial slow evidence") === true, "owner publishes parsed partial output");
+			assert.equal(status().timedOut, undefined);
+			assert.equal(status().steps?.[0]?.status, "complete");
+			assert.equal(await tick(1), initial.timeoutAt);
+			result = await pending;
+		} finally {
+			try {
+				try { if (result === undefined) await tick(600); }
+				finally { fs.writeFileSync(release, "cleanup"); }
+				await pending;
+			} finally {
+				for (const [key, value] of Object.entries(previous)) {
+					if (value === undefined) delete process.env[key]; else process.env[key] = value;
+				}
+			}
+		}
+		assert.ok(result);
 		assert.equal(result.isError, true);
 		assert.match(result.content[0].text, mode === "parallel" ? /Parallel run timed out/ : /Chain timed out/);
 		assert.match(result.content[0].text, /Timed out after 600ms\./);
