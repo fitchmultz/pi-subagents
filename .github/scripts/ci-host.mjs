@@ -3,6 +3,21 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+function cleanup(root, env, qualificationFailed) {
+  try {
+    // Go extracts read-only module directories; only Go owns their removal.
+    if (existsSync(env.GOMODCACHE)) {
+      run("go", ["clean", "-modcache"], { cwd: root, env });
+    }
+    rmSync(root, { recursive: true, force: true });
+  } catch (error) {
+    if (!qualificationFailed) {
+      throw error;
+    }
+    console.error(`CI cleanup failed for ${root}:`, error);
+  }
+}
+
 const [flavor, target, automationArg, sourceArg] = process.argv.slice(2);
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -23,7 +38,8 @@ const { prepareHost, selectDevelopmentHost } = await import(
   pathToFileURL(join(automation, "scripts/hosts.mjs")).href
 );
 const root = mkdtempSync("/tmp/ps-ci-");
-const env = isolatedEnvironment(root);
+const env = { ...isolatedEnvironment(root), GOMODCACHE: join(root, "go-modules") };
+let qualificationFailed = false;
 try {
   const development = join(root, "development");
   stageSource(resolve(sourceArg), development);
@@ -87,6 +103,9 @@ try {
     cwd: development,
     env: testEnv,
   });
+} catch (error) {
+  qualificationFailed = true;
+  throw error;
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  cleanup(root, env, qualificationFailed);
 }
