@@ -303,6 +303,22 @@ test("timing history bounds legacy reads and retains the latest 1000 samples per
   assert.equal(samples[0].task, "Sample 1499");
   assert.equal(samples.at(-1)?.task, "Sample 1");
   assert.equal(fs.existsSync(f.database), false, "a reader cannot bootstrap or migrate storage");
+  // Hot retention must not race a cold import against best-effort writer admission.
+  recordRun("requested", "Migration complete", 0, 0);
+  const migrated = new DatabaseSync(f.database, { readOnly: true });
+  try {
+    assert.equal(
+      migrated.prepare("SELECT key FROM timing_meta WHERE key='legacy-imported'").get()?.key,
+      "legacy-imported",
+    );
+    assert.equal(
+      loadRunsForAgent("requested")[0]?.task,
+      "Migration complete",
+      "native migration commits before the concurrent retention phase",
+    );
+  } finally {
+    migrated.close();
+  }
   await Promise.all(
     ["one", "two", "three", "four"].map(
       (worker) =>
