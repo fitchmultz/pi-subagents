@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { fork } from "node:child_process";
+import childProcess, { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -159,6 +159,71 @@ test("owned compact run ordering, filtering and seek pagination do not adopt orp
 	await assert.rejects(f.index.listRuns({ cursor: first.nextCursor }), code("STALE_CURSOR"));
 	await f.index.setOwner({ ownerSessionId: "fork", runs: [] });
 	assert.equal((await f.index.listRuns()).total, 0);
+});
+
+test("a browse racing owner replacement waits for the current admission instead of expiring behind it", { timeout: 30_000 }, async (t) => {
+	const f = fixture(t), metadataRoot = path.join(f.agentDir, "sessions", "subagent-runs");
+	fs.mkdirSync(metadataRoot, { recursive: true });
+	const initial = run("initial", f.file("initial.jsonl", [header(), message("initial-entry", "initialword")]));
+	const replacement = Array.from({ length: 227 }, (_, index) => run(`replacement-${index}`));
+	const wire: string[] = [], original = childProcess.fork;
+	let worker: ChildProcess | undefined, exited: Promise<unknown[]> | undefined, entered!: () => void;
+	const gateEntered = new Promise<void>((resolve) => { entered = resolve; });
+	t.mock.method(childProcess, "fork", (modulePath: string, args: string[], options: childProcess.ForkOptions) => {
+		const child = original(modulePath, [...args, replacement[0].runId], { ...options, stdio: [...options.stdio as childProcess.StdioOptions[], "pipe"] as childProcess.StdioOptions,
+			execArgv: ["--import", new URL("../fixtures/history-admission-gate.mjs", import.meta.url).href] });
+		const send = child.send;
+		child.send = function(request: any, ...rest: any[]) { wire.push(`send ${request.method}#${request.id}`); return Reflect.apply(send, this, [request, ...rest]); } as typeof child.send;
+		child.on("message", (response: any) => {
+			if (response.admissionGate === "entered") { wire.push("gate entered"); entered(); } else if (Number.isInteger(response.id)) wire.push(`ack #${response.id}`);
+		});
+		worker = child; exited = once(child, "exit");
+		return child;
+	});
+	syncBuiltinESMExports();
+	let databaseFile = "", released = false;
+	// Release only a still-current worker; a deadline already killed the stale one.
+	const release = () => {
+		if (released || !worker || f.index.failure !== undefined || worker.exitCode !== null || worker.signalCode !== null) return;
+		released = true; (worker.stdio[4] as NodeJS.WritableStream).write(Buffer.from([1]));
+	};
+	try {
+		await owned(f.index, [initial]);
+		const before = await f.index.listRuns();
+		assert.deepEqual([before.total, before.rows[0].runId, before.freshness.state], [1, "initial", "current"], "initial owner publication is observed first");
+		databaseFile = (await f.index.status()).databaseFile;
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const start = wire.length;
+		// One turn: browse resumes from already settled readiness while setOwner replaces it.
+		const outcomes = Promise.allSettled([f.index.listRuns(), f.index.setOwner({ ownerSessionId: "parent", runs: replacement })]);
+		await gateEntered;
+		const admission = wire.slice(start).find((event) => event.startsWith("send setOwner#"))!;
+		assert.ok(admission, "replacement admission reached the worker");
+		assert.equal(wire.includes(`ack #${admission.split("#")[1]}`), false, "admission is held at its native watch before reply");
+		t.diagnostic(`Wire before the original ordinary deadline elapses: ${wire.slice(start).join(", ")}`);
+		t.mock.timers.tick(3000);
+		release();
+		const settled = await outcomes;
+		assert.deepEqual(settled.map((outcome) => outcome.status === "fulfilled" ? "fulfilled" : outcome.reason.code), ["fulfilled", "fulfilled"],
+			"browse waits for current owner admission rather than expiring its ordinary deadline and killing the admission");
+		const page = (settled[0] as PromiseFulfilledResult<Awaited<ReturnType<SubagentHistoryIndex["listRuns"]>>>).value;
+		assert.equal(page.total, 227);
+		assert.ok(page.rows.every((row) => row.runId.startsWith("replacement-")), "browse observes the current owned run set");
+		t.mock.timers.reset();
+		await f.index.refresh();
+		assert.equal((await f.index.listRuns()).total, 227, "the admitted worker keeps projecting and serving");
+	} finally {
+		t.mock.timers.reset(); release();
+		t.mock.restoreAll(); syncBuiltinESMExports();
+	}
+	await f.index.close();
+	assert.deepEqual(await exited, [0, null], "the history worker exits through close");
+	const database = new DatabaseSync(databaseFile, { readOnly: true });
+	try {
+		assert.equal(database.prepare("PRAGMA quick_check").get()!.quick_check, "ok");
+		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM runs").get()!.count, 227);
+		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM runs WHERE id='initial'").get()!.count, 0);
+	} finally { database.close(); }
 });
 
 test("a full Agents page retains deep native branch configuration within the history process deadline", async (t) => {

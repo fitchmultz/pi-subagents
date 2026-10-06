@@ -87,6 +87,15 @@ export class SubagentHistoryIndex {
 		}
 		await this.ready;
 	}
+	/** Arms an ordinary deadline only in the continuation that saw the current admission and worker settle, never behind a replacement admission. */
+	private async admitted<T>(method: string, input?: any, signal?: AbortSignal, timeout?: number): Promise<T> {
+		await this.ensure();
+		const ready = this.ready, child = this.process;
+		await ready;
+		// setOwner() or a restart may have replaced readiness during either await; wait for the replacement.
+		if (!child || ready !== this.ready || child !== this.process) return this.admitted<T>(method, input, signal, timeout);
+		return this.send<T>(method, input, signal, timeout);
+	}
 	async setOwner(input: HistoryOwner): Promise<void> {
 		if (this.closed) throw new HistoryIndexError("CLOSED", "History index is closed.");
 		if (!this.process) await Promise.all(this.children.values());
@@ -104,20 +113,16 @@ export class SubagentHistoryIndex {
 		await this.ensure();
 		if (run.ownerSessionId !== this.owner!.ownerSessionId || foreground && foreground.runId !== run.runId) throw new HistoryIndexError("OWNERSHIP", "Run does not belong to the current owner.");
 		const copy = structuredClone(run), fg = foreground && structuredClone(foreground);
-		await this.send<void>("updateRun", { run: copy, foreground: fg });
+		await this.admitted<void>("updateRun", { run: copy, foreground: fg });
 		this.owner!.runs = [...this.owner!.runs.filter((entry) => entry.runId !== run.runId), copy];
 		if (fg) this.owner!.foregroundRuns = [...(this.owner!.foregroundRuns ?? []).filter((entry) => entry.runId !== run.runId), fg];
 	}
 	private async query<T>(method: string, input: { signal?: AbortSignal }): Promise<T> {
-		await this.ensure();
 		const { signal, ...wire } = input;
-		return this.send<T>(method, wire, signal);
+		return this.admitted<T>(method, wire, signal);
 	}
 	/** Tool discovery waits for run metadata only, not transcript backfill. */
-	async needsControls(): Promise<boolean> {
-		await this.ensure();
-		return this.send("needsControls", undefined, undefined, 15_000);
-	}
+	needsControls(): Promise<boolean> { return this.admitted("needsControls", undefined, undefined, 15_000); }
 	listRuns(options: HistoryRunOptions = {}): Promise<HistoryRunPage> { return this.query("listRuns", options); }
 	historyPage(input: HistoryPageInput): Promise<HistoryPage> { return this.query("historyPage", input); }
 	search(input: HistorySearchInput): Promise<HistorySearchPage> { return this.query("search", input); }
@@ -130,8 +135,7 @@ export class SubagentHistoryIndex {
 	result(input: Pick<HistoryEntryInput, "runId" | "index" | "signal">): Promise<HistoryResult | null> { return this.query("result", input); }
 	async refresh(runId?: string, options: { signal?: AbortSignal } = {}): Promise<void> {
 		if (!this.closed) this.unavailable = undefined;
-		await this.ensure();
-		return this.send("refresh", { runId }, options.signal, 120_000);
+		return this.admitted("refresh", { runId }, options.signal, 120_000);
 	}
 	onChanged(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 	/** Hard cancellation affects this instance's outstanding work, not native sessions or other indexers. */
