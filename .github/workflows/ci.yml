@@ -23,7 +23,7 @@ concurrency:
 
 env:
   CI: "true"
-  PI_AUTOMATION_REF: 6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
+  PI_AUTOMATION_REF: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
@@ -46,9 +46,9 @@ jobs:
       - run: npm run quality
 
   resolve:
-    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
     with:
-      automation-ref: 6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
+      automation-ref: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
 
@@ -124,7 +124,10 @@ jobs:
           else
             brew install fd ripgrep
           fi
-      - run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')"
+      - name: Use the reviewed automation npm
+        run: |
+          PM="$(node -p 'require("./automation/package.json").packageManager')"
+          npm exec --yes --package="$PM" -- npm install --global "$PM"
       - name: Install the compatibility owner's native runtime
         working-directory: extension
         run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
