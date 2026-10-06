@@ -1,14 +1,14 @@
 # Secure remote Intercom bridge
 
-Optional HTTPS messaging proxy for a remote agent such as **Grok Bot**. Pi-intercom's broker remains same-machine Unix IPC. Nothing is added to the Pi extension loader, and starting Pi alone never starts this proxy.
+Optional HTTPS messaging proxy and locally controlled Pi-session launcher for a remote agent such as **Grok Bot**. Pi-intercom's broker remains same-machine Unix IPC. Nothing is added to the Pi extension loader, and starting Pi alone never starts this proxy.
 
 ## Design note
 
-**Transport:** a Mac-local Node HTTPS server bound to **127.0.0.1**, carried by a Mac-initiated **SSH reverse TCP forward** to the Linux box's loopback interface. Grok calls HTTPS on its own loopback. Unlike a Unix-socket tunnel, only the proxy opens `broker.sock`; neither the remote nor SSH can issue raw broker frames. This choice needs no cloud account, public DNS, inbound Mac SSH, or per-call laptop approval. An existing SSH account on Linux is the only tunnel prerequisite. SSH authenticates the tunnel host; end-to-end mTLS authenticates both application endpoints even to other processes on Linux.
+**Transport:** a Mac-local Node HTTPS server bound to **127.0.0.1**, carried by a Mac-initiated **SSH reverse TCP forward** to the Linux box's loopback interface. Grok calls HTTPS on its own loopback. Unlike a Unix-socket tunnel, only the local helper and normal local Pi peers use `broker.sock`; neither the remote nor SSH can issue raw broker frames. This choice needs no cloud account, public DNS, inbound Mac SSH, or per-call laptop approval. An existing SSH account on Linux is the only tunnel prerequisite. SSH authenticates the tunnel host; end-to-end mTLS authenticates both application endpoints even to other processes on Linux.
 
 **Threat model:** deny unauthenticated local/network callers, stolen credentials after revocation/expiry, identity spoofing, arbitrary broker commands, forged replies, accidental LAN exposure, and unbounded waits/resource use. The Mac user, local broker, OS, private CA, and approved remote host are trusted. A compromised authorized Grok credential can read peer metadata and send agent-visible text to local peers (including instructions); mTLS does not sandbox those agents or make the content trustworthy. Listed peers can be in other projects. Approve only a host allowed to see that metadata and message those peers. Root/compromised endpoints and denial of service beyond fixed connection/request limits are outside this boundary.
 
-**Auth/authority:** TLS 1.2+ with client certificates issued by a private CA **and** an explicit SHA-256 certificate fingerprint allowlist. Each allowlisted certificate fixes the peer name and Mac project directory; remote payloads cannot change identity, cwd, socket, shell commands, or presence. Certificates last seven days. TLS verifies the server CA and loopback SAN; never use `curl -k` or disable certificate checks. The proxy exposes only register/list/send/ask/reply, plus inbox/ack receipt plumbing needed to receive messages and answer local asks. No broker admin, topic operations, file reads, or shell endpoint.
+**Auth/authority:** TLS 1.2+ with client certificates issued by a private CA **and** an explicit SHA-256 certificate fingerprint allowlist. Each allowlisted certificate fixes the peer name and Mac project directory; remote payloads cannot change identity, cwd, socket, shell commands, or presence. Certificates last seven days. TLS verifies the server CA and loopback SAN; never use `curl -k` or disable certificate checks. The proxy exposes register/list/send/ask/reply, inbox/ack receipt plumbing, and optional name-only start plus own-launched sessions/stop operations. No broker admin, topic operations, file reads, or shell endpoint.
 
 **Socket discovery:** reuse the actual `IntercomClient`, `getBrokerSocketPath()` and framing code. With the same Mac uid, `PI_CODING_AGENT_DIR` (default `~/.pi/agent`) and `TMPDIR` as Pi, the preferred path is `$TMPDIR/pi-intercom-<sha256(uid:agentDir)[0:16]>/broker.sock`; long paths fall back to `/tmp`. The client's existing owned-socket legacy fallback is retained. No hardcoded `/var/folders` path, chmod, broker spawn, PID-file operation, or broker restart. An unavailable broker returns an error; start a normal Pi session to bring it up.
 
@@ -105,6 +105,53 @@ ssh "$GROK_SSH" 'chmod 600 ~/.config/pi-intercom/*'
 
 For a least-privileged dedicated Linux SSH tunnel account, the administrator can restrict its key to remote forwarding with `restrict,port-forwarding,permitlisten="127.0.0.1:9443",command="/bin/false"` and `AllowTcpForwarding remote`, `GatewayPorts no`. `-N` requests no shell. Provision files separately; do not reuse Grok's client key as an SSH key. No SSH login credential for the Mac is given to Grok.
 
+## Enable controlled destination-session launches
+
+Launching is **disabled by default**, independently for each certificate identity. Messaging-only installs and helper `--help` do not require a Pi SDK. To enable launches, add `launch` to the selected client in the private Mac configuration and create an owned **0700** session directory first:
+
+```bash
+mkdir -m 700 "$BRIDGE/sessions"
+```
+
+```json
+{
+  "packageRoot": "/absolute/immutable/node_modules/@earendil-works/pi-coding-agent",
+  "sessionDir": "/Users/mitch/.pi/intercom-bridge/sessions",
+  "provider": "openai-codex",
+  "model": "EXACT_MODEL_ID",
+  "context": "This is a locally authorized remote Intercom session. Stay idle until an Intercom task arrives and reply through Intercom.",
+  "extensions": [
+    "/absolute/pi-subagents/dist/pi-intercom/index.js",
+    "/absolute/pi-subagents/dist/extension/index.js"
+  ],
+  "discoverResources": false,
+  "trustProject": false,
+  "offline": false,
+  "maxSessions": 4,
+  "startupTimeoutMs": 15000
+}
+```
+
+The helper runs its **physical Node executable**, resolves only the pinned package's manifest `bin.pi`, and uses the identity's fixed, canonical Mac `cwd`. Use the intended installed fork, not a development SDK with the same version. `provider` and `model` must be exact IDs, without fuzzy matching or a thinking suffix. Local settings still choose model reasoning. Native launch context is a genuine user instruction written using that package's exported `SessionManager`; it creates a **0600 native JSONL journal without submitting a prompt or running inference**. The session then starts idle in RPC mode. Success requires exact saved ID/name/file/model, idle RPC state, and actual publication of its named Intercom broker peer. This proves startup, **not provider credential usability**; verify the first real task/reply separately.
+
+Resources are locally controlled. `extensions` requires 1–32 existing absolute paths including Intercom; include subagents and any other useful locally approved extensions there. By default (`discoverResources:false`), discovered/configured/built-in extensions, skills, templates, themes and context-file discovery are disabled; explicit extensions still load. This is an explicit resource selection, not full normal discovery. Set `discoverResources:true` to retain normal native discovery; use the **same physical Intercom extension path already selected by native settings**, avoiding duplicate owners loaded from separate installed copies. `trustProject` (default false) chooses native `--approve` versus `--no-approve` for the fixed local project; it is not a remote approval. `offline` (default false) disables automatic catalog/network activity, not requested model inference. The child retains local credentials and normal environment, but strips enclosing `PI_SUBAGENT_*` identity/control metadata so it is an independent session.
+
+Send SIGHUP after editing policy. Removing/changing an identity or its launch policy stops its existing children; invalid reload denies everyone and stops all owned children. Credential `issue` preserves launch policy but replaces the fingerprint, so rotation also stops the old credential's children. Only this helper's own children may be stopped, never arbitrary Pi sessions or the broker.
+
+```bash
+node "$REMOTE" start --name planner
+node "$REMOTE" sessions
+# Use peerId from start/sessions as the ordinary messaging target:
+node "$REMOTE" ask --to PI_PEER_ID --message 'Review the current project and reply with your findings.'
+node "$REMOTE" stop --session-id NATIVE_SESSION_ID
+```
+
+Names are prefixed `remote:IDENTITY:NAME` to avoid impersonating local peers. An already-live name for the same identity is reused; a concurrent start/stop returns a conflict, not a duplicate launch. After a lost start response, inspect `sessions` or repeat the **same name**, not a fresh name. Name is the **only** remote launch input: no task, cwd, shell, environment, flags, model, resource paths or raw RPC commands. Submit tasks afterward through ordinary Intercom. Fixed cwd and launch settings are **not a sandbox**: the authorized agent can use its locally enabled tools and credentials. Grant launch permission only to a remote identity trusted with that authority and potential model costs.
+
+Caps are 4 sessions per identity by default (local range 1–16), and 32 active launches helper-wide. Readiness deadline defaults to 15 seconds (local range 1–60000 ms). HTTP start has a 75-second outer deadline; CLI start has 90 seconds including cleanup. Startup failure, abort, deadline, explicit stop, identity revocation, certificate expiry and helper SIGINT/SIGTERM stop owned children. Cleanup closes stdin, escalates to TERM/KILL after 1/3 seconds if needed, and observes actual process closure within 8 seconds; it does not report a signal request as a completed exit. Unsupported RPC dialogs are cancelled and the session is stopped with `interaction_required`; they are never automatically approved. RPC events/diagnostics are continuously drained. Control records are bounded to 4 MiB; oversized unused native transcript/tool events are discarded through their LF boundary with metadata-only overflow reporting, without truncating the native session/tool result or killing a healthy peer. Raw stderr/model/tool content is never sent to the audit log.
+
+Long-lived peers are **not tied to the remote presence peer's five-minute idle lease** or an HTTP connection. They remain available while the helper and certificate authorization remain valid. Journals survive stop/failure/restart and can be resumed locally with the pinned Pi's `--session PATH`; the helper does not silently restart or adopt old/native processes. `sessions` reports current helper ownership, state, PID, native journal path and metadata-only error codes; at most 64 recent records are retained. The PID identifies the owned manifest-CLI process; a supervised fork can run Pi in its native worker. It is not an all-machine session admin API. Planned helper shutdown stops its children; do not SIGKILL the helper to perform routine cleanup.
+
 ## Grok Bot: exact remote commands
 
 On Linux, configure Grok's shell environment:
@@ -141,15 +188,18 @@ curl --fail-with-body --max-time 135 \
 
 All routes require mTLS and the certificate allowlist. Unknown routes/fields, wrong methods, non-JSON bodies, unsafe control characters, and requests larger than 64 KiB are rejected. No CORS; browser-origin requests are rejected. Success is `{ "ok": true, ... }`; application failures are `{ "ok": false, "error": { "code": "...", "message": "..." } }` with a non-2xx status. Certificate/allowlist admission can terminate TLS before HTTP; the CLI reports that as a TLS/transport error. No remote-controlled broker frame or command is passed through.
 
-| Route               | Request                   | Success fields                                           |
-| ------------------- | ------------------------- | -------------------------------------------------------- |
-| `POST /v1/register` | `{}`                      | `sessionId`, `name` (also automatic on other operations) |
-| `GET /v1/list`      | none                      | `sessionId`, `sessions` (metadata + unambiguous targets) |
-| `POST /v1/send`     | `{to,message}`            | `id`, `accepted`, `delivered`                            |
-| `POST /v1/ask`      | `{to,message,timeoutMs?}` | send receipt and `reply:{from,message}`                  |
-| `GET /v1/inbox`     | none                      | `messages:[{from,message}]`, `overflow`, `lostMessages`  |
-| `POST /v1/reply`    | `{replyTo,message}`       | send receipt; target derived from the received ask       |
-| `POST /v1/ack`      | `{ids:[...]}`             | `acked`, `retained`                                      |
+| Route               | Request                   | Success fields                                                            |
+| ------------------- | ------------------------- | ------------------------------------------------------------------------- |
+| `POST /v1/register` | `{}`                      | `sessionId`, `name` (also automatic on other operations)                  |
+| `GET /v1/list`      | none                      | `sessionId`, `sessions` (metadata + unambiguous targets)                  |
+| `POST /v1/send`     | `{to,message}`            | `id`, `accepted`, `delivered`                                             |
+| `POST /v1/ask`      | `{to,message,timeoutMs?}` | send receipt and `reply:{from,message}`                                   |
+| `GET /v1/inbox`     | none                      | `messages:[{from,message}]`, `overflow`, `lostMessages`                   |
+| `POST /v1/reply`    | `{replyTo,message}`       | send receipt; target derived from the received ask                        |
+| `POST /v1/ack`      | `{ids:[...]}`             | `acked`, `retained`                                                       |
+| `POST /v1/start`    | `{name}`                  | `session:{sessionId,peerId,name,status,pid,sessionFile,error?}`, `reused` |
+| `GET /v1/sessions`  | none                      | `sessions` (only current helper/identity-owned launch records)            |
+| `POST /v1/stop`     | `{sessionId}`             | `session` with observed `exited` status; journal retained                 |
 
 Timeout does **not** retract a delivered ask; a late answer can arrive in inbox. Offline/missing peers, broker outages, ambiguous/self targets, a second concurrent ask, invalid/revoked credentials, timeout, and resource limits have explicit errors. HTTP send/list deadlines are bounded by the real client (8/5 seconds); broker registration by 10 seconds. A lost HTTP response or acknowledgement timeout means **delivery unknown**—inspect inbox/local peer before retrying to avoid duplicate instructions.
 
@@ -180,10 +230,10 @@ Confirm the reload/revocation audit record, that Grok disappears from the local 
 
 ## Verification / smoke transcript
 
-The process-boundary integration test uses a private real broker, real TLS certificates, actual HTTPS requests and the remote CLI; it requires no model/provider credentials:
+The process-boundary tests use a private real broker, real TLS certificates, actual HTTPS requests and the remote CLI. Launch tests use the actually installed Pi dependency graph with a selected-host native faux provider (no paid inference or external credentials); they prove native persistence, zero pre-startup inference, real Intercom wake/tool reply, ownership/caps, startup failure/abort/deadline, safe dialog cancellation, presence-lease independence, short-lived certificate expiry, rotation/revocation and child exit before helper shutdown completes:
 
 ```bash
-node --test test/integration/intercom-bridge.test.ts
+node --test test/integration/intercom-bridge.test.ts test/integration/intercom-bridge-launch.test.ts
 # Do not inject host startup diagnostics into native fixture stderr:
 env -u PI_TIMING -u PI_EXTENSION_PERFORMANCE npm run ci
 ```

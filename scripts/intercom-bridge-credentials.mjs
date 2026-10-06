@@ -25,7 +25,7 @@ function help() {
   console.log(`Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke> DIR [NAME] [--cwd PATH]
 
 init    Create a new private CA, loopback server certificate and grok-bot credential.
-issue   Issue a fresh 7-day client certificate; replace that name's old authorization.
+issue   Issue a fresh 7-day client certificate; preserve local launch policy.
 revoke  Remove the named client from the allowlist. Does not delete saved credentials.
 
 Options: --cwd PATH  Local project identity for init/issue (default: current directory)
@@ -38,6 +38,7 @@ Examples:
   node scripts/intercom-bridge-credentials.mjs revoke ~/.pi/intercom-bridge grok-bot
 
 After issue/revoke, send SIGHUP to the helper PID to activate the allowlist.
+Rotation/revocation stops that identity's helper-launched Pi children; journals remain.
 Concurrent credential commands fail rather than overwrite each other's authorization.
 After a crashed command, inspect DIR/.credentials.lock/owner and remove that lock
 only after confirming its process has stopped.
@@ -247,6 +248,7 @@ try {
       fingerprint256: credential.fingerprint256,
       name,
       cwd: resolve(args.values.cwd || previous?.cwd || process.cwd()),
+      ...(previous?.launch === undefined ? {} : { launch: previous.launch }),
     });
     atomicConfig(configPath, config);
     console.log(

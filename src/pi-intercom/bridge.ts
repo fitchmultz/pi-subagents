@@ -8,8 +8,9 @@ import { getBrokerSocketPath } from "./broker/paths.ts";
 import { loadConfig, sameListener, type Config, type Identity } from "./bridge-config.ts";
 import { ASK_TIMEOUT, Fault, fingerprint, log } from "./bridge-protocol.ts";
 import { Session } from "./bridge-session.ts";
-import { operationFor, routeFor } from "./bridge-routes.ts";
+import { operationFor, routeFor, type Operation } from "./bridge-routes.ts";
 import { reply } from "./bridge-http.ts";
+import { Launcher, sameIdentity } from "./bridge-launch.ts";
 
 const MAX_CONNECTIONS = 128;
 
@@ -24,6 +25,7 @@ class Bridge {
   private readonly configPath: string;
   private readonly sessions = new Map<string, Session>();
   private readonly losses = new Map<string, number>();
+  private readonly launcher = new Launcher();
   private readonly sockets = new Set<Socket>();
   private readonly connections = new Map<TLSSocket, Connection>();
   private readonly server: Server;
@@ -88,7 +90,7 @@ class Bridge {
   }
   private allowed(identity: Identity): boolean {
     const current = this.config.clients.get(identity.fingerprint256);
-    return !this.stopping && current?.name === identity.name && current.cwd === identity.cwd;
+    return !this.stopping && sameIdentity(identity, current);
   }
   private lost(fp: string, count = 1): void {
     if (count > 0 && this.config.clients.has(fp)) {
@@ -181,8 +183,9 @@ class Bridge {
       });
     });
     process.on("SIGHUP", () => this.reload());
-    process.once("SIGINT", () => this.stop());
-    process.once("SIGTERM", () => this.stop());
+    // Retain listeners during dispatch: selected SDK dependencies use signal-exit's listener check.
+    process.on("SIGINT", () => this.stop());
+    process.on("SIGTERM", () => this.stop());
   }
   private reload(): void {
     if (this.stopping) {
@@ -195,9 +198,13 @@ class Bridge {
       }
       this.config = next;
       this.revokeRemoved();
+      this.launcher.revoke(next.clients).catch(() => log("launch_cleanup", { result: "failed" }));
       log("allowlist_reloaded", { result: "accepted", clients: next.clients.size });
     } catch {
       this.config = { ...this.config, clients: new Map() };
+      this.launcher
+        .revoke(this.config.clients)
+        .catch(() => log("launch_cleanup", { result: "failed" }));
       for (const session of this.sessions.values()) {
         session.close(
           new Fault(
@@ -253,7 +260,11 @@ class Bridge {
     for (const socket of this.sockets) {
       socket.destroy();
     }
-    await Promise.all([...this.handlers, ...sessions.map((session) => session.settled())]);
+    await Promise.all([
+      ...this.handlers,
+      ...sessions.map((session) => session.settled()),
+      this.launcher.shutdown(),
+    ]);
     log("shutdown", { result: "closed" });
   }
   private admission(req: IncomingMessage): {
@@ -317,14 +328,16 @@ class Bridge {
       const signal = controller.signal;
       req.once("aborted", abort);
       res.once("close", onClose);
-      setDeadline(route === "POST /v1/ask" ? ASK_TIMEOUT + 15000 : 15000);
+      const duration = route === "POST /v1/ask" ? ASK_TIMEOUT + 15000 : 15000;
+      setDeadline(route === "POST /v1/start" ? 75000 : duration);
       const operation = await operationFor(req, route, signal);
       if (operation.route === "POST /v1/ask") {
         setDeadline(operation.timeoutMs + 15000);
       }
-      const data = await session.execute(operation, {
+      const data = await this.execute(operation, session, {
         signal,
         requestId,
+        expires,
         onPeer: (id) => {
           peer = id;
         },
@@ -349,6 +362,38 @@ class Bridge {
       if (controller && session) {
         session.end(controller);
       }
+    }
+  }
+  private async execute(
+    operation: Operation,
+    session: Readonly<Session>,
+    context: {
+      readonly signal: AbortSignal;
+      readonly requestId: string;
+      readonly expires: number;
+      readonly onPeer: (id: string) => void;
+    },
+  ) {
+    switch (operation.route) {
+      case "POST /v1/start":
+        return this.launcher.start(operation.name, {
+          identity: session.identity,
+          expires: context.expires,
+          signal: context.signal,
+          peers: (signal) => session.connectedPeers(signal),
+        });
+      case "GET /v1/sessions":
+        return this.launcher.list(session.identity);
+      case "POST /v1/stop":
+        return this.launcher.stop(session.identity, operation.sessionId);
+      case "GET /v1/list":
+      case "GET /v1/inbox":
+      case "POST /v1/register":
+      case "POST /v1/ask":
+      case "POST /v1/send":
+      case "POST /v1/reply":
+      case "POST /v1/ack":
+        return session.execute(operation, context);
     }
   }
 }

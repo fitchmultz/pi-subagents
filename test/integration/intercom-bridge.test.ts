@@ -2,14 +2,14 @@ import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
-import { EventEmitter, once } from "node:events";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, watch } from "node:fs";
 import { join, resolve } from "node:path";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { getBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { normalizeMessage, normalizeSessionInfo } from "../../src/pi-intercom/types.ts";
 import { hasErrorCode, errorMessage, type UnknownRecord } from "../../src/shared/unknown.ts";
+import { exec, start, stop, parseCredential } from "../support/intercom-bridge.ts";
 import {
   assertDefined,
   json,
@@ -31,103 +31,7 @@ function envelope(value: unknown) {
 function messages(body: UnknownRecord) {
   return records(body.messages).map(envelope);
 }
-function parseCredential(value: unknown) {
-  const input = record(value);
-  return {
-    ca: text(input.ca),
-    cert: text(input.cert),
-    key: text(input.key),
-    fingerprint256: text(input.fingerprint256),
-  };
-}
-
-function exec(
-  file: string,
-  args: readonly string[],
-  options: { readonly env?: Readonly<NodeJS.ProcessEnv> } = {},
-) {
-  return new Promise<{ readonly stdout: string; readonly stderr: string }>(
-    (resolveExec, reject) => {
-      execFile(file, args, { ...options, encoding: "utf8" }, (error, stdout, stderr) => {
-        if (error) {
-          reject(error instanceof Error ? error : new Error(errorMessage(error)));
-          return;
-        }
-        resolveExec({ stdout, stderr });
-      });
-    },
-  );
-}
 const repo = resolve(import.meta.dirname, "../..");
-
-function start(file: string, args: readonly string[], env: Readonly<NodeJS.ProcessEnv>) {
-  const child = spawn(process.execPath, [join(repo, file), ...args], {
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const events = new EventEmitter();
-  let output = "";
-  child.stdout.on("data", (chunk) => {
-    output += String(chunk);
-    events.emit("output");
-  });
-  child.stderr.on("data", (chunk) => {
-    output += String(chunk);
-    events.emit("output");
-  });
-  child.on("exit", () => {
-    events.emit("output");
-  });
-  child.on("error", (error) => {
-    output += error.message;
-    events.emit("output");
-  });
-  return {
-    child,
-    output: () => output,
-    wait: (pattern: RegExp, after = 0) =>
-      new Promise<string>((resolveWait, reject) => {
-        const timer = setTimeout(
-          () => finish(new Error(`No ${pattern.toString()}: ${output}`)),
-          15000,
-        );
-        const check = () => {
-          if (pattern.test(output.slice(after))) {
-            finish();
-          } else if (child.exitCode !== null || child.signalCode !== null) {
-            finish(new Error(`Exited before ${pattern.toString()}: ${output}`));
-          }
-        };
-        const finish = (error?: Readonly<Error>) => {
-          clearTimeout(timer);
-          events.off("output", check);
-          if (error) {
-            reject(error);
-          } else {
-            resolveWait(output);
-          }
-        };
-        events.on("output", check);
-        check();
-      }),
-  };
-}
-
-async function stop(child: ChildProcess) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  const exited = once(child, "exit");
-  const timer = setTimeout(() => {
-    child.kill("SIGKILL");
-  }, 3000);
-  child.kill("SIGTERM");
-  try {
-    await exited;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 function nextMessage(client: Readonly<IntercomClient>) {
   return once(client, "message").then((args: readonly unknown[]) =>
@@ -147,6 +51,7 @@ test(
     const previousTmp = process.env.TMPDIR;
     process.env.TMPDIR = root;
     const credentials = join(root, "credentials");
+    const project = join(root, "future-project");
     const tools = join(repo, "scripts/intercom-bridge-credentials.mjs");
     const runTool = async (...args: readonly string[]) =>
       json((await exec(process.execPath, [tools, ...args], { env })).stdout);
@@ -170,7 +75,7 @@ test(
     };
     try {
       const credential = parseCredential(
-        await runTool("init", credentials, "grok-bot", "--cwd", root),
+        await runTool("init", credentials, "grok-bot", "--cwd", project),
       );
       const unpinned = parseCredential(await runTool("issue", credentials, "unapproved"));
       const configPath = join(credentials, "config.json");
@@ -248,10 +153,9 @@ test(
         const registered = await api("register", {});
         assert.equal(registered.body.name, "grok-bot");
         const remoteId = text(registered.body.sessionId);
-        assert.equal(
-          (await peer.listSessions()).find((row) => row.id === remoteId)?.name,
-          "grok-bot",
-        );
+        const remotePeer = (await peer.listSessions()).find((row) => row.id === remoteId);
+        assert.equal(remotePeer?.name, "grok-bot");
+        assert.equal(remotePeer.cwd, project);
         assert.equal(statSync(getBrokerSocketPath()).mode & 0o777, 0o600);
         for (const [action, body] of [
           ["register", { name: "spoofed" }],

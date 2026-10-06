@@ -79,7 +79,7 @@ Children normally inherit Pi's tools, extensions, project instructions and skill
 
 Intercom is included. It lets Pi sessions exchange messages and lets a child ask its parent for a decision.
 
-Read the [Intercom guide](docs/intercom.md) for setup and host limits. The [secure bridge](docs/intercom-bridge.md) supports a remote Linux agent.
+Read the [Intercom guide](docs/intercom.md) for setup and host limits. The [secure bridge](docs/intercom-bridge.md) supports messaging and optional locally controlled Pi-session launches for a remote Linux agent.
 
 Indexed history requires SQLite 3.53.4 through Node's built-in `node:sqlite` binding. Other SQLite versions fail. See the [storage requirements](docs/performance.md#storage-budgets-and-recovery) and [host startup costs](docs/performance.md#necessary-costs-and-limits).
 
