@@ -47,7 +47,7 @@ interface Config {
 interface Envelope { from: SessionInfo; message: Message }
 interface InboxEntry extends Envelope { bytes: number; replying: boolean }
 interface Connection { fingerprint: string; expires: number; timer: NodeJS.Timeout }
-interface WaitingAsk { id: string; peer?: string; answered: boolean; resolve: (reply: Envelope) => void; reject: (error: Fault) => void }
+interface WaitingAsk { id: string; peer?: string; settled: boolean; resolve: (reply: Envelope) => void; reject: (error: Fault) => void }
 
 function object(value: unknown, fields: string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Fault(400, "invalid_input", "Expected a JSON object.");
@@ -211,7 +211,7 @@ class Session {
     });
     this.client.on("message", (from: SessionInfo, message: Message) => this.receive(from, message));
     this.client.on("session_left", (id: string) => {
-      if (this.pending?.peer === id && !this.pending.answered) this.close(new Fault(409, "peer_offline", "Ask recipient disconnected.", { id: this.pending.id }));
+      if (this.pending?.peer === id && !this.pending.settled) this.pending.reject(new Fault(409, "peer_offline", "Ask recipient disconnected.", { id: this.pending.id }));
       for (const [messageId, entry] of this.inbox) {
         if (entry.from.id === id && entry.message.expectsReply) { this.remove(messageId); this.bridge.lost(this.identity.fingerprint256); }
       }
@@ -299,7 +299,7 @@ class Session {
     }
     log("received", { ...this.fields(), peer: from.id, messageId: message.id, result: "received" });
     const pending = this.pending;
-    if (pending && !pending.answered && pending.id === message.replyTo && pending.peer === from.id) {
+    if (pending && !pending.settled && pending.id === message.replyTo && pending.peer === from.id) {
       pending.resolve({ from, message });
       return;
     }
@@ -356,7 +356,9 @@ class Session {
     try { result = await wait(this.client.send(peer, { text: message, delivery: "steer", ...options, messageId: id }), signal); }
     catch (error) {
       if (signal.aborted) throw signal.reason;
-      throw new Fault(504, "send_unconfirmed", "Broker acknowledgement was not received; delivery is unknown. Do not automatically retry.", { id, deliveryUnknown: true });
+      const fault = new Fault(504, "send_unconfirmed", "Broker acknowledgement was not received; delivery is unknown. Do not automatically retry.", { id, deliveryUnknown: true });
+      this.close(fault);
+      throw fault;
     }
     this.guard(signal);
     log("send_result", { ...this.fields(), requestId, peer, messageId: id, result: result.accepted ? "accepted" : "rejected" });
@@ -369,8 +371,12 @@ class Session {
     const id = randomUUID();
     let waiting!: WaitingAsk;
     let timer: NodeJS.Timeout | undefined;
+    let receipt: SendResult | undefined;
     const reply = new Promise<Envelope>((resolve, reject) => {
-      waiting = { id, answered: false, resolve: (answer) => { waiting.answered = true; clearTimeout(timer); resolve(answer); }, reject };
+      waiting = { id, settled: false,
+        resolve: (answer) => { waiting.settled = true; clearTimeout(timer); resolve(answer); },
+        reject: (error) => { waiting.settled = true; clearTimeout(timer); reject(error); },
+      };
     });
     // A disconnect may reject the reply while target lookup or send acknowledgement is still pending.
     void reply.catch(() => {});
@@ -382,8 +388,12 @@ class Session {
       const peer = await this.target(to, signal);
       this.guard(signal);
       waiting.peer = peer.id;
-      timer = setTimeout(() => this.close(new Fault(504, "ask_timeout", "Peer did not reply before the ask deadline.", { id })), timeoutMs);
-      const receipt = await this.send(peer.id, message, signal, requestId, { messageId: id, expectsReply: true });
+      timer = setTimeout(() => {
+        const fault = new Fault(504, "ask_timeout", "Peer did not reply before the ask deadline.", { id, ...(receipt ? { accepted: receipt.accepted, delivered: receipt.delivered } : { deliveryUnknown: true }) });
+        if (receipt) waiting.reject(fault);
+        else this.close(fault);
+      }, timeoutMs);
+      receipt = await this.send(peer.id, message, signal, requestId, { messageId: id, expectsReply: true });
       const answer = await wait(reply, signal);
       this.guard(signal);
       return { ...receipt, replied: true, reply: answer };
@@ -466,7 +476,7 @@ class Bridge {
   start(): void {
     this.server.listen(this.config.port, "127.0.0.1", () => {
       const address = this.server.address();
-      log("listening", { result: "ready", port: typeof address === "object" && address ? address.port : this.config.port, brokerSocket: getBrokerSocketPath() });
+      log("listening", { result: "ready", host: "127.0.0.1", pid: process.pid, port: typeof address === "object" && address ? address.port : this.config.port, brokerSocket: getBrokerSocketPath() });
     });
     process.on("SIGHUP", () => this.reload());
     process.once("SIGINT", () => this.shutdown());
@@ -485,7 +495,7 @@ class Bridge {
       for (const [fp, session] of this.sessions) if (!this.allowed(session.identity)) this.drop(fp, new Fault(403, "revoked", "Identity revoked or changed by configuration reload."));
       for (const connection of this.connections.values()) if (!next.clients.has(connection.fingerprint)) this.drop(connection.fingerprint, new Fault(403, "revoked", "Identity revoked."));
       for (const fp of this.losses.keys()) if (!next.clients.has(fp)) this.losses.delete(fp);
-      log("allowlist_reloaded", { result: "accepted" });
+      log("allowlist_reloaded", { result: "accepted", clients: next.clients.size });
     } catch {
       this.config.clients.clear();
       for (const session of this.sessions.values()) session.close(new Fault(503, "configuration_invalid", "Configuration reload failed; all identities denied."));
