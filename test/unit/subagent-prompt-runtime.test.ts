@@ -52,22 +52,24 @@ function skill(name: string): Skill {
 }
 
 function promptEvent(): BeforeAgentStartEvent {
+  const systemPromptOptions = {
+    cwd: "/fixture",
+    selectedTools: [],
+    hiddenTools: [],
+    toolSnippets: {},
+    toolGuidelines: {},
+    promptGuidelines: [],
+    customPrompt: "Selected replacement",
+    appendSystemPrompt: '<skill name="explicit">Selected instructions</skill>',
+    sections: {},
+    skills: [skill("safe-bash"), skill("pi-subagents")],
+    contextFiles: [{ path: "/repo/AGENTS.md", content: "Selected project policy" }],
+  };
   return {
     type: "before_agent_start",
     prompt: "Assigned task",
     systemPrompt: "Opaque prompt is never parsed",
-    systemPromptOptions: {
-      cwd: "/fixture",
-      selectedTools: [],
-      toolSnippets: {},
-      toolGuidelines: {},
-      promptGuidelines: [],
-      customPrompt: "Selected replacement",
-      appendSystemPrompt: '<skill name="explicit">Selected instructions</skill>',
-      sections: {},
-      skills: [skill("safe-bash"), skill("pi-subagents")],
-      contextFiles: [{ path: "/repo/AGENTS.md", content: "Selected project policy" }],
-    },
+    systemPromptOptions,
   };
 }
 
