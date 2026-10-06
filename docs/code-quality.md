@@ -22,9 +22,11 @@ npm run quality:sabotage        # clean integrated revision; full baseline CI th
 
 Each quality executable supports `-h`/`--help`. Unknown arguments and child failures are errors.
 `quality` composes engine setup, generated-schema freshness, scope/configuration/suppression policy,
-installed-CLI probes, lint, formatting, root TypeScript 7 checking and effective leaf-project checking.
-`ci` adds the build and the existing package/install smokes and complete test suites. CI qualifies
-actual official Pi and fork installations separately; equal version strings are not runtime proof.
+lint, formatting, root TypeScript 7 checking, effective leaf-project checking and installed-CLI probes.
+Static gates run before the expensive native probes so invalid inputs fail promptly; passing acceptance
+still requires every probe. `ci` adds the build, package/install smokes and complete test suites.
+CI qualifies actual official Pi and fork installations separately; equal version strings are not runtime
+proof.
 
 ### Acceptance budgets and process ownership
 
@@ -213,9 +215,11 @@ mutation-owner isolation, and native-container contents/method ownership.
 `quality:sabotage` starts from a clean committed integrated revision, installs its own lockfile-resolved
 dependencies in a disposable detached worktree, runs baseline **real `npm run ci`**,
 then injects a syntactic lint violation, semantic violation, compiler error, formatting error and wrong
-existing safe-call declaration path in that worktree. It requires the intended error,
-retains logs in the OS temporary directory and removes its own worktree without touching other work.
-A failing baseline is not successful sabotage proof: finish integrated source cleanup first.
+existing safe-call declaration path in the isolated installed-CLI probe. Production policy stays intact
+for that last control, so static checks cannot preempt the intended allowance-isolation failure.
+It requires the intended error, retains logs in the OS temporary directory and removes its own worktree
+without touching other work. A failing baseline is not successful sabotage proof: finish integrated
+source cleanup first.
 
 Report configuration-only changes, checker-integrity corrections, formatting, maintainability changes,
 fixture repairs and actual runtime bug fixes separately. Include the exact commands/results and any

@@ -62,7 +62,7 @@
     "lint:fix": "node scripts/quality-lint.mjs --fix",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "quality": "npm run quality:setup && npm run check:schemas && npm run quality:policy && npm run quality:probes && npm run lint && npm run format:check && npm run typecheck && npm run typecheck:leaves",
+    "quality": "npm run quality:setup && npm run check:schemas && npm run quality:policy && npm run lint && npm run format:check && npm run typecheck && npm run typecheck:leaves && npm run quality:probes",
     "ci": "npm run quality && npm run build && npm run smoke:package && npm run smoke:install && npm run test:all",
     "smoke:real-pi": "node scripts/real-pi-smoke.mjs"
   },

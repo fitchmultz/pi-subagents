@@ -96,17 +96,36 @@ async function sabotage(acceptance, label, content, expected) {
 }
 
 async function verifyIsolationFailure(acceptance) {
-  const configPath = join(acceptance.directory, ".oxlintrc.json");
-  const original = readFileSync(configPath, "utf8");
+  const probePath = join(acceptance.directory, "test/quality/allowances.test.mjs");
+  const original = readFileSync(probePath, "utf8");
+  const anchor = "const options = { ...config.rules[rule][1] };";
+  if (original.split(anchor).length !== 2) {
+    throw new Error(
+      "Native declaration-isolation probe input changed; update the sabotage fixture",
+    );
+  }
   try {
-    const config = JSON.parse(original);
-    config.rules["typescript/no-floating-promises"][1].allowForKnownSafeCalls[0].path =
-      "./src/extension/index.ts";
-    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(
+      probePath,
+      original.replace(
+        anchor,
+        'const options = { ...config.rules[rule][1], allowForKnownSafeCalls: [{ ...allowance, path: "./foreign.ts" }] };',
+      ),
+    );
+    const formatted = await acceptance.command(
+      "npm",
+      ["exec", "--no", "--", "oxfmt", "--write", "test/quality/allowances.test.mjs"],
+      "isolation-format",
+    );
+    if (formatted.status !== 0) {
+      throw new Error(`Allowance sabotage fixture formatting failed: ${formatted.log}`);
+    }
     const result = await acceptance.command("npm", ["run", "ci"], "isolation");
     if (
       result.status === 0 ||
-      !result.output.includes("Effective safe-call policy must select the native declaration only")
+      !result.output.includes(
+        "Native registration diagnostics must match declaration-isolation expectations",
+      )
     ) {
       throw new Error(
         `Allowance sabotage was not rejected by the native declaration-isolation probe; evidence ${result.log}`,
@@ -117,7 +136,7 @@ async function verifyIsolationFailure(acceptance) {
     );
   } finally {
     if (acceptance.cleanupSafe) {
-      writeFileSync(configPath, original);
+      writeFileSync(probePath, original);
     }
   }
 }
@@ -167,7 +186,7 @@ async function verifyAcceptanceFailures() {
       acceptance,
       "format",
       "export const qualityValue= 1;\n",
-      /quality-sabotage.ts|Formatting issues/,
+      /quality-sabotage\.ts[\s\S]*Format issues found/,
     );
     await verifyIsolationFailure(acceptance);
   } finally {

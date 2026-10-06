@@ -69,6 +69,7 @@ copied("copied", () => {});
         [rule, 20],
         [rule, 22],
       ],
+      "Native registration diagnostics must match declaration-isolation expectations",
     );
     assert.equal(compiler(dir).status, 0, compiler(dir).stdout);
     options.allowForKnownSafeCalls = [{ ...allowance, path: "./foreign.ts" }];
