@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Optional loopback-only mTLS Intercom HTTPS bridge over SSH reverse forwarding, with certificate-bound remote peer identity, bounded messaging/inbox API, metadata audit logs, remote CLI, and credential issue/rotation/revocation tooling. The same-machine broker and extension startup remain unchanged.
+
 ## [0.44.4] - 2026-10-04
 
 ### Added

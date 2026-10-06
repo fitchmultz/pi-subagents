@@ -33,6 +33,7 @@
     "skills/**/*",
     "prompts/**/*",
     "docs/intercom.md",
+    "docs/intercom-bridge.md",
     "docs/performance.md",
     "README.md",
     "CHANGELOG.md"
