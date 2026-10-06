@@ -54,7 +54,21 @@ export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
 node dist/pi-intercom/bridge.js --config "$BRIDGE/config.json" >> "$BRIDGE/audit.jsonl"
 ```
 
-The listening record includes the helper PID and port. Record the PID as `HELPER_PID` in your administration terminal; **do not use the broker PID**. Verify `lsof -nP -iTCP:9443 -sTCP:LISTEN` shows only `127.0.0.1:9443`. Keep the helper running; no per-message approvals are needed.
+The listening record includes the helper PID and port. Record the PID as `HELPER_PID` in your administration terminal; **do not use the broker PID**. Wait for that readiness record before making a request: a running process is not proof its listener is ready. Verify `lsof -nP -iTCP:9443 -sTCP:LISTEN` shows only `127.0.0.1:9443`. Keep the helper running; no per-message approvals are needed.
+
+For the installed Mac LaunchAgent (`com.fitchmultz.pi-intercom-bridge`), inspect and administer it with:
+
+```bash
+launchctl print "gui/$(id -u)/com.fitchmultz.pi-intercom-bridge"
+# Reload allowlist without restarting:
+launchctl kill SIGHUP "gui/$(id -u)/com.fitchmultz.pi-intercom-bridge"
+# Stop immediately; remove the plist too to disable future login starts:
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fitchmultz.pi-intercom-bridge.plist"
+# Start again explicitly:
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fitchmultz.pi-intercom-bridge.plist"
+```
+
+The installed agent has no `KeepAlive` auto-restart; stopping its helper really stops access. Remove its plist to disable future login starts permanently. Inspect/drain inbox before a planned helper restart because it is volatile.
 
 ### Tunnel and provision Grok
 
@@ -123,7 +137,7 @@ curl --fail-with-body --max-time 135 \
 
 ### JSON API contract
 
-All routes require mTLS and the certificate allowlist. Unknown routes/fields, wrong methods, non-JSON bodies, unsafe control characters, and requests larger than 64 KiB are rejected. No CORS; browser-origin requests are rejected. Success is `{ "ok": true, ... }`; failures are `{ "ok": false, "error": { "code": "...", "message": "..." } }` with a non-2xx status. No remote-controlled broker frame or command is passed through.
+All routes require mTLS and the certificate allowlist. Unknown routes/fields, wrong methods, non-JSON bodies, unsafe control characters, and requests larger than 64 KiB are rejected. No CORS; browser-origin requests are rejected. Success is `{ "ok": true, ... }`; application failures are `{ "ok": false, "error": { "code": "...", "message": "..." } }` with a non-2xx status. Certificate/allowlist admission can terminate TLS before HTTP; the CLI reports that as a TLS/transport error. No remote-controlled broker frame or command is passed through.
 
 | Route | Request | Success fields |
 |---|---|---|
@@ -168,7 +182,8 @@ The process-boundary integration test uses a private real broker, real TLS certi
 
 ```bash
 node --test test/integration/intercom-bridge.test.ts
-npm run ci
+# Do not inject host startup diagnostics into native fixture stderr:
+env -u PI_TIMING -u PI_EXTENSION_PERFORMANCE npm run ci
 ```
 
 For a live smoke, from a separate Mac process and then Linux use the remote CLI to list peers and ask an intentionally selected connected session:
@@ -178,4 +193,20 @@ node "$REMOTE" list
 node "$REMOTE" ask --to KNOWN_FULL_SESSION_ID --message 'Bridge smoke only: reply with bridge-smoke-ok.' --timeout-ms 120000
 ```
 
-Save only a redacted transcript: platform, operation, returned peer names relevant to the test, accepted/delivered, and reply text. Do not publish unrelated cwd/model/topic/message content. Local/off-box evidence for this implementation is recorded alongside delivery; an off-box transcript requires the actual approved Linux host to be reachable.
+Save only a redacted transcript: platform, operation, returned peer names relevant to the test, accepted/delivered, and reply text. Do not publish unrelated cwd/model/topic/message content.
+
+Observed **2026-10-06**, from a separate process on the Mac through the installed runtime-only helper to the live broker and a real connected Pi session (not a mocked recipient):
+
+```json
+{
+  "platform": "darwin",
+  "transport": "loopback HTTPS mTLS",
+  "list": {"ok": true, "peers": ["secure-intercom-bridge", "grok-bot"]},
+  "ask": {
+    "ok": true, "accepted": true, "delivered": true, "replied": true,
+    "reply": "bridge-smoke-ok"
+  }
+}
+```
+
+**Off-box deployment/smoke is not yet verified:** the actual Grok Linux SSH destination/access was unavailable. No credentials were transferred to an unverified host. Once that access is supplied, verify Linux's listener and repeat these exact list/ask commands there.
