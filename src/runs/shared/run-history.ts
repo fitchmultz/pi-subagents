@@ -67,6 +67,8 @@ export function recordRun(agent: string, task: string, exitCode: number, duratio
 			&& connection.prepare("SELECT key FROM timing_meta WHERE key='legacy-imported'").get();
 		// Filesystem reads and JSON parsing must not consume another writer's admission budget.
 		const legacy = imported ? [] : legacySamples(agentDir).reverse();
+		// Allow brief native writer overlap; three attempts still bound best-effort admission.
+		connection.exec("PRAGMA busy_timeout=1000");
 		historyTransaction(connection, () => {
 			connection.exec(`CREATE TABLE IF NOT EXISTS timing_meta(key TEXT PRIMARY KEY);
 				CREATE TABLE IF NOT EXISTS samples(sequence INTEGER PRIMARY KEY,agent TEXT NOT NULL,task TEXT NOT NULL,ts INTEGER NOT NULL,status TEXT NOT NULL,duration REAL NOT NULL,exit INTEGER);
