@@ -964,12 +964,10 @@ for (const terminalState of ["complete", "failed"] as const) {
 }
 
 test("foreground result collection requires durable publication, not an early terminal status", async (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
-  const poll = t.mock.method(globalThis, "setInterval");
   const f = await setup(t),
     id = randomUUID(),
-    asyncDir = path.join(f.cwd, "write-gap");
-  fs.mkdirSync(asyncDir);
+    asyncDir = getRunMetadataDir(id);
+  fs.mkdirSync(asyncDir, { recursive: true });
   const original = f.state.ownedRuns.get(f.runId);
   assertDefined(original);
   f.state.ownedRuns.set(id, {
@@ -980,43 +978,177 @@ test("foreground result collection requires durable publication, not an early te
     asyncDir,
     pid: process.pid,
   });
-  fs.writeFileSync(
-    path.join(asyncDir, "status.json"),
-    JSON.stringify({
+  const watch = t.mock.method(fs, "watch");
+  syncBuiltinESMExports();
+  const poll = t.mock.method(globalThis, "setInterval");
+  const controller = new AbortController();
+  let returned = false;
+  const pending = waitForOwnedRun({
+    id,
+    deps: f.deps,
+    ctx: makeMinimalCtx(f.cwd),
+    signal: controller.signal,
+  }).then((result) => {
+    returned = true;
+    return result;
+  });
+  const ownerWatch = watch.mock.calls[0]?.result;
+  // The broken no-watch baseline still needs an independent publication witness.
+  const admitted = ownerWatch ?? fs.watch(asyncDir);
+  const published: string[] = [];
+  admitted.on("change", (_event, filename) => {
+    published.push(filename.toString());
+  });
+  try {
+    assert.equal(poll.mock.callCount(), 1, "the actual wait registered its fallback");
+    assert.equal(poll.mock.calls[0].arguments[1], POLL_INTERVAL_MS);
+    // Freeze only this parent's interval after actual wait admission. Native
+    // directory notifications and filesystem publication remain real.
+    clearInterval(poll.mock.calls[0].result);
+    await until(() => {
+      if (published.includes("status.json")) {
+        return true;
+      }
+      saveRunStatus(id, {
+        runId: id,
+        mode: "single",
+        state: "running",
+        startedAt: 1,
+        pid: process.pid,
+        steps: [{ agent: "worker", status: "running" }],
+      });
+      return false;
+    }, "the admitted native watcher is ready");
+    published.length = 0;
+    saveRunStatus(id, {
       runId: id,
       mode: "single",
       state: "complete",
       startedAt: 1,
       pid: process.pid,
       steps: [{ agent: "worker", status: "complete" }],
-    }),
-  );
-  let returned = false;
-  const pending = waitForOwnedRun({ id, deps: f.deps, ctx: makeMinimalCtx(f.cwd) }).then(
-    (result) => {
-      returned = true;
-      return result;
-    },
-  );
-  assert.equal(poll.mock.callCount(), 1, "an early status must leave an active wait");
-  assert.equal(poll.mock.calls[0].arguments[1], POLL_INTERVAL_MS);
-  t.mock.timers.tick(POLL_INTERVAL_MS);
-  await Promise.resolve();
-  assert.equal(returned, false);
-  fs.mkdirSync(getRunMetadataDir(id), { recursive: true });
-  fs.writeFileSync(
-    path.join(getRunMetadataDir(id), "result.json"),
-    JSON.stringify({
+    });
+    await until(
+      () => published.includes("status.json"),
+      "the admitted native watcher processed terminal status",
+    );
+    assert.equal(returned, false, "an early terminal status is not a saved result");
+    saveAsyncRunResult(id, {
       id,
       mode: "single",
       success: true,
       state: "complete",
       results: [{ agent: "worker", output: "DURABLE-AFTER-GAP", exitCode: 0, success: true }],
-    }),
-  );
-  t.mock.timers.tick(POLL_INTERVAL_MS);
-  assert.match(textAt((await pending).content), /DURABLE-AFTER-GAP/);
+    });
+    await until(() => published.includes("result.json"), "native durable result publication");
+    await until(() => returned, "durable publication must wake the wait without a polling tick");
+    assert.match(textAt((await pending).content), /DURABLE-AFTER-GAP/);
+    assert.equal(watch.mock.callCount(), 1, "the owner admitted one actual native directory watch");
+    assert.equal(watch.mock.calls[0].arguments[0], asyncDir);
+    assert.equal(f.state.waitingRuns?.has(id), false);
+  } finally {
+    controller.abort();
+    await pending;
+    if (ownerWatch === undefined) {
+      admitted.close();
+    }
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
+
+for (const fault of ["error", "abort"] as const) {
+  test(`publication watcher ${fault} retains polling or prevents reads after cancellation`, async (t) => {
+    const f = await setup(t),
+      id = randomUUID(),
+      asyncDir = getRunMetadataDir(id);
+    const original = f.state.ownedRuns.get(f.runId);
+    assertDefined(original);
+    f.state.ownedRuns.set(id, {
+      ...original,
+      runId: id,
+      rootRunId: id,
+      source: "async",
+      asyncDir,
+      pid: process.pid,
+    });
+    saveRunStatus(id, {
+      runId: id,
+      mode: "single",
+      state: "running",
+      startedAt: 1,
+      pid: process.pid,
+      steps: [{ agent: "worker", status: "running" }],
+    });
+    const publication: PromiseWithResolvers<void> = Promise.withResolvers();
+    const witness = fs.watch(asyncDir, (_event, filename) => {
+      if (filename === "result.json") {
+        publication.resolve();
+      }
+    });
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const polling = t.mock.method(globalThis, "setInterval");
+    const watch = t.mock.method(fs, "watch");
+    syncBuiltinESMExports();
+    const controller = new AbortController();
+    let updates = 0;
+    const pending = waitForOwnedRun({
+      id,
+      deps: f.deps,
+      ctx: makeMinimalCtx(f.cwd),
+      signal: controller.signal,
+      onUpdate: () => {
+        updates++;
+      },
+    });
+    try {
+      assert.equal(polling.mock.calls[0].arguments[1], POLL_INTERVAL_MS);
+      const watcher = watch.mock.calls[0].result;
+      assertDefined(watcher);
+      const close = t.mock.method(watcher, "close");
+      const waiting = f.state.waitingRuns;
+      assertDefined(waiting);
+      const release = t.mock.method(waiting, "delete");
+      if (fault === "error") {
+        watcher.emit("error", new Error("native watch failure"));
+        assert.equal(close.mock.callCount(), 1, "watch error closes its native owner immediately");
+        saveAsyncRunResult(id, {
+          id,
+          mode: "single",
+          state: "complete",
+          success: true,
+          results: [{ agent: "worker", output: "POLL-FALLBACK", exitCode: 0 }],
+        });
+        await publication.promise;
+        t.mock.timers.tick(POLL_INTERVAL_MS);
+        const result = await pending;
+        assert.equal(result.details.wait?.status, "completed");
+        assert.match(textAt(result.content), /POLL-FALLBACK/);
+      } else {
+        controller.abort();
+        assert.equal((await pending).details.wait?.status, "cancelled");
+        const reads = t.mock.method(fs, "openSync");
+        syncBuiltinESMExports();
+        const settledUpdates = updates;
+        watcher.emit("change", "rename", null);
+        watcher.emit("change", "rename", "result.json");
+        t.mock.timers.tick(POLL_INTERVAL_MS);
+        assert.equal(reads.mock.callCount(), 0, "queued notifications cannot read after abort");
+        assert.equal(updates, settledUpdates, "queued notifications cannot publish after abort");
+      }
+      assert.equal(close.mock.callCount(), 1, "each owned native watcher closes exactly once");
+      assert.equal(release.mock.callCount(), 1, "wait ownership releases exactly once");
+      assert.equal(waiting.has(id), false);
+      assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
+    } finally {
+      controller.abort();
+      await pending;
+      witness.close();
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+}
 
 test("waiting polls one fresh view without reading transcripts or enumerating unrelated questions", async (t) => {
   const f = await setup(t),

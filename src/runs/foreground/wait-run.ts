@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { watch, type FSWatcher } from "node:fs";
 import { writeAsyncControlRequest } from "../background/async-control.ts";
 import {
   ownedRunExecutionResult,
@@ -73,6 +74,7 @@ export async function waitForOwnedRun(input: WaitInput): Promise<SubagentExecuti
 class RunWait {
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private watcher: FSWatcher | undefined;
   private unsubscribe: (() => void) | undefined;
   private readonly pending = Promise.withResolvers<SubagentExecutionResult>();
   private previous = "";
@@ -98,6 +100,7 @@ class RunWait {
       if (this.input.signal?.aborted === true) {
         this.abort();
       } else {
+        this.watchPublications();
         this.check();
       }
       // Unlike passive background tracking, this call owes a result. Keep the
@@ -110,6 +113,39 @@ class RunWait {
     }
     return this.pending.promise;
   }
+
+  private watchPublications(): void {
+    const { asyncDir } = this.target;
+    if (asyncDir === undefined || asyncDir.length === 0) {
+      return;
+    }
+    try {
+      this.watcher = watch(asyncDir, (_event, filename) => {
+        // Publication only wakes the authoritative observation; temporary
+        // files and event streams are not status or saved-result authority.
+        if (filename === null || filename === "status.json" || filename === "result.json") {
+          this.check();
+        }
+      });
+      this.watcher.on("error", this.watchFailed);
+    } catch {
+      this.watchFailed();
+    }
+  }
+
+  private closeWatch(): void {
+    const watcher = this.watcher;
+    this.watcher = undefined;
+    watcher?.close();
+  }
+
+  private readonly watchFailed = (): void => {
+    try {
+      this.closeWatch();
+    } catch {
+      // This optional wakeup failed; the original live polling owner remains.
+    }
+  };
 
   private finish(outcome: WaitOutcome): void {
     if (this.finished) {
@@ -157,6 +193,9 @@ class RunWait {
       },
       () => {
         this.input.signal?.removeEventListener("abort", this.abort);
+      },
+      () => {
+        this.closeWatch();
       },
     ]) {
       try {
@@ -237,6 +276,9 @@ class RunWait {
   };
 
   private readonly check = (): void => {
+    if (this.finished) {
+      return;
+    }
     const { deps, ctx, index } = this.input;
     try {
       if (
