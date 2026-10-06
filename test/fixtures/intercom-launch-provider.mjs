@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -13,6 +13,7 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import(
 export default function (pi) {
   const input = JSON.parse(readFileSync(process.env.PI_INTERCOM_LAUNCH_FIXTURE, "utf8"));
   const path = join(input.receipts, `${process.pid}.json`);
+  const pending = join(dirname(input.receipts), `${process.pid}.receipt.tmp`);
   const receipt = {
     pid: process.pid,
     ppid: process.ppid,
@@ -26,7 +27,10 @@ export default function (pi) {
     dialog: null,
     shutdown: false,
   };
-  const save = () => writeFileSync(path, JSON.stringify(receipt));
+  const save = () => {
+    writeFileSync(pending, JSON.stringify(receipt), { mode: 0o600 });
+    renameSync(pending, path);
+  };
   save();
   globalThis.fetch = async () => {
     receipt.networkRequests++;

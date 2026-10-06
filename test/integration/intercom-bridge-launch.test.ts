@@ -214,8 +214,20 @@ test(
       await until(() => gone(runtimePid));
       assert.equal(gone(runtimePid), true, "native runtime must exit with its CLI owner");
     };
+    const previousAgent = process.env.PI_CODING_AGENT_DIR;
+    const previousTmp = process.env.TMPDIR;
+    process.env.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR;
+    process.env.TMPDIR = root;
+    const observer = new IntercomClient();
     try {
       await broker.wait(/Intercom broker started/);
+      await observer.connect({
+        name: "launch-observer",
+        cwd,
+        model: "fixture",
+        status: "idle",
+      });
+      assert.ok((await observer.listSessions()).some((peer) => peer.id === observer.sessionId));
       const running = await launchBridge();
       await t.test(
         "native persistence and idle readiness precede inference; ordinary mTLS ask invokes real reply tool",
@@ -340,26 +352,12 @@ test(
       await t.test(
         "early native activity cannot admit a duplicate start and stalled broker readiness obeys the launch deadline",
         async () => {
-          const previousAgent = process.env.PI_CODING_AGENT_DIR;
-          const previousTmp = process.env.TMPDIR;
-          process.env.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR;
-          process.env.TMPDIR = root;
-          const observer = new IntercomClient();
           let paused = false;
           const pausedAt = running.active.output().length;
           let pending:
             | Promise<{ readonly status: number; readonly body: UnknownRecord }>
             | undefined;
           try {
-            await observer.connect({
-              name: "launch-observer",
-              cwd,
-              model: "fixture",
-              status: "idle",
-            });
-            assert.ok(
-              (await observer.listSessions()).some((peer) => peer.name === "launch-observer"),
-            );
             scenario("early-work");
             policy.startupTimeoutMs = 2500;
             save();
@@ -417,17 +415,6 @@ test(
               // Teardown settles any successful admission if an earlier assertion failed.
               // oxlint-disable-next-line no-await-in-loop
               await running.request("stop", { sessionId: row.sessionId });
-            }
-            await observer.disconnect();
-            if (previousAgent === undefined) {
-              delete process.env.PI_CODING_AGENT_DIR;
-            } else {
-              process.env.PI_CODING_AGENT_DIR = previousAgent;
-            }
-            if (previousTmp === undefined) {
-              delete process.env.TMPDIR;
-            } else {
-              process.env.TMPDIR = previousTmp;
             }
             policy.startupTimeoutMs = 12000;
             save();
@@ -639,6 +626,10 @@ test(
             null,
             "helper must never stop the independent broker",
           );
+          assert.ok(
+            (await observer.listSessions()).some((peer) => peer.id === observer.sessionId),
+            "the independent broker peer must remain usable after helper shutdown",
+          );
           // Fresh helper owns none of the old processes and does not resume them implicitly.
           const clocked = await launchBridge("test/fixtures/intercom-bridge-clock.ts", renewed);
           const next = clocked.active;
@@ -671,6 +662,17 @@ test(
     } finally {
       if (bridge) {
         await stop(bridge.child);
+      }
+      await observer.disconnect();
+      if (previousAgent === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previousAgent;
+      }
+      if (previousTmp === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = previousTmp;
       }
       await stop(broker.child);
       for (const pid of pids) {
