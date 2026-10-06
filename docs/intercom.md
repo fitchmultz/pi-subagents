@@ -572,7 +572,7 @@ Assistant-error replies wait for broker acknowledgement during `message_end`, bo
 
 Historical official Pi 0.87.1 checks exposed queue visibility and prompt-preparation races. Current tests preserve exact-once receipts and input rejection/recovery on the selected host, including the genuine Pi 1.0 pre-admission window described above; they do not promise one combined provider turn. Historical results are not a current 1.0 pass. Use an explicit `async: false` wait when dependent work needs a finalized result. Native pending-call, idle-checkpoint and immediate-usage APIs are no longer supported. See [result delivery](../README.md#host-capabilities-and-result-delivery) and [local qualification](../README.md#local-validation).
 
-- **Same machine only** — Uses local Unix sockets, no network support
+- **Same machine only** — The core broker uses local Unix sockets, no network support. The optional [secure remote bridge](intercom-bridge.md) authenticates remote messaging through a separate loopback mTLS proxy; it does not expose the broker socket.
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine
