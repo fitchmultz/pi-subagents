@@ -1,13 +1,14 @@
-import { hasErrorCode } from "../../src/shared/unknown.ts";
 import { createSubagentState } from "../support/background-fixtures.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
 import { assertDefined, parseJson, textAt, record, numberValue } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 /** Parallel execution through the public executor. */
 
-import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync, type ChildProcess } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -32,23 +33,21 @@ import {
 describe("parallel agent execution", () => {
   let tempDir: string;
   let mockPi: MockPi;
+  let fixtureJoined: boolean;
 
-  before(() => {
+  beforeEach(() => {
+    tempDir = createTempDir();
+    fixtureJoined = true;
+    // An unresolved previous owner must keep its queue/bin, not have it reset by the next test.
     mockPi = createMockPi();
     mockPi.install();
   });
 
-  after(() => {
-    mockPi.uninstall();
-  });
-
-  beforeEach(() => {
-    tempDir = createTempDir();
-    mockPi.reset();
-  });
-
   afterEach(() => {
-    removeTempDir(tempDir);
+    mockPi.uninstall({ retainFiles: !fixtureJoined });
+    if (fixtureJoined) {
+      removeTempDir(tempDir);
+    }
   });
 
   function git(cwd: string, args: readonly string[]): string {
@@ -156,14 +155,53 @@ describe("parallel agent execution", () => {
     let runId: string | undefined;
     let launcherPid: number | undefined;
     let runnerPid: number | undefined;
+    const cancellation = new AbortController();
+    const failures: unknown[] = [];
+    let launcher: ChildProcess | undefined;
+    let nativeClose:
+      | { readonly code: number | null; readonly signal: NodeJS.Signals | null }
+      | undefined;
+    let spawnError: Error | undefined;
+    const closed: PromiseWithResolvers<void> = Promise.withResolvers();
+    const observeClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      nativeClose = { code, signal };
+      closed.resolve();
+    };
+    // The native spy delegates unchanged and retains the real return before spawnRunner
+    // unrefs it. Its synchronous started event attaches close/error before the event loop.
+    const observedSpawn = t.mock.method(childProcess, "spawn");
+    syncBuiltinESMExports();
     bus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
       const started = parseAsyncStartedEvent(event);
+      assertDefined(started.id);
       runId = started.id;
       launcherPid = started.pid;
+      const launches = observedSpawn.mock.calls.filter(
+        ({ arguments: args }) =>
+          args[0] === process.execPath &&
+          args[1][0] ===
+            fileURLToPath(
+              new URL("../../src/runs/background/subagent-runner-launcher.ts", import.meta.url),
+            ) &&
+          args[2].cwd === tempDir,
+      );
+      assert.equal(launches.length, 1, "one native launcher owns the controlled fixture");
+      const launch = launches[0];
+      assertDefined(launch);
+      launcher = launch.result;
+      assertDefined(launcher);
+      assert.equal(launcher.pid, launcherPid, "published launch matches the native spawn return");
+      assert.equal(launch.arguments[1][2], path.join(getRunMetadataDir(runId), "launch.json"));
+      launcher.once("error", (error) => {
+        spawnError = error;
+      });
+      // This launcher awaits runner close; these two mock responses have no descendants.
+      launcher.once("close", observeClose);
     });
     const executor = makeExecutor([makeAgent("slow"), makeAgent("second")], tempDir, bus);
     let resultPromise: Promise<SubagentExecutionResult> | undefined;
     let result: SubagentExecutionResult | undefined;
+    let resultSettled = false;
     let completed = false;
     let sequence = 0;
     const readEvidence = (name: string) => {
@@ -202,56 +240,53 @@ describe("parallel agent execution", () => {
       );
       return numberValue(record(parseJson(fs.readFileSync(`${clockFile}.ack`, "utf8"))).now);
     };
-    const alive = (pid: number | undefined) => {
-      if (!((pid ?? 0) !== 0 && !Number.isNaN(pid))) {
-        return false;
-      }
+    const cancelOwner = async () => {
       try {
-        assertDefined(pid);
-        process.kill(pid, 0);
-        return true;
-      } catch (error) {
-        if (hasErrorCode(error, "ESRCH")) {
-          return false;
+        if (launcher !== undefined && nativeClose === undefined) {
+          // A live runner acknowledges real timers before RunWait saves cooperative cancel.
+          clockCommand({ resume: true });
+          await waitFor(
+            () =>
+              nativeClose !== undefined ||
+              (fs.existsSync(`${clockFile}.ack`) &&
+                record(parseJson(fs.readFileSync(`${clockFile}.ack`, "utf8"))).sequence ===
+                  sequence),
+            "owner clock resumes or actual launcher closes",
+          );
         }
-        throw error;
+      } finally {
+        cancellation.abort();
       }
     };
-    const stopOwner = () => {
-      try {
-        if (runnerPid !== undefined && alive(runnerPid)) {
-          process.kill(runnerPid, "SIGTERM");
-        } else if (launcherPid !== undefined && alive(launcherPid)) {
-          process.kill(-launcherPid, "SIGTERM");
-        }
-      } catch (error) {
-        if (!hasErrorCode(error, "ESRCH")) {
-          throw error;
-        }
-      }
-    };
-    const failures: unknown[] = [];
+    let resultJoin: Promise<void> | undefined;
+    fixtureJoined = false;
     try {
       process.env.NODE_OPTIONS = `${savedEnv.NODE_OPTIONS ?? ""} --import=${preload}`;
       process.env.PI_TEST_RUNNER_CLOCK = clockFile;
-      resultPromise = executor
-        .execute({
-          toolCallId: "parallel-extend",
-          params: {
-            tasks: [
-              { agent: "slow", task: "Need more time" },
-              { agent: "second", task: "Starts after extension" },
-            ],
-            concurrency: 1,
-            timeoutMs: 250,
-          },
-          signal: new AbortController().signal,
-          ctx: makeMinimalCtx(tempDir),
-        })
-        .then((value) => {
+      resultPromise = executor.execute({
+        toolCallId: "parallel-extend",
+        params: {
+          tasks: [
+            { agent: "slow", task: "Need more time" },
+            { agent: "second", task: "Starts after extension" },
+          ],
+          concurrency: 1,
+          timeoutMs: 250,
+        },
+        signal: cancellation.signal,
+        ctx: makeMinimalCtx(tempDir),
+      });
+      resultJoin = resultPromise.then(
+        (value) => {
           result = value;
-          return value;
-        });
+          resultSettled = true;
+          return;
+        },
+        (error: unknown) => {
+          failures.push(error);
+          resultSettled = true;
+        },
+      );
       await waitFor(() => {
         const current = status();
         runnerPid = current?.pid ?? runnerPid;
@@ -263,6 +298,11 @@ describe("parallel agent execution", () => {
           mockPi.callCount() === 1
         );
       }, "actual owner deadline and first child are ready");
+      assertDefined(launcher);
+      assertDefined(launcherPid);
+      assertDefined(runnerPid);
+      assert.equal(launcher.pid, launcherPid, "real launch event identifies the captured owner");
+      assert.notEqual(runnerPid, launcherPid, "launcher awaits a separate actual runner");
       const initial = status();
       assertDefined(initial);
       const initialTimeout = initial.timeoutAt;
@@ -326,19 +366,30 @@ describe("parallel agent execution", () => {
     try {
       fs.writeFileSync(release, "cleanup");
       if (!completed) {
-        // Switch back to native timers for cancellation if a clock assertion failed.
-        clockCommand({ resume: true });
-        stopOwner();
+        await cancelOwner();
       }
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await waitFor(() => resultSettled, "original foreground wait settles");
+      await resultJoin;
+      assertDefined(launcher);
       await waitFor(
-        () => !alive(launcherPid === undefined ? undefined : -launcherPid) && !alive(runnerPid),
-        "owned launcher group and runner exit before fixture teardown",
+        () => nativeClose !== undefined,
+        "native launcher/runner close before fixture teardown",
       );
-      await waitFor(() => result !== undefined, "foreground wait settles after owner exit");
-      await resultPromise;
+      await closed.promise;
+      assert.equal(spawnError, undefined, "native owner observation has no spawn error");
+      assertDefined(nativeClose);
+      assert.equal(nativeClose.code, 0, "launcher joined actual runner successfully");
+      assert.equal(nativeClose.signal, null, "launcher was not externally terminated");
+      fixtureJoined = true;
     } catch (error) {
       failures.push(error);
     } finally {
+      observedSpawn.mock.restore();
+      syncBuiltinESMExports();
       for (const [key, value] of Object.entries(savedEnv)) {
         if (value === undefined) {
           delete process.env[key];
@@ -348,16 +399,23 @@ describe("parallel agent execution", () => {
       }
     }
     if (failures.length > 0) {
-      t.diagnostic(JSON.stringify({ cleanupFailures: failures.slice(1) }));
-      throw new Error(
-        `Parallel extension failed: ${JSON.stringify({
+      t.diagnostic(
+        JSON.stringify({
+          cleanupFailures: failures
+            .slice(1)
+            .map((error) => (error instanceof Error ? error.message : JSON.stringify(error))),
+          fixtureJoined,
           result,
           status: readEvidence("status.json"),
           events: readEvidence("events.jsonl"),
           runnerErrors: readEvidence("runner-error.log"),
-        })}`,
-        { cause: failures[0] },
+        }),
       );
+      const originalError = failures[0];
+      if (originalError instanceof Error) {
+        throw originalError;
+      }
+      throw new Error("Parallel extension failed", { cause: originalError });
     }
   });
 

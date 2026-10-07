@@ -42,7 +42,7 @@ interface MockPiResponse {
 export interface MockPi {
   readonly dir: string;
   readonly install: () => void;
-  readonly uninstall: () => void;
+  readonly uninstall: (options?: { readonly retainFiles?: boolean }) => void;
   readonly onCall: (response: ReadonlyDeep<MockPiResponse>) => void;
   readonly reset: () => void;
   readonly callCount: () => number;
@@ -107,7 +107,7 @@ export function createMockPi(): MockPi {
       process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
       process.env.MOCK_PI_QUEUE_DIR = queueDir;
     },
-    uninstall() {
+    uninstall(options = {}) {
       if (!installed) {
         return;
       }
@@ -121,6 +121,9 @@ export function createMockPi(): MockPi {
         delete process.env.MOCK_PI_QUEUE_DIR;
       } else {
         process.env.MOCK_PI_QUEUE_DIR = originalQueueEnv;
+      }
+      if (options.retainFiles === true) {
+        return;
       }
       try {
         fs.rmSync(rootDir, { recursive: true, force: true });

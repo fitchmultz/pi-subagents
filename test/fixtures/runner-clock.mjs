@@ -1,13 +1,21 @@
 import fs from "node:fs";
 import { mock } from "node:test";
+import { performance } from "node:perf_hooks";
 
 // Only the private runner uses virtual time; MockPi clears NODE_OPTIONS for its real children.
 const clockFile = process.env.PI_TEST_RUNNER_CLOCK;
 if (clockFile && /subagent-runner\.(?:ts|js)$/.test(process.argv[1] ?? "")) {
   const interval = globalThis.setInterval;
   let sequence = 0;
+  let resumedAt;
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.now() });
   const pump = interval(() => {
+    if (resumedAt !== undefined) {
+      const now = performance.now();
+      // Reset would erase the runner's deadline/control timers, preventing cooperative cancel.
+      mock.timers.tick(now - resumedAt);
+      resumedAt = now;
+    }
     if (!fs.existsSync(clockFile)) {
       return;
     }
@@ -17,7 +25,7 @@ if (clockFile && /subagent-runner\.(?:ts|js)$/.test(process.argv[1] ?? "")) {
     }
     sequence = command.sequence;
     if (command.resume) {
-      mock.timers.reset();
+      resumedAt = performance.now();
     } else {
       mock.timers.tick(command.tick);
     }
