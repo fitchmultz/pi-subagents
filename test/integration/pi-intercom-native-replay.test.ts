@@ -50,6 +50,7 @@ if (evidenceDir !== undefined && evidenceDir !== "") {
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
 }
 const root = realpathSync(mkdtempSync(path.join(evidenceDir ?? tmpdir(), "pi-intercom-native-")));
+let retainRoot = false;
 const agentDir = path.join(root, "agent");
 for (const directory of [
   agentDir,
@@ -170,7 +171,7 @@ afterAll(async () => {
     broker.kill("SIGTERM");
     await exited;
   }
-  if (evidenceDir !== undefined && evidenceDir !== "") {
+  if (retainRoot || (evidenceDir !== undefined && evidenceDir !== "")) {
     writeFileSync(path.join(root, "broker.log"), brokerLog);
   } else {
     rmSync(root, { recursive: true, force: true });
@@ -2468,19 +2469,83 @@ for (const scenario of ["question", "tool"] as const) {
       extensions: [],
     });
     let asyncDir: string | undefined, pending: Promise<unknown> | undefined;
-    t.after(async () => {
+    let tearingDown = false;
+    const releaseChild = () => {
       writeFileSync(release, "released");
       for (const question of listSupervisorQuestions(owner, name)) {
         if (question.state === "awaiting_input") {
           saveQuestionAnswer(question, "Use the synthetic native path.");
         }
       }
-      await pending;
-      for (const [key, value] of Object.entries(savedEnv)) {
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
+    };
+    const waitForChild = () => {
+      const runDirectory = asyncDir;
+      if (runDirectory === undefined) {
+        return pending;
+      }
+      // Completion and native exit are bounded only after the held child is released.
+      pending ??= (async () => {
+        let failure: Error | undefined, status: ReturnType<typeof json> | undefined;
+        try {
+          await waitFor(() => {
+            if (tearingDown) {
+              releaseChild();
+            }
+            return (
+              existsSync(path.join(runDirectory, "status.json")) &&
+              json(readFileSync(path.join(runDirectory, "status.json"), "utf8")).state !== "running"
+            );
+          }, "async child completion");
+          status = json(readFileSync(path.join(runDirectory, "status.json"), "utf8"));
+          assert.equal(status.state, "complete");
+        } catch (error) {
+          if (!(error instanceof Error)) {
+            retainRoot = true;
+            throw error;
+          }
+          failure = error;
+        }
+        try {
+          // Completion failure cannot stand in for observing the actual runner's exit.
+          await waitFor(() => {
+            if (tearingDown) {
+              releaseChild();
+            }
+            if (!existsSync(path.join(runDirectory, "status.json"))) {
+              return false;
+            }
+            const observed = json(readFileSync(path.join(runDirectory, "status.json"), "utf8"));
+            return !questionProcessAlive({ pid: numberValue(observed.pid) });
+          }, "private runner exit");
+        } catch (error) {
+          retainRoot = true;
+          if (failure === undefined) {
+            throw error;
+          }
+          t.diagnostic(`Private runner custody remains uncertain: ${errorMessage(error)}`);
+        }
+        if (failure !== undefined) {
+          throw failure;
+        }
+        return status;
+      })();
+      return pending;
+    };
+    t.after(async () => {
+      try {
+        tearingDown = true;
+        releaseChild();
+        await waitForChild();
+      } catch (error) {
+        retainRoot = true;
+        throw error;
+      } finally {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
         }
       }
     });
@@ -2499,22 +2564,6 @@ for (const scenario of ["question", "tool"] as const) {
       });
       assert.ok(started.isError !== true, textAt(started.content));
       asyncDir = text(started.details.asyncDir);
-      // The durable runner status is also the cleanup receipt for this synthetic child.
-      pending = (async () => {
-        await waitFor(
-          () =>
-            existsSync(path.join(asyncDir, "status.json")) &&
-            json(readFileSync(path.join(asyncDir, "status.json"), "utf8")).state !== "running",
-          "async child completion",
-        );
-        const status = json(readFileSync(path.join(asyncDir, "status.json"), "utf8"));
-        assert.equal(status.state, "complete");
-        await waitFor(
-          () => !questionProcessAlive({ pid: numberValue(status.pid) }),
-          "private runner exit",
-        );
-        return status;
-      })();
     }
     const childReceipt = () => json(readFileSync(`${release}.json`, "utf8"));
     await waitFor(
@@ -2607,7 +2656,7 @@ for (const scenario of ["question", "tool"] as const) {
     assert.ok(numberValue(event.elapsedMs) >= controlConfig.needsAttentionAfterMs);
     assert.match(message.content, /agent_runs\(\{ action: "inspect"/);
     assert.doesNotMatch(message.content, /subagent\(\{ action: "(?:status|nudge|interrupt)"/);
-    await pending;
+    await waitForChild();
     assert.equal(childReceipt().modelCalls, 2);
     assert.equal(childReceipt().networkRequests, 0);
     assert.deepEqual(childReceipt().errors, []);
