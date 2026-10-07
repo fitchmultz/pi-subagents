@@ -56,6 +56,22 @@ test("removed wait action is rejected without starting or attaching to work", as
 	assert.equal(f.mock.callCount(), 0);
 });
 
+test("a foreground wait returns bounded actionable questions without copying saved launch baselines", async (t) => {
+	const f = setup(t);
+	saveQuestionContract(f.runId, 0, { attemptBaseline: Array.from({ length: 10_000 }, (_, index) => `native-${index}`) });
+	const question = createSupervisorQuestion({ runId: f.runId, ownerTarget: "parent", agent: "worker", index: 0,
+		childSessionId: "child", childTarget: "child", sessionFile: path.join(f.cwd, "session.jsonl"), cwd: f.cwd, pid: process.pid,
+		reason: "need_decision", message: `Choose the API. ${"large context ".repeat(2000)} QUESTION-END` });
+	const result = await waitForOwnedRun({ id: f.runId, deps: f.deps, ctx: makeMinimalCtx(f.cwd) });
+	assert.equal(result.details.wait?.status, "awaiting_input");
+	assert.ok(Buffer.byteLength(JSON.stringify(result.details.questions)) < 5000);
+	assert.match(result.content[0]!.text, /Choose the API/);
+	assert.match(result.content[0]!.text, /action: "answer"/);
+	assert.ok(result.content[0]!.text.includes(question.questionId));
+	assert.doesNotMatch(result.content[0]!.text, /QUESTION-END/);
+	assert.equal(readQuestionState(question).state, "awaiting_input", "returning the wait must not cancel the child or answer its question");
+});
+
 test("continue async:false waits for the new saved-launch result, not the original completed handle", async (t) => {
 	const f = setup(t);
 	f.mock.onCall({ output: "ACTUAL-CONTINUATION-RESULT", delay: 250 });

@@ -580,7 +580,8 @@ export interface Details {
 	intercomTargets?: string[];
 	managementControl?: ManagementControl;
 	managementControls?: ManagementControl[];
-	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
+	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionSummary[];
+	questionList?: { total: number; offset: number; limit: number; nextOffset?: number };
 	wait?: { runId: string; completionId?: string; index?: number; status: "completed" | "cancelled" | "yielded" | "awaiting_input" | "unavailable" };
 	run?: OwnedRunView;
 	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId" | "predecessorIndex"> & { summary?: string; continuations?: string[] }>;

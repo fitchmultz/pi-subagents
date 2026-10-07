@@ -6,11 +6,11 @@ export function formatAgentProcessExit(exit: AgentProcessExit | undefined): stri
 		: "Agent process exit not recorded. Command exit is unconfirmed.";
 }
 
-export function formatRunAction(action: ManagementAction | "questions" | "answer", id: string, fields: Record<string, string | number | boolean> = {}, childSafe = false): string {
+export function formatRunAction(action: ManagementAction | "questions" | "answer", id: string | undefined, fields: Record<string, string | number | boolean> = {}, childSafe = false): string {
 	const legacyChild = childSafe && loadConfig().compactChildTools === false;
 	const parentAction = { status: "inspect", resume: "continue", interrupt: "stop" };
 	const name = legacyChild ? action : parentAction[action as keyof typeof parentAction] ?? action;
-	const args = Object.entries({ action: name, id, ...fields }).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(", ");
+	const args = Object.entries({ action: name, ...(id !== undefined ? { id } : {}), ...fields }).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(", ");
 	const call = `${legacyChild || action === "extend" ? "subagent" : "agent_runs"}({ ${args} })`;
 	return action === "extend" && !legacyChild ? `load_subagent({}), then ${call}` : call;
 }

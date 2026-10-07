@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ownedRunView } from "../runs/shared/run-records.ts";
 import { acceptanceHumanAction } from "../runs/shared/acceptance-evaluation.ts";
-import { getRunMetadataDir, listRunQuestions } from "../runs/shared/supervisor-questions.ts";
+import { getRunMetadataDir, listRunQuestions, summarizeSupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 import { HistoryIndexError } from "./types.ts";
 import type { ForegroundResumeRun, HistoryOwner, HistoryRunRow, OwnedRun, Request, Response } from "./types.ts";
 import type { SubagentState } from "../shared/types.ts";
@@ -46,10 +46,10 @@ function compactView(view: HistoryRunRow): HistoryRunRow {
 	return {
 		...view, task: safeText(view.task, 2048), error: view.error && safeText(view.error), diagnosis: view.diagnosis && safeText(view.diagnosis), recoveryError: view.recoveryError && safeText(view.recoveryError),
 		review: view.review && { ...view.review, message: view.review.message && safeText(view.review.message) }, continuations: [],
-		questions: view.questions?.map((question) => ({ questionId: question.questionId, runId: question.runId, ownerSessionId: question.ownerSessionId, ownerTarget: question.ownerTarget,
-			agent: question.agent, index: question.index, childSessionId: question.childSessionId, childTarget: question.childTarget, sessionFile: question.sessionFile,
-			cwd: question.cwd, pid: question.pid, processIdentity: question.processIdentity, createdAt: question.createdAt, reason: question.reason, message: safeText(question.message, 2048), state: question.state,
-			answer: question.answer && { ...question.answer, message: safeText(question.answer.message, 2048) }, delivery: question.delivery, revival: question.revival })),
+		questions: view.questions?.map((question) => {
+			const summary = summarizeSupervisorQuestion(question);
+			return { ...summary, message: safeText(summary.message, 2048), answer: summary.answer && { ...summary.answer, message: safeText(summary.answer.message, 2048) } };
+		}),
 		children: view.children.map((child) => ({
 			agent: child.agent, index: child.index, workflowNodeId: child.workflowNodeId, sessionFile: child.sessionFile, task: child.task && safeText(child.task), label: child.label && safeText(child.label, 256),
 			state: child.state, configuration: child.configuration, missingSession: child.missingSession, identityUnavailable: child.identityUnavailable, modelSelection: child.modelSelection,
