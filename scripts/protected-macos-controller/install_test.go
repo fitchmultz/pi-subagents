@@ -5,16 +5,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+
+	"howett.net/plist"
 )
 
 func TestInstallStagesInactivePlistOnlyInPrivateRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	root := t.TempDir()
-	if err := os.Chmod(root, 0700); err != nil {
+	root := filepath.Join(t.TempDir(), `private & <root> "quoted" 'single' space`)
+	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
 	input := filepath.Join(t.TempDir(), "config-input.json")
@@ -31,37 +34,53 @@ func TestInstallStagesInactivePlistOnlyInPrivateRoot(t *testing.T) {
 	if err != nil || len(plists) != 1 {
 		t.Fatalf("staged plist missing: %v %v", plists, err)
 	}
-	plist := plists[0]
-	for path, mode := range map[string]os.FileMode{filepath.Join(root, "launchd"): 0700, plist: 0600, filepath.Join(root, "config.json"): 0600, filepath.Join(root, "protected-macos-controller"): 0700} {
+	plistPath := plists[0]
+	for path, mode := range map[string]os.FileMode{filepath.Join(root, "launchd"): 0700, plistPath: 0600, filepath.Join(root, "config.json"): 0600, filepath.Join(root, "protected-macos-controller"): 0700} {
 		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != mode {
 			t.Fatalf("%s not private %o: %v", filepath.Base(path), mode, err)
 		}
 	}
-	// Parse with the platform plist tool, not the generator.
-	raw, err := exec.Command("/usr/bin/plutil", "-convert", "json", "-o", "-", plist).Output()
+	before, err := os.ReadFile(plistPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var parsed struct {
+	type serviceDefinition struct {
 		Label            string
 		ProgramArguments []string
 		RunAtLoad        bool
 	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{filepath.Join(root, "protected-macos-controller"), "run", "--config", filepath.Join(root, "config.json")}
-	if !slices.Equal(parsed.ProgramArguments, want) || parsed.Label+".plist" != filepath.Base(plist) || !strings.HasPrefix(parsed.Label, "com.fitchmultz.protected-macos-") || !parsed.RunAtLoad {
-		t.Fatalf("staged service definition wrong: %+v", parsed)
-	}
-	before, err := os.ReadFile(plist)
+	// Decode the actual staged XML independently of the production encoder.
+	var parsed serviceDefinition
+	format, err := plist.Unmarshal(before, &parsed)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if format != plist.XMLFormat {
+		t.Fatalf("staged plist is not XML: format %d", format)
+	}
+	want := []string{filepath.Join(root, "protected-macos-controller"), "run", "--config", filepath.Join(root, "config.json")}
+	if !slices.Equal(parsed.ProgramArguments, want) || parsed.Label+".plist" != filepath.Base(plistPath) || !strings.HasPrefix(parsed.Label, "com.fitchmultz.protected-macos-") || !parsed.RunAtLoad {
+		t.Fatalf("staged service definition wrong: %+v", parsed)
+	}
+	if runtime.GOOS == "darwin" {
+		// macOS must also accept the staged plist with its real platform tool.
+		raw, err := exec.Command("/usr/bin/plutil", "-convert", "json", "-o", "-", plistPath).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var native serviceDefinition
+		if err := json.Unmarshal(raw, &native); err != nil {
+			t.Fatal(err)
+		}
+		if native.Label != parsed.Label || !slices.Equal(native.ProgramArguments, parsed.ProgramArguments) || native.RunAtLoad != parsed.RunAtLoad {
+			t.Fatalf("platform plist semantics differ: native %+v, portable %+v", native, parsed)
+		}
+		t.Log("/usr/bin/plutil -convert json -o -: exit 0; native and portable service semantics agree")
 	}
 	if err := install(config{Root: root}, input); err == nil {
 		t.Fatal("second install replaced the working deployment")
 	}
-	if after, err := os.ReadFile(plist); err != nil || string(after) != string(before) {
+	if after, err := os.ReadFile(plistPath); err != nil || string(after) != string(before) {
 		t.Fatal("refused install modified the staged plist")
 	}
 }
