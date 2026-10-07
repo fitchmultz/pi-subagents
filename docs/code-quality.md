@@ -21,6 +21,10 @@ npm run quality:sabotage        # clean integrated revision; full baseline CI th
 ```
 
 Each quality executable supports `-h`/`--help`. Unknown arguments and child failures are errors.
+Linux native editor receipts also require GNU `cp` and `getcap` at a standard system path.
+Install `libcap2-bin` on Debian/Ubuntu before `ci`, `check:compat` or `quality:sabotage`.
+Without it, the editor correctly refuses existing-file replacements because file capabilities
+cannot be verified; a create-only success does not establish replacement readiness.
 `quality` composes engine setup, generated-schema freshness, scope/configuration/suppression policy,
 lint, formatting, root TypeScript 7 checking, effective leaf-project checking, installed-CLI probes and
 the auxiliary protected-Mac controller's Go checks. Static gates run before expensive native probes so
