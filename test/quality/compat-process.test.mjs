@@ -2511,6 +2511,26 @@ for (const forged of [false, true]) {
           JSON.parse(readFileSync(join(receipt.directory, "state.json"), "utf8")).state,
           "ready",
         );
+        if (!forged) {
+          const incarnation = {
+            pid: escape.pid,
+            uid: escape.uid,
+            sid: escape.sid,
+            identity: escape.identity,
+          };
+          console.log(
+            `Native opaque diagnostic fixture: ${JSON.stringify({ incarnation, receiptRoot: receipt.receiptRoot })}`,
+          );
+          const diagnostic = `native incarnation ${JSON.stringify(incarnation)}`;
+          assert.deepEqual(
+            {
+              borrow: borrowed.cause.includes(diagnostic),
+              rescue: readFileSync(log, "utf8").includes(diagnostic),
+            },
+            { borrow: true, rescue: true },
+            "Both failures preserve the independently observed native incarnation",
+          );
+        }
       } catch (error) {
         failure = error;
         throw error;

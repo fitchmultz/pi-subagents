@@ -34,7 +34,15 @@ export const CI_TIMEOUT_MS = (15 + 5 + 5 + 15 + 1) * MINUTE;
 export const COMPAT_TIMEOUT_MS = (5 + 5 + 1 + 5 + 1) * MINUTE + CI_TIMEOUT_MS;
 
 function observationFailure(entries) {
-  return new Error(entries.map((entry) => entry.message).join("; "));
+  return new Error(
+    entries
+      .map((entry) =>
+        entry.uid === undefined
+          ? entry.message
+          : `${entry.message}; native incarnation ${JSON.stringify({ pid: entry.pid, uid: entry.uid, sid: entry.sid, identity: entry.identity })}`,
+      )
+      .join("; "),
+  );
 }
 function queryFailure(previous, error, deadline) {
   // Query-budget truncation must not hide the last concrete veto.
@@ -313,6 +321,10 @@ export class OwnedProcesses {
       )
       .map((entry) => ({
         pid: entry.pid,
+        // Diagnose the captured birth, never a later incarnation of this PID.
+        uid: snapshot.identities.find(
+          (value) => value.pid === entry.pid && value.identity === entry.identity,
+        )?.uid,
         identity: entry.identity,
         sid: entry.sid,
         message: `Unanchored opaque native process ${entry.pid} in session ${entry.sid}; ownership unknown`,
