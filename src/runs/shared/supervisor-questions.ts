@@ -75,6 +75,46 @@ export interface SupervisorQuestionView extends SupervisorQuestion {
 	revival?: { runId: string; pid: number; startedAt: number };
 }
 
+export interface SupervisorQuestionSummary extends Pick<SupervisorQuestionView,
+	"questionId" | "runId" | "ownerSessionId" | "ownerTarget" | "agent" | "index" | "childSessionId" | "childTarget" |
+	"sessionFile" | "cwd" | "pid" | "processIdentity" | "createdAt" | "reason" | "message" | "state" | "answer" | "delivery" | "revival"> {
+	questionPath: string;
+	answerPath?: string;
+	messageTruncated?: boolean;
+	answerTruncated?: boolean;
+	hasInterview?: boolean;
+}
+
+export function summarizeSupervisorQuestion(question: SupervisorQuestionView): SupervisorQuestionSummary {
+	const directory = questionDir(question);
+	return {
+		questionId: question.questionId, runId: question.runId, ownerSessionId: question.ownerSessionId, ownerTarget: question.ownerTarget,
+		agent: question.agent, index: question.index, childSessionId: question.childSessionId, childTarget: question.childTarget,
+		sessionFile: question.sessionFile, cwd: question.cwd, pid: question.pid, processIdentity: question.processIdentity,
+		createdAt: question.createdAt, reason: question.reason, state: question.state, message: question.message.slice(0, 2048),
+		questionPath: path.join(directory, "question.json"),
+		...(question.message.length > 2048 ? { messageTruncated: true } : {}),
+		...(question.interview ? { hasInterview: true } : {}),
+		...(question.answer ? { answer: { message: question.answer.message.slice(0, 2048), answeredAt: question.answer.answeredAt, origin: question.answer.origin },
+			answerPath: path.join(directory, "answer.json"), ...(question.answer.message.length > 2048 ? { answerTruncated: true } : {}) } : {}),
+		...(question.delivery ? { delivery: { kind: question.delivery.kind, runId: question.delivery.runId, deliveredAt: question.delivery.deliveredAt } } : {}),
+		...(question.revival ? { revival: { runId: question.revival.runId, pid: question.revival.pid, startedAt: question.revival.startedAt } } : {}),
+	};
+}
+
+export function supervisorQuestionPage(questions: SupervisorQuestionView[], options: { offset?: number; limit?: number } = {}): {
+	questions: SupervisorQuestionSummary[];
+	questionList: { total: number; offset: number; limit: number; nextOffset?: number };
+} {
+	const offset = options.offset ?? 0, limit = options.limit ?? 20;
+	if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Question offset must be a non-negative integer.");
+	if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Question limit must be from 1 to 100.");
+	const pending = (question: SupervisorQuestionView) => question.state === "awaiting_input" || question.state === "answer_pending" ? 0 : 1;
+	const sorted = questions.toSorted((a, b) => pending(a) - pending(b) || a.createdAt - b.createdAt || a.questionId.localeCompare(b.questionId));
+	return { questions: sorted.slice(offset, offset + limit).map((question) => summarizeSupervisorQuestion(question)),
+		questionList: { total: questions.length, offset, limit, ...(offset + limit < questions.length ? { nextOffset: offset + limit } : {}) } };
+}
+
 function safeId(value: string): string {
 	if (typeof value !== "string" || !/^[a-zA-Z0-9_-]+$/.test(value)) throw new Error("Invalid run or question ID.");
 	return value;
@@ -356,17 +396,20 @@ export function questionRecoveryHint(question: SupervisorQuestion, childSafe = f
 	return `Recover an unlaunched continuation: ${formatRunAction("resume", question.runId, { index: question.index, message: "Continue with the saved supervisor answer." }, childSafe)}`;
 }
 
-export function formatSupervisorQuestions(questions: SupervisorQuestionView[], childSafe = false): string {
+export function formatSupervisorQuestions(questions: SupervisorQuestionSummary[], childSafe = false): string {
 	if (!questions.length) return "No supervisor questions owned by this session.";
 	return questions.map((question) => [
 		`Question: ${question.questionId} | ${question.state}`,
 		`Run: ${question.runId} | Child: ${question.index} (${question.agent}) | Owner: ${question.ownerSessionId}`,
 		`Session: ${question.sessionFile} | Child target: ${question.childTarget}`,
 		question.message,
-		...(question.answer ? [`Saved answer: ${question.answer.message}`] : []),
+		...(question.messageTruncated ? [`[Question preview truncated. Full question: ${question.questionPath}]`] : []),
+		...(question.hasInterview ? [`Structured interview: ${question.questionPath}`] : []),
+		...(question.answer ? [`Saved answer: ${question.answer.message}`, ...(question.answerTruncated ? [`[Answer preview truncated. Exact saved answer: ${question.answerPath}]`] : [])] : []),
 		...(question.revival && !question.delivery ? [`Continuation requested: ${question.revival.runId}; delivery unconfirmed. Answer retained.`, questionRecoveryHint(question, childSafe)] : []),
 		question.delivery ? `Answer delivered via ${question.delivery.kind}; run: ${question.delivery.runId}`
 			: question.state === "cancelled" ? "Question cancelled; use continue for a new follow-up."
+			: question.answerTruncated ? `Retry answer with the exact saved message from ${question.answerPath}; a preview is not a valid replacement.`
 			: `Answer: ${formatRunAction("answer", question.runId, { questionId: question.questionId, message: question.answer?.message ?? "..." }, childSafe)}`,
 	].join("\n")).join("\n\n");
 }

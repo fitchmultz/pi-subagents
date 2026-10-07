@@ -5,6 +5,9 @@
 ### Added
 - Optional loopback-only mTLS Intercom HTTPS bridge over SSH reverse forwarding, with certificate-bound remote peer identity, bounded messaging/inbox API, metadata audit logs, remote CLI, and credential issue/rotation/revocation tooling. The same-machine broker and extension startup remain unchanged.
 
+### Fixed
+- Keep supervisor-question tool results bounded: page compact question/answer previews without repeating frozen launch metadata or native attempt baselines. Full question, interview and immutable answer files remain available; answering, cancellation and revival retain their original durable contracts.
+
 ## [0.44.4] - 2026-10-04
 
 ### Added

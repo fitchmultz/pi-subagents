@@ -1,25 +1,30 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { IntercomEventBus, SubagentExecutionResult } from "../../shared/types.ts";
-import { cancelSupervisorQuestion, claimQuestionRevival, formatSupervisorQuestions, listSupervisorQuestions, questionProcessAlive, questionRecoveryHint, readQuestionState, recordQuestionDelivery, releaseQuestionRevival, saveQuestionAnswer, type SupervisorQuestionView } from "../shared/supervisor-questions.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
+import { cancelSupervisorQuestion, claimQuestionRevival, formatSupervisorQuestions, listSupervisorQuestions, questionProcessAlive, questionRecoveryHint, readQuestionState, recordQuestionDelivery, releaseQuestionRevival, saveQuestionAnswer, supervisorQuestionPage, type SupervisorQuestionView } from "../shared/supervisor-questions.ts";
 import { liveLaunchOverrideNotice, nestedResolutionScopeForExecutor, reviveSavedSubagent } from "./foreground-control.ts";
 import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 
-function questionResult(questions: SupervisorQuestionView[], text = formatSupervisorQuestions(questions)): SubagentExecutionResult {
-	return { content: [{ type: "text", text }], details: { mode: "management", results: [], questions } };
+function questionResult(questions: SupervisorQuestionView[], text: string): SubagentExecutionResult {
+	return { content: [{ type: "text", text }], details: { mode: "management", results: [], ...supervisorQuestionPage(questions) } };
 }
 
 export function projectSupervisorQuestions(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string, childSafe = false): SubagentExecutionResult {
 	if (result.isError && !result.content.some((item) => item.type === "text" && /Async run not found|Status file not found/.test(item.text))) return result;
-	const questions = listSupervisorQuestions(ownerSessionId, params.id ?? params.runId ?? (params.dir ? path.basename(params.dir) : undefined))
+	const id = params.id ?? params.runId ?? (params.dir ? path.basename(params.dir) : undefined);
+	const questions = listSupervisorQuestions(ownerSessionId, id)
 		.filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	if (!questions.length) return result;
+	const page = supervisorQuestionPage(questions);
 	const questionOnly = result.isError && result.content.some((item) => item.type === "text" && /Async run not found|Status file not found/.test(item.text));
 	return {
 		...result,
 		...(questionOnly ? { isError: false } : {}),
-		content: [{ type: "text", text: [`Supervisor input (not execution completion):\n${formatSupervisorQuestions(questions, childSafe)}`, ...(questionOnly ? [] : result.content.map((item) => item.type === "text" ? item.text : ""))].join("\n\n") }],
-		details: { ...result.details, questions },
+		content: [{ type: "text", text: [`Supervisor input (not execution completion):\n${formatSupervisorQuestions(page.questions, childSafe)}`,
+			...(page.questionList.nextOffset !== undefined ? [`More questions: ${formatRunAction("questions", id, { offset: page.questionList.nextOffset, limit: page.questionList.limit }, childSafe)}`] : []),
+			...(questionOnly ? [] : result.content.map((item) => item.type === "text" ? item.text : ""))].join("\n\n") }],
+		details: { ...result.details, ...page },
 	};
 }
 
@@ -35,7 +40,7 @@ export function cancelSupervisorInput(result: SubagentExecutionResult, params: S
 	}
 	const cancelled = questions.map((question) => readQuestionState(question));
 	return result.isError ? questionResult(cancelled, `Cancelled ${questions.length} pending supervisor question(s). Any live waiter will abort its agent; cancellation is requested, not proof of process exit.`)
-		: { ...result, details: { ...result.details, questions: cancelled } };
+		: { ...result, details: { ...result.details, ...supervisorQuestionPage(cancelled) } };
 }
 
 export function controlSupervisorQuestion(input: { params: SubagentParamsLike; requestCwd: string; ctx: ExtensionContext; deps: ExecutorDeps }): SubagentExecutionResult {
@@ -45,8 +50,15 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		if (params.dir !== undefined) throw new Error("questions/answer use a run id, not dir.");
 		if (params.index !== undefined && (!Number.isSafeInteger(params.index) || params.index < 0)) throw new Error("index must be a non-negative integer.");
 		const questions = listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), id)
-			.filter((question) => params.index === undefined || question.index === params.index);
-		if (params.action === "questions") return questionResult(questions, formatSupervisorQuestions(questions, Boolean(nestedResolutionScopeForExecutor(input.deps))));
+			.filter((question) => (params.index === undefined || question.index === params.index) && (params.action !== "questions" || params.questionId === undefined || question.questionId === params.questionId));
+		if (params.action === "questions") {
+			const page = supervisorQuestionPage(questions, params), childSafe = Boolean(nestedResolutionScopeForExecutor(input.deps));
+			const text = [formatSupervisorQuestions(page.questions, childSafe),
+				`Questions: ${page.questions.length} shown, ${page.questionList.total} total (offset ${page.questionList.offset}).`,
+				...(page.questionList.nextOffset !== undefined ? [`More questions: ${formatRunAction("questions", id, { offset: page.questionList.nextOffset, limit: page.questionList.limit,
+					...(params.index !== undefined ? { index: params.index } : {}), ...(params.questionId ? { questionId: params.questionId } : {}) }, childSafe)}`] : [])].join("\n\n");
+			return { content: [{ type: "text", text }], details: { mode: "management", results: [], ...page } };
+		}
 		if (!id || !params.questionId) throw new Error("action='answer' requires id and questionId.");
 		const question = questions.find((entry) => entry.questionId === params.questionId);
 		if (!question) throw new Error("Question not found in this session's runs. Resume the owning supervisor session to answer it.");
@@ -60,10 +72,10 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		const result = reviveSavedSubagent({ ...input, params: { ...params, message: `${answer.origin === "human" ? "Direct user answer (human origin)" : "Supervisor answer"} to question ${question.questionId}:\n\n${answer.message}\n\nOriginal question:\n${question.message}` } }, { ...question, source: "question" }, claim.runId);
 		if (result.isError) {
 			releaseQuestionRevival(question);
-			return { ...result, details: { ...result.details, questions: [readQuestionState(question)] } };
+			return { ...result, details: { ...result.details, ...supervisorQuestionPage([readQuestionState(question)]) } };
 		}
 		recordQuestionDelivery(question, { kind: "revive", runId: claim.runId, deliveredAt: Date.now() });
-		return { ...result, details: { ...result.details, questions: [readQuestionState(question)] } };
+		return { ...result, details: { ...result.details, ...supervisorQuestionPage([readQuestionState(question)]) } };
 	} catch (error) {
 		return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 	}

@@ -2,7 +2,8 @@ import * as path from "node:path";
 import { writeAsyncControlRequest } from "../background/async-control.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ownedRunExecutionResult, ownedRunProgressResult, ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
-import { getRunMetadataDir, listOwnedRunQuestions, questionProcessAlive, readRunJson } from "../shared/supervisor-questions.ts";
+import { formatSupervisorQuestions, getRunMetadataDir, listOwnedRunQuestions, questionProcessAlive, readRunJson, supervisorQuestionPage } from "../shared/supervisor-questions.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
 import { getSingleResultOutput, readStatus } from "../../shared/utils.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, POLL_INTERVAL_MS, type OwnedRun, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentRunId } from "../background/run-id-resolver.ts";
@@ -86,7 +87,9 @@ export async function waitForOwnedRun(input: {
 				const questions = runQuestions.filter((question) => question.ownerSessionId === owner && (index === undefined || question.index === index) && question.state === "awaiting_input");
 				if (questions.length) {
 					const result = ownedRunStatusResult(target, deps.state);
-					result.details.questions = questions; finish("awaiting_input", `Run ${target.runId} needs input; waiting ended without stopping it.\n\n${questions.map((question) => `Question ${question.questionId}: ${question.message}`).join("\n\n")}`, result); return;
+					const page = supervisorQuestionPage(questions), childSafe = Boolean(nestedResolutionScopeForExecutor(deps));
+					Object.assign(result.details, page);
+					finish("awaiting_input", `Run ${target.runId} needs input; waiting ended without stopping it.\n\n${formatSupervisorQuestions(page.questions, childSafe)}\n\nAll questions: ${formatRunAction("questions", target.runId, index === undefined ? {} : { index }, childSafe)}`, result); return;
 				}
 				if ((index !== undefined || view.resultPath) && children.every((child) => child.result && child.state !== "live" && child.state !== "unknown") && (index !== undefined || view.state !== "live")) {
 					const result = ownedRunStatusResult(target, deps.state);
