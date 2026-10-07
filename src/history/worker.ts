@@ -48,7 +48,7 @@ function compactView(view: HistoryRunRow): HistoryRunRow {
 		review: view.review && { ...view.review, message: view.review.message && safeText(view.review.message) }, continuations: [],
 		questions: view.questions?.map((question) => {
 			const summary = summarizeSupervisorQuestion(question);
-			return { ...summary, message: safeText(summary.message, 2048), answer: summary.answer && { ...summary.answer, message: safeText(summary.answer.message, 2048) } };
+			return { ...summary, message: safeText(question.message, 2048), answer: summary.answer && { ...summary.answer, message: safeText(question.answer?.message, 2048) } };
 		}),
 		children: view.children.map((child) => ({
 			agent: child.agent, index: child.index, workflowNodeId: child.workflowNodeId, sessionFile: child.sessionFile, task: child.task && safeText(child.task), label: child.label && safeText(child.label, 256),
