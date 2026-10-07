@@ -158,9 +158,8 @@ setInterval(() => fs.appendFileSync(heartbeat, 'tick\\n'), 30);
     await until(() => !alive(runnerPid), "runner must exit");
     const heartbeat = path.join(cwd, `heartbeat-${children[0]}`);
     const before = fs.statSync(heartbeat).size;
-    await delay(100);
-    assert.ok(
-      fs.statSync(heartbeat).size > before,
+    await until(
+      () => fs.statSync(heartbeat).size > before,
       "child must still execute after the runner dies",
     );
     assertDefined(state.ownedRuns);
