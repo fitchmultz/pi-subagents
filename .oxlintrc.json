@@ -11831,6 +11831,7 @@
         "scripts/package-smoke.mjs",
         "scripts/prepare.mjs",
         "scripts/quality-boundaries.mjs",
+        "scripts/quality-controller.mjs",
         "scripts/quality-directives.mjs",
         "scripts/quality-lint.mjs",
         "scripts/quality-policy.mjs",

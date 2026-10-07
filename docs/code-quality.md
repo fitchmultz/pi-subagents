@@ -22,9 +22,9 @@ npm run quality:sabotage        # clean integrated revision; full baseline CI th
 
 Each quality executable supports `-h`/`--help`. Unknown arguments and child failures are errors.
 `quality` composes engine setup, generated-schema freshness, scope/configuration/suppression policy,
-lint, formatting, root TypeScript 7 checking, effective leaf-project checking and installed-CLI probes.
-Static gates run before the expensive native probes so invalid inputs fail promptly; passing acceptance
-still requires every probe. `ci` adds the build, package/install smokes and complete test suites.
+lint, formatting, root TypeScript 7 checking, effective leaf-project checking, installed-CLI probes and
+the auxiliary protected-Mac controller's Go checks. Static gates run before expensive native probes so
+invalid inputs fail promptly; passing acceptance still requires every probe. `ci` adds the build, package/install smokes and complete test suites.
 CI qualifies actual official Pi and fork installations separately; equal version strings are not runtime
 proof.
 
@@ -104,6 +104,15 @@ the Oxc extension and its supported `oxc.path.tsgolint` setting to select the co
 engine. Run `quality:setup` before starting the editor language server; reload it after patch updates.
 The canonical TypeScript command remains `npm run typecheck`; `typecheck:leaves` additionally checks
 maintained nested projects using their effective settings.
+
+The auxiliary `scripts/protected-macos-controller` module is Go, not an Oxlint/TypeScript exclusion.
+`quality:controller` runs native Go vet, committed-module verification, race tests, a build and actual
+CLI help in the real acceptance workflow. Native gofmt owns its source; both root formatting commands
+include the corresponding `format:controller` command. Go and the controller remain optional for normal
+extension production installation/build. Go tests have their own 600-second deadline; the command owner
+allows 11 minutes so startup and that deadline do not get cut off by its default five-minute timeout.
+These local checks do not activate the service or certify
+live GitHub routing, protected guests or unattended-job settlement.
 
 The root `.oxlintrc.json` is the only approved lint configuration. Policy rejects alternative root
 and nested auto-discovery names supported by the pinned CLI (`.oxlintrc.json[c]`,
