@@ -167,14 +167,14 @@ Inside an agent conversation, use the native multiline editor to message that ch
 
 In native fullscreen mode, clicking a task opens it; clicking the same task or the **Agents** entrance again closes the view. Displayed action hints are clickable too, including Back, Send, actions, read/write focus, reply, quoted context and latest activity. The connected-session list, message composer and topics view also support their displayed controls. Parent result cards, slash results and notifications expand on click and keep Pi's configured expansion shortcut. Labels use Pi's native **Option** wording on macOS and **Alt** elsewhere; shortcut configuration and key behavior do not change. Regular terminals use the keyboard.
 
-| Agent-view shortcut | Action |
-| --- | --- |
-| Enter | Send to the named child, or answer its real waiting question |
-| Alt+R | Reply with the selected message, tool result or change attached |
-| Alt+D | Inspect full details while reading; native word deletion while composing |
-| Alt+G / Alt+L | Working-tree diff / jump to latest activity |
-| Alt+Q / Alt+P | Remove quoted context / pin or unpin this child |
-| Alt+S / Alt+C | Stop only this child / explicitly continue with the draft |
+| Agent-view shortcut | Action                                                                   |
+| ------------------- | ------------------------------------------------------------------------ |
+| Enter               | Send to the named child, or answer its real waiting question             |
+| Alt+R               | Reply with the selected message, tool result or change attached          |
+| Alt+D               | Inspect full details while reading; native word deletion while composing |
+| Alt+G / Alt+L       | Working-tree diff / jump to latest activity                              |
+| Alt+Q / Alt+P       | Remove quoted context / pin or unpin this child                          |
+| Alt+S / Alt+C       | Stop only this child / explicitly continue with the draft                |
 
 Queued children say **waiting to start**. Their drafts stay available until they run; messaging or Continue never launches a duplicate queued child. Viewing finished work never launches it. If a child finishes while you compose or send, the draft remains available for **Continue**. An older multi-child runner that cannot target one child is reported as unavailable rather than stopping its siblings. A saved conversation or launch profile that is missing is likewise not invented. Native selection/copy covers visible fullscreen text; cross-page drag selection is not provided.
 
@@ -183,15 +183,20 @@ Human messages are marked as user direction in the child's own conversation. Bro
 Fresh sessions expose `delegate` and small discovery loaders, not the full run-control or peer schemas. Known-profile delegation enables `agent_runs` automatically. For profiles or history before delegation, load only run controls:
 
 ```typescript
-load_subagent({ advanced: false })
-agent_runs({ action: "profiles" })
-delegate({ agent: "worker", task: "Implement the approved fix", worktree: true })
-agent_runs({ action: "list" })
-agent_runs({ action: "inspect", id: "<run-id>" })
-agent_runs({ action: "inspect", id: "<run-id>", full: true }) // Full task and launch configuration
-agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." })
-agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
-agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the result." })
+load_subagent({ advanced: false });
+agent_runs({ action: "profiles" });
+delegate({ agent: "worker", task: "Implement the approved fix", worktree: true });
+agent_runs({ action: "list" });
+agent_runs({ action: "inspect", id: "<run-id>" });
+agent_runs({ action: "inspect", id: "<run-id>", full: true }); // Full task and launch configuration
+agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." });
+agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." });
+agent_runs({
+  action: "review",
+  id: "<run-id>",
+  decision: "accepted",
+  message: "Checked the result.",
+});
 ```
 
 Run controls also appear when the same saved session owns actionable work: live runs, questions, failures, or unreviewed results. Reviewed inert history alone does not activate them; it remains accessible through `load_subagent({ advanced: false })`. Tool-only allowlists without a loader remain eager, and exclusions are never overridden. Activated schemas stay available for the selected branch; native tool declarations preserve selection across requests, reload and compaction rather than unloading every turn.
@@ -211,9 +216,15 @@ If a background runner exits while its children remain alive, Stop signals those
 ### Indexed history and saved-text search
 
 ```typescript
-agent_runs({ action: "list", text: "login", state: "completed", sort: "newest", limit: 20 })
-agent_runs({ action: "history", id: "<owned-run-id>", index: 0, limit: 100 })
-agent_runs({ action: "search", query: '"login timeout"', agent: "worker", sort: "newest", limit: 20 })
+agent_runs({ action: "list", text: "login", state: "completed", sort: "newest", limit: 20 });
+agent_runs({ action: "history", id: "<owned-run-id>", index: 0, limit: 100 });
+agent_runs({
+  action: "search",
+  query: '"login timeout"',
+  agent: "worker",
+  sort: "newest",
+  limit: 20,
+});
 // Reuse the returned cursor with the same action, filters, sort and limit.
 ```
 
@@ -311,46 +322,46 @@ Those are ordinary Pi requests. Pi decides whether to call `subagent`, which age
 
 ## Common workflows
 
-| Want | Ask naturally |
-|------|---------------|
-| Get a second opinion | “Ask oracle to review this plan and challenge assumptions.” |
-| Solve a hard problem | “Use oracle to investigate this bug before we edit.” |
-| Review a diff | “Use reviewer to review this diff.” |
-| Run parallel reviewers | “Run reviewers for correctness, tests, and cleanup.” |
-| Implement then review | “Implement this, then review it.” |
-| Review until clean | “Run a review loop on this change with a max of 3 rounds.” |
-| Execute a plan carefully | “Have worker implement this approved plan, then run reviewers and apply the feedback.” |
-| Scout before planning | “Use scout to inspect the auth flow before planning.” |
-| Run in the background | “Run this in the background.” |
+| Want                     | Ask naturally                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Get a second opinion     | “Ask oracle to review this plan and challenge assumptions.”                                                    |
+| Solve a hard problem     | “Use oracle to investigate this bug before we edit.”                                                           |
+| Review a diff            | “Use reviewer to review this diff.”                                                                            |
+| Run parallel reviewers   | “Run reviewers for correctness, tests, and cleanup.”                                                           |
+| Implement then review    | “Implement this, then review it.”                                                                              |
+| Review until clean       | “Run a review loop on this change with a max of 3 rounds.”                                                     |
+| Execute a plan carefully | “Have worker implement this approved plan, then run reviewers and apply the feedback.”                         |
+| Scout before planning    | “Use scout to inspect the auth flow before planning.”                                                          |
+| Run in the background    | “Run this in the background.”                                                                                  |
 | Watch a changing process | “Run watcher in the background to monitor PR checks; notify me on material changes and stop when they finish.” |
-| Browse agents | “Show me the available subagents.” |
-| Use a saved workflow | “Run the review chain on this branch.” |
-| See running work | “Show active async runs.” |
-| Check setup | “Check whether subagents are configured correctly.” |
+| Browse agents            | “Show me the available subagents.”                                                                             |
+| Use a saved workflow     | “Run the review chain on this branch.”                                                                         |
+| See running work         | “Show active async runs.”                                                                                      |
+| Check setup              | “Check whether subagents are configured correctly.”                                                            |
 
 The extension ships with builtin agents you can use immediately.
 
 ## Builtin agents in plain English
 
-| Agent | Use it when you want... |
-|-------|--------------------------|
-| `scout` | Fast codebase recon and a compressed handoff. |
-| `context-builder` | Requirements and codebase analysis that produces implementation-ready context. |
-| `researcher` | Evidence-driven research for consequential technical decisions. |
-| `watcher` | Read-only background monitoring with timely material-change updates to the parent. |
-| `planner` | A concrete implementation plan without edits. |
-| `worker` | End-to-end implementation of an approved, bounded task. |
-| `debugger` | Root-cause diagnosis with reproduction and repair evidence. |
-| `fixer` | A bounded set of already-decided fixes without replanning. |
-| `reviewer` | General implementation review against the task and evidence. |
-| `reviewer-gpt` | Evidence-backed maintainability and correctness review. |
-| `reviewer-claude` | An independent cross-model review of assumptions and product risk. |
-| `reviewer-security` | Security and data-safety review for trust-boundary changes. |
-| `reviewer-ponytail` | An over-engineering and slop review that never trades away intended behavior. |
-| `ui-designer` | Rendered UI, layout, accessibility, and visual polish. |
-| `writer` | Human-facing documentation, announcements, and polished copy. |
-| `oracle` | A forked second opinion that protects the current decision contract. |
-| `delegate` | Lightweight generic delegation that stays close to the parent session. |
+| Agent               | Use it when you want...                                                            |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `scout`             | Fast codebase recon and a compressed handoff.                                      |
+| `context-builder`   | Requirements and codebase analysis that produces implementation-ready context.     |
+| `researcher`        | Evidence-driven research for consequential technical decisions.                    |
+| `watcher`           | Read-only background monitoring with timely material-change updates to the parent. |
+| `planner`           | A concrete implementation plan without edits.                                      |
+| `worker`            | End-to-end implementation of an approved, bounded task.                            |
+| `debugger`          | Root-cause diagnosis with reproduction and repair evidence.                        |
+| `fixer`             | A bounded set of already-decided fixes without replanning.                         |
+| `reviewer`          | General implementation review against the task and evidence.                       |
+| `reviewer-gpt`      | Evidence-backed maintainability and correctness review.                            |
+| `reviewer-claude`   | An independent cross-model review of assumptions and product risk.                 |
+| `reviewer-security` | Security and data-safety review for trust-boundary changes.                        |
+| `reviewer-ponytail` | An over-engineering and slop review that never trades away intended behavior.      |
+| `ui-designer`       | Rendered UI, layout, accessibility, and visual polish.                             |
+| `writer`            | Human-facing documentation, announcements, and polished copy.                      |
+| `oracle`            | A forked second opinion that protects the current decision contract.               |
+| `delegate`          | Lightweight generic delegation that stays close to the parent session.             |
 
 Use the role that fits the task. Keep writers isolated and launch independent reviewers separately. Every bundled profile sets `allowSubagents: false` and `maxSubagentDepth: 0`, so routine fanout stays in the parent. Custom profiles may explicitly enable useful helpers within their assigned task, subject to the [depth limit](#recursion-guard) and role authority, including read-only constraints. The original parent owns integration and final delivery; do not enable nested delegation or raise its budget without user authorization.
 
@@ -438,15 +449,15 @@ Children do not receive delegation tools by default. When a profile enables dele
 
 The files in `prompts/` document common workflows without registering additional slash commands:
 
-| File | Use it for |
-|------|------------|
-| `parallel-review.md` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `review-loop.md` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
-| `parallel-research.md` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
-| `parallel-context-build.md` | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts. |
-| `parallel-handoff-plan.md` | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
-| `gather-context-and-clarify.md` | Scout/research first, then ask the user the clarification questions that matter. |
-| `parallel-cleanup.md` | Run review-only cleanup passes after implementation. |
+| File                            | Use it for                                                                                                  |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `parallel-review.md`            | Launch fresh-context reviewers with distinct angles, then synthesize what to fix.                           |
+| `review-loop.md`                | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped.                        |
+| `parallel-research.md`          | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs.        |
+| `parallel-context-build.md`     | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts.              |
+| `parallel-handoff-plan.md`      | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
+| `gather-context-and-clarify.md` | Scout/research first, then ask the user the clarification questions that matter.                            |
+| `parallel-cleanup.md`           | Run review-only cleanup passes after implementation.                                                        |
 
 ## Bundled intercom
 
@@ -484,9 +495,14 @@ Children return routine completion through their normal result. For portable bac
 Blocking supervisor questions are saved before notification, with their owner session, child session, and launch-time acceptance/output requirements. They do not expire at the ordinary intercom ask timeout. A waiting call returns so the supervisor can answer while the same owner and child remain available. Background calls have already returned their receipt. Neither state is successful completion.
 
 ```typescript
-agent_runs({ action: "questions" })
-agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", message: "Use the stable API." })
-agent_runs({ action: "stop", id: "<run-id>" })
+agent_runs({ action: "questions" });
+agent_runs({
+  action: "answer",
+  id: "<run-id>",
+  questionId: "<question-id>",
+  message: "Use the stable API.",
+});
+agent_runs({ action: "stop", id: "<run-id>" });
 ```
 
 Resume the **same saved supervisor session**, even from another cwd, to recover its questions. A different session does not silently adopt them. Ordinary `intercom` replies also save the answer while the live waiter is connected. After supervisor/broker restart, prefer `agent_runs` questions/answer; a nudge is guidance, not an answer to a blocking question.
@@ -511,13 +527,13 @@ At this point, you know enough to use the plugin. The rest of this README is ref
 
 Skip this section until you want exact syntax.
 
-| Command | Description |
-|---------|-------------|
-| `/run <agent> [task]` | Run one agent; omit the task for self-contained agents |
-| `/chain agent1 "task1" -> agent2 "task2"` | Run agents in sequence |
-| `/parallel agent1 "task1" -> agent2 "task2"` | Run agents in parallel |
-| `/run-chain <chainName> -- <task>` | Launch a saved `.chain.md` or `.chain.json` workflow |
-| `/subagents-doctor` | Show read-only setup diagnostics |
+| Command                                      | Description                                            |
+| -------------------------------------------- | ------------------------------------------------------ |
+| `/run <agent> [task]`                        | Run one agent; omit the task for self-contained agents |
+| `/chain agent1 "task1" -> agent2 "task2"`    | Run agents in sequence                                 |
+| `/parallel agent1 "task1" -> agent2 "task2"` | Run agents in parallel                                 |
+| `/run-chain <chainName> -- <task>`           | Launch a saved `.chain.md` or `.chain.json` workflow   |
+| `/subagents-doctor`                          | Show read-only setup diagnostics                       |
 
 Commands validate agent names locally, support tab completion, and send results back into the conversation.
 
@@ -560,14 +576,14 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 /parallel scout[skills=security] "map backend risk" -> researcher[model=openai/gpt-5-mini] "research frontend guidance"
 ```
 
-| Key | Example | Description |
-|-----|---------|-------------|
-| `output` | `output=context.md` | Write results to a file. For `/chain` and `/parallel`, relative paths live under the chain directory; for `/run`, relative paths resolve against cwd. |
-| `outputMode` | `outputMode=file-only` | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`. |
-| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. |
-| `model` | `model=anthropic/claude-sonnet-4` | Override model for this step. |
-| `skills` | `skills=planning+review` | Override injected skills. `+` separates multiple skills. |
-| `progress` | `progress` | Enable progress tracking. |
+| Key          | Example                           | Description                                                                                                                                           |
+| ------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `output`     | `output=context.md`               | Write results to a file. For `/chain` and `/parallel`, relative paths live under the chain directory; for `/run`, relative paths resolve against cwd. |
+| `outputMode` | `outputMode=file-only`            | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`.                      |
+| `reads`      | `reads=a.md+b.md`                 | Read files before executing. `+` separates multiple paths.                                                                                            |
+| `model`      | `model=anthropic/claude-sonnet-4` | Override model for this step.                                                                                                                         |
+| `skills`     | `skills=planning+review`          | Override injected skills. `+` separates multiple skills.                                                                                              |
+| `progress`   | `progress`                        | Enable progress tracking.                                                                                                                             |
 
 Set `output=false`, `reads=false`, or `skills=false` to disable that behavior explicitly. Do not use `output=false` for file-only returns; use `outputMode=file-only` with an `output` path.
 
@@ -619,7 +635,7 @@ Common clarify keys:
 - `w` edits output/write behavior where supported
 - `r` edits reads where supported
 - `p` toggles progress tracking where supported
-Picker screens use `↑↓`, `Enter`, `Esc`, and type-to-filter. The full-screen editor supports word wrapping, paste, `Esc` to save, and `Ctrl+C` to discard.
+  Picker screens use `↑↓`, `Enter`, `Esc`, and type-to-filter. The full-screen editor supports word wrapping, paste, `Esc` to save, and `Ctrl+C` to discard.
 
 ## Agents and chains
 
@@ -627,12 +643,12 @@ Agents are markdown files with YAML frontmatter and a system prompt body. They d
 
 Agent locations, lowest to highest priority:
 
-| Scope | Path |
-|-------|------|
-| Builtin | Subagents' own `agents/` directory |
+| Scope   | Path                                                            |
+| ------- | --------------------------------------------------------------- |
+| Builtin | Subagents' own `agents/` directory                              |
 | Package | Configured Pi packages declaring `subagents.agents` directories |
-| User | `~/.pi/agent/agents/**/*.md` |
-| Project | `.pi/agents/**/*.md` |
+| User    | `~/.pi/agent/agents/**/*.md`                                    |
+| Project | `.pi/agents/**/*.md`                                            |
 
 Package profiles use Pi's public package manager to resolve installed npm, Git and local package declarations, without installing missing packages or scanning undeclared dependencies. Declare exact package-relative directories in `package.json`, for example `"subagents": { "agents": ["resources/agents"] }`; absolute, escaping and missing directories are rejected. Profiles are read-only: create a same-named user or trusted-project profile to override one. Precedence is builtin < package < user < trusted project. Package declarations follow `agentScope`; untrusted project declarations are not read. In both scopes, a project declaration shadows the same npm name, Git repository or local package identity; a project `autoload:false` resource delta retains the global package's profiles. Discovery reads current settings on every request, so source removal/reload cannot retain stale profiles. Pi's native resource filters still control extensions/skills/prompts; they do not filter this separate profile manifest.
 
@@ -675,12 +691,12 @@ Role boundaries, structured-output instructions, and Intercom guidance use Pi's 
 
 Use these fields only when an agent needs stricter isolation or inherited conversation:
 
-| Field | Effect |
-|-------|--------|
-| `systemPromptMode: replace` | Replace Pi's normal base prompt with the agent prompt. |
+| Field                          | Effect                                                                                                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `systemPromptMode: replace`    | Replace Pi's normal base prompt with the agent prompt.                                                                            |
 | `inheritProjectContext: false` | Suppress current project-instruction loading from files like `AGENTS.md` and `CLAUDE.md`; inherited fork history is not scrubbed. |
-| `inheritSkills: false` | Disable discovered skills; explicitly selected skills and inherited fork history remain separate. |
-| `defaultContext: fork` | Use forked session context when a launch omits `context`; explicit `context: "fresh"` still wins. |
+| `inheritSkills: false`         | Disable discovered skills; explicitly selected skills and inherited fork history remain separate.                                 |
+| `defaultContext: fork`         | Use forked session context when a launch omits `context`; explicit `context: "fresh"` still wins.                                 |
 
 Bundled agents use the same prompt, project-context, and skill inheritance defaults. `oracle` alone opts into forked conversation context; the other profiles remain fresh.
 
@@ -719,34 +735,33 @@ maxSubagentDepth: 0
 maxExecutionTimeMs: 600000
 maxTokens: 50000
 ---
-
 Your system prompt goes here.
 ```
 
 Important fields:
 
-| Field | Notes |
-|-------|-------|
-| `package` | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate. |
-| `tools` | Tool allowlist, including extension tools. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. Omit it to keep Pi's normal configured tool surface. |
-| `allowSubagents` | Opt-in child-safe nested delegation. Disabled in bundled profiles and still bounded by `maxSubagentDepth`. |
-| `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
-| `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
-| `fallbackModels` | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. The shared driver first retries the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then falls back when appropriate. Ordinary task failures do not trigger retry or fallback. |
-| `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
-| `systemPromptMode` | `append` by default; `replace` discards Pi's base prompt. |
-| `inheritProjectContext` | Uses Pi's native context-file loading policy; `false` passes `--no-context-files`. |
-| `inheritSkills` | Keeps or strips Pi’s discovered skills catalog. |
-| `defaultContext` | Optional `fresh` or `fork` launch context default for this agent. |
-| `skills` | Injects specific skills directly, regardless of `inheritSkills`. |
-| `output` | Default single-agent output file. |
-| `defaultReads` | Files to read before running in chain/parallel behavior. |
-| `defaultProgress` | Maintain `progress.md`. |
-| `completionGuard` | Opt in with `true` to require an observed successful mutating tool result. Disabled by default; task wording never determines success. An explicit `acceptance` contract takes precedence and can allow valid no-op outcomes. |
-| `interactive` | Parsed for compatibility but not enforced in v1. |
-| `maxSubagentDepth` | Defaults to `0`; raise it explicitly for an agent allowed to delegate, subject to the inherited global limit. |
-| `maxExecutionTimeMs` | Stops each child attempt after the given number of milliseconds, with a fresh budget for each self-review turn. |
-| `maxTokens` | Bounds the child's assistant input plus output tokens per attempt, including separate self-review attempts. It is not a cumulative workflow or nested-usage budget. Enforcement is best-effort because usage arrives after model events. |
+| Field                   | Notes                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `package`               | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate.                                                                                                                                                                                                     |
+| `tools`                 | Tool allowlist, including extension tools. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. Omit it to keep Pi's normal configured tool surface.                                                                                                                                                                                                     |
+| `allowSubagents`        | Opt-in child-safe nested delegation. Disabled in bundled profiles and still bounded by `maxSubagentDepth`.                                                                                                                                                                                                                                                                     |
+| `extensions`            | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions.                                                                                                                                                                                                                                                              |
+| `model`                 | Default model. Bare ids prefer the current provider when possible, then unique registry matches.                                                                                                                                                                                                                                                                               |
+| `fallbackModels`        | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. The shared driver first retries the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then falls back when appropriate. Ordinary task failures do not trigger retry or fallback. |
+| `thinking`              | Appended as a `:level` suffix at runtime unless a suffix is already present.                                                                                                                                                                                                                                                                                                   |
+| `systemPromptMode`      | `append` by default; `replace` discards Pi's base prompt.                                                                                                                                                                                                                                                                                                                      |
+| `inheritProjectContext` | Uses Pi's native context-file loading policy; `false` passes `--no-context-files`.                                                                                                                                                                                                                                                                                             |
+| `inheritSkills`         | Keeps or strips Pi’s discovered skills catalog.                                                                                                                                                                                                                                                                                                                                |
+| `defaultContext`        | Optional `fresh` or `fork` launch context default for this agent.                                                                                                                                                                                                                                                                                                              |
+| `skills`                | Injects specific skills directly, regardless of `inheritSkills`.                                                                                                                                                                                                                                                                                                               |
+| `output`                | Default single-agent output file.                                                                                                                                                                                                                                                                                                                                              |
+| `defaultReads`          | Files to read before running in chain/parallel behavior.                                                                                                                                                                                                                                                                                                                       |
+| `defaultProgress`       | Maintain `progress.md`.                                                                                                                                                                                                                                                                                                                                                        |
+| `completionGuard`       | Opt in with `true` to require an observed successful mutating tool result. Disabled by default; task wording never determines success. An explicit `acceptance` contract takes precedence and can allow valid no-op outcomes.                                                                                                                                                  |
+| `interactive`           | Parsed for compatibility but not enforced in v1.                                                                                                                                                                                                                                                                                                                               |
+| `maxSubagentDepth`      | Defaults to `0`; raise it explicitly for an agent allowed to delegate, subject to the inherited global limit.                                                                                                                                                                                                                                                                  |
+| `maxExecutionTimeMs`    | Stops each child attempt after the given number of milliseconds, with a fresh budget for each self-review turn.                                                                                                                                                                                                                                                                |
+| `maxTokens`             | Bounds the child's assistant input plus output tokens per attempt, including separate self-review attempts. It is not a cumulative workflow or nested-usage budget. Enforcement is best-effort because usage arrives after model events.                                                                                                                                       |
 
 ### Tool and extension selection
 
@@ -781,10 +796,10 @@ When `extensions` is present, it takes precedence over extension paths implied b
 
 Chains are reusable workflows stored separately from agent files. Use `.chain.md` for simple sequential saved chains. Use `.chain.json` when a chain needs dynamic fanout.
 
-| Scope | Path |
-|-------|------|
-| User | `~/.pi/agent/chains/**/*.chain.md`, `~/.pi/agent/chains/**/*.chain.json` |
-| Project | `.pi/chains/**/*.chain.md`, `.pi/chains/**/*.chain.json` |
+| Scope   | Path                                                                     |
+| ------- | ------------------------------------------------------------------------ |
+| User    | `~/.pi/agent/chains/**/*.chain.md`, `~/.pi/agent/chains/**/*.chain.json` |
+| Project | `.pi/chains/**/*.chain.md`, `.pi/chains/**/*.chain.json`                 |
 
 Nested subdirectories are discovered recursively. If both `.chain.md` and `.chain.json` define the same parsed runtime chain name in the same scope, `.chain.json` wins. If user and project scopes define the same parsed runtime chain name, the project chain wins. Chains support the same optional `package` frontmatter as agents; `name: review-flow` plus `package: code-analysis` runs as `code-analysis.review-flow`.
 
@@ -797,6 +812,7 @@ description: Gather context then plan implementation
 ---
 
 ## scout
+
 phase: Context
 label: Map auth flow
 as: context
@@ -805,6 +821,7 @@ output: context.md
 Analyze the codebase for {task}
 
 ## planner
+
 phase: Planning
 label: Implementation plan
 reads: context.md
@@ -869,11 +886,11 @@ Create simple `.chain.md` chains by writing files directly or with the `subagent
 
 Task templates support:
 
-| Variable | Description |
-|----------|-------------|
-| `{task}` | Original task from the first step. |
-| `{previous}` | Output from the prior step, or aggregated output from a parallel step. |
-| `{chain_dir}` | Path to the chain artifact directory. |
+| Variable         | Description                                                                |
+| ---------------- | -------------------------------------------------------------------------- |
+| `{task}`         | Original task from the first step.                                         |
+| `{previous}`     | Output from the prior step, or aggregated output from a parallel step.     |
+| `{chain_dir}`    | Path to the chain artifact directory.                                      |
 | `{outputs.name}` | Text value from a prior step or completed parallel task with `as: "name"`. |
 
 Parallel outputs are aggregated with clear separators before being passed to the next step:
@@ -925,6 +942,7 @@ Missing skills do not fail execution. The result summary shows a warning.
 The package bundles a `pi-subagents` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: child subagents never receive it, and their context is explicitly filtered to strip parent-only orchestration instructions.
 
 What the bundled skill covers:
+
 - **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
 - **Workflow recipes**: how to apply the example techniques directly with `subagent(...)` when the user describes the workflow in natural language. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers
@@ -950,9 +968,9 @@ delegate({
     criteria: [{ id: "fix", must: "Fix the reproduced bug without changing the public API" }],
     evidence: ["changed-files", "commands-run", "residual-risks"],
     verify: [{ id: "unit", command: "npm test", env: [{ name: "CI", value: "1" }] }],
-    maxFinalizationTurns: 3
-  }
-})
+    maxFinalizationTurns: 3,
+  },
+});
 ```
 
 `load_subagent({ advanced: false })` enables only `agent_runs` for profiles, history, and controls. Omit `advanced` (or set it true) to enable those controls plus the advanced `subagent` schema. It retains string or object acceptance criteria, environment maps, arbitrary caller-supplied output schemas, workflows, and detailed launch overrides. Those flexible inputs do not require strict conversion. Child `structured_output` submissions are still validated against the requested schema; constrained sampling depends on native model and schema support.
@@ -1087,46 +1105,46 @@ Agent definitions are not loaded into context by default. Management actions let
 
 ### Parameter reference
 
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `agent` | string | - | Agent name for single mode, or target for management actions. |
-| `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `history`, `search`, `interrupt`, `extend`, `resume`, `nudge`, `questions`, `answer`, `review`, or `doctor`. |
-| `questionId` | string | - | Required with `id` and `message` for `action: "answer"`. |
-| `decision` | `accepted \| needs_changes` | - | Parent review outcome for `action: "review"`; optional `message` adds a note. |
-| `offset` / `limit` | integer | 0 / 20 | Page indexed `status` lists; limit is 1–100 and also applies to history/search (history defaults to 100). Exact-ID lookup is retained independently. |
-| `cursor` | string | - | Opaque list/history/search cursor; reuse the same query, without offset/before. Restart paging after a stale-cursor error. |
-| `sort` | string | attention / relevance | `status`: attention, newest, oldest. `search`: relevance, newest. |
-| `state` / `text` | string | - | Global execution-state/full-assignment filters for `status` lists, applied before paging. `agent` also filters list/search children. |
-| `query` | string | - | Required for `search`: lexical words or one quoted phrase, without operators/punctuation/prefixes. |
-| `before` | integer | - | `history` only: exclusive physical native-entry position for an earlier page; omit for latest. |
-| `full` | boolean | false | Exact `status`/`agent_runs` inspect: include the full task and saved launch configuration. |
-| `chainName` | string | - | Chain name for management actions. |
-| `config` | object/string | - | Agent or chain config for create/update. |
-| `output` | `string \| false` | agent default | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts. |
-| `outputMode` | `"inline" \| "file-only"` | `inline` | Inline mode returns the saved content plus an output reference. `file-only` returns only a compact persistent-file reference and requires an `output` path. |
-| `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
-| `model` | string | agent default | Override model. |
-| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `outputSchema`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
-| `concurrency` | number | config or `4` | Top-level parallel concurrency. |
-| `timeoutMs` / `maxRuntimeMs` | number | - | Owner-enforced wall-clock timeout for waiting single, parallel, and chain runs. When `async` is omitted, either field requests a wait. Explicit async/background calls reject it. Short reviewer budgets are raised to a safe floor; planner/researcher-style budgets are raised only from local run-history duration data. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
-| `extendMs` | number | - | Additional milliseconds for `action: "extend"`. |
-| `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
-| `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |
-| `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `oracle` defaults to `fork`; the other Fitch role profiles default to `fresh`. Fork is rejected for effective `anthropic/` primary or fallback models. |
-| `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
-| `clarify` | boolean | false | Show TUI preview/edit flow only when explicitly set to `true`. |
-| `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `async` | boolean | top-level: true | Background delivery from the shared owner. Set `false` to wait for the saved result. Child-safe nested calls default to waiting so their results can appear in the calling child's report; `clarify: true` and timeout fields also request a wait. |
-| `cwd` | string | selected execution cwd | Override working directory. Relative paths resolve from the parent's current selection; omitted continuation cwd retains the saved child launch and selection. Without a directory extension, use native Pi cwd. |
-| `progress` | boolean | agent default | Maintain `progress.md` for a single run. Parallel task-level progress is maintained in each task cwd; chain progress is maintained in `chainDir`. |
-| `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
-| `artifacts` | boolean | true | Write input, output, and metadata debug artifacts. JSONL is not written. |
-| `includeProgress` | boolean | false | Include full progress in result. |
-| `control` | object | enabled, 10-minute idle threshold | Override needs-attention tracking (`enabled`, `needsAttentionAfterMs`, `failedToolAttemptsBeforeAttention`, `notifyOn`, `notifyChannels`). |
-| `share` | boolean | false | Upload session export to GitHub Gist. |
-| `sessionDir` | string | derived | Override session log directory. |
-| `acceptance` | object | omitted | Explicit criteria/evidence/verification contract. When present, the child gets a structured contract, then the runtime continues the same session for a bounded self-review/repair loop before evaluating acceptance. Launch independent reviewers separately from the parent. |
+| Param                        | Type                          | Default                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------- | ----------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`                      | string                        | -                                 | Agent name for single mode, or target for management actions.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `task`                       | string                        | -                                 | Task string for single mode.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `action`                     | string                        | -                                 | `list`, `get`, `create`, `update`, `delete`, `status`, `history`, `search`, `interrupt`, `extend`, `resume`, `nudge`, `questions`, `answer`, `review`, or `doctor`.                                                                                                                                                                                                                                                                             |
+| `questionId`                 | string                        | -                                 | Required with `id` and `message` for `action: "answer"`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `decision`                   | `accepted \| needs_changes`   | -                                 | Parent review outcome for `action: "review"`; optional `message` adds a note.                                                                                                                                                                                                                                                                                                                                                                   |
+| `offset` / `limit`           | integer                       | 0 / 20                            | Page indexed `status` lists; limit is 1–100 and also applies to history/search (history defaults to 100). Exact-ID lookup is retained independently.                                                                                                                                                                                                                                                                                            |
+| `cursor`                     | string                        | -                                 | Opaque list/history/search cursor; reuse the same query, without offset/before. Restart paging after a stale-cursor error.                                                                                                                                                                                                                                                                                                                      |
+| `sort`                       | string                        | attention / relevance             | `status`: attention, newest, oldest. `search`: relevance, newest.                                                                                                                                                                                                                                                                                                                                                                               |
+| `state` / `text`             | string                        | -                                 | Global execution-state/full-assignment filters for `status` lists, applied before paging. `agent` also filters list/search children.                                                                                                                                                                                                                                                                                                            |
+| `query`                      | string                        | -                                 | Required for `search`: lexical words or one quoted phrase, without operators/punctuation/prefixes.                                                                                                                                                                                                                                                                                                                                              |
+| `before`                     | integer                       | -                                 | `history` only: exclusive physical native-entry position for an earlier page; omit for latest.                                                                                                                                                                                                                                                                                                                                                  |
+| `full`                       | boolean                       | false                             | Exact `status`/`agent_runs` inspect: include the full task and saved launch configuration.                                                                                                                                                                                                                                                                                                                                                      |
+| `chainName`                  | string                        | -                                 | Chain name for management actions.                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `config`                     | object/string                 | -                                 | Agent or chain config for create/update.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `output`                     | `string \| false`             | agent default                     | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts.                                                                                                                                                                                                                                                               |
+| `outputMode`                 | `"inline" \| "file-only"`     | `inline`                          | Inline mode returns the saved content plus an output reference. `file-only` returns only a compact persistent-file reference and requires an `output` path.                                                                                                                                                                                                                                                                                     |
+| `skill`                      | `string \| string[] \| false` | agent default                     | Override skills or disable all.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `model`                      | string                        | agent default                     | Override model.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `tasks`                      | array                         | -                                 | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `outputSchema`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`.                                                                                                                                                                                                                                                                            |
+| `concurrency`                | number                        | config or `4`                     | Top-level parallel concurrency.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `timeoutMs` / `maxRuntimeMs` | number                        | -                                 | Owner-enforced wall-clock timeout for waiting single, parallel, and chain runs. When `async` is omitted, either field requests a wait. Explicit async/background calls reject it. Short reviewer budgets are raised to a safe floor; planner/researcher-style budgets are raised only from local run-history duration data. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
+| `extendMs`                   | number                        | -                                 | Additional milliseconds for `action: "extend"`.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `worktree`                   | boolean                       | false                             | Create isolated git worktrees for parallel tasks.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `chain`                      | array                         | -                                 | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize.                                                           |
+| `context`                    | `fresh \| fork`               | agent default or `fresh`          | `fork` creates real branched sessions from the parent leaf. Packaged `oracle` defaults to `fork`; the other Fitch role profiles default to `fresh`. Fork is rejected for effective `anthropic/` primary or fallback models.                                                                                                                                                                                                                     |
+| `chainDir`                   | string                        | temp chain dir                    | Persistent directory for chain artifacts.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `clarify`                    | boolean                       | false                             | Show TUI preview/edit flow only when explicitly set to `true`.                                                                                                                                                                                                                                                                                                                                                                                  |
+| `agentScope`                 | `user \| project \| both`     | `both`                            | Agent discovery scope. Project wins on collisions.                                                                                                                                                                                                                                                                                                                                                                                              |
+| `async`                      | boolean                       | top-level: true                   | Background delivery from the shared owner. Set `false` to wait for the saved result. Child-safe nested calls default to waiting so their results can appear in the calling child's report; `clarify: true` and timeout fields also request a wait.                                                                                                                                                                                              |
+| `cwd`                        | string                        | selected execution cwd            | Override working directory. Relative paths resolve from the parent's current selection; omitted continuation cwd retains the saved child launch and selection. Without a directory extension, use native Pi cwd.                                                                                                                                                                                                                                |
+| `progress`                   | boolean                       | agent default                     | Maintain `progress.md` for a single run. Parallel task-level progress is maintained in each task cwd; chain progress is maintained in `chainDir`.                                                                                                                                                                                                                                                                                               |
+| `maxOutput`                  | object                        | 200KB, 5000 lines                 | Final output truncation limits.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `artifacts`                  | boolean                       | true                              | Write input, output, and metadata debug artifacts. JSONL is not written.                                                                                                                                                                                                                                                                                                                                                                        |
+| `includeProgress`            | boolean                       | false                             | Include full progress in result.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `control`                    | object                        | enabled, 10-minute idle threshold | Override needs-attention tracking (`enabled`, `needsAttentionAfterMs`, `failedToolAttemptsBeforeAttention`, `notifyOn`, `notifyChannels`).                                                                                                                                                                                                                                                                                                      |
+| `share`                      | boolean                       | false                             | Upload session export to GitHub Gist.                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `sessionDir`                 | string                        | derived                           | Override session log directory.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `acceptance`                 | object                        | omitted                           | Explicit criteria/evidence/verification contract. When present, the child gets a structured contract, then the runtime continues the same session for a bounded self-review/repair loop before evaluating acceptance. Launch independent reviewers separately from the parent.                                                                                                                                                                  |
 
 `context: "fork"` fails fast when an affected agent's effective primary or fallback model uses the `anthropic/` provider, the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. A pinned non-Anthropic override excludes profile fallbacks; actual Anthropic candidates remain ineligible, and fork never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with fork-default `oracle`. Other providers continue to use these agent defaults and explicit context overrides normally.
 
@@ -1139,21 +1157,26 @@ Single, top-level parallel, sequential chain, and parallel chain tasks accept `o
 Status and control actions:
 
 ```ts
-subagent({ action: "status" })
-subagent({ action: "status", id: "<run-id>" })
-subagent({ action: "status", id: "<nested-run-id>" })
-subagent({ action: "interrupt", id: "<run-id>" })
-subagent({ action: "interrupt", id: "<nested-run-id>" })
-subagent({ action: "extend", id: "<run-id>", extendMs: 300000 })
-subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
-subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
-subagent({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" })
-subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })
-subagent({ action: "review", id: "<run-id>", decision: "needs_changes", message: "One edge case remains." })
-subagent({ action: "status", text: "login", sort: "newest", limit: 20 })
-subagent({ action: "history", id: "<run-id>", index: 0, limit: 100 })
-subagent({ action: "search", query: '"login timeout"', limit: 20 })
-subagent({ action: "doctor" })
+subagent({ action: "status" });
+subagent({ action: "status", id: "<run-id>" });
+subagent({ action: "status", id: "<nested-run-id>" });
+subagent({ action: "interrupt", id: "<run-id>" });
+subagent({ action: "interrupt", id: "<nested-run-id>" });
+subagent({ action: "extend", id: "<run-id>", extendMs: 300000 });
+subagent({ action: "resume", id: "<run-id>", message: "follow-up question" });
+subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" });
+subagent({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" });
+subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" });
+subagent({
+  action: "review",
+  id: "<run-id>",
+  decision: "needs_changes",
+  message: "One edge case remains.",
+});
+subagent({ action: "status", text: "login", sort: "newest", limit: 20 });
+subagent({ action: "history", id: "<run-id>", index: 0, limit: 100 });
+subagent({ action: "search", query: '"login timeout"', limit: 20 });
+subagent({ action: "doctor" });
 ```
 
 `status` resolves exact run IDs, including legacy foreground IDs and nested run IDs, before falling back to prefix matching. Completed, failed, and interrupted owned runs remain inspectable after reload or restart of the same saved parent. `id: "latest"` / `id: "last"` selects the latest owned run; exact IDs are retained regardless of list size. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, `agent_runs({ action: "list" })` lists only the child's directly owned runs restored from its saved session. Use an explicit run ID for advanced `status`; children cannot enumerate unrelated top-level runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
@@ -1411,17 +1434,17 @@ subagent({
       "Plan acceptance checks are addressed",
       "Scout handoff artifacts are not committed",
       "Focused validation for changed behavior passes",
-      "Residual risks or skipped checks are reported"
+      "Residual risks or skipped checks are reported",
     ],
     evidence: ["changed-files", "commands-run", "validation-output", "residual-risks"],
     verify: [{ id: "local-gate", command: "npm run ci" }],
     stopRules: [
       "Do not edit unrelated files",
-      "Stop and report if the plan requires a decision outside the assigned authority"
+      "Stop and report if the plan requires a decision outside the assigned authority",
     ],
-    maxFinalizationTurns: 3
-  }
-})
+    maxFinalizationTurns: 3,
+  },
+});
 ```
 
 ## Human-only acceptance blockers
@@ -1500,6 +1523,7 @@ model: claude-sonnet-4-20250514
 subagent: browser-screenshoter
 cwd: /tmp/screenshots
 ---
+
 Use url in the prompt to take screenshot: $@
 ```
 
@@ -1511,22 +1535,22 @@ For more reusable workflows on top of subagents, including `/chain-prompts` and 
 
 The main runtime files are:
 
-| File | Purpose |
-|------|---------|
-| `src/extension/index.ts` | Extension registration, tool registration, message/render wiring. |
-| `src/agents/agents.ts` | Agent and chain discovery, frontmatter parsing. |
-| `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, chain, management, status, interrupt, and doctor actions. |
-| `src/runs/background/subagent-runner.ts` | Durable owner for single tasks, parallel groups, chains, and verification. |
-| `src/runs/background/async-execution.ts` | Frozen launch configuration and detached owner startup for every mode. |
-| `src/runs/shared/child-attempt.ts` | Shared process/event lifecycle for native Pi JSON CLI attempts and the Claude Code adapter. |
-| `src/runs/foreground/wait-run.ts` | Abort-aware result/progress view over an owned run. |
-| `src/runs/background/async-status.ts` | Durable and legacy run discovery and status formatting. |
-| `src/runs/shared/run-records.ts` | Native parent ownership, saved launch/result recovery, attention-first lists, and lineage/review views. |
-| `src/agents/chain-serializer.ts` / `src/runs/shared/chain-outputs.ts` / `src/runs/shared/dynamic-fanout.ts` | Saved chain parsing, named outputs, and bounded dynamic expansion. |
-| `src/runs/shared/native-finalization.ts` | Same-process Pi self-review and current typed report submission. |
-| `src/runs/foreground/wait-run.ts` / `src/runs/shared/parent-usage.ts` | Abort-aware durable waits and finalized native tool-result usage. |
-| `src/shared/settings.ts` | Chain behavior, instructions, and config helpers. |
-| `src/runs/shared/worktree.ts` | Git worktree isolation. |
-| `src/intercom/intercom-bridge.ts` | Fixed intercom instructions, target names, and agent wiring. |
-| `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
-| `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |
+| File                                                                                                        | Purpose                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `src/extension/index.ts`                                                                                    | Extension registration, tool registration, message/render wiring.                                       |
+| `src/agents/agents.ts`                                                                                      | Agent and chain discovery, frontmatter parsing.                                                         |
+| `src/runs/foreground/subagent-executor.ts`                                                                  | Main execution routing for single, parallel, chain, management, status, interrupt, and doctor actions.  |
+| `src/runs/background/subagent-runner.ts`                                                                    | Durable owner for single tasks, parallel groups, chains, and verification.                              |
+| `src/runs/background/async-execution.ts`                                                                    | Frozen launch configuration and detached owner startup for every mode.                                  |
+| `src/runs/shared/child-attempt.ts`                                                                          | Shared process/event lifecycle for native Pi JSON CLI attempts and the Claude Code adapter.             |
+| `src/runs/foreground/wait-run.ts`                                                                           | Abort-aware result/progress view over an owned run.                                                     |
+| `src/runs/background/async-status.ts`                                                                       | Durable and legacy run discovery and status formatting.                                                 |
+| `src/runs/shared/run-records.ts`                                                                            | Native parent ownership, saved launch/result recovery, attention-first lists, and lineage/review views. |
+| `src/agents/chain-serializer.ts` / `src/runs/shared/chain-outputs.ts` / `src/runs/shared/dynamic-fanout.ts` | Saved chain parsing, named outputs, and bounded dynamic expansion.                                      |
+| `src/runs/shared/native-finalization.ts`                                                                    | Same-process Pi self-review and current typed report submission.                                        |
+| `src/runs/foreground/wait-run.ts` / `src/runs/shared/parent-usage.ts`                                       | Abort-aware durable waits and finalized native tool-result usage.                                       |
+| `src/shared/settings.ts`                                                                                    | Chain behavior, instructions, and config helpers.                                                       |
+| `src/runs/shared/worktree.ts`                                                                               | Git worktree isolation.                                                                                 |
+| `src/intercom/intercom-bridge.ts`                                                                           | Fixed intercom instructions, target names, and agent wiring.                                            |
+| `src/extension/schemas.ts` / `src/shared/types.ts`                                                          | Tool schemas, shared types, and event constants.                                                        |
+| `test/unit/` / `test/integration/`                                                                          | Unit and loader-based integration tests.                                                                |

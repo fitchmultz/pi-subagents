@@ -8,45 +8,85 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const [mode, directory, sourceSession] = process.argv.slice(2);
 assert.ok(mode && directory && process.send, "Run this fixture through the native intercom test");
 const repo = fileURLToPath(new URL("../../", import.meta.url));
-const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url));
+const sdkRoot =
+  process.env.PI_INTERCOM_TEST_SDK ??
+  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url));
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
-const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkEntry.href);
-const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
+  await import(sdkEntry.href);
+const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(
+  pathToFileURL(path.join(aiRoot, "dist/index.js")).href
+);
 mkdirSync(directory, { recursive: true });
 const faux = fauxProvider({ provider: "fixture-restart" });
-const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+const modelRuntime = await ModelRuntime.create({
+  credentials: new InMemoryCredentialStore(),
+  modelsPath: null,
+  refreshOnCreate: false,
+});
 modelRuntime.registerNativeProvider(faux.provider);
-const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+const settingsManager = SettingsManager.inMemory({
+  compaction: { enabled: false },
+  retry: { enabled: false },
+});
 let context;
 const errors = [];
 const loader = new DefaultResourceLoader({
-  cwd: directory, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager,
-  noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+  cwd: directory,
+  agentDir: process.env.PI_CODING_AGENT_DIR,
+  settingsManager,
+  noExtensions: true,
+  noSkills: true,
+  noPromptTemplates: true,
+  noThemes: true,
+  noContextFiles: true,
   systemPrompt: "Native restart regression fixture.",
-  additionalExtensionPaths: [process.env.PI_INTERCOM_TEST_EXTENSION ?? path.join(repo, "src/pi-intercom/index.ts")],
-  extensionFactories: [(pi) => pi.on("session_start", (_event, ctx) => {
-    context = ctx;
-    pi.setSessionName("restart-parent");
-  })],
+  additionalExtensionPaths: [
+    process.env.PI_INTERCOM_TEST_EXTENSION ?? path.join(repo, "src/pi-intercom/index.ts"),
+  ],
+  extensionFactories: [
+    (pi) =>
+      pi.on("session_start", (_event, ctx) => {
+        context = ctx;
+        pi.setSessionName("restart-parent");
+      }),
+  ],
 });
 await loader.reload();
 assert.deepEqual(loader.getExtensions().errors, []);
-const sessionManager = mode === "fork"
-  ? SessionManager.forkFrom(sourceSession, directory, path.join(directory, "sessions"))
-  : mode === "resume"
-    ? SessionManager.open(sourceSession)
-    : SessionManager.create(directory, path.join(directory, "sessions"));
+function openSession() {
+  if (mode === "fork") {
+    return SessionManager.forkFrom(sourceSession, directory, path.join(directory, "sessions"));
+  }
+  if (mode === "resume") {
+    return SessionManager.open(sourceSession);
+  }
+  return SessionManager.create(directory, path.join(directory, "sessions"));
+}
+const sessionManager = openSession();
 const { session } = await createAgentSession({
-  cwd: directory, agentDir: process.env.PI_CODING_AGENT_DIR,
-  modelRuntime, model: faux.getModel(), settingsManager, resourceLoader: loader, sessionManager, noTools: "builtin",
+  cwd: directory,
+  agentDir: process.env.PI_CODING_AGENT_DIR,
+  modelRuntime,
+  model: faux.getModel(),
+  settingsManager,
+  resourceLoader: loader,
+  sessionManager,
+  noTools: "builtin",
 });
 const summary = async () => {
   if (!session.agent.state.tools.some((tool) => tool.name === "intercom")) {
-    await session.agent.state.tools.find((tool) => tool.name === "load_intercom").execute("fixture-load", {}, new AbortController().signal);
+    await session.agent.state.tools
+      .find((tool) => tool.name === "load_intercom")
+      .execute("fixture-load", {}, new AbortController().signal);
   }
   const intercom = session.agent.state.tools.find((tool) => tool.name === "intercom");
-  const status = await intercom.execute("fixture-status", { action: "status" }, new AbortController().signal);
+  const status = await intercom.execute(
+    "fixture-status",
+    { action: "status" },
+    new AbortController().signal,
+  );
   const entries = sessionManager.getEntries();
   return {
     sessionId: sessionManager.getSessionId(),
@@ -55,8 +95,16 @@ const summary = async () => {
     nativeQueued: session.agent.hasQueuedMessages(),
     publicPending: context.hasPendingMessages(),
     status: JSON.stringify(status),
-    visibleIds: entries.filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message").map((entry) => entry.details.message.id),
-    checkpointOwners: [...new Set(entries.filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery").map((entry) => entry.data.sessionId))],
+    visibleIds: entries
+      .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
+      .map((entry) => entry.details.message.id),
+    checkpointOwners: [
+      ...new Set(
+        entries
+          .filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery")
+          .map((entry) => entry.data.sessionId),
+      ),
+    ],
     errors,
   };
 };
@@ -66,26 +114,41 @@ if (mode === "seed") {
     fauxAssistantMessage("Saved conversation ready"),
     async (_context, options) => {
       process.send({ type: "ready", ...(await summary()) });
-      await new Promise((resolve) => options.signal.addEventListener("abort", resolve, { once: true }));
+      await new Promise((resolve) =>
+        options.signal.addEventListener("abort", resolve, { once: true }),
+      );
       return fauxAssistantMessage("Aborted");
     },
   ]);
 } else {
   faux.setResponses([fauxAssistantMessage("Recovered pending messages")]);
 }
-await session.bindExtensions({ mode: "rpc", uiContext: { ...session.extensionRunner.getUIContext() }, onError: (error) => errors.push(error) });
+await session.bindExtensions({
+  mode: "rpc",
+  uiContext: { ...session.extensionRunner.getUIContext() },
+  onError: (error) => errors.push(error),
+});
 
 if (mode === "seed") {
   process.on("message", async (message) => {
-    if (message?.action === "snapshot") process.send({ type: "snapshot", ...(await summary()) });
+    if (message?.action === "snapshot") {
+      process.send({ type: "snapshot", ...(await summary()) });
+    }
   });
   await session.prompt("Seed this saved session");
   // The test kills this process while native queues and intercom staging are pending.
   await session.prompt("Hold an unfinished provider request");
 } else {
   const deadline = Date.now() + 5_000;
+  // Each summary awaits a real broker response before deciding whether native delivery settled.
+  // oxlint-disable-next-line no-await-in-loop
   while (!(await summary()).status.includes("Pending inbound messages: 0") || !session.isIdle) {
-    assert.ok(Date.now() < deadline, "restored native delivery finishes without waking passive messages");
+    assert.ok(
+      Date.now() < deadline,
+      "restored native delivery finishes without waking passive messages",
+    );
+    // Native delivery consumes its queue between polls; do not race concurrent status calls.
+    // oxlint-disable-next-line no-await-in-loop
     await sleep(5);
   }
   await session.waitForIdle();

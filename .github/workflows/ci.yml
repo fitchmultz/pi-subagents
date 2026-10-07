@@ -9,10 +9,10 @@ on:
     inputs:
       official-version:
         type: string
-        default: ''
+        default: ""
       fork-ref:
         type: string
-        default: ''
+        default: ""
 
 permissions:
   contents: read
@@ -22,11 +22,29 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CI: 'true'
+  CI: "true"
   PI_AUTOMATION_REF: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ">=24.21.0 <25"
+          package-manager-cache: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
+      - run: npm ci --ignore-scripts
+      - run: npm run quality
+
   resolve:
     uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
     with:
@@ -54,9 +72,12 @@ jobs:
         include:
           - { os: ubuntu-latest, host: official }
           - { os: ubuntu-latest, host: fork }
-          - { os: macos-latest, host: fork }
+          - { os: [self-hosted, macOS, ARM64, protected-macos-arm64], host: fork }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # check:compat 58m + its owner cleanup (round to 59m), host/development
+    # preparation 30m, production installs/smokes 15m, fork/tooling 15m,
+    # and final settlement 1m. See scripts/compat-process.mjs for stage math.
+    timeout-minutes: 120
     env:
       PI_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
       PI_EDITOR_RECEIPT_TEST_ROOT: ${{ github.workspace }}/editor
@@ -86,15 +107,19 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '>=24.21.0 <25'
+          node-version: ">=24.21.0 <25"
           check-latest: true
           package-manager-cache: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.1"
+          cache: false
       - name: Install native test prerequisites
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get update
-            sudo apt-get install -y fd-find ripgrep
+            sudo apt-get install -y fd-find ripgrep libcap2-bin
             sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
           else
             brew install fd ripgrep
@@ -103,6 +128,9 @@ jobs:
         run: |
           PM="$(node -p 'require("./automation/package.json").packageManager')"
           npm exec --yes --package="$PM" -- npm install --global "$PM"
+      - name: Install the compatibility owner's native runtime
+        working-directory: extension
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Build the resolved fork on this platform
         if: matrix.host == 'fork'
         working-directory: fork
@@ -122,13 +150,14 @@ jobs:
         run: node extension/.github/scripts/ci-host.mjs fork "$RUNNER_TEMP/fork-package" automation extension
 
   compatibility:
-    needs: [resolve, editor, qualification]
+    needs: [quality, resolve, editor, qualification]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected host gate
         env:
+          QUALITY: ${{ needs.quality.result }}
           RESOLVE: ${{ needs.resolve.result }}
           EDITOR: ${{ needs.editor.result }}
           QUALIFICATION: ${{ needs.qualification.result }}
-        run: test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success
+        run: test "$QUALITY" = success && test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success

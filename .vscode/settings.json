@@ -1,0 +1,11 @@
+{
+  "oxc.requireConfig": true,
+  "oxc.path.oxlint": "node_modules/.bin/oxlint",
+  "oxc.path.oxfmt": "node_modules/.bin/oxfmt",
+  "oxc.path.tsgolint": "node_modules/.cache/pi-quality-engine/tsgolint",
+  "oxc.fixKind": "safe_fix",
+  "editor.formatOnSave": true,
+  "[javascript][javascriptreact][typescript][typescriptreact][json][jsonc][markdown][yaml]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  }
+}

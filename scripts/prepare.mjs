@@ -21,47 +21,67 @@ const cwd = process.cwd();
 const buildScript = join(cwd, "scripts", "build.mjs");
 const tscBin = (root) => join(root, "node_modules", "typescript", "bin", "tsc");
 
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(
+    "Usage: node scripts/prepare.mjs\n\nBuild source installs using the local compiler or a temporary pinned TypeScript install.\nTemporary compilers are removed on success or failure; host peers are not installed.\nExample: npm run prepare\nExit codes: 0 build passed; 1 compiler setup or build failed.",
+  );
+  process.exit(0);
+}
+
 // No shell: process.execPath runs scripts and npm's cli.js directly, which is safe for
 // paths containing spaces on every platform (shell:true concatenates args unescaped).
 async function runNode(args) {
-	const { stderr, stdout } = await execFile(process.execPath, args, { cwd, maxBuffer: 20 * 1024 * 1024 });
-	// Forward output on success too: install-time diagnostics such as the
-	// concurrent-swap race-loss warning are otherwise swallowed.
-	if (stdout) process.stdout.write(stdout);
-	if (stderr) process.stderr.write(stderr);
+  const { stderr, stdout } = await execFile(process.execPath, args, {
+    cwd,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  // Forward output on success too: install-time diagnostics such as the
+  // concurrent-swap race-loss warning are otherwise swallowed.
+  if (stdout) {
+    process.stdout.write(stdout);
+  }
+  if (stderr) {
+    process.stderr.write(stderr);
+  }
 }
 
 async function main() {
-	if (existsSync(tscBin(cwd))) {
-		await runNode([buildScript]);
-		return;
-	}
-	const npmExecPath = process.env.npm_execpath;
-	if (!npmExecPath) throw new Error(`npm_execpath is not set; run "npm install" manually in ${cwd} and retry.`);
-	const { devDependencies } = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
-	const prefix = await mkdtemp(join(tmpdir(), "pi-subagents-tsc-"));
-	try {
-		await runNode([
-			npmExecPath,
-			"install",
-			`typescript@${devDependencies.typescript}`,
-			"--prefix",
-			prefix,
-			"--no-save",
-			"--no-package-lock",
-			"--ignore-scripts",
-			"--no-audit",
-			"--no-fund",
-		]);
-		await runNode([buildScript, tscBin(prefix)]);
-	} finally {
-		await rm(prefix, { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
-	}
+  if (existsSync(tscBin(cwd))) {
+    await runNode([buildScript]);
+    return;
+  }
+  const npmExecPath = process.env.npm_execpath;
+  if (!npmExecPath) {
+    throw new Error(`npm_execpath is not set; run "npm install" manually in ${cwd} and retry.`);
+  }
+  const { devDependencies } = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+  const prefix = await mkdtemp(join(tmpdir(), "pi-subagents-tsc-"));
+  try {
+    await runNode([
+      npmExecPath,
+      "install",
+      `typescript@${devDependencies.typescript}`,
+      "--prefix",
+      prefix,
+      "--no-save",
+      "--no-package-lock",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+    ]);
+    await runNode([buildScript, tscBin(prefix)]);
+  } finally {
+    await rm(prefix, { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
+  }
 }
 
 main().catch((error) => {
-	if (error?.stdout) process.stdout.write(error.stdout);
-	if (error?.stderr) process.stderr.write(error.stderr);
-	console.error(error instanceof Error ? error.message : String(error));
-	process.exitCode = 1;
+  if (error?.stdout) {
+    process.stdout.write(error.stdout);
+  }
+  if (error?.stderr) {
+    process.stderr.write(error.stderr);
+  }
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 });

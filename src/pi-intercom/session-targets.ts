@@ -3,22 +3,22 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 export interface TargetIdentity {
-  id: string;
-  name?: string;
+  readonly id: string;
+  readonly name?: string;
 }
 
 export interface ProjectSessionIdentity extends TargetIdentity {
-  cwd: string;
-  projectId?: string;
+  readonly cwd: string;
+  readonly projectId?: string;
 }
 
 export const MIN_SESSION_TARGET_PREFIX_LENGTH = 8;
 
 export interface TargetResolution<T extends TargetIdentity> {
-  status: "none" | "found" | "ambiguous" | "prefix_too_short";
-  target?: T;
-  matches: T[];
-  minLength?: number;
+  readonly status: "none" | "found" | "ambiguous" | "prefix_too_short";
+  readonly target?: T;
+  readonly matches: readonly T[];
+  readonly minLength?: number;
 }
 
 export function shortSessionId(sessionId: string): string {
@@ -35,34 +35,49 @@ function resolveGitCommonDirectory(cwd: string): Promise<string | undefined> {
   delete env.GIT_COMMON_DIR;
   delete env.GIT_WORK_TREE;
   return new Promise((resolve) => {
-    execFile("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
-      cwd: path.dirname(process.execPath),
-      encoding: "utf8",
-      env,
-      maxBuffer: 4096,
-      timeout: 500,
-    }, (error, stdout) => {
-      const gitDirectory = error ? "" : stdout.trim();
-      resolve(gitDirectory && !/[\0\r\n]/.test(gitDirectory)
-        ? normalizedPath(path.resolve(cwd, gitDirectory))
-        : undefined);
-    });
+    execFile(
+      "git",
+      ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      {
+        cwd: path.dirname(process.execPath),
+        encoding: "utf8",
+        env,
+        maxBuffer: 4096,
+        timeout: 500,
+      },
+      (error, stdout) => {
+        const gitDirectory = error ? "" : stdout.trim();
+        resolve(
+          gitDirectory !== "" && !/[\0\r\n]/.test(gitDirectory)
+            ? normalizedPath(path.resolve(cwd, gitDirectory))
+            : undefined,
+        );
+      },
+    );
   });
 }
 
 export async function resolveSessionProjectId(cwd: string): Promise<string> {
   const gitDirectory = await resolveGitCommonDirectory(cwd);
-  const identity = gitDirectory ? `git:${gitDirectory}` : `cwd:${normalizedPath(cwd)}`;
+  const identity =
+    gitDirectory !== undefined && gitDirectory !== ""
+      ? `git:${gitDirectory}`
+      : `cwd:${normalizedPath(cwd)}`;
   return createHash("sha256").update(identity).digest("hex");
 }
 
-function normalizedNames(sessions: TargetIdentity[]): Set<string> {
-  return new Set(sessions
-    .map((session) => session.name?.trim().toLowerCase())
-    .filter((name): name is string => Boolean(name)));
+function normalizedNames(sessions: readonly TargetIdentity[]): Set<string> {
+  return new Set(
+    sessions
+      .map((session) => session.name?.trim().toLowerCase())
+      .filter((name): name is string => Boolean(name)),
+  );
 }
 
-export function formatSessionTarget(session: TargetIdentity, allSessions: TargetIdentity[] = [session]): string {
+export function formatSessionTarget(
+  session: TargetIdentity,
+  allSessions: readonly TargetIdentity[] = [session],
+): string {
   const ids = allSessions.map((candidate) => candidate.id.toLowerCase());
   const names = normalizedNames(allSessions);
   const id = session.id.toLowerCase();
@@ -78,23 +93,33 @@ export function formatSessionTarget(session: TargetIdentity, allSessions: Target
   return session.id;
 }
 
-export function formatTargetOptions(sessions: TargetIdentity[], allSessions: TargetIdentity[] = sessions): string {
+export function formatTargetOptions(
+  sessions: readonly TargetIdentity[],
+  allSessions: readonly TargetIdentity[] = sessions,
+): string {
   return sessions
-    .map((session) => `${session.name || shortSessionId(session.id)} → ${formatSessionTarget(session, allSessions)}`)
+    .map(
+      (session) =>
+        `${session.name === undefined || session.name === "" ? shortSessionId(session.id) : session.name} → ${formatSessionTarget(session, allSessions)}`,
+    )
     .join(", ");
 }
 
-export function targetDisplayName(session: TargetIdentity, allSessions: TargetIdentity[] = [session]): string {
-  if (!session.name?.trim()) {
+export function targetDisplayName(
+  session: TargetIdentity,
+  allSessions: readonly TargetIdentity[] = [session],
+): string {
+  if (session.name === undefined || session.name.trim() === "") {
     return session.id;
   }
 
   const lowerName = session.name.trim().toLowerCase();
-  const duplicateName = allSessions.some((candidate) =>
-    candidate.id !== session.id && candidate.name?.trim().toLowerCase() === lowerName
+  const duplicateName = allSessions.some(
+    (candidate) =>
+      candidate.id !== session.id && candidate.name?.trim().toLowerCase() === lowerName,
   );
-  const nameConflictsWithOtherIdPrefix = allSessions.some((candidate) =>
-    candidate.id !== session.id && candidate.id.toLowerCase().startsWith(lowerName)
+  const nameConflictsWithOtherIdPrefix = allSessions.some(
+    (candidate) => candidate.id !== session.id && candidate.id.toLowerCase().startsWith(lowerName),
   );
 
   return duplicateName || nameConflictsWithOtherIdPrefix
@@ -109,64 +134,91 @@ export function targetDisplayName(session: TargetIdentity, allSessions: TargetId
 // expensive on large sessions. Live details belong behind intercom list.
 export const PEER_AWARENESS_HINT = `Other Pi sessions may be connected to this project. Use load_intercom({}) if needed, then intercom({ action: "list" }) before changing shared state or coordinating known overlapping work. Routine standalone read-only tasks do not need a peer check. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
 
-export function filterProjectSessions<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): T[] {
+export function filterProjectSessions<T extends ProjectSessionIdentity>(
+  sessions: readonly T[],
+  currentSessionId: string,
+): T[] {
   const current = sessions.find((session) => session.id === currentSessionId);
-  if (!current) return [];
+  if (!current) {
+    return [];
+  }
 
-  return sessions.filter((session) =>
-    session.id === currentSessionId
-    || session.cwd === current.cwd
-    || Boolean(current.projectId && session.projectId && session.projectId === current.projectId)
+  return sessions.filter(
+    (session) =>
+      session.id === currentSessionId ||
+      session.cwd === current.cwd ||
+      (current.projectId !== undefined &&
+        current.projectId !== "" &&
+        session.projectId !== undefined &&
+        session.projectId !== "" &&
+        session.projectId === current.projectId),
   );
 }
 
-export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): string | undefined {
-  return filterProjectSessions(sessions, currentSessionId).some((session) => session.id !== currentSessionId)
+export function formatPeerAwarenessHint(
+  sessions: readonly ProjectSessionIdentity[],
+  currentSessionId: string,
+): string | undefined {
+  return filterProjectSessions(sessions, currentSessionId).some(
+    (session) => session.id !== currentSessionId,
+  )
     ? PEER_AWARENESS_HINT
     : undefined;
 }
 
-export function resolveSessionTarget<T extends TargetIdentity>(sessions: T[], rawTarget: string): TargetResolution<T> {
+function matchedTargets<T extends TargetIdentity>(matches: readonly T[]): TargetResolution<T> {
+  if (matches.length === 1) {
+    return { status: "found", target: matches[0], matches };
+  }
+  return matches.length > 1 ? { status: "ambiguous", matches } : { status: "none", matches: [] };
+}
+function shortTargetResolution<T extends TargetIdentity>(
+  names: readonly T[],
+  prefixes: readonly T[],
+): TargetResolution<T> {
+  if (names.length === 0) {
+    return {
+      status: "prefix_too_short",
+      matches: prefixes,
+      minLength: MIN_SESSION_TARGET_PREFIX_LENGTH,
+    };
+  }
+  const byId = new Map<string, T>();
+  for (const session of [...names, ...prefixes]) {
+    byId.set(session.id, session);
+  }
+  return matchedTargets([...byId.values()]);
+}
+export function resolveSessionTarget<T extends TargetIdentity>(
+  sessions: readonly T[],
+  rawTarget: string,
+): TargetResolution<T> {
   const target = rawTarget.trim();
   const lowerTarget = target.toLowerCase();
 
   const exactIdMatches = sessions.filter((session) => session.id.toLowerCase() === lowerTarget);
-  if (exactIdMatches.length === 1) {
-    return { status: "found", target: exactIdMatches[0], matches: exactIdMatches };
-  }
-  if (exactIdMatches.length > 1) {
-    return { status: "ambiguous", matches: exactIdMatches };
+  if (exactIdMatches.length > 0) {
+    return matchedTargets(exactIdMatches);
   }
 
-  const nameMatches = sessions.filter((session) => session.name?.trim().toLowerCase() === lowerTarget);
-  const allPrefixMatches = sessions.filter((session) => session.id.toLowerCase().startsWith(lowerTarget));
+  const nameMatches = sessions.filter(
+    (session) => session.name?.trim().toLowerCase() === lowerTarget,
+  );
+  const allPrefixMatches = sessions.filter((session) =>
+    session.id.toLowerCase().startsWith(lowerTarget),
+  );
   const prefixMatches = target.length >= MIN_SESSION_TARGET_PREFIX_LENGTH ? allPrefixMatches : [];
-  if (target.length > 0 && target.length < MIN_SESSION_TARGET_PREFIX_LENGTH && allPrefixMatches.length > 0) {
-    if (nameMatches.length > 0) {
-      const matchesById = new Map<string, T>();
-      for (const session of [...nameMatches, ...allPrefixMatches]) {
-        matchesById.set(session.id, session);
-      }
-      const matches = Array.from(matchesById.values());
-      if (matches.length === 1) {
-        return { status: "found", target: matches[0], matches };
-      }
-      return { status: "ambiguous", matches };
-    }
-    return { status: "prefix_too_short", matches: allPrefixMatches, minLength: MIN_SESSION_TARGET_PREFIX_LENGTH };
+  if (
+    target.length > 0 &&
+    target.length < MIN_SESSION_TARGET_PREFIX_LENGTH &&
+    allPrefixMatches.length > 0
+  ) {
+    return shortTargetResolution(nameMatches, allPrefixMatches);
   }
 
   const matchesById = new Map<string, T>();
   for (const session of [...nameMatches, ...prefixMatches]) {
     matchesById.set(session.id, session);
   }
-  const matches = Array.from(matchesById.values());
-
-  if (matches.length === 1) {
-    return { status: "found", target: matches[0], matches };
-  }
-  if (matches.length > 1) {
-    return { status: "ambiguous", matches };
-  }
-  return { status: "none", matches: [] };
+  return matchedTargets(Array.from(matchesById.values()));
 }

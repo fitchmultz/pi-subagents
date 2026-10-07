@@ -48,8 +48,13 @@ tmux -S "$SOCKET" attach -t "$SESSION"
 After the peer starts:
 
 ```typescript
-intercom({ action: "list" })
-intercom({ action: "send", to: "worker", delivery: "steer", message: "Smoke test: send exactly OK back to this session with delivery steer." })
+intercom({ action: "list" });
+intercom({
+  action: "send",
+  to: "worker",
+  delivery: "steer",
+  message: "Smoke test: send exactly OK back to this session with delivery steer.",
+});
 ```
 
 Expected reply:

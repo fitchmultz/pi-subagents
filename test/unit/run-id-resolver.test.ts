@@ -12,155 +12,239 @@ import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/neste
 const routeRoots: string[] = [];
 
 afterEach(() => {
-	for (const root of routeRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  for (const root of routeRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
 });
 
-function stateWithOwnedRun(id: string): SubagentState {
-	return {
-		baseCwd: "",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundRuns: new Map(),
-		ownedRuns: new Map([[id, { runId: id, rootRunId: id, ownerSessionId: "parent", source: "async", mode: "single", startedAt: 1, cwd: "", task: "Fixture", children: [] }]]),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
+function stateWithOwnedRun(id: string): SubagentState & Required<Pick<SubagentState, "ownedRuns">> {
+  return {
+    baseCwd: "",
+    currentSessionId: null,
+    asyncJobs: new Map(),
+    foregroundRuns: new Map(),
+    ownedRuns: new Map([
+      [
+        id,
+        {
+          runId: id,
+          rootRunId: id,
+          ownerSessionId: "parent",
+          source: "async",
+          mode: "single",
+          startedAt: 1,
+          cwd: "",
+          task: "Fixture",
+          children: [],
+        },
+      ],
+    ]),
+    cleanupTimers: new Map(),
+    lastUiContext: null,
+    poller: null,
+    completionSeen: new Map(),
+    watcher: null,
+    watcherRestartTimer: null,
+    resultFileCoalescer: {
+      schedule: () => false,
+      clear: () => {
+        /* This fixture has no queued file handlers. */
+      },
+    },
+  };
 }
 
 function nested(rootRunId: string, id: string) {
-	const route = createNestedRoute(rootRunId);
-	routeRoots.push(path.dirname(route.eventSink));
-	writeNestedChild(route, rootRunId, id, 0);
-	return route;
+  const route = createNestedRoute(rootRunId);
+  routeRoots.push(path.dirname(route.eventSink));
+  writeNestedChild(route, rootRunId, id, 0);
+  return route;
 }
 
-function writeNestedChild(route: ReturnType<typeof createNestedRoute>, parentRunId: string, id: string, parentStepIndex?: number) {
-	writeNestedEvent(route, {
-		type: "subagent.nested.updated",
-		ts: 100,
-		parentRunId,
-		...(parentStepIndex !== undefined ? { parentStepIndex } : {}),
-		child: { id, parentRunId, ...(parentStepIndex !== undefined ? { parentStepIndex } : {}), depth: 1, path: [{ runId: parentRunId, ...(parentStepIndex !== undefined ? { stepIndex: parentStepIndex } : {}) }], state: "running", agent: "worker" },
-	});
+function writeNestedChild(
+  route: ReturnType<typeof createNestedRoute>,
+  parentRunId: string,
+  id: string,
+  parentStepIndex?: number,
+) {
+  writeNestedEvent(route, {
+    type: "subagent.nested.updated",
+    ts: 100,
+    parentRunId,
+    ...(parentStepIndex !== undefined ? { parentStepIndex } : {}),
+    child: {
+      id,
+      parentRunId,
+      ...(parentStepIndex !== undefined ? { parentStepIndex } : {}),
+      depth: 1,
+      path: [
+        {
+          runId: parentRunId,
+          ...(parentStepIndex !== undefined ? { stepIndex: parentStepIndex } : {}),
+        },
+      ],
+      state: "running",
+      agent: "worker",
+    },
+  });
 }
 
-function stateWithNestedRoute(route: ReturnType<typeof createNestedRoute>): SubagentState {
-	return stateWithOwnedRun(route.rootRunId);
+function stateWithNestedRoute(
+  route: ReturnType<typeof createNestedRoute>,
+): ReturnType<typeof stateWithOwnedRun> {
+  return stateWithOwnedRun(route.rootRunId);
 }
 
 describe("subagent run id resolver", () => {
-	it("prefers exact durable owner locations, then exact nested before prefix matches", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-resolver-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			fs.mkdirSync(path.join(asyncRoot, "shared-id"), { recursive: true });
-			nested("root-shared", "shared-id");
-			nested("root-prefix", "shared-id-child");
+  it("prefers exact durable owner locations, then exact nested before prefix matches", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-resolver-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      fs.mkdirSync(path.join(asyncRoot, "shared-id"), { recursive: true });
+      nested("root-shared", "shared-id");
+      nested("root-prefix", "shared-id-child");
 
-			assert.equal(resolveSubagentRunId("shared-id", { state: stateWithOwnedRun("shared-id"), asyncDirRoot: asyncRoot, resultsDir })?.kind, "async");
-			assert.equal(resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir })?.kind, "async");
-			fs.rmSync(path.join(asyncRoot, "shared-id"), { recursive: true, force: true });
-			const resolved = resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir });
-			assert.equal(resolved?.kind, "nested");
-			assert.equal(resolved?.id, "shared-id");
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
+      assert.equal(
+        resolveSubagentRunId("shared-id", {
+          state: stateWithOwnedRun("shared-id"),
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+        })?.kind,
+        "async",
+      );
+      assert.equal(
+        resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir })?.kind,
+        "async",
+      );
+      fs.rmSync(path.join(asyncRoot, "shared-id"), { recursive: true, force: true });
+      const resolved = resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir });
+      assert.equal(resolved?.kind, "nested");
+      assert.equal(resolved.id, "shared-id");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-	for (const owned of [true, false]) it(`keeps canonical ${owned ? "owned" : "tracked"} async control direct for exact IDs and prefixes`, () => {
-		const id = "direct-canonical-child", route = nested("direct-canonical-root", id), state = stateWithNestedRoute(route);
-		const asyncDir = getRunMetadataDir(id); routeRoots.push(asyncDir);
-		saveRunStatus(id, { runtimeVersion: 2, runId: id, mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] });
-		if (owned) state.ownedRuns!.set(id, stateWithOwnedRun(id).ownedRuns!.get(id)!);
-		else state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
-		for (const requested of [id, "direct-canonical-c"]) {
-			const resolved = resolveSubagentRunId(requested, { state });
-			assert.equal(resolved?.kind, "async");
-			assert.equal(resolved?.id, id);
-		}
-	});
+  for (const owned of [true, false]) {
+    it(`keeps canonical ${owned ? "owned" : "tracked"} async control direct for exact IDs and prefixes`, () => {
+      const id = "direct-canonical-child",
+        route = nested("direct-canonical-root", id),
+        state = stateWithNestedRoute(route);
+      const asyncDir = getRunMetadataDir(id);
+      routeRoots.push(asyncDir);
+      saveRunStatus(id, {
+        runtimeVersion: 2,
+        runId: id,
+        mode: "single",
+        state: "running",
+        pid: process.pid,
+        startedAt: Date.now(),
+        steps: [{ agent: "worker", status: "running" }],
+      });
+      if (owned) {
+        const run = stateWithOwnedRun(id).ownedRuns.get(id);
+        assert.ok(run);
+        state.ownedRuns.set(id, run);
+      } else {
+        state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+      }
+      for (const requested of [id, "direct-canonical-c"]) {
+        const resolved = resolveSubagentRunId(requested, { state });
+        assert.equal(resolved?.kind, "async");
+        assert.equal(resolved.id, id);
+      }
+    });
+  }
 
-	it("reports one combined ambiguity for prefixes across namespaces", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-ambiguous-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			fs.mkdirSync(path.join(asyncRoot, "fanout-async"), { recursive: true });
-			nested("root-fanout", "fanout-nested");
-			assert.throws(
-				() => resolveSubagentRunId("fanout", { asyncDirRoot: asyncRoot, resultsDir }),
-				/Ambiguous subagent run id prefix 'fanout' matched: async:fanout-async, nested:fanout-nested/,
-			);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
+  it("reports one combined ambiguity for prefixes across namespaces", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-ambiguous-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      fs.mkdirSync(path.join(asyncRoot, "fanout-async"), { recursive: true });
+      nested("root-fanout", "fanout-nested");
+      assert.throws(
+        () => resolveSubagentRunId("fanout", { asyncDirRoot: asyncRoot, resultsDir }),
+        /Ambiguous subagent run id prefix 'fanout' matched: async:fanout-async, nested:fanout-nested/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-	it("limits nested lookup to active state routes when state is provided", () => {
-		const allowed = nested("root-allowed", "shared-nested");
-		nested("root-outside", "shared-nested");
+  it("limits nested lookup to active state routes when state is provided", () => {
+    const allowed = nested("root-allowed", "shared-nested");
+    nested("root-outside", "shared-nested");
 
-		assert.throws(
-			() => resolveSubagentRunId("shared-nested"),
-			/ambiguous across authorized registries|ambiguous across registries/i,
-		);
-		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithOwnedRun("owned-only") }), undefined);
-		const asyncRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-shadow-"));
-		routeRoots.push(asyncRoot);
-		fs.mkdirSync(path.join(asyncRoot, "shared-nested"));
-		fs.writeFileSync(path.join(asyncRoot, "shared-nested", "status.json"), "{");
-		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed), asyncDirRoot: asyncRoot });
-		assert.equal(resolved?.kind, "nested");
-		assert.equal(resolved?.kind === "nested" ? resolved.match.rootRunId : undefined, "root-allowed");
-		const ambiguous = stateWithNestedRoute(allowed);
-		ambiguous.ownedRuns!.set("root-outside", stateWithOwnedRun("root-outside").ownedRuns!.get("root-outside")!);
-		assert.throws(() => resolveSubagentRunId("shared-nest", { state: ambiguous }), /Ambiguous subagent run id prefix/, "distinct authorized routes must not collapse into one prefix target");
-	});
+    assert.throws(
+      () => resolveSubagentRunId("shared-nested"),
+      /ambiguous across authorized registries|ambiguous across registries/i,
+    );
+    assert.equal(
+      resolveSubagentRunId("shared-nested", { state: stateWithOwnedRun("owned-only") }),
+      undefined,
+    );
+    const asyncRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-shadow-"));
+    routeRoots.push(asyncRoot);
+    fs.mkdirSync(path.join(asyncRoot, "shared-nested"));
+    fs.writeFileSync(path.join(asyncRoot, "shared-nested", "status.json"), "{");
+    const resolved = resolveSubagentRunId("shared-nested", {
+      state: stateWithNestedRoute(allowed),
+      asyncDirRoot: asyncRoot,
+    });
+    assert.equal(resolved?.kind, "nested");
+    assert.equal(resolved.match.rootRunId, "root-allowed");
+    const ambiguous = stateWithNestedRoute(allowed);
+    const outside = stateWithOwnedRun("root-outside").ownedRuns.get("root-outside");
+    assert.ok(outside);
+    ambiguous.ownedRuns.set("root-outside", outside);
+    assert.throws(
+      () => resolveSubagentRunId("shared-nest", { state: ambiguous }),
+      /Ambiguous subagent run id prefix/,
+      "distinct authorized routes must not collapse into one prefix target",
+    );
+  });
 
-	it("limits nested lookup to descendants of a scoped child address", () => {
-		const route = createNestedRoute("root-scoped");
-		routeRoots.push(path.dirname(route.eventSink));
-		writeNestedChild(route, "root-scoped", "same-child-zero", 0);
-		writeNestedChild(route, "root-scoped", "same-child-one", 1);
+  it("limits nested lookup to descendants of a scoped child address", () => {
+    const route = createNestedRoute("root-scoped");
+    routeRoots.push(path.dirname(route.eventSink));
+    writeNestedChild(route, "root-scoped", "same-child-zero", 0);
+    writeNestedChild(route, "root-scoped", "same-child-one", 1);
 
-		assert.throws(
-			() => resolveSubagentRunId("same-child", { nested: { routes: [route] } }),
-			/Ambiguous subagent run id prefix 'same-child'/,
-		);
-		const resolved = resolveSubagentRunId("same-child", { nested: { routes: [route], descendantOf: { parentRunId: "root-scoped", parentStepIndex: 0 } } });
-		assert.equal(resolved?.kind, "nested");
-		assert.equal(resolved?.id, "same-child-zero");
-		assert.equal(resolved?.kind === "nested" ? resolved.match.run.parentStepIndex : undefined, 0);
-	});
+    assert.throws(
+      () => resolveSubagentRunId("same-child", { nested: { routes: [route] } }),
+      /Ambiguous subagent run id prefix 'same-child'/,
+    );
+    const resolved = resolveSubagentRunId("same-child", {
+      nested: { routes: [route], descendantOf: { parentRunId: "root-scoped", parentStepIndex: 0 } },
+    });
+    assert.equal(resolved?.kind, "nested");
+    assert.equal(resolved.id, "same-child-zero");
+    assert.equal(resolved.match.run.parentStepIndex, 0);
+  });
 
-	it("reports async prefix ambiguity without parsing resolver error text", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-async-ambiguous-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			fs.mkdirSync(path.join(asyncRoot, "dupe-one"), { recursive: true });
-			fs.mkdirSync(path.join(asyncRoot, "dupe-two"), { recursive: true });
-			fs.writeFileSync(path.join(asyncRoot, "dupe-one", "status.json"), "{");
+  it("reports async prefix ambiguity without parsing resolver error text", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-async-ambiguous-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      fs.mkdirSync(path.join(asyncRoot, "dupe-one"), { recursive: true });
+      fs.mkdirSync(path.join(asyncRoot, "dupe-two"), { recursive: true });
+      fs.writeFileSync(path.join(asyncRoot, "dupe-one", "status.json"), "{");
 
-			assert.throws(
-				() => resolveSubagentRunId("dupe", { asyncDirRoot: asyncRoot, resultsDir }),
-				/Ambiguous subagent run id prefix 'dupe' matched: async:dupe-one, async:dupe-two/,
-			);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
+      assert.throws(
+        () => resolveSubagentRunId("dupe", { asyncDirRoot: asyncRoot, resultsDir }),
+        /Ambiguous subagent run id prefix 'dupe' matched: async:dupe-one, async:dupe-two/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-	it("rejects unsafe nested id tokens before lookup", () => {
-		assert.throws(() => resolveSubagentRunId("../run"), /safe id token/);
-		assert.throws(() => resolveSubagentRunId("a/b"), /safe id token/);
-		assert.throws(() => resolveSubagentRunId(""), /safe id token/);
-	});
+  it("rejects unsafe nested id tokens before lookup", () => {
+    assert.throws(() => resolveSubagentRunId("../run"), /safe id token/);
+    assert.throws(() => resolveSubagentRunId("a/b"), /safe id token/);
+    assert.throws(() => resolveSubagentRunId(""), /safe id token/);
+  });
 });

@@ -7,13 +7,13 @@ import { it } from "node:test";
 import { writeAtomicJson } from "../../src/shared/atomic-json.ts";
 
 it("writeAtomicJson creates private files", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-atomic-json-"));
-	try {
-		const file = path.join(dir, "status.json");
-		writeAtomicJson(file, { ok: true });
-		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf-8")), { ok: true });
-		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-	} finally {
-		fs.rmSync(dir, { recursive: true, force: true });
-	}
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-atomic-json-"));
+  try {
+    const file = path.join(dir, "status.json");
+    writeAtomicJson(file, { ok: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf-8")), { ok: true });
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

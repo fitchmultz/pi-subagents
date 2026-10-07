@@ -46,10 +46,27 @@
     "test:integration": "node scripts/run-tests.mjs integration",
     "test:all": "node scripts/run-tests.mjs all",
     "check:compat": "node scripts/check-compat.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "typecheck:leaves": "node scripts/quality-typecheck.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:install": "node scripts/local-install-smoke.mjs",
-    "ci": "npm run typecheck && npm run smoke:package && npm run smoke:install && npm run test:all",
+    "generate:schemas": "node scripts/generate-run-schemas.mjs",
+    "check:schemas": "node scripts/generate-run-schemas.mjs --check",
+    "quality:setup": "patch-package --patch-dir patches/npm --error-on-fail && node scripts/setup-quality-engine.mjs",
+    "quality:scope": "node scripts/quality-scope.mjs",
+    "quality:policy": "node scripts/quality-policy.mjs",
+    "quality:probes": "node --test --test-concurrency=1 test/quality/*.test.mjs",
+    "quality:controller": "node scripts/quality-controller.mjs",
+    "quality:sabotage": "node scripts/quality-sabotage.mjs",
+    "lint": "node scripts/quality-lint.mjs",
+    "lint:agent": "node scripts/quality-lint.mjs --agent",
+    "lint:fix": "node scripts/quality-lint.mjs --fix",
+    "format": "oxfmt --write . && npm run format:controller",
+    "format:check": "oxfmt --check . && npm run format:controller:check",
+    "format:controller": "node scripts/quality-controller.mjs --format",
+    "format:controller:check": "node scripts/quality-controller.mjs --format-check",
+    "quality": "npm run quality:setup && npm run check:schemas && npm run quality:policy && npm run lint && npm run format:check && npm run typecheck && npm run typecheck:leaves && npm run quality:probes && npm run quality:controller",
+    "ci": "npm run quality && npm run build && npm run smoke:package && npm run smoke:install && npm run test:all",
     "smoke:real-pi": "node scripts/real-pi-smoke.mjs"
   },
   "pi": {
@@ -91,14 +108,27 @@
     "@earendil-works/pi-coding-agent": "1.0.0",
     "@earendil-works/pi-tui": "1.0.0",
     "@types/node": "24.19.1",
+    "@types/sinon": "22.0.0",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "patch-package": "8.0.1",
+    "sinon": "22.1.0",
     "typebox": "1.3.34",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "typescript-api": "npm:typescript@6.0.3",
+    "typescript-json-schema": "0.68.0"
   },
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=24.21.0"
   },
   "dependencies": {
-    "stream-json": "3.7.0"
+    "ajv": "8.20.0",
+    "koffi": "3.3.2",
+    "stream-json": "3.7.0",
+    "type-fest": "5.10.0"
   }
 }

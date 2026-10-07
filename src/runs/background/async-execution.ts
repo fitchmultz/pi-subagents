@@ -1,850 +1,227 @@
-/**
- * Async execution logic for subagent tool
- */
-
-import { spawn } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "../../agents/agents.ts";
-import { applyThinkingSuffix, SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../shared/pi-args.ts";
-import { findDuplicateOutputPath, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveChainTemplates, resolveParallelBehaviors, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
-import type { RunnerStep, RunnerSubagentStep } from "../shared/parallel-utils.ts";
-import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
-import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
-import { resolveChildCwd } from "../../shared/utils.ts";
-import { buildModelCandidates, resolveModelCandidate, type AvailableModelInfo } from "../shared/model-fallback.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { resolveExpectedWorktreeAgentCwd } from "../shared/worktree.ts";
-import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
-import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
-import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
-import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
 import {
-	type AcceptanceInput,
-	type ChildProjectTrustPolicy,
-	type Details,
-	type JsonSchemaObject,
-	type MaxOutputConfig,
-	type NestedRouteInfo,
-	type ResolvedControlConfig,
-	type SavedLaunchConfig,
-	type SubagentRunMode,
-	DEFAULT_MAX_OUTPUT,
-	RESULTS_DIR,
-	RUNNER_ERROR_LOG_FILE,
-	SUBAGENT_ASYNC_STARTED_EVENT,
-	resolveChildMaxSubagentDepth,
+  createChainDir,
+  isParallelStep,
+  isDynamicParallelStep,
+  resolveChainTemplates,
+} from "../../shared/settings.ts";
+import { resolveChildCwd } from "../../shared/utils.ts";
+import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
+import {
+  ChainOutputValidationError,
+  validateChainOutputBindings,
+} from "../shared/chain-outputs.ts";
+import type {
+  ChainStep,
+  AsyncParallelGroupStatus,
+  RunnerStep,
+  SubagentRunMode,
 } from "../../shared/types.ts";
-import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
-import { formatRunAction } from "../../shared/status-format.ts";
-import { ensureTempRoot } from "../../shared/temp-root.ts";
-import { getRunMetadataDir } from "../shared/supervisor-questions.ts";
+import { AsyncChainPlanner } from "./async-chain-plan.ts";
+import { planAsyncSingle } from "./async-single-plan.ts";
+import {
+  AsyncStartValidationError,
+  UnavailableSubagentSkillError,
+  type AsyncChainParams,
+  type AsyncSingleParams,
+  type AsyncExecutionResult,
+} from "./async-plan.ts";
+import {
+  prepareAsyncOwner,
+  createRunnerLaunch,
+  launchAsyncRun,
+  launchErrorMessage,
+  formatAsyncStartError,
+  type AsyncRunOverview,
+} from "./async-launch.ts";
+export { formatAsyncStartedMessage } from "./async-launch.ts";
 
-const piPackageRoot = resolvePiPackageRoot();
-
-function usesAgentDefaultOutput(output: string | boolean | undefined): boolean {
-	return output === undefined || output === true || output === "true";
+function firstTask(step: ChainStep): string | undefined {
+  if (isParallelStep(step)) {
+    return step.parallel.at(0)?.task;
+  }
+  if (isDynamicParallelStep(step)) {
+    return step.parallel.task;
+  }
+  return step.task;
 }
 
-function materializeAsyncDefaultOutput(params: {
-	output: string | false | undefined;
-	artifactsDir: string | undefined;
-	asyncDir: string;
-	runId: string;
-	agent: string;
-	index?: number | string;
-}): string | false | undefined {
-	return materializeAgentDefaultOutputPath({
-		output: params.output,
-		artifactsDir: params.artifactsDir ?? params.asyncDir,
-		runId: params.runId,
-		agent: params.agent,
-		index: params.index,
-	});
+function stepAgents(step: ChainStep): readonly string[] {
+  if (isParallelStep(step)) {
+    return step.parallel.map((task) => task.agent);
+  }
+  if (isDynamicParallelStep(step)) {
+    return [step.parallel.agent];
+  }
+  return [step.agent];
 }
 
-function resolveAsyncOutput(params: {
-	requestedOutput: string | boolean | undefined;
-	agentDefaultOutput: string | false | undefined;
-	artifactsDir: string | undefined;
-	asyncDir: string;
-	runId: string;
-	agent: string;
-	index?: number | string;
-}): string | false | undefined {
-	const effectiveOutput = usesAgentDefaultOutput(params.requestedOutput)
-		? normalizeSingleOutputOverride(true, params.agentDefaultOutput)
-		: normalizeSingleOutputOverride(params.requestedOutput, params.agentDefaultOutput);
-	return usesAgentDefaultOutput(params.requestedOutput)
-		? materializeAsyncDefaultOutput({ output: effectiveOutput, artifactsDir: params.artifactsDir, asyncDir: params.asyncDir, runId: params.runId, agent: params.agent, index: params.index })
-		: effectiveOutput;
+function chainDescription(step: ChainStep): string {
+  if (isParallelStep(step)) {
+    return `[${step.parallel.map((task) => task.agent).join("+")}]`;
+  }
+  if (isDynamicParallelStep(step)) {
+    return `expand:${step.parallel.agent}`;
+  }
+  return step.agent;
 }
 
-interface AsyncExecutionContext {
-	rootSessionId?: string;
-	pi: ExtensionAPI;
-	cwd: string;
-	currentSessionId: string;
-	currentModelProvider?: string;
-	projectTrusted?: boolean;
+function validateChain(params: AsyncChainParams): void {
+  if (params.chain.length === 0) {
+    throw new AsyncStartValidationError("An async chain requires at least one step.");
+  }
+  validateChainOutputBindings(params.chain, { maxItems: params.dynamicFanoutMaxItems });
+  for (const step of params.chain) {
+    for (const name of stepAgents(step)) {
+      if (!params.agents.some((agent) => agent.name === name)) {
+        throw new AsyncStartValidationError(`Unknown agent: ${name}`);
+      }
+    }
+  }
 }
 
-interface AsyncChainParams {
-	timeoutMs?: number;
-	chain: ChainStep[];
-	task?: string;
-	resultMode?: Exclude<SubagentRunMode, "single">;
-	agents: AgentConfig[];
-	ctx: AsyncExecutionContext;
-	availableModels?: AvailableModelInfo[];
-	cwd?: string;
-	chainDir?: string;
-	maxOutput?: MaxOutputConfig;
-	artifactsDir?: string;
-	shareEnabled: boolean;
-	sessionRoot?: string;
-	chainSkills?: string[] | false;
-	sessionFilesByFlatIndex?: (string | undefined)[];
-	dynamicFanoutMaxItems?: number;
-	maxSubagentDepth: number;
-	worktreeSetupHook?: string;
-	worktreeSetupHookTimeoutMs?: number;
-	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
-	nestedRoute?: NestedRouteInfo;
-	projectTrust?: ChildProjectTrustPolicy;
+function childTargets(
+  steps: readonly RunnerStep[],
+  resolver: AsyncChainParams["childIntercomTarget"],
+): Array<string | undefined> | undefined {
+  if (resolver === undefined) {
+    return;
+  }
+  let index = 0;
+  return steps.flatMap((step) => {
+    if (!("parallel" in step)) {
+      return [resolver(step.agent, index++)];
+    }
+    if ("expand" in step) {
+      return [resolver(step.parallel.agent, index++)];
+    }
+    return step.parallel.map((task) => resolver(task.agent, index++));
+  });
 }
 
-interface AsyncSingleParams {
-	timeoutMs?: number;
-	agent: string;
-	task?: string;
-	agentConfig: AgentConfig;
-	ctx: AsyncExecutionContext;
-	cwd?: string;
-	maxOutput?: MaxOutputConfig;
-	artifactsDir?: string;
-	shareEnabled: boolean;
-	sessionRoot?: string;
-	sessionFile?: string;
-	skills?: string[] | false;
-	output?: string | boolean;
-	outputFromAgentDefault?: boolean;
-	generatedOutputFilename?: string;
-	outputMode?: "inline" | "file-only";
-	outputSchema?: JsonSchemaObject;
-	modelOverride?: string;
-	savedLaunch?: SavedLaunchConfig;
-	availableModels?: AvailableModelInfo[];
-	maxSubagentDepth: number;
-	worktreeSetupHook?: string;
-	worktreeSetupHookTimeoutMs?: number;
-	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
-	nestedRoute?: NestedRouteInfo;
-	acceptance?: AcceptanceInput;
-	progress?: boolean;
-	projectTrust?: ChildProjectTrustPolicy;
+function chainOverview(
+  id: string,
+  mode: SubagentRunMode,
+  chain: readonly ChainStep[],
+): AsyncRunOverview {
+  const first = chain.at(0);
+  const groups: AsyncParallelGroupStatus[] = [];
+  const agents: string[] = [];
+  for (const [stepIndex, step] of chain.entries()) {
+    const names = stepAgents(step);
+    if (isParallelStep(step) || isDynamicParallelStep(step)) {
+      groups.push({ start: agents.length, count: names.length, stepIndex });
+    }
+    agents.push(...names);
+  }
+  const description = chain.map(chainDescription);
+  return {
+    headline: `Async ${mode}: ${description.join(" -> ")} [${id}]`,
+    agent: first ? stepAgents(first).at(0) : undefined,
+    agents,
+    task: first ? firstTask(first)?.slice(0, 50) : undefined,
+    chain: description,
+    chainStepCount: chain.length,
+    parallelGroups: groups,
+  };
 }
 
-function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams, generatedOutputFilename?: string): RunnerSubagentStep {
-	return { ...step, launch: {
-		agent, model: step.model, thinking: step.thinking, modelCandidates: step.modelCandidates ?? [],
-		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
-		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,
-		context: agent.defaultContext ?? "fresh", output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline",
-		...(generatedOutputFilename ? { generatedOutputFilename } : step.outputPathFromAgentDefault && step.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { generatedOutputFilename: path.basename(agent.output) } : {}),
-		outputSchema: step.structuredOutputSchema, effectiveAcceptance: step.effectiveAcceptance,
-		maxOutput: { ...DEFAULT_MAX_OUTPUT, ...params.maxOutput }, maxSubagentDepth: step.maxSubagentDepth,
-		maxExecutionTimeMs: step.maxExecutionTimeMs, maxTokens: step.maxTokens,
-		controlConfig: params.controlConfig, projectTrust: params.projectTrust, projectTrusted: params.ctx.projectTrusted,
-	} };
+function isAsyncStartFailure(
+  error: unknown,
+): error is ChainOutputValidationError | AsyncStartValidationError | UnavailableSubagentSkillError {
+  return (
+    error instanceof ChainOutputValidationError ||
+    error instanceof AsyncStartValidationError ||
+    error instanceof UnavailableSubagentSkillError
+  );
 }
 
-function resolveLaunchModel(
-	agent: AgentConfig,
-	modelOverride: string | undefined,
-	availableModels: AvailableModelInfo[] | undefined,
-	preferredProvider: string | undefined,
-	savedLaunch?: SavedLaunchConfig,
-) {
-	const primary = modelOverride ?? savedLaunch?.model ?? agent.model;
-	const thinking = savedLaunch?.thinking ?? agent.thinking;
-	const model = applyThinkingSuffix(resolveModelCandidate(primary, availableModels, preferredProvider), thinking);
-	// Only caller selections pin the route; persisted candidates already encode the saved policy.
-	const fallbacks = modelOverride ? [] : savedLaunch?.modelCandidates ?? agent.fallbackModels;
-	return {
-		model,
-		thinking: resolveEffectiveThinking(model, thinking),
-		modelCandidates: buildModelCandidates(primary, fallbacks, availableModels, preferredProvider)
-			.map((candidate) => applyThinkingSuffix(candidate, thinking))
-			.filter((candidate): candidate is string => typeof candidate === "string"),
-	};
+/** Validates and plans the workflow before transferring ownership to a detached runner. */
+export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncExecutionResult {
+  const mode = params.resultMode ?? "chain";
+  try {
+    validateChain(params);
+  } catch (error) {
+    if (isAsyncStartFailure(error)) {
+      return formatAsyncStartError(mode, error.message);
+    }
+    throw error;
+  }
+  const cwd = resolveChildCwd(params.ctx.cwd, params.cwd);
+  const chainDir = mode === "chain" ? createChainDir(id, params.chainDir, cwd) : cwd;
+  const originalTask = params.task ?? firstTask(params.chain[0]);
+  let owner: ReturnType<typeof prepareAsyncOwner>;
+  try {
+    owner = prepareAsyncOwner(id);
+  } catch (error) {
+    return formatAsyncStartError(
+      mode,
+      `Failed to create async run directory: ${launchErrorMessage(error)}`,
+    );
+  }
+  const graph = buildWorkflowGraphSnapshot({ runId: id, mode, steps: params.chain });
+  let steps: RunnerStep[];
+  try {
+    steps = new AsyncChainPlanner(id, params, {
+      runnerCwd: cwd,
+      chainDir,
+      asyncDir: owner.asyncDir,
+      originalTask,
+      resultMode: mode,
+      templates: resolveChainTemplates(params.chain),
+    }).build();
+  } catch (error) {
+    if (isAsyncStartFailure(error)) {
+      return formatAsyncStartError(mode, error.message);
+    }
+    throw error;
+  }
+  const config = createRunnerLaunch(params, owner, {
+    steps,
+    cwd,
+    resultMode: mode,
+    chainDir,
+    originalTask,
+    childIntercomTargets: childTargets(steps, params.childIntercomTarget),
+    dynamicFanoutMaxItems: params.dynamicFanoutMaxItems,
+    workflowGraph: graph,
+  });
+  return launchAsyncRun(params.ctx.pi, owner, config, {
+    ...chainOverview(id, mode, params.chain),
+    nestedRoute: params.nestedRoute,
+  });
 }
 
-interface AsyncExecutionResult {
-	content: Array<{ type: "text"; text: string }>;
-	details: Details;
-	isError?: boolean;
-}
-
-export function formatAsyncStartedMessage(headline: string, childSafe = process.env[SUBAGENT_CHILD_ENV] === "1" && process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1"): string {
-	return [
-		headline,
-		"",
-		"The async run is detached. Do not run sleep timers or polling loops just to wait for it.",
-		"If you have independent work, continue that work. If you have nothing else to do until the async result arrives, end your turn now; Pi will deliver the completion when the run finishes.",
-		`Use ${formatRunAction("status", "...", {}, childSafe)} when you need the current status/result, or to inspect a blocked/stale run. Do not poll just to wait.`,
-	].join("\n");
-}
-
-/**
- * Spawn the async runner process
- */
-function spawnRunner(cfg: object, cwd: string, asyncDir: string): { pid?: number; error?: string } {
-	try {
-		const cwdStats = fs.statSync(cwd);
-		if (!cwdStats.isDirectory()) {
-			return { error: `cwd is not a directory: ${cwd}` };
-		}
-	} catch {
-		return { error: `cwd does not exist: ${cwd}` };
-	}
-
-	ensureTempRoot();
-	const cfgPath = path.join(asyncDir, "launch.json");
-	fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, runtimeVersion: 2 }), { mode: 0o600, flag: "wx" });
-	const runnerDir = path.dirname(fileURLToPath(import.meta.url));
-	const moduleExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
-	const launcher = path.join(runnerDir, `subagent-runner-launcher${moduleExtension}`);
-	const runner = path.join(runnerDir, `subagent-runner${moduleExtension}`);
-
-	const errorLogFd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "a");
-	try {
-		const proc = spawn(process.execPath, [launcher, runner, cfgPath], {
-			cwd,
-			detached: true,
-			stdio: ["ignore", "ignore", errorLogFd],
-			});
-		proc.on("error", (error) => {
-			console.error(`[pi-subagents] async spawn failed: ${error.message}`);
-		});
-		if (typeof proc.pid !== "number") {
-			return { error: `async runner did not produce a pid for cwd: ${cwd}` };
-		}
-		proc.unref();
-		return { pid: proc.pid };
-	} finally {
-		fs.closeSync(errorLogFd);
-	}
-}
-
-function formatAsyncStartError(mode: SubagentRunMode, message: string): AsyncExecutionResult {
-	return {
-		content: [{ type: "text", text: message }],
-		isError: true,
-		details: { mode, results: [] },
-	};
-}
-
-const UNAVAILABLE_SUBAGENT_SKILL_ERROR = "Skills not found: pi-subagents";
-
-class UnavailableSubagentSkillError extends Error {}
-class AsyncStartValidationError extends Error {}
-
-/**
- * Execute a chain asynchronously
- */
-export function executeAsyncChain(
-	id: string,
-	params: AsyncChainParams,
-): AsyncExecutionResult {
-	const {
-		chain,
-		agents,
-		ctx,
-		cwd,
-		maxOutput,
-		artifactsDir,
-		shareEnabled,
-		sessionRoot,
-		sessionFilesByFlatIndex,
-		maxSubagentDepth,
-		worktreeSetupHook,
-		worktreeSetupHookTimeoutMs,
-		controlConfig,
-		controlIntercomTarget,
-		childIntercomTarget,
-		nestedRoute,
-	} = params;
-	const resultMode = params.resultMode ?? "chain";
-	const chainSkills = params.chainSkills ?? [];
-	const availableModels = params.availableModels;
-	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
-	const chainDir = resultMode === "chain" ? createChainDir(id, params.chainDir, runnerCwd) : runnerCwd;
-	const firstStep = chain[0];
-	const originalTask = params.task ?? (firstStep
-		? (isParallelStep(firstStep)
-			? firstStep.parallel[0]?.task
-			: isDynamicParallelStep(firstStep)
-				? firstStep.parallel.task
-				: (firstStep as SequentialStep).task)
-		: undefined);
-	try {
-		validateChainOutputBindings(chain, { maxItems: params.dynamicFanoutMaxItems });
-	} catch (error) {
-		if (error instanceof ChainOutputValidationError) return formatAsyncStartError(resultMode, error.message);
-		throw error;
-	}
-	const workflowGraph = buildWorkflowGraphSnapshot({ runId: id, mode: resultMode, steps: chain });
-	const templates = resolveChainTemplates(chain);
-
-	for (const s of chain) {
-		const stepAgents = isParallelStep(s)
-			? s.parallel.map((t) => t.agent)
-			: isDynamicParallelStep(s)
-				? [s.parallel.agent]
-			: [(s as SequentialStep).agent];
-		for (const agentName of stepAgents) {
-			if (!agents.find((x) => x.name === agentName)) {
-				return {
-					content: [{ type: "text", text: `Unknown agent: ${agentName}` }],
-					isError: true,
-					details: { mode: resultMode, results: [] },
-				};
-			}
-		}
-	}
-
-	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
-	const nestedAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
-	const asyncDir = getRunMetadataDir(id);
-	try {
-		fs.mkdirSync(asyncDir, { recursive: true });
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return {
-			content: [{ type: "text", text: `Failed to create async run directory '${asyncDir}': ${message}` }],
-			isError: true,
-			details: { mode: resultMode, results: [] },
-		};
-	}
-
-	let progressInstructionCreated = false;
-	let outputMaterializationIndex = 0;
-	const buildStepOverrides = (s: SequentialStep): StepOverrides => {
-		const stepSkillInput = normalizeSkillInput(s.skill);
-		return {
-			...(s.output !== undefined ? { output: s.output } : {}),
-			...(s.outputMode !== undefined ? { outputMode: s.outputMode } : {}),
-			...(s.reads !== undefined ? { reads: s.reads } : {}),
-			...(s.progress !== undefined ? { progress: s.progress } : {}),
-			...(stepSkillInput !== undefined ? { skills: stepSkillInput } : {}),
-		};
-	};
-	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior) => {
-		const a = agents.find((x) => x.name === s.agent)!;
-		const outputIndex = outputMaterializationIndex++;
-		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
-		const instructionCwd = behaviorCwd ?? (resultMode === "chain" ? chainDir : stepCwd);
-		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
-		const launchAgent = behavior.skills === false ? { ...a, inheritSkills: false } : a;
-		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output) || s.outputFromAgentDefault === true;
-		const output = outputUsesAgentDefault && resultMode !== "chain"
-			? materializeAsyncDefaultOutput({ output: behavior.output, artifactsDir, asyncDir, runId: id, agent: s.agent, index: outputIndex })
-			: behavior.output;
-		const skillNames = behavior.skills === false ? [] : behavior.skills;
-		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, stepCwd, ctx.cwd, { projectTrusted: ctx.projectTrusted ?? true });
-		if (missingSkills.includes("pi-subagents")) throw new UnavailableSubagentSkillError(UNAVAILABLE_SUBAGENT_SKILL_ERROR);
-
-		let systemPrompt = a.systemPrompt?.trim() ?? "";
-		if (resolvedSkills.length > 0) {
-			const injection = buildSkillInjection(resolvedSkills);
-			systemPrompt = systemPrompt ? `${systemPrompt}\n\n${injection}` : injection;
-		}
-
-		const readInstructions = buildChainInstructions({ ...behavior, output: false, progress: false }, instructionCwd, false);
-		const isFirstProgressAgent = behavior.progress && !progressPrecreated && (resultMode !== "chain" || !progressInstructionCreated);
-		if (behavior.progress && resultMode === "chain") progressInstructionCreated = true;
-		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, instructionCwd, isFirstProgressAgent);
-		const outputPath = resolveSingleOutputPath(output, ctx.cwd, instructionCwd);
-		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
-		if (validationError) throw new AsyncStartValidationError(validationError);
-		const taskTemplate = s.task ?? "{previous}";
-		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
-
-		return withSavedLaunch({
-			agent: s.agent,
-			task,
-			phase: s.phase,
-			label: s.label,
-			outputName: s.as,
-			structured: Boolean(s.outputSchema),
-			cwd: stepCwd,
-			...resolveLaunchModel(a, s.model, availableModels, ctx.currentModelProvider),
-			tools: a.tools,
-			allowSubagents: a.allowSubagents,
-			extensions: a.extensions,
-			mcpDirectTools: a.mcpDirectTools,
-			completionGuard: a.completionGuard,
-			systemPrompt,
-			systemPromptMode: a.systemPromptMode,
-			inheritProjectContext: a.inheritProjectContext,
-			inheritSkills: launchAgent.inheritSkills,
-			skills: resolvedSkills.map((r) => r.name),
-			outputPath,
-			output: behavior.output,
-			outputMode: behavior.outputMode,
-			...(outputUsesAgentDefault && outputPath && typeof a.output === "string" && !path.isAbsolute(a.output) ? { outputPathFromAgentDefault: true } : {}),
-			sessionFile,
-			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
-			maxExecutionTimeMs: a.maxExecutionTimeMs,
-			maxTokens: a.maxTokens,
-			effectiveAcceptance: resolveEffectiveAcceptance({ explicit: s.acceptance }),
-			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
-			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
-		}, launchAgent, params);
-	};
-
-	let flatStepIndex = 0;
-	const nextSessionFile = (): string | undefined => {
-		const sessionFile = sessionFilesByFlatIndex?.[flatStepIndex];
-		flatStepIndex++;
-		return sessionFile;
-	};
-	const takeDynamicSessionFiles = (count: number): Array<string | undefined> | undefined => {
-		if (!sessionFilesByFlatIndex || count <= 0) return undefined;
-		const sessionFiles = sessionFilesByFlatIndex.slice(flatStepIndex, flatStepIndex + count);
-		flatStepIndex += count;
-		return sessionFiles;
-	};
-
-	let steps: RunnerStep[];
-	try {
-		steps = chain.map((s, stepIndex) => {
-			if (isParallelStep(s)) {
-				const groupCwd = resolveChildCwd(runnerCwd, s.cwd);
-				const behaviors = resultMode === "chain"
-					? resolveParallelBehaviors(s.parallel, agents, stepIndex, chainSkills)
-					: s.parallel.map((task) => resolveStepBehavior(agents.find((agent) => agent.name === task.agent)!, buildStepOverrides(task), chainSkills));
-				const parallelBehaviors = behaviors.map((behavior, index) => suppressProgressForReadOnlyTask(behavior, s.parallel[index]?.task, originalTask));
-				const progressPrecreated = resultMode === "chain" && parallelBehaviors.some((behavior) => behavior.progress);
-				if (progressPrecreated) {
-					if (!s.worktree) writeInitialProgressFile(chainDir);
-					progressInstructionCreated = true;
-				}
-				const parallelSteps = s.parallel.map((t, taskIndex) => {
-					let behaviorCwd: string | undefined;
-					if (s.worktree && resultMode !== "chain") {
-						try {
-							behaviorCwd = resolveExpectedWorktreeAgentCwd(groupCwd, `${id}-s${stepIndex}`, taskIndex);
-						} catch {
-							behaviorCwd = undefined;
-						}
-					}
-					const taskProgressPrecreated = progressPrecreated || (resultMode !== "chain" && parallelBehaviors[taskIndex]?.progress === true && !s.worktree);
-					if (taskProgressPrecreated && !progressPrecreated) {
-						const progressCwd = resolveChildCwd(groupCwd, t.cwd);
-						try {
-							writeInitialProgressFile(progressCwd);
-						} catch (error) {
-							throw new AsyncStartValidationError(`Failed to initialize progress in '${progressCwd}': ${error instanceof Error ? error.message : String(error)}`);
-						}
-					}
-					return buildSeqStep({ ...t, task: (templates[stepIndex] as string[])[taskIndex], cwd: resolveChildCwd(groupCwd, t.cwd) }, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
-				});
-				const duplicateOutputError = findDuplicateOutputPath(parallelSteps);
-				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
-				return {
-					parallel: parallelSteps,
-					cwd: groupCwd,
-					concurrency: s.concurrency,
-					failFast: s.failFast,
-					worktree: s.worktree,
-				};
-			}
-			if (isDynamicParallelStep(s)) {
-				const agent = agents.find((candidate) => candidate.name === s.parallel.agent)!;
-				const behavior = suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(s.parallel), chainSkills), s.parallel.task, originalTask);
-				const progressPrecreated = behavior.progress;
-				if (progressPrecreated) {
-					writeInitialProgressFile(chainDir);
-					progressInstructionCreated = true;
-				}
-				const maxItems = s.expand.maxItems ?? params.dynamicFanoutMaxItems ?? 0;
-				return {
-					expand: s.expand,
-					parallel: buildSeqStep({ ...s.parallel, task: templates[stepIndex] as string }, undefined, undefined, progressPrecreated, behavior),
-					collect: s.collect,
-					concurrency: s.concurrency,
-					failFast: s.failFast,
-					phase: s.phase,
-					label: s.label,
-					sessionFiles: takeDynamicSessionFiles(maxItems),
-				};
-			}
-			return buildSeqStep({ ...s, task: templates[stepIndex] as string }, nextSessionFile());
-		});
-	} catch (error) {
-		if (error instanceof UnavailableSubagentSkillError || error instanceof AsyncStartValidationError) return formatAsyncStartError(resultMode, error.message);
-		throw error;
-	}
-	let childTargetIndex = 0;
-	const childIntercomTargets = childIntercomTarget ? steps.flatMap((step) => {
-		if ("parallel" in step) {
-			if (!Array.isArray(step.parallel)) {
-				return [childIntercomTarget(step.parallel.agent, childTargetIndex++)];
-			}
-			return step.parallel.map((task) => childIntercomTarget(task.agent, childTargetIndex++));
-		}
-		return [childIntercomTarget(step.agent, childTargetIndex++)];
-	}) : undefined;
-
-	let spawnResult: { pid?: number; error?: string } = {};
-	try {
-		spawnResult = spawnRunner(
-			{
-				id,
-				steps,
-				chainDir,
-				originalTask,
-				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
-				cwd: runnerCwd,
-				placeholder: "{previous}",
-				maxOutput,
-				timeoutMs: params.timeoutMs,
-				artifactsDir,
-				share: shareEnabled,
-				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
-				asyncDir,
-				sessionId: ctx.currentSessionId,
-				rootSessionId: ctx.rootSessionId,
-				piPackageRoot,
-				worktreeSetupHook,
-				worktreeSetupHookTimeoutMs,
-				controlConfig,
-				controlIntercomTarget,
-				childIntercomTargets,
-				resultMode,
-				dynamicFanoutMaxItems: params.dynamicFanoutMaxItems,
-				workflowGraph,
-				nestedRoute: nestedRoute ?? inheritedNestedRoute,
-				nestedSelf: inheritedNestedRoute && nestedAddress ? {
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					depth: nestedAddress.depth,
-					path: nestedAddress.path,
-				} : undefined,
-				projectTrust: params.projectTrust,
-			},
-			runnerCwd,
-			asyncDir,
-		);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return formatAsyncStartError(resultMode, `Failed to start async ${resultMode} '${id}': ${message}`);
-	}
-
-	if (spawnResult.error) {
-		return formatAsyncStartError(resultMode, `Failed to start async ${resultMode} '${id}': ${spawnResult.error}`);
-	}
-
-	if (spawnResult.pid) {
-		const firstStep = chain[0];
-		const firstAgents = isParallelStep(firstStep)
-			? firstStep.parallel.map((t) => t.agent)
-			: isDynamicParallelStep(firstStep)
-				? [firstStep.parallel.agent]
-			: [(firstStep as SequentialStep).agent];
-		const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
-		const flatAgents: string[] = [];
-		let flatStepStart = 0;
-		for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
-			const step = chain[stepIndex]!;
-			if (isParallelStep(step)) {
-				parallelGroups.push({ start: flatStepStart, count: step.parallel.length, stepIndex });
-				flatAgents.push(...step.parallel.map((task) => task.agent));
-				flatStepStart += step.parallel.length;
-			} else if (isDynamicParallelStep(step)) {
-				parallelGroups.push({ start: flatStepStart, count: 1, stepIndex });
-				flatAgents.push(step.parallel.agent);
-				flatStepStart++;
-			} else {
-				flatAgents.push((step as SequentialStep).agent);
-				flatStepStart++;
-			}
-		}
-		if (inheritedNestedRoute && nestedAddress) {
-			const now = Date.now();
-			try {
-				writeNestedEvent(inheritedNestedRoute, {
-					type: "subagent.nested.started",
-					ts: now,
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					child: {
-						id,
-						parentRunId: nestedAddress.parentRunId,
-						parentStepIndex: nestedAddress.parentStepIndex,
-						depth: nestedAddress.depth,
-						path: nestedAddress.path,
-						asyncDir,
-						pid: spawnResult.pid,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget: childIntercomTargets?.[0],
-						intercomTarget: childIntercomTargets?.[0],
-						ownerState: "live",
-						mode: resultMode,
-						state: "running",
-						agent: firstAgents[0],
-						agents: flatAgents,
-						chainStepCount: chain.length,
-						parallelGroups,
-						startedAt: now,
-						lastUpdate: now,
-					},
-				});
-			} catch (error) {
-				console.error("Failed to emit nested async start event:", error);
-			}
-		}
-		ctx.pi.events.emit(SUBAGENT_ASYNC_STARTED_EVENT, {
-			id,
-			pid: spawnResult.pid,
-			sessionId: ctx.currentSessionId,
-			mode: resultMode,
-			agent: firstAgents[0],
-			agents: flatAgents,
-			task: isParallelStep(firstStep)
-				? firstStep.parallel[0]?.task?.slice(0, 50)
-				: isDynamicParallelStep(firstStep)
-					? firstStep.parallel.task?.slice(0, 50)
-				: (firstStep as SequentialStep).task?.slice(0, 50),
-			chain: chain.map((s) =>
-				isParallelStep(s) ? `[${s.parallel.map((t) => t.agent).join("+")}]` : isDynamicParallelStep(s) ? `expand:${s.parallel.agent}` : (s as SequentialStep).agent,
-			),
-			chainStepCount: chain.length,
-			parallelGroups,
-			workflowGraph,
-			cwd: runnerCwd,
-			asyncDir,
-			nestedRoute,
-		});
-	}
-
-	const chainDesc = chain
-		.map((s) =>
-			isParallelStep(s) ? `[${s.parallel.map((t) => t.agent).join("+")}]` : isDynamicParallelStep(s) ? `expand:${s.parallel.agent}` : (s as SequentialStep).agent,
-		)
-		.join(" -> ");
-
-	return {
-		content: [{ type: "text", text: formatAsyncStartedMessage(`Async ${resultMode}: ${chainDesc} [${id}]`) }],
-		details: { mode: resultMode, runId: id, results: [], asyncId: id, asyncDir, asyncPid: spawnResult.pid, workflowGraph },
-	};
-}
-
-/**
- * Execute a single agent asynchronously
- */
-export function executeAsyncSingle(
-	id: string,
-	params: AsyncSingleParams,
-): AsyncExecutionResult {
-	const {
-		agent,
-		agentConfig,
-		ctx,
-		cwd,
-		maxOutput,
-		artifactsDir,
-		shareEnabled,
-		sessionRoot,
-		sessionFile,
-		maxSubagentDepth,
-		worktreeSetupHook,
-		worktreeSetupHookTimeoutMs,
-		controlConfig,
-		controlIntercomTarget,
-		childIntercomTarget,
-		nestedRoute,
-	} = params;
-	const task = params.task ?? "";
-	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
-	const skillNames = params.skills === false ? [] : params.skills ?? agentConfig.skills ?? [];
-	const launchAgent = params.skills === false ? { ...agentConfig, inheritSkills: false } : agentConfig;
-	const availableModels = params.availableModels;
-	const { resolved: resolvedSkills, missing: missingSkills } = params.savedLaunch && params.skills === undefined
-		? { resolved: [], missing: [] }
-		: resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd, { projectTrusted: ctx.projectTrusted ?? true });
-	if (missingSkills.includes("pi-subagents")) return formatAsyncStartError("single", UNAVAILABLE_SUBAGENT_SKILL_ERROR);
-	let systemPrompt = params.savedLaunch && params.skills === undefined ? params.savedLaunch.systemPrompt : agentConfig.systemPrompt?.trim() ?? "";
-	if (resolvedSkills.length > 0) {
-		const injection = buildSkillInjection(resolvedSkills);
-		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${injection}` : injection;
-	}
-
-	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
-	const nestedAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
-	const asyncDir = getRunMetadataDir(id);
-	try {
-		fs.mkdirSync(asyncDir, { recursive: true });
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return {
-			content: [{ type: "text", text: `Failed to create async run directory '${asyncDir}': ${message}` }],
-			isError: true,
-			details: { mode: "single" as const, results: [] },
-		};
-	}
-
-	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output) || params.outputFromAgentDefault === true;
-	const agentDefaultOutput = params.generatedOutputFilename ?? agentConfig.output;
-	const effectiveOutput = resolveAsyncOutput({
-		requestedOutput: params.output,
-		agentDefaultOutput,
-		artifactsDir,
-		asyncDir,
-		runId: id,
-		agent,
-		index: 0,
-	});
-	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, runnerCwd);
-	const outputMode = params.outputMode ?? "inline";
-	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);
-	if (validationError) return formatAsyncStartError("single", validationError);
-	let taskWithOutputInstruction = task;
-	if (params.progress) {
-		writeInitialProgressFile(runnerCwd);
-		taskWithOutputInstruction += buildChainInstructions({ output: false, outputMode: "inline", reads: false, progress: true, skills: false }, runnerCwd, true).suffix;
-	}
-	taskWithOutputInstruction = injectSingleOutputInstruction(taskWithOutputInstruction, outputPath);
-	let spawnResult: { pid?: number; error?: string } = {};
-	try {
-		spawnResult = spawnRunner(
-			{
-				id,
-				steps: [
-					withSavedLaunch({
-						agent,
-						task: taskWithOutputInstruction,
-						cwd: runnerCwd,
-						...resolveLaunchModel(agentConfig, params.modelOverride, availableModels, ctx.currentModelProvider, params.savedLaunch),
-						tools: agentConfig.tools,
-						allowSubagents: agentConfig.allowSubagents,
-						extensions: agentConfig.extensions,
-						mcpDirectTools: agentConfig.mcpDirectTools,
-						completionGuard: agentConfig.completionGuard,
-						systemPrompt,
-						systemPromptMode: agentConfig.systemPromptMode,
-						inheritProjectContext: agentConfig.inheritProjectContext,
-						inheritSkills: launchAgent.inheritSkills,
-						skills: params.savedLaunch && params.skills === undefined ? params.savedLaunch.skills : resolvedSkills.map((r) => r.name),
-						outputPath,
-						outputMode,
-						...(outputUsesAgentDefault && outputPath && typeof agentDefaultOutput === "string" && !path.isAbsolute(agentDefaultOutput) ? { outputPathFromAgentDefault: true } : {}),
-						...(params.outputSchema ? { structuredOutputSchema: params.outputSchema } : {}),
-						...(params.outputSchema ? { structuredOutput: createStructuredOutputRuntime(params.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
-						sessionFile,
-						maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, agentConfig.maxSubagentDepth),
-						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
-						maxTokens: agentConfig.maxTokens,
-						effectiveAcceptance: resolveEffectiveAcceptance({ explicit: params.acceptance }),
-					}, launchAgent, params, params.generatedOutputFilename),
-				],
-				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
-				cwd: runnerCwd,
-				placeholder: "{previous}",
-				maxOutput,
-				timeoutMs: params.timeoutMs,
-				artifactsDir,
-				share: shareEnabled,
-				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
-				asyncDir,
-				sessionId: ctx.currentSessionId,
-				rootSessionId: ctx.rootSessionId,
-				piPackageRoot,
-				worktreeSetupHook,
-				worktreeSetupHookTimeoutMs,
-				controlConfig,
-				controlIntercomTarget,
-				childIntercomTargets: childIntercomTarget ? [childIntercomTarget(agent, 0)] : undefined,
-				resultMode: "single",
-				nestedRoute: nestedRoute ?? inheritedNestedRoute,
-				nestedSelf: inheritedNestedRoute && nestedAddress ? {
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					depth: nestedAddress.depth,
-					path: nestedAddress.path,
-				} : undefined,
-				projectTrust: params.projectTrust,
-			},
-			runnerCwd,
-			asyncDir,
-		);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return formatAsyncStartError("single", `Failed to start async run '${id}': ${message}`);
-	}
-
-	if (spawnResult.error) {
-		return formatAsyncStartError("single", `Failed to start async run '${id}': ${spawnResult.error}`);
-	}
-
-	if (spawnResult.pid) {
-		if (inheritedNestedRoute && nestedAddress) {
-			const now = Date.now();
-			try {
-				writeNestedEvent(inheritedNestedRoute, {
-					type: "subagent.nested.started",
-					ts: now,
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					child: {
-						id,
-						parentRunId: nestedAddress.parentRunId,
-						parentStepIndex: nestedAddress.parentStepIndex,
-						depth: nestedAddress.depth,
-						path: nestedAddress.path,
-						asyncDir,
-						pid: spawnResult.pid,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget: childIntercomTarget?.(agent, 0),
-						intercomTarget: childIntercomTarget?.(agent, 0),
-						ownerState: "live",
-						mode: "single",
-						state: "running",
-						agent,
-						agents: [agent],
-						chainStepCount: 1,
-						startedAt: now,
-						lastUpdate: now,
-					},
-				});
-			} catch (error) {
-				console.error("Failed to emit nested async start event:", error);
-			}
-		}
-		ctx.pi.events.emit(SUBAGENT_ASYNC_STARTED_EVENT, {
-			id,
-			pid: spawnResult.pid,
-			sessionId: ctx.currentSessionId,
-			mode: "single",
-			agent,
-			task: task?.slice(0, 50),
-			cwd: runnerCwd,
-			asyncDir,
-			nestedRoute,
-		});
-	}
-
-	return {
-		content: [{ type: "text", text: formatAsyncStartedMessage(`Async: ${agent} [${id}]`) }],
-		details: { mode: "single", runId: id, results: [], asyncId: id, asyncDir, asyncPid: spawnResult.pid },
-	};
+/** Plans one child's output/skill contract and preserves the handed-off pid on notification failure. */
+export function executeAsyncSingle(id: string, params: AsyncSingleParams): AsyncExecutionResult {
+  const cwd = resolveChildCwd(params.ctx.cwd, params.cwd);
+  let owner: ReturnType<typeof prepareAsyncOwner>;
+  try {
+    owner = prepareAsyncOwner(id);
+  } catch (error) {
+    return formatAsyncStartError(
+      "single",
+      `Failed to create async run directory: ${launchErrorMessage(error)}`,
+    );
+  }
+  let step: RunnerStep;
+  try {
+    step = planAsyncSingle(id, params, { cwd, asyncDir: owner.asyncDir });
+  } catch (error) {
+    if (isAsyncStartFailure(error)) {
+      return formatAsyncStartError("single", error.message);
+    }
+    throw error;
+  }
+  const config = createRunnerLaunch(params, owner, {
+    steps: [step],
+    cwd,
+    resultMode: "single",
+    childIntercomTargets: childTargets([step], params.childIntercomTarget),
+  });
+  return launchAsyncRun(params.ctx.pi, owner, config, {
+    headline: `Async: ${params.agent} [${id}]`,
+    agent: params.agent,
+    task: (params.task ?? "").slice(0, 50),
+    nestedRoute: params.nestedRoute,
+  });
 }
