@@ -2579,27 +2579,31 @@ for (const forged of [false, true]) {
   );
 }
 
-for (const [mode, forgery] of [
-  ["pre-admit", null],
-  ["after-admit", null],
-  ["pre-admit", "identity"],
-  ["pre-admit", "sid"],
-  ["pre-admit", "owners"],
-  ["pre-admit", "baselineHash"],
+for (const [mode, forgery, failAfterPublication] of [
+  ["pre-admit", null, false],
+  ["after-admit", null, false],
+  ["pre-admit", "identity", false],
+  ["pre-admit", "sid", false],
+  ["pre-admit", "owners", false],
+  ["pre-admit", "baselineHash", false],
+  ["pre-admit", null, true],
+  ["after-admit", null, true],
 ]) {
-  test(
-    forgery
-      ? `NO-WORK ${mode} rejects forged ${forgery} despite matching native PID and UID`
-      : `genuine NO-WORK ${mode} disconnect publishes native settlement before root removal`,
-    {},
-    async () => {
-      const root = mkdtempSync(join(tmpdir(), "ps-no-work-proof-"));
-      const ready = join(root, "ready.json");
-      const release = join(root, "release");
-      const failure = join(root, "rescue-error.log");
-      writeFileSync(
-        join(root, "actor.mjs"),
-        `
+  let name = `genuine NO-WORK ${mode} disconnect publishes native settlement before root removal`;
+  if (forgery) {
+    name = `NO-WORK ${mode} rejects forged ${forgery} despite matching native PID and UID`;
+  }
+  if (failAfterPublication) {
+    name = `NO-WORK ${mode} early publication failure preserves its error through genuine owner teardown`;
+  }
+  test(name, {}, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ps-no-work-proof-"));
+    const ready = join(root, "ready.json");
+    const release = join(root, "release");
+    const failure = join(root, "rescue-error.log");
+    writeFileSync(
+      join(root, "actor.mjs"),
+      `
         import { createHash } from "node:crypto";
         import { existsSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
         import { basename, join } from "node:path";
@@ -2638,23 +2642,27 @@ for (const [mode, forgery] of [
         }
         process.exit(0);
       `,
+    );
+    const outer = new OwnedProcesses();
+    let receipt;
+    let guardian;
+    let enclosing;
+    let caughtFailure;
+    let stopAttempted = false;
+    let teardownComplete = false;
+    const originalFailure = new Error("Intentional early NO-WORK fixture failure");
+    const outcome = outer
+      .execute(
+        process.execPath,
+        [join(root, "actor.mjs")],
+        { quiet: true },
+        new AbortController().signal,
+      )
+      .then(
+        (output) => ({ output }),
+        (error) => ({ error }),
       );
-      const outer = new OwnedProcesses();
-      let receipt;
-      let guardian;
-      let enclosing;
-      let caughtFailure;
-      const outcome = outer
-        .execute(
-          process.execPath,
-          [join(root, "actor.mjs")],
-          { quiet: true },
-          new AbortController().signal,
-        )
-        .then(
-          (output) => ({ output }),
-          (error) => ({ error }),
-        );
+    const exercise = async () => {
       try {
         receipt = await published(ready);
         enclosing = nativeFixture(receipt.outerGuardian);
@@ -2664,14 +2672,54 @@ for (const [mode, forgery] of [
         assert.equal(guardian.sid, guardian.pid);
         assert.equal(guardian.pgid, guardian.pid);
         assert.equal(guardian.exited, false);
+        assert.equal(typeof receipt.receiptRoot, "string");
+        assert.ok(
+          receipt.receiptRoot.length > 0,
+          "Actual nonempty outer receipt root is published",
+        );
+        assert.equal(
+          existsSync(receipt.receiptRoot),
+          true,
+          "Actual outer root exists before teardown",
+        );
+        assert.ok(
+          readdirSync(receipt.receiptRoot).length > 0,
+          "Published outer root contains actual native receipt directories",
+        );
+        if (failAfterPublication) {
+          console.log(
+            `Native NO-WORK early publication: ${JSON.stringify({ mode, root: receipt.receiptRoot, fixtures: [guardian, enclosing] })}`,
+          );
+          throw originalFailure;
+        }
         writeFileSync(`${release}.tmp`, JSON.stringify(guardian));
         renameSync(`${release}.tmp`, release);
         assert.equal((await outcome).error, undefined);
         if (forgery) {
-          await assertRejectedNoWork(outer, receipt, guardian, failure, forgery);
+          const forged = await assertRejectedNoWork(outer, receipt, guardian, failure, forgery);
+          stopAttempted = true;
+          await assert.rejects(outer.stop(), /retain private roots/);
+          assert.deepEqual(
+            JSON.parse(readFileSync(join(receipt.directory, "state.json"), "utf8")),
+            forged,
+          );
+          assert.equal(fixtureIdentity(guardian.pid).identity, guardian.identity);
+          assert.equal(
+            active(guardian.pid),
+            true,
+            "Rejected guardian retains its genuine native reservation",
+          );
+          assert.equal(
+            existsSync(receipt.receiptRoot),
+            true,
+            "Forged metadata must never authorize root deletion",
+          );
           assert.equal(existsSync(join(root, "work-ran")), false);
         } else {
           await assertNoWorkSettlement(outer, receipt, guardian, root);
+          stopAttempted = true;
+          await outer.stop();
+          assert.equal(existsSync(receipt.directory), false);
         }
       } catch (error) {
         caughtFailure = error;
@@ -2685,6 +2733,7 @@ for (const [mode, forgery] of [
               throw result.error;
             }
           },
+          () => finishNativeOwner(outer, outcome, stopAttempted),
           () => terminateNativeGuardian(guardian, receipt?.owners.at(-1)),
           () =>
             terminateNativeGuardian(
@@ -2704,10 +2753,38 @@ for (const [mode, forgery] of [
             ])),
           );
         }
+        teardownComplete = errors.length === 0;
         reportFixtureTeardown(errors, caughtFailure);
       }
-    },
-  );
+    };
+    if (failAfterPublication) {
+      await assert.rejects(exercise, (error) => {
+        assert.equal(
+          error,
+          originalFailure,
+          "Early teardown preserves the original Error identity",
+        );
+        return true;
+      });
+      assert.equal(teardownComplete, true, "The original error cannot hide failed settlement");
+      assert.equal(fixtureIdentity(guardian.pid), undefined, "Real inner guardian is absent");
+      assert.equal(
+        fixtureIdentity(enclosing.pid),
+        undefined,
+        "Genuine owner releases its guardian",
+      );
+      assert.equal(
+        existsSync(receipt.receiptRoot),
+        false,
+        "Genuine settlement removes the outer root",
+      );
+      console.log(
+        `Native NO-WORK early returned: ${JSON.stringify({ mode, root: receipt.receiptRoot, rootPresent: existsSync(receipt.receiptRoot), fixturesAbsent: [guardian, enclosing].map((entry) => fixtureIdentity(entry.pid)) })}`,
+      );
+    } else {
+      await exercise();
+    }
+  });
 }
 
 async function assertRejectedNoWork(outer, receipt, guardian, failure, forgery) {
@@ -2746,19 +2823,7 @@ async function assertRejectedNoWork(outer, receipt, guardian, failure, forgery) 
   assert.equal(live.sid, guardian.sid);
   assert.equal(live.exited, false);
   assert.equal(existsSync(join(receipt.directory, "state.json")), true);
-  await assert.rejects(outer.stop(), /retain private roots/);
-  assert.deepEqual(JSON.parse(readFileSync(join(receipt.directory, "state.json"), "utf8")), forged);
-  assert.equal(fixtureIdentity(guardian.pid).identity, guardian.identity);
-  assert.equal(
-    active(guardian.pid),
-    true,
-    "Rejected guardian retains its genuine native reservation",
-  );
-  assert.equal(
-    existsSync(receipt.receiptRoot),
-    true,
-    "Forged metadata must never authorize root deletion",
-  );
+  return forged;
 }
 
 async function assertNoWorkSettlement(outer, receipt, guardian, root) {
@@ -2805,8 +2870,6 @@ async function assertNoWorkSettlement(outer, receipt, guardian, root) {
     `Native NO-WORK absence: ${JSON.stringify({ pid: settled.pid, uid: settled.uid, identity: settled.identity, errno: "ESRCH" })}`,
   );
   assert.equal(existsSync(join(root, "work-ran")), false);
-  await outer.stop();
-  assert.equal(existsSync(receipt.directory), false);
 }
 
 async function publishedTick(root, tick) {
