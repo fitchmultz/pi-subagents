@@ -12,7 +12,8 @@ function questionResult(questions: SupervisorQuestionView[], text: string): Suba
 
 export function projectSupervisorQuestions(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string, childSafe = false): SubagentExecutionResult {
 	if (result.isError && !result.content.some((item) => item.type === "text" && /Async run not found|Status file not found/.test(item.text))) return result;
-	const questions = listSupervisorQuestions(ownerSessionId, params.id ?? params.runId ?? (params.dir ? path.basename(params.dir) : undefined))
+	const id = params.id ?? params.runId ?? (params.dir ? path.basename(params.dir) : undefined);
+	const questions = listSupervisorQuestions(ownerSessionId, id)
 		.filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	if (!questions.length) return result;
 	const page = supervisorQuestionPage(questions);
@@ -21,7 +22,7 @@ export function projectSupervisorQuestions(result: SubagentExecutionResult, para
 		...result,
 		...(questionOnly ? { isError: false } : {}),
 		content: [{ type: "text", text: [`Supervisor input (not execution completion):\n${formatSupervisorQuestions(page.questions, childSafe)}`,
-			...(page.questionList.nextOffset !== undefined ? [`More questions: ${formatRunAction("questions", params.id ?? params.runId, {}, childSafe)}`] : []),
+			...(page.questionList.nextOffset !== undefined ? [`More questions: ${formatRunAction("questions", id, { offset: page.questionList.nextOffset, limit: page.questionList.limit }, childSafe)}`] : []),
 			...(questionOnly ? [] : result.content.map((item) => item.type === "text" ? item.text : ""))].join("\n\n") }],
 		details: { ...result.details, ...page },
 	};
