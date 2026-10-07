@@ -102,6 +102,8 @@ roles are independent of language scope. Compiler diagnostics are tested indepen
 Normal lint, fixes, agent output, CI and the editor all use this same root configuration. VS Code uses
 the Oxc extension and its supported `oxc.path.tsgolint` setting to select the corrected repository
 engine. Run `quality:setup` before starting the editor language server; reload it after patch updates.
+Binary settings are relative to the repository as the first workspace folder. Oxc resolves these
+paths itself; `${workspaceFolder}` is unsupported and would discard the corrected-engine selection.
 The canonical TypeScript command remains `npm run typecheck`; `typecheck:leaves` additionally checks
 maintained nested projects using their effective settings.
 
