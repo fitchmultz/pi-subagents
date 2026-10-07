@@ -72,7 +72,7 @@ jobs:
         include:
           - { os: ubuntu-latest, host: official }
           - { os: ubuntu-latest, host: fork }
-          - { os: macos-latest, host: fork }
+          - { os: [self-hosted, macOS, ARM64, protected-macos-arm64], host: fork }
     runs-on: ${{ matrix.os }}
     # check:compat 58m + its owner cleanup (round to 59m), host/development
     # preparation 30m, production installs/smokes 15m, fork/tooling 15m,

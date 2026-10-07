@@ -7,6 +7,12 @@
 - Expected values must be independent of the code under test. Observe actual
   publication/readiness before checking negative outcomes; a sleep is not proof
   that the owner processed the input.
+- The Mac CI leg needs a proved clean guest and official one-job runner. Use
+  the attached `node scripts/protected-macos-ci.mjs controller --state "$OPERATOR_ROOT/state.json"`
+  through the official SDK owner; follow [docs/code-quality.md](docs/code-quality.md) for
+  baseline qualification/sealing, exact source binding and unattended serial replenishment.
+  Conditional native controls alone do not authorize activation or qualify first-hook source trust. Never weaken
+  native omission assertions or run public-repository jobs as the desktop user.
 - Use `npm run ci` for full validation. Never edit source or tests while checks
   run in this checkout. Qualify official Pi and the intended fork separately;
   matching version numbers do not establish matching runtime behavior.
