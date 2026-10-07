@@ -478,7 +478,6 @@ test("an inherited private CI root settles synchronous and connected nested desc
   const unicode = join(root, "é-雪");
   mkdirSync(unicode, { mode: 0o700 });
   const previousTmpdir = process.env.TMPDIR;
-  process.env.TMPDIR = unicode;
   const ready = join(root, "ready.json");
   const release = join(root, "release");
   const finish = join(root, "finish");
@@ -511,19 +510,28 @@ test("an inherited private CI root settles synchronous and connected nested desc
       while (!existsSync(${JSON.stringify(finish)})) await delay(10);
     `,
   );
-  const operation = run(process.execPath, [join(root, "actor.mjs")], {
-    quiet: true,
-    detached: true,
-  });
-  const outcome = operation.then(
-    (output) => ({ output }),
-    (error) => ({ error }),
-  );
+  let outcome;
   let owned;
   let caller;
+  let failure;
   const nestedFixtures = [];
   try {
+    process.env.TMPDIR = unicode;
+    outcome = run(process.execPath, [join(root, "actor.mjs")], {
+      quiet: true,
+      detached: true,
+    }).then(
+      (output) => ({ output }),
+      (error) => ({ error }),
+    );
     const receipt = await published(ready);
+    owned = nativeFixture(receipt.pid);
+    caller = nativeFixture(receipt.caller);
+    nestedFixtures.push(
+      ...[receipt.nested.guardian, receipt.nested.pid, receipt.nested.child].map((pid) =>
+        nativeFixture(pid),
+      ),
+    );
     assert.equal(
       receipt.guardianRoot.startsWith(`${unicode}/pi-compat-guardians-`),
       true,
@@ -535,12 +543,9 @@ test("an inherited private CI root settles synchronous and connected nested desc
     assert.equal(owned.sid, receipt.parent);
     assert.equal(owned.exited, false);
     assert.ok(active(owned.pid));
-    caller = nativeFixture(receipt.caller);
     assert.equal(caller.sid, receipt.parent);
     assert.equal(caller.uid, process.getuid());
-    for (const pid of [receipt.nested.guardian, receipt.nested.pid, receipt.nested.child]) {
-      const entry = nativeFixture(pid);
-      nestedFixtures.push(entry);
+    for (const entry of nestedFixtures) {
       assert.equal(entry.uid, process.getuid());
       assert.equal(entry.sid, receipt.nested.guardian);
       assert.equal(entry.exited, false);
@@ -575,22 +580,35 @@ test("an inherited private CI root settles synchronous and connected nested desc
       false,
       "Inherited root must settle protected children before deletion",
     );
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    writeFileSync(release, "fixture teardown");
-    writeFileSync(finish, "fixture teardown");
-    await outcome;
-    await terminateNativeFixture(owned);
-    for (const entry of [caller, ...nestedFixtures]) {
-      // Reap only this independently authenticated nested fixture family.
-      // oxlint-disable-next-line no-await-in-loop
-      await terminateNativeFixture(entry);
+    try {
+      const errors = await collectFixtureTeardown([
+        () => writeFileSync(release, "fixture teardown"),
+        () => writeFileSync(finish, "fixture teardown"),
+        async () => {
+          const result = await outcome;
+          if (result?.error) {
+            throw result.error;
+          }
+        },
+        ...[owned, caller, ...nestedFixtures].map((entry) => () => terminateNativeFixture(entry)),
+      ]);
+      if (errors.length === 0) {
+        errors.push(
+          ...(await collectFixtureTeardown([() => rmSync(root, { recursive: true, force: true })])),
+        );
+      }
+      reportFixtureTeardown(errors, failure);
+    } finally {
+      if (previousTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = previousTmpdir;
+      }
     }
-    if (previousTmpdir === undefined) {
-      delete process.env.TMPDIR;
-    } else {
-      process.env.TMPDIR = previousTmpdir;
-    }
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -2625,6 +2643,7 @@ for (const [mode, forgery] of [
       let receipt;
       let guardian;
       let enclosing;
+      let caughtFailure;
       const outcome = outer
         .execute(
           process.execPath,
@@ -2638,9 +2657,9 @@ for (const [mode, forgery] of [
         );
       try {
         receipt = await published(ready);
-        assert.equal(receipt.admitted !== null, mode === "after-admit");
-        guardian = await publishedNativeGuardian(receipt.pid);
         enclosing = nativeFixture(receipt.outerGuardian);
+        guardian = await publishedNativeGuardian(receipt.pid);
+        assert.equal(receipt.admitted !== null, mode === "after-admit");
         assert.equal(guardian.uid, process.getuid());
         assert.equal(guardian.sid, guardian.pid);
         assert.equal(guardian.pgid, guardian.pid);
@@ -2654,15 +2673,38 @@ for (const [mode, forgery] of [
         } else {
           await assertNoWorkSettlement(outer, receipt, guardian, root);
         }
+      } catch (error) {
+        caughtFailure = error;
+        throw error;
       } finally {
-        writeFileSync(release, "fixture teardown");
-        await outcome;
-        await terminateNativeFixture(guardian);
-        await terminateNativeFixture(enclosing);
-        if (forgery && receipt) {
-          rmSync(receipt.receiptRoot, { recursive: true, force: true });
+        const errors = await collectFixtureTeardown([
+          () => writeFileSync(release, "fixture teardown"),
+          async () => {
+            const result = await outcome;
+            if (result.error) {
+              throw result.error;
+            }
+          },
+          () => terminateNativeGuardian(guardian, receipt?.owners.at(-1)),
+          () =>
+            terminateNativeGuardian(
+              enclosing,
+              outer.environment.PI_COMPAT_PROCESS_OWNERS.split(",").at(-1),
+            ),
+        ]);
+        if (errors.length === 0) {
+          errors.push(
+            ...(await collectFixtureTeardown([
+              () => {
+                if (forgery && receipt) {
+                  rmSync(receipt.receiptRoot, { recursive: true, force: true });
+                }
+              },
+              () => rmSync(root, { recursive: true, force: true }),
+            ])),
+          );
         }
-        rmSync(root, { recursive: true, force: true });
+        reportFixtureTeardown(errors, caughtFailure);
       }
     },
   );
