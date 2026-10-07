@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/xml"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +46,32 @@ func TestInstallStagesInactivePlistOnlyInPrivateRoot(t *testing.T) {
 	before, err := os.ReadFile(plistPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The plist decoder stops after the dictionary; validate the whole document first.
+	decoder := xml.NewDecoder(bytes.NewReader(before))
+	var document struct {
+		XMLName xml.Name `xml:"plist"`
+	}
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatalf("staged plist XML is incomplete or malformed: %v", err)
+	}
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("staged plist XML is incomplete or malformed: %v", err)
+		}
+		switch token := token.(type) {
+		case xml.CharData:
+			if len(bytes.Trim(token, " \t\r\n")) != 0 {
+				t.Fatal("staged plist XML has non-whitespace trailing content")
+			}
+		case xml.Comment, xml.ProcInst:
+		default:
+			t.Fatalf("staged plist XML has trailing content: %T", token)
+		}
 	}
 	type serviceDefinition struct {
 		Label            string
