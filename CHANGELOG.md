@@ -7,6 +7,7 @@
 
 ### Fixed
 - Keep supervisor-question tool results bounded: page compact question/answer previews without repeating frozen launch metadata or native attempt baselines. Full question, interview and immutable answer files remain available; answering, cancellation and revival retain their original durable contracts.
+- Keep the history worker's cost per child append proportional to the new bytes. It used to re-hash every indexed byte of a linked session on each change, so a live child writing to a source of several hundred megabytes held the worker at full CPU for hours. Each check now re-hashes the last indexed line. Replacement, truncation and in-place rewrites of that line still start a new generation, and detail reads still verify their record digests. Indexes from earlier releases are verified in full once and then switch to the bounded check without re-indexing.
 
 ## [0.44.4] - 2026-10-04
 
