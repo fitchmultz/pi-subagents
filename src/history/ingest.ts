@@ -175,8 +175,13 @@ export class SourceIngest {
 	private fd: number;
 	private initial: fs.BigIntStats;
 	private source: SourceRow;
-	private prefix: Hash = createHash("sha256");
 	private recordDigest: Hash = createHash("sha256");
+	/** prefix_digest is "start:sha256" of the last indexed line; earlier releases hashed the whole prefix. */
+	private legacy = false;
+	private expected: string | null = null;
+	private verified: Hash = createHash("sha256");
+	private line: Hash = createHash("sha256");
+	private lineStart = 0;
 	private verifyAt = 0;
 	private position: number;
 	private frames: JournalFrames;
@@ -208,6 +213,10 @@ export class SourceIngest {
 			this.headerSeen = source.cursor > 0;
 			store.clearUnpublished(source.id);
 			store.run("DELETE FROM pending_text");
+			// Appends re-hash only the last indexed line, so live sources cost their new bytes, not their size.
+			const anchor = /^(\d+):([0-9a-f]{64})$/.exec(source.prefix_digest ?? "");
+			this.legacy = !anchor; this.expected = anchor ? anchor[2] : source.prefix_digest;
+			this.verifyAt = this.lineStart = anchor ? Number(anchor[1]) : 0;
 			this.phase = !force && source.stamp === stamp(this.initial) ? "done" : source.cursor ? "verify" : "read";
 			if (this.phase !== "done") store.run("UPDATE sources SET state='indexing',error=NULL WHERE id=?", source.id);
 			this.frames = new JournalFrames(previewProjection, (record) => {
@@ -224,7 +233,7 @@ export class SourceIngest {
 			const current = this.store.source(this.id)!;
 			if (!current || current.generation !== this.source.generation || current.cursor !== this.source.cursor) throw new HistoryIndexError("SOURCE_CHANGED", "Another writer advanced this source; reconcile before replaying.");
 			work?.();
-			this.store.run("UPDATE sources SET cursor=?,prefix_digest=?,identity=? WHERE id=?", end, this.prefix.copy().digest("hex"), identity(this.initial), this.id);
+			this.store.run("UPDATE sources SET cursor=?,prefix_digest=?,identity=? WHERE id=?", end, `${this.source.cursor}:${this.recordDigest.copy().digest("hex")}`, identity(this.initial), this.id);
 			this.store.bump();
 		});
 		this.source.cursor = end;
@@ -293,11 +302,19 @@ export class SourceIngest {
 			const count = fs.readSync(this.fd, bytes, 0, bytes.length, this.verifyAt);
 			if (count !== bytes.length) throw new Error("Journal truncated during prefix verification.");
 			this.store.operations.sourceBytesRead += count;
-			this.prefix.update(bytes); this.verifyAt += count;
+			this.verified.update(bytes);
+			if (this.legacy) {
+				// A whole-prefix check also finds the last indexed line, which anchors every later check.
+				const before = this.source.cursor - 2 - this.verifyAt, lf = before < 0 ? -1 : bytes.lastIndexOf(10, before);
+				if (lf < 0) this.line.update(bytes);
+				else { this.lineStart = this.verifyAt + lf + 1; this.line = createHash("sha256").update(bytes.subarray(lf + 1)); }
+			}
+			this.verifyAt += count;
 			if (this.verifyAt === this.source.cursor) {
-				if (this.prefix.copy().digest("hex") !== this.source.prefix_digest) {
+				if (this.verified.digest("hex") !== this.expected) {
 					this.store.resetSource(this.id); throw new HistoryIndexError("SOURCE_CHANGED", "Journal prefix changed; a new physical generation was scheduled.");
 				}
+				if (this.legacy) this.store.run("UPDATE sources SET prefix_digest=? WHERE id=?", `${this.lineStart}:${this.line.digest("hex")}`, this.id);
 				this.phase = "read";
 			}
 			return false;
@@ -313,7 +330,7 @@ export class SourceIngest {
 		}
 		const newline = this.buffer.indexOf(10);
 		const bytes = newline < 0 ? this.buffer : this.buffer.subarray(0, newline + 1);
-		this.recordDigest.update(bytes); this.prefix.update(bytes); this.frames.write(bytes); this.text.flush(this.store);
+		this.recordDigest.update(bytes); this.frames.write(bytes); this.text.flush(this.store);
 		this.buffer = this.buffer.subarray(bytes.length);
 		if (newline >= 0) this.finishRecord(this.frames.offset);
 		return false;

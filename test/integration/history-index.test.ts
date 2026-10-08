@@ -1,5 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import childProcess, { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -546,6 +547,48 @@ test("LF publication, malformed lines, append, replacement, truncation and delet
 	assert.equal((await f.index.search({ query: "rewrittenword" })).matches.length, 0);
 	fs.writeFileSync(file, lines([header(), message("restored", "restoredword")])); await f.index.refresh("mutable");
 	assert.equal((await f.index.historyPage({ runId: "mutable", index: 0 })).count, 1);
+});
+
+// Live children append to sources that reach hundreds of megabytes. Re-reading the indexed
+// prefix on every append kept the worker at full CPU for as long as the child wrote.
+const filler = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => message(`${prefix}-${index}`, "filler ".repeat(200)));
+const bytesRead = async (f: ReturnType<typeof fixture>) => (await f.index.status()).operations.sourceBytesRead;
+
+test("an append re-reads only the last indexed line, while an in-place rewrite still starts a new generation", async (t) => {
+	const f = fixture(t), file = f.file("large.jsonl", [header(), ...filler("large", 2000)]);
+	await owned(f.index, [run("large", file)]);
+	const indexed = fs.statSync(file).size, { generation } = await f.index.historyPage({ runId: "large", index: 0 });
+	const before = await bytesRead(f);
+	fs.appendFileSync(file, lines([message("appended", "appendedword")])); await f.index.refresh("large");
+	const read = await bytesRead(f) - before;
+	assert.ok(read < indexed / 100, `append verification re-read ${read} of ${indexed} indexed bytes`);
+	const appended = await f.index.historyPage({ runId: "large", index: 0 });
+	assert.equal(appended.generation, generation); assert.equal(appended.count, 2001);
+	assert.equal((await f.index.search({ query: "appendedword" })).matches.length, 1);
+	fs.writeFileSync(file, lines([header(), ...filler("rewritten", 2100), message("rewritten", "rewrittenword")]));
+	await f.index.refresh("large");
+	const rewritten = await f.index.historyPage({ runId: "large", index: 0 });
+	assert.ok(rewritten.generation! > generation!); assert.equal(rewritten.count, 2101);
+	assert.equal((await f.index.search({ query: "appendedword" })).matches.length, 0);
+	assert.equal((await f.index.search({ query: "rewrittenword" })).matches.length, 1);
+});
+
+test("a source indexed before line anchors keeps its generation and then verifies appends by its last line", async (t) => {
+	const f = fixture(t), file = f.file("upgrade.jsonl", [header(), ...filler("upgrade", 500)]), runs = [run("upgrade", file)];
+	await owned(f.index, runs);
+	const { databaseFile } = await f.index.status(), { generation } = await f.index.historyPage({ runId: "upgrade", index: 0 });
+	await f.index.close();
+	// Earlier releases stored the digest of every indexed byte.
+	const db = new DatabaseSync(databaseFile);
+	db.prepare("UPDATE sources SET prefix_digest=?").run(createHash("sha256").update(fs.readFileSync(file)).digest("hex"));
+	db.close();
+	await f.restart(); await owned(f.index, runs);
+	const indexed = fs.statSync(file).size, before = await bytesRead(f);
+	fs.appendFileSync(file, lines([message("upgraded", "upgradedword")])); await f.index.refresh("upgrade");
+	const read = await bytesRead(f) - before;
+	assert.ok(read < indexed / 10, `post-upgrade append re-read ${read} of ${indexed} indexed bytes`);
+	const page = await f.index.historyPage({ runId: "upgrade", index: 0 });
+	assert.equal(page.generation, generation); assert.equal(page.count, 501);
 });
 
 test("persistent replay publishes cursor and entries together; legacy missing identities remain visible and corrupt indexes rebuild", async (t) => {
