@@ -588,6 +588,200 @@
       }
     },
     {
+      "files": ["src/pi-intercom/bridge-launch.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": ["entry"]
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "RegExp",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBus",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "IncomingMessage",
+                  "ServerResponse",
+                  "TLSSocket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/pi-intercom/bridge-launch.ts",
+                "name": ["Launch"]
+              },
+              {
+                "from": "file",
+                "path": "./src/pi-intercom/bridge-rpc-process.ts",
+                "name": ["RpcProcess"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["test/integration/pi-intercom-runtime.test.ts"],
       "rules": {
         "no-param-reassign": [
@@ -11862,6 +12056,7 @@
         "test/fixtures/history-watch-hint.mjs",
         "test/fixtures/hold-runner-polls.mjs",
         "test/fixtures/hold-runner-startup.mjs",
+        "test/fixtures/intercom-launch-provider.mjs",
         "test/fixtures/malformed-finalization-receipts.mjs",
         "test/fixtures/native-acceptance-cli-extension.mjs",
         "test/fixtures/native-acceptance-report.mjs",

@@ -287,36 +287,41 @@ await test("policy rejects installed auto-discovery config variants even when Gi
   }
 });
 
-await test("native owner permission selects the real runner declaration, not a fabricated path", () => {
-  const dir = repositoryFixture();
-  try {
-    const file = "src/runs/background/runner-status.ts";
-    const original = readFileSync(resolve(dir, file), "utf8");
-    const lines = original.trimEnd().split("\n").length;
-    put(
-      dir,
-      file,
-      `${original.trimEnd()}\nexport function qualityOwner(step: RunnerStatusStep): void { step.currentTool = undefined; }\nexport function qualityOrdinary(other: { values: string[] }): void { other.values = []; }\n`,
-    );
-    const rules = ["typescript/prefer-readonly-parameter-types", "no-param-reassign"];
-    assert.deepEqual(lint(dir, rules, [file]), [
-      { rule: "no-param-reassign", file, line: lines + 2 },
-      { rule: "typescript/prefer-readonly-parameter-types", file, line: lines + 2 },
-    ]);
-    put(dir, "foreign.ts", "export interface RunnerStatusStep { values: string[]; }");
-    const overrides = structuredClone(config.overrides);
-    const owner = overrides.find((entry) => entry.files[0] === file);
-    const allowance = owner.rules[rules[0]][1].allow.find(
-      (entry) => entry.from === "file" && entry.name.includes("RunnerStatusStep"),
-    );
-    allowance.path = "./foreign.ts";
-    assert.ok(
-      lint(dir, rules, [file], { overrides }).some(
-        (finding) => finding.rule === rules[0] && finding.line === lines + 1,
-      ),
-    );
-  } finally {
-    remove(dir);
+await test("native owner permissions select actual runner and launch declarations, not fabricated origins", () => {
+  const owners = [
+    ["src/runs/background/runner-status.ts", "RunnerStatusStep", "step", "currentTool"],
+    ["src/pi-intercom/bridge-launch.ts", "Launch", "entry", "sessionId"],
+  ];
+  for (const [file, type, parameter, property] of owners) {
+    const dir = repositoryFixture();
+    try {
+      const original = readFileSync(resolve(dir, file), "utf8");
+      const lines = original.trimEnd().split("\n").length;
+      put(
+        dir,
+        file,
+        `${original.trimEnd()}\nexport function qualityOwner(${parameter}: ${type}): void { ${parameter}.${property} = undefined; }\nexport function qualityOrdinary(other: { values: string[] }): void { other.values = []; }\n`,
+      );
+      const rules = ["typescript/prefer-readonly-parameter-types", "no-param-reassign"];
+      assert.deepEqual(lint(dir, rules, [file]), [
+        { rule: "no-param-reassign", file, line: lines + 2 },
+        { rule: "typescript/prefer-readonly-parameter-types", file, line: lines + 2 },
+      ]);
+      put(dir, "foreign.ts", `export interface ${type} { values: string[]; }`);
+      const overrides = structuredClone(config.overrides);
+      const owner = overrides.find((entry) => entry.files[0] === file);
+      const allowance = owner.rules[rules[0]][1].allow.find(
+        (entry) => entry.from === "file" && entry.name.includes(type),
+      );
+      allowance.path = "./foreign.ts";
+      assert.ok(
+        lint(dir, rules, [file], { overrides }).some(
+          (finding) => finding.rule === rules[0] && finding.line === lines + 1,
+        ),
+      );
+    } finally {
+      remove(dir);
+    }
   }
 });
 
@@ -374,6 +379,30 @@ await test("approved checker directives stay confined to their actual boundary c
         ['const typebox: typeof import("typebox") = await import(arbitraryUrl);', 1],
         ['const typebox: typeof import("typebox") = load(nativeUrl);', 1],
         ['const typebox: typeof import("typebox") = arbitraryValue;', 1],
+      ],
+    ],
+    [
+      "typescript/no-unsafe-assignment",
+      "src/shared/native-session-loader.ts",
+      "async function loadNativeSession(packageRoot: string) {\n$then$\n}",
+      [
+        [
+          'const sessionModule: typeof import("@earendil-works/pi-coding-agent") = await import(pathToFileURL(packageRoot).href);',
+          0,
+        ],
+        [
+          'const ordinary: typeof import("@earendil-works/pi-coding-agent") = await import(pathToFileURL(packageRoot).href);',
+          1,
+        ],
+        [
+          'const sessionModule: typeof import("other-package") = await import(pathToFileURL(packageRoot).href);',
+          1,
+        ],
+        ["const sessionModule = await import(pathToFileURL(packageRoot).href);", 1],
+        [
+          'const sessionModule: typeof import("@earendil-works/pi-coding-agent") = await import(arbitraryUrl);',
+          1,
+        ],
       ],
     ],
     [

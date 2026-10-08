@@ -1,5 +1,15 @@
 // Real mutation owners authorized by the policy, not readonly permission for their readers.
 export const mutationBoundaries = [
+  {
+    file: "src/pi-intercom/bridge-launch.ts",
+    parameters: ["entry"],
+    types: [
+      { from: "file", path: "./src/pi-intercom/bridge-launch.ts", name: ["Launch"] },
+      { from: "file", path: "./src/pi-intercom/bridge-rpc-process.ts", name: ["RpcProcess"] },
+    ],
+    contract:
+      "The launcher owns native journal identity, cancellation, child and expiry lifetimes in its launch records; readers receive readonly views.",
+  },
   ...["pi-intercom-runtime", "pi-intercom-native-replay"].map((suite) => ({
     file: `test/integration/${suite}.test.ts`,
     parameters: [],

@@ -5,6 +5,9 @@ import { body } from "./bridge-http.ts";
 
 export type Operation =
   | { readonly route: "GET /v1/list" | "GET /v1/inbox" | "POST /v1/register" }
+  | { readonly route: "GET /v1/sessions" }
+  | { readonly route: "POST /v1/start"; readonly name: string }
+  | { readonly route: "POST /v1/stop"; readonly sessionId: string }
   | { readonly route: "POST /v1/ack"; readonly ids: readonly string[] }
   | { readonly route: "POST /v1/send"; readonly to: string; readonly message: string }
   | {
@@ -14,6 +17,10 @@ export type Operation =
       readonly timeoutMs: number;
     }
   | { readonly route: "POST /v1/reply"; readonly replyTo: string; readonly message: string };
+export type MessagingOperation = Exclude<
+  Operation,
+  { readonly route: "POST /v1/start" | "POST /v1/stop" | "GET /v1/sessions" }
+>;
 type Route = Operation["route"];
 
 const fields = {
@@ -24,6 +31,9 @@ const fields = {
   "POST /v1/send": ["to", "message"],
   "POST /v1/ask": ["to", "message", "timeoutMs"],
   "POST /v1/reply": ["replyTo", "message"],
+  "POST /v1/start": ["name"],
+  "GET /v1/sessions": [],
+  "POST /v1/stop": ["sessionId"],
 };
 
 function isRoute(route: string): route is Route {
@@ -68,7 +78,12 @@ export async function operationFor(
     case "GET /v1/list":
     case "GET /v1/inbox":
     case "POST /v1/register":
+    case "GET /v1/sessions":
       return { route };
+    case "POST /v1/start":
+      return { route, name: label(input.name, "session name", 64).trim() };
+    case "POST /v1/stop":
+      return { route, sessionId: label(input.sessionId, "session ID", 128) };
     case "POST /v1/ack": {
       if (!isUnknownArray(input.ids) || input.ids.length > INBOX_COUNT) {
         throw new Fault(400, "invalid_input", "ids must be an array of at most 256 message IDs.");
