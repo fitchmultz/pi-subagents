@@ -163,8 +163,9 @@ export class HistoryQueries {
 		if (input.agent) { if (input.agent.length > 256) throw new HistoryIndexError("INVALID", "Agent filter is too long."); clauses.push("c.agent=?"); params.push(input.agent); }
 		const joins = "JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1";
 		// Scope records before materializing/grouping hits, while bm25 still sees the
-		// complete corpus. Keep attempt attribution and seek filtering in the final join.
-		const eligible = input.runId || input.agent ? `eligible AS MATERIALIZED (SELECT DISTINCT e.rowid FROM entries e ${joins} WHERE ${clauses.join(" AND ")}),` : "";
+		// complete corpus. Scan each linked source once, not once per continuation.
+		// Attempt boundaries, attribution and seek filtering remain in the final join.
+		const eligible = input.runId || input.agent ? `eligible AS MATERIALIZED (SELECT e.rowid FROM entries e JOIN sources s ON s.id=e.source_id WHERE e.published=1 AND e.generation=s.generation AND e.source_id IN (SELECT c.source_id FROM children c WHERE ${clauses.slice(4).join(" AND ")})),` : "";
 		const eligibleParams = eligible ? params.slice(expression.length) : [];
 		// Ordering/filters apply globally before limit. Common terms may still require an FTS
 		// scan/sort; the parent enforces a hard deadline by killing this separate process.

@@ -286,7 +286,7 @@ test("closing while background projection publishes a change exits the worker cl
 	} finally { database.close(); }
 });
 
-test("a full Agents page retains an 80k-entry native branch within the history process deadline and a bounded heap", async (t) => {
+test("a full Agents page and shared continuation search retain an 80k-entry native branch within the history process deadline and a bounded heap", async (t) => {
 	const f = fixture(t), depth = 80_000, originalFork = childProcess.fork;
 	t.mock.method(childProcess, "fork", (modulePath, args, options) => originalFork(modulePath, args, { ...options, execArgv: ["--max-old-space-size=96"] }));
 	syncBuiltinESMExports();
@@ -303,6 +303,7 @@ test("a full Agents page retains an 80k-entry native branch within the history p
 	// The real worker must reopen it, verify the native source and admit all runs.
 	const db = new DatabaseSync(databaseFile), source = db.prepare("SELECT * FROM sources").get()!;
 	const insert = db.prepare("INSERT INTO entries(source_id,generation,id,native_id,parent_id,start,end,digest,timestamp,type,preview,published,role,visible_id,configuration_model) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)");
+	const document = db.prepare("INSERT INTO documents(entry_rowid,field,text_start,text_end,preview) VALUES (?,?,?,?,?)"), corpus = db.prepare("INSERT INTO corpus(rowid,text) VALUES (?,?)");
 	let cursor = fs.statSync(file).size, lastStart = cursor, lastDigest = "";
 	const fd = fs.openSync(file, "a");
 	try {
@@ -311,9 +312,13 @@ test("a full Agents page retains an 80k-entry native branch within the history p
 			const text = lines([record]);
 			lastStart = cursor; cursor += Buffer.byteLength(text); lastDigest = createHash("sha256").update(text).digest("hex");
 			fs.writeSync(fd, text);
-			insert.run(source.id, source.generation, record.id, record.id, record.parentId, lastStart, cursor, lastDigest, Date.parse(timestamp), record.type, JSON.stringify(record), record.message?.role ?? null, record.type === "message" ? record.id : null, record.type === "model_change" ? "synthetic/not-selected" : null);
+			const row = insert.run(source.id, source.generation, record.id, record.id, record.parentId, lastStart, cursor, lastDigest, Date.parse(timestamp), record.type, JSON.stringify(record), record.message?.role ?? null, record.type === "message" ? record.id : null, record.type === "model_change" ? "synthetic/not-selected" : null).lastInsertRowid;
+			if (record.type === "message") {
+				const visible = record.message.content[0].text;
+				corpus.run(document.run(row, '["message","content",0,"text"]', 0, visible.length, visible).lastInsertRowid, visible);
+			}
 		};
-		for (let index = 0; index < depth; index++) append({ ...message(`deep-${index}`, `Native history ${index}`), parentId: index ? `deep-${index - 1}` : "thinking" });
+		for (let index = 0; index < depth; index++) append({ ...message(`deep-${index}`, index === depth - 1 ? "nativehistoryneedle" : `Native history ${index}`), parentId: index ? `deep-${index - 1}` : "thinking" });
 		append({ type: "model_change", id: "other-branch", parentId: "model", timestamp, provider: "synthetic", modelId: "not-selected" });
 		append({ type: "custom", id: "active-leaf", parentId: terminal, timestamp });
 		const stat = fs.statSync(file, { bigint: true });
@@ -351,6 +356,26 @@ test("a full Agents page retains an 80k-entry native branch within the history p
 	const history = await f.index.historyPage({ runId: runs[0].runId, index: 0, terminalEntryId: terminal, leaf: terminal, limit: 1 });
 	assert.equal(history.count, depth + 2); assert.equal(history.entries[0].id, terminal);
 	assert.deepEqual(history.configuration, { model: "synthetic/selected", modelRecordedAt: Date.parse(timestamp), thinking: "high" });
+	const continuations = Array.from({ length: 150 }, (_, index) => ({
+		...run(`continuation-${index}`, file), rootRunId: runs[0].runId,
+		predecessorRunId: index ? `continuation-${index - 1}` : runs[0].runId, predecessorIndex: 0, pid: process.pid,
+	}));
+	const shared = [...runs, ...continuations];
+	await owned(f.index, shared);
+	const searchStarted = performance.now(), found = [], searchIds = new Set(shared.map((entry) => entry.runId));
+	let searchCursor: string | undefined;
+	do {
+		const result = await f.index.search({ query: "nativehistoryneedle", agent: "worker", limit: 100, cursor: searchCursor });
+		found.push(...result.matches); searchCursor = result.nextCursor;
+	} while (searchCursor);
+	assert.equal(found.length, shared.length);
+	assert.deepEqual(new Set(found.map((match) => match.runId)), searchIds);
+	for (const match of found) {
+		assert.equal(match.entryId, terminal); assert.equal(match.index, 0);
+		assert.equal(match.preview, "nativehistoryneedle");
+	}
+	assert.equal(f.index.failure, undefined);
+	t.diagnostic(`Rare agent search, ${shared.length} admitted attempts sharing ${depth + 4} native entries: ${Math.round(performance.now() - searchStarted)}ms`);
 });
 
 test("reused native configuration preserves exact leaves, strict failures and committed source invalidation", async (t) => {
