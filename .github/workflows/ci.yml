@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      fork-ref:
+        description: Exact candidate fork SHA; empty resolves maintained main
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       official-version:
@@ -53,6 +59,7 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, host: official }
+          - { os: macos-latest, host: official }
           - { os: ubuntu-latest, host: fork }
           - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
