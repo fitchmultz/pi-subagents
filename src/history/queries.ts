@@ -84,7 +84,8 @@ export class HistoryQueries {
 		try { boundary = this.boundary(source, input); } catch (error) { if (!strict && error instanceof HistoryIndexError && error.code === "BOUNDARY_UNAVAILABLE") return {}; throw error; }
 		// Only committed source changes invalidate ancestry, not unrelated run projections.
 		// Validate boundaries before reuse; explicit null leaves returned above remain empty.
-		const key = JSON.stringify([source.id, source.generation, source.cursor, source.stamp, input.terminalEntryId || null, input.terminalEntryId ? null : input.endedAt ?? null, input.leaf ?? null, strict]);
+		const leafKey = input.leaf === undefined ? null : [typeof input.leaf, String(input.leaf)];
+		const key = JSON.stringify([source.id, source.generation, source.cursor, source.stamp, input.terminalEntryId || null, input.terminalEntryId ? null : input.endedAt ?? null, leafKey, strict]);
 		const cached = this.configurations.get(key);
 		if (cached) return { ...cached };
 		const leaf = input.leaf ?? this.store.get(`SELECT id FROM entries WHERE ${boundary.clauses.join(" AND ")} ORDER BY start DESC LIMIT 1`, ...boundary.params)?.id;

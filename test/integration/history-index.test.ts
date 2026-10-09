@@ -373,6 +373,7 @@ test("reused native configuration preserves exact leaves, strict failures and co
 	page.configuration.model = "caller mutation";
 	assert.deepEqual((await f.index.historyPage(input)).configuration, first);
 	assert.deepEqual((await f.index.historyPage({ ...input, leaf: null })).configuration, {});
+	assert.deepEqual((await f.index.historyPage({ ...input, leaf: NaN as unknown as string })).configuration, {}, "SQLite-null scalar leaves cannot reuse an undefined/default leaf");
 	assert.deepEqual((await f.index.historyPage({ ...input, leaf: "second" })).configuration, { model: "synthetic/second", modelRecordedAt: time + 1000 });
 	assert.deepEqual((await f.index.historyPage({ ...input, endedAt: time })).configuration, first);
 	const terminalView = async (terminalEntryId: string, terminalLeafId?: string | null) => {
