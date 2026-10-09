@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.6] - 2026-10-09
+
+### Fixed
+- Keep full Agents pages available for long native histories by sharing bounded configuration results across rows and repeated queries. Committed publication, source generations and exact terminal/time/leaf boundaries invalidate reuse; strict errors and source integrity checks remain unchanged.
+- Restrict scoped saved-text search to eligible records before aggregating matches, retaining the complete corpus for global relevance scores, cross-field word matching, phrases, attempt boundaries and pagination.
+- Publish one settled-freshness notification for unchanged history census work instead of one per run/source. Real commits, canonical failures and source error/recovery observations still notify; polling, census and watches remain active.
+
 ## [0.44.5] - 2026-10-08
 
 ### Added

@@ -162,6 +162,39 @@ test("owned compact run ordering, filtering and seek pagination do not adopt orp
 	assert.equal((await f.index.listRuns()).total, 0);
 });
 
+test("an unchanged native census emits only settled freshness, while real view and source recovery remain observable", { timeout: 60_000 }, async (t) => {
+	const f = fixture(t), runs = Array.from({ length: 1000 }, (_, index) => run(`census-${index}`));
+	await owned(f.index, runs);
+	const before = await f.index.status();
+	let notifications = 0, census!: () => void;
+	const nextCensus = new Promise<void>((resolve) => { census = resolve; });
+	const unsubscribe = f.index.onChanged(() => { notifications++; census(); });
+	t.after(async () => unsubscribe());
+	await nextCensus;
+	await f.index.refresh();
+	const after = await f.index.status();
+	assert.ok(after.operations.runProjections >= before.operations.runProjections + runs.length, "the actual native census processed the admitted runs");
+	assert.equal(after.version, before.version);
+	assert.equal(after.freshness.pending, 0);
+	assert.ok(notifications <= 2, `${notifications} notifications for unchanged runs; only census/refresh settlement should be published`);
+	const changed = notifications;
+	await f.index.updateRun({ ...runs[0], task: "Genuine canonical assignment change" });
+	await f.index.refresh(runs[0].runId);
+	assert.ok(notifications > changed);
+	assert.equal((await f.index.listRuns({ text: "Genuine canonical" })).rows[0].task, "Genuine canonical assignment change");
+	const missing = path.join(f.root, "missing.jsonl");
+	await f.index.updateRun(run(runs[0].runId, missing));
+	await assert.rejects(f.index.refresh(runs[0].runId), code("DEGRADED"));
+	assert.equal((await f.index.historyPage({ runId: runs[0].runId, index: 0 })).sourceState, "missing");
+	const failed = notifications;
+	fs.writeFileSync(missing, lines([header(), message("restored", "recovered source")]));
+	await f.index.refresh(runs[0].runId);
+	const recovered = await f.index.historyPage({ runId: runs[0].runId, index: 0 });
+	assert.ok(notifications > failed);
+	assert.equal(recovered.sourceState, "current"); assert.equal(recovered.freshness.pending, 0);
+	assert.equal(recovered.freshness.errors, 0);
+});
+
 // Forks the index's real worker with a native phase gate (test/fixtures/history-ipc-gate.mjs) and records its IPC.
 function gatedWorker(t: { mock: any; after: (fn: () => void) => void }, gate: string) {
 	const wire: string[] = [], original = childProcess.fork;
@@ -253,16 +286,59 @@ test("closing while background projection publishes a change exits the worker cl
 	} finally { database.close(); }
 });
 
-test("a full Agents page retains deep native branch configuration within the history process deadline", async (t) => {
-	const f = fixture(t), depth = 2500;
-	const records = [
+test("a full Agents page and shared continuation search retain an 80k-entry native branch within the history process deadline and a bounded heap", async (t) => {
+	const f = fixture(t), depth = 80_000, originalFork = childProcess.fork;
+	t.mock.method(childProcess, "fork", (modulePath, args, options) => originalFork(modulePath, args, { ...options, execArgv: ["--max-old-space-size=96"] }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const file = f.file("deep.jsonl", [header(),
 		{ type: "model_change", id: "model", parentId: null, timestamp, provider: "synthetic", modelId: "selected" },
 		{ type: "thinking_level_change", id: "thinking", parentId: "model", timestamp, thinkingLevel: "high" },
-		...Array.from({ length: depth }, (_, index) => ({ ...message(`deep-${index}`, `Native history ${index}`), parentId: index ? `deep-${index - 1}` : "thinking" })),
-		{ type: "model_change", id: "other-branch", parentId: "model", timestamp, provider: "synthetic", modelId: "not-selected" },
-	];
-	const file = f.file("deep.jsonl", [header(), ...records]), terminal = `deep-${depth - 1}`;
-	const runs = Array.from({ length: 50 }, (_, index) => run(`deep-run-${index}`, file));
+	]), terminal = `deep-${depth - 1}`;
+	const runs = Array.from({ length: 50 }, (_, index) => ({ ...run(`deep-run-${index}`, file), pid: process.pid }));
+	await owned(f.index, runs);
+	const { databaseFile } = await f.index.status();
+	await f.index.close();
+	// A valid disposable persisted projection avoids 80k per-record ingest commits.
+	// The real worker must reopen it, verify the native source and admit all runs.
+	const db = new DatabaseSync(databaseFile), source = db.prepare("SELECT * FROM sources").get()!;
+	const insert = db.prepare("INSERT INTO entries(source_id,generation,id,native_id,parent_id,start,end,digest,timestamp,type,preview,published,role,visible_id,configuration_model) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)");
+	const document = db.prepare("INSERT INTO documents(entry_rowid,field,text_start,text_end,preview) VALUES (?,?,?,?,?)"), corpus = db.prepare("INSERT INTO corpus(rowid,text) VALUES (?,?)");
+	let cursor = fs.statSync(file).size, lastStart = cursor, lastDigest = "";
+	const fd = fs.openSync(file, "a");
+	try {
+		db.exec("BEGIN IMMEDIATE");
+		const append = (record: any) => {
+			const text = lines([record]);
+			lastStart = cursor; cursor += Buffer.byteLength(text); lastDigest = createHash("sha256").update(text).digest("hex");
+			fs.writeSync(fd, text);
+			const row = insert.run(source.id, source.generation, record.id, record.id, record.parentId, lastStart, cursor, lastDigest, Date.parse(timestamp), record.type, JSON.stringify(record), record.message?.role ?? null, record.type === "message" ? record.id : null, record.type === "model_change" ? "synthetic/not-selected" : null).lastInsertRowid;
+			if (record.type === "message") {
+				const visible = record.message.content[0].text;
+				corpus.run(document.run(row, '["message","content",0,"text"]', 0, visible.length, visible).lastInsertRowid, visible);
+			}
+		};
+		for (let index = 0; index < depth; index++) append({ ...message(`deep-${index}`, index === depth - 1 ? "nativehistoryneedle" : `Native history ${index}`), parentId: index ? `deep-${index - 1}` : "thinking" });
+		append({ type: "model_change", id: "other-branch", parentId: "model", timestamp, provider: "synthetic", modelId: "not-selected" });
+		append({ type: "custom", id: "active-leaf", parentId: terminal, timestamp });
+		const stat = fs.statSync(file, { bigint: true });
+		db.prepare("UPDATE sources SET cursor=?,prefix_digest=?,stamp=?").run(cursor, `${lastStart}:${lastDigest}`, `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`);
+		db.exec("COMMIT");
+	} finally { fs.closeSync(fd); db.close(); }
+	await f.restart(); await owned(f.index, runs);
+	const before = await f.index.status(), started = performance.now();
+	const live = await f.index.listRuns({ limit: 50, latestTasksOnly: true });
+	assert.equal(live.total, 50); assert.equal(live.rows.length, 50);
+	for (const row of live.rows) {
+		assert.equal(row.state, "live"); assert.equal(row.children[0].state, "live");
+		assert.deepEqual(row.children[0].nativeConfiguration, { model: "synthetic/selected", modelRecordedAt: Date.parse(timestamp), thinking: "high" });
+	}
+	t.diagnostic(`50 live rows, ${depth + 4} native entries, 96 MiB worker heap: ${Math.round(performance.now() - started)}ms`);
+	const warm = await f.index.listRuns({ limit: 50 });
+	assert.deepEqual(warm.rows.map((row) => row.children[0].nativeConfiguration), live.rows.map((row) => row.children[0].nativeConfiguration));
+	const after = await f.index.status();
+	assert.equal(after.operations.sourceBytesRead, before.operations.sourceBytesRead);
+	assert.equal(f.index.failure, undefined);
 	await owned(f.index, runs, { foregroundRuns: runs.map((entry) => ({
 		runId: entry.runId, mode: "single", cwd: "/synthetic", updatedAt: Date.parse(timestamp),
 		children: [{ index: 0, agent: "worker", status: "completed", sessionFile: file, result: {
@@ -279,7 +355,91 @@ test("a full Agents page retains deep native branch configuration within the his
 	}
 	const history = await f.index.historyPage({ runId: runs[0].runId, index: 0, terminalEntryId: terminal, leaf: terminal, limit: 1 });
 	assert.equal(history.count, depth + 2); assert.equal(history.entries[0].id, terminal);
-	assert.deepEqual(history.configuration, page.rows[0].children[0].nativeConfiguration);
+	assert.deepEqual(history.configuration, { model: "synthetic/selected", modelRecordedAt: Date.parse(timestamp), thinking: "high" });
+	const continuations = Array.from({ length: 150 }, (_, index) => ({
+		...run(`continuation-${index}`, file), rootRunId: runs[0].runId,
+		predecessorRunId: index ? `continuation-${index - 1}` : runs[0].runId, predecessorIndex: 0, pid: process.pid,
+	}));
+	const shared = [...runs, ...continuations];
+	await owned(f.index, shared);
+	const searchStarted = performance.now(), found = [], searchIds = new Set(shared.map((entry) => entry.runId));
+	let searchCursor: string | undefined;
+	do {
+		const result = await f.index.search({ query: "nativehistoryneedle", agent: "worker", limit: 100, cursor: searchCursor });
+		found.push(...result.matches); searchCursor = result.nextCursor;
+	} while (searchCursor);
+	assert.equal(found.length, shared.length);
+	assert.deepEqual(new Set(found.map((match) => match.runId)), searchIds);
+	for (const match of found) {
+		assert.equal(match.entryId, terminal); assert.equal(match.index, 0);
+		assert.equal(match.preview, "nativehistoryneedle");
+	}
+	assert.equal(f.index.failure, undefined);
+	t.diagnostic(`Rare agent search, ${shared.length} admitted attempts sharing ${depth + 4} native entries: ${Math.round(performance.now() - searchStarted)}ms`);
+});
+
+test("reused native configuration preserves exact leaves, strict failures and committed source invalidation", async (t) => {
+	const f = fixture(t), time = Date.parse(timestamp);
+	const model = (id: string, parentId: string | null, modelId: string, at = time) => ({ type: "model_change", id, parentId, timestamp: new Date(at).toISOString(), provider: "synthetic", modelId });
+	const file = f.file("configuration.jsonl", [header(), model("first", null, "first"),
+		{ type: "thinking_level_change", id: "thinking", parentId: "first", timestamp, thinkingLevel: "high" },
+		{ ...message("first-leaf", "first branch"), parentId: "thinking" },
+		model("second", null, "second", time + 1000),
+		model("cycle-one", "cycle-two", "cycle"),
+		{ type: "custom", id: "cycle-two", parentId: "cycle-one", timestamp },
+		{ ...message("active", "current branch"), parentId: "first-leaf" },
+	]);
+	const live = { ...run("config-live", file), pid: process.pid }, terminal = run("config-terminal", file);
+	await owned(f.index, [live, terminal]);
+	const input = { runId: live.runId, index: 0 };
+	const first = { model: "synthetic/first", modelRecordedAt: time, thinking: "high" };
+	const page = await f.index.historyPage(input);
+	assert.deepEqual(page.configuration, first);
+	page.configuration.model = "caller mutation";
+	assert.deepEqual((await f.index.historyPage(input)).configuration, first);
+	assert.deepEqual((await f.index.historyPage({ ...input, leaf: null })).configuration, {});
+	assert.deepEqual((await f.index.historyPage({ ...input, leaf: NaN as unknown as string })).configuration, {}, "SQLite-null scalar leaves cannot reuse an undefined/default leaf");
+	assert.deepEqual((await f.index.historyPage({ ...input, leaf: "second" })).configuration, { model: "synthetic/second", modelRecordedAt: time + 1000 });
+	assert.deepEqual((await f.index.historyPage({ ...input, endedAt: time })).configuration, first);
+	const terminalView = async (terminalEntryId: string, terminalLeafId?: string | null) => {
+		await f.index.updateRun(terminal, { runId: terminal.runId, mode: "single", cwd: "/synthetic", updatedAt: time,
+			children: [{ index: 0, agent: "worker", status: "completed", sessionFile: file, result: {
+				agent: "worker", task: terminal.task, exitCode: 0, terminalEntryId, terminalLeafId,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+			} }],
+		});
+		await f.index.refresh(terminal.runId);
+		return (await f.index.listRuns()).rows.find((row) => row.runId === terminal.runId)!.children[0].nativeConfiguration;
+	};
+	assert.deepEqual(await terminalView("active", "first-leaf"), first);
+	for (const [entry, leaf] of [["missing", undefined], ["missing", null], ["active", "missing"], ["cycle-two", "cycle-two"]] as const) {
+		assert.deepEqual(await terminalView(entry, leaf), {}, "non-strict list never guesses missing or cyclic configuration");
+		await assert.rejects(f.index.historyPage({ ...input, terminalEntryId: entry, leaf }), code(entry === "cycle-two" ? "MALFORMED_ANCESTRY" : "BOUNDARY_UNAVAILABLE"));
+	}
+	assert.deepEqual(await terminalView("active", null), {}, "explicit terminal leaf null is distinct from latest eligible");
+	assert.deepEqual(await terminalView("active"), first);
+	await assert.rejects(f.index.historyPage({ ...input, endedAt: NaN }), code("INVALID"));
+	const appended = model("backdated", "thinking", "third");
+	fs.appendFileSync(file, JSON.stringify(appended));
+	await f.index.refresh(live.runId);
+	assert.deepEqual((await f.index.historyPage({ ...input, endedAt: time })).configuration, first, "unpublished suffix cannot change cached configuration");
+	fs.appendFileSync(file, "\n"); await f.index.refresh(live.runId);
+	const third = { model: "synthetic/third", modelRecordedAt: time, thinking: "high" };
+	assert.deepEqual((await f.index.historyPage({ ...input, endedAt: time })).configuration, third, "backdated publication invalidates the same time boundary");
+	assert.deepEqual((await f.index.listRuns()).rows.find((row) => row.runId === live.runId)!.children[0].nativeConfiguration, third);
+	const generation = (await f.index.historyPage(input)).generation!;
+	fs.renameSync(f.file("new-configuration.jsonl", [header(), model("first", null, "fourth")]), file);
+	await f.index.refresh(live.runId);
+	const replacement = await f.index.historyPage(input);
+	assert.ok(replacement.generation! > generation);
+	assert.deepEqual(replacement.configuration, { model: "synthetic/fourth", modelRecordedAt: time });
+	await f.index.updateRun({ ...live, children: [{ agent: "worker", index: 0 }] });
+	await f.index.updateRun(run(terminal.runId), { runId: terminal.runId, mode: "single", cwd: "/synthetic", updatedAt: time, children: [{ agent: "worker", index: 0, status: "unknown" }] });
+	await f.index.refresh();
+	assert.equal((await f.index.status()).physicalSources, 0, "all old source handles were pruned before re-admission");
+	fs.writeFileSync(file, lines([header(), model("first", null, "fifth")]));
+	await f.index.updateRun(live); await f.index.refresh(live.runId);
+	assert.deepEqual((await f.index.historyPage(input)).configuration, { model: "synthetic/fifth", modelRecordedAt: time });
 });
 
 test("canonical foreground summaries stay compact, while physical archive pages retain >100 entries and tool pairs", async (t) => {
@@ -442,7 +602,7 @@ test("multiword search matches whole native records before ranking and paginatio
 	const f = fixture(t);
 	const file = f.file("record-search.jsonl", [header(),
 		message("far-apart", "firstneedle " + "padding ".repeat(600) + "lastneedle"),
-		{ ...message("separate-fields", ""), message: { role: "user", content: [{ type: "text", text: "firstneedle" }, { type: "text", text: "lastneedle" }] } },
+		{ ...message("separate-fields", ""), timestamp: new Date(Date.parse(timestamp) + 1000).toISOString(), message: { role: "user", content: [{ type: "text", text: "firstneedle" }, { type: "text", text: "lastneedle" }] } },
 		message("only-first", "firstneedle"), message("only-last", "lastneedle"),
 	]);
 	await owned(f.index, [run("search-records", file)]);
@@ -455,6 +615,41 @@ test("multiword search matches whole native records before ranking and paginatio
 	}
 	assert.equal((await f.index.search({ query: '"firstneedle lastneedle"' })).matches.length, 0, "phrases cannot jump windows or text fields");
 	assert.equal((await f.index.search({ query: "padding", runId: "search-records" })).matches.length, 1, "overlapping windows do not duplicate native-record results");
+	const parallel = { ...run("scoped-records", file), mode: "parallel" as const, children: [0, 4, 9].map((index) => ({ index, agent: index === 4 ? "later" : "earlier", sessionFile: file })) };
+	await owned(f.index, [parallel, { ...run("successor", file, "successor"), pid: process.pid }], {
+		foregroundRuns: [{ runId: parallel.runId, mode: "parallel", cwd: "/synthetic", updatedAt: Date.parse(timestamp),
+			children: parallel.children.map((child) => ({ ...child, status: "completed", result: {
+				agent: child.agent, task: "task", exitCode: 0,
+				...(child.index === 9 ? {} : { terminalEntryId: child.index === 4 ? "separate-fields" : "far-apart" }),
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+			} })),
+		}],
+	});
+	// Native global FTS scores are an independent oracle, not scores from search().
+	const db = new DatabaseSync((await f.index.status()).databaseFile, { readOnly: true }), scores = new Map<string, number>();
+	try {
+		for (const term of ["firstneedle", "lastneedle"]) {
+			const best = new Map<string, number>();
+			for (const row of db.prepare("SELECT e.id,bm25(corpus) AS score FROM corpus JOIN documents d ON d.id=corpus.rowid JOIN entries e ON e.rowid=d.entry_rowid WHERE corpus MATCH ?").all(`"${term}"`)) best.set(String(row.id), Math.min(best.get(String(row.id)) ?? Infinity, Number(row.score)));
+			for (const [id, score] of best) scores.set(id, (scores.get(id) ?? 0) + score);
+		}
+	} finally { db.close(); }
+	for (const sort of ["relevance", "newest"] as const) for (const [scope, expected] of [
+		[{ runId: parallel.runId }, ["far-apart:0", "far-apart:4", "far-apart:9", "separate-fields:4"]],
+		[{ runId: parallel.runId, index: 0 }, ["far-apart:0"]],
+		[{ runId: parallel.runId, index: 4 }, ["far-apart:4", "separate-fields:4"]],
+		[{ agent: "earlier" }, ["far-apart:0", "far-apart:9"]],
+	] as const) {
+		const matches = [];
+		let cursor: string | undefined;
+		do {
+			const page = await f.index.search({ query: "firstneedle lastneedle", ...scope, sort, limit: 1, cursor });
+			matches.push(...page.matches); cursor = page.nextCursor;
+		} while (cursor);
+		assert.deepEqual(matches.map((match) => `${match.entryId}:${match.index}`).sort(), [...expected].sort());
+		for (const match of matches) assert.equal(match.score, sort === "relevance" ? scores.get(match.entryId) : -match.timestamp!, "scoping preserves global scores and time ordering");
+		assert.equal((await f.index.search({ query: '"firstneedle lastneedle"', ...scope, sort })).matches.length, 0);
+	}
 });
 
 for (const interrupted of [false, true]) test(`concurrent workers preserve staged entries when the first writer ${interrupted ? "is killed" : "finishes"}`, async (t) => {

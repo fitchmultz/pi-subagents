@@ -21,6 +21,8 @@ const sourceWatchers = new Map<string, fs.FSWatcher>();
 const watchIdentities = new WeakMap<fs.FSWatcher, string>();
 const watchedSources = new Map<string, Map<string, string>>();
 let job: SourceIngest | undefined, scheduled = false, closed = false;
+let sourceObservation: { state: string; error: string | null } | undefined;
+let notifiedVersion: string | undefined;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let runErrors = new Set<string>();
 const barriers: Array<{ id: number; runId?: string }> = [];
@@ -32,7 +34,14 @@ function send(response: Response): void {
 	// The parent can disconnect after process.connected was read; then this and later replies are undeliverable, so stop as on disconnect.
 	if (process.connected) process.send!(response, undefined, undefined, (error) => { if (error) shutdown(); });
 }
-function changed(): void { send({ changed: true }); }
+function changed(observationChanged = false): void {
+	const version = store?.get("SELECT value FROM meta WHERE key='version'").value;
+	// Unchanged census projections need only one final freshness notification.
+	// Non-versioned errors/recovery and real commits still publish immediately.
+	if (observationChanged || version !== notifiedVersion || !hasPending()) {
+		notifiedVersion = version; send({ changed: true });
+	}
+}
 function errorReply(id: number, error: unknown): void {
 	const code = error instanceof HistoryIndexError ? error.code : "UNAVAILABLE";
 	// Parser errors can include fragments from the malformed body. IPC/logs must never carry them.
@@ -164,7 +173,11 @@ function prune(previousSources?: string[]): void {
 			store!.deleteDocuments(source.id);
 			store!.run("DELETE FROM entries WHERE source_id=?", source.id); store!.run("DELETE FROM sources WHERE id=?", source.id); removed = true;
 		}
-		if (removed) store!.bump();
+		if (removed) {
+			store!.bump();
+			// A later admission of the same path can recreate source generation 1.
+			queries?.sourcesRemoved();
+		}
 	});
 }
 function admit(run: OwnedRun): void {
@@ -201,23 +214,25 @@ function pump(): void {
 	try {
 		if (dirtyRuns.size) {
 			const id = dirtyRuns.values().next().value!; dirtyRuns.delete(id);
+			const failed = runErrors.has(id);
 			installWatches(id);
 			const previousSources = store.all("SELECT source_id FROM children WHERE run_id=? AND source_id IS NOT NULL", id).map((child) => child.source_id);
 			try { store.operations.runProjections++; const view = projection(runs.get(id)!); store.putView(compactView(view), view); runErrors.delete(id); }
 			catch { const view = unknown(runs.get(id)!, "Canonical owner summary is unavailable. Completion remains unconfirmed."); store.putView(compactView(view), view); runErrors.add(id); }
 			prune(previousSources);
 			for (const child of store.all("SELECT source_id FROM children WHERE run_id=? AND source_id IS NOT NULL", id)) if (child.source_id !== job?.id) dirtySources.set(child.source_id, dirtySources.get(child.source_id) ?? false);
-			installWatches(id); changed();
+			installWatches(id); changed(failed !== runErrors.has(id));
 		} else if (job) {
 			if (job.step()) {
 				const source = store.source(job.id);
 				if (source) watchSources(path.dirname(source.path));
-				job = undefined; changed();
+				job = undefined; changed(source?.state !== sourceObservation?.state || source?.error !== sourceObservation?.error);
+				sourceObservation = undefined;
 			}
 		} else if (dirtySources.size) {
 			const [id, force] = dirtySources.entries().next().value!; dirtySources.delete(id);
 			const source = store.source(id);
-			if (source) { activeSource = id; job = new SourceIngest(store, source, force); }
+			if (source) { activeSource = id; sourceObservation = source; job = new SourceIngest(store, source, force); }
 		}
 	} catch (error) {
 		const id = job?.id ?? activeSource;
@@ -230,7 +245,11 @@ function pump(): void {
 			else if ((error as NodeJS.ErrnoException).code === "ENOENT") store.resetSource(id, "missing", "Linked native conversation is missing.");
 			else store.run("UPDATE sources SET state='error',error=?,checked_at=? WHERE id=?", "Linked native conversation could not be indexed.", Date.now(), id);
 		}
-		if (!(error instanceof HistoryIndexError && error.code === "INDEX_BUSY")) changed();
+		if (!(error instanceof HistoryIndexError && error.code === "INDEX_BUSY")) {
+			const source = id ? store.source(id) : undefined;
+			changed(Boolean(source && (source.state !== sourceObservation?.state || source.error !== sourceObservation?.error)));
+		}
+		sourceObservation = undefined;
 	}
 	activeSource = undefined;
 	finishBarriers();
@@ -247,6 +266,7 @@ const timer = setInterval(census, 30_000); timer.unref();
 function clear(): void {
 	clearTimeout(retryTimer); retryTimer = undefined;
 	job?.close(); job = undefined;
+	sourceObservation = undefined; notifiedVersion = undefined;
 	for (const watcher of watchers.values()) watcher.close(); watchers.clear(); watchedSources.clear();
 	for (const watcher of sourceWatchers.values()) watcher.close(); sourceWatchers.clear();
 	dirtyRuns.clear(); dirtySources.clear(); runs.clear(); foreground.clear(); runErrors = new Set();
