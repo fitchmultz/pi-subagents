@@ -258,7 +258,7 @@ describe("parallel agent execution", () => {
 						if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 					}
 				}
-				await waitFor(() => groupMembers().length === 0 && !alive(runnerPid), "owned launcher group and runner exit before fixture teardown");
+				await waitFor(() => (!launcherPid || groupMembers().length === 0) && !alive(runnerPid), "owned launcher group and runner exit before fixture teardown");
 				await waitFor(() => result, "foreground wait settles after owner exit");
 				await resultPromise;
 			}
