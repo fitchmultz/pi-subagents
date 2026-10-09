@@ -58,27 +58,47 @@ test("an already observed native watch hint preserves completed degraded history
 		env: { ...process.env, PI_CODING_AGENT_DIR: f.agentDir }, stdio: ["ignore", "ignore", "inherit", "ipc"],
 	});
 	const exited = once(worker, "exit");
+	let stage = "initial native ingestion", finished = false, failure: Error | undefined;
+	let failedPending;
+	const nativeEvents: object[] = [];
+	const diagnose = (error: unknown) => t.diagnostic(JSON.stringify({ boundary: "native-watch-hint", stage, error: String(error),
+		nativeEvents, directories, observed: [...observed], pendingRequests: [...requests.values()].map((request) => request.method),
+		pendingHints: [...waiting.keys()], failedPending, connected: worker.connected, exitCode: worker.exitCode, signalCode: worker.signalCode }));
+	t.after(() => { if (!finished) diagnose(failure ?? "native keeper did not complete"); });
 	t.after(async () => { if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL"); await exited; });
 	let sequence = 0;
-	const requests = new Map<number, { resolve: (value: any) => void; reject: (error: any) => void }>();
-	const observed = new Set<string>(), waiting = new Map<string, () => void>();
+	const requests = new Map<number, { method: string; resolve: (value: any) => void; reject: (error: any) => void }>();
+	const observed = new Set<string>(), waiting = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
 	const directories: string[] = [];
+	const fail = (error: Error) => {
+		failure ??= error;
+		failedPending ??= { requests: [...requests.values()].map((request) => request.method), hints: [...waiting.keys()] };
+		for (const request of requests.values()) request.reject(error);
+		for (const hint of waiting.values()) hint.reject(error);
+		requests.clear(); waiting.clear();
+	};
+	worker.on("error", fail);
+	worker.on("exit", (code, signal) => fail(new Error(`Native history worker exited (${code}, ${signal})`)));
 	worker.on("message", (response: any) => {
+		if (response.watchEvent) { nativeEvents.push(response.watchEvent); if (nativeEvents.length > 12) nativeEvents.shift(); return; }
 		if (response.watchDirectory) { directories.push(response.watchDirectory); return; }
-		if (response.watchHint) { observed.add(response.watchHint); waiting.get(response.watchHint)?.(); waiting.delete(response.watchHint); return; }
+		if (response.watchHint) { observed.add(response.watchHint); waiting.get(response.watchHint)?.resolve(); waiting.delete(response.watchHint); return; }
 		const request = requests.get(response.id);
 		if (!request) return;
 		requests.delete(response.id);
 		if (response.error) request.reject(response.error); else request.resolve(response.value);
 	});
-	const hint = (name: string) => observed.has(name) ? Promise.resolve() : new Promise<void>((resolve) => waiting.set(name, resolve));
+	const hint = (name: string) => failure ? Promise.reject(failure) : observed.has(name) ? Promise.resolve() : new Promise<void>((resolve, reject) => waiting.set(name, { resolve, reject }));
 	const request = (method: string, input: object = {}) => new Promise<any>((resolve, reject) => {
-		const id = ++sequence; requests.set(id, { resolve, reject }); worker.send({ id, method, input });
+		if (failure) { reject(failure); return; }
+		const id = ++sequence; requests.set(id, { method, resolve, reject }); worker.send({ id, method, input }, (error) => { if (error) fail(error); });
 	});
 	try {
 		await request("setOwner", { ownerSessionId: "parent", runs: [run("delayed-watch", file)] }); await request("refresh");
+		stage = "first append observed";
 		fs.appendFileSync(file, '{broken "secret-no-log"}\n' + lines([message("later", "afterbroken")]));
 		await hint("observed");
+		stage = "completed degraded history before held hint";
 		await assert.rejects(request("refresh", { runId: "delayed-watch" }), code("DEGRADED"));
 		const before = await request("historyPage", { runId: "delayed-watch", index: 0 });
 		assert.equal(before.sourceState, "degraded"); assert.equal(before.freshness.state, "degraded");
@@ -88,6 +108,7 @@ test("an already observed native watch hint preserves completed degraded history
 		assert.equal(after.sourceState, "degraded");
 		assert.equal(after.freshness.state, "degraded", "an unchanged native hint cannot turn acknowledged indexing into pending work");
 		assert.equal(after.freshness.pending, 0);
+		stage = "genuine append observed";
 		observed.clear();
 		fs.appendFileSync(file, lines([message("newest", "genuine new publication")]));
 		await hint("observed");
@@ -100,6 +121,7 @@ test("an already observed native watch hint preserves completed degraded history
 		const reconciled = await request("historyPage", { runId: "delayed-watch", index: 0 });
 		assert.deepEqual(reconciled.entries.map((entry: any) => entry.id), ["first", "later", "newest"]);
 		assert.equal(reconciled.freshness.state, "degraded");
+		stage = "source-parent replacement observed";
 		observed.clear();
 		fs.rmSync(directory, { recursive: true }); fs.mkdirSync(directory);
 		fs.writeFileSync(file, lines([header(), message("replacement", "recreated source")]));
@@ -114,17 +136,26 @@ test("an already observed native watch hint preserves completed degraded history
 				assert.ok(Date.now() < deadline, `native watch publishes ${id} after source-parent recreation`);
 			}
 		};
+		stage = "source-parent replacement indexed";
 		await ready("replacement");
 		const physical = fs.statSync(directory, { bigint: true }), currentDirectory = `${physical.dev}:${physical.ino}`;
 		t.diagnostic(`Physical directory ${currentDirectory}; native registrations ${directories.join(",")}`);
+		stage = "automatic watch on recreated source parent";
 		worker.send({ watchHint: "automatic" }); await hint("automatic");
 		fs.appendFileSync(file, lines([message("replacement-append", "second native publication after recreation")]));
 		await ready("replacement-append");
 		assert.ok(directories.includes(currentDirectory), "native readiness includes a watch on the recreated physical source parent");
+		finished = true;
+	} catch (error) {
+		diagnose(error);
+		throw error;
 	} finally {
-		worker.send({ watchHint: "drain" });
-		await request("status");
-		worker.disconnect(); assert.deepEqual(await exited, [0, null]);
+		if (!failure && worker.connected) {
+			worker.send({ watchHint: "drain" });
+			await request("status");
+			worker.disconnect();
+		}
+		assert.deepEqual(await exited, [0, null]);
 	}
 });
 

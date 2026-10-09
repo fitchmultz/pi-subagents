@@ -2061,11 +2061,31 @@ test("answering in the view releases the real native durable question with human
 	let questionCallId: string | undefined;
 	let publishedAnswer = "";
 	const publications: string[] = [];
+	const reads = { started: 0, assembled: 0, returned: 0, validated: 0, invalidated: 0 };
+	const pageFacts = (page) => page && ({
+		sessionId: page.sessionId, sourceId: page.sourceId, generation: page.generation, version: page.version,
+		sourceState: page.sourceState, freshness: page.freshness, unavailable: page.unavailable,
+		count: page.count, terminalSequence: page.terminalSequence, finalResultId: page.finalResultId,
+		entries: page.entries.slice(-12).map((entry) => ({ id: entry.id, sequence: entry.sequence, type: entry.type,
+			role: entry.entry.message?.role, calls: Array.isArray(entry.entry.message?.content) ? entry.entry.message.content.filter((part) => part.type === "toolCall").map((part) => ({ id: part.id, name: part.name })) : undefined,
+			toolCallId: entry.entry.message?.toolCallId, toolName: entry.entry.message?.toolName })),
+	});
+	let lastRead, lastFence, renders = 0;
 	t.after(() => stale.resolve());
 	t.mock.method(f.controller, "historyPage", async (...args) => {
+		reads.started++;
 		const result = await historyPage(...args);
 		if (!result) return;
+		reads.assembled++;
 		const page = result.page;
+		lastRead = { key: args[0], paging: args[1], anchor: args[2], page: pageFacts(page), historyIds: result.history.entryIds.slice(-12) };
+		const isCurrent = result.isCurrent;
+		result.isCurrent = () => {
+			const current = isCurrent();
+			if (current) reads.validated++; else reads.invalidated++;
+			lastFence = { current, page: pageFacts(page), published: pageFacts(f.controller.task(args[0])?.page) };
+			return current;
+		};
 		// Question metadata can arrive before the journal page; only hold the assembled tool-call snapshot.
 		const call = page.entries.flatMap((entry) => entry.entry.message?.role === "assistant" ? entry.entry.message.content : [])
 			.find((part) => part.type === "toolCall" && part.name === "contact_supervisor");
@@ -2074,12 +2094,14 @@ test("answering in the view releases the real native durable question with human
 			await stale.promise;
 			oldReadReturned = true;
 		}
+		reads.returned++;
 		return result;
 	});
 	const task = f.controller.tasks[0]!, question = task.question!, opening = f.controller.open(task.key), view = f.overlay;
 	await until(() => held, "pre-answer native overlay page is in flight");
 	const requestRender = f.tui.requestRender.bind(f.tui);
 	t.mock.method(f.tui, "requestRender", (...args) => {
+		renders++;
 		const current = f.controller.task(task.key)!, text = current.history.map((item) => item.text).join("\n");
 		// A returned page can still be discarded or await canonical output. Observe publication, not an event-loop turn.
 		if (!released && current.page?.sessionId === question.childSessionId
@@ -2102,7 +2124,26 @@ test("answering in the view releases the real native durable question with human
 	assert.equal(f.calls[0].questionId, question.questionId);
 	await pending;
 	await until(() => readQuestionState(question).delivery?.kind === "live", "native child consumes the saved answer");
-	await refreshFixture(f);
+	try {
+		await refreshFixture(f);
+	} catch (error) {
+		const current = f.controller.task(task.key), saved = readQuestionState(question);
+		let receipt;
+		try { receipt = JSON.parse(fs.readFileSync(`${native.release}.json`, "utf8")); }
+		catch (readError) { receipt = { readError: String(readError) }; }
+		t.diagnostic(JSON.stringify({ boundary: "native-human-answer-publication", held, released, oldReadReturned, questionCallId,
+			question: { sessionId: question.childSessionId, sessionFile: question.sessionFile, state: saved.state, answer: saved.answer, delivery: saved.delivery },
+			reads, lastRead, lastFence, renders, publishedAnswer: publishedAnswer.slice(0, 2048),
+			publications: publications.slice(-3).map((text) => text.slice(0, 2048)), publicationCount: publications.length,
+			current: current && { runId: current.run.runId, state: current.child.state, sessionFile: current.child.sessionFile,
+				terminalEntryId: current.child.result?.terminalEntryId, terminalLeafId: current.child.result?.terminalLeafId,
+				updatedAt: current.run.updatedAt, historyLoading: current.historyLoading, historySource: current.historySource,
+				page: pageFacts(current.page), historyIds: current.historyIds.slice(-12),
+				history: current.history.slice(-12).map((item) => ({ id: item.id, text: item.text.slice(0, 512) })), unavailable: current.unavailable },
+			listError: f.controller.listError, indexFailure: String(f.state.historyIndex?.failure ?? ""),
+			native: { ...receipt, events: receipt.events?.slice(-8) }, view: plain(view).slice(0, 2048) }));
+		throw error;
+	}
 	assert.ok(released, "the old overlay read returns only after the native human answer is indexed");
 	assert.match(publishedAnswer, /Direct user answer \(human origin\)[\s\S]*Use the first path/, "the newer native answer is published before releasing the old read");
 	assert.ok(publications.length > 0, "the overlay requests rendering after the old read returns");

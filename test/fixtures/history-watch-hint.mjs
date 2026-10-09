@@ -13,7 +13,8 @@ fs.watch = function(directory, options, callback) {
 	const registered = sourceParent ? fs.statSync(directory, { bigint: true }) : undefined;
 	const directoryId = registered && `${registered.dev}:${registered.ino}`;
 	const watcher = watch.call(this, directory, options, (event, name) => {
-		if (path.resolve(directory) === path.dirname(file) && String(name) === path.basename(file)) {
+		if (sourceParent) {
+			process.send({ watchEvent: { event, name: name?.toString() ?? null, directoryId } });
 			if (automatic) {
 				const current = fs.statSync(directory, { bigint: true });
 				if (`${current.dev}:${current.ino}` === directoryId) { callback(event, name); return; }
