@@ -2057,7 +2057,7 @@ test("answering in the view releases the real native durable question with human
 	await until(() => { f.controller.refresh(true); return Boolean(f.controller.tasks[0]?.question); }, "real native durable question");
 	const historyPage = f.controller.historyPage.bind(f.controller);
 	const stale = Promise.withResolvers<void>();
-	let held = false, released = false;
+	let held, released = false;
 	let publishedAnswer = "";
 	const publications: string[] = [];
 	t.after(() => stale.resolve());
@@ -2067,23 +2067,25 @@ test("answering in the view releases the real native durable question with human
 		const page = result.page;
 		// Question metadata can arrive before the journal page; only hold the assembled tool-call snapshot.
 		if (!held && page.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.type === "toolCall" && part.name === "contact_supervisor"))) {
-			held = true;
+			held = page;
 			await stale.promise;
-		} else if (held && !released && page.entries.some((entry) => entry.entry.message?.role === "toolResult"
-			&& JSON.stringify(entry.entry.message.content).includes("Direct user answer"))) {
-			// Let refreshFixture publish the genuine newer page before the old overlay read returns.
-			setImmediate(() => {
-				publishedAnswer = f.controller.task(args[0])!.history.map((item) => item.text).join("\n");
-				released = true; stale.resolve();
-			});
 		}
 		return result;
 	});
 	const task = f.controller.tasks[0]!, question = task.question!, opening = f.controller.open(task.key), view = f.overlay;
-	await until(() => held, "pre-answer native overlay page is in flight");
+	await until(() => Boolean(held), "pre-answer native overlay page is in flight");
 	const requestRender = f.tui.requestRender.bind(f.tui);
 	t.mock.method(f.tui, "requestRender", (...args) => {
-		if (released) publications.push(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"));
+		const current = f.controller.task(task.key)!, text = current.history.map((item) => item.text).join("\n");
+		// A returned page can still be discarded or await canonical output. Observe publication, not an event-loop turn.
+		if (!released && current.page !== held && current.page?.sessionId === question.childSessionId
+			&& current.page.entries.some((entry) => entry.entry.message?.role === "toolResult" && current.historyIds.includes(entry.id)
+				&& JSON.stringify(entry.entry.message.content).includes("Direct user answer"))
+			&& /Direct user answer \(human origin\)[\s\S]*Use the first path/.test(text)) {
+			publishedAnswer = text;
+			released = true; stale.resolve();
+		}
+		if (released) publications.push(text);
 		return requestRender(...args);
 	});
 	assert.match(plain(view), /Waiting for your answer/);
@@ -2416,12 +2418,17 @@ async function indexedReady(f): Promise<void> {
 
 async function refreshFixture(f): Promise<void> {
 	await indexedReady(f);
-	for (const task of f.controller.tasks) {
-		if (task.child.missingSession && task.child.state !== "live") continue;
-		const value = await f.controller.historyPage(task.key);
-		if (!value) continue;
-		const history = task.child.state !== "live" && task.child.result ? withFinalResult(value.history, getSingleResultOutput(task.child.result), task.run.runId, task.run.updatedAt) : value.history;
-		task.history = history.items; task.historyIds = history.entryIds; task.page = value.page; task.finalId = history.finalId;
+	for (const initial of f.controller.tasks) {
+		if (initial.child.missingSession && initial.child.state !== "live") continue;
+		for (;;) {
+			const value = await f.controller.historyPage(initial.key), task = f.controller.task(initial.key);
+			if (!value || !task) break;
+			// Background refresh replaces task objects while pages load; publish only into the current read baseline.
+			if (!value.isCurrent()) continue;
+			const history = task.child.state !== "live" && task.child.result ? withFinalResult(value.history, getSingleResultOutput(task.child.result), task.run.runId, task.run.updatedAt) : value.history;
+			task.history = history.items; task.historyIds = history.entryIds; task.page = value.page; task.finalId = history.finalId;
+			break;
+		}
 	}
 	if (f.tui.hasOverlay() && f.overlay instanceof AgentConversation) { f.overlay.refresh(); await historyReady(f); }
 }
