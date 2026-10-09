@@ -2034,8 +2034,8 @@ test("answering in the view releases the real native durable question with human
 		const result = await historyPage(...args);
 		if (!result) return;
 		const page = result.page;
-		if (!held) {
-			assert.ok(page.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.type === "toolCall" && part.name === "contact_supervisor")));
+		// Question metadata can arrive before the journal page; only hold the assembled tool-call snapshot.
+		if (!held && page.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.type === "toolCall" && part.name === "contact_supervisor"))) {
 			held = true;
 			await stale.promise;
 		} else if (held && !released && page.entries.some((entry) => entry.entry.message?.role === "toolResult"
