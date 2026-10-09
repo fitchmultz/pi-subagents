@@ -1334,6 +1334,19 @@ for (const change of ["append", "source replacement", "index reopen"]) test(`Age
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const f = await fixture(t), manager = f.childSessions[0], index = await runHistoryIndex(f.state);
 	f.controller.visit(f.key); await f.controller.refresh();
+	const nativeIds: string[] = [];
+	let readingAnchor;
+	if (change === "source replacement") {
+		for (let card = 0; card < 250; card++) nativeIds.push(assistant(manager, `Replacement native history card ${card}`));
+		await indexedReady(f);
+		const reading = f.controller.open(f.key); await historyReady(f); plain(f.overlay);
+		await historyAction(f, "Earlier history"); plain(f.overlay);
+		f.overlay.handleInput("\x1b[5~"); plain(f.overlay);
+		readingAnchor = structuredClone(f.controller.visit(f.key).anchor);
+		assert.ok(readingAnchor && nativeIds.includes(readingAnchor.id.replace(/:0$/, "")), "earlier history saves a real native reading anchor");
+		assert.ok(nativeIds.indexOf(readingAnchor.id.replace(/:0$/, "")) + 100 < nativeIds.length, "the saved anchor requests a native window before Latest");
+		f.overlay.handleInput("\x1b"); await reading;
+	}
 	const historyPage = f.controller.historyPage.bind(f.controller), release = Promise.withResolvers<void>();
 	let held;
 	t.after(() => release.resolve());
@@ -1347,7 +1360,7 @@ for (const change of ["append", "source replacement", "index reopen"]) test(`Age
 	f.overlay.handleInput("Keep this unsent draft");
 	let currentIndex = index, currentSession = manager;
 	if (change === "source replacement") {
-		currentSession = SessionManager.create(f.cwd, path.join(f.cwd, "replacement-child"));
+		currentSession = SessionManager.forkFrom(manager.getSessionFile(), f.cwd, path.join(f.cwd, "replacement-child"));
 		currentSession.appendMessage({ role: "user", content: "Replacement assignment", timestamp: Date.now() });
 		assistant(currentSession, "Replacement native history");
 		fs.copyFileSync(currentSession.getSessionFile(), `${manager.getSessionFile()}.replacement`);
@@ -1383,6 +1396,12 @@ for (const change of ["append", "source replacement", "index reopen"]) test(`Age
 	const task = f.controller.task(f.key)!;
 	assert.match(task.history.map((item) => item.text).join("\n"), change === "source replacement" ? /Replacement native history/ : /New native history while loading/);
 	assert.equal(task.page!.sessionId, currentSession.getSessionId());
+	if (readingAnchor) {
+		const first = nativeIds.indexOf(readingAnchor.id.replace(/:0$/, ""));
+		assert.deepEqual(task.page!.entries.map((entry) => entry.id), nativeIds.slice(first, first + 100), "invalidated reload keeps the requested earlier native window instead of Latest");
+		plain(f.overlay);
+		assert.deepEqual(f.controller.visit(f.key).anchor, readingAnchor, "invalidated reload keeps the native reading anchor and line");
+	}
 	assert.equal(f.overlay.editor.getText(), "Keep this unsent draft");
 	const selected = task.history.findLast((item) => item.kind === "assistant")!;
 	assert.match((await selected.load!()).text, change === "source replacement" ? /Replacement native history/ : /New native history while loading/);
