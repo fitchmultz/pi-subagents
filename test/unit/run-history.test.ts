@@ -55,10 +55,12 @@ test("cold timing conversion retains a sample while an attached rollback-journal
 	fs.mkdirSync(path.dirname(f.database), { mode: 0o700 });
 	const db = new DatabaseSync(f.database);
 	db.exec("CREATE TABLE native_writer(value); INSERT INTO native_writer VALUES (1)");
+	assert.equal(db.prepare("PRAGMA journal_mode").get()?.journal_mode, "delete");
 	db.close();
 	const writer = spawn(process.execPath, ["--input-type=module", "-e", `
 		import fs from "node:fs"; import { DatabaseSync } from "node:sqlite";
-		const db = new DatabaseSync(${JSON.stringify(f.database)});
+		// Rollback-journal COMMIT must wait for the converter's brief read locks.
+		const db = new DatabaseSync(${JSON.stringify(f.database)}, { timeout: 1000 });
 		db.exec("BEGIN IMMEDIATE"); db.exec("INSERT INTO native_writer VALUES (2)");
 		fs.writeFileSync(${JSON.stringify(ready)}, "write transaction held");
 		setTimeout(() => { db.close(); process.exit(1); }, 5000).unref();
@@ -82,6 +84,9 @@ test("cold timing conversion retains a sample while an attached rollback-journal
 		recordRun("cold", "Sample during conversion", 0, 7);
 		await exited;
 		assert.equal(fs.existsSync(closed), true);
+		const committed = new DatabaseSync(f.database, { readOnly: true });
+		try { assert.deepEqual(committed.prepare("SELECT value FROM native_writer ORDER BY value").all().map((row) => row.value), [1, 2], "the competing writer committed its row"); }
+		finally { committed.close(); }
 		recordRun("cold", "Sample after conversion", 0, 8);
 		assert.deepEqual(loadRunsForAgent("cold").map((row) => row.task), ["Sample after conversion", "Sample during conversion"]);
 	} finally {
