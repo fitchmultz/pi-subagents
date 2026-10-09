@@ -197,12 +197,14 @@ test("real mTLS bridge admits only messaging, preserves peer identity and cancel
       const controller = new AbortController();
       const cancelMessage = nextMessage(peer);
       const cancelled = api("ask", { to: peer.sessionId, message: "cancel now", timeoutMs: 10000 }, { signal: controller.signal });
-      await cancelMessage;
+      const cancelledQuestion = await cancelMessage;
+      const offset = bridge!.output().length;
       controller.abort();
       await assert.rejects(cancelled);
-      await bridge!.wait(/"event":"session_closed"/);
+      await bridge!.wait(/"event":"session_closed".*"name":"grok-bot".*"result":"client_aborted"/, offset);
       const afterCancel = await api("register", {});
-      assert.equal(afterCancel.body.ok, true);
+      assert.equal(afterCancel.body.ok, true, JSON.stringify(afterCancel));
+      assert.equal(afterCancel.body.sessionId, cancelledQuestion.from.id, "re-register preserves the certificate-bound broker identity");
       await stop(broker!.child);
       const down = await api("list");
       assert.equal(down.status, 503);

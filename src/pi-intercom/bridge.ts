@@ -287,8 +287,8 @@ class Session {
       try { await this.connecting; } catch { /* The original request receives the connect failure. */ }
       await this.disconnect();
       if (this.bridge.sessions.get(this.identity.fingerprint256) === this) this.bridge.sessions.delete(this.identity.fingerprint256);
+      log("session_closed", { ...this.fields(), result: error.code });
     })();
-    log("session_closed", { ...this.fields(), result: error.code });
   }
 
   private receive(from: SessionInfo, message: Message): void {
