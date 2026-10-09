@@ -2057,7 +2057,7 @@ test("answering in the view releases the real native durable question with human
 	await until(() => { f.controller.refresh(true); return Boolean(f.controller.tasks[0]?.question); }, "real native durable question");
 	const historyPage = f.controller.historyPage.bind(f.controller);
 	const stale = Promise.withResolvers<void>();
-	let held, released = false;
+	let held, released = false, oldReadReturned = false;
 	let publishedAnswer = "";
 	const publications: string[] = [];
 	t.after(() => stale.resolve());
@@ -2069,6 +2069,7 @@ test("answering in the view releases the real native durable question with human
 		if (!held && page.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.type === "toolCall" && part.name === "contact_supervisor"))) {
 			held = page;
 			await stale.promise;
+			oldReadReturned = true;
 		}
 		return result;
 	});
@@ -2085,7 +2086,7 @@ test("answering in the view releases the real native durable question with human
 			publishedAnswer = text;
 			released = true; stale.resolve();
 		}
-		if (released) publications.push(text);
+		if (oldReadReturned) publications.push(text);
 		return requestRender(...args);
 	});
 	assert.match(plain(view), /Waiting for your answer/);
