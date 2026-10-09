@@ -59,6 +59,7 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, host: official }
+          - { os: macos-latest, host: official }
           - { os: ubuntu-latest, host: fork }
           - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
