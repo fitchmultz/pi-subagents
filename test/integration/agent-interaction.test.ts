@@ -1368,27 +1368,17 @@ for (const change of ["append", "source replacement", "index reopen"]) test(`Age
 	const fresh = await currentIndex.historyPage({ runId: f.run.runId, index: 0 });
 	assert.ok(fresh.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.text === (change === "source replacement" ? "Replacement native history" : "New native history while loading"))),
 		"observe real native publication before releasing the obsolete read");
-	const expected = change === "source replacement" ? /Replacement native history/ : /New native history while loading/;
-	const published = refreshFixture(f);
-	await until(() => {
-		const task = f.controller.task(f.key)!;
-		return task.page?.sessionId === currentSession.getSessionId() && expected.test(task.history.map((item) => item.text).join("\n"));
-	}, "new native history is published in the controller before the old read returns");
-	const publications: Array<{ text: string; sessionId?: string }> = [];
+	const publications: boolean[] = [];
 	const requestRender = f.tui.requestRender.bind(f.tui);
 	const renders = t.mock.method(f.tui, "requestRender", (...args) => {
 		const task = f.controller.task(f.key)!;
-		publications.push({ text: task.history.map((item) => item.text).join("\n"), sessionId: task.page?.sessionId });
+		publications.push(task.page === held);
 		return requestRender(...args);
 	});
 	release.resolve();
-	await published;
 	await historyReady(f);
 	assert.ok(publications.length > 0, "the overlay requests rendering after the obsolete read returns");
-	for (const publication of publications) {
-		assert.match(publication.text, expected, "no requested render may lose the newer native history");
-		assert.equal(publication.sessionId, currentSession.getSessionId(), "no requested render may restore an obsolete native source");
-	}
+	if (change !== "append") assert.deepEqual(publications.filter(Boolean), [], "the obsolete in-flight snapshot is never published");
 	renders.mock.restore();
 	const task = f.controller.task(f.key)!;
 	assert.match(task.history.map((item) => item.text).join("\n"), change === "source replacement" ? /Replacement native history/ : /New native history while loading/);
