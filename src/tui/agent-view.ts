@@ -70,6 +70,7 @@ export interface AgentTask {
 	replied: boolean;
 	page?: HistoryPage;
 	historyLoading?: boolean;
+	historySource?: string;
 	metadataAt?: number;
 }
 
@@ -332,7 +333,7 @@ export class AgentViewController {
 				activity: { ...prior.child.activity, ...child.activity } } : child;
 			return { key, label: child.identityUnavailable ? "Saved assignment unavailable" : sameAttempt ? agentTaskLabel(child) : prior?.label ?? agentTaskLabel(child), run: view, child: displayChild,
 				model: agentModel(displayChild, child.nativeConfiguration ?? (canonical && sameAttempt && child.sessionFile === prior.child.sessionFile ? prior.page?.configuration : undefined)), history: sameAttempt ? prior.history : [], historyIds: sameAttempt ? prior.historyIds : [],
-				page: sameAttempt ? prior.page : undefined, metadataAt: observed ? prior.metadataAt : undefined, historyLoading: sameAttempt ? prior.historyLoading : false, finalId: sameAttempt ? prior.finalId : undefined, unavailable: child.missingSession && child.state !== "live" ? "Saved conversation unavailable." : view.diagnosis,
+				page: sameAttempt ? prior.page : undefined, historySource: sameAttempt ? prior.historySource : undefined, metadataAt: observed ? prior.metadataAt : undefined, historyLoading: sameAttempt ? prior.historyLoading : false, finalId: sameAttempt ? prior.finalId : undefined, unavailable: child.missingSession && child.state !== "live" ? "Saved conversation unavailable." : view.diagnosis,
 				question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && ["awaiting_input", "answer_pending"].includes(question.state)),
 				unread: observed ? prior.unread : Boolean(visit && (child.activity?.lastActivityAt ?? view.updatedAt) > (visit.seenActivityAt ?? 0)), replied: sameAttempt ? prior.replied : false };
 		});
@@ -457,10 +458,21 @@ export class AgentViewController {
 		if (this.live(generation)) await this.refresh();
 	}
 
-	async historyPage(key: string, paging: Pick<HistoryPageInput, "before" | "after" | "cursor"> = {}, anchor?: string | null): Promise<{ history: AgentHistory; page: HistoryPage; latestPage: boolean; readThroughSequence?: number } | undefined> {
+	async historyPage(key: string, paging: Pick<HistoryPageInput, "before" | "after" | "cursor"> = {}, anchor?: string | null): Promise<{ history: AgentHistory; page: HistoryPage; latestPage: boolean; readThroughSequence?: number; isCurrent: () => boolean } | undefined> {
 		const task = this.task(key), generation = this.generation;
 		if (!task || !this.live() || task.child.identityUnavailable) return;
+		const published = task.page, source = task.historySource, sessionFile = task.child.sessionFile, childState = task.child.state;
 		const input = this.historyInput(task), index = await runHistoryIndex(this.state);
+		// Versions can reset on index reopen. Fence the actual owner/read baseline,
+		// including metadata-only source transitions, rather than ordering unrelated versions.
+		const isCurrent = () => {
+			const current = this.task(key);
+			if (!this.live(generation) || this.state.historyIndex !== index || index.failure || !current || current.child.identityUnavailable
+				|| current.page !== published || current.historySource !== source || current.child.sessionFile !== sessionFile || current.child.state !== childState) return false;
+			const boundary = this.historyInput(current);
+			return boundary.runId === input.runId && boundary.index === input.index && boundary.leaf === input.leaf
+				&& boundary.terminalEntryId === input.terminalEntryId && boundary.endedAt === input.endedAt;
+		};
 		const boundary = { runId: task.run.runId, index: task.child.index, terminalEntryId: input.terminalEntryId, endedAt: input.endedAt };
 		const marker = typeof input.readThrough === "string" && !input.readThrough.startsWith("result:")
 			? await index.entry({ ...boundary, entryId: input.readThrough.replace(/:(?:\d+|error)$/, "") }) : undefined;
@@ -471,7 +483,7 @@ export class AgentViewController {
 		}
 		const result = await indexedHistory(index, { ...input, limit: 100, ...paging });
 		if (!this.live(generation) || this.task(key)?.run.runId !== task.run.runId) return;
-		return { ...result, latestPage: paging.after !== undefined ? !result.page.hasMore : paging.before === undefined && paging.cursor === undefined,
+		return { ...result, isCurrent, latestPage: paging.after !== undefined ? !result.page.hasMore : paging.before === undefined && paging.cursor === undefined,
 			readThroughSequence: marker?.sequence ?? (input.readThrough == null ? -1 : undefined) };
 	}
 
@@ -494,6 +506,7 @@ export class AgentViewController {
 
 	applyMetadata(task: AgentTask, page: HistoryPage): void {
 		const visit = this.visits.get(task.key), delivered = new Map(page.deliveredMessages);
+		task.historySource = JSON.stringify([page.sourceId, page.generation, page.sessionId]);
 		if (page.freshness.state !== "catching-up") task.metadataAt = task.run.updatedAt;
 		task.model = agentModel(task.child, page.configuration);
 		task.unread = Boolean(page.unreadAfter || visit && (task.child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0));
@@ -865,6 +878,7 @@ export class AgentConversation extends Container {
 	private pageRequest = 0;
 	private detailRequest = 0;
 	private loadingPage = false;
+	private refreshPending = false;
 	private pageError?: string;
 	private latestPage = true;
 	private readSequence = -1;
@@ -953,6 +967,7 @@ export class AgentConversation extends Container {
 	private async loadPage(paging: Pick<HistoryPageInput, "before" | "after" | "cursor"> = {}, anchor?: string | null): Promise<void> {
 		if (this.closed) return;
 		const request = ++this.pageRequest;
+		this.refreshPending = false;
 		this.loadingPage = true; this.pageError = undefined;
 		if (this.task) this.task.historyLoading = true;
 		this.latestPage = paging.before === undefined && paging.after === undefined && paging.cursor === undefined;
@@ -966,16 +981,17 @@ export class AgentConversation extends Container {
 				if (reportPage) result = reportPage;
 			}
 			let task = this.task;
-			if (result.readThroughSequence !== undefined) this.readSequence = result.readThroughSequence;
-			this.latestPage = result.latestPage;
 			let history = result.history;
-			if ((this.initialPosition || this.latestPage || history.finalId && history.entryIds.includes(history.finalId)) && task.child.state !== "live" && task.child.result && getSingleResultOutput(task.child.result)) {
+			if ((this.initialPosition || result.latestPage || history.finalId && history.entryIds.includes(history.finalId)) && task.child.state !== "live" && task.child.result && getSingleResultOutput(task.child.result)) {
 				const report = await this.controller.savedResult(this.key, `result:${task.run.runId}`);
 				const currentTask = this.task;
 				if (this.closed || request !== this.pageRequest || !currentTask || currentTask.run.runId !== task.run.runId) return;
 				task = currentTask;
 				history = withFinalResult(history, report.text, task.run.runId, task.run.updatedAt);
 			}
+			if (!result.isCurrent()) { void this.loadPage(paging, anchor); return; }
+			if (result.readThroughSequence !== undefined) this.readSequence = result.readThroughSequence;
+			this.latestPage = result.latestPage;
 			task.history = history.items; task.historyIds = history.entryIds; task.finalId = history.finalId; task.page = result.page;
 			for (const item of task.history) if (item.id === `result:${task.run.runId}`) item.load = () => this.controller.savedResult(this.key, item.id);
 			this.seenSource ||= result.page.count > 0;
@@ -985,7 +1001,11 @@ export class AgentConversation extends Container {
 		} catch (error) {
 			if (!this.closed && request === this.pageRequest) this.pageError = `History unavailable: ${error instanceof Error ? error.message : String(error)}. F5 retries the selected run.`;
 		} finally {
-			if (!this.closed && request === this.pageRequest) { this.loadingPage = false; if (this.task) this.task.historyLoading = false; this.tui.requestRender(); }
+			if (!this.closed && request === this.pageRequest) {
+				this.loadingPage = false; if (this.task) this.task.historyLoading = false;
+				if (this.refreshPending && !this.pageError) { this.refreshPending = false; this.refresh(); }
+				this.tui.requestRender();
+			}
 		}
 	}
 
@@ -1001,7 +1021,10 @@ export class AgentConversation extends Container {
 		if (this.closed) return;
 		if (this.detail?.id === "assignment" && this.task) this.detail = this.assignment();
 		if (!this.initialPosition && !this.scroll.isFollowingEnd) this.restoreAnchor = this.anchor();
-		if (!this.loadingPage && this.latestPage && this.scroll.isFollowingEnd && !this.detail && !this.pageError) void this.loadPage();
+		if (this.latestPage && this.scroll.isFollowingEnd && !this.detail && !this.pageError) {
+			if (this.loadingPage) this.refreshPending = true;
+			else void this.loadPage();
+		}
 		this.tui.requestRender();
 	}
 	syncDraft(): void { if (!this.closed && this.editor.getExpandedText() !== this.visit.draft) this.editor.setText(this.visit.draft); }

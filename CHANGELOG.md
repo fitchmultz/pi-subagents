@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.44.7] - 2026-10-09
+
+### Fixed
+- Keep newer Agents history, including consumed human answers, from being overwritten by an older in-flight page. Recheck the owning session, index, selected attempt, source and published page before applying async history or saved-result reads; preserve requested paging and reading anchors when reloading an invalidated snapshot.
+- Consume refresh notifications received while the latest conversation page is loading, without pulling scrolled readers forward or automatically retrying history errors.
+
 ## [0.44.6] - 2026-10-09
 
 ### Fixed

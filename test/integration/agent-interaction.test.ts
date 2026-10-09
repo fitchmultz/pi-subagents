@@ -1330,6 +1330,57 @@ test("native Agents earlier/later pages and Latest retain access to exact select
 	assert.equal(f.calls.length, 0);
 });
 
+for (const change of ["append", "source replacement", "index reopen"]) test(`Agents consumes ${change} while a native history page is in flight`, async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const f = await fixture(t), manager = f.childSessions[0], index = await runHistoryIndex(f.state);
+	f.controller.visit(f.key); await f.controller.refresh();
+	const historyPage = index.historyPage.bind(index), release = Promise.withResolvers<void>();
+	let held;
+	t.after(() => release.resolve());
+	t.mock.method(index, "historyPage", async (input) => {
+		const page = await historyPage(input);
+		if (input.limit === 100 && !held) { held = page; await release.promise; }
+		return page;
+	});
+	const opening = f.controller.open(f.key);
+	await until(() => Boolean(held), "old native history page is in flight");
+	f.overlay.handleInput("Keep this unsent draft");
+	let currentIndex = index, currentSession = manager;
+	if (change === "source replacement") {
+		currentSession = SessionManager.create(f.cwd, path.join(f.cwd, "replacement-child"));
+		currentSession.appendMessage({ role: "user", content: "Replacement assignment", timestamp: Date.now() });
+		assistant(currentSession, "Replacement native history");
+		fs.copyFileSync(currentSession.getSessionFile(), `${manager.getSessionFile()}.replacement`);
+		fs.renameSync(`${manager.getSessionFile()}.replacement`, manager.getSessionFile());
+	} else {
+		assistant(manager, "New native history while loading");
+		if (change === "index reopen") {
+			await closeRunHistory(f.state);
+			const previous = process.env.PI_CODING_AGENT_DIR;
+			try {
+				process.env.PI_CODING_AGENT_DIR = path.join(f.cwd, "replacement-index");
+				currentIndex = await runHistoryIndex(f.state);
+			} finally { process.env.PI_CODING_AGENT_DIR = previous; }
+		}
+	}
+	await currentIndex.refresh();
+	await f.controller.refresh(); await f.controller.refresh();
+	const fresh = await currentIndex.historyPage({ runId: f.run.runId, index: 0 });
+	assert.ok(fresh.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.text === (change === "source replacement" ? "Replacement native history" : "New native history while loading"))),
+		"observe real native publication before releasing the obsolete read");
+	release.resolve();
+	await historyReady(f);
+	const task = f.controller.task(f.key)!;
+	assert.match(task.history.map((item) => item.text).join("\n"), change === "source replacement" ? /Replacement native history/ : /New native history while loading/);
+	assert.equal(task.page!.sessionId, currentSession.getSessionId());
+	assert.equal(f.overlay.editor.getText(), "Keep this unsent draft");
+	const selected = task.history.findLast((item) => item.kind === "assistant")!;
+	assert.match((await selected.load!()).text, change === "source replacement" ? /Replacement native history/ : /New native history while loading/);
+	f.overlay.handleInput("\x1b"); await opening;
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+	t.diagnostic(`held version ${held.version}; current version ${fresh.version}; index replaced: ${currentIndex !== index}`);
+});
+
 for (const loss of ["missing", "replacement", "truncation"]) test(`native detail requests show ${loss} failures without escaping TUI input or losing drafts`, async (t) => {
 	const f = await fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
 	assistant(manager, `Full selected body\n${"detail ".repeat(600)}SELECTED-END`);
@@ -1975,7 +2026,27 @@ test("answering in the view releases the real native durable question with human
 	const pending = f.executor.execute("question", { agent: "worker", task: "Ask for the required choice", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { await pending; native.restore(); });
 	await until(() => { f.controller.refresh(true); return Boolean(f.controller.tasks[0]?.question); }, "real native durable question");
+	const historyPage = f.controller.historyPage.bind(f.controller);
+	const stale = Promise.withResolvers<void>();
+	let held = false, released = false;
+	t.after(() => stale.resolve());
+	t.mock.method(f.controller, "historyPage", async (...args) => {
+		const result = await historyPage(...args);
+		if (!result) return;
+		const page = result.page;
+		if (!held) {
+			assert.ok(page.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.type === "toolCall" && part.name === "contact_supervisor")));
+			held = true;
+			await stale.promise;
+		} else if (held && !released && page.entries.some((entry) => entry.entry.message?.role === "toolResult"
+			&& JSON.stringify(entry.entry.message.content).includes("Direct user answer"))) {
+			// Let refreshFixture publish the genuine newer page before the old overlay read returns.
+			setImmediate(() => { released = true; stale.resolve(); });
+		}
+		return result;
+	});
 	const task = f.controller.tasks[0]!, question = task.question!, opening = f.controller.open(task.key), view = f.overlay;
+	await until(() => held, "pre-answer native overlay page is in flight");
 	assert.match(plain(view), /Waiting for your answer/);
 	assert.match(plain(view), /Which synthetic path/);
 	view.handleInput("Use the first path"); view.handleInput("\r");
@@ -1987,6 +2058,7 @@ test("answering in the view releases the real native durable question with human
 	await pending;
 	await until(() => readQuestionState(question).delivery?.kind === "live", "native child consumes the saved answer");
 	await refreshFixture(f);
+	assert.ok(released, "the old overlay read returns only after the native human answer is indexed");
 	assert.equal(readQuestionState(question).delivery?.kind, "live");
 	assert.equal(f.state.ownedRuns!.size, 1, "answering a live question starts no continuation");
 	assert.match(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"), /Direct user answer \(human origin\)[\s\S]*Use the first path/);
