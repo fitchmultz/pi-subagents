@@ -115,6 +115,7 @@ jobs:
       - name: Qualify official full CI and production installs
         if: matrix.host == 'official'
         env:
+          GH_TOKEN: ${{ github.token }}
           OFFICIAL_VERSION: ${{ needs.resolve.outputs.official-version }}
         run: node extension/.github/scripts/ci-host.mjs official "$OFFICIAL_VERSION" automation extension
       - name: Qualify fork full CI and production installs
