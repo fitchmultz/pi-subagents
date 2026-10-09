@@ -2057,7 +2057,8 @@ test("answering in the view releases the real native durable question with human
 	await until(() => { f.controller.refresh(true); return Boolean(f.controller.tasks[0]?.question); }, "real native durable question");
 	const historyPage = f.controller.historyPage.bind(f.controller);
 	const stale = Promise.withResolvers<void>();
-	let held, released = false, oldReadReturned = false;
+	let held = false, released = false, oldReadReturned = false;
+	let questionCallId: string | undefined;
 	let publishedAnswer = "";
 	const publications: string[] = [];
 	t.after(() => stale.resolve());
@@ -2066,23 +2067,25 @@ test("answering in the view releases the real native durable question with human
 		if (!result) return;
 		const page = result.page;
 		// Question metadata can arrive before the journal page; only hold the assembled tool-call snapshot.
-		if (!held && page.entries.some((entry) => entry.entry.message?.role === "assistant" && entry.entry.message.content.some((part) => part.type === "toolCall" && part.name === "contact_supervisor"))) {
-			held = page;
+		const call = page.entries.flatMap((entry) => entry.entry.message?.role === "assistant" ? entry.entry.message.content : [])
+			.find((part) => part.type === "toolCall" && part.name === "contact_supervisor");
+		if (!held && call) {
+			held = true; questionCallId = call.id;
 			await stale.promise;
 			oldReadReturned = true;
 		}
 		return result;
 	});
 	const task = f.controller.tasks[0]!, question = task.question!, opening = f.controller.open(task.key), view = f.overlay;
-	await until(() => Boolean(held), "pre-answer native overlay page is in flight");
+	await until(() => held, "pre-answer native overlay page is in flight");
 	const requestRender = f.tui.requestRender.bind(f.tui);
 	t.mock.method(f.tui, "requestRender", (...args) => {
 		const current = f.controller.task(task.key)!, text = current.history.map((item) => item.text).join("\n");
 		// A returned page can still be discarded or await canonical output. Observe publication, not an event-loop turn.
-		if (!released && current.page !== held && current.page?.sessionId === question.childSessionId
-			&& current.page.entries.some((entry) => entry.entry.message?.role === "toolResult" && current.historyIds.includes(entry.id)
-				&& JSON.stringify(entry.entry.message.content).includes("Direct user answer"))
-			&& /Direct user answer \(human origin\)[\s\S]*Use the first path/.test(text)) {
+		if (!released && current.page?.sessionId === question.childSessionId
+			&& current.page.entries.some((entry) => entry.entry.message?.role === "toolResult"
+				&& entry.entry.message.toolCallId === questionCallId && entry.entry.message.toolName === "contact_supervisor"
+				&& current.historyIds.includes(entry.id))) {
 			publishedAnswer = text;
 			released = true; stale.resolve();
 		}
@@ -2421,11 +2424,15 @@ async function refreshFixture(f): Promise<void> {
 	await indexedReady(f);
 	for (const initial of f.controller.tasks) {
 		if (initial.child.missingSession && initial.child.state !== "live") continue;
+		const deadline = Date.now() + 10_000;
 		for (;;) {
 			const value = await f.controller.historyPage(initial.key), task = f.controller.task(initial.key);
 			if (!value || !task) break;
 			// Background refresh replaces task objects while pages load; publish only into the current read baseline.
-			if (!value.isCurrent()) continue;
+			if (!value.isCurrent()) {
+				assert.ok(Date.now() < deadline, "current fixture history page loaded");
+				continue;
+			}
 			const history = task.child.state !== "live" && task.child.result ? withFinalResult(value.history, getSingleResultOutput(task.child.result), task.run.runId, task.run.updatedAt) : value.history;
 			task.history = history.items; task.historyIds = history.entryIds; task.page = value.page; task.finalId = history.finalId;
 			break;
