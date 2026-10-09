@@ -117,7 +117,7 @@ describe("parallel agent execution", () => {
 		assert.equal(result.details.results[1].timedOut, true);
 	});
 
-	it("extends a top-level foreground parallel timeout", async () => {
+	it("extends a top-level foreground parallel timeout", async (t) => {
 		const release = path.join(tempDir, "release-child");
 		const clockFile = path.join(tempDir, "runner-clock.json");
 		const savedEnv = { NODE_OPTIONS: process.env.NODE_OPTIONS, PI_TEST_RUNNER_CLOCK: process.env.PI_TEST_RUNNER_CLOCK };
@@ -168,6 +168,19 @@ describe("parallel agent execution", () => {
 				throw error;
 			}
 		};
+		const groupMembers = () => {
+			assert.ok(launcherPid, "native launcher process group is identified");
+			const census = spawnSync("ps", ["-axo", "pid=,pgid="], { encoding: "utf8", timeout: 1000 });
+			assert.equal(census.error, undefined);
+			assert.equal(census.status, 0, census.stderr);
+			assert.ok(census.stdout.trim(), "native process census is not empty");
+			return census.stdout.trim().split("\n").flatMap((line) => {
+				assert.match(line, /^\s*\d+\s+\d+\s*$/, "native process census has PID and PGID columns");
+				const [pid, pgid] = line.trim().split(/\s+/).map(Number);
+				assert.ok(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(pgid));
+				return pgid === launcherPid ? [pid] : [];
+			});
+		};
 		try {
 			process.env.NODE_OPTIONS = `${savedEnv.NODE_OPTIONS ?? ""} --import=${preload}`;
 			process.env.PI_TEST_RUNNER_CLOCK = clockFile;
@@ -192,6 +205,9 @@ describe("parallel agent execution", () => {
 					return current?.runtimeVersion === 2 && current.state === "running"
 						&& current.timeoutAt && mockPi.callCount() === 1;
 				}, "actual owner deadline and first child are ready");
+				const members = groupMembers();
+				assert.ok(members.includes(launcherPid!), "native launcher leads the owned group");
+				assert.ok(members.includes(runnerPid!), "native runner belongs to the captured launcher group");
 				const initial = status();
 				assert.equal(initial.timeoutAt - initial.startedAt, 250);
 				const extension = await executor.execute(
@@ -224,6 +240,12 @@ describe("parallel agent execution", () => {
 				}
 				assert.equal(mockPi.callCount(), 2);
 				completed = true;
+				const kill = process.kill.bind(process);
+				// Group signal probes can be denied even after completion; require a real census instead.
+				t.mock.method(process, "kill", (pid, signal) => {
+					if (pid === -launcherPid! && signal === 0) throw Object.assign(new Error("group signal probe denied"), { code: "EPERM" });
+					return kill(pid, signal);
+				});
 			} finally {
 				fs.writeFileSync(release, "cleanup");
 				if (!completed) {
@@ -236,7 +258,7 @@ describe("parallel agent execution", () => {
 						if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 					}
 				}
-				await waitFor(() => !alive(launcherPid && -launcherPid) && !alive(runnerPid), "owned launcher group and runner exit before fixture teardown");
+				await waitFor(() => groupMembers().length === 0 && !alive(runnerPid), "owned launcher group and runner exit before fixture teardown");
 				await waitFor(() => result, "foreground wait settles after owner exit");
 				await resultPromise;
 			}

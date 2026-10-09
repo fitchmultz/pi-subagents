@@ -2029,6 +2029,8 @@ test("answering in the view releases the real native durable question with human
 	const historyPage = f.controller.historyPage.bind(f.controller);
 	const stale = Promise.withResolvers<void>();
 	let held = false, released = false;
+	let publishedAnswer = "";
+	const publications: string[] = [];
 	t.after(() => stale.resolve());
 	t.mock.method(f.controller, "historyPage", async (...args) => {
 		const result = await historyPage(...args);
@@ -2041,12 +2043,20 @@ test("answering in the view releases the real native durable question with human
 		} else if (held && !released && page.entries.some((entry) => entry.entry.message?.role === "toolResult"
 			&& JSON.stringify(entry.entry.message.content).includes("Direct user answer"))) {
 			// Let refreshFixture publish the genuine newer page before the old overlay read returns.
-			setImmediate(() => { released = true; stale.resolve(); });
+			setImmediate(() => {
+				publishedAnswer = f.controller.task(args[0])!.history.map((item) => item.text).join("\n");
+				released = true; stale.resolve();
+			});
 		}
 		return result;
 	});
 	const task = f.controller.tasks[0]!, question = task.question!, opening = f.controller.open(task.key), view = f.overlay;
 	await until(() => held, "pre-answer native overlay page is in flight");
+	const requestRender = f.tui.requestRender.bind(f.tui);
+	t.mock.method(f.tui, "requestRender", (...args) => {
+		if (released) publications.push(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"));
+		return requestRender(...args);
+	});
 	assert.match(plain(view), /Waiting for your answer/);
 	assert.match(plain(view), /Which synthetic path/);
 	view.handleInput("Use the first path"); view.handleInput("\r");
@@ -2059,6 +2069,9 @@ test("answering in the view releases the real native durable question with human
 	await until(() => readQuestionState(question).delivery?.kind === "live", "native child consumes the saved answer");
 	await refreshFixture(f);
 	assert.ok(released, "the old overlay read returns only after the native human answer is indexed");
+	assert.match(publishedAnswer, /Direct user answer \(human origin\)[\s\S]*Use the first path/, "the newer native answer is published before releasing the old read");
+	assert.ok(publications.length > 0, "the overlay requests rendering after the old read returns");
+	for (const publication of publications) assert.match(publication, /Direct user answer \(human origin\)[\s\S]*Use the first path/, "no requested render may publish history that loses the native answer");
 	assert.equal(readQuestionState(question).delivery?.kind, "live");
 	assert.equal(f.state.ownedRuns!.size, 1, "answering a live question starts no continuation");
 	assert.match(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"), /Direct user answer \(human origin\)[\s\S]*Use the first path/);
