@@ -11,7 +11,9 @@ interface Cursor { generation: string; owner: string; version: number; query: st
 export class HistoryQueries {
 	private store: HistoryStore;
 	private info: () => HistoryVersion;
+	private configurations = new Map<string, HistoryConfiguration>();
 	constructor(store: HistoryStore, info: () => HistoryVersion) { this.store = store; this.info = info; }
+	sourcesRemoved(): void { this.configurations.clear(); }
 	private cursor(query: string, keys: (string | number)[], offset: number): string {
 		return Buffer.from(JSON.stringify({ generation: this.store.generation, owner: this.store.owner, version: this.info().version, query, keys, offset } satisfies Cursor)).toString("base64url");
 	}
@@ -80,6 +82,11 @@ export class HistoryQueries {
 		if (input.leaf === null) return {};
 		let boundary: ReturnType<HistoryQueries["boundary"]>;
 		try { boundary = this.boundary(source, input); } catch (error) { if (!strict && error instanceof HistoryIndexError && error.code === "BOUNDARY_UNAVAILABLE") return {}; throw error; }
+		// Only committed source changes invalidate ancestry, not unrelated run projections.
+		// Validate boundaries before reuse; explicit null leaves returned above remain empty.
+		const key = JSON.stringify([source.id, source.generation, source.cursor, source.stamp, input.terminalEntryId || null, input.terminalEntryId ? null : input.endedAt ?? null, input.leaf ?? null, strict]);
+		const cached = this.configurations.get(key);
+		if (cached) return { ...cached };
 		const leaf = input.leaf ?? this.store.get(`SELECT id FROM entries WHERE ${boundary.clauses.join(" AND ")} ORDER BY start DESC LIMIT 1`, ...boundary.params)?.id;
 		if (!leaf) return {};
 		// Fix recursive loop order: look up each child's parent by ID instead of
@@ -93,7 +100,11 @@ export class HistoryQueries {
 			(SELECT configuration_thinking FROM branch WHERE configuration_thinking IS NOT NULL ORDER BY start DESC LIMIT 1) AS thinking`, ...boundary.params, leaf);
 		if (!facts.count && input.leaf && strict) throw new HistoryIndexError("BOUNDARY_UNAVAILABLE", "Selected configuration leaf is not available in the indexed generation.");
 		if (facts.count && !facts.rooted) { if (!strict) return {}; throw new HistoryIndexError("MALFORMED_ANCESTRY", "Selected native configuration has cyclic ancestry."); }
-		return { ...(facts.model ? { model: facts.model, modelRecordedAt: facts.recorded_at ?? undefined } : {}), ...(facts.thinking ? { thinking: facts.thinking } : {}) };
+		const configuration = { ...(facts.model ? { model: facts.model, modelRecordedAt: facts.recorded_at ?? undefined } : {}), ...(facts.thinking ? { thinking: facts.thinking } : {}) };
+		// Bound memory across arbitrary sources, boundaries and pages. Eviction only recomputes.
+		if (this.configurations.size >= 128) this.configurations.delete(this.configurations.keys().next().value!);
+		this.configurations.set(key, configuration);
+		return { ...configuration };
 	}
 	historyPage(input: HistoryPageInput): HistoryPage {
 		const { source } = this.child(input.runId, input.index);
@@ -149,6 +160,11 @@ export class HistoryQueries {
 		if (input.runId) { clauses.push("c.run_id=?"); params.push(input.runId); }
 		if (input.index !== undefined) { clauses.push("c.child_index=?"); params.push(input.index); }
 		if (input.agent) { if (input.agent.length > 256) throw new HistoryIndexError("INVALID", "Agent filter is too long."); clauses.push("c.agent=?"); params.push(input.agent); }
+		const joins = "JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1";
+		// Scope records before materializing/grouping hits, while bm25 still sees the
+		// complete corpus. Keep attempt attribution and seek filtering in the final join.
+		const eligible = input.runId || input.agent ? `eligible AS MATERIALIZED (SELECT DISTINCT e.rowid FROM entries e ${joins} WHERE ${clauses.join(" AND ")}),` : "";
+		const eligibleParams = eligible ? params.slice(expression.length) : [];
 		// Ordering/filters apply globally before limit. Common terms may still require an FTS
 		// scan/sort; the parent enforces a hard deadline by killing this separate process.
 		const score = sort === "relevance" ? "matched.score" : "-COALESCE(e.timestamp,0)";
@@ -158,8 +174,8 @@ export class HistoryQueries {
 		}
 		// Match words across all visible fields/windows of one native record. A quoted
 		// phrase remains a single FTS expression, so it cannot span unrelated fields.
-		const rows = this.store.all(`WITH hits AS MATERIALIZED (
-			${expression.map((_term, index) => `SELECT d.id,d.entry_rowid,bm25(corpus) AS score,${index} AS term FROM corpus JOIN documents d ON d.id=corpus.rowid WHERE corpus MATCH ?`).join(" UNION ALL ")}
+		const rows = this.store.all(`WITH ${eligible} hits AS MATERIALIZED (
+			${expression.map((_term, index) => `SELECT d.id,d.entry_rowid,bm25(corpus) AS score,${index} AS term FROM corpus JOIN documents d ON d.id=corpus.rowid WHERE corpus MATCH ?${eligible ? " AND d.entry_rowid IN (SELECT rowid FROM eligible)" : ""}`).join(" UNION ALL ")}
 		), terms AS (
 			SELECT entry_rowid,term,MIN(score) AS score FROM hits GROUP BY entry_rowid,term
 		), matched AS (
@@ -167,7 +183,7 @@ export class HistoryQueries {
 		), excerpts AS (
 			SELECT id,entry_rowid,ROW_NUMBER() OVER (PARTITION BY entry_rowid ORDER BY score,id) AS choice FROM hits
 		)
-		SELECT d.*,${score} AS score,e.*,d.id AS document_id,s.path,s.session_id,c.run_id,c.child_index,c.agent,d.preview AS document_preview FROM matched JOIN excerpts ON excerpts.entry_rowid=matched.entry_rowid AND excerpts.choice=1 JOIN documents d ON d.id=excerpts.id JOIN entries e ON e.rowid=matched.entry_rowid JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1 WHERE ${clauses.join(" AND ")} ORDER BY score,d.id,c.run_id,c.child_index LIMIT ?`, ...params, limit + 1);
+		SELECT d.*,${score} AS score,e.*,d.id AS document_id,s.path,s.session_id,c.run_id,c.child_index,c.agent,d.preview AS document_preview FROM matched JOIN excerpts ON excerpts.entry_rowid=matched.entry_rowid AND excerpts.choice=1 JOIN documents d ON d.id=excerpts.id JOIN entries e ON e.rowid=matched.entry_rowid ${joins} WHERE ${clauses.join(" AND ")} ORDER BY score,d.id,c.run_id,c.child_index LIMIT ?`, ...eligibleParams, ...params, limit + 1);
 		const more = rows.length > limit, page = rows.slice(0, limit);
 		return { ...this.info(), matches: page.map((row) => ({ id: row.document_id, runId: row.run_id, index: row.child_index, agent: row.agent, entryId: row.id, nativeId: row.native_id, sessionId: row.session_id, sessionFile: row.path, timestamp: row.timestamp,
 			ref: { sourceId: row.source_id, generation: row.generation, start: row.start, end: row.end, digest: row.digest }, preview: row.document_preview, field: row.field, textStart: row.text_start, textEnd: row.text_end, score: row.score })),
