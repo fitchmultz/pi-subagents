@@ -524,6 +524,7 @@ async function makeSession(
 test("native Doctor reports broker registration and loaded compiled identity, not changed files on disk", async (t) => {
   const packageCopy = realpathSync(mkdtempSync(path.join(repo, "node_modules", ".pi-doctor-")));
   cpSync(path.join(repo, "dist"), path.join(packageCopy, "dist"), { recursive: true });
+  cpSync(path.join(repo, "generated"), path.join(packageCopy, "generated"), { recursive: true });
   const manifest = json(readFileSync(path.join(repo, "package.json"), "utf8"));
   writeFileSync(path.join(packageCopy, "package.json"), JSON.stringify(manifest));
   const receiver = await makeSession(t, "doctor-loaded", {
