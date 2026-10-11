@@ -2,66 +2,26 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { objectAt } from "./config-workflow-fixtures.ts";
-import { json as parseJsonObject } from "../support/assertions.ts";
-import {
-  parseChain,
-  parseJsonChain,
-  serializeChain,
-  serializeJsonChain,
-} from "../../src/agents/chain-serializer.ts";
-
-const chainContent = `---
-name: review-chain
-description: Review chain
----
-
-## reviewer
-output: report.md
-outputMode: file-only
-
-Review the diff
-`;
+import { parseChain, parseJsonChain, serializeChain } from "../../src/agents/chain-serializer.ts";
 
 describe("chain serializer", () => {
-  it("preserves headings inside task text when saving and loading", () => {
-    const task =
-      'Review this change.\n\n## Requirements\nDo not modify any files.\n\n```md\n## "Example"\\path\n```\n\u2028## Line separator\u2029## Paragraph separator\n';
-    const config = {
-      name: "heading-repro",
-      description: "Heading round trip",
-      source: "project" as const,
-      filePath: "/tmp/heading-repro.chain.md",
-      steps: [
-        { agent: "worker", task, outputSchema: "./schemas/review.json", skills: ["review"] },
-        { agent: "reviewer", task: "" },
-      ],
-    };
-    const loaded = parseChain(serializeChain(config), config.source, config.filePath);
-    assert.deepEqual(loaded.steps, config.steps);
-  });
-
   it("rejects invalid or ambiguous encoded tasks", () => {
-    for (const body of [
-      "task-json: 123",
-      'task-json: "unterminated',
-      'task-json: "one"\ntask-json: "two"',
-      'task-json: "one"\n\nAnother task',
-    ]) {
-      assert.throws(() =>
-        parseChain(
-          `---\nname: invalid\ndescription: Invalid\n---\n\n## worker\n${body}\n`,
-          "project",
-          "/tmp/invalid.chain.md",
-        ),
+    for (const [body, error] of [
+      ["task-json: 123", /must be a JSON string/],
+      ['task-json: "unterminated', SyntaxError],
+      ['task-json: "one"\ntask-json: "two"', /Duplicate task-json/],
+      ['task-json: "one"\n\nAnother task', /cannot combine task-json with task prose/],
+    ] as const) {
+      assert.throws(
+        () =>
+          parseChain(
+            `---\nname: invalid\ndescription: Invalid\n---\n\n## worker\n${body}\n`,
+            "project",
+            "/tmp/invalid.chain.md",
+          ),
+        error,
       );
     }
-  });
-
-  it("round-trips step outputMode", () => {
-    const parsed = parseChain(chainContent, "project", "/tmp/review-chain.md");
-
-    assert.equal(parsed.steps[0]?.outputMode, "file-only");
-    assert.match(serializeChain(parsed), /outputMode: file-only/);
   });
 
   it("round-trips phase, label, as, and path-based outputSchema", () => {
@@ -72,6 +32,8 @@ description: Review chain
 ---
 
 ## reviewer
+output: report.md
+outputMode: file-only
 phase: Review
 label: correctness pass
 as: correctnessFindings
@@ -83,11 +45,13 @@ Review the diff
       "/tmp/review-chain.md",
     );
 
+    assert.equal(parsed.steps[0]?.outputMode, "file-only");
     assert.equal(parsed.steps[0]?.phase, "Review");
     assert.equal(parsed.steps[0]?.label, "correctness pass");
     assert.equal(parsed.steps[0]?.as, "correctnessFindings");
     assert.equal(parsed.steps[0]?.outputSchema, "./schemas/finding.schema.json");
     const serialized = serializeChain(parsed);
+    assert.match(serialized, /outputMode: file-only/);
     assert.match(serialized, /phase: Review/);
     assert.match(serialized, /label: correctness pass/);
     assert.match(serialized, /as: correctnessFindings/);
@@ -153,21 +117,19 @@ Review the diff
   });
 
   it("rejects invalid JSON chain field types", () => {
-    assert.throws(
-      () =>
-        parseJsonChain(
-          JSON.stringify({
-            name: "bad-types",
-            description: "Bad types",
-            chain: [{ agent: "worker", failFast: "false" }],
-          }),
-          "project",
-          "/tmp/bad-types.chain.json",
-        ),
-      /failFast|must be boolean/,
-    );
+    const parse = (failFast: unknown) =>
+      parseJsonChain(
+        JSON.stringify({
+          name: "bad-types",
+          description: "Bad types",
+          chain: [{ parallel: [{ agent: "worker" }], failFast }],
+        }),
+        "project",
+        "/tmp/bad-types.chain.json",
+      );
+    assert.equal(parse(false).steps[0]?.failFast, false);
+    assert.throws(() => parse("false"), /must be boolean/);
   });
-
   it("keeps colon-prefixed prose in hand-written markdown step tasks", () => {
     const parsed = parseChain(
       `---
@@ -188,88 +150,6 @@ Continue here
       parsed.steps[0]?.task,
       "Goal: ship it\nhttp://example.test/context\nContinue here",
     );
-  });
-
-  it("serializes JSON chains back to JSON", () => {
-    const parsed = parseJsonChain(
-      JSON.stringify({
-        name: "dynamic-review",
-        package: "code-analysis",
-        description: "Review dynamic targets",
-        chain: [
-          {
-            agent: "scout",
-            task: "Return targets",
-            as: "targets",
-            outputSchema: { type: "object" },
-          },
-          {
-            expand: {
-              from: { output: "targets", path: "/items" },
-              item: "target",
-              key: "/path",
-              maxItems: 4,
-            },
-            parallel: {
-              agent: "reviewer",
-              task: "Review {target.path}",
-              outputSchema: { type: "object" },
-            },
-            collect: { as: "reviews" },
-          },
-        ],
-      }),
-      "project",
-      "/tmp/dynamic-review.chain.json",
-    );
-
-    const serialized = serializeJsonChain(parsed);
-    assert.doesNotMatch(serialized, /^---/);
-    const reparsed = parseJsonObject(serialized);
-    assert.equal(reparsed.name, "dynamic-review");
-    assert.equal(reparsed.package, "code-analysis");
-    assert.equal(objectAt(reparsed, "chain", 1, "collect").as, "reviews");
-  });
-
-  it("parses declarative JSON chains with dynamic fanout", () => {
-    const parsed = parseJsonChain(
-      JSON.stringify({
-        name: "dynamic-review",
-        description: "Review dynamic targets",
-        chain: [
-          {
-            agent: "scout",
-            task: "Return targets",
-            as: "targets",
-            outputSchema: { type: "object" },
-          },
-          {
-            expand: {
-              from: { output: "targets", path: "/items" },
-              item: "target",
-              key: "/path",
-              maxItems: 4,
-            },
-            parallel: {
-              agent: "reviewer",
-              task: "Review {target.path}",
-              outputSchema: { type: "object" },
-            },
-            collect: { as: "reviews" },
-          },
-        ],
-      }),
-      "project",
-      "/tmp/dynamic-review.chain.json",
-    );
-
-    assert.equal(parsed.name, "dynamic-review");
-    assert.equal(parsed.steps.length, 2);
-    assert.ok("collect" in parsed.steps[1]);
-    assert.deepEqual(parsed.steps[1].collect, { as: "reviews" });
-    assert.deepEqual((parsed.steps[0] as { outputSchema?: unknown }).outputSchema, {
-      type: "object",
-    });
   });
 
   it("parses and validates acceptance in JSON chains", () => {

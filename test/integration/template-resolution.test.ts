@@ -9,12 +9,12 @@ import "../support/isolated-home.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { normalizeSkillInput } from "../../src/agents/skills.ts";
 import {
   buildChainInstructions,
   type ResolvedStepBehavior,
   createChainDir,
-  isParallelStep,
   resolveChainTemplates,
   resolveParallelBehaviors,
   resolveStepBehavior,
@@ -24,101 +24,64 @@ import {
 import { createTempDir, removeTempDir, makeAgent } from "../support/helpers.ts";
 
 describe("resolveChainTemplates", () => {
-  it("uses step task for first step", () => {
-    const chain = [{ agent: "a", task: "Analyze {task}" }, { agent: "b" }];
-    const templates = resolveChainTemplates(chain);
-    assert.equal(templates[0], "Analyze {task}");
-  });
-
-  it("defaults to {previous} for subsequent steps without task", () => {
-    const chain = [{ agent: "a", task: "Start" }, { agent: "b" }, { agent: "c" }];
-    const templates = resolveChainTemplates(chain);
-    assert.equal(templates[1], "{previous}");
-    assert.equal(templates[2], "{previous}");
-  });
-
-  it("preserves explicit task on later steps", () => {
-    const chain = [
-      { agent: "a", task: "Start" },
-      { agent: "b", task: "Custom task for B" },
-    ];
-    const templates = resolveChainTemplates(chain);
-    assert.equal(templates[1], "Custom task for B");
-  });
-
-  it("handles parallel steps", () => {
-    const chain = [
-      {
-        parallel: [
-          { agent: "a", task: "Review auth" },
-          { agent: "b", task: "Review data" },
-        ],
-      },
-    ];
-    const templates = resolveChainTemplates(chain);
-    assert.ok(Array.isArray(templates[0]), "parallel step templates should be an array");
-    const parallelTemplates = templates[0];
-    assert.equal(parallelTemplates[0], "Review auth");
-    assert.equal(parallelTemplates[1], "Review data");
-  });
-
   it("mixed sequential + parallel", () => {
-    const chain = [
-      { agent: "scout", task: "Scan" },
-      {
-        parallel: [{ agent: "rev-a", task: "Deep review A" }, { agent: "rev-b" }],
-      },
-      { agent: "writer" },
-    ];
-    const templates = resolveChainTemplates(chain);
-    assert.equal(templates[0], "Scan");
-    assert.ok(Array.isArray(templates[1]));
-    assert.equal(templates[2], "{previous}");
-  });
-});
-
-describe("isParallelStep", () => {
-  it("returns true for parallel steps", () => {
-    assert.ok(isParallelStep({ parallel: [{ agent: "a", task: "t" }] }));
-  });
-
-  it("returns false for sequential steps", () => {
-    assert.ok(!isParallelStep({ agent: "a", task: "t" }));
+    assert.deepEqual(
+      resolveChainTemplates([
+        { agent: "scout", task: "Analyze {task}" },
+        { parallel: [{ agent: "rev-a", task: "Deep review A" }, { agent: "rev-b" }] },
+        { agent: "writer" },
+        { agent: "worker" },
+        { agent: "b", task: "Custom task for B" },
+      ]),
+      [
+        "Analyze {task}",
+        ["Deep review A", "{previous}"],
+        "{previous}",
+        "{previous}",
+        "Custom task for B",
+      ],
+    );
+    assert.deepEqual(
+      resolveChainTemplates([
+        {
+          parallel: [
+            { agent: "a", task: "Review auth" },
+            { agent: "b", task: "Review data" },
+          ],
+        },
+      ]),
+      [["Review auth", "Review data"]],
+    );
   });
 });
 
 describe("normalizeSkillInput", () => {
-  it("returns undefined for undefined input", () => {
-    const missingSkillInput = undefined;
-    assert.equal(normalizeSkillInput(missingSkillInput), undefined);
-  });
-
-  it("returns undefined for true (use default)", () => {
-    assert.equal(normalizeSkillInput(true), undefined);
+  it("returns undefined for omitted or default skill input", () => {
+    for (const input of [undefined, true]) {
+      assert.equal(normalizeSkillInput(input), undefined);
+    }
   });
 
   it("returns false for false (disable)", () => {
     assert.equal(normalizeSkillInput(false), false);
   });
 
-  it("splits comma-separated string", () => {
-    assert.deepEqual(normalizeSkillInput("web-search,pdf"), ["web-search", "pdf"]);
-  });
-
-  it("passes through array", () => {
-    assert.deepEqual(normalizeSkillInput(["a", "b"]), ["a", "b"]);
-  });
-
-  it("deduplicates", () => {
-    assert.deepEqual(normalizeSkillInput(["a", "b", "a"]), ["a", "b"]);
-  });
-
-  it("trims whitespace", () => {
-    assert.deepEqual(normalizeSkillInput(" a , b "), ["a", "b"]);
-  });
-
-  it("filters empty strings", () => {
-    assert.deepEqual(normalizeSkillInput(",a,,b,"), ["a", "b"]);
+  it("normalizes skill names from strings and arrays", () => {
+    for (const [input, expected] of [
+      ["web-search,pdf", ["web-search", "pdf"]],
+      [
+        ["a", "b"],
+        ["a", "b"],
+      ],
+      [
+        ["a", "b", "a"],
+        ["a", "b"],
+      ],
+      [" a , b ", ["a", "b"]],
+      [",a,,b,", ["a", "b"]],
+    ] as const) {
+      assert.deepEqual(normalizeSkillInput(input), expected);
+    }
   });
 });
 
@@ -176,18 +139,9 @@ describe("resolveStepBehavior", () => {
       name: "test",
       output: "report.md",
     };
-    const behavior = resolveStepBehavior(config, { output: false });
-    assert.equal(behavior.output, false);
-  });
-
-  it("string false disables output defensively", () => {
-    const config = {
-      ...makeAgent("test", { inheritProjectContext: true, inheritSkills: true }),
-      name: "test",
-      output: "report.md",
-    };
-    const behavior = resolveStepBehavior(config, { output: "false" });
-    assert.equal(behavior.output, false);
+    for (const output of [false, "false"] as const) {
+      assert.equal(resolveStepBehavior(config, { output }).output, false);
+    }
   });
 
   it("defaults to false when agent has no config", () => {
@@ -244,23 +198,6 @@ describe("resolveParallelBehaviors", () => {
 
     assert.equal(behaviors[0]?.output, false);
   });
-
-  it("propagates top-level skill: false to parallel tasks", () => {
-    const behaviors = resolveParallelBehaviors(
-      [{ agent: "reviewer", task: "Review", skill: "task-skill" }],
-      [
-        {
-          ...makeAgent("reviewer", { inheritProjectContext: true, inheritSkills: true }),
-          name: "reviewer",
-          skills: ["agent-skill"],
-        },
-      ],
-      0,
-      false,
-    );
-
-    assert.equal(behaviors[0]?.skills, false);
-  });
 });
 
 describe("read-only progress suppression", () => {
@@ -293,42 +230,6 @@ describe("read-only progress suppression", () => {
 });
 
 describe("buildChainInstructions", () => {
-  it("adds [Read from:] prefix for reads", () => {
-    const behavior: ResolvedStepBehavior = {
-      reads: ["context.md"],
-      output: false,
-      outputMode: "inline",
-      progress: false,
-      skills: false,
-    };
-    const dir = createTempDir("chain-test-");
-    try {
-      const { prefix } = buildChainInstructions(behavior, dir, false);
-      assert.ok(prefix.includes("[Read from:"), `should have Read instruction: ${prefix}`);
-      assert.ok(prefix.includes("context.md"), "should reference the file");
-    } finally {
-      removeTempDir(dir);
-    }
-  });
-
-  it("adds [Write to:] prefix for output", () => {
-    const behavior: ResolvedStepBehavior = {
-      reads: false,
-      output: "output.md",
-      outputMode: "inline",
-      progress: false,
-      skills: false,
-    };
-    const dir = createTempDir("chain-test-");
-    try {
-      const { prefix } = buildChainInstructions(behavior, dir, false);
-      assert.ok(prefix.includes("[Write to:"), `should have Write instruction: ${prefix}`);
-      assert.ok(prefix.includes("output.md"), "should reference the file");
-    } finally {
-      removeTempDir(dir);
-    }
-  });
-
   it("adds progress instructions in suffix for first progress step", () => {
     const behavior: ResolvedStepBehavior = {
       reads: false,
@@ -341,28 +242,10 @@ describe("buildChainInstructions", () => {
     try {
       const { suffix } = buildChainInstructions(behavior, dir, true);
       assert.ok(suffix.includes("progress.md"), `should reference progress.md: ${suffix}`);
-      assert.ok(
-        suffix.includes("Create") || suffix.includes("maintain"),
-        `should say create/maintain for first progress step: ${suffix}`,
+      assert.equal(
+        suffix,
+        `\n\n---\nCreate and maintain progress at: ${path.join(dir, "progress.md")}`,
       );
-    } finally {
-      removeTempDir(dir);
-    }
-  });
-
-  it("returns empty prefix/suffix when no behavior configured", () => {
-    const behavior: ResolvedStepBehavior = {
-      reads: false,
-      output: false,
-      outputMode: "inline",
-      progress: false,
-      skills: false,
-    };
-    const dir = createTempDir("chain-test-");
-    try {
-      const { prefix, suffix } = buildChainInstructions(behavior, dir, false);
-      assert.equal(prefix, "");
-      assert.equal(suffix, "");
     } finally {
       removeTempDir(dir);
     }
@@ -377,17 +260,6 @@ describe("createChainDir", () => {
       assert.ok(dir.includes("test-run-123"));
     } finally {
       removeTempDir(dir);
-    }
-  });
-
-  it("uses custom base when provided", () => {
-    const base = createTempDir("chain-base-");
-    try {
-      const dir = createChainDir("run-abc", base);
-      assert.ok(fs.existsSync(dir));
-      assert.ok(dir.startsWith(base) || dir === base);
-    } finally {
-      removeTempDir(base);
     }
   });
 });

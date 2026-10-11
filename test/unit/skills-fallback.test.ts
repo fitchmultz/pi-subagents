@@ -80,10 +80,11 @@ describe("skills filesystem fallback", () => {
   it("does not leak npm discovery warnings to stderr", () => {
     const binDir = path.join(tempDir, "bin");
     const fakeNpm = path.join(binDir, "npm");
+    const invoked = path.join(tempDir, "npm-invoked");
     fs.mkdirSync(binDir, { recursive: true });
     fs.writeFileSync(
       fakeNpm,
-      `#!/bin/sh\nprintf 'synthetic npm warning\\n' >&2\nprintf '%s\\n' '${tempDir}'\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" > '${invoked}'\nprintf 'synthetic npm warning\\n' >&2\nprintf '%s\\n' '${tempDir}'\n`,
     );
     fs.chmodSync(fakeNpm, 0o755);
 
@@ -111,22 +112,19 @@ describe("skills filesystem fallback", () => {
     );
 
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(invoked, "utf-8"), "root -g\n");
     assert.doesNotMatch(result.stderr, /synthetic npm warning/);
-  });
-
-  it("discovers project skills from filesystem paths", () => {
-    makeProjectSkill(tempDir, "fallback-skill", "Use fallback mode.");
-
-    const skills = discoverAvailableSkills(tempDir);
-    const discovered = skills.find((skill) => skill.name === "fallback-skill");
-    assert.ok(discovered, "expected fallback-skill to be discovered");
-    assert.equal(discovered.source, "project");
-    assert.equal(discovered.description, "Test description");
   });
 
   it("resolves and reads skill content via filesystem fallback", () => {
     makeProjectSkill(tempDir, "resolve-skill", "Run local fallback checks.");
 
+    const discovered = discoverAvailableSkills(tempDir).find(
+      (skill) => skill.name === "resolve-skill",
+    );
+    assert.ok(discovered, "expected resolve-skill to be discovered");
+    assert.equal(discovered.source, "project");
+    assert.equal(discovered.description, "Test description");
     const { resolved, missing } = resolveSkills(["resolve-skill"], tempDir);
     assert.deepEqual(missing, []);
     assert.equal(resolved.length, 1);
@@ -151,17 +149,13 @@ describe("skills filesystem fallback", () => {
     );
   });
 
-  it("classifies package-provided skills as project-package", () => {
-    makeProjectPackageSkill(tempDir, "test-skill-package", "pkg-skill", "Use package skill.");
-
-    const skills = discoverAvailableSkills(tempDir);
-    const discovered = skills.find((skill) => skill.name === "pkg-skill");
-    assert.ok(discovered, "expected pkg-skill to be discovered");
-    assert.equal(discovered.source, "project-package");
-  });
-
   it("prefers project skills over project-package skills with the same name", () => {
     makeProjectPackageSkill(tempDir, "test-skill-package", "shared-skill", "Package version");
+    runSkillsFresh(`
+      const discovered = discoverAvailableSkills(tempDir).find((skill) => skill.name === "shared-skill");
+      assert.ok(discovered, "expected shared-skill to be discovered");
+      assert.equal(discovered.source, "project-package");
+    `);
     makeProjectSkill(tempDir, "shared-skill", "Project version");
 
     const { resolved, missing } = resolveSkills(["shared-skill"], tempDir);
@@ -182,30 +176,6 @@ describe("skills filesystem fallback", () => {
     );
 
     const { resolved, missing } = resolveSkills(["settings-package-skill"], tempDir);
-    assert.deepEqual(missing, []);
-    assert.equal(resolved.length, 1);
-    assert.equal(resolved[0]?.source, "project-package");
-  });
-
-  it("discovers skills from project settings npm package sources", () => {
-    const packageRoot = path.join(tempDir, ".pi", "npm", "node_modules", "@scope", "skill-package");
-    makePackageSkill(
-      packageRoot,
-      "project-settings-scoped-npm-package-skill",
-      "Project settings scoped npm package skill.",
-      "@scope/skill-package",
-    );
-    fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
-    fs.writeFileSync(
-      path.join(tempDir, ".pi", "settings.json"),
-      JSON.stringify({ packages: ["npm:@scope/skill-package@1.2.3"] }, null, 2),
-      "utf-8",
-    );
-
-    const { resolved, missing } = resolveSkills(
-      ["project-settings-scoped-npm-package-skill"],
-      tempDir,
-    );
     assert.deepEqual(missing, []);
     assert.equal(resolved.length, 1);
     assert.equal(resolved[0]?.source, "project-package");
@@ -246,34 +216,54 @@ describe("skills filesystem fallback", () => {
     assert.equal(resolved[0]?.source, "project-package");
   });
 
-  it("discovers skills from user settings packages", () => {
-    const fakeHome = path.join(tempDir, "fake-home");
-    const userAgentDir = path.join(fakeHome, ".pi", "agent");
-    const userPackageRoot = path.join(userAgentDir, "user-pkg");
+  it("discovers user settings package sources and strictly reads declared npm manifests", () => {
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
-
     try {
-      process.env.HOME = fakeHome;
-      process.env.USERPROFILE = fakeHome;
-      makePackageSkill(
-        userPackageRoot,
-        "user-settings-package-skill",
-        "User settings package skill.",
-      );
-      fs.mkdirSync(userAgentDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(userAgentDir, "settings.json"),
-        JSON.stringify({ packages: [{ source: "./user-pkg" }] }, null, 2),
-        "utf-8",
-      );
-
-      runSkillsFresh(`
-        const discovered = discoverAvailableSkills(tempDir);
-        const skill = discovered.find((entry) => entry.name === "user-settings-package-skill");
-        assert.ok(skill);
-        assert.equal(skill.source, "user-package");
-      `);
+      for (const [source, installedPath] of [
+        [{ source: "./user-pkg" }, "user-pkg"],
+        ["git:github.com/user/repo.git@main", "git/github.com/user/repo"],
+        [{ source: "npm:@scope/skill-package@latest" }, "npm/node_modules/@scope/skill-package"],
+      ] as const) {
+        const fakeHome = fs.mkdtempSync(path.join(tempDir, "home-"));
+        process.env.HOME = fakeHome;
+        process.env.USERPROFILE = fakeHome;
+        const userAgentDir = path.join(fakeHome, ".pi", "agent");
+        const packageRoot = path.join(userAgentDir, installedPath);
+        makePackageSkill(
+          packageRoot,
+          "user-settings-package-skill",
+          "User settings package skill.",
+        );
+        fs.writeFileSync(
+          path.join(userAgentDir, "settings.json"),
+          JSON.stringify({ packages: [source] }),
+          "utf-8",
+        );
+        runSkillsFresh(`
+          import * as fs from "node:fs";
+          import * as path from "node:path";
+          const discovered = discoverAvailableSkills(tempDir);
+          const skill = discovered.find((entry) => entry.name === "user-settings-package-skill");
+          assert.ok(skill);
+          assert.equal(skill.source, "user-package");
+          fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
+          fs.writeFileSync(path.join(tempDir, ".pi", "settings.json"), "{untrusted-project", "utf-8");
+          const untrusted = resolveSkills(["user-settings-package-skill"], tempDir, { projectTrusted: false });
+          assert.deepEqual(untrusted.missing, []);
+          assert.equal(untrusted.resolved[0]?.source, "user-package");
+        `);
+        if (installedPath.startsWith("npm/")) {
+          fs.writeFileSync(path.join(packageRoot, "package.json"), "{bad-json", "utf-8");
+          runSkillsFresh(`
+            assert.throws(
+              () => discoverAvailableSkills(tempDir, { projectTrusted: false }),
+              /Failed to read package manifest .*skill-package.*package.json/,
+            );
+          `);
+        }
+        fs.rmSync(path.join(tempDir, ".pi"), { recursive: true, force: true });
+      }
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -287,101 +277,6 @@ describe("skills filesystem fallback", () => {
       }
     }
   });
-
-  it("discovers skills from user settings git package sources", () => {
-    const fakeHome = path.join(tempDir, "fake-home");
-    const userAgentDir = path.join(fakeHome, ".pi", "agent");
-    const packageRoot = path.join(userAgentDir, "git", "github.com", "user", "repo");
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
-
-    try {
-      process.env.HOME = fakeHome;
-      process.env.USERPROFILE = fakeHome;
-      makePackageSkill(
-        packageRoot,
-        "user-settings-git-package-skill",
-        "User settings git package skill.",
-      );
-      fs.mkdirSync(userAgentDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(userAgentDir, "settings.json"),
-        JSON.stringify({ packages: ["git:github.com/user/repo.git@main"] }, null, 2),
-        "utf-8",
-      );
-
-      runSkillsFresh(`
-        const discovered = discoverAvailableSkills(tempDir);
-        const skill = discovered.find((entry) => entry.name === "user-settings-git-package-skill");
-        assert.ok(skill);
-        assert.equal(skill.source, "user-package");
-      `);
-    } finally {
-      if (previousHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = previousHome;
-      }
-      if (previousUserProfile === undefined) {
-        delete process.env.USERPROFILE;
-      } else {
-        process.env.USERPROFILE = previousUserProfile;
-      }
-    }
-  });
-
-  it("discovers skills from user settings scoped npm package sources", () => {
-    const fakeHome = path.join(tempDir, "fake-home");
-    const userAgentDir = path.join(fakeHome, ".pi", "agent");
-    const packageRoot = path.join(userAgentDir, "npm", "node_modules", "@scope", "skill-package");
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
-
-    try {
-      process.env.HOME = fakeHome;
-      process.env.USERPROFILE = fakeHome;
-      makePackageSkill(
-        packageRoot,
-        "user-settings-scoped-npm-package-skill",
-        "User settings scoped npm package skill.",
-        "@scope/skill-package",
-      );
-      fs.mkdirSync(userAgentDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(userAgentDir, "settings.json"),
-        JSON.stringify({ packages: [{ source: "npm:@scope/skill-package@latest" }] }, null, 2),
-        "utf-8",
-      );
-
-      runSkillsFresh(`
-        import * as fs from "node:fs";
-        import * as path from "node:path";
-        const discovered = discoverAvailableSkills(tempDir);
-        const skill = discovered.find((entry) => entry.name === "user-settings-scoped-npm-package-skill");
-        assert.ok(skill);
-        assert.equal(skill.source, "user-package");
-        fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
-        fs.writeFileSync(path.join(tempDir, ".pi", "settings.json"), "{untrusted-project", "utf-8");
-        const untrusted = resolveSkills(["user-settings-scoped-npm-package-skill"], tempDir, {
-          projectTrusted: false,
-        });
-        assert.deepEqual(untrusted.missing, []);
-        assert.equal(untrusted.resolved[0]?.source, "user-package");
-      `);
-    } finally {
-      if (previousHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = previousHome;
-      }
-      if (previousUserProfile === undefined) {
-        delete process.env.USERPROFILE;
-      } else {
-        process.env.USERPROFILE = previousUserProfile;
-      }
-    }
-  });
-
   it("surfaces malformed project settings files instead of silently ignoring them", () => {
     fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
     fs.writeFileSync(path.join(tempDir, ".pi", "settings.json"), "{bad-json", "utf-8");

@@ -97,47 +97,62 @@ describe("agent management config parsing", () => {
     assert.match(profile("inherited-model"), /Model: inherited from parent .*; Thinking: high;/);
   });
 
-  it("rejects unknown config keys instead of silently ignoring typos", () => {
+  it("rejects invalid management config with field-specific diagnostics", () => {
     const ctx = {
       cwd: tempDir,
       modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
-    const result = handleManagementAction(
-      "create",
-      { config: { name: "typo-agent", description: "test", extra: true } },
-      ctx,
-    );
-    assert.equal(result.isError, true);
-    assert.match(readText(result), /unknown field: extra/);
+    for (const [config, errors] of [
+      [{ name: "typo-agent", description: "test", extra: true }, [/unknown field: extra/]],
+      [
+        { name: "Scout", package: "!!!", description: "Fast recon", scope: "project" },
+        [/config\.package is invalid/],
+      ],
+      [
+        { name: "budget-worker", description: "Bounded worker", scope: "project", maxTokens: 0 },
+        [/config\.maxTokens must be an integer >= 1/],
+      ],
+      [
+        {
+          name: "test-runner",
+          description: "Run tests",
+          scope: "project",
+          completionGuard: "false",
+        },
+        [/config\.completionGuard must be a boolean/],
+      ],
+      [
+        {
+          name: "Review Flow",
+          description: "Review flow",
+          scope: "project",
+          steps: [{ agent: "reviewer", task: "Review", skill: "code-review" }],
+        },
+        [/config\.steps\[0\]\.skill is not supported/, /use skills/],
+      ],
+    ] as const) {
+      const result = handleManagementAction("create", { config }, ctx);
+      assert.equal(result.isError, true);
+      for (const error of errors) {
+        assert.match(readText(result), error);
+      }
+    }
   });
-
-  it("surfaces JSON parse errors for create config strings", () => {
-    const result = handleCreate(
-      { config: '{"name":' },
-      {
-        cwd: tempDir,
-        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
-        isProjectTrusted: () => true,
-      },
-    );
-
-    assert.equal(result.isError, true);
-    assert.match(readText(result), /config must be valid JSON:/);
-  });
-
-  it("surfaces JSON parse errors for update config strings", () => {
-    const result = handleUpdate(
-      { agent: "reviewer", config: '{"description":' },
-      {
-        cwd: tempDir,
-        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
-        isProjectTrusted: () => true,
-      },
-    );
-
-    assert.equal(result.isError, true);
-    assert.match(readText(result), /config must be valid JSON:/);
+  it("surfaces JSON parse errors for create and update config strings", () => {
+    const ctx = {
+      cwd: tempDir,
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+      isProjectTrusted: () => true,
+    };
+    for (const [action, params] of [
+      ["create", { config: '{"name":' }],
+      ["update", { agent: "reviewer", config: '{"description":' }],
+    ] as const) {
+      const result = handleManagementAction(action, params, ctx);
+      assert.equal(result.isError, true);
+      assert.match(readText(result), /config must be valid JSON:/);
+    }
   });
 
   it("refuses to mutate duplicate definitions within one scope", () => {
@@ -287,21 +302,6 @@ describe("agent management config parsing", () => {
     assert.equal(fs.existsSync(updatedPath), false);
   });
 
-  it("rejects package values that cannot be normalized", () => {
-    const ctx = {
-      cwd: tempDir,
-      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
-      isProjectTrusted: () => true,
-    };
-    const created = handleCreate(
-      { config: { name: "Scout", package: "!!!", description: "Fast recon", scope: "project" } },
-      ctx,
-    );
-
-    assert.equal(created.isError, true);
-    assert.match(readText(created), /config\.package is invalid/);
-  });
-
   it("creates and updates packaged chains while preserving packaged step names", () => {
     const ctx = {
       cwd: tempDir,
@@ -389,8 +389,12 @@ Inspect
       modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
-    const task = "Review this change.\n\n## Requirements\nDo not modify any files.";
-    const steps = [{ agent: "worker", task, outputSchema: "./schema.json" }];
+    const task =
+      'Review this change.\n\n## Requirements\nDo not modify any files.\n\n```md\n## "Example"\\path\n```\n\u2028## Line separator\u2029## Paragraph separator\n';
+    const steps = [
+      { agent: "worker", task, outputSchema: "./schemas/review.json", skills: ["review"] },
+      { agent: "reviewer", task: "" },
+    ];
     const created = handleCreate(
       {
         config: {
@@ -409,7 +413,10 @@ Inspect
       );
     assert.deepEqual(load()?.steps, steps);
 
-    const updatedSteps = [{ ...steps[0], task: `${task}\n\n## Report\nReturn findings.` }];
+    const updatedSteps = [
+      { ...steps[0], task: `${task}\n\n## Report\nReturn findings.` },
+      steps[1],
+    ];
     const updated = handleUpdate(
       { chainName: "heading-repro", config: { steps: updatedSteps } },
       ctx,
@@ -418,57 +425,35 @@ Inspect
     assert.deepEqual(load()?.steps, updatedSteps);
   });
 
-  it("rejects singular step skill in saved-chain management config", () => {
-    const result = handleCreate(
-      {
-        config: {
-          name: "Review Flow",
-          description: "Review flow",
-          scope: "project",
-          steps: [{ agent: "reviewer", task: "Review", skill: "code-review" }],
-        },
-      },
-      {
-        cwd: tempDir,
-        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
-        isProjectTrusted: () => true,
-      },
-    );
-
-    assert.equal(result.isError, true);
-    assert.match(readText(result), /config\.steps\[0\]\.skill is not supported/);
-    assert.match(readText(result), /use skills/);
-  });
-
-  it("creates agents with completion guard disabled", () => {
+  it("creates agents with explicit completion guard settings", () => {
     const ctx = {
       cwd: tempDir,
       modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
-    const result = handleCreate(
-      {
-        config: {
-          name: "test-runner",
-          description: "Run tests",
-          scope: "project",
-          tools: "read, grep, bash, ls",
-          completionGuard: false,
+    for (const completionGuard of [false, true]) {
+      const result = handleCreate(
+        {
+          config: {
+            name: "test-runner",
+            description: "Run tests",
+            scope: "project",
+            tools: "read, grep, bash, ls",
+            completionGuard,
+          },
         },
-      },
-      ctx,
-    );
-
-    assert.equal(result.isError, false);
-    const filePath = path.join(tempDir, ".pi", "agents", "test-runner.md");
-    const content = fs.readFileSync(filePath, "utf-8");
-    assert.match(content, /^completionGuard: false$/m);
-
-    const got = handleManagementAction("get", { agent: "test-runner" }, ctx);
-    assert.equal(got.isError, false);
-    assert.match(readText(got), /Completion guard: false/);
+        ctx,
+      );
+      assert.equal(result.isError, false);
+      const filePath = path.join(tempDir, ".pi", "agents", "test-runner.md");
+      const content = fs.readFileSync(filePath, "utf-8");
+      assert.match(content, new RegExp(`^completionGuard: ${completionGuard}$`, "m"));
+      const got = handleManagementAction("get", { agent: "test-runner" }, ctx);
+      assert.equal(got.isError, false);
+      assert.match(readText(got), new RegExp(`Completion guard: ${completionGuard}`));
+      fs.unlinkSync(filePath);
+    }
   });
-
   it("creates agents with resource limits", () => {
     const ctx = {
       cwd: tempDir,
@@ -483,6 +468,9 @@ Inspect
           scope: "project",
           maxExecutionTimeMs: 600000,
           maxTokens: 50000,
+          allowSubagents: true,
+          maxSubagentDepth: 1,
+          systemPromptMode: "replace",
         },
       },
       ctx,
@@ -493,53 +481,14 @@ Inspect
     const content = fs.readFileSync(filePath, "utf-8");
     assert.match(content, /^maxExecutionTimeMs: 600000$/m);
     assert.match(content, /^maxTokens: 50000$/m);
+    assert.match(content, /^allowSubagents: true$/m);
+    assert.match(content, /^maxSubagentDepth: 1$/m);
+    assert.match(content, /^systemPromptMode: replace$/m);
 
     const got = handleManagementAction("get", { agent: "budget-worker" }, ctx);
     assert.equal(got.isError, false);
     assert.match(readText(got), /Max execution time: 600000ms/);
     assert.match(readText(got), /Max tokens: 50000/);
-  });
-
-  it("rejects invalid resource limit config", () => {
-    const result = handleCreate(
-      {
-        config: {
-          name: "budget-worker",
-          description: "Bounded worker",
-          scope: "project",
-          maxTokens: 0,
-        },
-      },
-      {
-        cwd: tempDir,
-        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
-        isProjectTrusted: () => true,
-      },
-    );
-
-    assert.equal(result.isError, true);
-    assert.match(readText(result), /config\.maxTokens must be an integer >= 1/);
-  });
-
-  it("rejects non-boolean completion guard config", () => {
-    const result = handleCreate(
-      {
-        config: {
-          name: "test-runner",
-          description: "Run tests",
-          scope: "project",
-          completionGuard: "false",
-        },
-      },
-      {
-        cwd: tempDir,
-        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
-        isProjectTrusted: () => true,
-      },
-    );
-
-    assert.equal(result.isError, true);
-    assert.match(readText(result), /config\.completionGuard must be a boolean/);
   });
 
   it("updates JSON chain descriptions without rewriting them as markdown", () => {
@@ -581,6 +530,13 @@ Inspect
       "utf-8",
     );
 
+    const loaded = discoverAgentsAll(tempDir, { projectTrusted: true }, "project").chains.find(
+      (chain) => chain.name === "dynamic-review",
+    );
+    assert.equal(loaded?.name, "dynamic-review");
+    assert.equal(loaded.steps.length, 2);
+    assert.deepEqual(loaded.steps[1]?.collect, { as: "reviews" });
+    assert.deepEqual(loaded.steps[0]?.outputSchema, { type: "object" });
     const updated = handleUpdate(
       { chainName: "dynamic-review", config: { description: "Updated dynamic review" } },
       ctx,
@@ -591,6 +547,7 @@ Inspect
     assert.doesNotMatch(content, /^---/);
     const parsed = parseJsonObject(content);
     assert.equal(parsed.description, "Updated dynamic review");
+    assert.deepEqual(objectAt(parsed, "chain", 0).outputSchema, { type: "object" });
     assert.equal(objectAt(parsed, "chain", 1, "collect").as, "reviews");
   });
 
