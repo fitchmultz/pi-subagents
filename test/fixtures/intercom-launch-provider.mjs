@@ -91,7 +91,7 @@ export default function (pi) {
     save();
     if (input.scenario === "hang") {
       setInterval(() => {
-        if (existsSync(join(dirname(input.receipts), `${process.pid}.block`))) {
+        if (existsSync(join(dirname(input.receipts), `${receipt.sessionId}.block`))) {
           receipt.blocked = true;
           save();
           // Deadlock approved native code without inference, network traffic or CPU spin.

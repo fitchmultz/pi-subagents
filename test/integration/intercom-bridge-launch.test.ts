@@ -252,8 +252,8 @@ test(
     const block = async (peer: UnknownRecord) => {
       assert.equal(peer.status, "idle", "native readiness must precede the deadlock");
       const pid = numberValue(peer.pid);
-      const runtimePid = await ownRuntime(pid);
-      writeFileSync(join(root, `${runtimePid}.block`), "", { mode: 0o600 });
+      await ownRuntime(pid);
+      writeFileSync(join(root, `${text(peer.sessionId)}.block`), "", { mode: 0o600 });
       await until(() => receipt(pid).blocked === true);
       assert.equal(receipt(pid).calls, 0, "deadlock must not require inference");
       assert.equal(receipt(pid).networkRequests, 0);
