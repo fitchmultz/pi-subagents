@@ -4,7 +4,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 function help() {
-  console.log(`Usage: node intercom-remote.mjs <register|list|inbox|send|ask|reply|ack> [options] [IDs...]
+  console.log(`Usage: node intercom-remote.mjs <register|list|inbox|send|ask|reply|ack|start|sessions|stop> [options] [IDs...]
 
 Environment (required):
   INTERCOM_BRIDGE_CA    Path to trusted bridge CA certificate
@@ -17,6 +17,8 @@ Options:
   --message TEXT       Message for send/ask/reply
   --reply-to ID        Inbound ask ID from inbox, for reply
   --timeout-ms MS      Ask timeout (100..120000, default: 120000)
+  --name NAME          Start/reuse a named idle Pi session under local policy
+  --session-id ID      Stop only a Pi session launched by this identity/helper
   -h, --help           Show help
 
 Examples:
@@ -25,12 +27,21 @@ Examples:
   node intercom-remote.mjs inbox
   node intercom-remote.mjs reply --reply-to QUESTION_ID --message 'Proceed.'
   node intercom-remote.mjs ack MESSAGE_ID
+  node intercom-remote.mjs start --name planner
+  node intercom-remote.mjs sessions
+  node intercom-remote.mjs stop --session-id NATIVE_SESSION_ID
 
 Outputs JSON. Exit: 0 success, 1 API/TLS/transport failure, 2 invalid arguments.
 No automatic retries: a lost response does not prove a message was unsent.`);
 }
 
 function allowedOptions(action) {
+  if (action === "start") {
+    return ["name"];
+  }
+  if (action === "stop") {
+    return ["session-id"];
+  }
   if (action === "send") {
     return ["to", "message"];
   }
@@ -54,7 +65,17 @@ function requireMessage(recipient, message) {
   }
 }
 
+function launchBody(action, options) {
+  const value = action === "start" ? options.name : options["session-id"];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(action === "start" ? "--name is required." : "--session-id is required.");
+  }
+  return action === "start" ? { name: value } : { sessionId: value };
+}
 function requestBody(action, options, ids, timeout) {
+  if (action === "start" || action === "stop") {
+    return launchBody(action, options);
+  }
   if (["send", "ask", "reply"].includes(action)) {
     const recipient = action === "reply" ? options["reply-to"] : options.to;
     requireMessage(recipient, options.message);
@@ -108,6 +129,8 @@ try {
       message: { type: "string" },
       "reply-to": { type: "string" },
       "timeout-ms": { type: "string" },
+      name: { type: "string" },
+      "session-id": { type: "string" },
     },
   });
   if (parsed.values.help) {
@@ -116,7 +139,20 @@ try {
   }
   const options = parsed.values;
   [action] = parsed.positionals;
-  if (!["register", "list", "inbox", "send", "ask", "reply", "ack"].includes(action)) {
+  if (
+    ![
+      "register",
+      "list",
+      "inbox",
+      "send",
+      "ask",
+      "reply",
+      "ack",
+      "start",
+      "sessions",
+      "stop",
+    ].includes(action)
+  ) {
     throw new Error("Choose an action; use --help.");
   }
   const allowed = allowedOptions(action);
@@ -159,7 +195,7 @@ try {
   const files = tlsFiles();
   origin.pathname = `/v1/${action}`;
   const payload = JSON.stringify(body);
-  const get = ["list", "inbox"].includes(action);
+  const get = ["list", "inbox", "sessions"].includes(action);
   const result = await new Promise((resolve, reject) => {
     const req = https.request(
       origin,
@@ -203,7 +239,7 @@ try {
       () => {
         req.destroy(new Error("Bridge request deadline exceeded; delivery may be unknown."));
       },
-      (action === "ask" ? timeout : 0) + 15000,
+      action === "start" ? 90000 : (action === "ask" ? timeout : 0) + 15000,
     );
     req.once("close", () => clearTimeout(timer));
     req.once("error", reject);

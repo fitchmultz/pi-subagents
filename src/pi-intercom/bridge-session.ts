@@ -9,7 +9,7 @@ import type { Message, SendResult, SessionInfo } from "./types.ts";
 import type { Identity } from "./bridge-config.ts";
 import { Fault, INBOX_BYTES, INBOX_COUNT, cancelled, log, wait } from "./bridge-protocol.ts";
 import type { UnknownRecord } from "../shared/unknown.ts";
-import type { Operation } from "./bridge-routes.ts";
+import type { MessagingOperation as Operation } from "./bridge-routes.ts";
 
 import { WaitingAsk, type Envelope } from "./bridge-ask.ts";
 const MAX_REQUESTS = 8;
@@ -306,6 +306,10 @@ export class Session {
     }
     this.guard(signal);
     return peers;
+  }
+  async connectedPeers(signal: AbortSignal): Promise<SessionInfo[]> {
+    await this.connect(signal);
+    return this.peers(signal);
   }
   private async target(to: string, signal: AbortSignal): Promise<SessionInfo> {
     const resolution = resolveSessionTarget(await this.peers(signal), to);

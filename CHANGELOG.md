@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.46.0] - 2026-10-11
+
+### Added
+
+- Opt-in controlled destination Pi-session launching over the secure Intercom bridge: locally pinned native RPC sessions, private native journals and inference-free startup, actual peer readiness, name reuse, own-session status/stop, caps, and remote CLI commands. Cancellation, expiry, revocation and shutdown reap the helper-owned process group, including unresponsive native workers, while retaining journals and observing actual closure. Cleanup deadlines report `stop_timeout` and remain retryable; cleanup failures preserve the original startup fault. Messaging-only and standalone credential installs remain independent of Pi SDK imports.
+
 ## [0.45.0] - 2026-10-11
 
 ### Changed

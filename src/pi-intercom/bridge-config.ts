@@ -1,8 +1,17 @@
-import { constants, closeSync, fstatSync, openSync, readFileSync, statSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { isAbsolute } from "node:path";
 import { createSecureContext } from "node:tls";
 import { isUnknownArray } from "../shared/unknown.ts";
 import { BODY_LIMIT, object, label, fingerprint } from "./bridge-protocol.ts";
+import { launchPolicy, type LaunchPolicy } from "./bridge-launch-policy.ts";
 
 const MAX_CLIENTS = 64;
 
@@ -10,6 +19,7 @@ export interface Identity {
   readonly fingerprint256: string;
   readonly name: string;
   readonly cwd: string;
+  readonly launch?: LaunchPolicy;
 }
 export interface Config {
   readonly port: number;
@@ -47,17 +57,26 @@ function identities(value: unknown): Map<string, Identity> {
   const clients = new Map<string, Identity>();
   const names = new Set<string>();
   for (const raw of value) {
-    const entry = object(raw, ["fingerprint256", "name", "cwd"]);
+    const entry = object(raw, ["fingerprint256", "name", "cwd", "launch"]);
     const fingerprint256 = fingerprint(entry.fingerprint256);
     const name = label(entry.name, "name", 128).trim();
     const cwd = label(entry.cwd, "cwd", 4096);
-    if (!isAbsolute(cwd) || !statSync(cwd).isDirectory()) {
-      throw new Error("Client cwd must be an existing absolute directory.");
+    if (!isAbsolute(cwd)) {
+      throw new Error("Client cwd must be absolute.");
+    }
+    const launch = launchPolicy(entry.launch);
+    if (launch && !statSync(cwd).isDirectory()) {
+      throw new Error("Launch cwd must be an existing directory.");
     }
     if (clients.has(fingerprint256) || names.has(name.toLowerCase())) {
       throw new Error("Client fingerprints and names must be unique.");
     }
-    clients.set(fingerprint256, { fingerprint256, name, cwd });
+    clients.set(fingerprint256, {
+      fingerprint256,
+      name,
+      cwd: launch ? realpathSync(cwd) : cwd,
+      launch,
+    });
     names.add(name.toLowerCase());
   }
   return clients;

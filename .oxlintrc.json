@@ -684,7 +684,8 @@
         "test/fixtures/pi-intercom-native-resume.mjs",
         "test/fixtures/real-pi-smoke-cli.mjs",
         "test/fixtures/runner-clock.mjs",
-        "test/support/mock-pi-script.mjs"
+        "test/support/mock-pi-script.mjs",
+        "test/fixtures/intercom-launch-provider.mjs"
       ],
       "rules": {
         "typescript/await-thenable": "off",
@@ -748,6 +749,18 @@
         "typescript/use-unknown-in-catch-callback-variable": "off",
         "typescript/explicit-module-boundary-types": "off",
         "typescript/consistent-type-imports": "off"
+      }
+    },
+    {
+      "files": ["src/pi-intercom/bridge-launch.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": ["entry"]
+          }
+        ]
       }
     }
   ]
