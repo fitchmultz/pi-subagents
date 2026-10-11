@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import { findLatestSessionFile } from "../../src/shared/utils.ts";
 
 describe("findLatestSessionFile", () => {
-  it("returns the newest session and treats optional metadata failures as absent", () => {
+  it("returns the newest session or null when the directory scan fails", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-sessions-"));
     try {
       const older = path.join(dir, "older.jsonl");

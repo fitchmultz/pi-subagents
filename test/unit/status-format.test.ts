@@ -50,9 +50,20 @@ describe("status format helpers", () => {
     );
 
     for (const state of ["completed", "paused", "failed"] as const) {
-      const terminal = buildManagementControl({ state, runId: `${state}-1`, canResume: true });
+      const terminal = buildManagementControl({
+        state,
+        runId: `${state}-1`,
+        canResume: true,
+        canNudge: true,
+        canInterrupt: true,
+        canExtend: true,
+      });
       assert.deepEqual(terminal.capabilities, ["status", "resume"]);
       assert.equal(terminal.capabilities.includes("nudge"), false);
+      assert.deepEqual(terminal.nextActions, [
+        { action: "status", runId: `${state}-1` },
+        { action: "resume", runId: `${state}-1` },
+      ]);
     }
   });
 

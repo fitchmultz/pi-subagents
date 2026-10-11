@@ -140,7 +140,7 @@ describe("shared temp paths", () => {
     assert.equal(path.basename(TEMP_ARTIFACTS_DIR), "artifacts");
   });
 
-  it("writes async config files under the same scoped temp root", () => {
+  it("locates legacy async config probes under the scoped temp root", () => {
     assert.equal(path.dirname(getAsyncConfigPath("abc123")), TEMP_ROOT_DIR);
     assert.equal(path.basename(getAsyncConfigPath("abc123")), "async-cfg-abc123.json");
   });

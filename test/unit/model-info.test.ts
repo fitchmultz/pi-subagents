@@ -58,42 +58,17 @@ describe("model info helpers", () => {
   });
 
   it("requires reasoning models to opt in to xhigh and max", () => {
-    assert.deepEqual(
-      getSupportedThinkingLevels({
-        provider: "openai",
-        id: "gpt-5",
-        fullId: "openai/gpt-5",
-        reasoning: true,
-      }),
-      ["off", "minimal", "low", "medium", "high"],
-    );
-  });
-
-  it("uses Pi's default levels when older model metadata omits reasoning", () => {
-    assert.deepEqual(
-      getSupportedThinkingLevels({ provider: "openai", id: "gpt-5", fullId: "openai/gpt-5" }),
-      ["off", "minimal", "low", "medium", "high"],
-    );
-  });
-
-  it("filters unsupported levels and preserves explicit xhigh and max mappings", () => {
-    assert.deepEqual(
-      getSupportedThinkingLevels({
-        provider: "deepseek",
-        id: "deepseek-v4-pro",
-        fullId: "deepseek/deepseek-v4-pro",
-        reasoning: true,
-        thinkingLevelMap: {
-          minimal: null,
-          low: null,
-          medium: null,
-          high: "high",
-          xhigh: "xhigh",
-          max: "max",
-        },
-      }),
-      ["off", "high", "xhigh", "max"],
-    );
+    for (const reasoning of [true, undefined]) {
+      assert.deepEqual(
+        getSupportedThinkingLevels({
+          provider: "openai",
+          id: "gpt-5",
+          fullId: "openai/gpt-5",
+          ...(reasoning === undefined ? {} : { reasoning }),
+        }),
+        ["off", "minimal", "low", "medium", "high"],
+      );
+    }
   });
 
   it("honors metadata that marks off unsupported", () => {

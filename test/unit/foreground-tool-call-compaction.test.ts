@@ -2,28 +2,9 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { compactForegroundResult, extractToolArgsPreview } from "../../src/shared/utils.ts";
-import { toolCall } from "../support/runtime-messages.ts";
 import { formatToolCall } from "../../src/shared/formatters.ts";
 
 describe("foreground tool-call compaction", () => {
-  it("stores compact tool-call summaries instead of raw message payloads", () => {
-    const result = compactForegroundResult({
-      agent: "tester",
-      task: "run checks",
-      exitCode: 0,
-      messages: [toolCall("write", { path: "/tmp/report.md", content: "x".repeat(50_000) })],
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-    });
-
-    assert.equal(result.messages, undefined);
-    assert.deepEqual(result.toolCalls, [
-      {
-        text: "write /tmp/report.md",
-        expandedText: "write /tmp/report.md",
-      },
-    ]);
-  });
-
   it("keeps expanded generic tool-call previews bounded", () => {
     const collapsed = formatToolCall("custom", { payload: "x".repeat(500) });
     const expanded = formatToolCall("custom", { payload: "x".repeat(500) }, true);
@@ -44,7 +25,7 @@ describe("foreground tool-call compaction", () => {
     assert.equal(result.toolCalls, undefined);
   });
 
-  it("formats array-based web search previews clearly", () => {
+  it("formats search, fetch and generic array previews clearly", () => {
     assert.equal(
       extractToolArgsPreview({
         queries: [
@@ -55,9 +36,6 @@ describe("foreground tool-call compaction", () => {
       }),
       "Chrome native messaging manifest path macOS (+1 more)",
     );
-  });
-
-  it("formats fetch_content urls clearly", () => {
     assert.equal(
       extractToolArgsPreview({
         urls: [
@@ -67,9 +45,6 @@ describe("foreground tool-call compaction", () => {
       }),
       "https://developer.chrome.com/docs/extensions/develop/conc...",
     );
-  });
-
-  it("falls back to generic array previews", () => {
     assert.equal(
       extractToolArgsPreview({ ids: ["run-a", "run-b", "run-c"] }),
       "ids=run-a (+2 more)",

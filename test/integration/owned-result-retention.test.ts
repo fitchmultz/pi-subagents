@@ -435,7 +435,25 @@ describe("unified owner result retention through actual router", () => {
 
   for (const includeProgress of [undefined, false]) {
     it(`keeps final results compact with includeProgress ${String(includeProgress)}`, async () => {
-      mock.onCall({ output: "Compact result" });
+      mock.onCall({
+        jsonl: [
+          {
+            type: "message_end",
+            message: {
+              ...events.assistantMessage("").message,
+              content: [
+                {
+                  type: "toolCall",
+                  id: "write-report",
+                  name: "write",
+                  arguments: { path: "/tmp/report.md", content: "x".repeat(50_000) },
+                },
+              ],
+            },
+          },
+          events.assistantMessage("Compact result"),
+        ],
+      });
       const result = await executor().execute({
         toolCallId: "compact",
         params: {
@@ -449,6 +467,9 @@ describe("unified owner result retention through actual router", () => {
       assert.equal(result.details.progress, undefined);
       assert.equal(result.details.results[0].progress, undefined);
       assert.equal(result.details.results[0].messages, undefined);
+      assert.deepEqual(result.details.results[0].toolCalls, [
+        { text: "write /tmp/report.md", expandedText: "write /tmp/report.md" },
+      ]);
       assertDefined(result.details.progressSummary);
       assert.ok(result.details.progressSummary.durationMs > 0);
     });

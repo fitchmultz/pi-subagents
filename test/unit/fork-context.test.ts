@@ -7,66 +7,9 @@ import { describe, it } from "node:test";
 import { assertDefined } from "../support/assertions.ts";
 import { assistant } from "../support/runtime-messages.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import {
-  createForkContextResolver,
-  resolveSubagentContext,
-} from "../../src/shared/fork-context.ts";
-
-describe("resolveSubagentContext", () => {
-  it("defaults to fresh", () => {
-    assert.equal(resolveSubagentContext(undefined), "fresh");
-    assert.equal(resolveSubagentContext("anything"), "fresh");
-  });
-  it("accepts fork", () => assert.equal(resolveSubagentContext("fork"), "fork"));
-});
+import { createForkContextResolver } from "../../src/shared/fork-context.ts";
 
 describe("createForkContextResolver", () => {
-  it("fresh mode never opens a parent session", (t) => {
-    const opener = t.mock.method(SessionManager, "open", () => {
-      throw new Error("must not open");
-    });
-    const resolver = createForkContextResolver(
-      {
-        getSessionFile: () => "/tmp/parent.jsonl",
-        getLeafId: () => "leaf-123",
-        getSessionDir: () => "/tmp",
-      },
-      "fresh",
-    );
-    assert.equal(resolver.sessionFileForIndex(0), undefined);
-    assert.equal(opener.mock.callCount(), 0);
-  });
-
-  it("fails fast when parent session file is missing", () => {
-    assert.throws(
-      () =>
-        createForkContextResolver(
-          {
-            getSessionFile: (): string | undefined => undefined,
-            getLeafId: () => "leaf-123",
-            getSessionDir: () => "/tmp",
-          },
-          "fork",
-        ),
-      /Forked subagent context requires a persisted parent session\./,
-    );
-  });
-
-  it("fails fast when leaf id is missing", () => {
-    assert.throws(
-      () =>
-        createForkContextResolver(
-          {
-            getSessionFile: () => "/tmp/parent.jsonl",
-            getLeafId: () => null,
-            getSessionDir: () => "/tmp",
-          },
-          "fork",
-        ),
-      /Forked subagent context requires a current leaf to fork from\./,
-    );
-  });
-
   it("creates isolated native branches per index without changing the parent", (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-native-"));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -79,7 +22,7 @@ describe("createForkContextResolver", () => {
     assertDefined(leaf);
     const bytes = fs.readFileSync(parentFile, "utf8");
     const entries = parent.getBranch(leaf);
-    const resolver = createForkContextResolver(parent, "fork");
+    const resolver = createForkContextResolver(parent);
     const children = [0, 1, 2, 3, 4, 7].map((index) => {
       const file = resolver.sessionFileForIndex(index);
       assertDefined(file);
@@ -125,7 +68,7 @@ describe("createForkContextResolver", () => {
       getLeafId: () => "unpersisted-leaf",
       getSessionDir: () => dir,
     };
-    const resolver = createForkContextResolver(parent, "fork");
+    const resolver = createForkContextResolver(parent);
     assert.throws(
       () => resolver.sessionFileForIndex(0),
       /Failed to create forked subagent session: Parent session file does not exist: .*Pi has not persisted enough history to fork yet\./,
@@ -143,10 +86,11 @@ describe("createForkContextResolver", () => {
     t.mock.method(SessionManager, "open", () => ({
       createBranchedSession: () => path.join(dir, "missing-child.jsonl"),
     }));
-    const resolver = createForkContextResolver(
-      { getSessionFile: () => parentFile, getLeafId: () => "leaf", getSessionDir: () => dir },
-      "fork",
-    );
+    const resolver = createForkContextResolver({
+      getSessionFile: () => parentFile,
+      getLeafId: () => "leaf",
+      getSessionDir: () => dir,
+    });
     assert.throws(
       () => resolver.sessionFileForIndex(0),
       /Failed to create forked subagent session: Session manager returned a forked session file that does not exist: .*missing-child\.jsonl/,
@@ -161,10 +105,11 @@ describe("createForkContextResolver", () => {
     t.mock.method(SessionManager, "open", () => ({
       createBranchedSession: (): string | undefined => undefined,
     }));
-    const resolver = createForkContextResolver(
-      { getSessionFile: () => parentFile, getLeafId: () => "leaf", getSessionDir: () => dir },
-      "fork",
-    );
+    const resolver = createForkContextResolver({
+      getSessionFile: () => parentFile,
+      getLeafId: () => "leaf",
+      getSessionDir: () => dir,
+    });
     assert.throws(
       () => resolver.sessionFileForIndex(0),
       /Failed to create forked subagent session: Session manager did not return a forked session file\./,

@@ -3,11 +3,6 @@ import { readLinuxProcess } from "../pi-intercom/broker/pid.ts";
 import type { AgentProcessExit } from "./types.ts";
 import { hasErrorCode } from "./unknown.ts";
 
-interface PostExitStdioGuardOptions {
-  readonly idleMs: number;
-  readonly hardMs: number;
-}
-
 interface ChildWithPipedStdio {
   readonly stdout: ChildProcess["stdout"];
   readonly stderr: ChildProcess["stderr"];
@@ -42,7 +37,7 @@ export function readChildProcessIdentity(pid: number): string | undefined {
   }
 }
 
-export function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {
+function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {
   try {
     return child.kill(signal);
   } catch {
@@ -109,7 +104,7 @@ class OwnedChildLifecycle implements ChildProcessLifecycle {
   private readonly clearStdioGuard: () => void;
   constructor(child: ChildWithPipedStdio & ChildWithKill) {
     this.child = child;
-    this.clearStdioGuard = attachPostExitStdioGuard(child, { idleMs: 2000, hardMs: 8000 });
+    this.clearStdioGuard = attachPostExitStdioGuard(child);
     child.on("exit", (code, signal) => {
       this.exited = true;
       this.exit = { pid: child.pid, code, signal, at: Date.now() };
@@ -193,11 +188,7 @@ export function attachChildProcessLifecycle(
   return new OwnedChildLifecycle(child);
 }
 
-export function attachPostExitStdioGuard(
-  child: ChildWithPipedStdio,
-  options: PostExitStdioGuardOptions,
-): () => void {
-  const { idleMs, hardMs } = options;
+function attachPostExitStdioGuard(child: ChildWithPipedStdio): () => void {
   let exited = false;
   let stdoutEnded = false;
   let stderrEnded = false;
@@ -239,7 +230,7 @@ export function attachPostExitStdioGuard(
     if (idleTimer) {
       clearTimeout(idleTimer);
     }
-    idleTimer = setTimeout(destroyUnendedStdio, idleMs);
+    idleTimer = setTimeout(destroyUnendedStdio, 2000);
     idleTimer.unref();
   };
 
@@ -263,7 +254,7 @@ export function attachPostExitStdioGuard(
     if (hardTimer) {
       return;
     }
-    hardTimer = setTimeout(destroyUnendedStdio, hardMs);
+    hardTimer = setTimeout(destroyUnendedStdio, 8000);
     hardTimer.unref();
   });
   child.on("close", clearTimers);

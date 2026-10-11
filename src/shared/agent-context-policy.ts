@@ -198,7 +198,7 @@ export function createPerAgentForkContextResolver(
       return undefined;
     }
     if (!forkResolver) {
-      forkResolver = createForkContextResolver(sessionManager, "fork");
+      forkResolver = createForkContextResolver(sessionManager);
     }
     return forkResolver.sessionFileForIndex(index);
   };

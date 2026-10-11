@@ -195,7 +195,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
   assertDefined(unmarked);
   successful(launch(unmarked, dirs.C, owner), ["B"]);
   let forkIndex = 0;
-  const resolver = createForkContextResolver(parent, "fork");
+  const resolver = createForkContextResolver(parent);
   const fork = () => {
     const file = resolver.sessionFileForIndex(forkIndex++);
     assertDefined(file);
