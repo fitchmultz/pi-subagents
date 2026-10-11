@@ -154,6 +154,9 @@ const SAME_MODEL_RECOVERY_PATTERNS = [
   /socket/i,
   /connection/i,
   /fetch failed/i,
+  // Node fetch reports a response body cut off mid-stream as bare "terminated"; Pi retries it too.
+  // Match the whole message: process failures embed stderr and paths that can contain the word.
+  /^\s*terminated\s*$/i,
   /network/i,
   /http idle/i,
   /timed? out/i,

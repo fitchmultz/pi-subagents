@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.46.1] - 2026-10-11
+
+### Fixed
+
+- A child that fails with Node's bare `terminated` network error (the response stream dropped mid-body, common during Wi-Fi drops) now gets the same-model retry and configured fallback models like other transport failures, instead of failing outright. Pi already retries this error inside the child.
+
 ## [0.46.0] - 2026-10-11
 
 ### Added

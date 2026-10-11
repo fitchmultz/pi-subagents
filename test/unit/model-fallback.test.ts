@@ -68,6 +68,14 @@ describe("model fallback helpers", () => {
       true,
     );
     assert.equal(isRecoverableSameModelFailure("provider transport timed out", 1), true);
+    assert.equal(isRecoverableSameModelFailure("terminated", 1), true);
+    assert.equal(
+      isRecoverableSameModelFailure(
+        "worker exited with code 7.\nloaded /w/retry-terminated/x.ts",
+        7,
+      ),
+      false,
+    );
     assert.equal(isRecoverableSameModelFailure("database is locked", 1), true);
     assert.equal(isRecoverableSameModelFailure("SQLITE_BUSY: database is locked", 1), true);
     assert.equal(isRecoverableSameModelFailure(undefined, 143), true);
