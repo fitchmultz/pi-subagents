@@ -506,7 +506,7 @@ async function makeSession(
     ) => {
       sends.push(id);
       const receipt = await sender.send(name, { ...input, messageId: id });
-      assert.equal(receipt.accepted, true);
+      assert.equal(receipt.accepted, true, JSON.stringify(receipt));
       return receipt;
     },
     status: async () => {
@@ -2882,6 +2882,11 @@ test("native broker-staged progress recovers terminal child identity across relo
   await parent.sender.connect(
     { name: "sender-historical-reload", cwd: parent.context().cwd, model: "fixture" },
     senderId,
+  );
+  await waitFor(
+    async () =>
+      (await parent.sender.listSessions()).some((peer) => peer.name === "historical-reload"),
+    "receiver registration after reload",
   );
   await parent.send("post-reload-progress", {
     text: "An obsolete finding from the completed child after native reload",
