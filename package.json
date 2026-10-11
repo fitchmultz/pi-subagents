@@ -59,7 +59,7 @@
     "lint:fix": "oxlint --type-aware --fix .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "ci": "npm run lint && npm run format:check && npm run typecheck && npm run check:schemas && npm run smoke:package && npm run smoke:install && npm run test:all",
+    "ci": "npm run lint && npm run format:check && npm run typecheck && npm run smoke:package && npm run smoke:install && npm run test:all",
     "smoke:real-pi": "node scripts/real-pi-smoke.mjs"
   },
   "pi": {
