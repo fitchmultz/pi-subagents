@@ -4,8 +4,6 @@
 
 ![A Pi parent session delegates independent tasks to scout and reviewer children, then receives their saved results.](.github/readme/delegation.png)
 
-*Each child has its own task and conversation. Results return to the same saved parent session.*
-
 ## Install and start
 
 Requires **Pi 1.0.0+** and **Node 24.21.0+**. Use macOS or Linux. Windows is not supported.
@@ -83,7 +81,7 @@ Intercom is included. It lets Pi sessions exchange messages and lets a child ask
 
 Read the [Intercom guide](docs/intercom.md) for setup and host limits. The [secure bridge](docs/intercom-bridge.md) supports a remote Linux agent.
 
-Indexed history requires the qualified built-in SQLite binding. See the [performance guide](docs/performance.md) for requirements and host startup costs.
+Indexed history requires SQLite 3.53.4 through Node's built-in `node:sqlite` binding. Other SQLite versions fail. See the [storage requirements](docs/performance.md#storage-budgets-and-recovery) and [host startup costs](docs/performance.md#necessary-costs-and-limits).
 
 ## Update and troubleshoot
 
