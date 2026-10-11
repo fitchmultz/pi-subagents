@@ -1,8 +1,9 @@
 ---
 name: worker
 description: End-to-end implementation specialist for bounded tasks
-model: openai-codex/gpt-6-astra
-thinking: medium
+model: openai-codex/gpt-6.1-sol
+fallbackModels: anthropic/claude-opus-5-5
+thinking: xhigh
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

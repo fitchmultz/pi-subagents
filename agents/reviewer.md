@@ -1,9 +1,9 @@
 ---
 name: reviewer
 description: Code review specialist that validates implementation and reports issues
-model: openai-codex/gpt-6-astra
-fallbackModels: anthropic/claude-opus-5
-thinking: medium
+model: openai-codex/gpt-6.1-sol
+fallbackModels: anthropic/claude-opus-5-5
+thinking: xhigh
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

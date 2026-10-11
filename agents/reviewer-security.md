@@ -1,8 +1,9 @@
 ---
 name: reviewer-security
 description: Security and data-safety reviewer for changed code, dependencies, and exposed surfaces
-model: openai-codex/gpt-6-astra
-thinking: medium
+model: openai-codex/gpt-6.1-sol
+fallbackModels: zai/glm-5.3
+thinking: xhigh
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

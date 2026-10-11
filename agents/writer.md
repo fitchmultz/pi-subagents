@@ -1,9 +1,9 @@
 ---
 name: writer
 description: Human-facing writing specialist for documentation, announcements, guides, and polished copy
-model: openai-codex/gpt-6.1-sol
-fallbackModels: anthropic/claude-fable-5-1
-thinking: high
+model: anthropic/claude-opus-5-5
+fallbackModels: openai-codex/gpt-6.1-sol
+thinking: xhigh
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

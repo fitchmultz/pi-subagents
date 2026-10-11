@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## [0.45.0] - 2026-10-11
 
 ### Changed
 
+- Refresh bundled role defaults. Claude Opus 5.5 at `xhigh` now drives planner, ui-designer, writer and reviewer-claude, with GPT-6.1 Sol as fallback. GPT-6.1 Sol at `xhigh` drives worker, fixer, debugger, researcher, context-builder, oracle and the reviewer, reviewer-gpt, reviewer-ponytail and reviewer-security roles; scout and delegate stay at `high`. Sol roles fall back to Opus 5.5, except fork-default oracle (Anthropic is ineligible for fork context) and reviewer-security (Opus refuses security review work), which fall back to `zai/glm-5.3`. Removed stale `anthropic/claude-opus-5`, `gpt-5.6-sol`, `gpt-6-astra` and `claude-fable-5-1` routes. Watcher is unchanged.
+- Acceptance contracts now tell children to check early whether every criterion is verifiable in their environment and to report unreachable services, credentials, devices or tools right away instead of spending turns on workarounds; observed human-only boundaries still report as blocked. The skill tells parents to require only checks the child can run.
 - Enforce strict Oxlint and Oxfmt rules through the published tools, editor configuration and CI. Refactor maintained code into focused owners, preserve native SDK contracts, and validate persisted run data at runtime boundaries. Package versions and user-facing behavior remain unchanged.
 
 ## [0.44.7] - 2026-10-09

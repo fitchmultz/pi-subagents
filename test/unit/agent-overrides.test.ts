@@ -62,38 +62,23 @@ describe("builtin agent overrides", () => {
         ]),
       ),
       {
-        "context-builder": [
-          "openai-codex/gpt-6.1-sol",
-          "xhigh",
-          "anthropic/claude-opus-5",
-          "openai-codex/gpt-6-astra",
-        ],
-        debugger: ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
-        delegate: ["openai-codex/gpt-6.1-sol", "high"],
-        fixer: [
-          "openai-codex/gpt-6.1-sol",
-          "xhigh",
-          "anthropic/claude-opus-5",
-          "openai-codex/gpt-6-astra",
-        ],
-        oracle: ["openai-codex/gpt-6-astra", "medium"],
-        planner: ["openai-codex/gpt-6-astra", "high", "anthropic/claude-opus-5"],
-        researcher: ["openai-codex/gpt-6-astra", "medium"],
-        reviewer: ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
-        "reviewer-claude": ["anthropic/claude-opus-5-5", "medium", "anthropic/claude-opus-5"],
-        "reviewer-gpt": ["openai-codex/gpt-6-astra", "medium"],
-        "reviewer-ponytail": [
-          "openai-codex/gpt-6.1-sol",
-          "xhigh",
-          "anthropic/claude-opus-5",
-          "openai-codex/gpt-6-astra",
-        ],
-        "reviewer-security": ["openai-codex/gpt-6-astra", "medium"],
-        scout: ["openai-codex/gpt-6.1-sol", "high", "openai-codex/gpt-5.6-sol"],
-        "ui-designer": ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
+        "context-builder": ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        debugger: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        delegate: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5-5"],
+        fixer: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        oracle: ["openai-codex/gpt-6.1-sol", "xhigh", "zai/glm-5.3"],
+        planner: ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
+        researcher: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        reviewer: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        "reviewer-claude": ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
+        "reviewer-gpt": ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        "reviewer-ponytail": ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        "reviewer-security": ["openai-codex/gpt-6.1-sol", "xhigh", "zai/glm-5.3"],
+        scout: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5-5"],
+        "ui-designer": ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
         watcher: ["openai-codex/gpt-6-luna", "high"],
-        worker: ["openai-codex/gpt-6-astra", "medium"],
-        writer: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-fable-5-1"],
+        worker: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
+        writer: ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
       },
     );
     const watcher = builtins.find((agent) => agent.name === "watcher");
@@ -143,9 +128,6 @@ describe("builtin agent overrides", () => {
         `${agent.name} progress guidance drift`,
       );
     }
-    const delegate = builtins.find((agent) => agent.name === "delegate");
-    assert.equal(delegate?.model, "openai-codex/gpt-6.1-sol");
-    assert.equal(delegate.fallbackModels, undefined);
   });
 
   it("applies user settings overrides to builtin agents", () => {
