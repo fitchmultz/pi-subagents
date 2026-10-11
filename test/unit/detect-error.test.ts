@@ -27,15 +27,20 @@ describe("detectSubagentError", () => {
   });
 
   it("detects isError tool result as failure (no assistant response)", () => {
-    const messages = [
-      toolResult("file contents", false, "", "read"),
-      toolResult("EISDIR: illegal operation on a directory, read", true, "", "read"),
-    ];
-    const result = detectSubagentError(messages);
-    assert.equal(result.hasError, true);
-    assert.equal(result.errorType, "read");
-    assert.ok(result.details !== undefined);
-    assert.match(result.details, /EISDIR/);
+    for (const [errorType, errorText, expectedDetails] of [
+      ["read", "EISDIR: illegal operation on a directory, read", /EISDIR/],
+      ["bash", "segmentation fault", /segmentation fault/],
+    ] as const) {
+      const result = detectSubagentError([
+        toolResult("ok", false, "", "read"),
+        toolResult(errorText, true, "", errorType),
+      ]);
+      assert.equal(result.hasError, true);
+      assert.equal(result.errorType, errorType);
+      assert.equal(result.exitCode, 1);
+      assert.ok(result.details !== undefined);
+      assert.match(result.details, expectedDetails);
+    }
   });
 
   it("detects error after agent's last text response", () => {
