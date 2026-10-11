@@ -450,6 +450,23 @@ async function createExtensionHarness(
   });
   const toolDefinitions = () =>
     loaded.extensions.flatMap((extension) => [...extension.tools.values()]);
+  // Untyped so it satisfies both host SDKs: Pi 1.1 requires durationMs/outputPad, Pi 1.0 lacks them.
+  const renderContextDefaults = {
+    toolCallId: "render",
+    state: undefined,
+    lastComponent: undefined,
+    cwd: repoDir,
+    argsComplete: true,
+    isPartial: false,
+    expanded: false,
+    showImages: false,
+    isError: false,
+    durationMs: undefined,
+    outputPad: 0,
+    invalidate: () => {
+      /* This fixture renders synchronously. */
+    },
+  };
   const tools = (): CapturedTool[] => {
     const captured: CapturedTool[] = [];
     for (const registered of toolDefinitions()) {
@@ -509,20 +526,9 @@ async function createExtensionHarness(
           : {
               renderCall: (args, theme, context) =>
                 definition.renderCall?.(args, theme, {
-                  toolCallId: "render",
+                  ...renderContextDefaults,
                   args,
-                  state: undefined,
-                  lastComponent: undefined,
-                  cwd: repoDir,
                   executionStarted: false,
-                  argsComplete: true,
-                  isPartial: false,
-                  expanded: false,
-                  showImages: false,
-                  isError: false,
-                  invalidate: () => {
-                    /* This fixture renders synchronously. */
-                  },
                   ...context,
                 }) ?? new Text("", 0, 0),
             }),
@@ -538,23 +544,7 @@ async function createExtensionHarness(
                   },
                   { expanded: false, isPartial: false, ...renderOptions },
                   theme,
-                  {
-                    toolCallId: "render",
-                    args: {},
-                    state: undefined,
-                    lastComponent: undefined,
-                    cwd: repoDir,
-                    executionStarted: true,
-                    argsComplete: true,
-                    isPartial: false,
-                    expanded: false,
-                    showImages: false,
-                    isError: false,
-                    invalidate: () => {
-                      /* This fixture renders synchronously. */
-                    },
-                    ...context,
-                  },
+                  { ...renderContextDefaults, args: {}, executionStarted: true, ...context },
                 ) ?? new Text("", 0, 0),
             }),
       });

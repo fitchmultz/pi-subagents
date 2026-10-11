@@ -1,6 +1,8 @@
 import type { Terminal } from "@earendil-works/pi-tui";
 
 export interface TestTerminal extends Terminal {
+  // Declared here so the fixture satisfies both host SDKs: Pi 1.1 requires it, Pi 1.0 lacks it.
+  readonly setProgramStatus: (status: unknown) => void;
   readonly input: (data: string) => void;
   readonly click: (x: number, y: number) => void;
   readonly resize: (width: number, height: number) => void;
@@ -40,6 +42,7 @@ export function createTestTerminal(columns = 90, rows = 28): TestTerminal {
     clearScreen: discardTerminalOutput,
     setTitle: discardTerminalOutput,
     setProgress: discardTerminalOutput,
+    setProgramStatus: discardTerminalOutput,
     async drainInput() {
       // Input is injected synchronously; no operating-system stream needs draining.
     },
