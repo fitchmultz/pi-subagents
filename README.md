@@ -1,6 +1,6 @@
 # pi-subagents
 
-Subagents lets [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) delegate tasks to child sessions. Use it for code review, research, or implementation while you continue in the parent session.
+`pi-subagents` lets [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) delegate tasks to child sessions. Use it for code review, research, or implementation while you continue in the parent session.
 
 ![A Pi parent session delegates independent tasks to scout and reviewer children, then receives their saved results.](.github/readme/delegation.png)
 

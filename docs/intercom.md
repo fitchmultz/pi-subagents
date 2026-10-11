@@ -32,7 +32,7 @@ Intercom requires Pi **1.0.0** and Node **24.21.0** or later. No Pi fork is requ
 pi install npm:@fitchmultz/pi-subagents
 ```
 
-Git fallback (existing tags and branches remain installable):
+Install from Git:
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
@@ -526,7 +526,6 @@ Runtime files:
 **PID reuse after restore.** A live numeric PID alone does not identify a broker: a cold restore can reuse that number for an unrelated process or thread. Linux startup ignores a saved PID only when readable native metadata disproves its identity. Different boot/PID namespace or comparable start ticks identify a stale record; start ticks are compared only in the same reader time namespace. Legacy numeric-only records remain ambiguous and blocking, except a proven non-leader thread (`Tgid != Pid`) cannot be the process ID a broker wrote. Unreadable/unsupported metadata, foreign procfs PID views and signal-0 permission errors retain the conservative refusal. macOS needs no procfs and retains numeric-PID behavior. No process is killed and no PID file is deleted to recover; normal broker startup writes its new record. A connected broker and its accepted queues are unchanged. The fields follow Linux [`proc_pid_status(5)`](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html), [`proc_pid_stat(5)`](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html) and [`namespaces(7)`](https://man7.org/linux/man-pages/man7/namespaces.7.html); they are identity evidence, not process-control authority.
 
 **`ask` stays client-side.** The broker still routes plain messages; it does not have a special request/response mode for `ask`. The sender marks the message as expecting a reply, the recipient wakes or queues according to the delivery mode, and the sender waits for the matching reply before returning it as the tool result. Reply hints make that flow practical by showing the recipient the exact `reply` call to use. Separately, `list` / `sessions` now carry a `requestId` so a delayed session-list reply cannot be mistaken for a newer one.
-
 
 ## File Structure
 

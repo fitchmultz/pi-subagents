@@ -4,7 +4,7 @@
 
 This guide contains the detailed installation, controls, workflow and runtime reference.
 
-`pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
+`pi-subagents` lets Pi delegate work to child agents. Use it for code review, research, implementation and saved workflows.
 
 ## Installation
 
@@ -22,7 +22,7 @@ With [pi-change-working-dir](https://github.com/fitchmultz/pi-change-working-dir
 
 Without a directory extension, native Pi cwd behavior is unchanged. An installed older or failing directory extension produces a clear error before work starts; update it rather than silently launching in another directory. Every child validates its loaded directory owner before its first prompt, including fresh runs. Inspection, review, questions, stop, and ordinary saved-child continuation remain available even when the parent's selected directory is unavailable. Native session identity, project context, and browser-group identity keep their existing ownership.
 
-Git fallback (existing tags and branches remain installable):
+Install from Git:
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
@@ -111,7 +111,6 @@ agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "C
 Run controls also appear when the same saved session owns actionable work: live runs, questions, failures, or unreviewed results. Reviewed inert history alone does not activate them; it remains accessible through `load_subagent({ advanced: false })`. Tool-only allowlists without a loader remain eager, and exclusions are never overridden. Activated schemas stay available for the selected branch; native tool declarations preserve selection across requests, reload and compaction rather than unloading every turn.
 
 `delegate` uses the same durable run owner and acceptance path as `subagent`; `worktree: true` runs one isolated writer through the existing worktree path. `agent_runs` keeps the saved parent's work discoverable across working directories, reloads, and restarts. A nudge never restarts completed work; `continue` explicitly revives its saved session. Use `load_subagent` for parallel groups, chains, detailed overrides, and profile administration. Existing `subagent` calls remain supported.
-
 
 ### Owned runs, review, and continuation
 
@@ -313,7 +312,6 @@ You can also ask naturally:
 
 ```text
 Show me the current async runs.
-
 ```
 
 If something feels misconfigured, run:
@@ -514,7 +512,6 @@ You can combine either execution override with `--fork`:
 ```text
 /run oracle "review this decision" --fork --fg
 /run oracle "review this decision" --fork --bg
-
 ```
 
 Prefer separate single-agent runs for independent fanout when each result should reach the parent without waiting for every sibling. Use a parallel group when the parent needs one aggregate result or shared concurrency/worktree controls. Continue useful parent work or end the turn for delivery; do not run sleep or status-polling loops. This also applies when child evidence gates an incomplete active goal. Non-interactive one-shot Pi callers should set `async: false` when stdout must contain the child result. On the portable path, omitted `async` returns a launch receipt.
@@ -715,7 +712,6 @@ name: scout-planner
 description: Gather context then plan implementation
 ---
 
-
 ## scout
 phase: Context
 label: Map auth flow
@@ -852,7 +848,7 @@ What the bundled skill covers:
 - **Intercom conventions**: when to ask vs send, and how parent-side result delivery works with `pi-intercom`
 - **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
 
-If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and example prompts encode the same workflows in user-facing form.
+The bundled skill guides agents that orchestrate subagents. For human examples, see [Good first prompts](#good-first-prompts) and the [example prompts](../prompts/).
 
 ## Programmatic tool usage
 
@@ -916,7 +912,6 @@ delegate({
 
 // Dynamic fanout from structured output
 { chain: [
-
   {
     agent: "scout",
     task: "Return migration targets as structured_output: { items: [{ path, reason }] }",
@@ -1117,7 +1112,6 @@ Stop and run deadlines also cancel Git checkout and setup hooks. Failed or inter
 
 After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Worktrees and temp branches are then cleaned up. Runner exceptions or diff-capture failures preserve them so edits remain recoverable.
 
-
 ## Configuration
 
 `pi-subagents` reads optional JSON config from `~/.pi/agent/extensions/subagent/config.json`.
@@ -1317,7 +1311,6 @@ Public acceptance config is evidence-driven. There is no public `level` field an
 - `checked`: runtime structural checks passed, such as required criteria, required evidence, and no staged files.
 - `verified`: configured runtime verification commands passed. Child-reported command success does not count.
 - `rejected`: attestation, structural checks, verification, or finalization failed.
-
 
 Independent review is not part of `acceptance`; the parent launches reviewer runs after the worker completes. Unsupported `acceptance.review` input fails during preflight before any child starts. Self-review finalization never counts as independent review, and it never counts as `verified` unless configured runtime verification commands actually pass. Child-written handoff files remain authoritative during finalization. Otherwise, the current finalization report supplies the parent result, chain input, and artifact output; native finalization also refreshes files generated from earlier assistant output. Legacy and Claude Code fenced reports can retain the prior handoff when they provide no new summary. The initial output remains available as acceptance audit evidence; finalization usage and residual risks are included in the result. Final reports describe cumulative whole-task evidence, including criterion-local evidence requirements, not only edits made during the finalization turn.
 
