@@ -39,12 +39,6 @@ const faults = {
       fs.mkdirSync(dist, { recursive: true });
       fs.writeFileSync(join(dist, "winner.txt"), "published");
       fs.writeFileSync(join(dist, "index.js"), "winner");
-      // Shared fixture: only pi-mcp-adapter supplies dist-relative runtime assets.
-      for (const asset of (process.env.BUILD_SWAP_RUNTIME_ASSETS ?? "")
-        .split(",")
-        .filter(Boolean)) {
-        fs.copyFileSync(join(cwd, asset), join(dist, asset));
-      }
       throw new Error("synthetic race loss");
     };
   },

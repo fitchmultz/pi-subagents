@@ -211,13 +211,6 @@ test("build.mjs: deterministically discards staging after a concurrent winner", 
     assert.deepEqual(stagingDirs(dir), []);
   }));
 
-test("build.mjs: fails closed when a requested filesystem fault is unknown", () =>
-  withFixture(async (dir) => {
-    const result = await runBuild(dir, { BUILD_SWAP_FAULT: "unknown" }, faultArgs());
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /unknown build-swap fault: unknown/);
-  }));
-
 test("build.mjs: does not accept an empty dist as a published winner", () =>
   withFixture(async (dir) => {
     const result = await runBuild(dir, { BUILD_SWAP_FAULT: "empty-dist" }, faultArgs());

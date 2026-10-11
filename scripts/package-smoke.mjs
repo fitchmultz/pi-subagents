@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import process from "node:process";
 import { hostCli, hostRoot } from "./compat-host.mjs";
 
@@ -77,6 +78,9 @@ function assertNotPackedFile(files, path) {
 const productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
 const packDir = join(productionRoot, "pack");
 mkdirSync(packDir);
+if (packageJson.files !== undefined && !Array.isArray(packageJson.files)) {
+  fail("package.json files must be an array");
+}
 const packOutput = runOrFail("npm", ["pack", "--json", "--pack-destination", packDir]);
 let packs;
 try {
@@ -128,21 +132,31 @@ assertNotPackedFile(pack.files, "install.mjs");
 if (
   packageJson.name !== "@fitchmultz/pi-subagents" ||
   packageJson.private === true ||
-  packageJson.publishConfig?.access !== "public"
+  !isDeepStrictEqual(packageJson.publishConfig, { access: "public" })
 ) {
   fail("package.json must expose the owned public scoped npm identity");
 }
-if (packageJson.bin !== undefined) {
+if ("bin" in packageJson) {
   fail("package.json must not expose a legacy npx/bin installer");
 }
-if (!packageJson.pi?.extensions?.includes("./dist/extension/index.js")) {
-  fail("package.json pi.extensions must include ./dist/extension/index.js");
+if (packageJson.files?.includes("*.mjs")) {
+  fail("package.json files must not include the legacy root *.mjs wildcard");
 }
-if (!packageJson.pi?.extensions?.includes("./dist/pi-intercom/index.js")) {
-  fail("package.json pi.extensions must include ./dist/pi-intercom/index.js");
+for (const path of ["install.mjs", "scripts/intercom-smoke-package.mjs"]) {
+  if (existsSync(join(process.cwd(), path))) {
+    fail(`legacy distribution path must stay absent: ${path}`);
+  }
 }
-if (!packageJson.pi?.skills?.includes("./skills")) {
-  fail("package.json pi.skills must include ./skills");
+if (
+  !isDeepStrictEqual(packageJson.pi?.extensions, [
+    "./dist/extension/index.js",
+    "./dist/pi-intercom/index.js",
+  ])
+) {
+  fail("package.json pi.extensions must contain exactly the subagents and intercom entries");
+}
+if (!isDeepStrictEqual(packageJson.pi?.skills, ["./skills"])) {
+  fail("package.json pi.skills must contain exactly ./skills");
 }
 if (packageJson.pi?.prompts !== undefined) {
   fail(

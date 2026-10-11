@@ -5,11 +5,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { objectAt } from "./config-workflow-fixtures.ts";
-import {
-  array as arrayValue,
-  record as objectValue,
-  json as parseJsonObject,
-} from "../support/assertions.ts";
+import { record as objectValue, json as parseJsonObject } from "../support/assertions.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -97,27 +93,6 @@ test("package lock uses the public npm registry", () => {
     assert.equal(resolved.protocol, "https:", name);
     assert.equal(resolved.hostname, "registry.npmjs.org", name);
   }
-});
-
-test("one manifest bundles subagents and intercom", () => {
-  const pi = objectValue(readPackageJson().pi);
-  assert.deepEqual(pi.extensions, ["./dist/extension/index.js", "./dist/pi-intercom/index.js"]);
-  assert.deepEqual(pi.skills, ["./skills"]);
-  assert.equal(
-    fs.existsSync(path.join(projectRoot, "scripts", "intercom-smoke-package.mjs")),
-    false,
-  );
-});
-
-test("package has the owned public scoped identity and exposes no legacy npx installer", () => {
-  const packageJson = readPackageJson();
-  assert.equal(packageJson.name, "@fitchmultz/pi-subagents");
-  assert.notEqual(packageJson.private, true);
-  assert.deepEqual(packageJson.publishConfig, { access: "public" });
-  assert.equal("bin" in packageJson, false);
-  const files = packageJson.files === undefined ? [] : arrayValue(packageJson.files);
-  assert.equal(files.includes("*.mjs"), false);
-  assert.equal(fs.existsSync(path.join(projectRoot, "install.mjs")), false);
 });
 
 test("old pi package scope is not used by source or tests", () => {
