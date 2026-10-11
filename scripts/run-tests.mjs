@@ -139,7 +139,7 @@ const integration = () =>
     "integration tests",
     testFiles("test/integration"),
     timeoutMs ?? DEFAULT_TIMEOUT_MS.integration,
-    Math.min(4, Math.max(1, availableParallelism() - 1)),
+    Math.min(4, Math.max(1, availableParallelism())),
   );
 
 let status;
