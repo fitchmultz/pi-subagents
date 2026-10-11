@@ -4,11 +4,13 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 
-const DEFAULT_TIMEOUT_MS = { unit: 300_000, integration: 900_000 };
+// ponytail: integration is sized for the 3-vCPU macOS hosted runner, where the suite takes
+// about 840-910 s; lower it once the test campaign shrinks the suite.
+const DEFAULT_TIMEOUT_MS = { unit: 300_000, integration: 1_200_000 };
 
 function usage() {
   console.log(
-    `Usage: node scripts/run-tests.mjs [unit|integration|all] [--timeout-ms <ms>]\n\nRuns the local TypeScript test suites through Node's test runner.\n\nModes:\n  unit         Run test/unit/*.test.ts\n  integration  Run test/integration/*.test.ts\n  all          Run unit, then integration\n\nOptions:\n  --timeout-ms <ms>  Per-suite watchdog timeout in milliseconds\n  -h, --help         Show this help\n\nEnvironment:\n  PI_TEST_TIMEOUT_MS  Per-suite timeout when --timeout-ms is omitted (default: unit 300000, integration 900000)\n\nExit codes:\n  0  selected suite(s) passed\n  1  tests failed, timed out, or could not start\n  2  invalid arguments`,
+    `Usage: node scripts/run-tests.mjs [unit|integration|all] [--timeout-ms <ms>]\n\nRuns the local TypeScript test suites through Node's test runner.\n\nModes:\n  unit         Run test/unit/*.test.ts\n  integration  Run test/integration/*.test.ts\n  all          Run unit, then integration\n\nOptions:\n  --timeout-ms <ms>  Per-suite watchdog timeout in milliseconds\n  -h, --help         Show this help\n\nEnvironment:\n  PI_TEST_TIMEOUT_MS  Per-suite timeout when --timeout-ms is omitted (default: unit 300000, integration 1200000)\n\nExit codes:\n  0  selected suite(s) passed\n  1  tests failed, timed out, or could not start\n  2  invalid arguments`,
   );
 }
 
