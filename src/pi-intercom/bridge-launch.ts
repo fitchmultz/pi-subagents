@@ -20,7 +20,6 @@ interface Launch {
   sessionFile?: string;
   process?: RpcProcess;
   timer?: NodeJS.Timeout;
-  settled?: Promise<UnknownRecord>;
 }
 interface StartContext {
   readonly identity: Identity;
@@ -98,11 +97,12 @@ export class Launcher {
       admitted: false,
     };
     this.launches.add(entry);
-    entry.settled = this.establish(entry, policy, context);
     try {
-      return await entry.settled;
+      return await this.establish(entry, policy, context);
     } catch (error) {
-      await this.retire(entry, new Fault(503, "launch_failed", "Pi startup failed."));
+      await this.retire(entry, new Fault(503, "launch_failed", "Pi startup failed.")).catch(() =>
+        log("launch_cleanup", { pid: entry.process?.pid, result: "failed" }),
+      );
       if (!entry.process) {
         this.launches.delete(entry);
       }

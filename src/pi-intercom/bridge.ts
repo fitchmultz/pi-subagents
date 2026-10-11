@@ -416,7 +416,7 @@ function main(): void {
     new Bridge(loadConfig(path), path).start();
   } catch {
     process.stderr.write(
-      "Bridge startup failed: check config schema, file ownership/mode 0600, absolute TLS/cwd paths, and TLS credentials.\n",
+      "Bridge startup failed: check config schema, file ownership/mode 0600, absolute TLS/cwd paths, TLS credentials, and launch policy (0700 sessionDir, Pi packageRoot, extension paths).\n",
     );
     process.exitCode = 1;
   }

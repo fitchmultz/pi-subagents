@@ -60,7 +60,7 @@ function executable(packageRoot: string): string {
 }
 function extensions(value: unknown): readonly string[] {
   if (!isUnknownArray(value) || value.length < 1 || value.length > 32) {
-    throw new Error("Launch extensions must include Intercom (1..32 local paths).");
+    throw new Error("Launch extensions must contain 1..32 local paths.");
   }
   return value.map((entry) => absolute(entry, "extension path"));
 }

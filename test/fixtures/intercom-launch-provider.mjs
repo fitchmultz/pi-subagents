@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -26,6 +26,7 @@ export default function (pi) {
     started: false,
     dialog: null,
     shutdown: false,
+    blocked: false,
   };
   const save = () => {
     writeFileSync(pending, JSON.stringify(receipt), { mode: 0o600 });
@@ -88,8 +89,23 @@ export default function (pi) {
     receipt.sessionFile = ctx.sessionManager.getSessionFile();
     receipt.started = true;
     save();
+    if (input.scenario === "hang") {
+      setInterval(() => {
+        if (existsSync(join(dirname(input.receipts), `${process.pid}.block`))) {
+          receipt.blocked = true;
+          save();
+          // Deadlock approved native code without inference, network traffic or CPU spin.
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+      }, 25);
+    }
     if (input.scenario === "early-work") {
-      setTimeout(() => pi.sendUserMessage("Locally configured startup activity fixture."), 250);
+      // Observe native RPC's reader before listening, so the fixture cannot consume input early.
+      process.stdin.once("resume", () => {
+        process.stdin.once("data", () => {
+          setImmediate(() => pi.sendUserMessage("Locally configured startup activity fixture."));
+        });
+      });
     }
     if (input.scenario === "stall") {
       const keepAlive = setInterval(save, 1000);
@@ -99,8 +115,11 @@ export default function (pi) {
       });
     }
     if (input.scenario === "dialog") {
-      receipt.dialog = await ctx.ui.confirm("Launch fixture", "No approval is permitted.");
-      save();
+      // Native RPC installs its input reader after session_start returns.
+      void ctx.ui.confirm("Launch fixture", "No approval is permitted.").then((confirmed) => {
+        receipt.dialog = confirmed;
+        save();
+      });
     }
   });
   pi.on("session_shutdown", () => {

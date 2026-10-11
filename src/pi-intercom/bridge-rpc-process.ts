@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { RpcCommand, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
+import { trySignalChildTree } from "../shared/post-exit-stdio-guard.ts";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 import { Fault, log, wait } from "./bridge-protocol.ts";
 import type { LaunchPolicy } from "./bridge-launch-policy.ts";
@@ -36,6 +37,7 @@ export class RpcProcess {
   constructor(policy: LaunchPolicy, cwd: string, sessionFile: string) {
     this.child = spawn(process.execPath, this.arguments(policy, sessionFile), {
       cwd,
+      detached: true,
       env: launchEnvironment(policy.packageRoot),
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -253,7 +255,12 @@ export class RpcProcess {
     this.stop().catch(() => log("launch_cleanup", { pid: this.child.pid, result: "failed" }));
   }
   stop(): Promise<void> {
-    this.stopping ??= this.shutdown();
+    if (this.exitObserved) {
+      return this.exited;
+    }
+    this.stopping ??= this.shutdown().finally(() => {
+      this.stopping = undefined;
+    });
     return this.stopping;
   }
   private async shutdown(): Promise<void> {
@@ -264,14 +271,20 @@ export class RpcProcess {
     this.fail(new Fault(410, "session_stopped", "Launched session is stopping."));
     this.child.stdin.end();
     const terminate = setTimeout(() => {
-      this.child.kill("SIGTERM");
+      trySignalChildTree(this.child, "SIGTERM");
     }, 1000);
     const kill = setTimeout(() => {
-      this.child.kill("SIGKILL");
+      trySignalChildTree(this.child, "SIGKILL");
     }, 3000);
     const deadline = AbortSignal.timeout(8000);
     try {
       await wait(this.exited, deadline);
+    } catch {
+      throw new Fault(
+        503,
+        "stop_timeout",
+        "Launched Pi did not close within the cleanup deadline; inspect sessions before retrying.",
+      );
     } finally {
       clearTimeout(terminate);
       clearTimeout(kill);

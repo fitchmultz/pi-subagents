@@ -51,6 +51,13 @@ function gone(pid: number): boolean {
   }
 }
 
+async function nativeIdentity(pid: number): Promise<string | undefined> {
+  const result = await exec("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
+    env: { ...process.env, LC_ALL: "C" },
+  }).catch(() => null);
+  return result?.stdout.trim();
+}
+
 function api(url: string, credential: ReturnType<typeof parseCredential>) {
   const tls = {
     ca: readFileSync(credential.ca),
@@ -178,6 +185,20 @@ test(
     const broker = start("src/pi-intercom/broker/broker.ts", [], env);
     let bridge: ReturnType<typeof start> | undefined;
     const pids = new Set<number>();
+    const deadlocks = new Map<number, string>();
+    t.after(async () => {
+      for (const [pid, identity] of deadlocks) {
+        // Never signal a reused PID: match the receipt-owned runtime's kernel birth and group.
+        // oxlint-disable-next-line no-await-in-loop
+        if ((await nativeIdentity(pid)) === identity) {
+          process.kill(pid, "SIGKILL");
+          // Reap failed-test deadlocks only after the owner assertions have had their chance to fail.
+          // oxlint-disable-next-line no-await-in-loop
+          await until(() => gone(pid));
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    });
     const launchBridge = async (file = "src/pi-intercom/bridge.ts", client = credential) => {
       const active = start(file, ["--config", configPath], env);
       bridge = active;
@@ -213,6 +234,30 @@ test(
       const runtimePid = numberValue(receipt(pid).pid);
       await until(() => gone(runtimePid));
       assert.equal(gone(runtimePid), true, "native runtime must exit with its CLI owner");
+      deadlocks.delete(runtimePid);
+      await until(() => gone(-pid));
+      assert.equal(gone(-pid), true, "no process may remain in the helper-owned launch group");
+    };
+    const ownRuntime = async (pid: number) => {
+      pids.add(pid);
+      const runtimePid = numberValue(receipt(pid).pid);
+      const identity = await nativeIdentity(runtimePid);
+      assert.ok(
+        identity !== undefined && identity !== "",
+        "kernel must identify the receipt-owned native runtime",
+      );
+      deadlocks.set(runtimePid, identity);
+      return runtimePid;
+    };
+    const block = async (peer: UnknownRecord) => {
+      assert.equal(peer.status, "idle", "native readiness must precede the deadlock");
+      const pid = numberValue(peer.pid);
+      const runtimePid = await ownRuntime(pid);
+      writeFileSync(join(root, `${runtimePid}.block`), "", { mode: 0o600 });
+      await until(() => receipt(pid).blocked === true);
+      assert.equal(receipt(pid).calls, 0, "deadlock must not require inference");
+      assert.equal(receipt(pid).networkRequests, 0);
+      return pid;
     };
     const previousAgent = process.env.PI_CODING_AGENT_DIR;
     const previousTmp = process.env.TMPDIR;
@@ -464,7 +509,11 @@ test(
           const pid = numberValue(row.pid);
           pids.add(pid);
           await observedExit(running.active, pid);
-          assert.notEqual(receipt(pid).dialog, true);
+          assert.equal(
+            receipt(pid).dialog,
+            false,
+            "native Pi must receive the dialog cancellation",
+          );
           assert.equal(receipt(pid).calls, 0);
         },
       );
@@ -514,7 +563,22 @@ test(
         },
       );
       await t.test(
-        "certificate expiry stops idle children after the authenticating TLS connection has closed",
+        "stop reaps a native runtime deadlocked after idle admission and retains its journal",
+        async () => {
+          scenario("hang");
+          const created = await running.request("start", { name: "hung-stop" });
+          assert.equal(created.status, 200, JSON.stringify(created.body));
+          const peer = record(created.body.session);
+          const pid = await block(peer);
+          const stopped = await running.request("stop", { sessionId: peer.sessionId });
+          assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
+          assert.equal(record(stopped.body.session).status, "exited");
+          await observedExit(running.active, pid);
+          assert.equal(existsSync(text(peer.sessionFile)), true, "forced stop retains the journal");
+        },
+      );
+      await t.test(
+        "certificate expiry reaps a deadlocked native runtime after the authenticating TLS connection has closed",
         async () => {
           const dir = join(root, "expiry");
           mkdirSync(dir, { mode: 0o700 });
@@ -568,13 +632,12 @@ test(
           const offset = running.active.output().length;
           running.active.child.kill("SIGHUP");
           await running.active.wait(/"event":"allowlist_reloaded"/, offset);
-          scenario("reply");
+          scenario("hang");
           const shortApi = api(running.url, short);
           const started = await shortApi("start", { name: "expires" });
           assert.equal(started.status, 200, JSON.stringify(started.body));
           const peer = record(started.body.session);
-          const pid = numberValue(peer.pid);
-          pids.add(pid);
+          const pid = await block(peer);
           await observedExit(running.active, pid);
           assert.equal(existsSync(text(peer.sessionFile)), true);
           await assert.rejects(shortApi("sessions"));
@@ -587,14 +650,48 @@ test(
       );
 
       await t.test(
-        "rotation preserves policy, revocation terminates children even after TLS closes; helper shutdown leaves other broker peers alone",
+        "policy removal, invalid reload, rotation and shutdown reap deadlocks; timed-out stops recover without affecting other peers",
         async () => {
-          scenario("reply");
+          scenario("hang");
+          const permission = record(
+            (await running.request("start", { name: "permission-removed" })).body.session,
+          );
+          const permissionPid = await block(permission);
+          delete grok.launch;
+          save();
+          let offset = running.active.output().length;
+          running.active.child.kill("SIGHUP");
+          await running.active.wait(/"event":"allowlist_reloaded","result":"accepted"/, offset);
+          await observedExit(running.active, permissionPid);
+          const denied = await running.request("start", { name: "permission-denied" });
+          assert.equal(denied.status, 403);
+          assert.equal(record(denied.body.error).code, "launch_disabled");
+          grok.launch = policy;
+          save();
+          offset = running.active.output().length;
+          running.active.child.kill("SIGHUP");
+          await running.active.wait(/"event":"allowlist_reloaded","result":"accepted"/, offset);
+          const invalid = record(
+            (await running.request("start", { name: "invalid-reload" })).body.session,
+          );
+          const invalidPid = await block(invalid);
+          writeFileSync(configPath, "{invalid", { mode: 0o600 });
+          offset = running.active.output().length;
+          running.active.child.kill("SIGHUP");
+          await running.active.wait(
+            /"event":"allowlist_reloaded","result":"failed_closed"/,
+            offset,
+          );
+          await observedExit(running.active, invalidPid);
+          await assert.rejects(running.request("start", { name: "invalid-denied" }));
+          save();
+          offset = running.active.output().length;
+          running.active.child.kill("SIGHUP");
+          await running.active.wait(/"event":"allowlist_reloaded","result":"accepted"/, offset);
           const launched = record(
             (await running.request("start", { name: "revoked" })).body.session,
           );
-          const pid = numberValue(launched.pid);
-          pids.add(pid);
+          const pid = await block(launched);
           const renewed = parseCredential(await runTool("issue", credentials, "grok-bot"));
           assert.deepEqual(
             record(
@@ -602,15 +699,18 @@ test(
             ).launch,
             policy,
           );
-          let offset = running.active.output().length;
+          offset = running.active.output().length;
           running.active.child.kill("SIGHUP");
           await running.active.wait(/"event":"allowlist_reloaded"/, offset);
           await observedExit(running.active, pid);
+          assert.equal(
+            existsSync(text(launched.sessionFile)),
+            true,
+            "revocation retains the journal",
+          );
           const renewedApi = api(running.url, renewed);
           const again = record((await renewedApi("start", { name: "shutdown" })).body.session);
-          const nextPid = numberValue(again.pid);
-          pids.add(nextPid);
-          const nextRuntimePid = numberValue(receipt(nextPid).pid);
+          const nextPid = await block(again);
           await stop(running.active.child);
           assert.equal(running.active.child.signalCode, null);
           assert.equal(running.active.child.exitCode, 0);
@@ -619,8 +719,8 @@ test(
             running.active.output(),
             new RegExp(`"event":"launch_exit","pid":${nextPid},`),
           );
-          await until(() => gone(nextPid));
-          await until(() => gone(nextRuntimePid));
+          await observedExit(running.active, nextPid);
+          assert.equal(existsSync(text(again.sessionFile)), true, "shutdown retains the journal");
           assert.equal(
             broker.child.exitCode,
             null,
@@ -636,6 +736,7 @@ test(
           const request = clocked.request;
           assert.deepEqual((await request("sessions")).body.sessions, []);
           assert.equal((await request("stop", { sessionId: again.sessionId })).status, 404);
+          scenario("hang");
           const leased = record(
             (await request("start", { name: "past-presence-lease" })).body.session,
           );
@@ -651,12 +752,64 @@ test(
               .sessionId,
             leased.sessionId,
           );
+          await block(leased);
+          // The helper clock suspends escalation; AbortSignal's real deadline still bounds stop.
+          const timedOut = await request("stop", { sessionId: leased.sessionId });
+          assert.equal(timedOut.status, 503);
+          assert.equal(record(timedOut.body.error).code, "stop_timeout");
+          assert.equal(gone(leasePid), false);
+          const leaseRuntimePid = numberValue(receipt(leasePid).pid);
+          assert.equal(await nativeIdentity(leaseRuntimePid), deadlocks.get(leaseRuntimePid));
+          process.kill(leaseRuntimePid, "SIGKILL");
+          await observedExit(next, leasePid);
+          const retried = await request("stop", { sessionId: leased.sessionId });
+          assert.equal(retried.status, 200, JSON.stringify(retried.body));
+          assert.equal(record(retried.body.session).status, "exited");
+          assert.equal(existsSync(text(leased.sessionFile)), true);
+          scenario("stall");
+          const pending = request("start", { name: "startup-cleanup-timeout" });
+          await until(async () => {
+            const stalled = records((await request("sessions")).body.sessions).find(
+              (row) => row.name === "remote:grok-bot:startup-cleanup-timeout",
+            );
+            return (
+              stalled !== undefined &&
+              nativeReceipts().some(
+                (row) => row.sessionId === stalled.sessionId && row.started === true,
+              )
+            );
+          });
+          const stalled = records((await request("sessions")).body.sessions).find(
+            (row) => row.name === "remote:grok-bot:startup-cleanup-timeout",
+          );
+          assert.ok(stalled);
+          const stalledPid = numberValue(stalled.pid);
+          const stalledRuntimePid = await ownRuntime(stalledPid);
+          offset = next.output().length;
+          next.child.kill("SIGALRM");
+          await next.wait(/"event":"fixture_clock"/, offset);
+          const failed = await pending;
+          assert.equal(failed.status, 504, JSON.stringify(failed.body));
+          assert.equal(record(failed.body.error).code, "launch_timeout");
+          assert.equal(await nativeIdentity(stalledRuntimePid), deadlocks.get(stalledRuntimePid));
+          process.kill(stalledRuntimePid, "SIGKILL");
+          await observedExit(next, stalledPid);
+          assert.equal(existsSync(text(stalled.sessionFile)), true);
+          scenario("reply");
+          const revoked = record(
+            (await request("start", { name: "revoked-after-timeout" })).body.session,
+          );
+          const revokedPid = numberValue(revoked.pid);
+          pids.add(revokedPid);
           offset = next.output().length;
           await runTool("revoke", credentials, "grok-bot");
           next.child.kill("SIGHUP");
           await next.wait(/"event":"allowlist_reloaded"/, offset);
-          await observedExit(next, leasePid);
+          await observedExit(next, revokedPid);
           await assert.rejects(request("list"));
+          await stop(next.child);
+          assert.equal(next.child.exitCode, 0, "a recovered stop must not poison helper shutdown");
+          assert.ok(next.output().includes('"event":"shutdown","result":"closed"'));
         },
       );
     } finally {
@@ -685,7 +838,6 @@ test(
           `launched child ${pid} must exit before private roots are deleted`,
         );
       }
-      rmSync(root, { recursive: true, force: true });
     }
   },
 );
