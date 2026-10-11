@@ -1,6 +1,6 @@
 # pi-subagents
 
-Give [Pi](https://github.com/badlogic/pi-mono) focused helpers for code review, research and implementation. Ask for help in your existing conversation, keep working while children run, and return to their saved results when you need them.
+Subagents lets you hand a task to another [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) session while you keep working. Ask a scout to explain unfamiliar code or a reviewer to check your diff, then open their saved conversations when you need the details.
 
 ![A Pi session delegates independent tasks to a scout and a reviewer, whose results are saved and returned to the parent session.](.github/readme/delegation.png)
 
@@ -21,9 +21,9 @@ In a new Pi session, try:
 Use scout to explain how authentication works in this project.
 ```
 
-No agent files or configuration are needed to start. For Git installs, local checkouts and source switching, see the [installation reference](docs/reference.md#installation).
+The built-in agents are ready to use. For Git installs, local checkouts and source switching, see the [installation reference](docs/reference.md#installation).
 
-## Ask for the help you need
+## Try a review
 
 ```text
 Use reviewer to review this diff for bugs and missing tests.
@@ -39,7 +39,7 @@ Have worker implement this approved plan, then ask reviewer to check the changes
 
 Background execution is the default. Each child gets a focused assignment and its own saved conversation. Pi can also wait for a result, run a sequence of agents, or reuse a saved workflow. A reviewer runs when you ask for one; installing the extension does not start automatic reviews.
 
-Children use models through your configured provider accounts and can consume tokens. They normally inherit Pi's tools, extensions, project instructions and skills, so give them the same care you give your main session. See [tool selection](docs/reference.md#tool-and-extension-selection) and [project trust](docs/reference.md#projecttrust) for restricted profiles.
+Each child uses your provider accounts and can spend tokens. Children normally inherit Pi's tools, extensions, project instructions and skills. See [tool selection](docs/reference.md#tool-and-extension-selection) and [project trust](docs/reference.md#projecttrust) for restricted profiles.
 
 ## Follow, message and continue your agents
 
@@ -72,7 +72,7 @@ Custom agents live in `~/.pi/agent/agents/` or your project's `.pi/agents/`. [Ag
 
 ## Direct commands
 
-Natural language is usually enough. These commands give you explicit control:
+You can also launch an agent directly:
 
 | Command | Example |
 | --- | --- |
@@ -84,7 +84,7 @@ Natural language is usually enough. These commands give you explicit control:
 
 Saved workflows use names you define; the example assumes you've [created a chain](docs/reference.md#chain-files) called `scout-planner`.
 
-Add `--fg` to wait for the saved result, unless your configuration forces background execution. See the [command reference](docs/reference.md#direct-commands) for options, forked context and per-step settings.
+Add `--fg` if you want to wait for the result. This works unless you've configured Pi to force background execution. See the [command reference](docs/reference.md#direct-commands) for options, forked context and per-step settings.
 
 ## Coordinate with other Pi sessions
 

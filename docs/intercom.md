@@ -14,7 +14,7 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 - **Agent collaboration** — An agent can reach out to another session when it needs help or wants to share results
 - **Session awareness** — See what other pi sessions are running and their current status
 
-Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
+Intercom sends direct messages to the session you choose.
 
 Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a discovery or change the supervisor needs while working. It steers at the next tool boundary; skip starts, redundant narration, and routine completion, and retain material findings in the final result. Fresh normal sessions see `load_intercom`, a small entry that enables the full `intercom` tool without sending or checking anything.
 
@@ -31,8 +31,6 @@ Intercom requires Pi **1.0.0** and Node **24.21.0** or later. No Pi fork is requ
 ```bash
 pi install npm:@fitchmultz/pi-subagents
 ```
-
-**The unscoped npm package `pi-subagents` is not this project.** Use `@fitchmultz/pi-subagents`.
 
 Git fallback (existing tags and branches remain installable):
 
@@ -529,17 +527,6 @@ Runtime files:
 
 **`ask` stays client-side.** The broker still routes plain messages; it does not have a special request/response mode for `ask`. The sender marks the message as expecting a reply, the recipient wakes or queues according to the delivery mode, and the sender waits for the matching reply before returning it as the tool result. Reply hints make that flow practical by showing the recipient the exact `reply` call to use. Separately, `list` / `sessions` now carry a `requestId` so a delayed session-list reply cannot be mistaken for a newer one.
 
-## pi-intercom vs pi-messenger
-
-| Aspect | pi-intercom | pi-messenger |
-|--------|-------------|--------------|
-| **Model** | Direct 1:1 messaging | Shared chat room |
-| **Primary use** | User orchestrating sessions | Autonomous agent coordination |
-| **Discovery** | Broker-based (real-time) | File-based registry |
-| **Messages** | Private, session-to-session | Broadcast to all agents |
-| **Persistence** | In Pi session history | Shared coordination files |
-
-Use pi-messenger for multi-agent swarms working on a shared task. Use pi-intercom when you want to manually coordinate your own sessions or have one agent reach out to another specific session.
 
 ## File Structure
 
