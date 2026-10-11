@@ -106,7 +106,7 @@
     "oxlint-tsgolint": "7.0.2003",
     "patch-package": "8.0.1",
     "sinon": "22.1.0",
-    "typebox": "1.3.34",
+    "typebox": "1.3.36",
     "typescript": "7.0.2",
     "typescript-json-schema": "0.68.0"
   },
