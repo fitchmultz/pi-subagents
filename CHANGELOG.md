@@ -26,7 +26,7 @@
 ## [0.44.4] - 2026-10-04
 
 ### Added
-- Publish the maintained project as `@fitchmultz/pi-subagents` with public npm delivery from its repository pipeline. The unscoped npm package is unrelated; existing Git installs and release refs remain supported.
+- Publish the maintained project as `@fitchmultz/pi-subagents` with public npm delivery from its repository pipeline. Existing Git installs and release refs remain supported.
 - Discover specialist profiles declared by configured packages through `subagents.agents`. Package profiles are read-only fallbacks between builtins and user/trusted-project overrides, including installed `@fitchmultz/pi-workflows` recipes. User-installed package skills remain available even in untrusted projects; project skill sources stay trust-gated.
 
 ### Changed
@@ -1593,10 +1593,6 @@
   - Current tool and recent output for running step
 
 ## [0.2.0] - 2026-01-24
-
-### Changed
-- **Rebranded to `pi-subagents`** (was `pi-async-subagents`)
-- Historical upstream installer: `npx pi-subagents` (not this maintained project; use `npm:@fitchmultz/pi-subagents` today).
 
 ### Added
 - Chain TUI now supports editing output paths, reads lists, and toggling progress per step

@@ -158,7 +158,7 @@ subagent({
 Builtin agents load at the lowest priority. Project agents override user agents,
 and user/project agents override builtins with the same name.
 
-Use `agent_runs({ action: "profiles" })` for the effective roles, model/thinking/fallback defaults (including truthful inheritance), and context defaults. The [README](../../../README.md#builtin-agents-in-plain-english) describes the bundled roles. Do not infer installed model routes from an old workflow example. Profiles without a model inherit the parent model at launch, including fresh-context runs; inspect the effective profile rather than assuming a role has no model configured.
+Use `agent_runs({ action: "profiles" })` for the effective roles, model/thinking/fallback defaults (including truthful inheritance), and context defaults. The [Subagents reference](../../../docs/reference.md#builtin-agents-in-plain-english) describes the bundled roles. Do not infer installed model routes from an old workflow example. Profiles without a model inherit the parent model at launch, including fresh-context runs; inspect the effective profile rather than assuming a role has no model configured.
 
 For one run, use inline config:
 

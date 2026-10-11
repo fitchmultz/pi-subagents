@@ -42,7 +42,7 @@ The changed boundaries are exercised through real extension functions and regist
 - Four independent timing writers preserve each completed sample, another agent's samples, per-agent retained row counts and database integrity. A legacy snapshot read cannot erase an acknowledged write.
 - Native tool loading covers list/history/search validation, owned paging and same-parent reload on both compact and advanced routes. UI regressions cover narrow/wide native layouts, full reports/Reply, loading navigation, saved anchors and disposal.
 
-Primary owners are `test/integration/{history-index,owned-run-list,agent-interaction,tool-activation,lazy-coordination,session-resume-cost}.test.ts` and `test/unit/{run-history,journal-reader,temp-root-cleanup}.test.ts`. Run the [local validation](../README.md#local-validation) against an explicitly selected coherent host graph. Operation counts are more repeatable than timing thresholds.
+Primary owners are `test/integration/{history-index,owned-run-list,agent-interaction,tool-activation,lazy-coordination,session-resume-cost}.test.ts` and `test/unit/{run-history,journal-reader,temp-root-cleanup}.test.ts`. Run the [local validation](development.md#local-validation) against an explicitly selected coherent host graph. Operation counts are more repeatable than timing thresholds.
 
 ## Receipt and loadout work
 
@@ -114,7 +114,7 @@ These assumptions include sustained activity and a full cache hit on that prefix
 
 ### Accounting and useful checks
 
-`src/runs/shared/native-usage.ts` excludes inherited launch-baseline entries and nonbillable checkpoints, then validates and deduplicates new native contributions. Excluding old journal usage does **not** make newly sending inherited context free. Pi 1.0 attribution uses finalized execution/wait tool results, not the removed `recordUsage` hook. Background notifications alone do not enter parent totals. Claude totals may remain explicitly accounting-incomplete when per-category evidence is unavailable. See [usage accounting](../README.md#usage-accounting); local attribution is not an additional provider request.
+`src/runs/shared/native-usage.ts` excludes inherited launch-baseline entries and nonbillable checkpoints, then validates and deduplicates new native contributions. Excluding old journal usage does **not** make newly sending inherited context free. Pi 1.0 attribution uses finalized execution/wait tool results, not the removed `recordUsage` hook. Background notifications alone do not enter parent totals. Claude totals may remain explicitly accounting-incomplete when per-category evidence is unavailable. See [usage accounting](reference.md#usage-accounting); local attribution is not an additional provider request.
 
 To investigate an actual spike, compare provider usage for the relevant time/model/account with parent and child native usage, launch counts, effective `fresh`/`fork` settings and context sizes. Do not sum attributed parent totals and the same child totals as independent traffic. Keep private prompts, journals and credentials out of public issues.
 
