@@ -4,7 +4,7 @@
 
 ## Local validation
 
-See [Code quality](code-quality.md) for the strict Oxlint/Oxfmt policy and setup commands. `npm run ci` runs those quality gates before the build, package checks and tests.
+See [Code quality](code-quality.md) for the strict Oxlint/Oxfmt rules and commands. `npm run ci` runs lint and formatting before TypeScript, package checks and tests.
 
 `npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It runs full CI with actual native editor receipts: a supplied clean `PI_EDITOR_RECEIPT_TEST_ROOT` stays read-only, otherwise the owning runner snapshots public `pi-apply-edits` main once in a temporary checkout, records its exact Git SHA, installs only its third-party runtime dependencies, and cleans its owned copy. Repository CI resolves that editor SHA once for all host/platform lanes. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
 

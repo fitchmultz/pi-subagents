@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-### Added
+### Changed
 
-- Optional loopback-only mTLS Intercom HTTPS bridge over SSH reverse forwarding, with certificate-bound remote peer identity, bounded messaging/inbox API, metadata audit logs, remote CLI, and credential issue/rotation/revocation tooling. The same-machine broker and extension startup remain unchanged.
+- Enforce strict Oxlint and Oxfmt rules through the published tools, editor configuration and CI. Refactor maintained code into focused owners, preserve native SDK contracts, and validate persisted run data at runtime boundaries. Package versions and user-facing behavior remain unchanged.
 
 ## [0.44.7] - 2026-10-09
 

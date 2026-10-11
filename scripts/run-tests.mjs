@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { run } from "./compat-process.mjs";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,13 +83,10 @@ function sanitizedEnv() {
       delete env[key];
     }
   }
-  // Harness startup instrumentation changes child stderr, hiding otherwise-empty transport failures.
-  // Tests must observe the selected host's normal diagnostics, not the outer Pi's debug mode.
-  delete env.PI_TIMING;
   return env;
 }
 
-async function runNodeTest(label, files, timeoutMs, concurrency) {
+function runNodeTest(label, files, timeoutMs, concurrency) {
   const args = [...(concurrency ? [`--test-concurrency=${concurrency}`] : []), "--test", ...files];
   const startedAt = Date.now();
   const tempRoot = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
@@ -97,31 +94,25 @@ async function runNodeTest(label, files, timeoutMs, concurrency) {
   env.PI_SUBAGENT_TEMP_ROOT = tempRoot;
   env.HOME = tempRoot;
   delete env.PI_CODING_AGENT_DIR;
-  let failure;
+  let result;
   try {
-    await run(process.execPath, args, {
+    result = spawnSync(process.execPath, args, {
       stdio: "inherit",
       env,
       timeout: timeoutMs,
+      killSignal: "SIGTERM",
     });
-  } catch (error) {
-    failure = error;
   } finally {
-    // The command owner observes quiescence before its promise settles.
+    // Children of a killed runner can still be writing here; cleanup must not hide the timeout report.
     try {
-      if (failure?.cleanupFailed !== true) {
-        rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-      } else {
-        console.error(`Retained test root until owned processes quiesce: ${tempRoot}`);
-      }
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch (error) {
       console.error(`Could not remove ${tempRoot}: ${error.message}`);
-      failure ??= error;
     }
   }
   const elapsedMs = Date.now() - startedAt;
-  if (failure) {
-    if (failure.code === "ETIMEDOUT") {
+  if (result.error) {
+    if (result.error.code === "ETIMEDOUT") {
       console.error(`${label} timed out after ${timeoutMs}ms (elapsed ${elapsedMs}ms).`);
       console.error(`Command: ${process.execPath} ${args.join(" ")}`);
       console.error(
@@ -129,10 +120,15 @@ async function runNodeTest(label, files, timeoutMs, concurrency) {
       );
       return 1;
     }
-    console.error(`${label} failed: ${failure.message}`);
-    return failure.status ?? 1;
+    console.error(`Failed to start ${label}: ${result.error.message}`);
+    return 1;
   }
-  return 0;
+  if (result.signal) {
+    console.error(`${label} exited due to signal ${result.signal} after ${elapsedMs}ms.`);
+    console.error(`Command: ${process.execPath} ${args.join(" ")}`);
+    return 1;
+  }
+  return result.status ?? 1;
 }
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
@@ -149,15 +145,15 @@ const integration = () =>
 let status;
 switch (mode) {
   case "unit":
-    status = await unit();
+    status = unit();
     break;
   case "integration":
-    status = await integration();
+    status = integration();
     break;
   case "all":
-    status = await unit();
+    status = unit();
     if (status === 0) {
-      status = await integration();
+      status = integration();
     }
     break;
 }

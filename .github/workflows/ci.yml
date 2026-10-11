@@ -33,9 +33,8 @@ env:
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
-  quality:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,12 +43,8 @@ jobs:
         with:
           node-version: ">=24.21.0 <25"
           package-manager-cache: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: "1.27.1"
-          cache: false
       - run: npm ci --ignore-scripts
-      - run: npm run quality
+      - run: npm run lint && npm run format:check
 
   resolve:
     uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@54c687228d840506555801b9db038373e697d901 # main
@@ -79,12 +74,9 @@ jobs:
           - { os: ubuntu-latest, host: official }
           - { os: macos-latest, host: official }
           - { os: ubuntu-latest, host: fork }
-          - { os: [self-hosted, macOS, ARM64, protected-macos-arm64], host: fork }
+          - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
-    # check:compat 58m + its owner cleanup (round to 59m), host/development
-    # preparation 30m, production installs/smokes 15m, fork/tooling 15m,
-    # and final settlement 1m. See scripts/compat-process.mjs for stage math.
-    timeout-minutes: 120
+    timeout-minutes: 30
     env:
       PI_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
       PI_EDITOR_RECEIPT_TEST_ROOT: ${{ github.workspace }}/editor
@@ -117,10 +109,6 @@ jobs:
           node-version: ">=24.21.0 <25"
           check-latest: true
           package-manager-cache: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: "1.27.1"
-          cache: false
       - name: Install native test prerequisites
         shell: bash
         run: |
@@ -135,9 +123,6 @@ jobs:
         run: |
           PM="$(node -p 'require("./automation/package.json").packageManager')"
           npm exec --yes --package="$PM" -- npm install --global "$PM"
-      - name: Install the compatibility owner's native runtime
-        working-directory: extension
-        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Build the resolved fork on this platform
         if: matrix.host == 'fork'
         working-directory: fork
@@ -158,14 +143,14 @@ jobs:
         run: node extension/.github/scripts/ci-host.mjs fork "$RUNNER_TEMP/fork-package" automation extension
 
   compatibility:
-    needs: [quality, resolve, editor, qualification]
+    needs: [lint, resolve, editor, qualification]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected host gate
         env:
-          QUALITY: ${{ needs.quality.result }}
+          LINT: ${{ needs.lint.result }}
           RESOLVE: ${{ needs.resolve.result }}
           EDITOR: ${{ needs.editor.result }}
           QUALIFICATION: ${{ needs.qualification.result }}
-        run: test "$QUALITY" = success && test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success
+        run: test "$LINT" = success && test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success
