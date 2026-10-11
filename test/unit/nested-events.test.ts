@@ -222,6 +222,17 @@ describe("nested event parsing and projection", () => {
         path: [{ runId: "root-run", stepIndex: 3 }],
       },
     });
+    writeNestedEvent(route, {
+      type: "subagent.nested.completed",
+      ts: 200,
+      parentRunId: "root-run",
+      parentStepIndex: 3,
+      child: {
+        ...child("nested-visible", "complete", 200),
+        parentStepIndex: 3,
+        path: [{ runId: "root-run", stepIndex: 3 }],
+      },
+    });
     const job: AsyncJobState = {
       asyncId: "root-run",
       asyncDir: "/tmp/root-run",
@@ -237,6 +248,7 @@ describe("nested event parsing and projection", () => {
 
     const registry = projectNestedEvents(route);
     assert.equal(registry.children.length, 1);
+    assert.equal(registry.children[0].state, "complete");
     assert.equal(registry.children[0].steps?.[0]?.agent, "leaf");
     assert.equal(job.nestedChildren?.[0]?.id, "nested-visible");
     assert.equal(job.steps?.[0]?.children, undefined);

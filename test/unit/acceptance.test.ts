@@ -511,6 +511,19 @@ describe("acceptance gates", () => {
     assert.deepEqual(validateAcceptanceInput({}), [
       "acceptance must include at least one of criteria, evidence, verify, or stopRules.",
     ]);
+    assert.throws(
+      () => resolveEffectiveAcceptance({ explicit: {} }),
+      /must include at least one of criteria/,
+    );
+    assert.deepEqual(
+      validateAcceptanceInput({
+        criteria: ["Patch the bug"],
+        review: { agent: "reviewer", required: true, focus: "Correctness" },
+      }),
+      [
+        "acceptance.review is not supported; launch a separate parent-controlled reviewer after the worker completes.",
+      ],
+    );
     assert.deepEqual(validateAcceptanceInput({ criteria: [{ must: "Patch bug" }] }), [
       "acceptance.criteria[0].id is required.",
     ]);

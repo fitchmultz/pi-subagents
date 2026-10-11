@@ -231,13 +231,24 @@ describe("worktree", () => {
     }
   });
 
-  it("findWorktreeTaskCwdConflict allows omitted or matching task cwd values", () => {
+  it("findWorktreeTaskCwdConflict allows omitted or matching cwd and reports the first conflict", () => {
     const sharedCwd = path.join("/tmp", "repo");
-    for (const tasks of [
-      [{ agent: "worker-a" }, { agent: "worker-b", cwd: sharedCwd }],
-      [{ agent: "worker-a", cwd: "." }],
+    const conflictingCwd = path.join(sharedCwd, "packages", "app");
+    for (const { tasks, expected } of [
+      {
+        tasks: [{ agent: "worker-a" }, { agent: "worker-b", cwd: sharedCwd }],
+        expected: undefined,
+      },
+      { tasks: [{ agent: "worker-a", cwd: "." }], expected: undefined },
+      {
+        tasks: [
+          { agent: "worker-a", cwd: sharedCwd },
+          { agent: "worker-b", cwd: conflictingCwd },
+        ],
+        expected: { index: 1, agent: "worker-b", cwd: conflictingCwd },
+      },
     ]) {
-      assert.equal(findWorktreeTaskCwdConflict(tasks, sharedCwd), undefined);
+      assert.deepEqual(findWorktreeTaskCwdConflict(tasks, sharedCwd), expected);
     }
   });
 

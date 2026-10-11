@@ -781,7 +781,7 @@ describe("parallel agent execution", () => {
     });
 
     assert.equal(result.isError, true);
-    assert.match(textAt(result.content), /outputMode: "file-only"/);
+    assert.match(textAt(result.content), /^Async step \(echo\) sets outputMode: "file-only"/);
     assert.equal(mockPi.callCount(), 0);
   });
 

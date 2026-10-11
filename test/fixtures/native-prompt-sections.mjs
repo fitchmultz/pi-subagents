@@ -389,6 +389,12 @@ function assertOrdinaryHistory(instance) {
   ]) {
     assert.ok(input.includes(content), content);
   }
+  assert.ok(
+    wire(instance).some(
+      (item) =>
+        item.type === "function_call" && item.name === "read" && item.call_id === "mixed_read",
+    ),
+  );
   assert.doesNotMatch(input, /PARENT ONLY MESSAGE/);
 }
 
@@ -448,6 +454,7 @@ test("authorized fanout children retain their own nested calls and results throu
   assert.match(currentPrompt(child), /useful helper work within that task/);
   assert.match(currentPrompt(child), /original parent owns integration/);
   assert.doesNotMatch(currentPrompt(child), /Do not propose or run subagents/);
+  assert.doesNotMatch(currentPrompt(child), /only for the fanout work explicitly requested/);
   for (const name of toolNames) {
     assert.match(JSON.stringify(wire(child, 1)), new RegExp(`${name} nested result`));
   }
