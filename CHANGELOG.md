@@ -1,20 +1,18 @@
 # Changelog
 
-## [0.45.0] - 2026-10-11
+## [0.46.0] - 2026-10-11
 
 ### Added
 
-- Opt-in controlled destination Pi-session launching over the secure Intercom bridge: locally pinned native RPC sessions, private native journals and inference-free startup, actual peer readiness, name reuse, own-session status/stop, caps, cancellation/expiry/revocation/shutdown cleanup, and remote CLI commands. Messaging-only and standalone credential installs remain independent of Pi SDK imports.
+- Opt-in controlled destination Pi-session launching over the secure Intercom bridge: locally pinned native RPC sessions, private native journals and inference-free startup, actual peer readiness, name reuse, own-session status/stop, caps, and remote CLI commands. Cancellation, expiry, revocation and shutdown reap the helper-owned process group, including unresponsive native workers, while retaining journals and observing actual closure. Cleanup deadlines report `stop_timeout` and remain retryable; cleanup failures preserve the original startup fault. Messaging-only and standalone credential installs remain independent of Pi SDK imports.
+
+## [0.45.0] - 2026-10-11
 
 ### Changed
 
 - Refresh bundled role defaults. Claude Opus 5.5 at `xhigh` now drives planner, ui-designer, writer and reviewer-claude, with GPT-6.1 Sol as fallback. GPT-6.1 Sol at `xhigh` drives worker, fixer, debugger, researcher, context-builder, oracle and the reviewer, reviewer-gpt, reviewer-ponytail and reviewer-security roles; scout and delegate stay at `high`. Sol roles fall back to Opus 5.5, except fork-default oracle (Anthropic is ineligible for fork context) and reviewer-security (Opus refuses security review work), which fall back to `zai/glm-5.3`. Removed stale `anthropic/claude-opus-5`, `gpt-5.6-sol`, `gpt-6-astra` and `claude-fable-5-1` routes. Watcher is unchanged.
 - Acceptance contracts now tell children to check early whether every criterion is verifiable in their environment and to report unreachable services, credentials, devices or tools right away instead of spending turns on workarounds; observed human-only boundaries still report as blocked. The skill tells parents to require only checks the child can run.
 - Enforce strict Oxlint and Oxfmt rules through the published tools, editor configuration and CI. Refactor maintained code into focused owners, preserve native SDK contracts, and validate persisted run data at runtime boundaries. Package versions and user-facing behavior remain unchanged.
-
-### Fixed
-
-- Stop the entire helper-owned RPC process group when a launched Pi runtime hangs, including native workers that cannot handle signals. Stop, certificate expiry, revocation and helper shutdown retain the native journal and observe process closure. Report cleanup deadlines as `stop_timeout`, allow stop retries after a deadline, and preserve the original startup failure when cleanup also fails.
 
 ## [0.44.7] - 2026-10-09
 
