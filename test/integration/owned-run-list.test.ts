@@ -269,13 +269,26 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
     ["page-02", "page-01"],
     "review changes reorder without replacing execution outcomes",
   );
-  assert.match(toolText((await page()).content), /Legacy saved foreground evidence/);
+  const selected = await page();
+  assert.match(toolText(selected.content), /Legacy saved foreground evidence/);
+  assertDefined(selected.details.runs);
+  assertDefined(selected.details.runs.find((run) => run.runId === "page-01"));
+  const selectedControl = selected.details.managementControls?.find(
+    (control) => control.runId === "page-01",
+  );
+  assertDefined(selectedControl);
+  assert.equal(selectedControl.capabilities.includes("resume"), true);
   fs.unlinkSync(sessionFile);
-  assert.notEqual(
-    (await page()).details.managementControls
-      ?.find((control) => control.runId === "page-01")
-      ?.capabilities.includes("resume"),
-    true,
+  const missingSession = await page();
+  assertDefined(missingSession.details.runs);
+  assertDefined(missingSession.details.runs.find((run) => run.runId === "page-01"));
+  const missingSessionControl = missingSession.details.managementControls?.find(
+    (control) => control.runId === "page-01",
+  );
+  assertDefined(missingSessionControl);
+  assert.equal(
+    missingSessionControl.capabilities.includes("resume"),
+    false,
     "selected controls must notice a removed session file even before index catch-up",
   );
   fs.writeFileSync(sessionFile, nativeHeader);

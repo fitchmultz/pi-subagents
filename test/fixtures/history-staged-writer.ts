@@ -1,28 +1,7 @@
-import { HistoryStore, type SourceRow } from "../../src/history/store.ts";
+import { HistoryStore } from "../../src/history/store.ts";
 import { SourceIngest } from "../../src/history/ingest.ts";
 import { HistoryIndexError } from "../../src/history/types.ts";
-import { assertRecord } from "../support/assertions.ts";
-
-function isSourceRow(value: unknown): value is SourceRow {
-  assertRecord(value);
-  const strings = ["id", "path", "state"];
-  const numbers = ["generation", "cursor", "malformed", "complexity"];
-  const nullableStrings = [
-    "identity",
-    "stamp",
-    "session_id",
-    "header_digest",
-    "prefix_digest",
-    "error",
-  ];
-  const nullableNumbers = ["checked_at", "format_version"];
-  return (
-    strings.every((key) => typeof value[key] === "string") &&
-    numbers.every((key) => typeof value[key] === "number") &&
-    nullableStrings.every((key) => value[key] === null || typeof value[key] === "string") &&
-    nullableNumbers.every((key) => value[key] === null || typeof value[key] === "number")
-  );
-}
+import { sourceRow } from "../../src/history/rows.ts";
 
 // Pause real processes on either side of the staging/publication boundary.
 // Queries in the test assert retained native records, not the lock mechanism.
@@ -34,11 +13,11 @@ if (directory === undefined || send === undefined) {
 const store = new HistoryStore(directory, "parent");
 let ingest: SourceIngest | undefined;
 const open = (): SourceIngest => {
-  const source: unknown = store.get("SELECT * FROM sources LIMIT 1");
-  if (!isSourceRow(source)) {
+  const source = store.get("SELECT * FROM sources LIMIT 1");
+  if (source === undefined) {
     throw new Error("Staged history writer requires an indexed source row.");
   }
-  return new SourceIngest(store, source, true);
+  return new SourceIngest(store, sourceRow(source), true);
 };
 try {
   ingest = open();
