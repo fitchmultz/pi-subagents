@@ -33,12 +33,8 @@ import {
   numberValue,
 } from "../support/assertions.ts";
 import { fauxProvider } from "@earendil-works/pi-ai";
-import { initTheme } from "@earendil-works/pi-coding-agent";
-import { TuiMainScreen } from "@earendil-works/pi-tui";
-import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
-import { createTestTerminal } from "../support/terminal.ts";
+import { customInteraction } from "../support/custom-interaction.ts";
 import type { ReadonlyDeep } from "type-fest";
-initTheme("dark", false);
 import {
   createEventBus,
   createMockPi,
@@ -120,6 +116,7 @@ describe("saved output choices", () => {
   let ctx: ReturnType<typeof makeMinimalCtx>;
   let executor: ReturnType<typeof createSubagentExecutor>;
   let discoveries: number;
+  let previewConfirmations: number;
   let runIds: Set<string>;
 
   before(() => {
@@ -133,28 +130,21 @@ describe("saved output choices", () => {
     profile = makeAgent("writer", { output: "reports/frozen.md" });
     ctx = makeMinimalCtx(tempDir);
     discoveries = 0;
+    previewConfirmations = 0;
     runIds = new Set();
     mockPi.reset();
     executor = createExecutor();
   });
 
   function acceptBackgroundPreview(): void {
-    ctx.ui.custom = async (factory) =>
-      new Promise((resolve, reject) => {
-        const component = factory(
-          new TuiMainScreen(createTestTerminal()),
-          ctx.ui.theme,
-          new KeybindingsManager(),
-          resolve,
-        );
-        Promise.resolve(component)
-          .then((view) => {
-            assert.equal(typeof view.handleInput, "function");
-            view.handleInput?.("b");
-            view.handleInput?.("\r");
-          })
-          .catch(reject);
-      });
+    ctx.mode = "tui";
+    ctx.hasUI = true;
+    const interact = customInteraction(["b", "\r"]);
+    ctx.ui.custom = async (...args) => {
+      const result = await interact(...args);
+      previewConfirmations++;
+      return result;
+    };
   }
 
   function createExecutor() {
@@ -459,11 +449,12 @@ describe("saved output choices", () => {
     ["single", "parallel", "sequential chain"].includes(entry.name),
   )) {
     it(`clarify-to-background ${route.name} preserves generated output origin`, async () => {
-      ctx.hasUI = true;
       acceptBackgroundPreview();
       mockPi.onCall({ output: "Predecessor report" });
       const original = await run({ ...route.params, async: true, clarify: true });
       assertDefined(original.details.asyncId);
+      assert.equal(previewConfirmations, 1, "native done callback confirms the preview");
+      assert.equal(original.details.wait, undefined, "confirmation launches in the background");
       for (const index of route.indices) {
         // Each child continuation must finish before starting the next one.
         // oxlint-disable-next-line no-await-in-loop
@@ -630,9 +621,13 @@ describe("saved output choices", () => {
       it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${String(output)})`, async () => {
         profile = { ...profile, output: path.join(tempDir, "absolute.md") };
         ctx.hasUI = clarify;
-        acceptBackgroundPreview();
+        if (clarify) {
+          acceptBackgroundPreview();
+        }
         mockPi.onCall({ output: "Absolute predecessor" });
         const original = await run({ ...writer, async: true, clarify, outputMode: "inline" });
+        assert.equal(previewConfirmations, clarify ? 1 : 0);
+        assert.equal(original.details.wait, undefined, "the original is a background receipt");
         assert.equal(
           savedLaunch(text(original.details.asyncId)).generatedOutputFilename,
           undefined,

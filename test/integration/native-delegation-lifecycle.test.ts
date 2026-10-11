@@ -356,7 +356,6 @@ for (const includeProgress of [true, undefined]) {
     assert.deepEqual(recovered.details.progress, result.details.progress);
     assert.equal(deliveries, 1);
     assert.equal(f.mock.callCount(), 1);
-    assert.equal(deliveries, 1);
   });
 }
 
@@ -474,7 +473,7 @@ for (const selected of [undefined, 1]) {
       await pending;
     });
     await until(() => delivered === 1, "nested owner receives guidance");
-    await delay(120);
+    await until(() => f.state.waitingRuns?.has(runId) === true, "nested wait is registered");
     assert.equal(
       settled,
       false,
@@ -495,7 +494,7 @@ for (const selected of [undefined, 1]) {
       recovered = true;
       return result;
     });
-    await delay(30);
+    await until(() => f.state.waitingRuns?.has(runId) === true, "recovered wait is registered");
     assert.equal(
       recovered,
       false,

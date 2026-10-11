@@ -435,6 +435,9 @@ describe("unified owner result retention through actual router", () => {
 
   for (const includeProgress of [undefined, false]) {
     it(`keeps final results compact with includeProgress ${String(includeProgress)}`, async () => {
+      const finalOutput =
+        "Finished the test sweep. Three failures reproduced, two were flaky, and the smallest fix is to retry the image bootstrap before the integration shard starts.";
+      const write = { path: "/tmp/huge-report.md", content: "x".repeat(50_000) };
       mock.onCall({
         jsonl: [
           {
@@ -446,12 +449,29 @@ describe("unified owner result retention through actual router", () => {
                   type: "toolCall",
                   id: "write-report",
                   name: "write",
-                  arguments: { path: "/tmp/report.md", content: "x".repeat(50_000) },
+                  arguments: write,
                 },
               ],
             },
           },
-          events.assistantMessage("Compact result"),
+          events.toolStart("write", write),
+          events.toolResult("write", "ok"),
+          events.toolEnd("write"),
+          ...Array.from({ length: 60 }, (_, index) => [
+            events.toolStart(
+              "bash",
+              { command: `docker compose run --rm api test-shard-${index} --retry --verbose` },
+              `bash-${index}`,
+            ),
+            events.toolResult(
+              "bash",
+              "Docker container stdout and stderr diagnostics ".repeat(50),
+              false,
+              `bash-${index}`,
+            ),
+            events.toolEnd("bash", `bash-${index}`),
+          ]).flat(),
+          events.assistantMessage(finalOutput),
         ],
       });
       const result = await executor().execute({
@@ -464,11 +484,17 @@ describe("unified owner result retention through actual router", () => {
         ctx: makeMinimalCtx(cwd),
       });
       assert.equal(result.isError, undefined);
+      assert.equal(result.details.mode, "single");
+      assert.equal(result.details.results.length, 1);
+      assert.equal(result.details.results[0].exitCode, 0);
+      assert.equal(result.details.results[0].finalOutput, finalOutput);
+      assert.ok(textAt(result.content).length < 2_000);
+      assert.ok(JSON.stringify(result).length < 80_000);
       assert.equal(result.details.progress, undefined);
       assert.equal(result.details.results[0].progress, undefined);
       assert.equal(result.details.results[0].messages, undefined);
       assert.deepEqual(result.details.results[0].toolCalls, [
-        { text: "write /tmp/report.md", expandedText: "write /tmp/report.md" },
+        { text: "write /tmp/huge-report.md", expandedText: "write /tmp/huge-report.md" },
       ]);
       assertDefined(result.details.progressSummary);
       assert.ok(result.details.progressSummary.durationMs > 0);

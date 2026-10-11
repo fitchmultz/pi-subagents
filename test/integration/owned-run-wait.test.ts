@@ -296,6 +296,7 @@ test("native session disposal settles an already registered wait without stoppin
     assert.equal(f.state.waitingRuns.has(f.runId), false);
     assert.equal(questionProcessAlive({ pid: process.pid }), true);
     assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
+    assert.equal(fs.existsSync(path.join(asyncDir, "control-requests")), false);
     assert.equal(f.mock.callCount(), 0, "losing the session cannot start a child");
   } finally {
     controller.abort();
@@ -519,7 +520,8 @@ test(
 
 test("continue async:false waits for the new saved-launch result, not the original completed handle", async (t) => {
   const f = await setup(t);
-  f.mock.onCall({ output: "ACTUAL-CONTINUATION-RESULT", delay: 250 });
+  const release = path.join(f.cwd, "release-continuation");
+  f.mock.onCall({ output: "ACTUAL-CONTINUATION-RESULT", waitForFile: release });
   let returned = false;
   const pending = f
     .invoke({ action: "resume", id: f.runId, message: "Continue with saved choices", async: false })
@@ -527,8 +529,21 @@ test("continue async:false waits for the new saved-launch result, not the origin
       returned = true;
       return result;
     });
-  await delay(40);
-  assert.equal(returned, false);
+  try {
+    await until(() => f.mock.callCount() === 1, "continuation child starts");
+    const successor = [...f.state.ownedRuns.values()].find(
+      (candidate) => candidate.runId !== f.runId,
+    );
+    assertDefined(successor);
+    await until(
+      () => f.state.waitingRuns?.has(successor.runId) === true,
+      "successor wait is registered",
+    );
+    assert.equal(returned, false);
+  } finally {
+    fs.writeFileSync(release, "finish");
+    await pending;
+  }
   const result = await pending;
   assert.equal(result.details.wait?.status, "completed", textAt(result.content));
   assert.notEqual(result.details.wait.runId, f.runId);
@@ -555,6 +570,7 @@ test("important steering releases a foreground continuation without stopping it 
     false,
     "steering cannot stop the child",
   );
+  assert.equal(fs.existsSync(path.join(run.asyncDir, "control-requests")), false);
   await until(
     () => fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json")),
     "continuation publishes its result after yielding",
@@ -1172,6 +1188,7 @@ for (const fault of ["error", "abort"] as const) {
       assert.equal(release.mock.callCount(), 1, "wait ownership releases exactly once");
       assert.equal(waiting.has(id), false);
       assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
+      assert.equal(fs.existsSync(path.join(asyncDir, "control-requests")), false);
     } finally {
       controller.abort();
       await pending;
