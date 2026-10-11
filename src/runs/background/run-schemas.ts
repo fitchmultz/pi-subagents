@@ -1,4 +1,4 @@
-import { Ajv, type ValidateFunction } from "ajv";
+import type { ErrorObject } from "ajv";
 import { validateStatusForSummary } from "./async-status-validation.ts";
 import { isRecord } from "./async-value.ts";
 import type { SubagentRunConfig } from "./runner-config.ts";
@@ -6,7 +6,7 @@ import type {
   NativeFinalizationConfig,
   NativeFinalizationEvent,
 } from "../shared/native-finalization-types.ts";
-import runSchema from "./schemas/RunContracts.json" with { type: "json" };
+import * as guards from "../../../generated/RunValidators.js";
 import type {
   AsyncStatus,
   AsyncResultFile,
@@ -30,56 +30,16 @@ import type {
   SubagentExecutionResult,
 } from "../../shared/types.ts";
 
-// Typed guards are compiled from generated canonical declarations, not assertion casts.
-// Unknown forward-compatible properties remain permitted; declared nested fields are checked.
-// Each guard compiles on first use: eager compilation cost every Pi and runner process ~175 ms.
-const validator = new Ajv({ strict: false, allErrors: true, strictNumbers: true });
-validator.addSchema(runSchema, "run");
-
-function lazyGuard<T>(ref: string): () => ValidateFunction<T> {
-  let validate: ValidateFunction<T> | undefined;
-  return () => {
-    validate ??= validator.compile<T>({ $ref: ref });
-    return validate;
-  };
+// AJV's standalone guards preserve canonical validation without compiling in every process.
+function errorsText(errors: readonly ErrorObject[] | null | undefined): string {
+  if (!errors || errors.length === 0) {
+    return "No errors";
+  }
+  return errors.map((error) => `data${error.instancePath} ${String(error.message)}`).join(", ");
 }
-const status = lazyGuard<AsyncStatus>("run#/definitions/AsyncStatus");
-const result = lazyGuard<AsyncResultFile>("run#/definitions/AsyncResultFile");
-const foreground = lazyGuard<ForegroundResumeRun>("run#/definitions/ForegroundResumeRun");
-const owned = lazyGuard<OwnedRun>("run#/definitions/OwnedRun");
-const started = lazyGuard<AsyncStartedEvent>("run#/definitions/AsyncStartedEvent");
-const control = lazyGuard<ControlEvent>("run#/definitions/ControlEvent");
-const contract = lazyGuard<SupervisorRunContract>("run#/definitions/SupervisorRunContract");
-const question = lazyGuard<SupervisorQuestion>("run#/definitions/SupervisorQuestion");
-const answer = lazyGuard<QuestionAnswer>("run#/definitions/QuestionAnswer");
-const delivery = lazyGuard<QuestionDelivery>("run#/definitions/QuestionDelivery");
-const revival = lazyGuard<NonNullable<SupervisorQuestionView["revival"]>>(
-  "run#/definitions/SupervisorQuestionView/properties/revival",
-);
-
-const historyRow = lazyGuard<HistoryRunRow>("run#/definitions/HistoryRunRow");
-const historyRuns = lazyGuard<HistoryRunPage>("run#/definitions/HistoryRunPage");
-const historyPage = lazyGuard<HistoryPage>("run#/definitions/HistoryPage");
-const historySearch = lazyGuard<HistorySearchPage>("run#/definitions/HistorySearchPage");
-const historyStatus = lazyGuard<HistoryIndexStatus>("run#/definitions/HistoryIndexStatus");
-const historyEntry = lazyGuard<HistoryEntry>("run#/definitions/HistoryEntry");
-const historyResult = lazyGuard<HistoryResult>("run#/definitions/HistoryResult");
-
-const details = lazyGuard<Details>("run#/definitions/Details");
-const executionResult = lazyGuard<SubagentExecutionResult>(
-  "run#/definitions/SubagentExecutionResult",
-);
-
-const runnerConfig = lazyGuard<SubagentRunConfig>("run#/definitions/SubagentRunConfig");
-const finalizationConfig = lazyGuard<NativeFinalizationConfig>(
-  "run#/definitions/NativeFinalizationConfig",
-);
-const finalizationEvent = lazyGuard<NativeFinalizationEvent>(
-  "run#/definitions/NativeFinalizationEvent",
-);
 
 export function parseNativeFinalizationConfig(value: unknown): NativeFinalizationConfig {
-  const check = finalizationConfig();
+  const check = guards.NativeFinalizationConfig;
   if (!check(value)) {
     throw new SyntaxError("Invalid native finalization configuration");
   }
@@ -87,7 +47,7 @@ export function parseNativeFinalizationConfig(value: unknown): NativeFinalizatio
 }
 
 export function parseNativeFinalizationEvent(value: unknown): NativeFinalizationEvent {
-  const check = finalizationEvent();
+  const check = guards.NativeFinalizationEvent;
   if (!check(value)) {
     throw new SyntaxError("Invalid native finalization boundary");
   }
@@ -95,82 +55,82 @@ export function parseNativeFinalizationEvent(value: unknown): NativeFinalization
 }
 
 export function parseSubagentRunConfig(value: unknown): SubagentRunConfig {
-  const check = runnerConfig();
+  const check = guards.SubagentRunConfig;
   if (!check(value)) {
-    throw new Error(`Invalid runner config: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid runner config: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseDetails(value: unknown): Details {
-  const check = details();
+  const check = guards.Details;
   if (!check(value)) {
-    throw new Error(`Invalid run details: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid run details: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseSubagentExecutionResult(value: unknown): SubagentExecutionResult {
-  const check = executionResult();
+  const check = guards.SubagentExecutionResult;
   if (!check(value)) {
-    throw new Error(`Invalid run result: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid run result: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryRunRow(value: unknown): HistoryRunRow {
-  const check = historyRow();
+  const check = guards.HistoryRunRow;
   if (!check(value)) {
-    throw new Error(`Invalid history run: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history run: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryRunPage(value: unknown): HistoryRunPage {
-  const check = historyRuns();
+  const check = guards.HistoryRunPage;
   if (!check(value)) {
-    throw new Error(`Invalid history runs: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history runs: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryPage(value: unknown): HistoryPage {
-  const check = historyPage();
+  const check = guards.HistoryPage;
   if (!check(value)) {
-    throw new Error(`Invalid history page: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history page: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistorySearchPage(value: unknown): HistorySearchPage {
-  const check = historySearch();
+  const check = guards.HistorySearchPage;
   if (!check(value)) {
-    throw new Error(`Invalid history search: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history search: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryIndexStatus(value: unknown): HistoryIndexStatus {
-  const check = historyStatus();
+  const check = guards.HistoryIndexStatus;
   if (!check(value)) {
-    throw new Error(`Invalid history status: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history status: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryEntry(value: unknown): HistoryEntry {
-  const check = historyEntry();
+  const check = guards.HistoryEntry;
   if (!check(value)) {
-    throw new Error(`Invalid history entry: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history entry: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryResult(value: unknown): HistoryResult {
-  const check = historyResult();
+  const check = guards.HistoryResult;
   if (!check(value)) {
-    throw new Error(`Invalid history result: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid history result: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseAsyncStatus(value: unknown): AsyncStatus {
   validateStatusForSummary(value, "status.json");
-  const check = status();
+  const check = guards.AsyncStatus;
   if (!check(value)) {
-    throw new Error(`Invalid async status: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid async status: ${errorsText(check.errors)}.`);
   }
   return value;
 }
@@ -198,7 +158,7 @@ function resultErrors(errors: readonly unknown[]): string {
 }
 
 export function parseAsyncResult(value: unknown): AsyncResultFile {
-  const check = result();
+  const check = guards.AsyncResultFile;
   if (!check(value)) {
     throw new Error(`Invalid async result: ${resultErrors(check.errors ?? [])}.`);
   }
@@ -206,57 +166,57 @@ export function parseAsyncResult(value: unknown): AsyncResultFile {
 }
 
 export function parseForegroundResumeRun(value: unknown): ForegroundResumeRun {
-  const check = foreground();
+  const check = guards.ForegroundResumeRun;
   if (!check(value)) {
-    throw new Error(`Invalid foreground run: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid foreground run: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseAsyncStartedEvent(value: unknown): AsyncStartedEvent {
-  const check = started();
+  const check = guards.AsyncStartedEvent;
   if (!check(value)) {
-    throw new Error(`Invalid async start event: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid async start event: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseControlEvent(value: unknown): ControlEvent {
-  const check = control();
+  const check = guards.ControlEvent;
   if (!check(value)) {
-    throw new Error(`Invalid control event: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid control event: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseSupervisorRunContract(value: unknown): SupervisorRunContract {
-  const check = contract();
+  const check = guards.SupervisorRunContract;
   if (!check(value)) {
-    throw new Error(`Invalid supervisor contract: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid supervisor contract: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseSupervisorQuestion(value: unknown): SupervisorQuestion {
-  const check = question();
+  const check = guards.SupervisorQuestion;
   if (!check(value)) {
-    throw new Error(`Invalid supervisor question: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid supervisor question: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseQuestionAnswer(value: unknown): QuestionAnswer {
-  const check = answer();
+  const check = guards.QuestionAnswer;
   if (!check(value)) {
-    throw new Error(`Invalid question answer: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid question answer: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseQuestionDelivery(value: unknown): QuestionDelivery {
-  const check = delivery();
+  const check = guards.QuestionDelivery;
   if (!check(value)) {
-    throw new Error(`Invalid question delivery: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid question delivery: ${errorsText(check.errors)}.`);
   }
   return value;
 }
@@ -264,17 +224,17 @@ export function parseQuestionDelivery(value: unknown): QuestionDelivery {
 export function parseQuestionRevival(
   value: unknown,
 ): NonNullable<SupervisorQuestionView["revival"]> {
-  const check = revival();
+  const check = guards.SupervisorQuestionView;
   if (!check(value)) {
-    throw new Error(`Invalid question revival: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid question revival: ${errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseOwnedRun(value: unknown): OwnedRun {
-  const check = owned();
+  const check = guards.OwnedRun;
   if (!check(value)) {
-    throw new Error(`Invalid owned run: ${validator.errorsText(check.errors)}.`);
+    throw new Error(`Invalid owned run: ${errorsText(check.errors)}.`);
   }
   return value;
 }
