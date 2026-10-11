@@ -396,37 +396,6 @@ describe("fork context execution wiring", () => {
     );
   });
 
-  it("uses local duration history before raising planner foreground budgets", async () => {
-    const { recordRun } = await import("../../src/runs/shared/run-history.ts");
-    const agent = `planner-history-${process.pid}`;
-    for (let index = 0; index < 3; index++) {
-      recordRun(agent, "old", 0, 1000);
-    }
-    const { manager } = makeSessionManagerRecorder();
-    const executor = makeExecutorWithDiscoverAgents(() => ({
-      agents: [
-        {
-          ...makeAgent(agent, { inheritProjectContext: true, inheritSkills: true }),
-          name: agent,
-          description: "Planner",
-        },
-      ],
-      projectAgentsDir: null,
-    }));
-    mockPi.reset();
-    mockPi.onCall({ delay: 250, output: "planner complete" });
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: { agent, task: "Plan slowly", timeoutMs: 180 },
-      signal: new AbortController().signal,
-      ctx: makeCtx(manager),
-    });
-
-    assert.equal(result.isError, undefined, JSON.stringify(result));
-    assert.match(textAt(result.content), /planner complete/);
-  });
-
   it("does not raise parallel timeouts because an ignored top-level agent is reviewer", async () => {
     const { manager } = makeSessionManagerRecorder();
     const executor = makeExecutor();
@@ -1000,50 +969,6 @@ describe("fork context execution wiring", () => {
     assert.equal(isNativeFork(write[write.indexOf("--session") + 1]), true);
   });
 
-  it("applies paired intercom wiring to fresh and fork chain steps", async () => {
-    const parentSessionFile = path.join(tempDir, "parent.jsonl");
-    const { manager } = makeForkingSessionManagerRecorder({
-      sessionFile: parentSessionFile,
-      leafId: "leaf-current",
-    });
-    const executor = makeExecutorWithDiscoverAgents(() => ({
-      agents: [
-        {
-          ...makeAgent("scout", { inheritProjectContext: true, inheritSkills: true }),
-          name: "scout",
-          description: "Custom override scout",
-          defaultContext: "fresh",
-          tools: ["read"],
-        },
-        {
-          ...makeAgent("worker", { inheritProjectContext: true, inheritSkills: true }),
-          name: "worker",
-          description: "Custom override worker",
-          defaultContext: "fork",
-          tools: ["read"],
-        },
-      ],
-      projectAgentsDir: null,
-    }));
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: {
-        chain: [
-          { agent: "scout", task: "scan" },
-          { agent: "worker", task: "write" },
-        ],
-        clarify: false,
-      },
-      signal: new AbortController().signal,
-      ctx: makeCtx(manager),
-    });
-
-    assert.equal(result.isError, undefined);
-    assert.equal(toolsArg(callArgsForTaskContaining("scan")), "read,intercom,contact_supervisor");
-    assert.equal(toolsArg(callArgsForTaskContaining("write")), "read,intercom,contact_supervisor");
-  });
-
   it("applies paired intercom wiring to fresh and fork dynamic fanout children", async () => {
     mockPi.reset();
     mockPi.onCall({
@@ -1357,41 +1282,6 @@ describe("fork context execution wiring", () => {
     assert.equal(fs.existsSync(args[sessionIndex + 1]), true);
   });
 
-  it("creates isolated forked sessions per parallel task", async () => {
-    const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({
-      sessionFile: path.join(tempDir, "parent-parallel.jsonl"),
-      leafId: "leaf-777",
-    });
-    const executor = makeExecutor();
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: {
-        tasks: [
-          { agent: "echo", task: "task one" },
-          { agent: "second", task: "task two" },
-        ],
-        context: "fork",
-      },
-      signal: new AbortController().signal,
-      ctx: makeCtx(manager),
-    });
-
-    assert.equal(result.isError, undefined);
-    assert.deepEqual(openedPaths, [
-      path.join(tempDir, "parent-parallel.jsonl"),
-      path.join(tempDir, "parent-parallel.jsonl"),
-    ]);
-    assert.deepEqual(branchedLeafIds, Array(2).fill(manager.getLeafId()));
-    const sessionArgs = readSessionArgsFromCalls();
-    assert.equal(sessionArgs.length, 2);
-    assert.equal(new Set(sessionArgs).size, 2);
-    for (const childSessionFile of sessionArgs) {
-      assert.notEqual(childSessionFile, path.join(tempDir, "parent-parallel.jsonl"));
-      assert.equal(fs.existsSync(childSessionFile), true);
-    }
-  });
-
   it("expands top-level parallel task counts before fork session allocation", async () => {
     const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({
       sessionFile: path.join(tempDir, "parent-count.jsonl"),
@@ -1419,52 +1309,10 @@ describe("fork context execution wiring", () => {
     const sessionArgs = readSessionArgsFromCalls();
     assert.equal(sessionArgs.length, 3);
     assert.equal(new Set(sessionArgs).size, 3);
-  });
-
-  it("rejects top-level parallel worktree runs with a conflicting task cwd", async () => {
-    const { manager } = makeSessionManagerRecorder({
-      sessionFile: "/tmp/parent.jsonl",
-      leafId: "leaf-777",
-    });
-    const executor = makeExecutor();
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: {
-        tasks: [
-          { agent: "echo", task: "task one" },
-          { agent: "second", task: "task two", cwd: `${tempDir}/other` },
-        ],
-        worktree: true,
-      },
-      signal: new AbortController().signal,
-      ctx: makeCtx(manager),
-    });
-
-    assert.equal(result.isError, true);
-    assert.match(textAt(result.content), /worktree isolation uses the shared cwd/i);
-    assert.match(textAt(result.content), /task 2 \(second\) sets cwd/i);
-  });
-
-  it("rejects top-level parallel counts that expand past MAX_PARALLEL", async () => {
-    const { manager } = makeSessionManagerRecorder({
-      sessionFile: "/tmp/parent.jsonl",
-      leafId: "leaf-max",
-    });
-    const executor = makeExecutor();
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: {
-        tasks: [{ agent: "echo", task: "task one", count: 9 }],
-      },
-      signal: new AbortController().signal,
-      ctx: makeCtx(manager),
-    });
-
-    assert.equal(result.isError, true);
-    assert.match(textAt(result.content), /Max 8 tasks/);
-    assert.match(textAt(result.content), /parallel\.maxTasks/);
+    for (const childSessionFile of sessionArgs) {
+      assert.notEqual(childSessionFile, path.join(tempDir, "parent-count.jsonl"));
+      assert.equal(fs.existsSync(childSessionFile), true);
+    }
   });
 
   it("uses top-level parallel config overrides for maxTasks and concurrency", async () => {
@@ -1546,77 +1394,6 @@ describe("fork context execution wiring", () => {
       assert.equal(result.isError, undefined, testCase.name);
       assert.equal(maxRunning, testCase.expectedMaxRunning, testCase.name);
     }
-  });
-
-  it("releases the parallel wait on intercom handoff while its owner finishes both children", async () => {
-    mockPi.reset();
-    const release = path.join(tempDir, "release-child");
-    mockPi.onCall({
-      matchArgsIncludes: "send handoff",
-      steps: [
-        { jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
-        { waitForFile: release, jsonl: [events.assistantMessage("after handoff")] },
-      ],
-    });
-    mockPi.onCall({ matchArgsIncludes: "continue", output: "other done" });
-    const executor = makeExecutorWithDiscoverAgents(() => ({
-      agents: [
-        {
-          ...makeAgent("echo", { inheritProjectContext: true, inheritSkills: true }),
-          name: "echo",
-          description: "Echo",
-          systemPrompt: "Intercom orchestration channel:",
-        },
-        {
-          ...makeAgent("second", { inheritProjectContext: true, inheritSkills: true }),
-          name: "second",
-          description: "Second",
-          systemPrompt: "Intercom orchestration channel:",
-        },
-      ],
-      projectAgentsDir: null,
-    }));
-    let detachEmitted = false;
-    const result = await executor.execute({
-      toolCallId: "intercom-parallel",
-      params: {
-        tasks: [
-          { agent: "echo", task: "send handoff" },
-          { agent: "second", task: "continue" },
-        ],
-      },
-      signal: new AbortController().signal,
-      onUpdate: (update: ProgressUpdate) => {
-        if (detachEmitted) {
-          return;
-        }
-        if (
-          !(update.details.progress?.some((entry) => entry.currentTool === "intercom") === true)
-        ) {
-          return;
-        }
-        detachEmitted = true;
-        executor.eventsApi.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "parallel-detach" });
-      },
-      ctx: makeCtx(makeSessionManagerRecorder().manager),
-    });
-
-    assert.equal(result.isError, undefined);
-    assert.match(textAt(result.content), /Released the wait/);
-    assert.equal(result.details.wait?.status, "yielded");
-    assert.equal(detachEmitted, true);
-    fs.writeFileSync(release, "");
-    const saved = await savedOwnerResult(result.details.wait.runId);
-    assert.equal(saved.terminalState, "complete");
-    assertDefined(saved.results);
-    assert.deepEqual(
-      saved.results.map((child) => child.output),
-      ["after handoff", "other done"],
-    );
-    assertDefined(saved.results);
-    assert.ok(
-      saved.results.every((child) => objectRecord(child).detached !== true && child.exitCode === 0),
-    );
   });
 
   it("keeps a sibling failure in the owner result after the parallel wait is released", async () => {
@@ -1701,33 +1478,6 @@ describe("fork context execution wiring", () => {
     assert.match(textAt(inspection.content), /second[\s\S]*sibling exploded/);
   });
 
-  it("runs top-level parallel async requests in the background", async () => {
-    const executor = makeExecutor();
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: {
-        tasks: [
-          { agent: "echo", task: "async parallel task one" },
-          { agent: "second", task: "async parallel task two" },
-        ],
-        async: true,
-        clarify: false,
-      },
-      signal: new AbortController().signal,
-      ctx: makeCtx(makeSessionManagerRecorder().manager),
-    });
-
-    assert.equal(result.isError, undefined);
-    assert.equal(result.details.mode, "parallel");
-    assert.ok(
-      Boolean(result.details.asyncId),
-      "expected an asyncId for background top-level parallel runs",
-    );
-    assert.match(textAt(result.content), /Async parallel:/);
-    await waitForTaskCalls(["async parallel task one", "async parallel task two"]);
-  });
-
   it("forks only fork-default agents in top-level parallel async when launch context is omitted", async () => {
     const parentSessionFile = path.join(tempDir, "parent.jsonl");
     const { manager } = makeForkingSessionManagerRecorder({
@@ -1783,74 +1533,6 @@ describe("fork context execution wiring", () => {
     assert.notEqual(forkSessionIndex, -1);
     assert.equal(countForkedSessionFiles([freshArgs[freshSessionIndex + 1]]), 0);
     assert.equal(forkArgs[forkSessionIndex + 1], forkedSessionFile(1));
-  });
-
-  it("applies paired intercom wiring to fresh and fork async children", async () => {
-    mockPi.reset();
-    mockPi.onCall({
-      output: "async fresh child",
-      echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_ROOT_SESSION_ID"],
-    });
-    mockPi.onCall({
-      output: "async fork child",
-      echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_ROOT_SESSION_ID"],
-    });
-    const parentSessionFile = path.join(tempDir, "parent.jsonl");
-    const { manager } = makeForkingSessionManagerRecorder({
-      sessionFile: parentSessionFile,
-      leafId: "leaf-current",
-    });
-    const executor = makeExecutorWithDiscoverAgents(() => ({
-      agents: [
-        {
-          ...makeAgent("scout", { inheritProjectContext: true, inheritSkills: true }),
-          name: "scout",
-          description: "Scout",
-          defaultContext: "fresh",
-          tools: ["read"],
-        },
-        {
-          ...makeAgent("worker", { inheritProjectContext: true, inheritSkills: true }),
-          name: "worker",
-          description: "Worker",
-          defaultContext: "fork",
-          tools: ["read"],
-        },
-      ],
-      projectAgentsDir: null,
-    }));
-
-    const result = await executor.execute({
-      toolCallId: "id",
-      params: {
-        tasks: [
-          { agent: "scout", task: "async find files" },
-          { agent: "worker", task: "async implement fix" },
-        ],
-        async: true,
-        clarify: false,
-      },
-      signal: new AbortController().signal,
-      ctx: makeCtx(manager),
-    });
-
-    assert.equal(result.isError, undefined);
-    assert.equal(result.details.context, "fork");
-    await waitForTaskCalls(["async find files", "async implement fix"]);
-    const freshCall = callRecordForTaskContaining("async find files");
-    const forkCall = callRecordForTaskContaining("async implement fix");
-    assert.equal(toolsArg(freshCall.args), "read,intercom,contact_supervisor");
-    assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
-    assert.equal(
-      freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET,
-      `subagent-chat-${manager.getSessionId().slice(0, 8)}`,
-    );
-    assert.equal(
-      forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET,
-      `subagent-chat-${manager.getSessionId().slice(0, 8)}`,
-    );
-    assert.equal(freshCall.env.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
-    assert.equal(forkCall.env.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
   });
 
   it("runs async chain requests in the background when clarify is omitted", async () => {

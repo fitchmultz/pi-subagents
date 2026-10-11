@@ -97,6 +97,7 @@ if (outcome === "background") {
         false,
         "ending this wait must not stop existing work",
       );
+      assert.equal(fs.existsSync(path.join(asyncDir, "control-requests")), false);
       process.exitCode = 0;
       console.log(outcome);
     })

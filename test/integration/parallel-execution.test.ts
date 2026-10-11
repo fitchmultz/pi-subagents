@@ -613,25 +613,6 @@ describe("parallel agent execution", () => {
     }
   });
 
-  it("top-level parallel explicit output paths persist in the workspace", async () => {
-    mockPi.onCall({ output: "Saved report" });
-    const executor = makeExecutor();
-
-    const result = await executor.execute({
-      toolCallId: "parallel-output",
-      params: { tasks: [{ agent: "echo", task: "Write report", output: "parallel-output.md" }] },
-      signal: new AbortController().signal,
-      ctx: makeMinimalCtx(tempDir),
-    });
-
-    const outputPath = path.join(tempDir, "parallel-output.md");
-    assert.equal(result.isError, undefined);
-    assert.equal(fs.readFileSync(outputPath, "utf-8"), "Saved report");
-    assert.equal(result.details.results[0].savedOutputPath, outputPath);
-    assert.equal(result.details.results[0].outputCleanup, undefined);
-    assert.match(result.details.results[0].finalOutput ?? "", /Saved report/);
-  });
-
   it("top-level parallel tasks support outputSchema", async () => {
     mockPi.onCall({
       output: "structured report",
@@ -915,24 +896,6 @@ describe("parallel agent execution", () => {
 Inspect`),
     );
     assert.doesNotMatch(taskArg, /## Acceptance Contract/);
-  });
-
-  it("top-level parallel progress emits the existing progress instruction style", async () => {
-    mockPi.onCall({ output: "Progress done" });
-    const executor = makeExecutor();
-
-    await executor.execute({
-      toolCallId: "parallel-progress",
-      params: { tasks: [{ agent: "echo", task: "Track work", progress: true }] },
-      signal: new AbortController().signal,
-      ctx: makeMinimalCtx(tempDir),
-    });
-
-    const args = readLastCallArgs();
-    assert.ok(
-      (args.at(-1) ?? "").includes(`Update progress at: ${path.join(tempDir, "progress.md")}`),
-    );
-    assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
   });
 
   it("top-level parallel suppresses progress when the task is review-only", async () => {

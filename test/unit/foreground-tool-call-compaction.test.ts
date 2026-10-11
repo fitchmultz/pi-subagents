@@ -14,15 +14,21 @@ describe("foreground tool-call compaction", () => {
   });
 
   it("does not keep an empty toolCalls array after compaction", () => {
-    const result = compactForegroundResult({
-      agent: "tester",
-      task: "run checks",
-      exitCode: 0,
-      messages: [],
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-    });
+    for (const messages of [
+      [{ role: "assistant", content: [{ type: "text", text: "Legacy saved transcript" }] }],
+      [],
+    ] as const) {
+      const result = compactForegroundResult({
+        agent: "tester",
+        task: "run checks",
+        exitCode: 0,
+        messages,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+      });
 
-    assert.equal(result.toolCalls, undefined);
+      assert.equal(result.toolCalls, undefined);
+      assert.equal(result.messages, undefined);
+    }
   });
 
   it("formats search, fetch and generic array previews clearly", () => {

@@ -627,7 +627,7 @@ describe("single owner execution", () => {
     assert.ok(readCallArgs().includes("--no-skills"));
   });
 
-  it("handles stderr without exit code as info (not error)", async () => {
+  it("keeps a successful result when the child writes warning stderr", async () => {
     mockPi.onCall({ output: "Success", stderr: "Warning: something", exitCode: 0 });
     const agents = makeAgentConfigs(["echo"]);
 
@@ -637,5 +637,7 @@ describe("single owner execution", () => {
       ctx: makeMinimalCtx(tempDir),
     });
     assert.equal(result.isError, undefined);
+    assert.equal(result.details.results[0].finalOutput, "Success");
+    assert.equal(result.details.results[0].exitCode, 0);
   });
 });
