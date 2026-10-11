@@ -30,9 +30,9 @@ formatting. Generated runtime schemas and build outputs keep their own bytes.
 The VS Code Oxc extension uses these same lint and formatting configurations.
 
 `npm run ci` runs lint, formatting, TypeScript, package/install smokes and all
-tests. CI separately qualifies the latest official Pi and the maintained fork
-on GitHub-hosted Linux and macOS. There is no custom checker build, probe suite
-or self-hosted runner requirement.
+tests. CI separately qualifies the latest official Pi on GitHub-hosted Linux and
+the maintained fork on Linux and macOS. There is no custom checker build, probe
+suite or self-hosted runner requirement.
 
 CI's lint job also checks schema/validator drift against the committed dev dependencies,
 before qualification substitutes the selected host graph.

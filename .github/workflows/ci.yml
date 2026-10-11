@@ -72,8 +72,8 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, host: official }
-          - { os: macos-latest, host: official }
           - { os: ubuntu-latest, host: fork }
+          # One macOS lane, on the maintained fork; official Pi stays qualified on Linux.
           - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
