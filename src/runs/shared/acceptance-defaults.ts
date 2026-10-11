@@ -1,0 +1,1 @@
+export const DEFAULT_FINALIZATION_MAX_TURNS = 3;

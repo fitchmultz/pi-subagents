@@ -7,50 +7,82 @@ const RETRY_WINDOW_MS = 30_000;
 const RETRY_DELAY_MS = 500;
 const MAX_STDERR_LENGTH = 64 * 1024;
 
-function run(runnerPath: string, configPath: string, piPackageRoot?: string): Promise<{ code: number; stderr: string }> {
-	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [runnerPath, configPath], {
-			stdio: ["ignore", "inherit", "pipe"],
-			env: piPackageRoot ? { ...process.env, PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR ?? piPackageRoot } : process.env,
-		});
-		let stderr = "";
-		child.stderr.on("data", (chunk: Buffer) => {
-			process.stderr.write(chunk);
-			stderr = `${stderr}${chunk.toString()}`.slice(-MAX_STDERR_LENGTH);
-		});
-		child.once("error", (error) => {
-			const stderr = error.stack ?? error.message;
-			process.stderr.write(`${stderr}\n`);
-			resolve({ code: 1, stderr });
-		});
-		child.once("close", (code) => resolve({ code: code ?? 1, stderr }));
-	});
+function run(
+  runnerPath: string,
+  configPath: string,
+  piPackageRoot?: string,
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [runnerPath, configPath], {
+      stdio: ["ignore", "inherit", "pipe"],
+      env:
+        piPackageRoot !== undefined && piPackageRoot.length > 0
+          ? { ...process.env, PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR ?? piPackageRoot }
+          : process.env,
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: unknown) => {
+      if (!Buffer.isBuffer(chunk)) {
+        return;
+      }
+      process.stderr.write(chunk);
+      stderr = `${stderr}${chunk.toString()}`.slice(-MAX_STDERR_LENGTH);
+    });
+    child.once("error", (error) => {
+      const failure = error.stack ?? error.message;
+      process.stderr.write(`${failure}\n`);
+      resolve({ code: 1, stderr: failure });
+    });
+    child.once("close", (code) => resolve({ code: code ?? 1, stderr }));
+  });
 }
 
-const [runnerPath, configPath] = process.argv.slice(2);
-if (!runnerPath || !configPath) throw new Error("Usage: subagent-runner-launcher <runner> <config>");
+const runnerPath = process.argv.at(2);
+const configPath = process.argv.at(3);
+if (runnerPath === undefined || configPath === undefined) {
+  throw new Error("Usage: subagent-runner-launcher <runner> <config>");
+}
 
 let statusPath: string | undefined;
 let piPackageRoot: string | undefined;
 try {
-	const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { asyncDir?: unknown; piPackageRoot?: unknown };
-	if (typeof config.piPackageRoot === "string") piPackageRoot = config.piPackageRoot;
-	if (typeof config.asyncDir === "string") statusPath = path.join(config.asyncDir, "status.json");
-} catch {}
+  const config: unknown = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  if (typeof config === "object" && config !== null) {
+    if ("piPackageRoot" in config && typeof config.piPackageRoot === "string") {
+      piPackageRoot = config.piPackageRoot;
+    }
+    if ("asyncDir" in config && typeof config.asyncDir === "string") {
+      statusPath = path.join(config.asyncDir, "status.json");
+    }
+  }
+} catch {
+  // The runner owns reporting malformed launch files; launcher discovery is best effort.
+}
 
 // ponytail: bridge short in-place extension updates; use shared update locking if longer gaps appear.
 const deadline = Date.now() + RETRY_WINDOW_MS;
 let announcedRetry = false;
 while (true) {
-	const result = await run(runnerPath, configPath, piPackageRoot);
-	const failedBeforeStartup = !statusPath || !fs.existsSync(statusPath);
-	if (result.code === 0 || !failedBeforeStartup || !result.stderr.includes("ERR_MODULE_NOT_FOUND") || Date.now() >= deadline) {
-		process.exitCode = result.code;
-		break;
-	}
-	if (!announcedRetry) {
-		process.stderr.write("[pi-subagents] Runner dependencies are being updated; retrying startup.\n");
-		announcedRetry = true;
-	}
-	await delay(RETRY_DELAY_MS);
+  // Retrying before startup must finish before inspecting the next process outcome.
+  // oxlint-disable-next-line no-await-in-loop
+  const result = await run(runnerPath, configPath, piPackageRoot);
+  const failedBeforeStartup = statusPath === undefined || !fs.existsSync(statusPath);
+  if (
+    result.code === 0 ||
+    !failedBeforeStartup ||
+    !result.stderr.includes("ERR_MODULE_NOT_FOUND") ||
+    Date.now() >= deadline
+  ) {
+    process.exitCode = result.code;
+    break;
+  }
+  if (!announcedRetry) {
+    process.stderr.write(
+      "[pi-subagents] Runner dependencies are being updated; retrying startup.\n",
+    );
+    announcedRetry = true;
+  }
+  // Back off between dependency-update retries instead of launching concurrent runners.
+  // oxlint-disable-next-line no-await-in-loop
+  await delay(RETRY_DELAY_MS);
 }

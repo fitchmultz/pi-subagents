@@ -1,134 +1,142 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
+import { createNativeSessionFixture } from "../support/native-session.ts";
 import registerSubagentNotify from "../../src/runs/background/notify.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../src/shared/types.ts";
 
-function createPi() {
-	const events = new EventEmitter();
-	const sent: Array<{ message: unknown; options: unknown }> = [];
-	const pi = {
-		events,
-		sendMessage(message: unknown, options: unknown) {
-			sent.push({ message, options });
-		},
-	};
-
-	registerSubagentNotify(pi as never);
-
-	return { events, sent };
+async function createPi(t: TestContext) {
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const native = await createNativeSessionFixture({
+    cwd: process.cwd(),
+    agentDir: process.env.HOME ?? process.cwd(),
+    configure(pi) {
+      const capture = {
+        ...pi,
+        sendMessage: (message: unknown, options: unknown) => {
+          sent.push({ message, options });
+        },
+      };
+      registerSubagentNotify(capture);
+    },
+  });
+  t.after(native.dispose);
+  return { events: native.pi.events, sent };
 }
 
 describe("registerSubagentNotify", () => {
-	it("skips fallback notifications when grouped intercom result delivery already succeeded", () => {
-		const { events, sent } = createPi();
+  it("skips fallback notifications when grouped intercom result delivery already succeeded", async (t) => {
+    const { events, sent } = await createPi(t);
 
-		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			id: "notify-intercom-delivered-1",
-			agent: "worker",
-			success: true,
-			summary: "Delivered over intercom",
-			exitCode: 0,
-			timestamp: 123,
-			intercomResultDelivered: true,
-		});
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+      id: "notify-intercom-delivered-1",
+      agent: "worker",
+      success: true,
+      summary: "Delivered over intercom",
+      exitCode: 0,
+      timestamp: 123,
+      intercomResultDelivered: true,
+    });
 
-		assert.deepEqual(sent, []);
-	});
+    assert.deepEqual(sent, []);
+  });
 
-	it("uses a fallback summary when a background completion is empty", () => {
-		const { events, sent } = createPi();
+  it("uses a fallback summary when a background completion is empty", async (t) => {
+    const { events, sent } = await createPi(t);
 
-		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			id: "notify-empty-1",
-			agent: "worker",
-			success: true,
-			summary: "",
-			exitCode: 0,
-			timestamp: 123,
-		});
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+      id: "notify-empty-1",
+      agent: "worker",
+      success: true,
+      summary: "",
+      exitCode: 0,
+      timestamp: 123,
+    });
 
-		assert.equal(sent.length, 1);
-		assert.deepEqual(sent[0], {
-			message: {
-				customType: "subagent-notify",
-				content: "Background task completed: **worker**\n\n(no output)",
-				display: true,
-			},
-			options: { triggerTurn: true },
-		});
-	});
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0], {
+      message: {
+        customType: "subagent-notify",
+        content: "Background task completed: **worker**\n\n(no output)",
+        display: true,
+      },
+      options: { triggerTurn: true },
+    });
+  });
 
-	it("preserves non-empty completion summaries", () => {
-		const { events, sent } = createPi();
-		const summary = "  Done streaming\nAll clear  ";
+  it("preserves non-empty completion summaries", async (t) => {
+    const { events, sent } = await createPi(t);
+    const summary = "  Done streaming\nAll clear  ";
 
-		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			id: "notify-summary-1",
-			agent: "worker",
-			success: true,
-			summary,
-			exitCode: 0,
-			timestamp: 456,
-			taskIndex: 1,
-			totalTasks: 3,
-		});
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+      id: "notify-summary-1",
+      agent: "worker",
+      success: true,
+      summary,
+      exitCode: 0,
+      timestamp: 456,
+      taskIndex: 1,
+      totalTasks: 3,
+    });
 
-		assert.equal(sent.length, 1);
-		assert.deepEqual(sent[0], {
-			message: {
-				customType: "subagent-notify",
-				content: `Background task completed: **worker** (2/3)\n\n${summary}`,
-				display: true,
-			},
-			options: { triggerTurn: true },
-		});
-	});
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0], {
+      message: {
+        customType: "subagent-notify",
+        content: `Background task completed: **worker** (2/3)\n\n${summary}`,
+        display: true,
+      },
+      options: { triggerTurn: true },
+    });
+  });
 
-	it("preserves session paths in notification content", () => {
-		const { events, sent } = createPi();
+  it("preserves session paths in notification content", async (t) => {
+    const { events, sent } = await createPi(t);
 
-		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			id: "notify-path-1",
-			agent: "worker",
-			success: true,
-			summary: "Done",
-			exitCode: 0,
-			timestamp: 456,
-			sessionFile: "/tmp/session.jsonl",
-		});
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+      id: "notify-path-1",
+      agent: "worker",
+      success: true,
+      summary: "Done",
+      exitCode: 0,
+      timestamp: 456,
+      sessionFile: "/tmp/session.jsonl",
+    });
 
-		assert.deepEqual(sent, [{
-			message: {
-				customType: "subagent-notify",
-				content: "Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl",
-				display: true,
-			},
-			options: { triggerTurn: true },
-		}]);
-	});
+    assert.deepEqual(sent, [
+      {
+        message: {
+          customType: "subagent-notify",
+          content:
+            "Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl",
+          display: true,
+        },
+        options: { triggerTurn: true },
+      },
+    ]);
+  });
 
-	it("labels paused completions as paused even without an exit code", () => {
-		const { events, sent } = createPi();
+  it("labels paused completions as paused even without an exit code", async (t) => {
+    const { events, sent } = await createPi(t);
 
-		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			id: "notify-paused-1",
-			agent: "worker",
-			success: false,
-			state: "paused",
-			summary: "Paused after interrupt. Waiting for explicit next action.",
-			timestamp: 789,
-		});
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+      id: "notify-paused-1",
+      agent: "worker",
+      success: false,
+      state: "paused",
+      summary: "Paused after interrupt. Waiting for explicit next action.",
+      timestamp: 789,
+    });
 
-		assert.equal(sent.length, 1);
-		assert.deepEqual(sent[0], {
-			message: {
-				customType: "subagent-notify",
-				content: "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action.",
-				display: true,
-			},
-			options: { triggerTurn: true },
-		});
-	});
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0], {
+      message: {
+        customType: "subagent-notify",
+        content:
+          "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action.",
+        display: true,
+      },
+      options: { triggerTurn: true },
+    });
+  });
 });

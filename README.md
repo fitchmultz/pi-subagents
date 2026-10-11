@@ -31,12 +31,12 @@ Have worker implement this approved plan, then ask reviewer to check the changes
 
 Children run in the background by default. You can also use commands:
 
-| Task | Command |
-| --- | --- |
-| Review a diff | `/run reviewer "Review this diff"` |
-| Run parallel tasks | `/parallel scout "Inspect frontend" -> scout "Inspect backend"` |
-| Run a sequence | `/chain scout "Map auth" -> planner "Plan a refactor"` |
-| Run a saved workflow | `/run-chain scout-planner -- refactor authentication` |
+| Task                 | Command                                                         |
+| -------------------- | --------------------------------------------------------------- |
+| Review a diff        | `/run reviewer "Review this diff"`                              |
+| Run parallel tasks   | `/parallel scout "Inspect frontend" -> scout "Inspect backend"` |
+| Run a sequence       | `/chain scout "Map auth" -> planner "Plan a refactor"`          |
+| Run a saved workflow | `/run-chain scout-planner -- refactor authentication`           |
 
 Add `--fg` to wait for the result. The [`forceTopLevelAsync` setting](docs/reference.md#forcetoplevelasync) disables waits when enabled.
 
@@ -44,13 +44,13 @@ The saved workflow example requires a [chain file](docs/reference.md#chain-files
 
 ## Choose a role and model
 
-| Task | Built-in agents |
-| --- | --- |
-| Read code or gather evidence | `scout`, `context-builder`, `researcher` |
-| Plan or check a decision | `planner`, `oracle` |
-| Implement or repair a change | `worker`, `debugger`, `fixer`, `delegate` |
-| Review a change | `reviewer`, `reviewer-gpt`, `reviewer-claude`, `reviewer-security`, `reviewer-ponytail` |
-| Design, write or monitor | `ui-designer`, `writer`, `watcher` |
+| Task                         | Built-in agents                                                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------- |
+| Read code or gather evidence | `scout`, `context-builder`, `researcher`                                                |
+| Plan or check a decision     | `planner`, `oracle`                                                                     |
+| Implement or repair a change | `worker`, `debugger`, `fixer`, `delegate`                                               |
+| Review a change              | `reviewer`, `reviewer-gpt`, `reviewer-claude`, `reviewer-security`, `reviewer-ponytail` |
+| Design, write or monitor     | `ui-designer`, `writer`, `watcher`                                                      |
 
 Ask Pi to show the effective profiles. Select an available model if a profile default is unavailable.
 

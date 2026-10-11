@@ -36,11 +36,11 @@ Evidence directory: `/tmp/pi-subagents-assessment.FhIBiR/`. Important files: `cl
 
 Five interleaved, isolated RPC startup/get-commands/exit samples, without model calls:
 
-| Configuration | Median |
-| --- | ---: |
-| Pi without extensions | 149.7 ms |
+| Configuration                   |   Median |
+| ------------------------------- | -------: |
+| Pi without extensions           | 149.7 ms |
 | Pi with both package extensions | 550.8 ms |
-| Difference | 401.1 ms |
+| Difference                      | 401.1 ms |
 
 This is not a full-profile startup, steady-state memory, or model-latency benchmark. It does **not** justify a permanent worker pool.
 

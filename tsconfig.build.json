@@ -1,12 +1,13 @@
 {
-	"extends": "./tsconfig.json",
-	"compilerOptions": {
-		"noEmit": false,
-		"noCheck": true,
-		"types": [],
-		"rewriteRelativeImportExtensions": true,
-		"outDir": "dist",
-		"rootDir": "src",
-		"sourceMap": false
-	}
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "noCheck": true,
+    "types": [],
+    "rewriteRelativeImportExtensions": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts"]
 }

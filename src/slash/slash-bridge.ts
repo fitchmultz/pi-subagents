@@ -1,178 +1,224 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import {
-	SLASH_SUBAGENT_CANCEL_EVENT,
-	SLASH_SUBAGENT_REQUEST_EVENT,
-	SLASH_SUBAGENT_RESPONSE_EVENT,
-	SLASH_SUBAGENT_STARTED_EVENT,
-	SLASH_SUBAGENT_UPDATE_EVENT,
-	type Details,
-	type SubagentExecutionResult,
+  normalizeSubagentParamsLike,
+  type SubagentParamsLike,
+  type SubagentExecutionRequest,
+} from "../runs/foreground/subagent-executor.ts";
+import { errorMessage, isRecord } from "../shared/unknown.ts";
+import type { ReadonlyInput } from "../shared/types/inputs.ts";
+import {
+  SLASH_SUBAGENT_CANCEL_EVENT,
+  SLASH_SUBAGENT_REQUEST_EVENT,
+  SLASH_SUBAGENT_RESPONSE_EVENT,
+  SLASH_SUBAGENT_STARTED_EVENT,
+  SLASH_SUBAGENT_UPDATE_EVENT,
+  type Details,
+  type SubagentExecutionResult,
 } from "../shared/types.ts";
 
 interface SlashSubagentRequest {
-	requestId: string;
-	params: SubagentParamsLike;
-	/** Reuse slash discovery's captured directory without changing the native session context. */
-	executionCwd?: string;
+  readonly requestId: string;
+  readonly params: ReadonlyInput<SubagentParamsLike>;
+  /** Reuse slash discovery's captured directory without changing the native session context. */
+  readonly executionCwd?: string;
 }
 
 export interface SlashSubagentResponse {
-	requestId: string;
-	result: SubagentExecutionResult;
-	isError: boolean;
-	errorText?: string;
+  readonly requestId: string;
+  readonly result: ReadonlyInput<SubagentExecutionResult>;
+  readonly isError: boolean;
+  readonly errorText?: string;
 }
 
 export interface SlashSubagentUpdate {
-	requestId: string;
-	progress?: Details["progress"];
-	currentTool?: string;
-	toolCount?: number;
+  readonly requestId: string;
+  readonly progress?: ReadonlyInput<Details["progress"]>;
+  readonly currentTool?: string;
+  readonly toolCount?: number;
 }
 
 interface EventBus {
-	on(event: string, handler: (data: unknown) => void): (() => void) | void;
-	emit(event: string, data: unknown): void;
+  // Retained adapter buses may return no unsubscribe function, including an explicit void contract.
+  // oxlint-disable-next-line typescript/no-invalid-void-type
+  readonly on: (event: string, handler: (data: unknown) => void) => (() => void) | void;
+  readonly emit: (event: string, data: unknown) => void;
 }
 
 interface SlashBridgeOptions {
-	events: EventBus;
-	getContext: () => ExtensionContext | null;
-	execute: (
-		id: string,
-		params: SubagentParamsLike,
-		signal: AbortSignal,
-		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
-		ctx: ExtensionContext,
-		executionCwd?: string,
-	) => Promise<SubagentExecutionResult>;
+  readonly events: EventBus;
+  readonly getContext: () => ExtensionContext | null;
+  readonly execute: (request: SubagentExecutionRequest) => Promise<SubagentExecutionResult>;
+}
+
+function failedResponse(
+  requestId: string,
+  errorText: string,
+  content = errorText,
+): SlashSubagentResponse {
+  return {
+    requestId,
+    isError: true,
+    errorText,
+    result: {
+      content: [{ type: "text", text: content }],
+      details: { mode: "single", results: [] },
+    },
+  };
+}
+
+class SlashBridge {
+  private readonly options: SlashBridgeOptions;
+  private readonly controllers = new Map<string, AbortController>();
+  private readonly pendingCancels = new Set<string>();
+  private readonly subscriptions: Array<() => void> = [];
+  private readonly pending = new Set<Promise<void>>();
+
+  constructor(options: SlashBridgeOptions) {
+    this.options = options;
+  }
+
+  register(): void {
+    this.subscribe(SLASH_SUBAGENT_CANCEL_EVENT, (data) => this.cancel(data));
+    this.subscribe(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
+      const operation = this.receive(data);
+      this.pending.add(operation);
+      operation
+        .finally(() => {
+          this.pending.delete(operation);
+        })
+        .catch((error: unknown) => {
+          console.error("Slash subagent bridge failed:", error);
+        });
+    });
+  }
+
+  private subscribe(event: string, handler: (data: unknown) => void): void {
+    const unsubscribe = this.options.events.on(event, handler);
+    if (typeof unsubscribe === "function") {
+      this.subscriptions.push(unsubscribe);
+    }
+  }
+
+  private cancel(data: unknown): void {
+    if (!isRecord(data) || typeof data.requestId !== "string") {
+      return;
+    }
+    const controller = this.controllers.get(data.requestId);
+    if (controller) {
+      controller.abort();
+    } else {
+      this.pendingCancels.add(data.requestId);
+    }
+  }
+
+  private respond(response: SlashSubagentResponse): void {
+    this.options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
+  }
+
+  private async receive(data: unknown): Promise<void> {
+    if (!isRecord(data) || typeof data.requestId !== "string" || data.params === undefined) {
+      return;
+    }
+    const requestId = data.requestId;
+    const ctx = this.options.getContext();
+    if (!ctx) {
+      this.respond(
+        failedResponse(
+          requestId,
+          "No active extension context.",
+          "No active extension context for slash subagent execution.",
+        ),
+      );
+      return;
+    }
+    if (!isRecord(data.params)) {
+      this.respond(failedResponse(requestId, "Slash subagent parameters must be an object."));
+      return;
+    }
+    let request: SlashSubagentRequest;
+    try {
+      request = {
+        requestId,
+        params: normalizeSubagentParamsLike(data.params),
+        ...(typeof data.executionCwd === "string" ? { executionCwd: data.executionCwd } : {}),
+      };
+    } catch (error) {
+      this.respond(failedResponse(requestId, errorMessage(error)));
+      return;
+    }
+    const controller = new AbortController();
+    this.controllers.set(requestId, controller);
+    if (this.pendingCancels.delete(requestId)) {
+      controller.abort();
+      this.respond(failedResponse(requestId, "Cancelled before start.", "Cancelled."));
+      this.controllers.delete(requestId);
+      return;
+    }
+    this.options.events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
+    await this.execute(request, controller.signal, ctx);
+  }
+
+  private async execute(
+    request: SlashSubagentRequest,
+    signal: AbortSignal,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    try {
+      const result = await this.options.execute({
+        toolCallId: request.requestId,
+        params: request.params,
+        signal,
+        onUpdate: (update) => {
+          const progress = update.details.progress;
+          const first = progress?.at(0);
+          this.options.events.emit(SLASH_SUBAGENT_UPDATE_EVENT, {
+            requestId: request.requestId,
+            progress,
+            currentTool: first?.currentTool,
+            toolCount: first?.toolCount,
+          });
+        },
+        ctx,
+        executionCwd: request.executionCwd,
+      });
+      this.respond({
+        requestId: request.requestId,
+        result,
+        isError: result.isError === true,
+        errorText:
+          result.isError === true
+            ? result.content.find((part) => part.type === "text")?.text
+            : undefined,
+      });
+    } catch (error) {
+      this.respond(failedResponse(request.requestId, errorMessage(error)));
+    } finally {
+      this.controllers.delete(request.requestId);
+    }
+  }
+
+  cancelAll(): void {
+    for (const controller of this.controllers.values()) {
+      controller.abort();
+    }
+    this.controllers.clear();
+    this.pendingCancels.clear();
+  }
+
+  dispose(): void {
+    for (const unsubscribe of this.subscriptions) {
+      unsubscribe();
+    }
+    this.subscriptions.length = 0;
+    this.pendingCancels.clear();
+  }
 }
 
 export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
-	cancelAll: () => void;
-	dispose: () => void;
+  cancelAll: () => void;
+  dispose: () => void;
 } {
-	const controllers = new Map<string, AbortController>();
-	const pendingCancels = new Set<string>();
-	const subscriptions: Array<() => void> = [];
-
-	const subscribe = (event: string, handler: (data: unknown) => void): void => {
-		const unsubscribe = options.events.on(event, handler);
-		if (typeof unsubscribe === "function") subscriptions.push(unsubscribe);
-	};
-
-	subscribe(SLASH_SUBAGENT_CANCEL_EVENT, (data) => {
-		if (!data || typeof data !== "object") return;
-		const requestId = (data as { requestId?: unknown }).requestId;
-		if (typeof requestId !== "string") return;
-		const controller = controllers.get(requestId);
-		if (controller) {
-			controller.abort();
-			return;
-		}
-		pendingCancels.add(requestId);
-	});
-
-	subscribe(SLASH_SUBAGENT_REQUEST_EVENT, async (data) => {
-		if (!data || typeof data !== "object") return;
-		const request = data as Partial<SlashSubagentRequest>;
-		if (typeof request.requestId !== "string" || !request.params) return;
-		const { requestId, params } = request as SlashSubagentRequest;
-
-		const ctx = options.getContext();
-		if (!ctx) {
-			const response: SlashSubagentResponse = {
-				requestId,
-				result: {
-					content: [{ type: "text", text: "No active extension context for slash subagent execution." }],
-					details: { mode: "single" as const, results: [] },
-				},
-				isError: true,
-				errorText: "No active extension context.",
-			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
-			return;
-		}
-
-		const controller = new AbortController();
-		controllers.set(requestId, controller);
-
-		if (pendingCancels.delete(requestId)) {
-			controller.abort();
-			const response: SlashSubagentResponse = {
-				requestId,
-				result: {
-					content: [{ type: "text", text: "Cancelled." }],
-					details: { mode: "single" as const, results: [] },
-				},
-				isError: true,
-				errorText: "Cancelled before start.",
-			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
-			controllers.delete(requestId);
-			return;
-		}
-
-		options.events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
-
-		try {
-			const result = await options.execute(
-				requestId,
-				params,
-				controller.signal,
-				(update) => {
-					const progress = update.details?.progress;
-					const first = progress?.[0];
-					const payload: SlashSubagentUpdate = {
-						requestId,
-						progress,
-						currentTool: first?.currentTool,
-						toolCount: first?.toolCount,
-					};
-					options.events.emit(SLASH_SUBAGENT_UPDATE_EVENT, payload);
-				},
-				ctx,
-				request.executionCwd,
-			);
-
-			const response: SlashSubagentResponse = {
-				requestId,
-				result,
-				isError: (result as { isError?: boolean }).isError === true,
-				errorText: (result as { isError?: boolean }).isError
-					? result.content.find((c) => c.type === "text")?.text
-					: undefined,
-			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
-		} catch (error) {
-			const response: SlashSubagentResponse = {
-				requestId,
-				result: {
-					content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-					details: { mode: "single" as const, results: [] },
-				},
-				isError: true,
-				errorText: error instanceof Error ? error.message : String(error),
-			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
-		} finally {
-			controllers.delete(requestId);
-		}
-	});
-
-	return {
-		cancelAll: () => {
-			for (const controller of controllers.values()) {
-				controller.abort();
-			}
-			controllers.clear();
-			pendingCancels.clear();
-		},
-		dispose: () => {
-			for (const unsubscribe of subscriptions) unsubscribe();
-			subscriptions.length = 0;
-			pendingCancels.clear();
-		},
-	};
+  const bridge = new SlashBridge(options);
+  bridge.register();
+  return { cancelAll: () => bridge.cancelAll(), dispose: () => bridge.dispose() };
 }

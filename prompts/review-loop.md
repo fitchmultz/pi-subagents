@@ -16,6 +16,7 @@ For each review round, launch fresh-context `reviewer` agents as separate async 
 Choose review angles from the actual change. Common angles are correctness/regressions, tests/validation, and simplicity/maintainability. Add security, performance, docs/API contracts, or user-flow validation when the work calls for it. Prefer three strong reviewers over many vague reviewers.
 
 After reviewers return, synthesize their feedback into:
+
 - concrete blockers or decisions outside the existing authority;
 - fixes worth doing now;
 - optional improvements;
@@ -30,6 +31,7 @@ When there are fixes worth doing now and the workflow is implementation-authoriz
 After a fix worker returns, run another review round only when it made material changes or addressed non-trivial findings. Do not keep looping for optional polish, speculative improvements, or findings already deferred by the parent.
 
 Stop and summarize when one of these is true:
+
 - reviewers find no blockers or fixes worth doing now;
 - remaining feedback is optional, speculative, or intentionally deferred;
 - reviewers surface a concrete decision outside the existing authority that needs me;

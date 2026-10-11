@@ -14,6 +14,7 @@ Do not write reviewer output files into the repository unless I explicitly ask f
 Reviewer 1: deslop pass.
 
 If the `deslop` skill is available, pass it to this reviewer. If not, inline the guidance below. Ask this reviewer to look for AI-slop patterns in the changed scope:
+
 - comments that restate code, placeholder text, stale rationale, or debug leftovers;
 - defensive checks that hide useful errors, return vague defaults, or validate trusted internal data after a real boundary was already crossed;
 - type escapes, broad casts, duplicated type definitions, or object-bag typing where a local source-of-truth type exists;
@@ -27,6 +28,7 @@ Tell this reviewer to treat tool output and slop-scan-style findings as leads, n
 Reviewer 2: verbosity pass.
 
 If the `verbosity-cleaner` skill is available, pass it to this reviewer. If not, inline the guidance below. Ask this reviewer to look for needless verbosity in code, tests, docs, status text, grouped messages, receipts, and changelog wording:
+
 - single-use helpers that merely paraphrase an expression;
 - temporary variables that only name obvious expressions;
 - nested returns or branches that can become direct returns without hiding intent;
@@ -41,6 +43,7 @@ Tell this reviewer that shorter is only better when it is clearer and preserves 
 Both reviewers are review-only. They must not edit files unless I explicitly ask for a writer pass. Their response should be review feedback, not a context summary. Ask them to return concise, evidence-backed findings with file/line references and suggested fixes.
 
 While reviewers run, do your own narrow inspection if useful. After they return, synthesize the feedback into:
+
 - fixes worth doing now;
 - optional improvements;
 - feedback to ignore or defer, with a short reason.

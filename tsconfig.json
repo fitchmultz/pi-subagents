@@ -1,19 +1,32 @@
 {
-	"compilerOptions": {
-		"target": "ES2025",
-		"lib": ["ES2025"],
-		"module": "NodeNext",
-		"moduleResolution": "NodeNext",
-		"allowImportingTsExtensions": true,
-		"verbatimModuleSyntax": true,
-		"erasableSyntaxOnly": true,
-		"noEmit": true,
-		"resolveJsonModule": true,
-		"skipLibCheck": true,
-		"types": ["node"],
-		"noUnusedLocals": true
-	},
-	"include": [
-		"src/**/*.ts"
-	]
+  "compilerOptions": {
+    "target": "ES2025",
+    "lib": ["ES2025"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noImplicitReturns": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["node"],
+    "noUnusedLocals": true
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.mts",
+    "**/*.cts",
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.mjs",
+    "**/*.cjs",
+    ".github/**/*.mjs"
+  ],
+  "exclude": ["node_modules", "dist", "dist.staging*"]
 }

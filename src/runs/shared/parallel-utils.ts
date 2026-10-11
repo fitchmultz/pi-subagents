@@ -1,153 +1,117 @@
-import type { DynamicCollectSpec, DynamicExpandSpec } from "../../shared/settings.ts";
-import type { JsonSchemaObject, ResolvedAcceptanceConfig, SavedLaunchConfig } from "../../shared/types.ts";
+import type { ReadonlyInput } from "../../shared/types/inputs.ts";
+import type {
+  RunnerStep,
+  RunnerSubagentStep,
+  ParallelStepGroup,
+  DynamicRunnerGroup,
+} from "../../shared/types/workflow.ts";
+export type {
+  RunnerStep,
+  RunnerSubagentStep,
+  ParallelStepGroup,
+  DynamicRunnerGroup,
+} from "../../shared/types/workflow.ts";
 
-export interface RunnerSubagentStep {
-	agent: string;
-	task: string;
-	phase?: string;
-	label?: string;
-	outputName?: string;
-	structured?: boolean;
-	cwd?: string;
-	model?: string;
-	thinking?: string;
-	modelCandidates?: string[];
-	tools?: string[];
-	allowSubagents?: boolean;
-	extensions?: string[];
-	mcpDirectTools?: string[];
-	completionGuard?: boolean;
-	systemPrompt?: string | null;
-	systemPromptMode?: "append" | "replace";
-	inheritProjectContext: boolean;
-	inheritSkills: boolean;
-	skills?: string[];
-	outputPath?: string;
-	output?: string | false;
-	outputMode?: "inline" | "file-only";
-	outputPathFromAgentDefault?: boolean;
-	sessionFile?: string;
-	maxSubagentDepth?: number;
-	maxExecutionTimeMs?: number;
-	maxTokens?: number;
-	structuredOutput?: {
-		schema: JsonSchemaObject;
-		schemaPath: string;
-		outputPath: string;
-	};
-	structuredOutputSchema?: JsonSchemaObject;
-	effectiveAcceptance?: ResolvedAcceptanceConfig;
-	launch?: SavedLaunchConfig;
+export function isParallelGroup(
+  step: ReadonlyInput<RunnerStep>,
+): step is ReadonlyInput<ParallelStepGroup> {
+  return "parallel" in step && Array.isArray(step.parallel);
 }
 
-export interface ParallelStepGroup {
-	parallel: RunnerSubagentStep[];
-	cwd?: string;
-	concurrency?: number;
-	failFast?: boolean;
-	worktree?: boolean;
+export function isDynamicRunnerGroup(
+  step: ReadonlyInput<RunnerStep>,
+): step is ReadonlyInput<DynamicRunnerGroup> {
+  return (
+    "expand" in step && "collect" in step && "parallel" in step && !Array.isArray(step.parallel)
+  );
 }
 
-export interface DynamicRunnerGroup {
-	expand: DynamicExpandSpec;
-	parallel: RunnerSubagentStep;
-	collect: DynamicCollectSpec;
-	concurrency?: number;
-	failFast?: boolean;
-	phase?: string;
-	label?: string;
-	sessionFiles?: Array<string | undefined>;
+export function flattenSteps(
+  steps: readonly ReadonlyInput<RunnerStep>[],
+): ReadonlyInput<RunnerSubagentStep>[] {
+  const flat: ReadonlyInput<RunnerSubagentStep>[] = [];
+  for (const step of steps) {
+    if (isParallelGroup(step)) {
+      for (const task of step.parallel) {
+        flat.push(task);
+      }
+    } else if (isDynamicRunnerGroup(step)) {
+      continue;
+    } else {
+      flat.push(step);
+    }
+  }
+  return flat;
 }
 
-export type RunnerStep = RunnerSubagentStep | ParallelStepGroup | DynamicRunnerGroup;
-
-export function isParallelGroup(step: RunnerStep): step is ParallelStepGroup {
-	return "parallel" in step && Array.isArray(step.parallel);
-}
-
-export function isDynamicRunnerGroup(step: RunnerStep): step is DynamicRunnerGroup {
-	return "expand" in step && "collect" in step && "parallel" in step && !Array.isArray((step as { parallel?: unknown }).parallel);
-}
-
-export function flattenSteps(steps: RunnerStep[]): RunnerSubagentStep[] {
-	const flat: RunnerSubagentStep[] = [];
-	for (const step of steps) {
-		if (isParallelGroup(step)) {
-			for (const task of step.parallel) flat.push(task);
-		} else if (isDynamicRunnerGroup(step)) {
-			continue;
-		} else {
-			flat.push(step);
-		}
-	}
-	return flat;
-}
-
-export async function mapConcurrent<T, R>(
-	items: T[],
-	limit: number,
-	fn: (item: T, i: number) => Promise<R>,
-): Promise<R[]> {
-	const safeLimit = Math.max(1, Math.floor(limit) || 1);
-	const results: R[] = new Array(items.length);
-	let next = 0;
-
-	async function worker(_workerIndex: number): Promise<void> {
-		while (next < items.length) {
-			const i = next++;
-			results[i] = await fn(items[i], i);
-		}
-	}
-
-	await Promise.all(
-		Array.from({ length: Math.min(safeLimit, items.length) }, (_, wi) => worker(wi)),
-	);
-	return results;
-}
+export { mapConcurrent } from "../../shared/concurrency.ts";
 
 export interface ParallelTaskResult {
-	agent: string;
-	taskIndex?: number;
-	output: string;
-	exitCode: number | null;
-	error?: string;
-	model?: string;
-	attemptedModels?: string[];
-	outputTargetPath?: string;
-	outputTargetExists?: boolean;
+  agent: string;
+  taskIndex?: number;
+  output: string;
+  exitCode: number | null;
+  error?: string;
+  model?: string;
+  attemptedModels?: string[];
+  outputTargetPath?: string;
+  outputTargetExists?: boolean;
+}
+
+function parallelResultStatus(
+  result: ReadonlyInput<ParallelTaskResult>,
+  hasOutput: boolean,
+): string {
+  const error = result.error ?? "";
+  const suffix = error.length > 0 ? `: ${error}` : "";
+  if (result.exitCode === -1) {
+    return `SKIPPED${suffix}`;
+  }
+  if (result.exitCode !== 0 && result.exitCode !== null) {
+    return `FAILED (exit code ${result.exitCode})${suffix}`;
+  }
+  if (error.length > 0) {
+    return `WARNING: ${error}`;
+  }
+  return emptyOutputStatus(result, hasOutput);
+}
+
+function emptyOutputStatus(result: ReadonlyInput<ParallelTaskResult>, hasOutput: boolean): string {
+  if (hasOutput) {
+    return "";
+  }
+  const target = result.outputTargetPath ?? "";
+  if (target.length === 0) {
+    return "EMPTY OUTPUT (no textual response returned)";
+  }
+  return result.outputTargetExists === false
+    ? `EMPTY OUTPUT (expected output file missing: ${target})`
+    : "";
 }
 
 export function aggregateParallelOutputs(
-	results: ParallelTaskResult[],
-	headerFormat: (index: number, agent: string) => string = (i, agent) =>
-		`=== Parallel Task ${i + 1} (${agent}) ===`,
+  results: readonly ReadonlyInput<ParallelTaskResult>[],
+  headerFormat: (index: number, agent: string) => string = (i, agent) =>
+    `=== Parallel Task ${i + 1} (${agent}) ===`,
 ): string {
-	return results
-		.map((r, i) => {
-			const header = headerFormat(r.taskIndex ?? i, r.agent);
-			const hasOutput = Boolean(r.output?.trim());
-			const status =
-				r.exitCode === -1
-					? `SKIPPED${r.error ? `: ${r.error}` : ""}`
-					: r.exitCode !== 0 && r.exitCode !== null
-						? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}`
-						: r.error
-							? `WARNING: ${r.error}`
-							: !hasOutput && r.outputTargetPath && r.outputTargetExists === false
-								? `EMPTY OUTPUT (expected output file missing: ${r.outputTargetPath})`
-								: !hasOutput && !r.outputTargetPath
-									? "EMPTY OUTPUT (no textual response returned)"
-							: "";
-			const body = status ? (hasOutput ? `${status}\n${r.output}` : status) : r.output;
-			return `${header}\n${body}`;
-		})
-		.join("\n\n");
+  return results
+    .map((result, index) => {
+      const header = headerFormat(result.taskIndex ?? index, result.agent);
+      const hasOutput = result.output.trim().length > 0;
+      const status = parallelResultStatus(result, hasOutput);
+      let body = result.output;
+      if (status.length > 0) {
+        body = hasOutput ? `${status}\n${result.output}` : status;
+      }
+      return `${header}\n${body}`;
+    })
+    .join("\n\n");
 }
 
 export const FAIL_FAST_REASON = "subagent-fail-fast";
 
 export function isFailFastAbort(signal: AbortSignal | undefined): boolean {
-	return signal?.aborted === true && signal.reason === FAIL_FAST_REASON;
+  return signal?.aborted === true && signal.reason === FAIL_FAST_REASON;
 }
 
 export const MAX_PARALLEL_CONCURRENCY = 4;

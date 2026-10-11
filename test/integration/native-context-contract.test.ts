@@ -8,68 +8,117 @@ import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { discoverAgentsAll } from "../../src/agents/agents.ts";
 import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
+import { nativeCli } from "../support/native-sdk.ts";
+import { parseJson, assertRecord, strings, text } from "../support/assertions.ts";
 
-const packageRoot = process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
+const packageRoot =
+  process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ??
+  path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
 
 it("native Pi suppresses inherited resources without dropping selected context and skills", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-context-contract-"));
-	try {
-		fs.writeFileSync(path.join(root, "AGENTS.md"), "NATIVE_PROJECT_SENTINEL");
-		const inheritedSkillDir = path.join(root, "agent", "skills", "inherited");
-		fs.mkdirSync(inheritedSkillDir, { recursive: true });
-		fs.writeFileSync(path.join(inheritedSkillDir, "SKILL.md"), "---\nname: inherited\ndescription: INHERITED_SKILL_SENTINEL\n---\nInherited body");
-		const selectedSkill = path.join(root, "selected.md");
-		fs.writeFileSync(selectedSkill, "---\nname: selected\ndescription: SELECTED_SKILL_SENTINEL\n---\nSelected body");
-		const observer = path.join(root, "observe.ts");
-		// Observe the real resource loader and prompt builder, then stop before any model request.
-		fs.writeFileSync(observer, `import { writeFileSync } from "node:fs";
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-context-contract-"));
+  try {
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "NATIVE_PROJECT_SENTINEL");
+    const inheritedSkillDir = path.join(root, "agent", "skills", "inherited");
+    fs.mkdirSync(inheritedSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(inheritedSkillDir, "SKILL.md"),
+      "---\nname: inherited\ndescription: INHERITED_SKILL_SENTINEL\n---\nInherited body",
+    );
+    const selectedSkill = path.join(root, "selected.md");
+    fs.writeFileSync(
+      selectedSkill,
+      "---\nname: selected\ndescription: SELECTED_SKILL_SENTINEL\n---\nSelected body",
+    );
+    const observer = path.join(root, "observe.ts");
+    // Observe the real resource loader and prompt builder, then stop before any model request.
+    fs.writeFileSync(
+      observer,
+      `import { writeFileSync } from "node:fs";
 export default function(pi) {
 	pi.on("session_start", (_event, ctx) => {
 		writeFileSync(process.env.CONTEXT_PROBE_OUTPUT, ctx.getSystemPrompt());
 		ctx.shutdown();
 	});
-}`);
-		for (const inheritProjectContext of [false, true]) {
-			const output = path.join(root, `prompt-${inheritProjectContext}.txt`);
-			const built = buildPiArgs({ baseArgs: ["--mode", "rpc", "--no-prompt-templates", "--no-themes", "--skill", selectedSkill], task: "Do not invoke a model",
-				sessionEnabled: false, inheritProjectContext, inheritSkills: inheritProjectContext, systemPrompt: "EXPLICIT_SELECTED_CONTEXT", extensions: [observer], projectTrust: "approve" });
-			const env = { ...process.env, ...built.env, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_OFFLINE: "1", CONTEXT_PROBE_OUTPUT: output };
-			try {
-				const child = spawnSync(process.execPath, [process.env.PI_HOST_CLI ?? path.join(packageRoot, JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).bin.pi), ...built.args], { cwd: root, env, input: "", encoding: "utf8", timeout: 15_000 });
-				assert.equal(child.status, 0, child.stderr);
-				const prompt = fs.readFileSync(output, "utf8");
-				assert.equal(prompt.includes("NATIVE_PROJECT_SENTINEL"), inheritProjectContext);
-				assert.ok(prompt.includes("EXPLICIT_SELECTED_CONTEXT"));
-				assert.ok(prompt.includes("SELECTED_SKILL_SENTINEL"));
-				assert.equal(prompt.includes("INHERITED_SKILL_SENTINEL"), inheritProjectContext);
-			} finally {
-				cleanupTempDir(built.tempDir);
-			}
-		}
-	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
-	}
+}`,
+    );
+    for (const inheritProjectContext of [false, true]) {
+      const output = path.join(root, `prompt-${inheritProjectContext}.txt`);
+      const built = buildPiArgs({
+        baseArgs: [
+          "--mode",
+          "rpc",
+          "--no-prompt-templates",
+          "--no-themes",
+          "--skill",
+          selectedSkill,
+        ],
+        task: "Do not invoke a model",
+        sessionEnabled: false,
+        inheritProjectContext,
+        inheritSkills: inheritProjectContext,
+        systemPrompt: "EXPLICIT_SELECTED_CONTEXT",
+        extensions: [observer],
+        projectTrust: "approve",
+      });
+      const env = {
+        ...process.env,
+        ...built.env,
+        PI_CODING_AGENT_DIR: path.join(root, "agent"),
+        PI_OFFLINE: "1",
+        CONTEXT_PROBE_OUTPUT: output,
+      };
+      try {
+        const child = spawnSync(
+          process.execPath,
+          [process.env.PI_HOST_CLI ?? nativeCli(packageRoot), ...built.args],
+          { cwd: root, env, input: "", encoding: "utf8", timeout: 15_000 },
+        );
+        assert.equal(child.status, 0, child.stderr);
+        const prompt = fs.readFileSync(output, "utf8");
+        assert.equal(prompt.includes("NATIVE_PROJECT_SENTINEL"), inheritProjectContext);
+        assert.ok(prompt.includes("EXPLICIT_SELECTED_CONTEXT"));
+        assert.ok(prompt.includes("SELECTED_SKILL_SENTINEL"));
+        assert.equal(prompt.includes("INHERITED_SKILL_SENTINEL"), inheritProjectContext);
+      } finally {
+        cleanupTempDir(built.tempDir);
+      }
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it("native child and intercom prompt sections preserve provider-visible content and fork boundaries", () => {
-	const env = { ...process.env, PI_PROMPT_TEST_SDK: packageRoot };
-	delete env.NODE_TEST_CONTEXT;
-	const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "test/fixtures/native-prompt-sections.mjs"], {
-		encoding: "utf8", timeout: 60_000, env,
-	});
-	assert.equal(child.status, 0, `${child.error?.message ?? ""}\n${child.stdout}\n${child.stderr}`);
-	assert.match(child.stdout, /# pass 5\b/);
+  const env: NodeJS.ProcessEnv = { ...process.env, PI_PROMPT_TEST_SDK: packageRoot };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(
+    process.execPath,
+    ["--test", "--test-reporter=tap", "test/fixtures/native-prompt-sections.mjs"],
+    {
+      encoding: "utf8",
+      timeout: 60_000,
+      env,
+    },
+  );
+  assert.equal(child.status, 0, `${child.error?.message ?? ""}\n${child.stdout}\n${child.stderr}`);
+  assert.match(child.stdout, /# pass 5\b/);
 });
 
 it("native Pi preserves configured builtins and custom tools for the bundled delegate", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-delegate-tools-"));
-	try {
-		const agentDir = path.join(root, "agent");
-		fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
-		fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
-		const output = path.join(root, "tools.json");
-		const shutdown = path.join(root, "shutdown.json");
-		fs.writeFileSync(path.join(agentDir, "extensions", "observe.ts"), `import { writeFileSync } from "node:fs";
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-delegate-tools-"));
+  try {
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({ defaultTools: ["read", "bash"] }),
+    );
+    const output = path.join(root, "tools.json");
+    const shutdown = path.join(root, "shutdown.json");
+    fs.writeFileSync(
+      path.join(agentDir, "extensions", "observe.ts"),
+      `import { writeFileSync } from "node:fs";
 import { Type } from "typebox";
 import { fauxProvider } from "@earendil-works/pi-ai";
 export default function(pi) {
@@ -82,54 +131,132 @@ export default function(pi) {
 		ctx.shutdown();
 	});
 	pi.on("session_shutdown", () => writeFileSync(process.env.TOOL_PROBE_SHUTDOWN, JSON.stringify({ providerCalls: faux.state.callCount })));
-}`);
-		const delegate = discoverAgentsAll(root).builtin.find((agent) => agent.name === "delegate");
-		assert.ok(delegate);
-		const built = buildPiArgs({ baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
-			task: "Do not invoke a model", sessionEnabled: false, model: "faux/faux-1", inheritProjectContext: false, inheritSkills: false,
-			tools: delegate.tools, extensions: delegate.extensions, mcpDirectTools: delegate.mcpDirectTools, allowSubagents: delegate.allowSubagents,
-			projectTrust: "no-approve" });
-		const child = spawnSync(process.execPath, [path.join(packageRoot, "dist/bundle/cli.js"), ...built.args], {
-			cwd: root, input: "", encoding: "utf8", timeout: 15_000,
-			env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: root, USERPROFILE: root,
-				PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...built.env,
-				TOOL_PROBE_OUTPUT: output, TOOL_PROBE_SHUTDOWN: shutdown },
-		});
-		assert.equal(child.status, 0, child.stderr || child.error?.message);
-		assert.deepEqual(JSON.parse(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
-		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).sort(),
-			process.env.PI_COMPAT_HOST === "fork" ? ["background_command", "bash", "discover_tools", "fixture_custom_tool", "read"] : ["bash", "fixture_custom_tool", "read"]);
-	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
-	}
+}`,
+    );
+    const delegate = discoverAgentsAll(root).builtin.find((agent) => agent.name === "delegate");
+    assert.ok(delegate);
+    const built = buildPiArgs({
+      baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
+      task: "Do not invoke a model",
+      sessionEnabled: false,
+      model: "faux/faux-1",
+      inheritProjectContext: false,
+      inheritSkills: false,
+      tools: delegate.tools,
+      extensions: delegate.extensions,
+      mcpDirectTools: delegate.mcpDirectTools,
+      allowSubagents: delegate.allowSubagents,
+      projectTrust: "no-approve",
+    });
+    const child = spawnSync(
+      process.execPath,
+      [path.join(packageRoot, "dist/bundle/cli.js"), ...built.args],
+      {
+        cwd: root,
+        input: "",
+        encoding: "utf8",
+        timeout: 15_000,
+        env: {
+          PATH: process.env.PATH,
+          SystemRoot: process.env.SystemRoot,
+          HOME: root,
+          USERPROFILE: root,
+          PI_CODING_AGENT_DIR: agentDir,
+          PI_OFFLINE: "1",
+          PI_SKIP_VERSION_CHECK: "1",
+          ...built.env,
+          TOOL_PROBE_OUTPUT: output,
+          TOOL_PROBE_SHUTDOWN: shutdown,
+        },
+      },
+    );
+    assert.equal(child.status, 0, child.stderr.length > 0 ? child.stderr : child.error?.message);
+    assert.deepEqual(parseJson(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
+    assert.deepEqual(
+      [...strings(parseJson(fs.readFileSync(output, "utf8")))].sort((a, b) => a.localeCompare(b)),
+      process.env.PI_COMPAT_HOST === "fork"
+        ? ["background_command", "bash", "discover_tools", "fixture_custom_tool", "read"]
+        : ["bash", "fixture_custom_tool", "read"],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it("native Pi applies the saved-session cwd before extension execution and preserves the session on repeat opens", (t) => {
-	const evidence = process.env.PI_SESSION_CWD_EVIDENCE_DIR;
-	if (evidence) fs.mkdirSync(evidence, { recursive: true });
-	const root = fs.realpathSync(fs.mkdtempSync(path.join(evidence ?? os.tmpdir(), "pi-native-session-cwd-")));
-	const originalCwd = path.join(root, "original");
-	const replacementCwd = path.join(root, "replacement project");
-	const launchCwd = path.join(root, "launch");
-	try {
-		for (const name of ["original", "replacement project", "launch", "home", "agent", "tmp", "jiti"]) fs.mkdirSync(path.join(root, name), { mode: 0o700 });
-		fs.writeFileSync(path.join(replacementCwd, "AGENTS.md"), "REPLACEMENT_PROJECT_CONTEXT");
-		const schema = { type: "object" };
-		const schemaPath = path.join(root, "schema.json");
-		fs.writeFileSync(schemaPath, JSON.stringify(schema));
-		const sessionFile = path.join(root, "saved.jsonl");
-		const timestamp = "2026-01-01T00:00:00.000Z";
-		const header = { type: "session", version: 3, id: "01234567-89ab-4cde-8012-3456789abcde", timestamp, cwd: originalCwd };
-		const entries = [
-			{ type: "model_change", id: "model", parentId: null, timestamp, provider: "faux", modelId: "faux-1" },
-			{ type: "thinking_level_change", id: "thinking", parentId: "model", timestamp, thinkingLevel: "off" },
-			{ type: "message", id: "user", parentId: "thinking", timestamp, message: { role: "user", content: "Saved synthetic history", timestamp: 0 } },
-			{ type: "custom", id: "state", parentId: "user", timestamp, customType: "fixture", data: { retained: true } },
-		];
-		const bytes = `${[header, ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
-		fs.writeFileSync(sessionFile, bytes);
-		const observer = path.join(root, "observe.ts");
-		fs.writeFileSync(observer, `import { writeFileSync } from "node:fs";
+  const evidence = process.env.PI_SESSION_CWD_EVIDENCE_DIR;
+  if (evidence !== undefined && evidence !== "") {
+    fs.mkdirSync(evidence, { recursive: true });
+  }
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(evidence ?? os.tmpdir(), "pi-native-session-cwd-")),
+  );
+  const originalCwd = path.join(root, "original");
+  const replacementCwd = path.join(root, "replacement project");
+  const launchCwd = path.join(root, "launch");
+  try {
+    for (const name of [
+      "original",
+      "replacement project",
+      "launch",
+      "home",
+      "agent",
+      "tmp",
+      "jiti",
+    ]) {
+      fs.mkdirSync(path.join(root, name), { mode: 0o700 });
+    }
+    fs.writeFileSync(path.join(replacementCwd, "AGENTS.md"), "REPLACEMENT_PROJECT_CONTEXT");
+    const schema = { type: "object" };
+    const schemaPath = path.join(root, "schema.json");
+    fs.writeFileSync(schemaPath, JSON.stringify(schema));
+    const sessionFile = path.join(root, "saved.jsonl");
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const header = {
+      type: "session",
+      version: 3,
+      id: "01234567-89ab-4cde-8012-3456789abcde",
+      timestamp,
+      cwd: originalCwd,
+    };
+    const entries = [
+      {
+        type: "model_change",
+        id: "model",
+        parentId: null,
+        timestamp,
+        provider: "faux",
+        modelId: "faux-1",
+      },
+      {
+        type: "thinking_level_change",
+        id: "thinking",
+        parentId: "model",
+        timestamp,
+        thinkingLevel: "off",
+      },
+      {
+        type: "message",
+        id: "user",
+        parentId: "thinking",
+        timestamp,
+        message: { role: "user", content: "Saved synthetic history", timestamp: 0 },
+      },
+      {
+        type: "custom",
+        id: "state",
+        parentId: "user",
+        timestamp,
+        customType: "fixture",
+        data: { retained: true },
+      },
+    ];
+    const bytes = `${[header, ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    fs.writeFileSync(sessionFile, bytes);
+    const observer = path.join(root, "observe.ts");
+    fs.writeFileSync(
+      observer,
+      `import { writeFileSync } from "node:fs";
 import { fauxProvider } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 export default async function(pi) {
@@ -152,69 +279,142 @@ export default async function(pi) {
 		ctx.shutdown();
 	});
 	pi.on("session_shutdown", () => writeFileSync(process.env.SESSION_CWD_PROBE_SHUTDOWN, JSON.stringify({ providerCalls: faux.state.callCount })));
-}`);
+}`,
+    );
 
-		function probe(label: string, saved: boolean, cwd: string | undefined, expectedCwd: string) {
-			const replacement = cwd === replacementCwd && saved;
-			const output = path.join(root, `${label}.json`);
-			const shutdownPath = path.join(root, `${label}-shutdown.json`);
-			const built = buildPiArgs({ baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
-				task: "Do not invoke a model", sessionEnabled: saved, sessionFile: saved ? sessionFile : undefined, cwd,
-				model: saved ? undefined : "faux/faux-1", inheritProjectContext: replacement, inheritSkills: false, extensions: [observer],
-				tools: ["read", "bash"], rootSessionId: "owning-parent",
-				structuredOutput: { schema, schemaPath, outputPath: path.join(root, "capture.json") },
-				projectTrust: replacement ? "approve" : "no-approve" });
-			const command = [path.join(packageRoot, "dist/bundle/cli.js"), ...built.args];
-			try {
-				const child = spawnSync(process.execPath, command, { cwd: launchCwd, input: "", encoding: "utf8", timeout: 15_000,
-					env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: path.join(root, "home"), USERPROFILE: path.join(root, "home"),
-						PI_CODING_AGENT_DIR: path.join(root, "agent"), TMPDIR: path.join(root, "tmp"), TMP: path.join(root, "tmp"), TEMP: path.join(root, "tmp"),
-						JITI_FS_CACHE: path.join(root, "jiti"), PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", NODE_OPTIONS: process.env.NODE_OPTIONS, ...built.env,
-						SESSION_CWD_PROBE_OUTPUT: output, SESSION_CWD_PROBE_SHUTDOWN: shutdownPath } });
-				const observation = fs.existsSync(output) ? JSON.parse(fs.readFileSync(output, "utf8")) : undefined;
-				const shutdown = fs.existsSync(shutdownPath) ? JSON.parse(fs.readFileSync(shutdownPath, "utf8")) : undefined;
-				const savedBytes = fs.readFileSync(sessionFile, "utf8");
-				if (process.env.PI_SESSION_CWD_EVIDENCE_DIR) {
-					fs.mkdirSync(process.env.PI_SESSION_CWD_EVIDENCE_DIR, { recursive: true });
-					fs.writeFileSync(path.join(process.env.PI_SESSION_CWD_EVIDENCE_DIR, `${label}.json`), JSON.stringify({ command: [process.execPath, ...command],
-						launchCwd, requestedCwd: cwd, expectedCwd, originalCwdExists: fs.existsSync(originalCwd), status: child.status, signal: child.signal,
-						error: child.error?.message, stdout: child.stdout, stderr: child.stderr, observation, shutdown, originalBytes: bytes, savedBytes }, null, 2));
-				}
-				assert.equal(child.status, 0, child.stderr || child.error?.message);
-				assert.equal(child.signal, null);
-				// Node 24.0 emits this warning when the native cwd preload imports TypeScript.
-				assert.match(child.stderr, /^(?:\(node:\d+\) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/);
-				assert.deepEqual(observation.executed, { stdout: `${expectedCwd}\n`, stderr: "", code: 0, killed: false });
-				assert.equal(observation.cwd, expectedCwd);
-				assert.equal(observation.sessionCwd, expectedCwd);
-				assert.equal(observation.processCwd, launchCwd);
-				assert.deepEqual(observation.model, { provider: "faux", id: "faux-1" });
-				assert.deepEqual(shutdown, { providerCalls: 0 });
-				assert.deepEqual(observation.tools.sort(), ["bash", "read", "structured_output"]);
-				assert.equal(observation.trusted, replacement);
-				assert.equal(observation.prompt.includes("REPLACEMENT_PROJECT_CONTEXT"), replacement);
-				assert.equal(observation.rootId, "owning-parent");
-				assert.equal(observation.nodeOptions, process.env.NODE_OPTIONS);
-				assert.equal(observation.overrideEnvironment, undefined);
-				assert.equal(observation.reopenedCwd, originalCwd);
-				assert.equal(savedBytes, bytes);
-				if (saved) {
-					assert.equal(observation.sessionFile, sessionFile);
-					assert.equal(observation.sessionId, header.id);
-					assert.deepEqual(observation.header, header);
-					assert.deepEqual(observation.entries, entries);
-				}
-			} finally {
-				cleanupTempDir(built.tempDir);
-			}
-		}
-		probe("saved-default", true, undefined, originalCwd);
-		probe("saved-explicit", true, originalCwd, originalCwd);
-		probe("fresh", false, replacementCwd, launchCwd);
-		fs.rmdirSync(originalCwd);
-		for (let turn = 0; turn < 2; turn++) probe(`replacement-${turn}`, true, replacementCwd, replacementCwd);
-	} finally {
-		// Keep the synthetic session and observations as resume evidence.
-		t.diagnostic(`Host: ${packageRoot}; saved-session evidence: ${root}`);
-	}
+    function probe(label: string, saved: boolean, cwd: string | undefined, expectedCwd: string) {
+      const replacement = cwd === replacementCwd && saved;
+      const output = path.join(root, `${label}.json`);
+      const shutdownPath = path.join(root, `${label}-shutdown.json`);
+      const built = buildPiArgs({
+        baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
+        task: "Do not invoke a model",
+        sessionEnabled: saved,
+        sessionFile: saved ? sessionFile : undefined,
+        cwd,
+        model: saved ? undefined : "faux/faux-1",
+        inheritProjectContext: replacement,
+        inheritSkills: false,
+        extensions: [observer],
+        tools: ["read", "bash"],
+        rootSessionId: "owning-parent",
+        structuredOutput: { schema, schemaPath, outputPath: path.join(root, "capture.json") },
+        projectTrust: replacement ? "approve" : "no-approve",
+      });
+      const command = [path.join(packageRoot, "dist/bundle/cli.js"), ...built.args];
+      try {
+        const child = spawnSync(process.execPath, command, {
+          cwd: launchCwd,
+          input: "",
+          encoding: "utf8",
+          timeout: 15_000,
+          env: {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            HOME: path.join(root, "home"),
+            USERPROFILE: path.join(root, "home"),
+            PI_CODING_AGENT_DIR: path.join(root, "agent"),
+            TMPDIR: path.join(root, "tmp"),
+            TMP: path.join(root, "tmp"),
+            TEMP: path.join(root, "tmp"),
+            JITI_FS_CACHE: path.join(root, "jiti"),
+            PI_OFFLINE: "1",
+            PI_SKIP_VERSION_CHECK: "1",
+            NODE_OPTIONS: process.env.NODE_OPTIONS,
+            ...built.env,
+            SESSION_CWD_PROBE_OUTPUT: output,
+            SESSION_CWD_PROBE_SHUTDOWN: shutdownPath,
+          },
+        });
+        const observation = fs.existsSync(output)
+          ? parseJson(fs.readFileSync(output, "utf8"))
+          : undefined;
+        const shutdown = fs.existsSync(shutdownPath)
+          ? parseJson(fs.readFileSync(shutdownPath, "utf8"))
+          : undefined;
+        const savedBytes = fs.readFileSync(sessionFile, "utf8");
+        if (
+          process.env.PI_SESSION_CWD_EVIDENCE_DIR !== undefined &&
+          process.env.PI_SESSION_CWD_EVIDENCE_DIR !== ""
+        ) {
+          fs.mkdirSync(process.env.PI_SESSION_CWD_EVIDENCE_DIR, { recursive: true });
+          fs.writeFileSync(
+            path.join(process.env.PI_SESSION_CWD_EVIDENCE_DIR, `${label}.json`),
+            JSON.stringify(
+              {
+                command: [process.execPath, ...command],
+                launchCwd,
+                requestedCwd: cwd,
+                expectedCwd,
+                originalCwdExists: fs.existsSync(originalCwd),
+                status: child.status,
+                signal: child.signal,
+                error: child.error?.message,
+                stdout: child.stdout,
+                stderr: child.stderr,
+                observation,
+                shutdown,
+                originalBytes: bytes,
+                savedBytes,
+              },
+              null,
+              2,
+            ),
+          );
+        }
+        assert.equal(
+          child.status,
+          0,
+          child.stderr.length > 0 ? child.stderr : child.error?.message,
+        );
+        assert.equal(child.signal, null);
+        // Node 24.0 emits this warning when the native cwd preload imports TypeScript.
+        assert.match(
+          child.stderr,
+          /^(?:\(node:\d+\) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/,
+        );
+        assertRecord(observation);
+        assert.deepEqual(observation.executed, {
+          stdout: `${expectedCwd}\n`,
+          stderr: "",
+          code: 0,
+          killed: false,
+        });
+        assert.equal(observation.cwd, expectedCwd);
+        assert.equal(observation.sessionCwd, expectedCwd);
+        assert.equal(observation.processCwd, launchCwd);
+        assert.deepEqual(observation.model, { provider: "faux", id: "faux-1" });
+        assert.deepEqual(shutdown, { providerCalls: 0 });
+        assert.deepEqual(
+          [...strings(observation.tools)].sort((a, b) => a.localeCompare(b)),
+          ["bash", "read", "structured_output"],
+        );
+        assert.equal(observation.trusted, replacement);
+        assert.equal(text(observation.prompt).includes("REPLACEMENT_PROJECT_CONTEXT"), replacement);
+        assert.equal(observation.rootId, "owning-parent");
+        assert.equal(observation.nodeOptions, process.env.NODE_OPTIONS);
+        assert.equal(observation.overrideEnvironment, undefined);
+        assert.equal(observation.reopenedCwd, originalCwd);
+        assert.equal(savedBytes, bytes);
+        if (saved) {
+          assert.equal(observation.sessionFile, sessionFile);
+          assert.equal(observation.sessionId, header.id);
+          assert.deepEqual(observation.header, header);
+          assert.deepEqual(observation.entries, entries);
+        }
+      } finally {
+        cleanupTempDir(built.tempDir);
+      }
+    }
+    probe("saved-default", true, undefined, originalCwd);
+    probe("saved-explicit", true, originalCwd, originalCwd);
+    probe("fresh", false, replacementCwd, launchCwd);
+    fs.rmdirSync(originalCwd);
+    for (let turn = 0; turn < 2; turn++) {
+      probe(`replacement-${turn}`, true, replacementCwd, replacementCwd);
+    }
+  } finally {
+    // Keep the synthetic session and observations as resume evidence.
+    t.diagnostic(`Host: ${packageRoot}; saved-session evidence: ${root}`);
+  }
 });

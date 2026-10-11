@@ -7,131 +7,141 @@ import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import {
-	ASYNC_DIR,
-	CHAIN_RUNS_DIR,
-	RESULTS_DIR,
-	TEMP_ARTIFACTS_DIR,
-	TEMP_ROOT_DIR,
-	getAsyncConfigPath,
-	resolveTempRootDir,
-	resolveTempScopeId,
+  ASYNC_DIR,
+  CHAIN_RUNS_DIR,
+  RESULTS_DIR,
+  TEMP_ARTIFACTS_DIR,
+  TEMP_ROOT_DIR,
+  getAsyncConfigPath,
+  resolveTempRootDir,
+  resolveTempScopeId,
 } from "../../src/shared/types.ts";
 
 describe("resolveTempScopeId", () => {
-	let saved: NodeJS.ProcessEnv;
-	beforeEach(() => {
-		saved = { ...process.env };
-		for (const key of ["USERNAME", "USER", "LOGNAME", "HOME"]) delete process.env[key];
-	});
-	afterEach(() => {
-		mock.restoreAll();
-		syncBuiltinESMExports();
-		for (const key of ["USERNAME", "USER", "LOGNAME", "HOME"]) {
-			if (saved[key] === undefined) delete process.env[key];
-			else process.env[key] = saved[key];
-		}
-	});
+  let saved: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    saved = { ...process.env };
+    for (const key of ["USERNAME", "USER", "LOGNAME", "HOME"]) {
+      delete process.env[key];
+    }
+  });
+  afterEach(() => {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+    for (const key of ["USERNAME", "USER", "LOGNAME", "HOME"]) {
+      if (saved[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = saved[key];
+      }
+    }
+  });
 
-	it("prefers uid when available", () => {
-		mock.property(process, "getuid", () => 501);
-		process.env.USER = "alice";
-		assert.equal(resolveTempScopeId(), "uid-501");
-	});
+  it("prefers uid when available", () => {
+    mock.property(process, "getuid", () => 501);
+    process.env.USER = "alice";
+    assert.equal(resolveTempScopeId(), "uid-501");
+  });
 
-	it("falls back to environment usernames when uid is unavailable", () => {
-		mock.property(process, "getuid", undefined);
-		process.env.USERNAME = "Alice Example";
-		assert.equal(resolveTempScopeId(), "user-Alice-Example");
-	});
+  it("falls back to environment usernames when uid is unavailable", () => {
+    mock.property(process, "getuid", undefined);
+    process.env.USERNAME = "Alice Example";
+    assert.equal(resolveTempScopeId(), "user-Alice-Example");
+  });
 
-	it("falls back to os.userInfo when environment is missing", () => {
-		mock.property(process, "getuid", undefined);
-		mock.method(os, "userInfo", () => ({ username: "svc_account" }));
-		syncBuiltinESMExports();
-		assert.equal(resolveTempScopeId(), "user-svc_account");
-	});
+  it("falls back to os.userInfo when environment is missing", () => {
+    mock.property(process, "getuid", undefined);
+    mock.method(os, "userInfo", () => ({ username: "svc_account" }));
+    syncBuiltinESMExports();
+    assert.equal(resolveTempScopeId(), "user-svc_account");
+  });
 
-	it("falls back to home path when os.userInfo throws", () => {
-		mock.property(process, "getuid", undefined);
-		mock.method(os, "userInfo", () => { throw new Error("uv_os_get_passwd returned ENOENT"); });
-		mock.method(os, "homedir", () => "/home/12345/app user");
-		syncBuiltinESMExports();
-		assert.equal(resolveTempScopeId(), "home-home-12345-app-user");
-	});
+  it("falls back to home path when os.userInfo throws", () => {
+    mock.property(process, "getuid", undefined);
+    mock.method(os, "userInfo", () => {
+      throw new Error("uv_os_get_passwd returned ENOENT");
+    });
+    mock.method(os, "homedir", () => "/home/12345/app user");
+    syncBuiltinESMExports();
+    assert.equal(resolveTempScopeId(), "home-home-12345-app-user");
+  });
 });
 
 describe("resolveTempRootDir", () => {
-	it("accepts only dedicated pi-subagents directories", () => {
-		assert.equal(resolveTempRootDir("/tmp/pi-subagents-isolated"), path.resolve("/tmp/pi-subagents-isolated"));
-		assert.throws(() => resolveTempRootDir("/tmp"), /dedicated 'pi-subagents-\*' directory/);
-		assert.throws(() => resolveTempRootDir("/"), /dedicated 'pi-subagents-\*' directory/);
-	});
+  it("accepts only dedicated pi-subagents directories", () => {
+    assert.equal(
+      resolveTempRootDir("/tmp/pi-subagents-isolated"),
+      path.resolve("/tmp/pi-subagents-isolated"),
+    );
+    assert.throws(() => resolveTempRootDir("/tmp"), /dedicated 'pi-subagents-\*' directory/);
+    assert.throws(() => resolveTempRootDir("/"), /dedicated 'pi-subagents-\*' directory/);
+  });
 });
 
 describe("temp-root write boundaries", () => {
-	it("refuses current launcher artifact paths through a symlinked configured root", () => {
-		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-root-boundary-"));
-		const target = path.join(scratch, "target");
-		const configuredRoot = path.join(scratch, "pi-subagents-unsafe");
-		fs.mkdirSync(target);
-		fs.symlinkSync(target, configuredRoot, "dir");
-		try {
-			const artifactsModule = new URL("../../src/shared/artifacts.ts", import.meta.url).href;
-			const script = `import { getArtifactPaths } from ${JSON.stringify(artifactsModule)}; getArtifactPaths(${JSON.stringify(path.join(configuredRoot, "artifacts"))}, 'run', 'worker');`;
-			const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-				encoding: "utf-8",
-				env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },
-			});
-			assert.notEqual(result.status, 0);
-			assert.match(result.stderr, /Unsafe pi-subagents temp root/);
-			assert.equal(fs.existsSync(path.join(target, "artifacts")), false);
-		} finally {
-			fs.rmSync(scratch, { recursive: true, force: true });
-		}
-	});
+  it("refuses current launcher artifact paths through a symlinked configured root", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-root-boundary-"));
+    const target = path.join(scratch, "target");
+    const configuredRoot = path.join(scratch, "pi-subagents-unsafe");
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, configuredRoot, "dir");
+    try {
+      const artifactsModule = new URL("../../src/shared/artifacts.ts", import.meta.url).href;
+      const script = `import { getArtifactPaths } from ${JSON.stringify(artifactsModule)}; getArtifactPaths(${JSON.stringify(path.join(configuredRoot, "artifacts"))}, 'run', 'worker');`;
+      const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Unsafe pi-subagents temp root/);
+      assert.equal(fs.existsSync(path.join(target, "artifacts")), false);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
 
-	it("refuses cleanup through symlinked temp subdirectories", () => {
-		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-cleanup-boundary-"));
-		const configuredRoot = path.join(scratch, "pi-subagents-cleanup");
-		const target = path.join(scratch, "target");
-		fs.mkdirSync(configuredRoot);
-		fs.mkdirSync(target);
-		const outsideFile = path.join(target, "old-result.json");
-		fs.writeFileSync(outsideFile, "keep", "utf-8");
-		const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-		fs.utimesSync(outsideFile, old, old);
-		try {
-			fs.symlinkSync(target, path.join(configuredRoot, "async-subagent-results"), "dir");
-			const tempRootModule = new URL("../../src/shared/temp-root.ts", import.meta.url).href;
-			const script = `import { cleanupOldRunStorage } from ${JSON.stringify(tempRootModule)}; await cleanupOldRunStorage();`;
-			const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-				encoding: "utf-8",
-				env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },
-			});
-			assert.notEqual(result.status, 0);
-			assert.match(result.stderr, /Unsafe symlink in pi-subagents temp path/);
-			assert.equal(fs.readFileSync(outsideFile, "utf-8"), "keep");
-		} finally {
-			fs.rmSync(scratch, { recursive: true, force: true });
-		}
-	});
+  it("refuses cleanup through symlinked temp subdirectories", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-cleanup-boundary-"));
+    const configuredRoot = path.join(scratch, "pi-subagents-cleanup");
+    const target = path.join(scratch, "target");
+    fs.mkdirSync(configuredRoot);
+    fs.mkdirSync(target);
+    const outsideFile = path.join(target, "old-result.json");
+    fs.writeFileSync(outsideFile, "keep", "utf-8");
+    const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(outsideFile, old, old);
+    try {
+      fs.symlinkSync(target, path.join(configuredRoot, "async-subagent-results"), "dir");
+      const tempRootModule = new URL("../../src/shared/temp-root.ts", import.meta.url).href;
+      const script = `import { cleanupOldRunStorage } from ${JSON.stringify(tempRootModule)}; await cleanupOldRunStorage();`;
+      const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Unsafe symlink in pi-subagents temp path/);
+      assert.equal(fs.readFileSync(outsideFile, "utf-8"), "keep");
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("shared temp paths", () => {
-	it("anchors shared temp directories under one scoped root", () => {
-		assert.equal(path.dirname(RESULTS_DIR), TEMP_ROOT_DIR);
-		assert.equal(path.dirname(ASYNC_DIR), TEMP_ROOT_DIR);
-		assert.equal(path.dirname(CHAIN_RUNS_DIR), TEMP_ROOT_DIR);
-		assert.equal(path.dirname(TEMP_ARTIFACTS_DIR), TEMP_ROOT_DIR);
-		assert.match(path.basename(TEMP_ROOT_DIR), /^pi-subagents-/);
-		assert.equal(path.basename(RESULTS_DIR), "async-subagent-results");
-		assert.equal(path.basename(ASYNC_DIR), "async-subagent-runs");
-		assert.equal(path.basename(CHAIN_RUNS_DIR), "chain-runs");
-		assert.equal(path.basename(TEMP_ARTIFACTS_DIR), "artifacts");
-	});
+  it("anchors shared temp directories under one scoped root", () => {
+    assert.equal(path.dirname(RESULTS_DIR), TEMP_ROOT_DIR);
+    assert.equal(path.dirname(ASYNC_DIR), TEMP_ROOT_DIR);
+    assert.equal(path.dirname(CHAIN_RUNS_DIR), TEMP_ROOT_DIR);
+    assert.equal(path.dirname(TEMP_ARTIFACTS_DIR), TEMP_ROOT_DIR);
+    assert.match(path.basename(TEMP_ROOT_DIR), /^pi-subagents-/);
+    assert.equal(path.basename(RESULTS_DIR), "async-subagent-results");
+    assert.equal(path.basename(ASYNC_DIR), "async-subagent-runs");
+    assert.equal(path.basename(CHAIN_RUNS_DIR), "chain-runs");
+    assert.equal(path.basename(TEMP_ARTIFACTS_DIR), "artifacts");
+  });
 
-	it("writes async config files under the same scoped temp root", () => {
-		assert.equal(path.dirname(getAsyncConfigPath("abc123")), TEMP_ROOT_DIR);
-		assert.equal(path.basename(getAsyncConfigPath("abc123")), "async-cfg-abc123.json");
-	});
+  it("writes async config files under the same scoped temp root", () => {
+    assert.equal(path.dirname(getAsyncConfigPath("abc123")), TEMP_ROOT_DIR);
+    assert.equal(path.basename(getAsyncConfigPath("abc123")), "async-cfg-abc123.json");
+  });
 });

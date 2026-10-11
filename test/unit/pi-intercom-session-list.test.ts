@@ -1,43 +1,55 @@
 import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
+import { createTestTerminal } from "../support/terminal.ts";
+import { createPlainTheme } from "../support/ui.ts";
 import { SessionListOverlay } from "../../src/pi-intercom/ui/session-list.ts";
 import type { SessionInfo } from "../../src/pi-intercom/types.ts";
 
-const current: SessionInfo = { id: "current-session", name: "controller", cwd: "/repo", model: "model-a" };
+const current: SessionInfo = {
+  id: "current-session",
+  name: "controller",
+  cwd: "/repo",
+  model: "model-a",
+};
 const sessions: SessionInfo[] = Array.from({ length: 12 }, (_, index) => ({
   id: `worker-session-${index}`,
   name: `worker-${index}`,
   cwd: index === 0 ? "/repo" : `/very/long/project/path/${index}`,
   model: `model-${index}`,
 }));
-const theme = { fg: (_name: string, text: string) => text, bold: (text: string) => text };
-const keybindings = {
-  matches: (data: string, action: string) => action === "tui.select.cancel" && data === "\x1b",
-  getKeys: (action: string) => action === "tui.select.confirm" ? ["Enter"] : ["Escape"],
-};
+const theme = createPlainTheme();
+const keybindings = new KeybindingsManager();
 
-function assertWidth(lines: string[], width: number): void {
-  for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
+function assertWidth(lines: readonly string[], width: number): void {
+  for (const line of lines) {
+    assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
+  }
 }
 
 test("session list delegates selection, scrolling, and truncation to SelectList", () => {
   let selected: SessionInfo | undefined;
-  const overlay = new SessionListOverlay(
-    { requestRender: () => {} } as never,
-    theme as never,
-    keybindings as never,
-    current,
+  const overlay = new SessionListOverlay(new TuiAltScreen(createTestTerminal(88, 30)), theme, {
+    keybindings,
+    currentSession: current,
     sessions,
-    (result) => { selected = result; },
-  );
+    done(result) {
+      selected = result;
+    },
+  });
 
   const normal = overlay.render(88);
-  assert.match(normal.join("\n"), /Current Session[\s\S]*controller[\s\S]*Other Sessions[\s\S]*worker-0[\s\S]*model-0/);
+  assert.match(
+    normal.join("\n"),
+    /Current Session[\s\S]*controller[\s\S]*Other Sessions[\s\S]*worker-0[\s\S]*model-0/,
+  );
   assertWidth(normal, 88);
 
-  for (let index = 0; index < 9; index++) overlay.handleInput("\x1b[B");
+  for (let index = 0; index < 9; index++) {
+    overlay.handleInput("\x1b[B");
+  }
   const paged = overlay.render(50);
   assert.match(paged.join("\n"), /\(10\/12\)/);
   assert.match(paged.join("\n"), /worker-9/);
@@ -50,15 +62,15 @@ test("session list delegates selection, scrolling, and truncation to SelectList"
 });
 
 test("project-scoped session list explains how to reveal hidden projects", () => {
-  const overlay = new SessionListOverlay(
-    { requestRender: () => undefined } as never,
-    theme as never,
-    keybindings as never,
-    current,
-    [],
-    () => undefined,
-    3,
-  );
+  const overlay = new SessionListOverlay(new TuiAltScreen(createTestTerminal(88, 30)), theme, {
+    keybindings,
+    currentSession: current,
+    sessions: [],
+    hiddenSessionCount: 3,
+    done() {
+      /* This display-only case does not accept a selection. */
+    },
+  });
 
   const lines = overlay.render(88);
   assert.match(lines.join("\n"), /No other sessions in this project/);
@@ -69,14 +81,14 @@ test("project-scoped session list explains how to reveal hidden projects", () =>
 
 test("empty session list keeps chrome and cancel behavior", () => {
   let cancelled = false;
-  const overlay = new SessionListOverlay(
-    { requestRender: () => {} } as never,
-    theme as never,
-    keybindings as never,
-    current,
-    [],
-    () => { cancelled = true; },
-  );
+  const overlay = new SessionListOverlay(new TuiAltScreen(createTestTerminal(88, 30)), theme, {
+    keybindings,
+    currentSession: current,
+    sessions: [],
+    done() {
+      cancelled = true;
+    },
+  });
 
   const lines = overlay.render(32);
   assert.match(lines.join("\n"), /Current Session[\s\S]*Other Sessions[\s\S]*No other intercom/);

@@ -1,52 +1,65 @@
 import * as path from "node:path";
+import { isRecord } from "../../shared/unknown.ts";
 
 const MAX_NESTED_ID_LENGTH = 128;
 export const MAX_NESTED_PATH_ENTRIES = 4;
 
-export type NestedPathEntry = { runId: string; stepIndex?: number; agent?: string };
+export type NestedPathEntry = {
+  readonly runId: string;
+  readonly stepIndex?: number;
+  readonly agent?: string;
+};
 
 export function isSafeNestedPathId(value: unknown): value is string {
-	return typeof value === "string"
-		&& value.length > 0
-		&& value.length <= MAX_NESTED_ID_LENGTH
-		&& !path.isAbsolute(value)
-		&& !value.includes("/")
-		&& !value.includes("\\")
-		&& !value.includes("..");
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_NESTED_ID_LENGTH &&
+    !path.isAbsolute(value) &&
+    !value.includes("/") &&
+    !value.includes("\\") &&
+    !value.includes("..")
+  );
 }
 
-function stepIndex(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
-}
-
-function nonEmptyString(value: unknown, max: number): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined;
+function pathEntry(value: unknown): NestedPathEntry | undefined {
+  if (!isRecord(value) || !isSafeNestedPathId(value.runId)) {
+    return;
+  }
+  const stepIndex = value.stepIndex;
+  const agent = value.agent;
+  return {
+    runId: value.runId,
+    ...(typeof stepIndex === "number" && Number.isInteger(stepIndex) && stepIndex >= 0
+      ? { stepIndex }
+      : {}),
+    ...(typeof agent === "string" && agent.length > 0 ? { agent: agent.slice(0, 128) } : {}),
+  };
 }
 
 export function sanitizeNestedPath(value: unknown): NestedPathEntry[] {
-	if (!Array.isArray(value)) return [];
-	return value.map((part) => {
-		if (!part || typeof part !== "object") return undefined;
-		const record = part as Record<string, unknown>;
-		if (!isSafeNestedPathId(record.runId)) return undefined;
-		return {
-			runId: record.runId,
-			...(stepIndex(record.stepIndex) !== undefined ? { stepIndex: stepIndex(record.stepIndex) } : {}),
-			...(nonEmptyString(record.agent, 128) ? { agent: nonEmptyString(record.agent, 128) } : {}),
-		};
-	}).filter((part): part is NestedPathEntry => Boolean(part)).slice(0, MAX_NESTED_PATH_ENTRIES);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map(pathEntry)
+    .filter((part): part is NestedPathEntry => part !== undefined)
+    .slice(0, MAX_NESTED_PATH_ENTRIES);
 }
 
 export function parseNestedPathEnv(value: string | undefined): NestedPathEntry[] {
-	if (!value) return [];
-	try {
-		return sanitizeNestedPath(JSON.parse(value) as unknown);
-	} catch {
-		return [];
-	}
+  if (value === undefined || value.length === 0) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return sanitizeNestedPath(parsed);
+  } catch {
+    return [];
+  }
 }
 
-export function encodeNestedPathEnv(value: NestedPathEntry[]): string {
-	const sanitized = sanitizeNestedPath(value);
-	return sanitized.length ? JSON.stringify(sanitized) : "";
+export function encodeNestedPathEnv(value: readonly NestedPathEntry[]): string {
+  const sanitized = sanitizeNestedPath(value);
+  return sanitized.length > 0 ? JSON.stringify(sanitized) : "";
 }

@@ -35,11 +35,13 @@ The last JSON line contains paths to the issued client `cert`/`key`, trusted `ca
   "ca": "/Users/mitch/.pi/intercom-bridge/ca.crt",
   "cert": "/Users/mitch/.pi/intercom-bridge/server.crt",
   "key": "/Users/mitch/.pi/intercom-bridge/server.key",
-  "clients": [{
-    "fingerprint256": "SHA256_FINGERPRINT_FROM_ISSUE",
-    "name": "grok-bot",
-    "cwd": "/Users/mitch/project"
-  }]
+  "clients": [
+    {
+      "fingerprint256": "SHA256_FINGERPRINT_FROM_ISSUE",
+      "name": "grok-bot",
+      "cwd": "/Users/mitch/project"
+    }
+  ]
 }
 ```
 
@@ -139,15 +141,15 @@ curl --fail-with-body --max-time 135 \
 
 All routes require mTLS and the certificate allowlist. Unknown routes/fields, wrong methods, non-JSON bodies, unsafe control characters, and requests larger than 64 KiB are rejected. No CORS; browser-origin requests are rejected. Success is `{ "ok": true, ... }`; application failures are `{ "ok": false, "error": { "code": "...", "message": "..." } }` with a non-2xx status. Certificate/allowlist admission can terminate TLS before HTTP; the CLI reports that as a TLS/transport error. No remote-controlled broker frame or command is passed through.
 
-| Route | Request | Success fields |
-|---|---|---|
-| `POST /v1/register` | `{}` | `sessionId`, `name` (also automatic on other operations) |
-| `GET /v1/list` | none | `sessionId`, `sessions` (metadata + unambiguous targets) |
-| `POST /v1/send` | `{to,message}` | `id`, `accepted`, `delivered` |
-| `POST /v1/ask` | `{to,message,timeoutMs?}` | send receipt and `reply:{from,message}` |
-| `GET /v1/inbox` | none | `messages:[{from,message}]`, `overflow`, `lostMessages` |
-| `POST /v1/reply` | `{replyTo,message}` | send receipt; target derived from the received ask |
-| `POST /v1/ack` | `{ids:[...]}` | `acked`, `retained` |
+| Route               | Request                   | Success fields                                           |
+| ------------------- | ------------------------- | -------------------------------------------------------- |
+| `POST /v1/register` | `{}`                      | `sessionId`, `name` (also automatic on other operations) |
+| `GET /v1/list`      | none                      | `sessionId`, `sessions` (metadata + unambiguous targets) |
+| `POST /v1/send`     | `{to,message}`            | `id`, `accepted`, `delivered`                            |
+| `POST /v1/ask`      | `{to,message,timeoutMs?}` | send receipt and `reply:{from,message}`                  |
+| `GET /v1/inbox`     | none                      | `messages:[{from,message}]`, `overflow`, `lostMessages`  |
+| `POST /v1/reply`    | `{replyTo,message}`       | send receipt; target derived from the received ask       |
+| `POST /v1/ack`      | `{ids:[...]}`             | `acked`, `retained`                                      |
 
 Timeout does **not** retract a delivered ask; a late answer can arrive in inbox. Offline/missing peers, broker outages, ambiguous/self targets, a second concurrent ask, invalid/revoked credentials, timeout, and resource limits have explicit errors. HTTP send/list deadlines are bounded by the real client (8/5 seconds); broker registration by 10 seconds. A lost HTTP response or acknowledgement timeout means **delivery unknown**—inspect inbox/local peer before retrying to avoid duplicate instructions.
 
@@ -201,9 +203,12 @@ Observed **2026-10-06**, from a separate process on the Mac through the installe
 {
   "platform": "darwin",
   "transport": "loopback HTTPS mTLS",
-  "list": {"ok": true, "peers": ["secure-intercom-bridge", "grok-bot"]},
+  "list": { "ok": true, "peers": ["secure-intercom-bridge", "grok-bot"] },
   "ask": {
-    "ok": true, "accepted": true, "delivered": true, "replied": true,
+    "ok": true,
+    "accepted": true,
+    "delivered": true,
+    "replied": true,
     "reply": "bridge-smoke-ok"
   }
 }

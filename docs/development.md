@@ -4,6 +4,8 @@
 
 ## Local validation
 
+See [Code quality](code-quality.md) for the strict Oxlint/Oxfmt rules and commands. `npm run ci` runs lint and formatting before TypeScript, package checks and tests.
+
 `npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It runs full CI with actual native editor receipts: a supplied clean `PI_EDITOR_RECEIPT_TEST_ROOT` stays read-only, otherwise the owning runner snapshots public `pi-apply-edits` main once in a temporary checkout, records its exact Git SHA, installs only its third-party runtime dependencies, and cleans its owned copy. Repository CI resolves that editor SHA once for all host/platform lanes. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
 
 Repository CI resolves latest stable official Pi and maintained fork main once, then freezes that version/SHA across the Linux/macOS lanes and release qualification. Full `npm run ci`, selected-host native contracts, Git production builds and packed-install smokes remain required.
@@ -95,4 +97,3 @@ PI_TEST_TIMEOUT_MS=1800000 npm run test:integration
 # or
 node scripts/run-tests.mjs integration --timeout-ms 1800000
 ```
-

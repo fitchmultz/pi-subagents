@@ -4,81 +4,122 @@
 
 import type { Usage } from "./types.ts";
 import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
+import type { ReadonlyDeep } from "type-fest";
 
 /**
  * Format token count with k suffix for large numbers
  */
 export function formatTokens(n: number): string {
-	return n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
+  if (n < 1000) {
+    return String(n);
+  }
+  return n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 }
 
 export function formatModelThinking(model?: string, thinking?: string): string {
-	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
-	const displayModel = parsed?.baseModel ?? model;
-	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
-	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
-	return [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean).join(" · ");
+  const parsed = model !== undefined && model !== "" ? splitKnownThinkingSuffix(model) : undefined;
+  const displayModel = parsed?.baseModel ?? model;
+  const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
+  const displayThinking =
+    parsed?.thinkingSuffix !== undefined && parsed.thinkingSuffix !== ""
+      ? parsed.thinkingSuffix.slice(1)
+      : explicitThinking;
+  return [
+    displayModel,
+    displayThinking !== undefined && displayThinking !== ""
+      ? `thinking ${displayThinking}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function hasUsageValue(value: number): boolean {
+  return value !== 0 && !Number.isNaN(value);
 }
 
 /**
  * Format usage statistics into a compact string
  */
-export function formatUsage(u: Usage, model?: string): string {
-	const parts: string[] = [];
-	if (u.turns) parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
-	if (u.input) parts.push(`in:${formatTokens(u.input)}`);
-	if (u.output) parts.push(`out:${formatTokens(u.output)}`);
-	if (u.cacheRead) parts.push(`R${formatTokens(u.cacheRead)}`);
-	if (u.cacheWrite) parts.push(`W${formatTokens(u.cacheWrite)}`);
-	if (u.cost) parts.push(`$${u.cost.toFixed(4)}`);
-	if (model) parts.push(model);
-	return parts.join(" ");
+export function formatUsage(u: ReadonlyDeep<Usage>, model?: string): string {
+  const parts: string[] = [];
+  if (hasUsageValue(u.turns)) {
+    parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
+  }
+  if (hasUsageValue(u.input)) {
+    parts.push(`in:${formatTokens(u.input)}`);
+  }
+  if (hasUsageValue(u.output)) {
+    parts.push(`out:${formatTokens(u.output)}`);
+  }
+  if (hasUsageValue(u.cacheRead)) {
+    parts.push(`R${formatTokens(u.cacheRead)}`);
+  }
+  if (hasUsageValue(u.cacheWrite)) {
+    parts.push(`W${formatTokens(u.cacheWrite)}`);
+  }
+  if (hasUsageValue(u.cost)) {
+    parts.push(`$${u.cost.toFixed(4)}`);
+  }
+  if (model !== undefined && model !== "") {
+    parts.push(model);
+  }
+  return parts.join(" ");
 }
 
 /**
  * Format duration in human-readable form
  */
 export function formatDuration(ms: number): string {
-	if (ms < 1000) return `${ms}ms`;
-	if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-	return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  if (ms < 60000) {
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+  return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
 }
 
 /**
  * Format a tool call for display
  */
-export function formatToolCall(name: string, args: Record<string, unknown>, expanded = false): string {
-	switch (name) {
-		case "bash": {
-			const command = typeof args.command === "string" ? args.command : "";
-			const maxLength = expanded ? 240 : 60;
-			return `$ ${command.slice(0, maxLength)}${command.length > maxLength ? "..." : ""}`;
-		}
-		case "read":
-		case "write":
-		case "edit": {
-			const target = typeof args.path === "string"
-				? args.path
-				: typeof args.file_path === "string"
-					? args.file_path
-					: "";
-			return `${name} ${shortenPath(target)}`;
-		}
-		default: {
-			const s = JSON.stringify(args);
-			const maxLength = expanded ? 160 : 40;
-			return `${name} ${s.slice(0, maxLength)}${s.length > maxLength ? "..." : ""}`;
-		}
-	}
+export function formatToolCall(
+  name: string,
+  args: Readonly<Record<string, unknown>>,
+  expanded = false,
+): string {
+  switch (name) {
+    case "bash": {
+      const command = typeof args.command === "string" ? args.command : "";
+      const maxLength = expanded ? 240 : 60;
+      return `$ ${command.slice(0, maxLength)}${command.length > maxLength ? "..." : ""}`;
+    }
+    case "read":
+    case "write":
+    case "edit": {
+      let target = "";
+      if (typeof args.path === "string") {
+        target = args.path;
+      } else if (typeof args.file_path === "string") {
+        target = args.file_path;
+      }
+      return `${name} ${shortenPath(target)}`;
+    }
+    default: {
+      const s = JSON.stringify(args);
+      const maxLength = expanded ? 160 : 40;
+      return `${name} ${s.slice(0, maxLength)}${s.length > maxLength ? "..." : ""}`;
+    }
+  }
 }
 
 /**
  * Shorten a path by replacing home directory with ~
  */
 export function shortenPath(p: string): string {
-	const home = process.env.HOME;
-	if (home && p.startsWith(home)) {
-		return `~${p.slice(home.length)}`;
-	}
-	return p;
+  const home = process.env.HOME;
+  if (home !== undefined && home !== "" && p.startsWith(home)) {
+    return `~${p.slice(home.length)}`;
+  }
+  return p;
 }
