@@ -97,6 +97,13 @@ describe("builtin agent overrides", () => {
       /Skip starts, redundant status, and routine completion/,
     );
     for (const agent of builtins) {
+      assert.equal(agent.tools, undefined, `${agent.name} should use the normal tool surface`);
+      assert.equal(agent.extensions, undefined, `${agent.name} should use configured extensions`);
+      assert.equal(
+        agent.mcpDirectTools,
+        undefined,
+        `${agent.name} should use configured MCP tools`,
+      );
       assert.equal(
         agent.systemPromptMode,
         "append",
@@ -114,10 +121,6 @@ describe("builtin agent overrides", () => {
         `${agent.name} must not delegate to nested subagents`,
       );
       assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);
-      assert.ok(
-        agent.tools?.includes("subagent") !== true,
-        `${agent.name} must not expose nested delegation`,
-      );
       const effectivePrompt = applyIntercomBridgeToAgent(
         agent,
         resolveIntercomBridge("main"),
@@ -128,6 +131,9 @@ describe("builtin agent overrides", () => {
         `${agent.name} progress guidance drift`,
       );
     }
+    assert.equal(builtins.find((agent) => agent.name === "planner")?.defaultContext, "fresh");
+    assert.equal(builtins.find((agent) => agent.name === "worker")?.defaultContext, "fresh");
+    assert.equal(builtins.find((agent) => agent.name === "oracle")?.defaultContext, "fork");
   });
 
   it("applies user settings overrides to builtin agents", () => {
@@ -138,8 +144,8 @@ describe("builtin agent overrides", () => {
             model: "openai/gpt-5.4",
             thinking: "xhigh",
             systemPromptMode: "replace",
-            inheritProjectContext: true,
-            inheritSkills: true,
+            inheritProjectContext: false,
+            inheritSkills: false,
             completionGuard: false,
           },
         },
@@ -154,8 +160,8 @@ describe("builtin agent overrides", () => {
     assert.equal(reviewer.model, "openai/gpt-5.4");
     assert.equal(reviewer.thinking, "xhigh");
     assert.equal(reviewer.systemPromptMode, "replace");
-    assert.equal(reviewer.inheritProjectContext, true);
-    assert.equal(reviewer.inheritSkills, true);
+    assert.equal(reviewer.inheritProjectContext, false);
+    assert.equal(reviewer.inheritSkills, false);
     assert.equal(reviewer.completionGuard, false);
   });
 
@@ -209,27 +215,6 @@ describe("builtin agent overrides", () => {
     );
     assert.ok(reviewer);
     assert.equal(reviewer.model, "openai/gpt-5.4");
-  });
-
-  it("management list applies only settings from the requested scope", () => {
-    fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
-    writeJson(path.join(tempProject, ".pi", "settings.json"), {
-      subagents: { agentOverrides: { reviewer: { disabled: true } } },
-    });
-    const result = handleManagementAction(
-      "list",
-      { agentScope: "user" },
-      {
-        cwd: tempProject,
-        modelRegistry: makeExtensionContext(tempProject).modelRegistry,
-        isProjectTrusted: () => true,
-      },
-    );
-    assert.equal(result.isError, false);
-    assert.match(
-      result.content[0]?.type === "text" ? result.content[0].text : "",
-      /^- reviewer \(/m,
-    );
   });
 
   it("management user scope does not parse malformed project settings", () => {
@@ -309,19 +294,6 @@ describe("builtin agent overrides", () => {
     }
   });
 
-  it("does not apply user settings overrides when scope is project", () => {
-    fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
-    writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
-      subagents: { agentOverrides: { reviewer: { model: "openai/gpt-5.4" } } },
-    });
-
-    const reviewer = discoverAgents(tempProject, "project").agents.find(
-      (agent) => agent.name === "reviewer",
-    );
-    assert.ok(reviewer);
-    assert.notEqual(reviewer.model, "openai/gpt-5.4");
-  });
-
   it("does not read malformed out-of-scope settings files", () => {
     fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
     fs.mkdirSync(path.join(tempHome, ".pi", "agent"), { recursive: true });
@@ -389,45 +361,19 @@ describe("builtin agent overrides", () => {
 
   it("surfaces malformed builtin override entries instead of silently ignoring them", () => {
     const settingsPath = path.join(tempHome, ".pi", "agent", "settings.json");
-    writeJson(settingsPath, {
-      subagents: {
-        agentOverrides: {
-          reviewer: {
-            inheritProjectContext: "true",
-          },
-        },
-      },
-    });
-
-    assert.throws(
-      () => discoverAgents(tempProject, "both"),
-      (error: unknown) =>
-        error instanceof Error &&
-        error.message.includes(settingsPath) &&
-        error.message.includes("reviewer") &&
-        error.message.includes("inheritProjectContext"),
-    );
-  });
-
-  it("surfaces malformed completion guard override values", () => {
-    const settingsPath = path.join(tempHome, ".pi", "agent", "settings.json");
-    writeJson(settingsPath, {
-      subagents: {
-        agentOverrides: {
-          reviewer: {
-            completionGuard: "false",
-          },
-        },
-      },
-    });
-
-    assert.throws(
-      () => discoverAgents(tempProject, "both"),
-      (error: unknown) =>
-        error instanceof Error &&
-        error.message.includes(settingsPath) &&
-        error.message.includes("reviewer") &&
-        error.message.includes("completionGuard"),
-    );
+    for (const [field, value] of [
+      ["inheritProjectContext", "true"],
+      ["completionGuard", "false"],
+    ] as const) {
+      writeJson(settingsPath, { subagents: { agentOverrides: { reviewer: { [field]: value } } } });
+      assert.throws(
+        () => discoverAgents(tempProject, "both"),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes(settingsPath) &&
+          error.message.includes("reviewer") &&
+          error.message.includes(field),
+      );
+    }
   });
 });

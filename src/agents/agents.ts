@@ -40,7 +40,7 @@ import {
 } from "./builtin-overrides.ts";
 import { loadConfiguredPackageAgents } from "./package-agents.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
-import { mergeAgentsForScope } from "./agent-selection.ts";
+import { mergeAgents } from "./agent-selection.ts";
 import { errorMessage } from "./config-values.ts";
 export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
 
@@ -160,7 +160,7 @@ export function discoverAgents(
   const paths = profilePaths(cwd, options);
   const profiles = discoverLocalProfiles(paths, scope);
   const packages = loadConfiguredPackageAgents(cwd, scope, options);
-  const agents = mergeAgentsForScope(scope, profiles.user, profiles.project, [
+  const agents = mergeAgents(profiles.user, profiles.project, [
     ...profiles.builtin,
     ...packages.agents,
   ]).filter((agent) => agent.disabled !== true);

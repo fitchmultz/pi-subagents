@@ -126,7 +126,7 @@ export function resolveStepBehavior(
 function resolveChainPath(filePath: string, chainDir: string): string {
   return path.isAbsolute(filePath) ? filePath : path.join(chainDir, filePath);
 }
-/** Prepend read/output paths so task prose cannot accidentally override the chosen destination. */
+/** Compose read paths and progress instructions for a chain child. */
 export function buildChainInstructions(
   behavior: ResolvedStepBehavior,
   chainDir: string,
@@ -138,9 +138,6 @@ export function buildChainInstructions(
     prefixParts.push(
       `[Read from: ${behavior.reads.map((file) => resolveChainPath(file, chainDir)).join(", ")}]`,
     );
-  }
-  if (behavior.output !== false && behavior.output.length > 0) {
-    prefixParts.push(`[Write to: ${resolveChainPath(behavior.output, chainDir)}]`);
   }
   if (behavior.progress) {
     const progressPath = path.join(chainDir, "progress.md");

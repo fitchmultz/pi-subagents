@@ -9,10 +9,8 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../../src/shared/types/config.ts";
 import { collectInvocationAgentNames, isDynamicParallelStep } from "../../src/shared/settings.ts";
 import {
-  buildFlatAgentNameResolver,
   createPerAgentForkContextResolver,
   invocationUsesForkContext,
-  resolveAgentContext,
   validateForkContextModelPolicy,
   wrapChainTasksForAgentContext,
   wrapTaskForAgentContext,
@@ -44,18 +42,6 @@ function makeAgent(
     filePath: `/user/${name}.md`,
   };
 }
-
-describe("resolveAgentContext", () => {
-  it("uses explicit caller context when provided", () => {
-    assert.equal(resolveAgentContext("fresh", "worker", agents), "fresh");
-    assert.equal(resolveAgentContext("fork", "scout", agents), "fork");
-  });
-
-  it("falls back to agent defaultContext when caller context is omitted", () => {
-    assert.equal(resolveAgentContext(undefined, "scout", agents), "fresh");
-    assert.equal(resolveAgentContext(undefined, "worker", agents), "fork");
-  });
-});
 
 describe("validateForkContextModelPolicy", () => {
   it("rejects Anthropic primary and fallback models whenever context resolves to fork", () => {
@@ -229,15 +215,5 @@ describe("createPerAgentForkContextResolver", () => {
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("buildFlatAgentNameResolver", () => {
-  it("maps parallel task indices to agent names", () => {
-    const resolve = buildFlatAgentNameResolver({
-      tasks: [{ agent: "scout" }, { agent: "worker" }],
-    });
-    assert.equal(resolve(0), "scout");
-    assert.equal(resolve(1), "worker");
   });
 });

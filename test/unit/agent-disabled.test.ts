@@ -27,7 +27,7 @@ function writeAgent(filePath: string, name: string, description: string, model: 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(
     filePath,
-    `---\nname: ${name}\ndescription: ${description}\nmodel: ${model}\n---\n\nPrompt.\n`,
+    `---\nname: ${name}\ndescription: ${description}\nmodel: ${model}\n---\n\n${description} prompt.\n`,
     "utf-8",
   );
 }
@@ -94,21 +94,6 @@ describe("builtin agent disabling", () => {
         error.message.includes("reviewer") &&
         error.message.includes("disabled"),
     );
-  });
-
-  it("bulk disableBuiltins hides builtins at runtime and marks them disabled in discoverAgentsAll", () => {
-    writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
-      subagents: { disableBuiltins: true },
-    });
-
-    const runtimeBuiltinCount = discoverAgents(tempProject, "both").agents.filter(
-      (agent) => agent.source === "builtin",
-    ).length;
-    assert.equal(runtimeBuiltinCount, 0);
-
-    const allBuiltins = discoverAgentsAll(tempProject).builtin;
-    assert.ok(allBuiltins.length > 0);
-    assert.ok(allBuiltins.every((agent) => agent.disabled === true));
   });
 
   it("an explicit user override opts a builtin out of user-scope bulk disable", () => {
@@ -195,7 +180,14 @@ describe("builtin agent disabling", () => {
       "---\nname: helper\ndescription: Helper\n---\n\nHelp.\n",
       "utf-8",
     );
-    const disabledBuiltinNames = discoverAgentsAll(tempProject).builtin.map((agent) => agent.name);
+    const disabledBuiltins = discoverAgentsAll(tempProject).builtin;
+    assert.ok(disabledBuiltins.every((agent) => agent.disabled === true));
+    const disabledBuiltinNames = disabledBuiltins.map((agent) => agent.name);
+    assert.equal(
+      discoverAgents(tempProject, "both").agents.filter((agent) => agent.source === "builtin")
+        .length,
+      0,
+    );
     assert.ok(disabledBuiltinNames.length > 0);
 
     const text = readText(
@@ -255,6 +247,39 @@ describe("builtin agent disabling", () => {
       "openai/gpt-project",
     );
 
+    writeAgent(
+      path.join(tempHome, ".pi", "agent", "agents", "user-only.md"),
+      "user-only",
+      "User only",
+      "openai/gpt-user",
+    );
+    writeAgent(
+      path.join(tempProject, ".pi", "agents", "project-only.md"),
+      "project-only",
+      "Project only",
+      "openai/gpt-project",
+    );
+    const discovered = discoverAgents(tempProject, "both").agents;
+    assert.deepEqual(
+      discovered
+        .filter((agent) => agent.name === "user-only" || agent.name === "project-only")
+        .map((agent) => [agent.name, agent.source])
+        .sort(([left], [right]) => left.localeCompare(right)),
+      [
+        ["project-only", "project"],
+        ["user-only", "user"],
+      ],
+    );
+    const reviewers = discovered.filter((agent) => agent.name === "reviewer");
+    assert.equal(reviewers.length, 1);
+    assert.equal(reviewers[0]?.source, "project");
+    assert.equal(reviewers[0]?.systemPrompt, "Project reviewer override prompt.");
+    const userReviewers = discoverAgents(tempProject, "user").agents.filter(
+      (agent) => agent.name === "reviewer",
+    );
+    assert.equal(userReviewers.length, 1);
+    assert.equal(userReviewers[0]?.source, "user");
+    assert.equal(userReviewers[0]?.systemPrompt, "User reviewer override prompt.");
     const text = readText(
       handleManagementAction(
         "get",
