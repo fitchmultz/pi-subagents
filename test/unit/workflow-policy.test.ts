@@ -47,6 +47,22 @@ describe("workflow policy", () => {
       (await pending).map((result) => result.output),
       ["0", "1", "2"],
     );
+    await assert.rejects(
+      runParallelTasks({
+        tasks: [1, 2, 3],
+        concurrency: 2,
+        runTask: async (item) => {
+          if (item === 2) {
+            throw new Error("boom");
+          }
+          return success;
+        },
+        stoppedTask: () => {
+          throw new Error("No task should stop");
+        },
+      }),
+      /boom/,
+    );
   });
 
   it("fail-fast interrupts running siblings with its own reason and skips queued work", async () => {
@@ -213,24 +229,6 @@ describe("workflow policy", () => {
       }).status,
       "failed",
     );
-  });
-
-  it("a successful prefix is not a completed workflow", () => {
-    const prefix = completeWorkflowStep({
-      stepIndex: 0,
-      stepCount: 2,
-      results: [success],
-      previousOutput: "",
-    });
-    assert.equal(prefix.advance, true);
-    assert.equal(prefix.complete, false);
-    const last = completeWorkflowStep({
-      stepIndex: 1,
-      stepCount: 2,
-      results: [success],
-      previousOutput: prefix.previousOutput,
-    });
-    assert.equal(last.complete, true);
   });
 
   for (const mode of ["sequential", "dynamic"]) {

@@ -218,11 +218,31 @@ function toolMessages(session: AgentSession) {
 test("portable concurrent final waits charge once in native journal and survive a fresh session reader", async (t) => {
   const h = await harness(t);
   const first = await h.open();
+  const second = { id: "child-session:second-entry", usage };
+  first.setContributions([contribution, contribution, second]);
+  const prepared = first.adapter.attach(result(), [contribution, contribution, second], first.ctx);
+  assert.equal(prepared.usage, undefined, "preparation is intent, not a charge");
+  assert.deepEqual(toolMessages(first.session), []);
+  assert.equal(first.session.getSessionStats().cost, 0);
   await first.wait({}, {});
-  assert.equal(first.session.getSessionStats().cost, 10);
+  const combined = {
+    input: 20,
+    output: 40,
+    cacheRead: 60,
+    cacheWrite: 80,
+    reasoning: 10,
+    cacheWrite1h: 30,
+    totalTokens: 200,
+    cost: { input: 2, output: 4, cacheRead: 6, cacheWrite: 8, total: 20 },
+  };
+  assert.equal(first.session.getSessionStats().cost, 20);
   assert.deepEqual(
     toolMessages(first.session).map((message) => message.usage),
-    [usage, undefined],
+    [combined, undefined],
+  );
+  assert.deepEqual(
+    record(record(toolMessages(first.session)[0].details).parentUsage).contributions,
+    [contribution, second],
   );
   const file = first.session.sessionManager.getSessionFile();
   assertDefined(file);
@@ -235,14 +255,19 @@ test("portable concurrent final waits charge once in native journal and survive 
   );
   await h.close(first.session);
   const resumed = await h.open(file);
+  resumed.setContributions([contribution, contribution, second]);
   await resumed.wait({});
-  assert.equal(resumed.session.getSessionStats().cost, 10);
+  assert.equal(resumed.session.getSessionStats().cost, 20);
   const resumedResult = toolMessages(resumed.session).at(-1);
   assertDefined(resumedResult);
   assert.equal(resumedResult.usage, undefined);
-  resumed.setContributions([contribution, { ...contribution, id: "child-session:resumed-entry" }]);
+  resumed.setContributions([
+    contribution,
+    second,
+    { ...contribution, id: "child-session:resumed-entry" },
+  ]);
   await resumed.wait({});
-  assert.equal(resumed.session.getSessionStats().cost, 20, "only resumed child work is new");
+  assert.equal(resumed.session.getSessionStats().cost, 30, "only resumed child work is new");
 });
 
 test("portable discarded result does not reserve usage; inspection and custom details never charge", async (t) => {

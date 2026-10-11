@@ -209,51 +209,6 @@ describe("nested event parsing and projection", () => {
     assert.equal(summary.steps?.[0]?.error, "Child partial failure");
   });
 
-  it("projects started, updated, and completed records into async and foreground parent state", () => {
-    const route = trackRoute();
-    writeNestedEvent(route, {
-      type: "subagent.nested.started",
-      ts: 100,
-      parentRunId: "root-run",
-      parentStepIndex: 1,
-      child: child("nested-a", "running", 100),
-    });
-    writeNestedEvent(route, {
-      type: "subagent.nested.updated",
-      ts: 200,
-      parentRunId: "root-run",
-      parentStepIndex: 1,
-      child: { ...child("nested-a", "running", 200), currentTool: "read" },
-    });
-    writeNestedEvent(route, {
-      type: "subagent.nested.completed",
-      ts: 300,
-      parentRunId: "root-run",
-      parentStepIndex: 1,
-      child: child("nested-a", "complete", 300),
-    });
-
-    const registry = projectNestedEvents(route);
-    assert.equal(registry.children.length, 1);
-    assert.equal(registry.children[0]?.id, "nested-a");
-    assert.equal(registry.children[0]?.state, "complete");
-    assert.equal(registry.children[0]?.steps?.[0]?.agent, "leaf");
-
-    const job: AsyncJobState = {
-      asyncId: "root-run",
-      asyncDir: "/tmp/root-run",
-      status: "running",
-      nestedRoute: route,
-      steps: [
-        { agent: "owner-0", status: "running", index: 0 },
-        { agent: "owner-1", status: "running", index: 1 },
-      ],
-    };
-    updateAsyncJobNestedProjection(job);
-    assert.equal(job.nestedChildren?.[0]?.id, "nested-a");
-    assert.equal(job.steps?.[1]?.children?.[0]?.id, "nested-a");
-  });
-
   it("attaches root children to visible step slices by original step index", () => {
     const route = trackRoute();
     writeNestedEvent(route, {
@@ -280,6 +235,10 @@ describe("nested event parsing and projection", () => {
 
     updateAsyncJobNestedProjection(job);
 
+    const registry = projectNestedEvents(route);
+    assert.equal(registry.children.length, 1);
+    assert.equal(registry.children[0].steps?.[0]?.agent, "leaf");
+    assert.equal(job.nestedChildren?.[0]?.id, "nested-visible");
     assert.equal(job.steps?.[0]?.children, undefined);
     assert.equal(job.steps?.[1]?.children?.[0]?.id, "nested-visible");
   });

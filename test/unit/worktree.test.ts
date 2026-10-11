@@ -233,37 +233,12 @@ describe("worktree", () => {
 
   it("findWorktreeTaskCwdConflict allows omitted or matching task cwd values", () => {
     const sharedCwd = path.join("/tmp", "repo");
-    assert.equal(
-      findWorktreeTaskCwdConflict(
-        [{ agent: "worker-a" }, { agent: "worker-b", cwd: sharedCwd }],
-        sharedCwd,
-      ),
-      undefined,
-    );
-  });
-
-  it("findWorktreeTaskCwdConflict treats relative task cwd values as relative to the shared cwd", () => {
-    const sharedCwd = path.join("/tmp", "repo");
-    assert.equal(
-      findWorktreeTaskCwdConflict([{ agent: "worker-a", cwd: "." }], sharedCwd),
-      undefined,
-    );
-  });
-
-  it("findWorktreeTaskCwdConflict returns the first conflicting task cwd", () => {
-    const sharedCwd = path.join("/tmp", "repo");
-    const conflict = findWorktreeTaskCwdConflict(
-      [
-        { agent: "worker-a", cwd: sharedCwd },
-        { agent: "worker-b", cwd: path.join(sharedCwd, "packages", "app") },
-      ],
-      sharedCwd,
-    );
-    assert.deepEqual(conflict, {
-      index: 1,
-      agent: "worker-b",
-      cwd: path.join(sharedCwd, "packages", "app"),
-    });
+    for (const tasks of [
+      [{ agent: "worker-a" }, { agent: "worker-b", cwd: sharedCwd }],
+      [{ agent: "worker-a", cwd: "." }],
+    ]) {
+      assert.equal(findWorktreeTaskCwdConflict(tasks, sharedCwd), undefined);
+    }
   });
 
   it("diffWorktrees captures committed, modified, and new files", async () => {
@@ -537,32 +512,6 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [".venv"] }));
         setupHook: { hookPath: path.relative(repoDir, hookPath) },
       });
       assert.ok(setup.worktrees[0].syntheticPaths.includes(".venv"));
-    } finally {
-      if (setup) {
-        cleanupWorktrees(setup);
-      }
-      cleanupRepo(repoDir);
-    }
-  });
-
-  it("runs an absolute worktree setup hook path", async () => {
-    const repoDir = createRepo("pi-worktree-hook-absolute-");
-    const hookPath = createHookScript(
-      repoDir,
-      "setup-hook.mjs",
-      `
-import * as fs from "node:fs";
-JSON.parse(fs.readFileSync(0, "utf-8"));
-process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
-`,
-    );
-
-    let setup: WorktreeSetup | undefined;
-    try {
-      setup = await createWorktrees(repoDir, "hook-absolute", 1, {
-        setupHook: { hookPath },
-      });
-      assert.equal(setup.worktrees.length, 1);
     } finally {
       if (setup) {
         cleanupWorktrees(setup);

@@ -408,13 +408,15 @@ test("owner rechecks the index after native no-staged-files repair and shutdown"
 
 for (const scenario of ["success", "public-output", "repair", "passive"] as const) {
   test(`native child performs ${scenario} and mandatory review in one process`, async () => {
-    const { result, receipt, output } = await run(scenario, {
+    const { result, receipt, output, pids } = await run(scenario, {
       turns: scenario === "repair" ? 2 : 1,
       maxTokens: 30,
     });
     const child = result.results[0];
     assert.equal(result.success, true, JSON.stringify(child));
     assertDefined(receipt);
+    assert.equal(pids.length, 1);
+    assert.equal(receipt.pid, pids[0]);
     assert.equal(receipt.calls, scenario === "repair" ? 3 : 2);
     assertDefined(receipt);
     assertDefined(child.acceptance);
@@ -472,12 +474,14 @@ test("legacy Pi review publishes its current schema-validated payload across pro
 
 for (const scenario of ["retry", "linger", "resubmit", "missing-then-repair"]) {
   test(`native owner preserves ${scenario} through same-process review`, async () => {
-    const { result, receipt } = await run(scenario, {
+    const { result, receipt, pids } = await run(scenario, {
       turns: scenario === "missing-then-repair" ? 2 : 1,
     });
     const child = result.results[0];
     assert.equal(result.success, true, JSON.stringify(child));
     assertDefined(receipt);
+    assert.equal(pids.length, 1);
+    assert.equal(receipt.pid, pids[0]);
     assertDefined(child.agentProcessExit);
     assert.equal(child.agentProcessExit.pid, receipt.pid);
     assertDefined(child.acceptance);

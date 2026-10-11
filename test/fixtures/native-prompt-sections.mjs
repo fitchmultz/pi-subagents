@@ -32,11 +32,7 @@ const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkURL));
 const sdk = await import(sdkURL.href);
 const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")));
 const responses = await import(pathToFileURL(path.join(aiRoot, "dist/api/openai-responses.js")));
-const {
-  default: childRuntime,
-  CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
-  CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
-} = await import(
+const { default: childRuntime } = await import(
   pathToFileURL(
     process.env.PI_PROMPT_TEST_RUNTIME ??
       path.join(repo, "src/runs/shared/subagent-prompt-runtime.ts"),
@@ -63,7 +59,14 @@ after(async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
-const toolNames = ["subagent", "delegate", "agent_runs"];
+const toolNames = ["subagent", "delegate", "agent_runs", "load_subagent"];
+const strictRole = [
+  "You are a child subagent, not the parent orchestrator.",
+  "The parent session owns delegation, orchestration, review fanout, and follow-up worker launches.",
+  "Ignore prior parent-only orchestration instructions in inherited conversation history.",
+  "Do not propose or run subagents. Complete only your assigned role-specific task with the tools available to you.",
+  "If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
+].join("\n");
 const skills = ["safe-skill", "pi-subagents"].map((name) => ({
   name,
   description: `${name} catalog sentinel`,
@@ -77,6 +80,8 @@ async function make({
   child = true,
   fanout = false,
   inherited = true,
+  selected = false,
+  exactOverride,
   sessionFile,
   profile = "CHILD PROFILE",
   replacement,
@@ -107,18 +112,22 @@ async function make({
   const captures = [];
   const fullWriter = (pi) =>
     pi.on("before_agent_start", (event) => ({
-      systemPrompt: `${event.systemPrompt}\nOPAQUE FULL OVERRIDE`,
+      systemPrompt: exactOverride ?? `${event.systemPrompt}\nOPAQUE FULL OVERRIDE`,
     }));
   function inheritedResources() {
+    const agentsFiles = [];
+    if (selected) {
+      agentsFiles.push({ path: "/fixture/AGENTS.md", content: "Selected project policy" });
+    } else if (inherited) {
+      agentsFiles.push({ path: "/fixture/AGENTS.md", content: "PROJECT POLICY" });
+    }
     return {
       appendSystemPromptOverride: () => [
         profile,
         '<skill name="explicit">SELECTED SKILL BODY</skill>',
       ],
-      agentsFilesOverride: () => ({
-        agentsFiles: inherited ? [{ path: "/fixture/AGENTS.md", content: "PROJECT POLICY" }] : [],
-      }),
-      skillsOverride: () => ({ skills: inherited ? skills : [], diagnostics: [] }),
+      agentsFilesOverride: () => ({ agentsFiles }),
+      skillsOverride: () => ({ skills: inherited || selected ? skills : [], diagnostics: [] }),
       extensionFactories: [
         ...(full && !fullAfter ? [fullWriter] : []),
         ...(child ? [childRuntime] : []),
@@ -288,6 +297,20 @@ test("unchanged-history forks preserve provider input prefix; fresh and disabled
     JSON.stringify(fresh.captures),
     /PARENT TASK|PARENT ANSWER|PROJECT POLICY|safe-skill catalog sentinel/,
   );
+  const selected = await run(
+    await make({
+      inherited: false,
+      selected: true,
+      replacement: "Selected replacement",
+      profile: '<skill name="explicit">Selected instructions</skill>',
+    }),
+  );
+  assert.match(currentPrompt(selected), /^Selected replacement/);
+  assert.match(currentPrompt(selected), /Selected project policy/);
+  assert.match(currentPrompt(selected), /Selected instructions/);
+  assert.match(currentPrompt(selected), /safe-skill catalog sentinel/);
+  assert.doesNotMatch(currentPrompt(selected), /pi-subagents catalog sentinel/);
+  assert.ok(currentPrompt(selected).includes(strictRole));
   const disabledFork = await run(
     await make({
       sessionFile: parent.sm.createBranchedSession(parent.sm.getLeafId()),
@@ -300,10 +323,74 @@ test("unchanged-history forks preserve provider input prefix; fresh and disabled
     /PROJECT POLICY/,
     "inheritance flags do not scrub existing history",
   );
-  for (const [label, instance] of Object.entries({ baseline, fork, fresh, disabledFork })) {
+  for (const [label, instance] of Object.entries({
+    baseline,
+    fork,
+    fresh,
+    selected,
+    disabledFork,
+  })) {
     save(label, instance);
   }
 });
+
+function appendMixedHistory(instance) {
+  instance.sm.appendMessage({
+    role: "user",
+    content: "Earlier planner → worker → reviewers.",
+    timestamp: Date.now(),
+  });
+  for (const kind of [
+    "subagent-orchestration-instructions",
+    "subagent-slash-result",
+    "subagent-notify",
+    "subagent_control_notice",
+  ]) {
+    instance.sm.appendCustomMessageEntry(kind, "PARENT ONLY MESSAGE", false);
+  }
+  instance.sm.appendMessage({
+    ...ai.fauxAssistantMessage(
+      [
+        { type: "text", text: "I will inspect the repo." },
+        ai.fauxToolCall("subagent", {}, { id: "mixed_subagent|fc_mixed_subagent" }),
+        ai.fauxToolCall("read", { path: "README.md" }, { id: "mixed_read|fc_mixed_read" }),
+      ],
+      { stopReason: "toolUse" },
+    ),
+    provider: instance.model.provider,
+    model: instance.model.id,
+    api: instance.model.api,
+  });
+  for (const name of ["subagent", "read"]) {
+    instance.sm.appendMessage({
+      role: "toolResult",
+      toolName: name,
+      toolCallId: `mixed_${name}|fc_mixed_${name}`,
+      content: [{ type: "text", text: `${name} mixed result` }],
+      isError: false,
+      timestamp: Date.now(),
+    });
+  }
+  instance.sm.appendCustomMessageEntry("other", "UNRELATED CUSTOM DATA", false);
+  instance.sm.appendMessage({
+    role: "user",
+    content: "Now implement only the assigned fix.",
+    timestamp: Date.now(),
+  });
+}
+function assertOrdinaryHistory(instance) {
+  const input = JSON.stringify(wire(instance));
+  for (const content of [
+    "Earlier planner",
+    "Now implement only",
+    "I will inspect the repo.",
+    "read mixed result",
+    "UNRELATED CUSTOM DATA",
+  ]) {
+    assert.ok(input.includes(content), content);
+  }
+  assert.doesNotMatch(input, /PARENT ONLY MESSAGE/);
+}
 
 test("default children filter all parent orchestration tool names without rewriting raw history", async () => {
   const parent = await run(await make({ child: false }));
@@ -325,18 +412,15 @@ test("default children filter all parent orchestration tool names without rewrit
       timestamp: Date.now(),
     });
   }
-  parent.sm.appendCustomMessageEntry(
-    "subagent-orchestration-instructions",
-    "PARENT ONLY MESSAGE",
-    false,
-  );
+  appendMixedHistory(parent);
   const forkFile = parent.sm.createBranchedSession(parent.sm.getLeafId());
   const raw = fs.readFileSync(forkFile, "utf8");
   const fork = await run(await make({ sessionFile: forkFile }));
   assert.doesNotMatch(
     JSON.stringify(wire(fork)),
-    /inherited result|PARENT ONLY MESSAGE|call_subagent|call_delegate|call_agent_runs/,
+    /inherited result|PARENT ONLY MESSAGE|call_subagent|call_delegate|call_agent_runs|call_load_subagent|mixed_subagent/,
   );
+  assertOrdinaryHistory(fork);
   assert.notDeepEqual(
     wire(fork)[0],
     wire(parent)[0],
@@ -367,6 +451,7 @@ test("authorized fanout children retain their own nested calls and results throu
   for (const name of toolNames) {
     assert.match(JSON.stringify(wire(child, 1)), new RegExp(`${name} nested result`));
   }
+  appendMixedHistory(child);
   const file = child.sm.getSessionFile();
   const raw = fs.readFileSync(file, "utf8");
   const resumed = await run(await make({ fanout: true, sessionFile: file }));
@@ -383,20 +468,36 @@ test("authorized fanout children retain their own nested calls and results throu
       ),
     );
   }
+  assertOrdinaryHistory(resumed);
+  assert.match(JSON.stringify(wire(resumed)), /mixed_subagent/);
+  assert.match(JSON.stringify(wire(resumed)), /subagent mixed result/);
   assert.ok(fs.readFileSync(file, "utf8").startsWith(raw));
   save("fanout-resume", resumed);
 });
 
 test("opaque full writers before and after child sections keep provider-visible instructions", async () => {
-  for (const fullAfter of [false, true]) {
+  for (const [fullAfter, exactOverride] of [
+    [false, undefined],
+    [true, undefined],
+    [false, "EXACT OVERRIDE"],
+  ]) {
     // Capture each native instance's environment before the next scenario changes it.
     // oxlint-disable-next-line no-await-in-loop
-    const child = await run(await make({ full: true, fullAfter }));
-    assert.match(currentPrompt(child), /OPAQUE FULL OVERRIDE/);
-    assert.match(currentPrompt(child), /PROJECT POLICY/);
-    assert.match(currentPrompt(child), /SELECTED SKILL BODY/);
-    assert.ok(currentPrompt(child).includes(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS));
-    assert.ok(!currentPrompt(child).includes(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS));
+    const child = await run(await make({ full: true, fullAfter, exactOverride }));
+    if (exactOverride) {
+      assert.equal(
+        currentPrompt(child),
+        `EXACT OVERRIDE\n\n<subagent_role>\n${strictRole}\n</subagent_role>`,
+      );
+    } else {
+      assert.match(currentPrompt(child), /OPAQUE FULL OVERRIDE/);
+      assert.match(currentPrompt(child), /PROJECT POLICY/);
+      assert.match(currentPrompt(child), /SELECTED SKILL BODY/);
+    }
+    assert.ok(currentPrompt(child).includes(strictRole));
+    assert.equal(currentPrompt(child).split("<subagent_role>").length, 2);
+    assert.equal(currentPrompt(child).split("</subagent_role>").length, 2);
+    assert.doesNotMatch(currentPrompt(child), /delegation enabled for your assigned task/);
     save(`full-${fullAfter ? "after" : "before"}`, child);
   }
 });

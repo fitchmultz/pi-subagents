@@ -300,12 +300,32 @@ describe("background native acceptance report boundary", () => {
   });
 
   it("uses the current explicit resubmission after queued coordination without an extra pass", async () => {
-    const { result, native, artifact } = await run("resubmit");
+    const currentReport = {
+      criteriaSatisfied: [
+        { id: "criterion-1", status: "satisfied", evidence: "Native fixture state" },
+      ],
+      changedFiles: ["fixture.ts"],
+      residualRisks: [],
+      diffSummary: handoff,
+      reviewFindings: [{ summary: "Finding retained", custom: { lines: [1, 2] } }],
+    };
+    const { result, native, artifact } = await run("resubmit", {
+      initialReport: report(`Initial task report\n${details}`, false),
+      finalReport: `${handoff}\n\n\`\`\`acceptance-report\n${JSON.stringify(currentReport)}\n\`\`\``,
+    });
     assert.equal(result.exitCode, 0, result.error);
+    assert.equal(result.error, undefined);
     assertDefined(result.acceptance);
     assert.equal(result.acceptance.status, "checked");
     assertDefined(result.acceptance);
-    assert.deepEqual(result.acceptance.childReport, parseAcceptanceReport(fullReport).report);
+    assert.deepEqual(result.acceptance.childReport, currentReport);
+    assert.equal(
+      result.acceptance.initialChildReport?.criteriaSatisfied?.[0]?.status,
+      "not-satisfied",
+    );
+    assert.equal(result.acceptance.childReportParseError, undefined);
+    assert.equal(result.acceptance.finalization?.status, "completed");
+    assert.notEqual(result.acceptance.status, "verified");
     assertDefined(result.acceptance);
     assertDefined(result.acceptance.finalization);
     assert.equal(result.acceptance.finalization.turns[0].rawOutput, handoff);
@@ -321,7 +341,7 @@ describe("background native acceptance report boundary", () => {
     assertDefined(submission);
     assert.deepEqual(record(submission.arguments).value, {
       answer: handoff,
-      report: parseAcceptanceReport(fullReport).report,
+      report: currentReport,
     });
     assert.ok(
       native[0].messages.some(

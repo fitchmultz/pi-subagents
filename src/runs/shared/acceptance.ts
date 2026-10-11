@@ -18,10 +18,8 @@ export {
   evaluateAcceptanceReport,
 } from "./acceptance-evaluation.ts";
 export {
-  attachFinalizationToLedger,
   buildFinalizationProcessFailureLedger,
   createFinalizationProcessFailureTurn,
-  createFinalizationTurn,
   createFinalizationReportRuntime,
   type FinalizationReportSubmission,
   readFinalizationReport,

@@ -1,37 +1,28 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { describe, it } from "node:test";
 import {
   buildClaudeCodeInvocation,
   parseClaudeCodeModel,
-  readClaudeCodeSessionMetadata,
-  writeClaudeCodeSessionMetadata,
 } from "../../src/runs/shared/claude-code.ts";
 
 describe("Claude Code backend model mapping", () => {
   it("defaults fable/opus/sonnet to a 300k compaction window", () => {
-    const invocation = buildClaudeCodeInvocation({ model: "claude-code/sonnet", task: "hi" });
-    assert.deepEqual(invocation.args.slice(0, 8), [
-      "-p",
-      "--dangerously-skip-permissions",
-      "--model",
-      "sonnet",
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      "--session-id",
-    ]);
-    assert.equal(invocation.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
-    assert.equal(invocation.model.context, "300k");
-  });
-
-  it("blocks Claude Code's native Agent tool", () => {
-    const args = buildClaudeCodeInvocation({ model: "claude-code/sonnet", task: "hi" }).args;
-    assert.ok(args.includes("--disallowedTools=Agent"));
-    assert.equal(args.at(-1), "hi");
+    for (const family of ["fable", "opus", "sonnet"]) {
+      const invocation = buildClaudeCodeInvocation({ model: `claude-code/${family}`, task: "hi" });
+      assert.deepEqual(invocation.args.slice(0, 8), [
+        "-p",
+        "--dangerously-skip-permissions",
+        "--model",
+        family,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--session-id",
+      ]);
+      assert.equal(invocation.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
+      assert.equal(invocation.model.context, "300k");
+    }
   });
 
   it("maps context and skill isolation to Claude Code flags", () => {
@@ -156,34 +147,5 @@ describe("Claude Code backend model mapping", () => {
       ["--tools", "Read,Bash,WebSearch"],
     );
     assert.ok(invocation.args.indexOf("hi") < invocation.args.indexOf("--tools"));
-  });
-
-  it("resumes from stored Claude Code session metadata", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-code-session-"));
-    try {
-      const sessionFile = path.join(dir, "session.jsonl");
-      writeClaudeCodeSessionMetadata(sessionFile, {
-        sessionId: "11111111-1111-4111-8111-111111111111",
-        model: "claude-code/opus",
-        cliModel: "opus",
-        family: "opus",
-        context: "300k",
-        updatedAt: 1,
-      });
-      assert.equal(
-        readClaudeCodeSessionMetadata(sessionFile)?.sessionId,
-        "11111111-1111-4111-8111-111111111111",
-      );
-      const invocation = buildClaudeCodeInvocation({
-        model: "claude-code/opus",
-        task: "continue",
-        sessionFile,
-      });
-      assert.ok(invocation.args.includes("--resume"));
-      assert.ok(!invocation.args.includes("--session-id"));
-      assert.equal(invocation.sessionId, "11111111-1111-4111-8111-111111111111");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

@@ -1,4 +1,5 @@
 import { errorMessage } from "../../shared/unknown.ts";
+import { mapConcurrent } from "../../shared/concurrency.ts";
 import type { DynamicParallelStep } from "../../shared/types/workflow.ts";
 import type {
   AcceptanceLedger,
@@ -17,7 +18,6 @@ import {
 import {
   aggregateParallelOutputs,
   FAIL_FAST_REASON,
-  mapConcurrent,
   type ParallelTaskResult,
 } from "./parallel-utils.ts";
 

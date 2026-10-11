@@ -44,8 +44,6 @@ export function flattenSteps(
   return flat;
 }
 
-export { mapConcurrent } from "../../shared/concurrency.ts";
-
 export interface ParallelTaskResult {
   agent: string;
   taskIndex?: number;
@@ -54,8 +52,6 @@ export interface ParallelTaskResult {
   error?: string;
   model?: string;
   attemptedModels?: string[];
-  outputTargetPath?: string;
-  outputTargetExists?: boolean;
 }
 
 function parallelResultStatus(
@@ -63,30 +59,10 @@ function parallelResultStatus(
   hasOutput: boolean,
 ): string {
   const error = result.error ?? "";
-  const suffix = error.length > 0 ? `: ${error}` : "";
-  if (result.exitCode === -1) {
-    return `SKIPPED${suffix}`;
-  }
-  if (result.exitCode !== 0 && result.exitCode !== null) {
-    return `FAILED (exit code ${result.exitCode})${suffix}`;
-  }
   if (error.length > 0) {
     return `WARNING: ${error}`;
   }
-  return emptyOutputStatus(result, hasOutput);
-}
-
-function emptyOutputStatus(result: ReadonlyInput<ParallelTaskResult>, hasOutput: boolean): string {
-  if (hasOutput) {
-    return "";
-  }
-  const target = result.outputTargetPath ?? "";
-  if (target.length === 0) {
-    return "EMPTY OUTPUT (no textual response returned)";
-  }
-  return result.outputTargetExists === false
-    ? `EMPTY OUTPUT (expected output file missing: ${target})`
-    : "";
+  return hasOutput ? "" : "EMPTY OUTPUT (no textual response returned)";
 }
 
 export function aggregateParallelOutputs(

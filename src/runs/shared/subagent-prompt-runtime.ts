@@ -24,7 +24,7 @@ const STRUCTURED_OUTPUT_INSTRUCTIONS = [
   "Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
 ].join("\n");
 
-export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
+const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
   "You are a child subagent, not the parent orchestrator.",
   "The parent session owns delegation, orchestration, review fanout, and follow-up worker launches.",
   "Ignore prior parent-only orchestration instructions in inherited conversation history.",
@@ -32,7 +32,7 @@ export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
   "If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
 
-export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
+const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
   "You are a child subagent with delegation enabled for your assigned task.",
   "You may delegate useful helper work within that task when it saves time or improves quality, using the available delegation tools.",
   "You remain responsible for your assigned result. The original parent owns integration, review synthesis, and final delivery.",

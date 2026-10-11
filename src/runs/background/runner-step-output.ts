@@ -110,9 +110,7 @@ export function publishStepOutput(
     originalPath.length > 0 &&
     step.outputMode !== "file-only" &&
     step.outputPathFromAgentDefault === true;
-  const cleanup = shouldConsume
-    ? cleanupSingleOutputFile(originalPath, output, undefined)
-    : undefined;
+  const cleanup = shouldConsume ? cleanupSingleOutputFile(originalPath, output) : undefined;
   const savedPath = relocateOutput(ctx, originalPath, cleanup);
   const reference = outputReference(savedPath, state.resolvedOutput.fullOutput, cleanup);
   const displayOutput = finalizeSingleOutput({

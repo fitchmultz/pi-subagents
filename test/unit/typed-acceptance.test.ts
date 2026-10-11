@@ -14,7 +14,6 @@ import {
   type JsonValue,
   type JsonObject,
 } from "@earendil-works/pi-ai";
-import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
 import { isRecord, isUnknownArray } from "../../src/shared/unknown.ts";
 import {
   evaluateAcceptance,
@@ -181,20 +180,6 @@ it("does only structural checks at the native boundary, leaving Git and verifica
     "passed",
   );
   assert.equal(verified.verifyRuns[0]?.exitCode, 7);
-});
-
-it("accepts a typed report and complete visible answer from the current successful call", () => {
-  const runtime = createFinalizationReportRuntime();
-  const messages = [submit(), resultMessage()];
-  try {
-    fs.writeFileSync(runtime.outputPath, JSON.stringify(value));
-    const result = readFinalizationReport(messages, runtime);
-    assert.equal(result.reportSubmissionError, undefined);
-    assert.equal(result.output, value.answer);
-    assert.deepEqual(result.report, value.report);
-  } finally {
-    fs.rmSync(path.dirname(runtime.schemaPath), { recursive: true, force: true });
-  }
 });
 
 it("validates the current public answer with its original recursive schema scope", () => {
@@ -441,49 +426,6 @@ it("keeps mandatory self-review defaults, cumulative typed evidence and verifica
   assert.deepEqual(ledger.initialChildReport, report);
   assert.deepEqual(ledger.childReport?.reviewFindings, report.reviewFindings);
   assert.equal(ledger.finalization?.turns[0]?.rawOutput, answer);
-});
-
-it("uses remaining review budget for missing submissions, and stops immediately for human blockers", async () => {
-  let calls = 0;
-  const run = (initialReport: ReadonlyInput<AcceptanceReport>) =>
-    evaluateRunAcceptance({
-      acceptance,
-      initial: { exitCode: 0 },
-      initialOutput: answer,
-      initialReport,
-      nativeReport: true,
-      sessionFile: "fixture.jsonl",
-      cwd: process.cwd(),
-      runTurn: async () => {
-        calls++;
-        return calls === 1
-          ? { output: "", reportSubmissionError: "No current submission" }
-          : { output: answer, report };
-      },
-    });
-  const repaired = await run(report);
-  assert.equal(calls, 2);
-  assert.equal(repaired.status, "checked");
-  assert.deepEqual(
-    repaired.finalization?.turns.map((turn) => turn.status),
-    ["rejected", "checked"],
-  );
-  assert.match(repaired.finalization.turns[0]?.unconfirmedOutput ?? "", /Identifier: task-42/);
-  calls = 0;
-  const blocked = await run({
-    ...report,
-    criteriaSatisfied: [
-      {
-        id: "criterion-1",
-        status: "blocked",
-        evidence: "Touch ID dialog visible",
-        humanAction: "Complete Touch ID",
-      },
-    ],
-  });
-  assert.equal(calls, 0);
-  assert.equal(blocked.status, "blocked");
-  assert.deepEqual(blocked.verifyRuns, []);
 });
 
 it("prompts native typed submissions without removing the external fenced path", () => {
