@@ -68,7 +68,7 @@ try {
   run("npm", ["run", "check:compat"], {
     cwd: development,
     env: testEnv,
-    timeout: 1_200_000,
+    timeout: 1_650_000,
     stdio: "inherit",
   });
   const consumer = join(root, "git-consumer");

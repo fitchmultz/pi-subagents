@@ -72,11 +72,11 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, host: official }
-          - { os: macos-latest, host: official }
           - { os: ubuntu-latest, host: fork }
+          # One macOS lane, on the maintained fork; official Pi stays qualified on Linux.
           - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       PI_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
       PI_EDITOR_RECEIPT_TEST_ROOT: ${{ github.workspace }}/editor

@@ -14,7 +14,8 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 assert.equal(process.argv.length, 2, "Expected no arguments; use --help");
 await import("./compat-host.mjs");
 const run = (command, args, options = {}) => {
-  const result = spawnSync(command, args, { stdio: "inherit", timeout: 1_200_000, ...options });
+  // Outlasts the 1_200_000 ms integration watchdog in scripts/run-tests.mjs.
+  const result = spawnSync(command, args, { stdio: "inherit", timeout: 1_500_000, ...options });
   if (result.error) {
     throw result.error;
   }
