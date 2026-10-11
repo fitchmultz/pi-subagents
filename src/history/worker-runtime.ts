@@ -10,7 +10,8 @@ import {
   type HistoryResult,
   type HistoryEntryInput,
 } from "./types.ts";
-import { HistoryStore } from "./store.ts";
+import { HistoryStore, type SourceRow } from "./store.ts";
+import { pruneHistory } from "./prune.ts";
 import { HistoryQueries } from "./queries.ts";
 import { SourceIngest } from "./ingest.ts";
 import { stamp } from "./source-file.ts";
@@ -39,6 +40,8 @@ export class HistoryWorker {
   private readonly controls: number[] = [];
   private readonly watches: SourceWatches;
   private job?: SourceIngest;
+  private sourceObservation?: { readonly state: string; readonly error: string | null };
+  private notifiedVersion?: string;
   private activeSource?: string;
   private scheduled = false;
   private closed = false;
@@ -65,8 +68,13 @@ export class HistoryWorker {
     }, 30_000);
     this.censusTimer.unref();
   }
-  private changed(): void {
-    this.send({ changed: true });
+  private changed(observationChanged = false): void {
+    const row = this.store?.get("SELECT value FROM meta WHERE key='version'");
+    const version = row ? text(row, "value") : undefined;
+    if (observationChanged || version !== this.notifiedVersion || !this.pending()) {
+      this.notifiedVersion = version;
+      this.send({ changed: true });
+    }
   }
   errorReply(id: number, error: unknown): void {
     this.send({
@@ -129,41 +137,26 @@ export class HistoryWorker {
     this.watches.install(runId === undefined ? [...this.runs.keys()] : [runId], sources);
   }
   private prune(previousSources?: readonly string[]): void {
-    if (previousSources?.length === 0) {
-      return;
-    }
-    const store = this.requireStore();
-    store.transaction(() => {
-      let removed = false;
-      if (previousSources === undefined) {
-        for (const row of store.all("SELECT id FROM runs")) {
-          const id = text(row, "id");
-          if (!this.runs.has(id)) {
-            store.run("DELETE FROM runs WHERE id=?", id);
-            removed = true;
-          }
-        }
-      }
-      for (const source of store.all(
-        `SELECT id,path FROM sources WHERE id NOT IN (SELECT source_id FROM children WHERE source_id IS NOT NULL)${previousSources ? ` AND id IN (${previousSources.map(() => "?").join(",")})` : ""}`,
-        ...(previousSources ?? []),
-      )) {
-        const id = text(source, "id");
+    const removed = pruneHistory(
+      this.requireStore(),
+      this.runs,
+      previousSources,
+      (id, sourcePath) => {
         if (this.job?.id === id) {
           this.job.close();
           this.job = undefined;
         }
         this.dirtySources.delete(id);
-        this.watches.forget({ id, path: text(source, "path") });
-        store.deleteDocuments(id);
-        store.run("DELETE FROM entries WHERE source_id=?", id);
-        store.run("DELETE FROM sources WHERE id=?", id);
-        removed = true;
-      }
-      if (removed) {
-        store.bump();
-      }
-    });
+        this.watches.forget({ id, path: sourcePath });
+      },
+    );
+    if (removed) {
+      this.queries?.sourcesRemoved();
+    }
+  }
+  private observationChanged(source: SourceRow | undefined): boolean {
+    const before = this.sourceObservation;
+    return source?.state !== before?.state || source?.error !== before?.error;
   }
   private admit(run: OwnedRun): void {
     if (!this.owner || run.ownerSessionId !== this.owner.ownerSessionId) {
@@ -260,6 +253,7 @@ export class HistoryWorker {
       return;
     }
     this.dirtyRuns.delete(id);
+    const failed = this.runErrors.has(id);
     const run = this.runs.get(id);
     if (!run) {
       return;
@@ -293,7 +287,7 @@ export class HistoryWorker {
       }
     }
     this.installWatches(id);
-    this.changed();
+    this.changed(failed !== this.runErrors.has(id));
   }
   private ingestNext(): void {
     if (this.job) {
@@ -303,7 +297,8 @@ export class HistoryWorker {
           this.watches.sourceDirectory(path.dirname(source.path));
         }
         this.job = undefined;
-        this.changed();
+        this.changed(this.observationChanged(source));
+        this.sourceObservation = undefined;
       }
       return;
     }
@@ -314,6 +309,7 @@ export class HistoryWorker {
       const source = this.requireStore().source(id);
       if (source) {
         this.activeSource = id;
+        this.sourceObservation = source;
         this.job = new SourceIngest(this.requireStore(), source, force);
       }
     }
@@ -327,8 +323,10 @@ export class HistoryWorker {
       this.recoverSource(id, error);
     }
     if (!(error instanceof HistoryIndexError && error.code === "INDEX_BUSY")) {
-      this.changed();
+      const source = id === undefined ? undefined : store.source(id);
+      this.changed(source !== undefined && this.observationChanged(source));
     }
+    this.sourceObservation = undefined;
   }
   private recoverSource(id: string, error: unknown): void {
     if (error instanceof HistoryIndexError && error.code === "INDEX_BUSY") {
@@ -472,6 +470,8 @@ export class HistoryWorker {
     this.retryTimer = undefined;
     this.job?.close();
     this.job = undefined;
+    this.sourceObservation = undefined;
+    this.notifiedVersion = undefined;
     this.watches.close();
     this.dirtyRuns.clear();
     this.dirtySources.clear();

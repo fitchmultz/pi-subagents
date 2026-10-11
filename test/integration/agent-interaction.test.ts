@@ -51,6 +51,7 @@ import type {
   SubagentState,
   SubagentExecutionResult,
   SavedLaunchConfig,
+  HistoryPage,
   TrackedOwnedRun,
 } from "../../src/shared/types.ts";
 import type { SubagentParamsLike } from "../../src/runs/foreground/subagent-params.ts";
@@ -73,6 +74,7 @@ import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 const root = fs.mkdtempSync(
   path.join(process.env.PI_AGENT_VIEW_EVIDENCE_DIR ?? os.tmpdir(), "agent-interaction-"),
 );
+
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PI_SUBAGENT_")) {
     delete process.env[key];
@@ -5226,11 +5228,128 @@ test("answering in the view releases the real native durable question with human
     f.refreshView(true);
     return Boolean(f.controller.picker.tasks[0]?.question);
   }, "real native durable question");
+  const historyPage = f.controller.conversation.historyPage.bind(f.controller);
+  const stale: PromiseWithResolvers<void> = Promise.withResolvers();
+  let held = false,
+    released = false,
+    oldReadReturned = false;
+  let questionCallId: string | undefined;
+  let publishedAnswer = "";
+  const publications: string[] = [];
+  const reads = { started: 0, assembled: 0, returned: 0, validated: 0, invalidated: 0 };
+  const pageFacts = (page: HistoryPage | undefined) =>
+    page && {
+      sessionId: page.sessionId,
+      sourceId: page.sourceId,
+      generation: page.generation,
+      version: page.version,
+      sourceState: page.sourceState,
+      freshness: page.freshness,
+      unavailable: page.unavailable,
+      count: page.count,
+      terminalSequence: page.terminalSequence,
+      finalResultId: page.finalResultId,
+      entries: page.entries.slice(-12).map((entry) => ({
+        id: entry.id,
+        sequence: entry.sequence,
+        type: entry.type,
+        role: record(entry.entry.message ?? {}).role,
+        calls: Array.isArray(record(entry.entry.message ?? {}).content)
+          ? records(record(entry.entry.message ?? {}).content ?? [])
+              .filter((part) => part.type === "toolCall")
+              .map((part) => ({ id: part.id, name: part.name }))
+          : undefined,
+        toolCallId: record(entry.entry.message ?? {}).toolCallId,
+        toolName: record(entry.entry.message ?? {}).toolName,
+      })),
+    };
+  let lastRead: unknown,
+    lastFence: unknown,
+    renders = 0;
+  t.after(() => stale.resolve());
+  t.mock.method(
+    f.controller.conversation,
+    "historyPage",
+    async (...args: Readonly<Parameters<typeof historyPage>>) => {
+      reads.started++;
+      const result = await historyPage(...args);
+      if (!result) {
+        return;
+      }
+      reads.assembled++;
+      const page = result.page;
+      lastRead = {
+        key: args[0],
+        paging: args[1],
+        anchor: args[2],
+        page: pageFacts(page),
+        historyIds: result.history.entryIds.slice(-12),
+      };
+      const isCurrent = result.isCurrent;
+      const observedCurrent = () => {
+        const current = isCurrent();
+        if (current) {
+          reads.validated++;
+        } else {
+          reads.invalidated++;
+        }
+        lastFence = {
+          current,
+          page: pageFacts(page),
+          published: pageFacts(f.controller.conversation.task(args[0])?.page),
+        };
+        return current;
+      };
+      // Question metadata can arrive before the journal page; only hold the assembled tool-call snapshot.
+      const call = page.entries
+        .flatMap((entry) =>
+          record(entry.entry.message ?? {}).role === "assistant"
+            ? records(record(entry.entry.message ?? {}).content ?? [])
+            : [],
+        )
+        .find((part) => part.type === "toolCall" && part.name === "contact_supervisor");
+      if (!held && call) {
+        held = true;
+        questionCallId = stringValue(call.id);
+        await stale.promise;
+        oldReadReturned = true;
+      }
+      reads.returned++;
+      return { ...result, isCurrent: observedCurrent };
+    },
+  );
   const task = f.controller.picker.tasks[0],
-    question = task.question;
-  assertDefined(question);
-  const opening = f.controller.open(task.key),
+    question = task.question,
+    opening = f.controller.open(task.key),
     view = f.conversation;
+  assertDefined(question);
+  await until(() => held, "pre-answer native overlay page is in flight");
+  const requestRender = f.tui.requestRender.bind(f.tui);
+  t.mock.method(f.tui, "requestRender", (...args: Readonly<Parameters<typeof requestRender>>) => {
+    renders++;
+    const current = requiredTask(f, task.key),
+      text = current.history.map((item) => item.text).join("\n");
+    // A returned page can still be discarded or await canonical output. Observe publication, not an event-loop turn.
+    if (
+      !released &&
+      current.page?.sessionId === question.childSessionId &&
+      current.page.entries.some(
+        (entry) =>
+          record(entry.entry.message ?? {}).role === "toolResult" &&
+          record(entry.entry.message ?? {}).toolCallId === questionCallId &&
+          record(entry.entry.message ?? {}).toolName === "contact_supervisor" &&
+          current.historyIds.includes(entry.id),
+      )
+    ) {
+      publishedAnswer = text;
+      released = true;
+      stale.resolve();
+    }
+    if (oldReadReturned) {
+      publications.push(text);
+    }
+    requestRender(...args);
+  });
   assert.match(plain(view), /Waiting for your answer/);
   assert.match(plain(view), /Which synthetic path/);
   view.handleInput("Use the first path");
@@ -5245,7 +5364,76 @@ test("answering in the view releases the real native durable question with human
     () => readQuestionState(question).delivery?.kind === "live",
     "native child consumes the saved answer",
   );
-  await refreshFixture(f);
+  try {
+    await refreshFixture(f);
+  } catch (error) {
+    const current = f.controller.conversation.task(task.key),
+      saved = readQuestionState(question);
+    let receipt: Record<string, unknown>;
+    try {
+      receipt = record(readJson(`${native.release}.json`));
+    } catch (readError) {
+      receipt = { readError: JSON.stringify(readError) };
+    }
+    t.diagnostic(
+      JSON.stringify({
+        boundary: "native-human-answer-publication",
+        held,
+        released,
+        oldReadReturned,
+        questionCallId,
+        question: {
+          sessionId: question.childSessionId,
+          sessionFile: question.sessionFile,
+          state: saved.state,
+          answer: saved.answer,
+          delivery: saved.delivery,
+        },
+        reads,
+        lastRead,
+        lastFence,
+        renders,
+        publishedAnswer: publishedAnswer.slice(0, 2048),
+        publications: publications.slice(-3).map((text) => text.slice(0, 2048)),
+        publicationCount: publications.length,
+        current: current && {
+          runId: current.run.runId,
+          state: current.child.state,
+          sessionFile: current.child.sessionFile,
+          terminalEntryId: current.child.result?.terminalEntryId,
+          terminalLeafId: current.child.result?.terminalLeafId,
+          updatedAt: current.run.updatedAt,
+          historyLoading: current.historyLoading,
+          historySource: current.historySource,
+          page: pageFacts(current.page),
+          historyIds: current.historyIds.slice(-12),
+          history: current.history
+            .slice(-12)
+            .map((item) => ({ id: item.id, text: item.text.slice(0, 512) })),
+          unavailable: current.unavailable,
+        },
+        listError: f.controller.picker.listError,
+        indexFailure: JSON.stringify(f.state.historyIndex?.failure ?? ""),
+        native: { ...receipt, events: records(receipt.events ?? []).slice(-8) },
+        view: plain(view).slice(0, 2048),
+      }),
+    );
+    throw error;
+  }
+  assert.ok(released, "the old overlay read returns only after the native human answer is indexed");
+  assert.match(
+    publishedAnswer,
+    /Direct user answer \(human origin\)[\s\S]*Use the first path/,
+    "the newer native answer is published before releasing the old read",
+  );
+  assert.ok(publications.length > 0, "the overlay requests rendering after the old read returns");
+  for (const publication of publications) {
+    assert.match(
+      publication,
+      /Direct user answer \(human origin\)[\s\S]*Use the first path/,
+      "no requested render may publish history that loses the native answer",
+    );
+  }
   assert.equal(readQuestionState(question).delivery?.kind, "live");
   assert.equal(f.state.ownedRuns.size, 1, "answering a live question starts no continuation");
   assert.match(
@@ -6092,26 +6280,40 @@ async function indexedReady(f: Fixture): Promise<void> {
 
 async function refreshFixture(f: Fixture): Promise<void> {
   await indexedReady(f);
-  for (const task of f.controller.picker.tasks) {
-    if (task.child.missingSession === true && task.child.state !== "live") {
+  for (const initial of f.controller.picker.tasks) {
+    if (initial.child.missingSession === true && initial.child.state !== "live") {
       continue;
     }
-    // Populate each selected page before moving to the next view's native identity.
-    // oxlint-disable-next-line no-await-in-loop
-    const value = await f.controller.conversation.historyPage(task.key);
-    if (!value) {
-      continue;
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      // Read the current native baseline before publishing each selected page.
+      // oxlint-disable-next-line no-await-in-loop
+      const value = await f.controller.conversation.historyPage(initial.key);
+      const task = f.controller.conversation.task(initial.key);
+      if (!value || !task) {
+        break;
+      }
+      if (!value.isCurrent()) {
+        assert.ok(Date.now() < deadline, "current fixture history page loaded");
+        continue;
+      }
+      const history =
+        task.child.state !== "live" && task.child.result
+          ? withFinalResult(
+              value.history,
+              getSingleResultOutput(task.child.result),
+              task.run.runId,
+              task.run.updatedAt,
+            )
+          : value.history;
+      f.controller.conversation.applyHistoryPage(
+        task.key,
+        history,
+        value.page,
+        value.page.count > 0,
+      );
+      break;
     }
-    const history =
-      task.child.state !== "live" && task.child.result
-        ? withFinalResult(
-            value.history,
-            getSingleResultOutput(task.child.result),
-            task.run.runId,
-            task.run.updatedAt,
-          )
-        : value.history;
-    f.controller.conversation.applyHistoryPage(task.key, history, value.page, value.page.count > 0);
   }
   if (f.tui.hasOverlay() && f.overlay instanceof AgentConversation) {
     f.overlay.refresh();
@@ -6462,5 +6664,173 @@ for (const retry of ["F5", "run list"] as const) {
     assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
     f.interactiveOverlay.handleInput("\x1b");
     await opening;
+  });
+}
+
+for (const change of ["append", "source replacement", "index reopen"]) {
+  test(`Agents consumes ${change} while a native history page is in flight`, async (t) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const f = await fixture(t),
+      manager = f.childSessions[0],
+      index = await runHistoryIndex(f.state);
+    f.controller.conversation.visit(f.key);
+    await f.controller.refresh();
+    const nativeIds: string[] = [];
+    let readingAnchor;
+    if (change === "source replacement") {
+      for (let card = 0; card < 250; card++) {
+        nativeIds.push(assistant(manager, `Replacement native history card ${card}`));
+      }
+      await indexedReady(f);
+      const reading = f.controller.open(f.key);
+      await historyReady(f);
+      plain(f.overlay);
+      await historyAction(f, "Earlier history");
+      plain(f.overlay);
+      f.interactiveOverlay.handleInput("\x1b[5~");
+      plain(f.overlay);
+      readingAnchor = structuredClone(f.controller.conversation.visit(f.key).anchor);
+      assert.ok(
+        readingAnchor && nativeIds.includes(readingAnchor.id.replace(/:0$/, "")),
+        "earlier history saves a real native reading anchor",
+      );
+      assert.ok(
+        nativeIds.indexOf(readingAnchor.id.replace(/:0$/, "")) + 100 < nativeIds.length,
+        "the saved anchor requests a native window before Latest",
+      );
+      f.interactiveOverlay.handleInput("\x1b");
+      await reading;
+    }
+    const historyPage = f.controller.conversation.historyPage.bind(f.controller),
+      release: PromiseWithResolvers<void> = Promise.withResolvers();
+    let held: HistoryPage | undefined;
+    t.after(() => release.resolve());
+    t.mock.method(
+      f.controller.conversation,
+      "historyPage",
+      async (...args: Readonly<Parameters<typeof historyPage>>) => {
+        const result = await historyPage(...args);
+        if (result && !held) {
+          held = result.page;
+          await release.promise;
+        }
+        return result;
+      },
+    );
+    const opening = f.controller.open(f.key);
+    await until(() => Boolean(held), "old native history page is in flight");
+    f.interactiveOverlay.handleInput("Keep this unsent draft");
+    let currentIndex = index,
+      currentSession = manager;
+    if (change === "source replacement") {
+      currentSession = SessionManager.forkFrom(
+        sessionFile(manager),
+        f.cwd,
+        path.join(f.cwd, "replacement-child"),
+      );
+      currentSession.appendMessage({
+        role: "user",
+        content: "Replacement assignment",
+        timestamp: Date.now(),
+      });
+      assistant(currentSession, "Replacement native history");
+      fs.copyFileSync(sessionFile(currentSession), `${sessionFile(manager)}.replacement`);
+      fs.renameSync(`${sessionFile(manager)}.replacement`, sessionFile(manager));
+    } else {
+      assistant(manager, "New native history while loading");
+      if (change === "index reopen") {
+        await closeRunHistory(f.state);
+        const previous = process.env.PI_CODING_AGENT_DIR;
+        try {
+          process.env.PI_CODING_AGENT_DIR = path.join(f.cwd, "replacement-index");
+          currentIndex = await runHistoryIndex(f.state);
+        } finally {
+          process.env.PI_CODING_AGENT_DIR = previous;
+        }
+      }
+    }
+    await currentIndex.refresh();
+    await f.controller.refresh();
+    await f.controller.refresh();
+    const fresh = await currentIndex.historyPage({ runId: f.run.runId, index: 0 });
+    assert.ok(
+      fresh.entries.some(
+        (entry) =>
+          record(entry.entry.message ?? {}).role === "assistant" &&
+          records(record(entry.entry.message ?? {}).content ?? []).some(
+            (part) =>
+              part.text ===
+              (change === "source replacement"
+                ? "Replacement native history"
+                : "New native history while loading"),
+          ),
+      ),
+      "observe real native publication before releasing the obsolete read",
+    );
+    const publications: boolean[] = [];
+    const requestRender = f.tui.requestRender.bind(f.tui);
+    const renders = t.mock.method(
+      f.tui,
+      "requestRender",
+      (...args: Readonly<Parameters<typeof requestRender>>) => {
+        const task = requiredTask(f);
+        publications.push(task.page === held);
+        requestRender(...args);
+      },
+    );
+    release.resolve();
+    await historyReady(f);
+    assert.ok(
+      publications.length > 0,
+      "the overlay requests rendering after the obsolete read returns",
+    );
+    if (change !== "append") {
+      assert.deepEqual(
+        publications.filter(Boolean),
+        [],
+        "the obsolete in-flight snapshot is never published",
+      );
+    }
+    renders.mock.restore();
+    const task = requiredTask(f);
+    assert.match(
+      task.history.map((item) => item.text).join("\n"),
+      change === "source replacement"
+        ? /Replacement native history/
+        : /New native history while loading/,
+    );
+    assert.equal(requiredPage(f).sessionId, currentSession.getSessionId());
+    if (readingAnchor) {
+      const first = nativeIds.indexOf(readingAnchor.id.replace(/:0$/, ""));
+      assert.deepEqual(
+        requiredPage(f).entries.map((entry) => entry.id),
+        nativeIds.slice(first, first + 100),
+        "invalidated reload keeps the requested earlier native window instead of Latest",
+      );
+      plain(f.overlay);
+      assert.deepEqual(
+        f.controller.conversation.visit(f.key).anchor,
+        readingAnchor,
+        "invalidated reload keeps the native reading anchor and line",
+      );
+    }
+    assert.equal(f.conversation.editor.getText(), "Keep this unsent draft");
+    const selected = task.history.findLast((item) => item.kind === "assistant");
+    assertDefined(selected);
+    assertDefined(selected.load);
+    assert.match(
+      (await selected.load()).text,
+      change === "source replacement"
+        ? /Replacement native history/
+        : /New native history while loading/,
+    );
+    f.interactiveOverlay.handleInput("\x1b");
+    await opening;
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.sent.length, 0);
+    assertDefined(held);
+    t.diagnostic(
+      `held version ${held.version}; current version ${fresh.version}; index replaced: ${currentIndex !== index}`,
+    );
   });
 }

@@ -304,6 +304,7 @@ export class AgentTaskStore {
   private applyTaskMetadata(task: AgentTask, page: HistoryPage): void {
     const visit = this.visits.get(task.key),
       delivered = new Map(page.deliveredMessages);
+    task.historySource = JSON.stringify([page.sourceId, page.generation, page.sessionId]);
     if (page.freshness.state !== "catching-up") {
       task.metadataAt = task.run.updatedAt;
     }

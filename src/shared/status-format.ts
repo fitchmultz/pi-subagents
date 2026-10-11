@@ -18,13 +18,13 @@ export function formatAgentProcessExit(exit: Readonly<AgentProcessExit> | undefi
 
 export function formatRunAction(
   action: ManagementAction | "questions" | "answer",
-  id: string,
+  id: string | undefined,
   fields: Readonly<Record<string, string | number | boolean>> = {},
   childSafe = false,
 ): string {
   const legacyChild = childSafe && loadConfig().compactChildTools === false;
   const name = legacyChild ? action : parentActionName(action);
-  const args = Object.entries({ action: name, id, ...fields })
+  const args = Object.entries({ action: name, ...(id !== undefined ? { id } : {}), ...fields })
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
     .join(", ");
   const call = `${legacyChild || action === "extend" ? "subagent" : "agent_runs"}({ ${args} })`;

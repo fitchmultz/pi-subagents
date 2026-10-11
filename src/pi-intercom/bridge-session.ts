@@ -193,6 +193,7 @@ export class Session {
     }
     await this.disconnect();
     this.owner.retired(this.identity.fingerprint256, this.generation);
+    log("session_closed", { ...this.fields(), result: this.closeReason.code });
   }
   close(error: Readonly<Fault>): void {
     if (this.closed) {
@@ -210,7 +211,6 @@ export class Session {
     this.inboxBytes = 0;
     // Retain the generation until acquisition/registration AND final disconnect settle.
     this.startRetirement();
-    log("session_closed", { ...this.fields(), result: error.code });
   }
   private startRetirement(): void {
     this.retirement = this.retire().catch((caught: unknown) => this.cleanupFailed(caught));

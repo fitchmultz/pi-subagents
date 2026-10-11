@@ -16,10 +16,12 @@ interface PageSource {
   readonly initialVisit: () => Pick<AgentVisit, "anchor" | "readThrough">;
   readonly readSequence: (sequence: number) => void;
   readonly clearCards: () => void;
+  readonly refresh: () => void;
 }
 
 export class ConversationHistory {
   loadingPage = false;
+  refreshPending = false;
   pageError?: string;
   latestPage = true;
   seenSource = false;
@@ -49,6 +51,7 @@ export class ConversationHistory {
       return;
     }
     const request = ++this.pageRequest;
+    this.refreshPending = false;
     this.loadingPage = true;
     this.pageError = undefined;
     this.controller.setHistoryLoading(this.key, true);
@@ -72,6 +75,10 @@ export class ConversationHistory {
     }
     this.loadingPage = false;
     this.controller.setHistoryLoading(this.key, false);
+    if (this.refreshPending && this.pageError === undefined) {
+      this.refreshPending = false;
+      this.source.refresh();
+    }
     this.tui.requestRender();
   }
   private async resolvePage(
@@ -87,12 +94,16 @@ export class ConversationHistory {
     if (!result || !this.active(request)) {
       return;
     }
-    if (result.readThroughSequence !== undefined) {
-      this.source.readSequence(result.readThroughSequence);
-    }
-    this.latestPage = result.latestPage;
-    const history = await this.savedReport(result.history, request);
+    const history = await this.savedReport(result, request);
     if (history && this.active(request)) {
+      if (!result.isCurrent()) {
+        await this.loadPage(paging, anchor);
+        return;
+      }
+      if (result.readThroughSequence !== undefined) {
+        this.source.readSequence(result.readThroughSequence);
+      }
+      this.latestPage = result.latestPage;
       this.applyPage(history, result);
     }
   }
@@ -128,22 +139,23 @@ export class ConversationHistory {
     return report ?? result;
   }
 
-  private includeReport(history: AgentHistory): boolean {
+  private includeReport(history: AgentHistory, latestPage: boolean): boolean {
     return (
       this.source.initialPosition() ||
-      this.latestPage ||
+      latestPage ||
       (history.finalId !== undefined && history.entryIds.includes(history.finalId))
     );
   }
   private async savedReport(
-    history: AgentHistory,
+    result: HistorySelection,
     request: number,
   ): Promise<AgentHistory | undefined> {
     const task = this.controller.task(this.key);
     if (!task) {
       return;
     }
-    const includeReport = this.includeReport(history);
+    const history = result.history;
+    const includeReport = this.includeReport(history, result.latestPage);
     if (
       !includeReport ||
       task.child.state === "live" ||

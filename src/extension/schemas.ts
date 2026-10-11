@@ -107,9 +107,7 @@ export const SubagentParams = Type.Object(
           "Target run ID; prefer id. Defaults to the most recently active controllable run for interrupt/extend/nudge.",
       }),
     ),
-    questionId: Type.Optional(
-      Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." }),
-    ),
+    questionId: AgentRunsValidationParams.properties.questionId,
     decision: Type.Optional(
       Type.Enum(["accepted", "needs_changes"] as const, {
         type: "string",
@@ -117,7 +115,9 @@ export const SubagentParams = Type.Object(
           "Parent-only review decision; not sent to the child. Put actionable instructions in resume/nudge. Does not launch work or change runtime acceptance.",
       }),
     ),
-    offset: Type.Optional(Type.Integer({ minimum: 0, description: "Status list offset." })),
+    offset: Type.Optional(
+      Type.Integer({ minimum: 0, description: "Status list/questions offset." }),
+    ),
     limit: AgentRunsValidationParams.properties.limit,
     ...HistoryQueryFields,
     full: Type.Optional(
@@ -328,16 +328,18 @@ export const SubagentParams = Type.Object(
 
         // JSON Schema's non-callable consequence keyword is not a Promise method.
         // oxlint-disable-next-line unicorn/no-thenable
-        then: { ...requiredObject("action"), properties: { action: { enum: ["status"] } } },
+        then: {
+          ...requiredObject("action"),
+          properties: { action: { enum: ["status", "questions"] } },
+        },
       },
       {
         if: requiredObject("limit"),
-
         // JSON Schema's non-callable consequence keyword is not a Promise method.
         // oxlint-disable-next-line unicorn/no-thenable
         then: {
           ...requiredObject("action"),
-          properties: { action: { enum: ["status", "history", "search"] } },
+          properties: { action: { enum: ["status", "questions", "history", "search"] } },
         },
       },
       {

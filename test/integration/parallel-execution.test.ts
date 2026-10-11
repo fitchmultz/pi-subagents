@@ -258,6 +258,22 @@ describe("parallel agent execution", () => {
         cancellation.abort();
       }
     };
+    const census = () => {
+      assertDefined(launcherPid);
+      const observed = spawnSync("ps", ["-axo", "pid=,pgid="], { encoding: "utf8", timeout: 1000 });
+      assert.equal(observed.error, undefined);
+      assert.equal(observed.status, 0, observed.stderr);
+      assert.notEqual(observed.stdout.trim(), "", "native process census is not empty");
+      return observed.stdout
+        .trim()
+        .split("\n")
+        .map((line) => {
+          assert.match(line, /^\s*\d+\s+\d+\s*$/, "native process census has PID and PGID columns");
+          const [pid, pgid] = line.trim().split(/\s+/).map(Number);
+          assert.ok(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(pgid));
+          return { pid, pgid };
+        });
+    };
     let resultJoin: Promise<void> | undefined;
     fixtureJoined = false;
     try {
@@ -303,6 +319,13 @@ describe("parallel agent execution", () => {
       assertDefined(runnerPid);
       assert.equal(launcher.pid, launcherPid, "real launch event identifies the captured owner");
       assert.notEqual(runnerPid, launcherPid, "launcher awaits a separate actual runner");
+      const members = new Set(
+        census()
+          .filter((entry) => entry.pgid === launcherPid)
+          .map((entry) => entry.pid),
+      );
+      assert.ok(members.has(launcherPid), "native launcher leads the owned group");
+      assert.ok(members.has(runnerPid), "native runner belongs to the captured launcher group");
       const initial = status();
       assertDefined(initial);
       const initialTimeout = initial.timeoutAt;
@@ -360,6 +383,14 @@ describe("parallel agent execution", () => {
       }
       assert.equal(mockPi.callCount(), 2);
       completed = true;
+      const kill = process.kill.bind(process);
+      // A denied group probe must not prevent observing actual native owner exit.
+      t.mock.method(process, "kill", (pid: number, signal?: number | NodeJS.Signals) => {
+        if (launcherPid !== undefined && pid === -launcherPid && signal === 0) {
+          throw Object.assign(new Error("group signal probe denied"), { code: "EPERM" });
+        }
+        return kill(pid, signal);
+      });
     } catch (error) {
       failures.push(error);
     }
@@ -384,6 +415,10 @@ describe("parallel agent execution", () => {
       assertDefined(nativeClose);
       assert.equal(nativeClose.code, 0, "launcher joined actual runner successfully");
       assert.equal(nativeClose.signal, null, "launcher was not externally terminated");
+      await waitFor(
+        () => census().every((entry) => entry.pgid !== launcherPid && entry.pid !== runnerPid),
+        "owned launcher group and runner exit before fixture teardown",
+      );
       fixtureJoined = true;
     } catch (error) {
       failures.push(error);

@@ -12,6 +12,8 @@ import {
   textAt,
   record,
   array,
+  records,
+  readJson,
   text as stringValue,
 } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
@@ -21,6 +23,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Check } from "typebox/value";
+import { runInNewContext } from "node:vm";
 import {
   createEventBus,
   createNativeSessionFixture,
@@ -31,6 +34,7 @@ import {
 } from "../support/helpers.ts";
 
 const root = createTempDir("feedback-ux-");
+
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const {
@@ -422,6 +426,11 @@ test("feedback public and advanced schemas expose full inspection and explain un
     stringValue(record(AcceptanceOverride).description),
     /never to a live child's acceptance/,
   );
+  for (const schema of [AgentRunsParams, SubagentParams]) {
+    assert.equal(Check(schema, { action: "questions", offset: 20, limit: 5 }), true);
+    assert.equal(Check(schema, { action: "questions", id: "run", questionId: "question" }), true);
+    assert.equal(Check(schema, { action: "questions", limit: 101 }), false);
+  }
 });
 
 test("feedback live runs precede 31 unreviewed results while history and explicit continuation links remain intact", async (t) => {
@@ -662,4 +671,192 @@ test("feedback durable wait requires the exact run/child/session/process and ret
     formatControlNoticeMessage(event()),
     /contact_supervisor still active for 600s; no observed output\/events for 600s/,
   );
+});
+
+test("question outputs page compact views while full questions, interviews and immutable answers remain recoverable", async () => {
+  const fixture = setup("question-output-growth");
+  const baseline = Array.from({ length: 10_000 }, (_, index) => `native-entry-${index}`);
+  questions.saveQuestionContract(fixture.run.runId, 0, { attemptBaseline: baseline });
+  const saved = Array.from({ length: 25 }, (_, index) =>
+    questions.createSupervisorQuestion({
+      runId: fixture.run.runId,
+      ownerTarget: "parent",
+      agent: "worker",
+      index: 0,
+      childSessionId: "child",
+      childTarget: "child",
+      sessionFile: fixture.sessionFile,
+      cwd: root,
+      pid: process.pid,
+      reason: "interview_request",
+      message:
+        index === 24
+          ? `QUESTION-LEAD ${"large question ".repeat(2000)} QUESTION-END`
+          : `Choose branch ${index}.`,
+      interview: {
+        questions: [
+          {
+            id: "choice",
+            type: "text",
+            question: `INTERVIEW ${"context ".repeat(2000)} INTERVIEW-END`,
+          },
+        ],
+      },
+    }),
+  );
+  const files = saved.map((question) =>
+    path.join(
+      questions.getRunMetadataDir(question.runId),
+      "questions",
+      question.questionId,
+      "question.json",
+    ),
+  );
+  const before = files.map((file) => fs.readFileSync(file, "utf8"));
+  const first = await fixture.execute({ action: "questions", id: fixture.run.runId });
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(first)) < 200_000,
+    "a questions page must not serialize growing launch/baseline/interview metadata",
+  );
+  assert.equal(first.details.questions?.length, 20);
+  assert.deepEqual(first.details.questionList, { total: 25, offset: 0, limit: 20, nextOffset: 20 });
+  assert.match(textAt(first.content), /offset: 20/);
+  const second = await fixture.execute({
+    action: "questions",
+    id: fixture.run.runId,
+    offset: first.details.questionList.nextOffset,
+  });
+  assert.equal(second.details.questions?.length, 5);
+  assert.equal(second.details.questionList?.nextOffset, undefined);
+  assert.equal(
+    new Set(
+      [...first.details.questions, ...second.details.questions].map(
+        (question) => question.questionId,
+      ),
+    ).size,
+    25,
+  );
+  for (const question of first.details.questions) {
+    for (const field of ["attemptBaseline", "launch", "interview"]) {
+      assert.equal(field in question, false);
+    }
+    assert.equal(question.hasInterview, true);
+    assert.ok(files.includes(question.questionPath));
+  }
+  const last = saved[24];
+  const exact = await fixture.execute({
+    action: "questions",
+    id: last.runId,
+    questionId: last.questionId,
+  });
+  assert.equal(
+    exact.details.questions?.length,
+    1,
+    "exact lookup must not depend on which page contains the question",
+  );
+  assert.match(textAt(exact.content), /QUESTION-LEAD/);
+  assert.doesNotMatch(textAt(exact.content), /QUESTION-END/);
+  assert.ok(textAt(exact.content).includes(files[24]));
+  assertDefined(exact.details.questions);
+  assert.equal(exact.details.questions[0].messageTruncated, true);
+  assert.deepEqual(
+    files.map((file) => fs.readFileSync(file, "utf8")),
+    before,
+    "browsing must not rewrite durable question/launch history",
+  );
+  const recovered = record(readJson(exact.details.questions[0].questionPath));
+  assert.equal(recovered.message, last.message);
+  assert.deepEqual(recovered.interview, last.interview);
+  assert.deepEqual(recovered.attemptBaseline, baseline);
+  assert.equal(record(recovered.launch).systemPrompt, fixture.launch.systemPrompt);
+  const answer = `ANSWER-LEAD ${"saved answer ".repeat(2000)} ANSWER-END`;
+  const receipt = await fixture.execute({
+    action: "answer",
+    id: last.runId,
+    questionId: last.questionId,
+    message: answer,
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(receipt)) < 20_000);
+  assert.equal(receipt.details.questions?.[0]?.state, "answer_pending");
+  const answerPath = receipt.details.questions[0].answerPath;
+  assertDefined(answerPath);
+  assert.equal(record(readJson(answerPath)).message, answer);
+  assert.equal(
+    (
+      await fixture.execute({
+        action: "answer",
+        id: last.runId,
+        questionId: last.questionId,
+        message: answer,
+      })
+    ).isError,
+    undefined,
+  );
+  assert.equal(
+    (
+      await fixture.execute({
+        action: "answer",
+        id: last.runId,
+        questionId: last.questionId,
+        message: "conflict",
+      })
+    ).isError,
+    true,
+  );
+  questions.claimQuestionRevival(last);
+  const status = await fixture.execute({ action: "status", id: last.runId });
+  assert.ok(Buffer.byteLength(JSON.stringify(status.details.questions)) < 100_000);
+  const statusQuestions = status.details.questions;
+  assertDefined(statusQuestions);
+  const nextCall = textAt(status.content).match(/^More questions: (.+)$/m)?.[1];
+  assertDefined(nextCall);
+  const nextResult: unknown = await runInNewContext(nextCall, { agent_runs: fixture.execute });
+  const nextDetails = record(record(nextResult).details);
+  assert.equal(
+    record(nextDetails.questionList).offset,
+    20,
+    "the advertised status continuation must advance past the shown page",
+  );
+  assert.equal(records(nextDetails.questions).length, 5);
+  assert.ok(
+    records(nextDetails.questions).every(
+      (question) => !statusQuestions.some((shown) => shown.questionId === question.questionId),
+    ),
+  );
+  const refreshed = await fixture.execute({
+    action: "questions",
+    id: last.runId,
+    questionId: last.questionId,
+  });
+  assert.equal(refreshed.details.questions?.[0]?.answerTruncated, true);
+  assert.match(textAt(refreshed.content), /Continuation requested:.*delivery unconfirmed/);
+  assert.match(textAt(refreshed.content), /Recover an unlaunched continuation/);
+  assert.ok(textAt(refreshed.content).includes(answerPath));
+  assert.doesNotMatch(
+    textAt(refreshed.content),
+    /message: "ANSWER-LEAD/,
+    "a truncated preview must never become a conflicting retry answer",
+  );
+  const cancelled = await fixture.execute({ action: "interrupt", id: last.runId });
+  assert.equal(cancelled.isError, undefined, textAt(cancelled.content));
+  assert.ok(Buffer.byteLength(JSON.stringify(cancelled)) < 200_000);
+  assert.equal(cancelled.details.questionList?.total, 25);
+  assert.ok(
+    saved.every((question) => questions.readQuestionState(question).state === "cancelled"),
+    "page size must not limit cancellation",
+  );
+  assert.deepEqual(
+    files.map((file) => fs.readFileSync(file, "utf8")),
+    before,
+  );
+  assert.equal(record(readJson(answerPath)).message, answer);
+  for (const params of [{ offset: -1 }, { offset: 0.5 }, { limit: 0 }, { limit: 101 }]) {
+    assert.equal(
+      // Native publication/cursor state must settle before advancing this sequence.
+      // oxlint-disable-next-line no-await-in-loop
+      (await fixture.execute({ action: "questions", ...params })).isError,
+      true,
+      JSON.stringify(params),
+    );
+  }
 });

@@ -31,7 +31,10 @@ export function observedLabel(child: Child, prior: Task | undefined, sameAttempt
 }
 export function cachedHistory(
   prior: Task | undefined,
-): Pick<AgentTask, "history" | "historyIds" | "page" | "historyLoading" | "finalId" | "replied"> {
+): Pick<
+  AgentTask,
+  "history" | "historyIds" | "page" | "historyLoading" | "historySource" | "finalId" | "replied"
+> {
   if (!prior) {
     return { history: [], historyIds: [], historyLoading: false, replied: false };
   }
@@ -39,6 +42,7 @@ export function cachedHistory(
     history: prior.history,
     historyIds: prior.historyIds,
     page: prior.page,
+    historySource: prior.historySource,
     historyLoading: prior.historyLoading,
     finalId: prior.finalId,
     replied: prior.replied,

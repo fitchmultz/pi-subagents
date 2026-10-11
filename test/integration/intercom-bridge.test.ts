@@ -422,12 +422,21 @@ test(
             { to: peer.sessionId, message: "cancel now", timeoutMs: 10000 },
             { signal: controller.signal },
           );
-          await cancelMessage;
+          const cancelledQuestion = await cancelMessage;
+          const offset = activeBridge.output().length;
           controller.abort();
           await assert.rejects(cancelled);
-          await activeBridge.wait(/"event":"session_closed"/);
+          await activeBridge.wait(
+            /"event":"session_closed".*"name":"grok-bot".*"result":"client_aborted"/,
+            offset,
+          );
           const afterCancel = await api("register", {});
-          assert.equal(afterCancel.body.ok, true);
+          assert.equal(afterCancel.body.ok, true, JSON.stringify(afterCancel));
+          assert.equal(
+            afterCancel.body.sessionId,
+            cancelledQuestion.from.id,
+            "re-register preserves the certificate-bound broker identity",
+          );
           await stop(activeBroker.child);
           const down = await api("list");
           assert.equal(down.status, 503);

@@ -50,7 +50,10 @@ export const AgentRunsValidationParams = Type.Object(
     ),
     id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
     questionId: Type.Optional(
-      Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." }),
+      Type.String({
+        minLength: 1,
+        description: "Durable supervisor question ID for exact questions lookup or answer.",
+      }),
     ),
     async: Type.Optional(
       Type.Boolean({
@@ -77,14 +80,14 @@ export const AgentRunsValidationParams = Type.Object(
     offset: Type.Optional(
       Type.Integer({
         minimum: 0,
-        description: "List offset; history is retained regardless of page size.",
+        description: "List/questions offset; history is retained regardless of page size.",
       }),
     ),
     limit: Type.Optional(
       Type.Integer({
         minimum: 1,
         maximum: 100,
-        description: "Results per list/search/history page (default 20; history 100).",
+        description: "Results per list/questions/search/history page (default 20; history 100).",
       }),
     ),
     ...HistoryQueryFields,
@@ -170,13 +173,13 @@ export const AgentRunsValidationParams = Type.Object(
         if: requiredObject("offset"),
         // JSON Schema's non-callable consequence keyword is not a Promise method.
         // oxlint-disable-next-line unicorn/no-thenable
-        then: { properties: { action: { enum: ["list"] } } },
+        then: { properties: { action: { enum: ["list", "questions"] } } },
       },
       {
         if: requiredObject("limit"),
         // JSON Schema's non-callable consequence keyword is not a Promise method.
         // oxlint-disable-next-line unicorn/no-thenable
-        then: { properties: { action: { enum: ["list", "history", "search"] } } },
+        then: { properties: { action: { enum: ["list", "questions", "history", "search"] } } },
       },
       {
         if: requiredObject("cursor"),

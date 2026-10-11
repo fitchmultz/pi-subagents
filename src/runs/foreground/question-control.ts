@@ -7,6 +7,7 @@ import type {
   SupervisorQuestionView,
 } from "../../shared/types.ts";
 import { errorMessage } from "../../shared/unknown.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
 import {
   cancelSupervisorQuestion,
   claimQuestionRevival,
@@ -18,6 +19,7 @@ import {
   recordQuestionDelivery,
   releaseQuestionRevival,
   saveQuestionAnswer,
+  supervisorQuestionPage,
 } from "../shared/supervisor-questions.ts";
 import { liveLaunchOverrideNotice } from "./foreground-control.ts";
 import { nestedResolutionScopeForExecutor } from "./execution-routing.ts";
@@ -26,11 +28,11 @@ import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 
 function questionResult(
   questions: readonly SupervisorQuestionView[],
-  text = formatSupervisorQuestions(questions),
+  text: string,
 ): SubagentExecutionResult {
   return {
     content: [{ type: "text", text }],
-    details: { mode: "management", results: [], questions },
+    details: { mode: "management", results: [], ...supervisorQuestionPage(questions) },
   };
 }
 
@@ -65,6 +67,7 @@ export function projectSupervisorQuestions(
   if (questions.length === 0) {
     return result;
   }
+  const page = supervisorQuestionPage(questions);
   return {
     ...result,
     ...(questionOnly ? { isError: false } : {}),
@@ -72,14 +75,19 @@ export function projectSupervisorQuestions(
       {
         type: "text",
         text: [
-          `Supervisor input (not execution completion):\n${formatSupervisorQuestions(questions, childSafe)}`,
+          `Supervisor input (not execution completion):\n${formatSupervisorQuestions(page.questions, childSafe)}`,
+          ...(page.questionList.nextOffset !== undefined
+            ? [
+                `More questions: ${formatRunAction("questions", questionRunId(params), { offset: page.questionList.nextOffset, limit: page.questionList.limit }, childSafe)}`,
+              ]
+            : []),
           ...(questionOnly
             ? []
             : result.content.map((item) => (item.type === "text" ? item.text : ""))),
         ].join("\n\n"),
       },
     ],
-    details: { ...result.details, questions },
+    details: { ...result.details, ...page },
   };
 }
 
@@ -126,7 +134,7 @@ export function cancelSupervisorInput(
         cancelled,
         `Cancelled ${questions.length} pending supervisor question(s). Any live waiter will abort its agent; cancellation is requested, not proof of process exit.`,
       )
-    : { ...result, details: { ...result.details, questions: cancelled } };
+    : { ...result, details: { ...result.details, ...supervisorQuestionPage(cancelled) } };
 }
 
 interface QuestionControlInput {
@@ -147,7 +155,44 @@ function selectQuestion(input: QuestionControlInput): readonly SupervisorQuestio
   return listSupervisorQuestions(
     input.ctx.sessionManager.getSessionId(),
     params.id ?? params.runId,
-  ).filter((question) => params.index === undefined || question.index === params.index);
+  ).filter(
+    (question) =>
+      (params.index === undefined || question.index === params.index) &&
+      (params.action !== "questions" ||
+        params.questionId === undefined ||
+        question.questionId === params.questionId),
+  );
+}
+
+function questionPageResult(
+  questions: readonly SupervisorQuestionView[],
+  params: SubagentParamsLike,
+  childSafe: boolean,
+): SubagentExecutionResult {
+  const page = supervisorQuestionPage(questions, params);
+  const text = [
+    formatSupervisorQuestions(page.questions, childSafe),
+    `Questions: ${page.questions.length} shown, ${page.questionList.total} total (offset ${page.questionList.offset}).`,
+    ...(page.questionList.nextOffset !== undefined
+      ? [
+          `More questions: ${formatRunAction(
+            "questions",
+            params.id ?? params.runId,
+            {
+              offset: page.questionList.nextOffset,
+              limit: page.questionList.limit,
+              ...(params.index !== undefined ? { index: params.index } : {}),
+              ...(params.questionId !== undefined ? { questionId: params.questionId } : {}),
+            },
+            childSafe,
+          )}`,
+        ]
+      : []),
+  ].join("\n\n");
+  return {
+    content: [{ type: "text", text }],
+    details: { mode: "management", results: [], ...page },
+  };
 }
 
 /** Save the durable answer before either notifying the live waiter or claiming revival. */
@@ -156,12 +201,10 @@ export function controlSupervisorQuestion(input: QuestionControlInput): Subagent
     const questions = selectQuestion(input);
     const { params } = input;
     if (params.action === "questions") {
-      return questionResult(
+      return questionPageResult(
         questions,
-        formatSupervisorQuestions(
-          questions,
-          nestedResolutionScopeForExecutor(input.deps) !== undefined,
-        ),
+        params,
+        nestedResolutionScopeForExecutor(input.deps) !== undefined,
       );
     }
     const id = params.id ?? params.runId;
@@ -259,5 +302,8 @@ function reviveQuestionAnswer(
       deliveredAt: Date.now(),
     });
   }
-  return { ...result, details: { ...result.details, questions: [readQuestionState(question)] } };
+  return {
+    ...result,
+    details: { ...result.details, ...supervisorQuestionPage([readQuestionState(question)]) },
+  };
 }

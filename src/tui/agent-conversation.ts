@@ -85,6 +85,7 @@ export class AgentConversation extends Container {
         this.viewport.readSequence = sequence;
       },
       clearCards: () => this.cards.clear(),
+      refresh: () => this.refresh(),
     });
 
     this.cards = new HistoryCards(
@@ -196,13 +197,15 @@ export class AgentConversation extends Container {
   }
   private refreshFollowing(): void {
     if (
-      !this.history.loadingPage &&
       this.history.latestPage &&
       this.scroll.isFollowingEnd &&
       !this.details.detail &&
       !hasText(this.history.pageError)
     ) {
-      this.run(this.history.loadPage());
+      this.history.refreshPending = this.history.loadingPage;
+      if (!this.history.loadingPage) {
+        this.run(this.history.loadPage());
+      }
     }
   }
   syncDraft(): void {

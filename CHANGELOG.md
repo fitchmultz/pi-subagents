@@ -6,11 +6,38 @@
 
 - Optional loopback-only mTLS Intercom HTTPS bridge over SSH reverse forwarding, with certificate-bound remote peer identity, bounded messaging/inbox API, metadata audit logs, remote CLI, and credential issue/rotation/revocation tooling. The same-machine broker and extension startup remain unchanged.
 
+## [0.44.7] - 2026-10-09
+
+### Fixed
+
+- Keep newer Agents history, including consumed human answers, from being overwritten by an older in-flight page. Recheck the owning session, index, selected attempt, source and published page before applying async history or saved-result reads; preserve requested paging and reading anchors when reloading an invalidated snapshot.
+- Consume refresh notifications received while the latest conversation page is loading, without pulling scrolled readers forward or automatically retrying history errors.
+- Emit the Intercom bridge `session_closed` audit record after broker disconnect completes and the closing session is removed; cancellation still rejects pending and new requests for that identity immediately.
+
+## [0.44.6] - 2026-10-09
+
+### Fixed
+
+- Keep full Agents pages available for long native histories by sharing bounded configuration results across rows and repeated queries. Committed publication, source generations and exact terminal/time/leaf boundaries invalidate reuse; strict errors and source integrity checks remain unchanged.
+- Restrict scoped saved-text search to eligible records before aggregating matches, retaining the complete corpus for global relevance scores, cross-field word matching, phrases, attempt boundaries and pagination.
+- Publish one settled-freshness notification for unchanged history census work instead of one per run/source. Real commits, canonical failures and source error/recovery observations still notify; polling, census and watches remain active.
+
+## [0.44.5] - 2026-10-08
+
+### Added
+
+- Optional loopback-only mTLS Intercom HTTPS bridge over SSH reverse forwarding, with certificate-bound remote peer identity, bounded messaging/inbox API, metadata audit logs, remote CLI, and credential issue/rotation/revocation tooling. The same-machine broker and extension startup remain unchanged.
+
+### Fixed
+
+- Keep supervisor-question tool results bounded: page compact question/answer previews without repeating frozen launch metadata or native attempt baselines. Full question, interview and immutable answer files remain available; answering, cancellation and revival retain their original durable contracts.
+- Keep the history worker's cost per child append proportional to the new bytes. It used to re-hash every indexed byte of a linked session on each change, so a live child writing to a source of several hundred megabytes held the worker at full CPU for hours. Each check now re-hashes the last indexed line. Replacement, truncation and in-place rewrites of that line still start a new generation, and detail reads still verify their record digests. Indexes from earlier releases are verified in full once and then switch to the bounded check without re-indexing.
+
 ## [0.44.4] - 2026-10-04
 
 ### Added
 
-- Publish the maintained project as `@fitchmultz/pi-subagents` with public npm delivery from its repository pipeline. The unscoped npm package is unrelated; existing Git installs and release refs remain supported.
+- Publish the maintained project as `@fitchmultz/pi-subagents` with public npm delivery from its repository pipeline. Existing Git installs and release refs remain supported.
 - Discover specialist profiles declared by configured packages through `subagents.agents`. Package profiles are read-only fallbacks between builtins and user/trusted-project overrides, including installed `@fitchmultz/pi-workflows` recipes. User-installed package skills remain available even in untrusted projects; project skill sources stay trust-gated.
 
 ### Changed
@@ -1809,11 +1836,6 @@
   - Current tool and recent output for running step
 
 ## [0.2.0] - 2026-01-24
-
-### Changed
-
-- **Rebranded to `pi-subagents`** (was `pi-async-subagents`)
-- Historical upstream installer: `npx pi-subagents` (not this maintained project; use `npm:@fitchmultz/pi-subagents` today).
 
 ### Added
 

@@ -14,11 +14,11 @@ Optional HTTPS messaging proxy for a remote agent such as **Grok Bot**. Pi-inter
 
 **Delivery/lifecycle:** one broker peer per authorized certificate, registered lazily on the first API call, with a five-minute inactivity lease. Poll inbox to maintain presence. Send returns broker acceptance, not proof a model consumed it. Ask steers the recipient and waits at most two minutes for both the exact recipient ID and exact `replyTo`. One outgoing ask per identity. Revocation/expiry/shutdown/client disconnect terminate waits. Inbox is bounded and volatile; overflow is reported, not silently described as successful receipt. Restarting the helper loses inbox contents and pending replies. Upgrade to a durable inbox journal if restart recovery is required; existing Pi recipients still save their own messages normally.
 
-**Audit:** JSONL metadata on stdout: request/connection identity, certificate fingerprint, operation, peer/message IDs and outcome. Message/attachment bodies and keys are not logged. Protect logs (0700 directory, 0600 files); rotate them with your normal log tooling. Never publish private config/keys or raw inbox/list output as smoke evidence.
+**Audit:** JSONL metadata on stdout: request/connection identity, certificate fingerprint, operation, peer/message IDs and outcome. `session_closed` confirms broker disconnection and removal of the retiring session; cancellation still rejects requests immediately. Message/attachment bodies and keys are not logged. Protect logs (0700 directory, 0600 files); rotate them with your normal log tooling. Never publish private config/keys or raw inbox/list output as smoke evidence.
 
 ## Mac setup
 
-Requires Node **24.21.0+**, OpenSSL with `req -addext` (Homebrew OpenSSL works), and a connected Pi session with Intercom. Run commands from this checkout/package directory. A runtime-only installed checkout already has `dist/`; for development use `npm ci` first. See the [installation guide](../README.md#installation) before rebuilding an in-use extension. This standalone helper can run from its own installed copy without touching the live Pi runtime.
+Requires Node **24.21.0+**, OpenSSL with `req -addext` (Homebrew OpenSSL works), and a connected Pi session with Intercom. Run commands from this checkout/package directory. A runtime-only installed checkout already has `dist/`; for development use `npm ci` first. See the [installation guide](reference.md#installation) before rebuilding an in-use extension. This standalone helper can run from its own installed copy without touching the live Pi runtime.
 
 ```bash
 # Use a NEW directory; init refuses to overwrite any existing CA.

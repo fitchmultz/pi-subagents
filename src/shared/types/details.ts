@@ -9,7 +9,7 @@ import type {
   SubagentResultStatus,
   SubagentRunMode,
 } from "./progress.ts";
-import type { SupervisorQuestionView } from "./questions.ts";
+import type { SupervisorQuestionSummary } from "./questions.ts";
 import type { ArtifactPaths, SingleResult } from "./results.ts";
 import type { UsageContribution } from "./usage.ts";
 import type { ChainOutputMap, WorkflowGraphSnapshot } from "./workflow.ts";
@@ -35,7 +35,13 @@ export interface Details {
   intercomTargets?: readonly string[];
   managementControl?: ManagementControl;
   managementControls?: readonly ManagementControl[];
-  questions?: readonly SupervisorQuestionView[];
+  questions?: readonly SupervisorQuestionSummary[];
+  questionList?: {
+    readonly total: number;
+    readonly offset: number;
+    readonly limit: number;
+    readonly nextOffset?: number;
+  };
   wait?: {
     readonly runId: string;
     readonly completionId?: string;

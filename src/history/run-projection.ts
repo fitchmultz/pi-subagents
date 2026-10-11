@@ -1,6 +1,10 @@
 import { ownedRunView } from "../runs/shared/run-records.ts";
 import { acceptanceHumanAction } from "../runs/shared/acceptance-evaluation.ts";
-import { getRunMetadataDir, listRunQuestions } from "../runs/shared/supervisor-questions.ts";
+import {
+  getRunMetadataDir,
+  listRunQuestions,
+  summarizeSupervisorQuestion,
+} from "../runs/shared/supervisor-questions.ts";
 import type { HistoryRunRow, OwnedRun, ReadonlyForegroundResumeRun } from "./types.ts";
 import type { OwnedRunReadState } from "../runs/shared/owned-run-read-state.ts";
 import { safeText } from "./text.ts";
@@ -83,29 +87,14 @@ function compactChild(child: Child): Child {
 function compactQuestion(
   question: NonNullable<HistoryRunRow["questions"]>[number],
 ): NonNullable<HistoryRunRow["questions"]>[number] {
+  const summary = summarizeSupervisorQuestion(question);
   return {
-    questionId: question.questionId,
-    runId: question.runId,
-    ownerSessionId: question.ownerSessionId,
-    ownerTarget: question.ownerTarget,
-    agent: question.agent,
-    index: question.index,
-    childSessionId: question.childSessionId,
-    childTarget: question.childTarget,
-    sessionFile: question.sessionFile,
-    cwd: question.cwd,
-    pid: question.pid,
-    processIdentity: question.processIdentity,
-    createdAt: question.createdAt,
-    reason: question.reason,
+    ...summary,
     message: safeText(question.message, 2048),
-    state: question.state,
-    answer: question.answer && {
-      ...question.answer,
-      message: safeText(question.answer.message, 2048),
+    answer: summary.answer && {
+      ...summary.answer,
+      message: safeText(question.answer?.message, 2048),
     },
-    delivery: question.delivery,
-    revival: question.revival,
   };
 }
 export function unknownRun(

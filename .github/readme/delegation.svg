@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="660" viewBox="0 0 1600 660" role="img" aria-labelledby="title desc">
+  <title id="title">Your Pi session, with focused help</title>
+  <desc id="desc">A parent Pi session delegates independent tasks to scout and reviewer child sessions. Each child returns a saved result to the same parent, where you can browse the conversation, answer questions or continue the work.</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#060A12"/>
+      <stop offset="0.52" stop-color="#0B1120"/>
+      <stop offset="1" stop-color="#080C16"/>
+    </linearGradient>
+    <radialGradient id="blueBloom" cx="0.18" cy="0.18" r="0.8">
+      <stop stop-color="#2563EB" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violetBloom" cx="0.65" cy="0.6" r="0.7">
+      <stop stop-color="#8B5CF6" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#172238" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#0E1525" stop-opacity="0.98"/>
+    </linearGradient>
+    <linearGradient id="focus" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#172554" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#312E81" stop-opacity="0.58"/>
+    </linearGradient>
+    <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.2" fill="#94A3B8" fill-opacity="0.09"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#02040A" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#60A5FA"/>
+    </marker>
+    <marker id="arrowViolet" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#A78BFA"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#34D399"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, Arial, sans-serif; }
+      .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+      .title { font: 700 46px Inter, ui-sans-serif, Arial, sans-serif; letter-spacing: -1px; fill: #F8FAFC; }
+      .card-title { font: 650 32px Inter, ui-sans-serif, Arial, sans-serif; fill: #F8FAFC; }
+      .copy { font: 450 26px Inter, ui-sans-serif, Arial, sans-serif; fill: #CBD5E1; }
+      .chip { font: 700 22px "JetBrains Mono", ui-monospace, monospace; letter-spacing: 1px; }
+      .connector { fill: none; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <!-- Solid canvas and restrained starter-token depth. -->
+  <rect width="1600" height="660" fill="url(#canvas)"/>
+  <rect width="1600" height="660" fill="url(#blueBloom)"/>
+  <rect width="1600" height="660" fill="url(#violetBloom)"/>
+  <rect width="1600" height="660" fill="url(#dotGrid)"/>
+  <text x="64" y="100" class="title">Your Pi session, with focused help</text>
+  <text x="64" y="145" class="copy" fill="#91A0B8">Delegate a task. Keep working. Come back to the saved conversation.</text>
+
+  <!-- Independent branches: no ordering or dependency between the children. -->
+  <g>
+    <path d="M438 322H492V290H554" class="connector" stroke="#60A5FA" marker-end="url(#arrowBlue)"/>
+    <path d="M438 444H492V468H554" class="connector" stroke="#A78BFA" marker-end="url(#arrowViolet)"/>
+    <path d="M964 290H1012V322H1080" class="connector" stroke="#34D399" marker-end="url(#arrowGreen)"/>
+    <path d="M964 468H1012V444H1080" class="connector" stroke="#34D399" marker-end="url(#arrowGreen)"/>
+  </g>
+  <text x="554" y="194" class="copy" fill="#91A0B8">Independent child sessions</text>
+
+  <!-- The parent owns the assignment and integration. -->
+  <g filter="url(#shadow)">
+    <rect x="64" y="242" width="374" height="292" rx="28" fill="url(#focus)" stroke="#526CA2"/>
+    <rect x="96" y="274" width="168" height="38" rx="19" fill="#172554" stroke="#3B82F6" stroke-opacity="0.55"/>
+    <text x="180" y="300" text-anchor="middle" class="chip" fill="#93C5FD">YOUR PI</text>
+    <text x="96" y="368" class="card-title">Ask for help</text>
+    <text x="96" y="414" class="copy">Pick a task and a role.</text>
+    <text x="96" y="450" class="copy">Keep the main</text>
+    <text x="96" y="486" class="copy">conversation moving.</text>
+  </g>
+
+  <!-- Child roles share the same execution lifecycle. -->
+  <g filter="url(#shadow)">
+    <rect x="554" y="218" width="410" height="144" rx="24" fill="url(#glass)" stroke="#2A3851"/>
+    <rect x="554" y="218" width="5" height="144" rx="2.5" fill="#60A5FA"/>
+    <text x="586" y="267" class="card-title">scout</text>
+    <text x="586" y="314" class="copy">“Explain the auth flow.”</text>
+    <circle cx="912" cy="263" r="21" fill="#60A5FA" fill-opacity="0.13"/>
+    <path d="m912 250 5 13-5 13-5-13Z" fill="none" stroke="#93C5FD" stroke-width="2.5"/>
+
+    <rect x="554" y="396" width="410" height="144" rx="24" fill="url(#glass)" stroke="#3D345B"/>
+    <rect x="554" y="396" width="5" height="144" rx="2.5" fill="#A78BFA"/>
+    <text x="586" y="445" class="card-title">reviewer</text>
+    <text x="586" y="492" class="copy">“Review this diff.”</text>
+    <circle cx="912" cy="441" r="21" fill="#A78BFA" fill-opacity="0.13"/>
+    <path d="m902 441 7 7 13-15" fill="none" stroke="#C4B5FD" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- A saved result returns to the owning parent, regardless of wait mode. -->
+  <g filter="url(#shadow)">
+    <rect x="1080" y="242" width="456" height="292" rx="28" fill="url(#glass)" stroke="#285548"/>
+    <rect x="1112" y="274" width="186" height="38" rx="19" fill="#102B28" stroke="#34D399" stroke-opacity="0.45"/>
+    <text x="1205" y="300" text-anchor="middle" class="chip" fill="#6EE7B7">SAVED RUNS</text>
+    <text x="1112" y="368" class="card-title">Results return to Pi</text>
+    <text x="1112" y="414" class="copy">Read reports and tool activity.</text>
+    <text x="1112" y="450" class="copy">Message, stop or continue</text>
+    <text x="1112" y="486" class="copy">the selected child.</text>
+  </g>
+  <text x="64" y="610" class="copy" fill="#91A0B8">Open /agents to browse active tasks and finished conversations.</text>
+</svg>

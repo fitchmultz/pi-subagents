@@ -69,12 +69,33 @@ function configurationValues(
     ...(thinking === null ? {} : { thinking }),
   };
 }
+function configurationKey(
+  source: SourceRow,
+  input: Pick<HistoryPageInput, "terminalEntryId" | "endedAt" | "leaf">,
+  strict: boolean,
+): string {
+  const terminal = hasText(input.terminalEntryId);
+  return JSON.stringify([
+    source.id,
+    source.generation,
+    source.cursor,
+    source.stamp,
+    terminal ? input.terminalEntryId : null,
+    terminal ? null : (input.endedAt ?? null),
+    input.leaf === undefined ? null : [typeof input.leaf, input.leaf],
+    strict,
+  ]);
+}
 export class QueryScope {
   readonly store: Readonly<HistoryStore>;
   readonly info: () => HistoryVersion;
+  private readonly configurations = new Map<string, HistoryConfiguration>();
   constructor(store: Readonly<HistoryStore>, info: () => HistoryVersion) {
     this.store = store;
     this.info = info;
+  }
+  sourcesRemoved(): void {
+    this.configurations.clear();
   }
   key(parts: readonly unknown[]): string {
     return hash(JSON.stringify(parts));
@@ -206,17 +227,35 @@ export class QueryScope {
       return {};
     }
     try {
+      // Validate boundaries before reuse. Only committed source changes invalidate ancestry.
+      this.boundary(source, input);
+      const key = configurationKey(source, input, strict);
+      const cached = this.configurations.get(key);
+      if (cached) {
+        return { ...cached };
+      }
       const facts = this.configurationFacts(source, input);
       if (!facts) {
         return {};
       }
-      return configurationValues(facts, input.leaf, strict);
+      const configuration = configurationValues(facts, input.leaf, strict);
+      this.cacheConfiguration(key, configuration);
+      return { ...configuration };
     } catch (error) {
       if (!strict && error instanceof HistoryIndexError && error.code === "BOUNDARY_UNAVAILABLE") {
         return {};
       }
       throw error;
     }
+  }
+  private cacheConfiguration(key: string, configuration: HistoryConfiguration): void {
+    if (this.configurations.size >= 128) {
+      const oldest = this.configurations.keys().next().value;
+      if (oldest !== undefined) {
+        this.configurations.delete(oldest);
+      }
+    }
+    this.configurations.set(key, configuration);
   }
   finalResultId(
     input: Pick<HistoryPageInput, "runId" | "index" | "terminalEntryId" | "endedAt">,

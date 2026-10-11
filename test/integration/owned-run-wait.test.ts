@@ -71,6 +71,38 @@ async function until(check: () => boolean, reason: string) {
     await delay(20);
   }
 }
+
+test("a foreground wait returns bounded actionable questions without copying saved launch baselines", async (t) => {
+  const f = await setup(t);
+  saveQuestionContract(f.runId, 0, {
+    attemptBaseline: Array.from({ length: 10_000 }, (_, index) => `native-${index}`),
+  });
+  const question = createSupervisorQuestion({
+    runId: f.runId,
+    ownerTarget: "parent",
+    agent: "worker",
+    index: 0,
+    childSessionId: "child",
+    childTarget: "child",
+    sessionFile: path.join(f.cwd, "session.jsonl"),
+    cwd: f.cwd,
+    pid: process.pid,
+    reason: "need_decision",
+    message: `Choose the API. ${"large context ".repeat(2000)} QUESTION-END`,
+  });
+  const result = await waitForOwnedRun({ id: f.runId, deps: f.deps, ctx: makeMinimalCtx(f.cwd) });
+  assert.equal(result.details.wait?.status, "awaiting_input");
+  assert.ok(Buffer.byteLength(JSON.stringify(result.details.questions)) < 5000);
+  assert.match(textAt(result.content), /Choose the API/);
+  assert.match(textAt(result.content), /action: "answer"/);
+  assert.ok(textAt(result.content).includes(question.questionId));
+  assert.doesNotMatch(textAt(result.content), /QUESTION-END/);
+  assert.equal(
+    readQuestionState(question).state,
+    "awaiting_input",
+    "returning the wait must not cancel the child or answer its question",
+  );
+});
 async function setup(t: TestContext, allowLaunch = false) {
   const cwd = createTempDir("wait-owned-"),
     runId = randomUUID(),

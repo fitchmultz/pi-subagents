@@ -8,6 +8,7 @@ export interface HistorySelection {
   readonly page: HistoryPage;
   readonly latestPage: boolean;
   readonly readThroughSequence?: number;
+  readonly isCurrent: () => boolean;
 }
 /** Browsing operations exposed to the native picker, not the controller's private state. */
 export interface PickerController {

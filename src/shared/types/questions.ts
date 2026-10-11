@@ -72,3 +72,32 @@ export interface SupervisorQuestionView extends SupervisorQuestion {
   readonly delivery?: QuestionDelivery;
   readonly revival?: { readonly runId: string; readonly pid: number; readonly startedAt: number };
 }
+
+export interface SupervisorQuestionSummary extends Pick<
+  SupervisorQuestionView,
+  | "questionId"
+  | "runId"
+  | "ownerSessionId"
+  | "ownerTarget"
+  | "agent"
+  | "index"
+  | "childSessionId"
+  | "childTarget"
+  | "sessionFile"
+  | "cwd"
+  | "pid"
+  | "processIdentity"
+  | "createdAt"
+  | "reason"
+  | "message"
+  | "state"
+  | "answer"
+  | "delivery"
+  | "revival"
+> {
+  readonly questionPath: string;
+  readonly answerPath?: string;
+  readonly messageTruncated?: boolean;
+  readonly answerTruncated?: boolean;
+  readonly hasInterview?: boolean;
+}

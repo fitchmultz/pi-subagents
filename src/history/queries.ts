@@ -33,6 +33,9 @@ export class HistoryQueries {
     this.transcript = new TranscriptQueries(this.scope);
     this.searchQueries = new SearchQueries(this.scope);
   }
+  sourcesRemoved(): void {
+    this.scope.sourcesRemoved();
+  }
   listRuns(options: HistoryRunOptions): HistoryRunPage {
     return this.runs.list(options);
   }

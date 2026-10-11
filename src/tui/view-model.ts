@@ -75,6 +75,7 @@ export interface AgentTask {
   replied: boolean;
   page?: HistoryPage;
   historyLoading?: boolean;
+  historySource?: string;
   metadataAt?: number;
 }
 

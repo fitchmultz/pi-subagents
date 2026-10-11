@@ -65,7 +65,7 @@ async function selectedHistory(
   input: HistoryPageInput,
   paging: Paging,
   anchor: string | null | undefined,
-): Promise<HistorySelection> {
+): Promise<Omit<HistorySelection, "isCurrent">> {
   const marker = await readMarker(index, input),
     selectedPaging = (await anchorPaging(index, input, anchor, marker)) ?? paging;
   const result = await indexedHistory(index, { ...input, limit: 100, ...selectedPaging });
@@ -76,6 +76,15 @@ async function selectedHistory(
   const unreadStart =
     input.readThrough === null || input.readThrough === undefined ? -1 : undefined;
   return { ...result, latestPage, readThroughSequence: marker?.sequence ?? unreadStart };
+}
+function sameHistoryBoundary(a: HistoryPageInput, b: HistoryPageInput): boolean {
+  return (
+    a.runId === b.runId &&
+    a.index === b.index &&
+    a.leaf === b.leaf &&
+    a.terminalEntryId === b.terminalEntryId &&
+    a.endedAt === b.endedAt
+  );
 }
 /** Browse requests own paging, subscriptions and stale-observation guards, never execution authority. */
 export class AgentBrowser {
@@ -280,13 +289,34 @@ export class AgentBrowser {
     if (!task || !this.session.live() || task.child.identityUnavailable === true) {
       return;
     }
+    const published = task.page,
+      source = task.historySource;
+    const sessionFile = task.child.sessionFile,
+      childState = task.child.state;
     const input = this.store.historyInput(task),
       index = await runHistoryIndex(this.state);
+    const isCurrent = (): boolean => {
+      const current = this.store.task(key);
+      if (
+        !this.session.live(generation) ||
+        this.state.historyIndex !== index ||
+        index.failure ||
+        !current ||
+        current.child.identityUnavailable === true ||
+        current.page !== published ||
+        current.historySource !== source ||
+        current.child.sessionFile !== sessionFile ||
+        current.child.state !== childState
+      ) {
+        return false;
+      }
+      return sameHistoryBoundary(this.store.historyInput(current), input);
+    };
     const result = await selectedHistory(index, input, paging, anchor);
     if (!this.session.live(generation) || this.store.task(key)?.run.runId !== task.run.runId) {
       return;
     }
-    return result;
+    return { ...result, isCurrent };
   }
   async savedResult(key: string, id: string): Promise<AgentHistoryItem> {
     const task = this.store.task(key),

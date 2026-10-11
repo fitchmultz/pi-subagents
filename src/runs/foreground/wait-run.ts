@@ -15,6 +15,12 @@ import {
   type SubagentExecutionResult,
 } from "../../shared/types.ts";
 import { errorMessage, isRecord } from "../../shared/unknown.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
+import {
+  formatSupervisorQuestions,
+  supervisorQuestionPage,
+} from "../shared/supervisor-questions.ts";
+import { nestedResolutionScopeForExecutor } from "./execution-routing.ts";
 import type { ExecutorDeps } from "./subagent-params.ts";
 import { acquireRunWait } from "./wait-registration.ts";
 import {
@@ -317,10 +323,12 @@ class RunWait {
     }
     if (questions.length > 0) {
       const result = ownedRunStatusResult(this.target, deps.state);
+      const page = supervisorQuestionPage(questions);
+      const childSafe = nestedResolutionScopeForExecutor(deps) !== undefined;
       return {
         status: "awaiting_input",
-        text: `Run ${this.target.runId} needs input; waiting ended without stopping it.\n\n${questions.map((question) => `Question ${question.questionId}: ${question.message}`).join("\n\n")}`,
-        result: { ...result, details: { ...result.details, questions } },
+        text: `Run ${this.target.runId} needs input; waiting ended without stopping it.\n\n${formatSupervisorQuestions(page.questions, childSafe)}\n\nAll questions: ${formatRunAction("questions", this.target.runId, index === undefined ? {} : { index }, childSafe)}`,
+        result: { ...result, details: { ...result.details, ...page } },
       };
     }
     if (waitHasSavedResult(observation, index)) {

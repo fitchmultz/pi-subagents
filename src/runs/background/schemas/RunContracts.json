@@ -1653,8 +1653,30 @@
         "questions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/import(%22src%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionView"
+            "$ref": "#/definitions/import(%22src%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionSummary"
           }
+        },
+        "questionList": {
+          "type": "object",
+          "properties": {
+            "total": {
+              "type": "number"
+            },
+            "offset": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            },
+            "nextOffset": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "limit",
+            "offset",
+            "total"
+          ]
         },
         "wait": {
           "type": "object",
@@ -8370,6 +8392,127 @@
         }
       }
     },
+    "import(\"src/shared/types/questions\",{with:{\"resolution-mode\":\"import\"}}).SupervisorQuestionSummary": {
+      "type": "object",
+      "properties": {
+        "questionPath": {
+          "type": "string"
+        },
+        "answerPath": {
+          "type": "string"
+        },
+        "messageTruncated": {
+          "type": "boolean"
+        },
+        "answerTruncated": {
+          "type": "boolean"
+        },
+        "hasInterview": {
+          "type": "boolean"
+        },
+        "index": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "answer_pending",
+            "answered",
+            "awaiting_input",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "ownerSessionId": {
+          "type": "string"
+        },
+        "delivery": {
+          "$ref": "#/definitions/QuestionDelivery"
+        },
+        "questionId": {
+          "type": "string"
+        },
+        "ownerTarget": {
+          "type": "string"
+        },
+        "childSessionId": {
+          "type": "string"
+        },
+        "childTarget": {
+          "type": "string"
+        },
+        "processIdentity": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "reason": {
+          "enum": [
+            "interview_request",
+            "need_decision"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "answer": {
+          "$ref": "#/definitions/QuestionAnswer"
+        },
+        "revival": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "pid": {
+              "type": "number"
+            },
+            "startedAt": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "pid",
+            "runId",
+            "startedAt"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "childSessionId",
+        "childTarget",
+        "createdAt",
+        "cwd",
+        "index",
+        "message",
+        "ownerSessionId",
+        "ownerTarget",
+        "pid",
+        "questionId",
+        "questionPath",
+        "reason",
+        "runId",
+        "sessionFile",
+        "state"
+      ]
+    },
     "OwnedRunView": {
       "$ref": "#/definitions/import(%22src%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).OwnedRunView"
     },
@@ -8975,11 +9118,15 @@
         "questions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionView%3E"
+            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fquestions%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SupervisorQuestionSummary%3E"
           }
         },
+        "questionList": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_38",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
         "wait": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_77",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_39",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "run": {
@@ -8992,7 +9139,7 @@
           }
         },
         "runList": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_86",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_83",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "history": {
@@ -9002,15 +9149,15 @@
           "$ref": "#/definitions/HistorySearchPage_1"
         },
         "intercomDelivery": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_89",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_86",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "artifacts": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_90",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_87",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "truncation": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_91",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_88",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "chainAgents": {
@@ -9174,10 +9321,37 @@
     "_ReadonlyObjectDeep_33": {
       "$ref": "#/definitions/__type_38"
     },
-    "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/questions\",{with:{\"resolution-mode\":\"import\"}}).SupervisorQuestionView>": {
+    "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/questions\",{with:{\"resolution-mode\":\"import\"}}).SupervisorQuestionSummary>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
+        "questionPath": {
+          "type": "string"
+        },
+        "answerPath": {
+          "type": "string"
+        },
+        "messageTruncated": {
+          "type": "boolean"
+        },
+        "answerTruncated": {
+          "type": "boolean"
+        },
+        "hasInterview": {
+          "type": "boolean"
+        },
+        "index": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
         "state": {
           "enum": [
             "answer_pending",
@@ -9187,17 +9361,7 @@
           ],
           "type": "string"
         },
-        "answer": {
-          "$ref": "#/definitions/QuestionAnswer_1"
-        },
-        "delivery": {
-          "$ref": "#/definitions/QuestionDelivery_1"
-        },
-        "revival": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_37",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "questionId": {
+        "cwd": {
           "type": "string"
         },
         "runId": {
@@ -9206,14 +9370,14 @@
         "ownerSessionId": {
           "type": "string"
         },
+        "delivery": {
+          "$ref": "#/definitions/QuestionDelivery_1"
+        },
+        "questionId": {
+          "type": "string"
+        },
         "ownerTarget": {
           "type": "string"
-        },
-        "agent": {
-          "type": "string"
-        },
-        "index": {
-          "type": "number"
         },
         "childSessionId": {
           "type": "string"
@@ -9221,14 +9385,8 @@
         "childTarget": {
           "type": "string"
         },
-        "sessionFile": {
+        "processIdentity": {
           "type": "string"
-        },
-        "cwd": {
-          "type": "string"
-        },
-        "pid": {
-          "type": "number"
         },
         "createdAt": {
           "type": "number"
@@ -9243,93 +9401,12 @@
         "message": {
           "type": "string"
         },
-        "interview": {},
-        "legacySource": {
-          "type": "string"
+        "answer": {
+          "$ref": "#/definitions/QuestionAnswer_1"
         },
-        "recordVersion": {
-          "description": "Readers migrate v1/v2 owner records; all new publications use v3.",
-          "enum": [
-            1,
-            2,
-            3
-          ],
-          "type": "number"
-        },
-        "nativeSessionId": {
-          "type": "string"
-        },
-        "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "terminalEntryId": {
-          "type": "string"
-        },
-        "attemptBaseline": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "baselineSource": {
-          "const": "native-migration",
-          "type": "string"
-        },
-        "effectiveConfiguration": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_38",
+        "revival": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_37",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "accounting": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_39",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "auditPath": {
-          "type": "string"
-        },
-        "task": {
-          "type": "string"
-        },
-        "label": {
-          "type": "string"
-        },
-        "result": {
-          "$ref": "#/definitions/ReadonlySingleResult_1"
-        },
-        "effectiveAcceptance": {
-          "$ref": "#/definitions/ResolvedAcceptanceConfig_4"
-        },
-        "output": {
-          "anyOf": [
-            {
-              "const": false,
-              "type": "boolean"
-            },
-            {
-              "type": "string"
-            }
-          ]
-        },
-        "outputMode": {
-          "$ref": "#/definitions/OutputMode"
-        },
-        "outputSchema": {
-          "$ref": "#/definitions/JsonSchemaObject_1"
-        },
-        "launch": {
-          "$ref": "#/definitions/SavedLaunchConfig_1"
-        },
-        "modelSelection": {
-          "$ref": "#/definitions/Pick_2",
-          "description": "Retained independently of progress after detachment."
-        },
-        "processIdentity": {
-          "type": "string"
-        },
-        "updatedAt": {
-          "type": "number"
         }
       },
       "required": [
@@ -9344,44 +9421,18 @@
         "ownerTarget",
         "pid",
         "questionId",
+        "questionPath",
         "reason",
         "runId",
         "sessionFile",
         "state"
       ]
     },
-    "QuestionAnswer_1": {
+    "QuestionDelivery_1": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_35",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
     "__type_40": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "message": {
-          "type": "string"
-        },
-        "answeredAt": {
-          "type": "number"
-        },
-        "origin": {
-          "const": "human",
-          "type": "string"
-        }
-      },
-      "required": [
-        "answeredAt",
-        "message"
-      ]
-    },
-    "_ReadonlyObjectDeep_35": {
-      "$ref": "#/definitions/__type_40"
-    },
-    "QuestionDelivery_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_36",
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-    },
-    "__type_41": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9403,6 +9454,33 @@
         "deliveredAt",
         "kind",
         "runId"
+      ]
+    },
+    "_ReadonlyObjectDeep_35": {
+      "$ref": "#/definitions/__type_40"
+    },
+    "QuestionAnswer_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_36",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_41": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "answeredAt": {
+          "type": "number"
+        },
+        "origin": {
+          "const": "human",
+          "type": "string"
+        }
+      },
+      "required": [
+        "answeredAt",
+        "message"
       ]
     },
     "_ReadonlyObjectDeep_36": {
@@ -9435,16 +9513,24 @@
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
-        "model": {
-          "type": "string"
+        "total": {
+          "type": "number"
         },
-        "thinking": {
-          "type": "string"
+        "offset": {
+          "type": "number"
         },
-        "modelRecordedAt": {
+        "limit": {
+          "type": "number"
+        },
+        "nextOffset": {
           "type": "number"
         }
-      }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "total"
+      ]
     },
     "_ReadonlyObjectDeep_38": {
       "$ref": "#/definitions/__type_43"
@@ -9453,25 +9539,35 @@
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
-        "state": {
-          "enum": [
-            "complete",
-            "incomplete"
-          ],
+        "runId": {
           "type": "string"
         },
-        "error": {
+        "completionId": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "status": {
+          "enum": [
+            "awaiting_input",
+            "cancelled",
+            "completed",
+            "unavailable",
+            "yielded"
+          ],
           "type": "string"
         }
       },
       "required": [
-        "state"
+        "runId",
+        "status"
       ]
     },
     "_ReadonlyObjectDeep_39": {
       "$ref": "#/definitions/__type_44"
     },
-    "ReadonlySingleResult_1": {
+    "OwnedRunView_1": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_40",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
@@ -9479,8 +9575,210 @@
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Breadonlyagent%3Astring%3Breadonlyindex%3Anumber%3BreadonlyworkflowNodeId%3F%3Astring%7Cundefined%3Breadonlytask%3F%3Astring%7Cundefined%3Breadonlylabel%3F%3Astring%7Cundefined%3BreadonlysessionFile%3F%3Astring%7Cundefined%3B%7D%26%7Breadonlystate%3Aimport(%22src%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ManagementRunState%3Breadonlyresult%3F%3A(Omit%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult%3E%2C%22artifactPaths%22%3E%26%7BreadonlyartifactPaths%3F%3APartial%3Cimport(%22src%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ArtifactPaths%3E%7Cundefined%3B%7D)%7Cundefined%3Breadonlylaunch%3F%3Aimport(%22src%2Fshared%2Ftypes%2Flaunch%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SavedLaunchConfig%7Cundefined%3Breadonlyconfiguration%3A%22saved%22%7C%22legacy-partial%22%3BreadonlymissingSession%3F%3Aboolean%7Cundefined%3BreadonlyidentityUnavailable%3F%3Aboolean%7Cundefined%3BreadonlymodelSelection%3F%3APick%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProgress%3E%2C%22model%22%7C%22thinking%22%7C%22modelStartedAt%22%3E%7Cundefined%3Breadonlyactivity%3F%3APartial%3CPick%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProgress%3E%2C%22status%22%7C%22lastActivityAt%22%7C%22currentTool%22%7C%22currentToolArgs%22%7C%22currentPath%22%7C%22streamingText%22%7C%22recentOutput%22%3E%3E%7Cundefined%3B%7D%3E"
+          }
+        },
+        "continuations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7BreadonlyrunId%3Astring%3BreadonlypredecessorRunId%3Astring%3BreadonlypredecessorIndex%3F%3Anumber%7Cundefined%3B%7D%3E"
+          }
+        },
+        "resultPath": {
+          "type": "string"
+        },
+        "canInterrupt": {
+          "type": "boolean"
+        },
+        "diagnosis": {
+          "type": "string"
+        },
+        "recoveryError": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "ownerSessionId": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "async",
+            "foreground"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubagentRunMode"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "number"
+        },
+        "rootRunId": {
+          "type": "string"
+        },
+        "predecessorRunId": {
+          "type": "string"
+        },
+        "predecessorIndex": {
+          "type": "number"
+        },
+        "asyncDir": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "number"
+        },
+        "review": {
+          "$ref": "#/definitions/ParentRunReview_1"
+        },
+        "completion": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_80",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
         "accounting": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_81",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "delivery": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_82",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "legacy": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attention",
+        "canInterrupt",
+        "children",
+        "continuations",
+        "cwd",
+        "mode",
+        "ownerSessionId",
+        "rootRunId",
+        "runId",
+        "source",
+        "startedAt",
+        "state",
+        "task",
+        "updatedAt"
+      ]
+    },
+    "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{readonlyagent:string;readonlyindex:number;readonlyworkflowNodeId?:string|undefined;readonlytask?:string|undefined;readonlylabel?:string|undefined;readonlysessionFile?:string|undefined;}&{readonlystate:import(\"src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ManagementRunState;readonlyresult?:(Omit<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).SingleResult>,\"artifactPaths\">&{readonlyartifactPaths?:Partial<import(\"src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ArtifactPaths>|undefined;})|undefined;readonlylaunch?:import(\"src/shared/types/launch\",{with:{\"resolution-mode\":\"import\"}}).SavedLaunchConfig|undefined;readonlyconfiguration:\"saved\"|\"legacy-partial\";readonlymissingSession?:boolean|undefined;readonlyidentityUnavailable?:boolean|undefined;readonlymodelSelection?:Pick<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).AgentProgress>,\"model\"|\"thinking\"|\"modelStartedAt\">|undefined;readonlyactivity?:Partial<Pick<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).AgentProgress>,\"status\"|\"lastActivityAt\"|\"currentTool\"|\"currentToolArgs\"|\"currentPath\"|\"streamingText\"|\"recentOutput\">>|undefined;}>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "workflowNodeId": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/ManagementRunState"
+        },
+        "result": {
           "$ref": "#/definitions/_ReadonlyObjectDeep_41",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "launch": {
+          "$ref": "#/definitions/SavedLaunchConfig_1"
+        },
+        "configuration": {
+          "enum": [
+            "legacy-partial",
+            "saved"
+          ],
+          "type": "string"
+        },
+        "missingSession": {
+          "type": "boolean"
+        },
+        "identityUnavailable": {
+          "type": "boolean"
+        },
+        "modelSelection": {
+          "$ref": "#/definitions/Pick_2"
+        },
+        "activity": {
+          "$ref": "#/definitions/Partial_5"
+        }
+      },
+      "required": [
+        "agent",
+        "configuration",
+        "index",
+        "state"
+      ]
+    },
+    "__type_46": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "detached": {
+          "type": "boolean"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "error": {
+          "type": "string"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "accounting": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_42",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "nativeSessionId": {
@@ -9507,20 +9805,11 @@
         "auditSaveError": {
           "type": "string"
         },
-        "agent": {
-          "type": "string"
-        },
         "agentProcessExit": {
           "$ref": "#/definitions/AgentProcessExit_2"
         },
-        "task": {
-          "type": "string"
-        },
         "exitCode": {
           "type": "number"
-        },
-        "detached": {
-          "type": "boolean"
         },
         "detachedReason": {
           "type": "string"
@@ -9539,11 +9828,7 @@
           "items": {
             "anyOf": [
               {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_44",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_51",
+                "$ref": "#/definitions/_ReadonlyObjectDeep_45",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               },
               {
@@ -9565,15 +9850,16 @@
               {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_56",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_57",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               }
             ]
           }
         },
         "usage": {
           "$ref": "#/definitions/Usage_4"
-        },
-        "model": {
-          "type": "string"
         },
         "attemptedModels": {
           "type": "array",
@@ -9593,18 +9879,6 @@
             "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent%3E%3E"
           }
         },
-        "error": {
-          "type": "string"
-        },
-        "sessionFile": {
-          "type": "string"
-        },
-        "skills": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
         "skillsWarning": {
           "type": "string"
         },
@@ -9619,9 +9893,6 @@
           "items": {
             "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ToolCallSummary%3E%3E"
           }
-        },
-        "artifactPaths": {
-          "$ref": "#/definitions/ArtifactPaths_2"
         },
         "truncation": {
           "$ref": "#/definitions/TruncationResult_2"
@@ -9657,6 +9928,9 @@
         },
         "acceptance": {
           "$ref": "#/definitions/AcceptanceLedger_2"
+        },
+        "artifactPaths": {
+          "$ref": "#/definitions/Partial_4"
         }
       },
       "required": [
@@ -9666,7 +9940,7 @@
         "usage"
       ]
     },
-    "__type_46": {
+    "__type_47": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9685,14 +9959,14 @@
         "state"
       ]
     },
-    "_ReadonlyObjectDeep_41": {
-      "$ref": "#/definitions/__type_46"
+    "_ReadonlyObjectDeep_42": {
+      "$ref": "#/definitions/__type_47"
     },
     "AgentProcessExit_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_42",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_43",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_47": {
+    "__type_48": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9764,14 +10038,14 @@
         "signal"
       ]
     },
-    "_ReadonlyObjectDeep_42": {
-      "$ref": "#/definitions/__type_47"
+    "_ReadonlyObjectDeep_43": {
+      "$ref": "#/definitions/__type_48"
     },
     "ResourceLimitExceeded_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_43",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_44",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_48": {
+    "__type_49": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9798,10 +10072,10 @@
         "message"
       ]
     },
-    "_ReadonlyObjectDeep_43": {
-      "$ref": "#/definitions/__type_48"
+    "_ReadonlyObjectDeep_44": {
+      "$ref": "#/definitions/__type_49"
     },
-    "__type_49": {
+    "__type_50": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9817,10 +10091,6 @@
           "items": {
             "anyOf": [
               {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_45",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_46",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               },
@@ -9830,6 +10100,10 @@
               },
               {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_48",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_49",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               }
             ]
@@ -9865,7 +10139,7 @@
         "role"
       ]
     },
-    "__type_50": {
+    "__type_51": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9885,10 +10159,10 @@
         "type"
       ]
     },
-    "_ReadonlyObjectDeep_45": {
-      "$ref": "#/definitions/__type_50"
+    "_ReadonlyObjectDeep_46": {
+      "$ref": "#/definitions/__type_51"
     },
-    "__type_51": {
+    "__type_52": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9911,10 +10185,10 @@
         "type"
       ]
     },
-    "_ReadonlyObjectDeep_46": {
-      "$ref": "#/definitions/__type_51"
+    "_ReadonlyObjectDeep_47": {
+      "$ref": "#/definitions/__type_52"
     },
-    "__type_52": {
+    "__type_53": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9935,10 +10209,10 @@
         "type"
       ]
     },
-    "_ReadonlyObjectDeep_47": {
-      "$ref": "#/definitions/__type_52"
+    "_ReadonlyObjectDeep_48": {
+      "$ref": "#/definitions/__type_53"
     },
-    "__type_53": {
+    "__type_54": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -9969,22 +10243,22 @@
         "type"
       ]
     },
-    "__type_54": {
+    "__type_55": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "additionalProperties": {},
       "type": "object"
     },
     "Readonly_5": {
-      "$ref": "#/definitions/__type_54"
+      "$ref": "#/definitions/__type_55"
     },
-    "_ReadonlyObjectDeep_48": {
-      "$ref": "#/definitions/__type_53"
+    "_ReadonlyObjectDeep_49": {
+      "$ref": "#/definitions/__type_54"
     },
     "ObservedUsage_4": {
       "description": "Observations from native journals and external runners are not necessarily complete SDK messages.",
-      "$ref": "#/definitions/_ReadonlyObjectDeep_49"
+      "$ref": "#/definitions/_ReadonlyObjectDeep_50"
     },
-    "__type_55": {
+    "__type_56": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10010,12 +10284,12 @@
           "type": "number"
         },
         "cost": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_50",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_51",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         }
       }
     },
-    "__type_56": {
+    "__type_57": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10036,16 +10310,16 @@
         }
       }
     },
+    "_ReadonlyObjectDeep_51": {
+      "$ref": "#/definitions/__type_57"
+    },
     "_ReadonlyObjectDeep_50": {
       "$ref": "#/definitions/__type_56"
     },
-    "_ReadonlyObjectDeep_49": {
-      "$ref": "#/definitions/__type_55"
+    "_ReadonlyObjectDeep_45": {
+      "$ref": "#/definitions/__type_50"
     },
-    "_ReadonlyObjectDeep_44": {
-      "$ref": "#/definitions/__type_49"
-    },
-    "__type_57": {
+    "__type_58": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10061,10 +10335,6 @@
           "items": {
             "anyOf": [
               {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_45",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_46",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               },
@@ -10074,6 +10344,10 @@
               },
               {
                 "$ref": "#/definitions/_ReadonlyObjectDeep_48",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_49",
                 "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
               }
             ]
@@ -10103,10 +10377,10 @@
         "toolName"
       ]
     },
-    "_ReadonlyObjectDeep_51": {
-      "$ref": "#/definitions/__type_57"
+    "_ReadonlyObjectDeep_52": {
+      "$ref": "#/definitions/__type_58"
     },
-    "__type_58": {
+    "__type_59": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10127,10 +10401,6 @@
               "items": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/_ReadonlyObjectDeep_45",
-                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-                  },
-                  {
                     "$ref": "#/definitions/_ReadonlyObjectDeep_46",
                     "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
                   },
@@ -10140,6 +10410,10 @@
                   },
                   {
                     "$ref": "#/definitions/_ReadonlyObjectDeep_48",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_49",
                     "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
                   }
                 ]
@@ -10156,10 +10430,10 @@
         "role"
       ]
     },
-    "_ReadonlyObjectDeep_52": {
-      "$ref": "#/definitions/__type_58"
+    "_ReadonlyObjectDeep_53": {
+      "$ref": "#/definitions/__type_59"
     },
-    "__type_59": {
+    "__type_60": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10180,10 +10454,6 @@
               "items": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/_ReadonlyObjectDeep_45",
-                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-                  },
-                  {
                     "$ref": "#/definitions/_ReadonlyObjectDeep_46",
                     "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
                   },
@@ -10193,6 +10463,10 @@
                   },
                   {
                     "$ref": "#/definitions/_ReadonlyObjectDeep_48",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_49",
                     "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
                   }
                 ]
@@ -10214,10 +10488,10 @@
         "role"
       ]
     },
-    "_ReadonlyObjectDeep_53": {
-      "$ref": "#/definitions/__type_59"
+    "_ReadonlyObjectDeep_54": {
+      "$ref": "#/definitions/__type_60"
     },
-    "__type_60": {
+    "__type_61": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10256,10 +10530,10 @@
         "role"
       ]
     },
-    "_ReadonlyObjectDeep_54": {
-      "$ref": "#/definitions/__type_60"
+    "_ReadonlyObjectDeep_55": {
+      "$ref": "#/definitions/__type_61"
     },
-    "__type_61": {
+    "__type_62": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10286,10 +10560,10 @@
         "summary"
       ]
     },
-    "_ReadonlyObjectDeep_55": {
-      "$ref": "#/definitions/__type_61"
+    "_ReadonlyObjectDeep_56": {
+      "$ref": "#/definitions/__type_62"
     },
-    "__type_62": {
+    "__type_63": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10313,10 +10587,10 @@
         "tokensBefore"
       ]
     },
-    "_ReadonlyObjectDeep_56": {
-      "$ref": "#/definitions/__type_62"
+    "_ReadonlyObjectDeep_57": {
+      "$ref": "#/definitions/__type_63"
     },
-    "__type_63": {
+    "__type_64": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10378,17 +10652,17 @@
       ]
     },
     "ObservedUsage_5": {
-      "$ref": "#/definitions/__type_55"
+      "$ref": "#/definitions/__type_56"
     },
     "Usage_4": {
-      "$ref": "#/definitions/__type_63"
+      "$ref": "#/definitions/__type_64"
     },
     "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ModelAttempt>>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
         "accounting": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_57",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_58",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "model": {
@@ -10415,7 +10689,7 @@
         "success"
       ]
     },
-    "__type_64": {
+    "__type_65": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10434,15 +10708,15 @@
         "state"
       ]
     },
-    "_ReadonlyObjectDeep_57": {
-      "$ref": "#/definitions/__type_64"
+    "_ReadonlyObjectDeep_58": {
+      "$ref": "#/definitions/__type_65"
     },
     "Usage_5": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_58",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_59",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "_ReadonlyObjectDeep_58": {
-      "$ref": "#/definitions/__type_63"
+    "_ReadonlyObjectDeep_59": {
+      "$ref": "#/definitions/__type_64"
     },
     "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ControlEvent>>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -10505,7 +10779,7 @@
           "type": "string"
         },
         "supervisorQuestion": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_59",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_60",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         }
       },
@@ -10518,7 +10792,7 @@
         "type"
       ]
     },
-    "__type_65": {
+    "__type_66": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10541,14 +10815,14 @@
         "state"
       ]
     },
-    "_ReadonlyObjectDeep_59": {
-      "$ref": "#/definitions/__type_65"
+    "_ReadonlyObjectDeep_60": {
+      "$ref": "#/definitions/__type_66"
     },
     "AgentProgress_2": {
       "description": "Live progress owner: streaming and tool events update fields and bounded buffers in place.",
-      "$ref": "#/definitions/_ReadonlyObjectDeep_60"
+      "$ref": "#/definitions/_ReadonlyObjectDeep_61"
     },
-    "__type_66": {
+    "__type_67": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10661,14 +10935,14 @@
     "Array_5": {
       "$ref": "#/definitions/ReadonlyArray_1"
     },
-    "_ReadonlyObjectDeep_60": {
-      "$ref": "#/definitions/__type_66"
+    "_ReadonlyObjectDeep_61": {
+      "$ref": "#/definitions/__type_67"
     },
     "ProgressSummary_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_61",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_62",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_67": {
+    "__type_68": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -10779,8 +11053,8 @@
         "tool"
       ]
     },
-    "_ReadonlyObjectDeep_61": {
-      "$ref": "#/definitions/__type_67"
+    "_ReadonlyObjectDeep_62": {
+      "$ref": "#/definitions/__type_68"
     },
     "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).ToolCallSummary>>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -10797,33 +11071,6 @@
         "expandedText",
         "text"
       ]
-    },
-    "ArtifactPaths_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_62",
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-    },
-    "__type_68": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "inputPath": {
-          "type": "string"
-        },
-        "outputPath": {
-          "type": "string"
-        },
-        "metadataPath": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "inputPath",
-        "metadataPath",
-        "outputPath"
-      ]
-    },
-    "_ReadonlyObjectDeep_62": {
-      "$ref": "#/definitions/__type_68"
     },
     "TruncationResult_2": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_63",
@@ -11266,7 +11513,7 @@
       ]
     },
     "_ReadonlyObjectDeep_69": {
-      "$ref": "#/definitions/__type_54"
+      "$ref": "#/definitions/__type_55"
     },
     "_ReadonlyObjectDeep_68": {
       "$ref": "#/definitions/__type_75"
@@ -11430,31 +11677,34 @@
     "_ReadonlyObjectDeep_66": {
       "$ref": "#/definitions/__type_72"
     },
-    "_ReadonlyObjectDeep_40": {
-      "$ref": "#/definitions/__type_45"
-    },
-    "ResolvedAcceptanceConfig_4": {
+    "Partial_4": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_71",
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-    },
-    "_ReadonlyObjectDeep_71": {
-      "$ref": "#/definitions/__type_29"
-    },
-    "JsonSchemaObject_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_72",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
     "__type_77": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "additionalProperties": {},
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "inputPath": {
+          "type": "string"
+        },
+        "outputPath": {
+          "type": "string"
+        },
+        "metadataPath": {
+          "type": "string"
+        }
+      }
     },
-    "_ReadonlyObjectDeep_72": {
+    "_ReadonlyObjectDeep_71": {
       "$ref": "#/definitions/__type_77"
+    },
+    "_ReadonlyObjectDeep_41": {
+      "$ref": "#/definitions/__type_46"
     },
     "SavedLaunchConfig_1": {
       "description": "Persisted launch snapshot. Resume consumers must not modify the original launch.",
-      "$ref": "#/definitions/_ReadonlyObjectDeep_73"
+      "$ref": "#/definitions/_ReadonlyObjectDeep_72"
     },
     "__type_78": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -11690,11 +11940,30 @@
     "AgentConfig_1": {
       "$ref": "#/definitions/__type_79"
     },
-    "MaxOutputConfig_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_74",
+    "JsonSchemaObject_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_73",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
     "__type_80": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "additionalProperties": {},
+      "type": "object"
+    },
+    "_ReadonlyObjectDeep_73": {
+      "$ref": "#/definitions/__type_80"
+    },
+    "ResolvedAcceptanceConfig_4": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_74",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "_ReadonlyObjectDeep_74": {
+      "$ref": "#/definitions/__type_29"
+    },
+    "MaxOutputConfig_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_75",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_81": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -11706,14 +11975,14 @@
         }
       }
     },
-    "_ReadonlyObjectDeep_74": {
-      "$ref": "#/definitions/__type_80"
+    "_ReadonlyObjectDeep_75": {
+      "$ref": "#/definitions/__type_81"
     },
     "ResolvedControlConfig_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_75",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_76",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_81": {
+    "__type_82": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -11748,17 +12017,17 @@
         "notifyOn"
       ]
     },
-    "_ReadonlyObjectDeep_75": {
-      "$ref": "#/definitions/__type_81"
+    "_ReadonlyObjectDeep_76": {
+      "$ref": "#/definitions/__type_82"
     },
-    "_ReadonlyObjectDeep_73": {
+    "_ReadonlyObjectDeep_72": {
       "$ref": "#/definitions/__type_78"
     },
     "Pick_2": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_76",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_77",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_82": {
+    "__type_83": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -11774,444 +12043,14 @@
         }
       }
     },
-    "_ReadonlyObjectDeep_76": {
-      "$ref": "#/definitions/__type_82"
-    },
-    "__type_83": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "runId": {
-          "type": "string"
-        },
-        "completionId": {
-          "type": "string"
-        },
-        "index": {
-          "type": "number"
-        },
-        "status": {
-          "enum": [
-            "awaiting_input",
-            "cancelled",
-            "completed",
-            "unavailable",
-            "yielded"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "runId",
-        "status"
-      ]
-    },
     "_ReadonlyObjectDeep_77": {
       "$ref": "#/definitions/__type_83"
     },
-    "OwnedRunView_1": {
+    "Partial_5": {
       "$ref": "#/definitions/_ReadonlyObjectDeep_78",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
     "__type_84": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "state": {
-          "$ref": "#/definitions/ManagementRunState"
-        },
-        "updatedAt": {
-          "type": "number"
-        },
-        "attention": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "children": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7Breadonlyagent%3Astring%3Breadonlyindex%3Anumber%3BreadonlyworkflowNodeId%3F%3Astring%7Cundefined%3Breadonlytask%3F%3Astring%7Cundefined%3Breadonlylabel%3F%3Astring%7Cundefined%3BreadonlysessionFile%3F%3Astring%7Cundefined%3B%7D%26%7Breadonlystate%3Aimport(%22src%2Fshared%2Ftypes%2Fowned-runs%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ManagementRunState%3Breadonlyresult%3F%3A(Omit%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SingleResult%3E%2C%22artifactPaths%22%3E%26%7BreadonlyartifactPaths%3F%3APartial%3Cimport(%22src%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ArtifactPaths%3E%7Cundefined%3B%7D)%7Cundefined%3Breadonlylaunch%3F%3Aimport(%22src%2Fshared%2Ftypes%2Flaunch%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).SavedLaunchConfig%7Cundefined%3Breadonlyconfiguration%3A%22saved%22%7C%22legacy-partial%22%3BreadonlymissingSession%3F%3Aboolean%7Cundefined%3BreadonlyidentityUnavailable%3F%3Aboolean%7Cundefined%3BreadonlymodelSelection%3F%3APick%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProgress%3E%2C%22model%22%7C%22thinking%22%7C%22modelStartedAt%22%3E%7Cundefined%3Breadonlyactivity%3F%3APartial%3CPick%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).AgentProgress%3E%2C%22status%22%7C%22lastActivityAt%22%7C%22currentTool%22%7C%22currentToolArgs%22%7C%22currentPath%22%7C%22streamingText%22%7C%22recentOutput%22%3E%3E%7Cundefined%3B%7D%3E"
-          }
-        },
-        "continuations": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3C%7BreadonlyrunId%3Astring%3BreadonlypredecessorRunId%3Astring%3BreadonlypredecessorIndex%3F%3Anumber%7Cundefined%3B%7D%3E"
-          }
-        },
-        "resultPath": {
-          "type": "string"
-        },
-        "canInterrupt": {
-          "type": "boolean"
-        },
-        "diagnosis": {
-          "type": "string"
-        },
-        "recoveryError": {
-          "type": "string"
-        },
-        "runId": {
-          "type": "string"
-        },
-        "ownerSessionId": {
-          "type": "string"
-        },
-        "source": {
-          "enum": [
-            "async",
-            "foreground"
-          ],
-          "type": "string"
-        },
-        "mode": {
-          "$ref": "#/definitions/SubagentRunMode"
-        },
-        "cwd": {
-          "type": "string"
-        },
-        "task": {
-          "type": "string"
-        },
-        "startedAt": {
-          "type": "number"
-        },
-        "rootRunId": {
-          "type": "string"
-        },
-        "predecessorRunId": {
-          "type": "string"
-        },
-        "predecessorIndex": {
-          "type": "number"
-        },
-        "asyncDir": {
-          "type": "string"
-        },
-        "pid": {
-          "type": "number"
-        },
-        "review": {
-          "$ref": "#/definitions/ParentRunReview_1"
-        },
-        "completion": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_83",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "accounting": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_84",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "delivery": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_85",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "legacy": {
-          "type": "boolean"
-        },
-        "error": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "attention",
-        "canInterrupt",
-        "children",
-        "continuations",
-        "cwd",
-        "mode",
-        "ownerSessionId",
-        "rootRunId",
-        "runId",
-        "source",
-        "startedAt",
-        "state",
-        "task",
-        "updatedAt"
-      ]
-    },
-    "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{readonlyagent:string;readonlyindex:number;readonlyworkflowNodeId?:string|undefined;readonlytask?:string|undefined;readonlylabel?:string|undefined;readonlysessionFile?:string|undefined;}&{readonlystate:import(\"src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).ManagementRunState;readonlyresult?:(Omit<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).SingleResult>,\"artifactPaths\">&{readonlyartifactPaths?:Partial<import(\"src/shared/types/results\",{with:{\"resolution-mode\":\"import\"}}).ArtifactPaths>|undefined;})|undefined;readonlylaunch?:import(\"src/shared/types/launch\",{with:{\"resolution-mode\":\"import\"}}).SavedLaunchConfig|undefined;readonlyconfiguration:\"saved\"|\"legacy-partial\";readonlymissingSession?:boolean|undefined;readonlyidentityUnavailable?:boolean|undefined;readonlymodelSelection?:Pick<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).AgentProgress>,\"model\"|\"thinking\"|\"modelStartedAt\">|undefined;readonlyactivity?:Partial<Pick<import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<import(\"src/shared/types/progress\",{with:{\"resolution-mode\":\"import\"}}).AgentProgress>,\"status\"|\"lastActivityAt\"|\"currentTool\"|\"currentToolArgs\"|\"currentPath\"|\"streamingText\"|\"recentOutput\">>|undefined;}>": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "agent": {
-          "type": "string"
-        },
-        "index": {
-          "type": "number"
-        },
-        "workflowNodeId": {
-          "type": "string"
-        },
-        "task": {
-          "type": "string"
-        },
-        "label": {
-          "type": "string"
-        },
-        "sessionFile": {
-          "type": "string"
-        },
-        "state": {
-          "$ref": "#/definitions/ManagementRunState"
-        },
-        "result": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_79",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "launch": {
-          "$ref": "#/definitions/SavedLaunchConfig_1"
-        },
-        "configuration": {
-          "enum": [
-            "legacy-partial",
-            "saved"
-          ],
-          "type": "string"
-        },
-        "missingSession": {
-          "type": "boolean"
-        },
-        "identityUnavailable": {
-          "type": "boolean"
-        },
-        "modelSelection": {
-          "$ref": "#/definitions/Pick_2"
-        },
-        "activity": {
-          "$ref": "#/definitions/Partial_5"
-        }
-      },
-      "required": [
-        "agent",
-        "configuration",
-        "index",
-        "state"
-      ]
-    },
-    "__type_85": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "detached": {
-          "type": "boolean"
-        },
-        "agent": {
-          "type": "string"
-        },
-        "model": {
-          "type": "string"
-        },
-        "task": {
-          "type": "string"
-        },
-        "skills": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "error": {
-          "type": "string"
-        },
-        "sessionFile": {
-          "type": "string"
-        },
-        "accounting": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_41",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "nativeSessionId": {
-          "type": "string"
-        },
-        "terminalLeafId": {
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "terminalEntryId": {
-          "type": "string"
-        },
-        "auditPath": {
-          "type": "string"
-        },
-        "fullOutputPath": {
-          "type": "string"
-        },
-        "initialOutputPath": {
-          "type": "string"
-        },
-        "auditSaveError": {
-          "type": "string"
-        },
-        "agentProcessExit": {
-          "$ref": "#/definitions/AgentProcessExit_2"
-        },
-        "exitCode": {
-          "type": "number"
-        },
-        "detachedReason": {
-          "type": "string"
-        },
-        "interrupted": {
-          "type": "boolean"
-        },
-        "timedOut": {
-          "type": "boolean"
-        },
-        "resourceLimitExceeded": {
-          "$ref": "#/definitions/ResourceLimitExceeded_2"
-        },
-        "messages": {
-          "type": "array",
-          "items": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_44",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_51",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_52",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_53",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_54",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_55",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              },
-              {
-                "$ref": "#/definitions/_ReadonlyObjectDeep_56",
-                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-              }
-            ]
-          }
-        },
-        "usage": {
-          "$ref": "#/definitions/Usage_4"
-        },
-        "attemptedModels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "modelAttempts": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fresults%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ModelAttempt%3E%3E"
-          }
-        },
-        "controlEvents": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ControlEvent%3E%3E"
-          }
-        },
-        "skillsWarning": {
-          "type": "string"
-        },
-        "progress": {
-          "$ref": "#/definitions/AgentProgress_2"
-        },
-        "progressSummary": {
-          "$ref": "#/definitions/ProgressSummary_2"
-        },
-        "toolCalls": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fprogress%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ToolCallSummary%3E%3E"
-          }
-        },
-        "truncation": {
-          "$ref": "#/definitions/TruncationResult_2"
-        },
-        "finalOutput": {
-          "type": "string"
-        },
-        "initialOutput": {
-          "type": "string"
-        },
-        "outputMode": {
-          "$ref": "#/definitions/OutputMode"
-        },
-        "savedOutputPath": {
-          "type": "string"
-        },
-        "outputReference": {
-          "$ref": "#/definitions/SavedOutputReference_2"
-        },
-        "outputSaveError": {
-          "type": "string"
-        },
-        "outputCleanup": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_65",
-          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-        },
-        "structuredOutput": {},
-        "structuredOutputPath": {
-          "type": "string"
-        },
-        "structuredOutputSchemaPath": {
-          "type": "string"
-        },
-        "acceptance": {
-          "$ref": "#/definitions/AcceptanceLedger_2"
-        },
-        "artifactPaths": {
-          "$ref": "#/definitions/Partial_4"
-        }
-      },
-      "required": [
-        "agent",
-        "exitCode",
-        "task",
-        "usage"
-      ]
-    },
-    "Partial_4": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_80",
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-    },
-    "__type_86": {
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
-      "type": "object",
-      "properties": {
-        "inputPath": {
-          "type": "string"
-        },
-        "outputPath": {
-          "type": "string"
-        },
-        "metadataPath": {
-          "type": "string"
-        }
-      }
-    },
-    "_ReadonlyObjectDeep_80": {
-      "$ref": "#/definitions/__type_86"
-    },
-    "_ReadonlyObjectDeep_79": {
-      "$ref": "#/definitions/__type_85"
-    },
-    "Partial_5": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_81",
-      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
-    },
-    "__type_87": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12252,8 +12091,8 @@
         }
       }
     },
-    "_ReadonlyObjectDeep_81": {
-      "$ref": "#/definitions/__type_87"
+    "_ReadonlyObjectDeep_78": {
+      "$ref": "#/definitions/__type_84"
     },
     "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<{readonlyrunId:string;readonlypredecessorRunId:string;readonlypredecessorIndex?:number|undefined;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -12275,10 +12114,10 @@
       ]
     },
     "ParentRunReview_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_82",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_79",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_88": {
+    "__type_85": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12301,10 +12140,10 @@
         "reviewedAt"
       ]
     },
-    "_ReadonlyObjectDeep_82": {
-      "$ref": "#/definitions/__type_88"
+    "_ReadonlyObjectDeep_79": {
+      "$ref": "#/definitions/__type_85"
     },
-    "__type_89": {
+    "__type_86": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12339,10 +12178,10 @@
         "state"
       ]
     },
-    "_ReadonlyObjectDeep_83": {
-      "$ref": "#/definitions/__type_89"
+    "_ReadonlyObjectDeep_80": {
+      "$ref": "#/definitions/__type_86"
     },
-    "__type_90": {
+    "__type_87": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12362,10 +12201,10 @@
         "state"
       ]
     },
-    "_ReadonlyObjectDeep_84": {
-      "$ref": "#/definitions/__type_90"
+    "_ReadonlyObjectDeep_81": {
+      "$ref": "#/definitions/__type_87"
     },
-    "__type_91": {
+    "__type_88": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12387,11 +12226,11 @@
         "notifiedAt"
       ]
     },
-    "_ReadonlyObjectDeep_85": {
-      "$ref": "#/definitions/__type_91"
+    "_ReadonlyObjectDeep_82": {
+      "$ref": "#/definitions/__type_88"
     },
-    "_ReadonlyObjectDeep_78": {
-      "$ref": "#/definitions/__type_84"
+    "_ReadonlyObjectDeep_40": {
+      "$ref": "#/definitions/__type_45"
     },
     "import(\"node_modules/type-fest/source/readonly-deep\",{with:{\"resolution-mode\":\"import\"}})._ReadonlyObjectDeep<Pick<import(\"src/shared/types/owned-runs\",{with:{\"resolution-mode\":\"import\"}}).OwnedRunView,\"task\"|\"mode\"|\"state\"|\"cwd\"|\"runId\"|\"updatedAt\"|\"review\"|\"source\"|\"rootRunId\"|\"predecessorRunId\"|\"predecessorIndex\"|\"attention\">&{readonlysummary?:string|undefined;readonlycontinuations?:readonlystring[]|undefined;}>": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
@@ -12462,7 +12301,7 @@
         "updatedAt"
       ]
     },
-    "__type_92": {
+    "__type_89": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12496,7 +12335,7 @@
         "version"
       ]
     },
-    "__type_93": {
+    "__type_90": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12535,16 +12374,16 @@
       ]
     },
     "HistoryFreshness_1": {
-      "$ref": "#/definitions/__type_93"
+      "$ref": "#/definitions/__type_90"
     },
-    "_ReadonlyObjectDeep_86": {
-      "$ref": "#/definitions/__type_92"
+    "_ReadonlyObjectDeep_83": {
+      "$ref": "#/definitions/__type_89"
     },
     "HistoryPage_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_87",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_84",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_94": {
+    "__type_91": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12708,7 +12547,7 @@
         "type"
       ]
     },
-    "__type_95": {
+    "__type_92": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12737,9 +12576,9 @@
       ]
     },
     "HistoryByteRef_1": {
-      "$ref": "#/definitions/__type_95"
+      "$ref": "#/definitions/__type_92"
     },
-    "__type_96": {
+    "__type_93": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12755,16 +12594,16 @@
       }
     },
     "HistoryConfiguration_2": {
-      "$ref": "#/definitions/__type_96"
+      "$ref": "#/definitions/__type_93"
     },
-    "_ReadonlyObjectDeep_87": {
-      "$ref": "#/definitions/__type_94"
+    "_ReadonlyObjectDeep_84": {
+      "$ref": "#/definitions/__type_91"
     },
     "HistorySearchPage_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_88",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_85",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_97": {
+    "__type_94": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12875,10 +12714,10 @@
         "timestamp"
       ]
     },
-    "_ReadonlyObjectDeep_88": {
-      "$ref": "#/definitions/__type_97"
+    "_ReadonlyObjectDeep_85": {
+      "$ref": "#/definitions/__type_94"
     },
-    "__type_98": {
+    "__type_95": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12902,10 +12741,10 @@
         "to"
       ]
     },
-    "_ReadonlyObjectDeep_89": {
-      "$ref": "#/definitions/__type_98"
+    "_ReadonlyObjectDeep_86": {
+      "$ref": "#/definitions/__type_95"
     },
-    "__type_99": {
+    "__type_96": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12924,10 +12763,10 @@
         "files"
       ]
     },
-    "_ReadonlyObjectDeep_90": {
-      "$ref": "#/definitions/__type_99"
+    "_ReadonlyObjectDeep_87": {
+      "$ref": "#/definitions/__type_96"
     },
-    "__type_100": {
+    "__type_97": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -12948,14 +12787,14 @@
         "truncated"
       ]
     },
-    "_ReadonlyObjectDeep_91": {
-      "$ref": "#/definitions/__type_100"
+    "_ReadonlyObjectDeep_88": {
+      "$ref": "#/definitions/__type_97"
     },
     "WorkflowGraphSnapshot_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_92",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_89",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_101": {
+    "__type_98": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -13053,7 +12892,7 @@
           }
         },
         "dynamic": {
-          "$ref": "#/definitions/_ReadonlyObjectDeep_93",
+          "$ref": "#/definitions/_ReadonlyObjectDeep_90",
           "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
         },
         "itemKey": {
@@ -13079,7 +12918,7 @@
         "status"
       ]
     },
-    "__type_102": {
+    "__type_99": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "type": "object",
       "properties": {
@@ -13105,17 +12944,17 @@
         "sourcePath"
       ]
     },
-    "_ReadonlyObjectDeep_93": {
-      "$ref": "#/definitions/__type_102"
+    "_ReadonlyObjectDeep_90": {
+      "$ref": "#/definitions/__type_99"
     },
-    "_ReadonlyObjectDeep_92": {
-      "$ref": "#/definitions/__type_101"
+    "_ReadonlyObjectDeep_89": {
+      "$ref": "#/definitions/__type_98"
     },
     "ChainOutputMap_1": {
-      "$ref": "#/definitions/_ReadonlyObjectDeep_94",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_91",
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
     },
-    "__type_103": {
+    "__type_100": {
       "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
       "additionalProperties": {
         "$ref": "#/definitions/import(%22node_modules%2Ftype-fest%2Fsource%2Freadonly-deep%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D)._ReadonlyObjectDeep%3Cimport(%22src%2Fshared%2Ftypes%2Fworkflow%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).ChainOutputMapEntry%3E"
@@ -13143,8 +12982,8 @@
         "text"
       ]
     },
-    "_ReadonlyObjectDeep_94": {
-      "$ref": "#/definitions/__type_103"
+    "_ReadonlyObjectDeep_91": {
+      "$ref": "#/definitions/__type_100"
     },
     "AgentToolResult.T": {
       "$ref": "#/definitions/__type_35"
@@ -13191,14 +13030,14 @@
         }
       ]
     },
-    "__type_104": {
+    "__type_101": {
       "type": "object",
       "additionalProperties": {
         "$ref": "#/definitions/import(%22node_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).JsonValue"
       }
     },
     "JsonObject": {
-      "$ref": "#/definitions/__type_104"
+      "$ref": "#/definitions/__type_101"
     },
     "Usage_6": {
       "$ref": "#/definitions/import(%22node_modules%2F%40earendil-works%2Fpi-ai%2Fdist%2Ftypes%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).Usage"
@@ -13737,7 +13576,7 @@
       ]
     },
     "JsonSchemaObject_2": {
-      "$ref": "#/definitions/__type_77"
+      "$ref": "#/definitions/__type_80"
     },
     "StructuredOutputRuntime": {
       "$ref": "#/definitions/import(%22src%2Fruns%2Fshared%2Fstructured-output%22%2C%7Bwith%3A%7B%22resolution-mode%22%3A%22import%22%7D%7D).StructuredOutputRuntime"

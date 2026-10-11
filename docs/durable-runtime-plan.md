@@ -34,6 +34,6 @@ Jiti's disabled module cache still uses native cached JavaScript for some extens
 
 ## Delivery boundary
 
-Release qualification requires parent review and recorded validation against released Pi. The full macOS/Linux package gates and isolated model-backed smoke tests remain separate from focused bug verification. Do not describe known host failures or checks that were not run as passing. The Linux gate takes a credential-free prebuilt native archive and keeps every package test; see [local validation](../README.md#local-validation).
+Release qualification requires parent review and recorded validation against released Pi. The full macOS/Linux package gates and isolated model-backed smoke tests remain separate from focused bug verification. Do not describe known host failures or checks that were not run as passing. The Linux gate takes a credential-free prebuilt native archive and keeps every package test; see [local validation](development.md#local-validation).
 
 Keep installed code and active sessions untouched until delivery is approved. Checkpoint and fully quit every Pi session using the affected installation, then wait at least five seconds after the last broker disconnect. Use a separate terminal to update this package before reopening Pi. Resume the same saved parent session before testing active tools; a new or forked parent must not adopt the original parent's runs or pending intercom delivery.
