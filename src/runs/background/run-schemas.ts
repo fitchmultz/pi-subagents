@@ -1,4 +1,4 @@
-import { Ajv } from "ajv";
+import { Ajv, type ValidateFunction } from "ajv";
 import { validateStatusForSummary } from "./async-status-validation.ts";
 import { isRecord } from "./async-value.ts";
 import type { SubagentRunConfig } from "./runner-config.ts";
@@ -32,137 +32,145 @@ import type {
 
 // Typed guards are compiled from generated canonical declarations, not assertion casts.
 // Unknown forward-compatible properties remain permitted; declared nested fields are checked.
+// Each guard compiles on first use: eager compilation cost every Pi and runner process ~175 ms.
 const validator = new Ajv({ strict: false, allErrors: true, strictNumbers: true });
 validator.addSchema(runSchema, "run");
-const status = validator.compile<AsyncStatus>({ $ref: "run#/definitions/AsyncStatus" });
-const result = validator.compile<AsyncResultFile>({ $ref: "run#/definitions/AsyncResultFile" });
-const foreground = validator.compile<ForegroundResumeRun>({
-  $ref: "run#/definitions/ForegroundResumeRun",
-});
-const owned = validator.compile<OwnedRun>({ $ref: "run#/definitions/OwnedRun" });
-const started = validator.compile<AsyncStartedEvent>({
-  $ref: "run#/definitions/AsyncStartedEvent",
-});
-const control = validator.compile<ControlEvent>({ $ref: "run#/definitions/ControlEvent" });
-const contract = validator.compile<SupervisorRunContract>({
-  $ref: "run#/definitions/SupervisorRunContract",
-});
-const question = validator.compile<SupervisorQuestion>({
-  $ref: "run#/definitions/SupervisorQuestion",
-});
-const answer = validator.compile<QuestionAnswer>({ $ref: "run#/definitions/QuestionAnswer" });
-const delivery = validator.compile<QuestionDelivery>({ $ref: "run#/definitions/QuestionDelivery" });
-const revival = validator.compile<NonNullable<SupervisorQuestionView["revival"]>>({
-  $ref: "run#/definitions/SupervisorQuestionView/properties/revival",
-});
 
-const historyRow = validator.compile<HistoryRunRow>({ $ref: "run#/definitions/HistoryRunRow" });
-const historyRuns = validator.compile<HistoryRunPage>({ $ref: "run#/definitions/HistoryRunPage" });
-const historyPage = validator.compile<HistoryPage>({ $ref: "run#/definitions/HistoryPage" });
-const historySearch = validator.compile<HistorySearchPage>({
-  $ref: "run#/definitions/HistorySearchPage",
-});
-const historyStatus = validator.compile<HistoryIndexStatus>({
-  $ref: "run#/definitions/HistoryIndexStatus",
-});
-const historyEntry = validator.compile<HistoryEntry>({ $ref: "run#/definitions/HistoryEntry" });
-const historyResult = validator.compile<HistoryResult>({ $ref: "run#/definitions/HistoryResult" });
+function lazyGuard<T>(ref: string): () => ValidateFunction<T> {
+  let validate: ValidateFunction<T> | undefined;
+  return () => {
+    validate ??= validator.compile<T>({ $ref: ref });
+    return validate;
+  };
+}
+const status = lazyGuard<AsyncStatus>("run#/definitions/AsyncStatus");
+const result = lazyGuard<AsyncResultFile>("run#/definitions/AsyncResultFile");
+const foreground = lazyGuard<ForegroundResumeRun>("run#/definitions/ForegroundResumeRun");
+const owned = lazyGuard<OwnedRun>("run#/definitions/OwnedRun");
+const started = lazyGuard<AsyncStartedEvent>("run#/definitions/AsyncStartedEvent");
+const control = lazyGuard<ControlEvent>("run#/definitions/ControlEvent");
+const contract = lazyGuard<SupervisorRunContract>("run#/definitions/SupervisorRunContract");
+const question = lazyGuard<SupervisorQuestion>("run#/definitions/SupervisorQuestion");
+const answer = lazyGuard<QuestionAnswer>("run#/definitions/QuestionAnswer");
+const delivery = lazyGuard<QuestionDelivery>("run#/definitions/QuestionDelivery");
+const revival = lazyGuard<NonNullable<SupervisorQuestionView["revival"]>>(
+  "run#/definitions/SupervisorQuestionView/properties/revival",
+);
 
-const details = validator.compile<Details>({ $ref: "run#/definitions/Details" });
-const executionResult = validator.compile<SubagentExecutionResult>({
-  $ref: "run#/definitions/SubagentExecutionResult",
-});
+const historyRow = lazyGuard<HistoryRunRow>("run#/definitions/HistoryRunRow");
+const historyRuns = lazyGuard<HistoryRunPage>("run#/definitions/HistoryRunPage");
+const historyPage = lazyGuard<HistoryPage>("run#/definitions/HistoryPage");
+const historySearch = lazyGuard<HistorySearchPage>("run#/definitions/HistorySearchPage");
+const historyStatus = lazyGuard<HistoryIndexStatus>("run#/definitions/HistoryIndexStatus");
+const historyEntry = lazyGuard<HistoryEntry>("run#/definitions/HistoryEntry");
+const historyResult = lazyGuard<HistoryResult>("run#/definitions/HistoryResult");
 
-const runnerConfig = validator.compile<SubagentRunConfig>({
-  $ref: "run#/definitions/SubagentRunConfig",
-});
-const finalizationConfig = validator.compile<NativeFinalizationConfig>({
-  $ref: "run#/definitions/NativeFinalizationConfig",
-});
-const finalizationEvent = validator.compile<NativeFinalizationEvent>({
-  $ref: "run#/definitions/NativeFinalizationEvent",
-});
+const details = lazyGuard<Details>("run#/definitions/Details");
+const executionResult = lazyGuard<SubagentExecutionResult>(
+  "run#/definitions/SubagentExecutionResult",
+);
+
+const runnerConfig = lazyGuard<SubagentRunConfig>("run#/definitions/SubagentRunConfig");
+const finalizationConfig = lazyGuard<NativeFinalizationConfig>(
+  "run#/definitions/NativeFinalizationConfig",
+);
+const finalizationEvent = lazyGuard<NativeFinalizationEvent>(
+  "run#/definitions/NativeFinalizationEvent",
+);
 
 export function parseNativeFinalizationConfig(value: unknown): NativeFinalizationConfig {
-  if (!finalizationConfig(value)) {
+  const check = finalizationConfig();
+  if (!check(value)) {
     throw new SyntaxError("Invalid native finalization configuration");
   }
   return value;
 }
 
 export function parseNativeFinalizationEvent(value: unknown): NativeFinalizationEvent {
-  if (!finalizationEvent(value)) {
+  const check = finalizationEvent();
+  if (!check(value)) {
     throw new SyntaxError("Invalid native finalization boundary");
   }
   return value;
 }
 
 export function parseSubagentRunConfig(value: unknown): SubagentRunConfig {
-  if (!runnerConfig(value)) {
-    throw new Error(`Invalid runner config: ${validator.errorsText(runnerConfig.errors)}.`);
+  const check = runnerConfig();
+  if (!check(value)) {
+    throw new Error(`Invalid runner config: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseDetails(value: unknown): Details {
-  if (!details(value)) {
-    throw new Error(`Invalid run details: ${validator.errorsText(details.errors)}.`);
+  const check = details();
+  if (!check(value)) {
+    throw new Error(`Invalid run details: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseSubagentExecutionResult(value: unknown): SubagentExecutionResult {
-  if (!executionResult(value)) {
-    throw new Error(`Invalid run result: ${validator.errorsText(executionResult.errors)}.`);
+  const check = executionResult();
+  if (!check(value)) {
+    throw new Error(`Invalid run result: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryRunRow(value: unknown): HistoryRunRow {
-  if (!historyRow(value)) {
-    throw new Error(`Invalid history run: ${validator.errorsText(historyRow.errors)}.`);
+  const check = historyRow();
+  if (!check(value)) {
+    throw new Error(`Invalid history run: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryRunPage(value: unknown): HistoryRunPage {
-  if (!historyRuns(value)) {
-    throw new Error(`Invalid history runs: ${validator.errorsText(historyRuns.errors)}.`);
+  const check = historyRuns();
+  if (!check(value)) {
+    throw new Error(`Invalid history runs: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryPage(value: unknown): HistoryPage {
-  if (!historyPage(value)) {
-    throw new Error(`Invalid history page: ${validator.errorsText(historyPage.errors)}.`);
+  const check = historyPage();
+  if (!check(value)) {
+    throw new Error(`Invalid history page: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistorySearchPage(value: unknown): HistorySearchPage {
-  if (!historySearch(value)) {
-    throw new Error(`Invalid history search: ${validator.errorsText(historySearch.errors)}.`);
+  const check = historySearch();
+  if (!check(value)) {
+    throw new Error(`Invalid history search: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryIndexStatus(value: unknown): HistoryIndexStatus {
-  if (!historyStatus(value)) {
-    throw new Error(`Invalid history status: ${validator.errorsText(historyStatus.errors)}.`);
+  const check = historyStatus();
+  if (!check(value)) {
+    throw new Error(`Invalid history status: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryEntry(value: unknown): HistoryEntry {
-  if (!historyEntry(value)) {
-    throw new Error(`Invalid history entry: ${validator.errorsText(historyEntry.errors)}.`);
+  const check = historyEntry();
+  if (!check(value)) {
+    throw new Error(`Invalid history entry: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 export function parseHistoryResult(value: unknown): HistoryResult {
-  if (!historyResult(value)) {
-    throw new Error(`Invalid history result: ${validator.errorsText(historyResult.errors)}.`);
+  const check = historyResult();
+  if (!check(value)) {
+    throw new Error(`Invalid history result: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseAsyncStatus(value: unknown): AsyncStatus {
   validateStatusForSummary(value, "status.json");
-  if (!status(value)) {
-    throw new Error(`Invalid async status: ${validator.errorsText(status.errors)}.`);
+  const check = status();
+  if (!check(value)) {
+    throw new Error(`Invalid async status: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
@@ -190,57 +198,65 @@ function resultErrors(errors: readonly unknown[]): string {
 }
 
 export function parseAsyncResult(value: unknown): AsyncResultFile {
-  if (!result(value)) {
-    throw new Error(`Invalid async result: ${resultErrors(result.errors ?? [])}.`);
+  const check = result();
+  if (!check(value)) {
+    throw new Error(`Invalid async result: ${resultErrors(check.errors ?? [])}.`);
   }
   return value;
 }
 
 export function parseForegroundResumeRun(value: unknown): ForegroundResumeRun {
-  if (!foreground(value)) {
-    throw new Error(`Invalid foreground run: ${validator.errorsText(foreground.errors)}.`);
+  const check = foreground();
+  if (!check(value)) {
+    throw new Error(`Invalid foreground run: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseAsyncStartedEvent(value: unknown): AsyncStartedEvent {
-  if (!started(value)) {
-    throw new Error(`Invalid async start event: ${validator.errorsText(started.errors)}.`);
+  const check = started();
+  if (!check(value)) {
+    throw new Error(`Invalid async start event: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseControlEvent(value: unknown): ControlEvent {
-  if (!control(value)) {
-    throw new Error(`Invalid control event: ${validator.errorsText(control.errors)}.`);
+  const check = control();
+  if (!check(value)) {
+    throw new Error(`Invalid control event: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseSupervisorRunContract(value: unknown): SupervisorRunContract {
-  if (!contract(value)) {
-    throw new Error(`Invalid supervisor contract: ${validator.errorsText(contract.errors)}.`);
+  const check = contract();
+  if (!check(value)) {
+    throw new Error(`Invalid supervisor contract: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseSupervisorQuestion(value: unknown): SupervisorQuestion {
-  if (!question(value)) {
-    throw new Error(`Invalid supervisor question: ${validator.errorsText(question.errors)}.`);
+  const check = question();
+  if (!check(value)) {
+    throw new Error(`Invalid supervisor question: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseQuestionAnswer(value: unknown): QuestionAnswer {
-  if (!answer(value)) {
-    throw new Error(`Invalid question answer: ${validator.errorsText(answer.errors)}.`);
+  const check = answer();
+  if (!check(value)) {
+    throw new Error(`Invalid question answer: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseQuestionDelivery(value: unknown): QuestionDelivery {
-  if (!delivery(value)) {
-    throw new Error(`Invalid question delivery: ${validator.errorsText(delivery.errors)}.`);
+  const check = delivery();
+  if (!check(value)) {
+    throw new Error(`Invalid question delivery: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
@@ -248,15 +264,17 @@ export function parseQuestionDelivery(value: unknown): QuestionDelivery {
 export function parseQuestionRevival(
   value: unknown,
 ): NonNullable<SupervisorQuestionView["revival"]> {
-  if (!revival(value)) {
-    throw new Error(`Invalid question revival: ${validator.errorsText(revival.errors)}.`);
+  const check = revival();
+  if (!check(value)) {
+    throw new Error(`Invalid question revival: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
 
 export function parseOwnedRun(value: unknown): OwnedRun {
-  if (!owned(value)) {
-    throw new Error(`Invalid owned run: ${validator.errorsText(owned.errors)}.`);
+  const check = owned();
+  if (!check(value)) {
+    throw new Error(`Invalid owned run: ${validator.errorsText(check.errors)}.`);
   }
   return value;
 }
