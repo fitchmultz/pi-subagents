@@ -4,8 +4,7 @@ import { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { describe, it, type TestContext } from "node:test";
 import {
-  attachPostExitStdioGuard,
-  trySignalChild,
+  attachChildProcessLifecycle,
   trySignalChildTree,
 } from "../../src/shared/post-exit-stdio-guard.ts";
 
@@ -13,6 +12,7 @@ function makeChild() {
   return Object.assign(new ChildProcess(), {
     stdout: new PassThrough(),
     stderr: new PassThrough(),
+    kill: () => false,
   });
 }
 
@@ -20,12 +20,12 @@ function enableTimers(t: TestContext): void {
   t.mock.timers.enable({ apis: ["setTimeout"] });
 }
 
-describe("attachPostExitStdioGuard", () => {
+describe("child process lifecycle", () => {
   it("reports whether a termination signal was actually delivered", () => {
-    assert.equal(trySignalChild({ kill: () => true }, "SIGTERM"), true);
-    assert.equal(trySignalChild({ kill: () => false }, "SIGTERM"), false);
+    assert.equal(trySignalChildTree({ kill: () => true }, "SIGTERM"), true);
+    assert.equal(trySignalChildTree({ kill: () => false }, "SIGTERM"), false);
     assert.equal(
-      trySignalChild(
+      trySignalChildTree(
         {
           kill: () => {
             throw new Error("gone");
@@ -58,11 +58,11 @@ describe("attachPostExitStdioGuard", () => {
   it("cancels cleanup after a clean close", (t) => {
     enableTimers(t);
     const child = makeChild();
-    attachPostExitStdioGuard(child, { idleMs: 50, hardMs: 100 });
+    attachChildProcessLifecycle(child);
 
     child.emit("exit", 0, null);
     child.emit("close", 0, null);
-    t.mock.timers.tick(100);
+    t.mock.timers.tick(8000);
 
     assert.equal(child.stdout.destroyed, false);
     assert.equal(child.stderr.destroyed, false);
@@ -71,10 +71,10 @@ describe("attachPostExitStdioGuard", () => {
   it("destroys silent stdio at the idle deadline", (t) => {
     enableTimers(t);
     const child = makeChild();
-    attachPostExitStdioGuard(child, { idleMs: 50, hardMs: 500 });
+    attachChildProcessLifecycle(child);
 
     child.emit("exit", 0, null);
-    t.mock.timers.tick(49);
+    t.mock.timers.tick(1999);
     assert.equal(child.stdout.destroyed, false);
     assert.equal(child.stderr.destroyed, false);
 
@@ -86,14 +86,14 @@ describe("attachPostExitStdioGuard", () => {
   it("destroys chatty stdio at the hard deadline", (t) => {
     enableTimers(t);
     const child = makeChild();
-    attachPostExitStdioGuard(child, { idleMs: 50, hardMs: 100 });
+    attachChildProcessLifecycle(child);
 
     child.emit("exit", 0, null);
-    t.mock.timers.tick(40);
-    child.stdout.emit("data", Buffer.from("tick"));
-    t.mock.timers.tick(40);
-    child.stdout.emit("data", Buffer.from("tick"));
-    t.mock.timers.tick(19);
+    for (let tick = 0; tick < 5; tick++) {
+      t.mock.timers.tick(1500);
+      child.stdout.emit("data", Buffer.from("tick"));
+    }
+    t.mock.timers.tick(499);
     assert.equal(child.stdout.destroyed, false);
     assert.equal(child.stderr.destroyed, false);
 

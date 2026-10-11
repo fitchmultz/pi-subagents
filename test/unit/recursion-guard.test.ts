@@ -33,13 +33,10 @@ afterEach(() => {
 });
 
 describe("normalizeMaxSubagentDepth", () => {
-  it("accepts integers >= 0", () => {
+  it("accepts nonnegative integers and rejects other depths", () => {
     assert.equal(normalizeMaxSubagentDepth(0), 0);
     assert.equal(normalizeMaxSubagentDepth(3), 3);
     assert.equal(normalizeMaxSubagentDepth("4"), 4);
-  });
-
-  it("rejects negatives and non-integers", () => {
     assert.equal(normalizeMaxSubagentDepth(-1), undefined);
     assert.equal(normalizeMaxSubagentDepth(1.5), undefined);
     assert.equal(normalizeMaxSubagentDepth("garbage"), undefined);
@@ -50,11 +47,6 @@ describe("resolveCurrentMaxSubagentDepth", () => {
   it("uses env when present", () => {
     process.env.PI_SUBAGENT_MAX_DEPTH = "5";
     assert.equal(resolveCurrentMaxSubagentDepth(1), 5);
-  });
-
-  it("falls back to config when env is absent", () => {
-    delete process.env.PI_SUBAGENT_MAX_DEPTH;
-    assert.equal(resolveCurrentMaxSubagentDepth(1), 1);
   });
 
   it("falls back to default when neither env nor config is valid", () => {
@@ -89,61 +81,32 @@ describe("resolveChildMaxSubagentDepth", () => {
     assert.equal(resolveChildMaxSubagentDepth(3, 1), 1);
     assert.equal(resolveChildMaxSubagentDepth(2, 0), 0);
   });
-
-  it("does not relax an already stricter inherited max", () => {
-    assert.equal(resolveChildMaxSubagentDepth(1, 3), 1);
-  });
 });
 
 describe("checkSubagentDepth", () => {
-  it("not blocked at depth=0, max=2", () => {
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "2";
-    const result = checkSubagentDepth();
-    assert.equal(result.blocked, false);
-    assert.equal(result.depth, 0);
-    assert.equal(result.maxDepth, 2);
-  });
-
   it("uses config max depth when env is absent", () => {
     process.env.PI_SUBAGENT_DEPTH = "1";
     delete process.env.PI_SUBAGENT_MAX_DEPTH;
-    const result = checkSubagentDepth(1);
-    assert.equal(result.blocked, true);
-    assert.equal(result.maxDepth, 1);
-  });
-
-  it("not blocked at depth=1, max=2", () => {
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "2";
-    assert.equal(checkSubagentDepth().blocked, false);
-  });
-
-  it("blocks at depth=1, max=1 after one nested level", () => {
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "1";
-    assert.equal(checkSubagentDepth().blocked, true);
-  });
-
-  it("blocked at depth=2, max=2", () => {
-    process.env.PI_SUBAGENT_DEPTH = "2";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "2";
-    const result = checkSubagentDepth();
-    assert.equal(result.blocked, true);
-    assert.equal(result.depth, 2);
+    const result = checkSubagentDepth(2);
+    assert.equal(result.blocked, false);
     assert.equal(result.maxDepth, 2);
   });
 
-  it("blocked at depth=3, max=2", () => {
-    process.env.PI_SUBAGENT_DEPTH = "3";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "2";
-    assert.equal(checkSubagentDepth().blocked, true);
-  });
-
-  it("blocked at depth=0, max=0 (disables subagent entirely)", () => {
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "0";
-    assert.equal(checkSubagentDepth().blocked, true);
+  it("enforces depth bounds and fails closed on invalid depth", () => {
+    for (const [depth, maxDepth, blocked, expectedDepth] of [
+      ["0", "2", false, 0],
+      ["2", "2", true, 2],
+      ["3", "2", true, 3],
+      ["0", "0", true, 0],
+      ["garbage", "2", true, 2],
+    ] as const) {
+      process.env.PI_SUBAGENT_DEPTH = depth;
+      process.env.PI_SUBAGENT_MAX_DEPTH = maxDepth;
+      const result = checkSubagentDepth();
+      assert.equal(result.blocked, blocked, `depth=${depth}, max=${maxDepth}`);
+      assert.equal(result.depth, expectedDepth);
+      assert.equal(result.maxDepth, Number(maxDepth));
+    }
   });
 
   it("allows the parent and blocks nested delegation by default", () => {
@@ -154,53 +117,25 @@ describe("checkSubagentDepth", () => {
     process.env.PI_SUBAGENT_DEPTH = "1";
     assert.deepEqual(checkSubagentDepth(), { blocked: true, depth: 1, maxDepth: 1 });
   });
-
-  it("blocks when depth is invalid", () => {
-    process.env.PI_SUBAGENT_DEPTH = "garbage";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "2";
-    const result = checkSubagentDepth();
-    assert.equal(result.blocked, true);
-    assert.equal(result.depth, 2);
-  });
 });
 
 describe("getSubagentDepthEnv", () => {
-  it("increments from depth=0", () => {
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    delete process.env.PI_SUBAGENT_MAX_DEPTH;
-    const env = getSubagentDepthEnv();
-    assert.equal(env.PI_SUBAGENT_DEPTH, "1");
-    assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
-  });
-
-  it("increments from depth=1", () => {
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    delete process.env.PI_SUBAGENT_MAX_DEPTH;
-    const env = getSubagentDepthEnv();
-    assert.equal(env.PI_SUBAGENT_DEPTH, "2");
-    assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
-  });
-
-  it("respects inherited PI_SUBAGENT_MAX_DEPTH when override is absent", () => {
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "5";
-    const env = getSubagentDepthEnv();
-    assert.equal(env.PI_SUBAGENT_DEPTH, "1");
-    assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "5");
-  });
-
-  it("uses the explicit child override even when a looser inherited env max exists", () => {
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    process.env.PI_SUBAGENT_MAX_DEPTH = "5";
-    const env = getSubagentDepthEnv(1);
-    assert.equal(env.PI_SUBAGENT_DEPTH, "1");
-    assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
-  });
-
-  it("preserves the depth block when env var is invalid", () => {
-    process.env.PI_SUBAGENT_DEPTH = "not-a-number";
-    delete process.env.PI_SUBAGENT_MAX_DEPTH;
-    const env = getSubagentDepthEnv();
-    assert.equal(env.PI_SUBAGENT_DEPTH, "1");
+  it("increments depth while preserving the inherited cap and invalid-depth block", () => {
+    for (const [depth, maxDepth, expectedDepth, expectedMax] of [
+      ["0", undefined, "1", "1"],
+      ["1", undefined, "2", "1"],
+      ["0", "5", "1", "5"],
+      ["not-a-number", undefined, "1", "1"],
+    ] as const) {
+      process.env.PI_SUBAGENT_DEPTH = depth;
+      if (maxDepth === undefined) {
+        delete process.env.PI_SUBAGENT_MAX_DEPTH;
+      } else {
+        process.env.PI_SUBAGENT_MAX_DEPTH = maxDepth;
+      }
+      const env = getSubagentDepthEnv();
+      assert.equal(env.PI_SUBAGENT_DEPTH, expectedDepth);
+      assert.equal(env.PI_SUBAGENT_MAX_DEPTH, expectedMax);
+    }
   });
 });

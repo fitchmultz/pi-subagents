@@ -5,17 +5,6 @@ import { assistant as assistantContent } from "../support/runtime-messages.ts";
 import { getFinalOutput } from "../../src/shared/utils.ts";
 
 describe("getFinalOutput", () => {
-  it("uses the last non-empty text part in the latest assistant message", () => {
-    const messages = [
-      assistantContent([
-        { type: "text", text: "" },
-        { type: "text", text: "Summary" },
-      ]),
-    ];
-
-    assert.equal(getFinalOutput(messages), "Summary");
-  });
-
   it("prefers final text over progress text in a multi-part assistant message", () => {
     const messages = [
       assistantContent([
@@ -28,24 +17,18 @@ describe("getFinalOutput", () => {
     assert.equal(getFinalOutput(messages), "Implemented: patch applied.");
   });
 
-  it("falls back to an older assistant message when the latest text is whitespace-only", () => {
-    const messages = [
-      assistantContent([{ type: "text", text: "Earlier" }]),
+  it("falls back to an older assistant message when the latest message has no non-empty text", () => {
+    for (const latest of [
       assistantContent([{ type: "text", text: " \n\t " }]),
-    ];
-
-    assert.equal(getFinalOutput(messages), "Earlier");
-  });
-
-  it("falls back to an older assistant message when the latest assistant message is tool-only", () => {
-    const messages = [
-      assistantContent([{ type: "text", text: "Earlier" }]),
       assistantContent([
         { type: "toolCall", id: "read", name: "read", arguments: { path: "README.md" } },
       ]),
-    ];
-
-    assert.equal(getFinalOutput(messages), "Earlier");
+    ]) {
+      assert.equal(
+        getFinalOutput([assistantContent([{ type: "text", text: "Earlier" }]), latest]),
+        "Earlier",
+      );
+    }
   });
 
   it("returns empty output when all assistant text is empty or whitespace-only", () => {

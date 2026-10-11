@@ -21,14 +21,7 @@ export function resolveSubagentContext(value?: unknown): SubagentExecutionContex
 
 export function createForkContextResolver(
   sessionManager: ForkableSessionManager,
-  requestedContext: unknown,
 ): ForkContextResolver {
-  if (resolveSubagentContext(requestedContext) !== "fork") {
-    return {
-      sessionFileForIndex: (): undefined => undefined,
-    };
-  }
-
   const parentSessionFile = sessionManager.getSessionFile();
   if (parentSessionFile === undefined || parentSessionFile === "") {
     throw new Error("Forked subagent context requires a persisted parent session.");

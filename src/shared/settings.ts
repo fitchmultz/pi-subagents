@@ -35,7 +35,6 @@ export {
   suppressProgressForReadOnlyTask,
 } from "./task-file-policy.ts";
 export type { ParallelTaskResult } from "../runs/shared/parallel-utils.ts";
-export { aggregateParallelOutputs } from "../runs/shared/parallel-utils.ts";
 
 export function isParallelStep(
   step: ReadonlyInput<ChainStep>,
