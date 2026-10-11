@@ -1196,7 +1196,11 @@ async function runLegacyAsync() {
   fs.rmSync(runtimeDir, { recursive: true, force: true });
   legacy.tempRemoved = !fs.existsSync(runtimeDir);
   await open(ownerFile);
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  const replayHint = path.join(runtimeDir, "async-subagent-results", `${runId}.json`);
+  fs.mkdirSync(path.dirname(replayHint), { recursive: true });
+  fs.copyFileSync(resultFile(runId), `${replayHint}.tmp`);
+  fs.renameSync(`${replayHint}.tmp`, replayHint);
+  await wait(() => !fs.existsSync(replayHint), "replayed completion consumed after reopen");
   await session.waitForIdle();
   assert.equal(
     evidence.nativeProviderRequests,
@@ -1436,6 +1440,9 @@ async function runWorkflowOutcomes() {
       });
       verify(`${name}: collection publication follows workflow validation`, () => {
         if (scenario.error) {
+          if (scenario.name === "collection-rejected") {
+            assert.equal(terminal.workflowGraph.nodes[1].children[0].status, "completed");
+          }
           assert.equal(terminal.outputs?.reviews, undefined);
           if (result.details.asyncId) {
             assert.equal(terminal.success, false);

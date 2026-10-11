@@ -8,9 +8,6 @@ import { describe, it } from "node:test";
 import {
   acceptanceFailureMessage,
   acceptanceInputFromResolved,
-  acceptanceSelfReviewConfig,
-  attachFinalizationToLedger,
-  createFinalizationTurn,
   evaluateAcceptance,
   formatAcceptanceFinalizationPrompt,
   formatAcceptancePrompt,
@@ -105,10 +102,26 @@ describe("acceptance gates", () => {
     });
 
     assert.deepEqual(acceptanceInputFromResolved(resolved), {
-      criteria: resolved.criteria,
-      evidence: resolved.evidence,
-      verify: resolved.verify,
-      stopRules: resolved.stopRules,
+      criteria: [
+        {
+          id: "criterion-custom",
+          must: "Patch the bug",
+          evidence: ["changed-files"],
+          severity: "recommended",
+        },
+      ],
+      evidence: ["commands-run"],
+      verify: [
+        {
+          id: "verify",
+          command: "npm test",
+          timeoutMs: 5_000,
+          cwd: "test",
+          env: { MODE: "resume" },
+          allowFailure: true,
+        },
+      ],
+      stopRules: ["Do not publish"],
       maxFinalizationTurns: 4,
     });
     assert.equal(acceptanceInputFromResolved(resolveEffectiveAcceptance({})), undefined);
@@ -181,20 +194,6 @@ describe("acceptance gates", () => {
     );
     assert.doesNotMatch(finalizationPrompt, /Required evidence: none/);
     assert.match(finalizationPrompt, /exactly one fenced JSON block/);
-  });
-
-  it("rejects unsupported review gates before resolving acceptance", () => {
-    const review = {
-      criteria: ["Patch the bug"],
-      review: { agent: "reviewer", required: true, focus: "Correctness" },
-    };
-    assert.deepEqual(validateAcceptanceInput(review), [
-      "acceptance.review is not supported; launch a separate parent-controlled reviewer after the worker completes.",
-    ]);
-    assert.throws(
-      () => resolveEffectiveAcceptance({ explicit: review }),
-      /acceptance\.review is not supported/,
-    );
   });
 
   it("parses only explicit acceptance-report fences", () => {
@@ -504,91 +503,6 @@ describe("acceptance gates", () => {
       assert.ok((ledger.verifyRuns[0]?.stderr?.length ?? 0) < 12_100);
     }));
 
-  it("self-review finalization does not mark a run verified by itself", async () =>
-    withTempRepo(async (cwd) => {
-      const acceptance = resolveEffectiveAcceptance({
-        explicit: { criteria: ["Patch bug"] },
-      });
-      const initial = await evaluateAcceptance({
-        acceptance,
-        output: report({
-          criteriaSatisfied: [{ id: "criterion-1", status: "not-satisfied", evidence: "missing" }],
-        }),
-        cwd,
-      });
-      const final = await evaluateAcceptance({ acceptance, output: report(), cwd });
-      const turn = createFinalizationTurn({
-        turn: 1,
-        prompt: "finalize",
-        rawOutput: report(),
-        ledger: final,
-      });
-      const ledger = attachFinalizationToLedger({
-        initialLedger: initial,
-        authoritativeLedger: final,
-        turns: [turn],
-        status: "completed",
-        maxTurns: 3,
-      });
-
-      assert.equal(ledger.status, "checked");
-      assert.equal(ledger.initialChildReport?.criteriaSatisfied?.[0]?.status, "not-satisfied");
-      assert.equal(ledger.childReport?.criteriaSatisfied?.[0]?.status, "satisfied");
-      assert.equal(ledger.finalization?.status, "completed");
-      assert.notEqual(ledger.status, "verified");
-    }));
-
-  it("exhausted self-review keeps the full governing contract on the attached ledger", async () =>
-    withTempRepo(async (cwd) => {
-      const full = resolveEffectiveAcceptance({
-        explicit: {
-          criteria: ["Patch bug"],
-          verify: [{ id: "unit-verify", command: 'node -e "process.exit(0)"', timeoutMs: 30_000 }],
-          maxFinalizationTurns: 1,
-        },
-      });
-      const selfReview = acceptanceSelfReviewConfig(full);
-      const failingOutput = report({
-        criteriaSatisfied: [{ id: "criterion-1", status: "not-satisfied", evidence: "missing" }],
-      });
-      const initial = await evaluateAcceptance({
-        acceptance: selfReview,
-        governing: full,
-        output: failingOutput,
-        cwd,
-      });
-      const lastTurn = await evaluateAcceptance({
-        acceptance: selfReview,
-        governing: full,
-        output: failingOutput,
-        cwd,
-      });
-      assert.equal(initial.effectiveAcceptance, full);
-      assert.equal(lastTurn.effectiveAcceptance, full);
-      const turn = createFinalizationTurn({
-        turn: 1,
-        prompt: "finalize",
-        rawOutput: failingOutput,
-        ledger: lastTurn,
-      });
-      const ledger = attachFinalizationToLedger({
-        initialLedger: initial,
-        authoritativeLedger: lastTurn,
-        turns: [turn],
-        status: "failed",
-        maxTurns: 1,
-      });
-
-      assert.equal(ledger.status, "rejected");
-      assert.equal(ledger.finalization?.status, "failed");
-      assert.equal(ledger.effectiveAcceptance.level, "verified");
-      assert.deepEqual(
-        ledger.effectiveAcceptance.verify.map((command) => command.id),
-        ["unit-verify"],
-      );
-      assert.equal(ledger.effectiveAcceptance.finalization.maxTurns, 1);
-    }));
-
   it("validates removed level API, empty contracts, verify shapes, and loop bounds", () => {
     assert.deepEqual(validateAcceptanceInput({ level: "none" }), [
       "acceptance.level is no longer supported; configure criteria, evidence, and verify directly.",
@@ -597,6 +511,19 @@ describe("acceptance gates", () => {
     assert.deepEqual(validateAcceptanceInput({}), [
       "acceptance must include at least one of criteria, evidence, verify, or stopRules.",
     ]);
+    assert.throws(
+      () => resolveEffectiveAcceptance({ explicit: {} }),
+      /must include at least one of criteria/,
+    );
+    assert.deepEqual(
+      validateAcceptanceInput({
+        criteria: ["Patch the bug"],
+        review: { agent: "reviewer", required: true, focus: "Correctness" },
+      }),
+      [
+        "acceptance.review is not supported; launch a separate parent-controlled reviewer after the worker completes.",
+      ],
+    );
     assert.deepEqual(validateAcceptanceInput({ criteria: [{ must: "Patch bug" }] }), [
       "acceptance.criteria[0].id is required.",
     ]);

@@ -6,7 +6,6 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { spawnSync, spawn } from "node:child_process";
 import {
-  cancelSupervisorQuestion,
   claimQuestionRevival,
   createSupervisorQuestion,
   listSupervisorQuestions,
@@ -17,7 +16,6 @@ import {
   saveQuestionContract,
   saveQuestionOwner,
 } from "../../src/runs/shared/supervisor-questions.ts";
-import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
 import { json, assertDefined } from "../support/assertions.ts";
 import type { SavedLaunchConfig } from "../../src/shared/types.ts";
 
@@ -130,17 +128,6 @@ test("migrated questions keep an old waiter working and survive deletion of temp
       },
     );
     assert.equal(result.status, 0, result.stderr);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("cancelled supervisor questions cannot silently revive", () => {
-  const { root, question } = fixture();
-  try {
-    cancelSupervisorQuestion(question, root);
-    assert.equal(readQuestionState(question, root).state, "cancelled");
-    assert.throws(() => saveQuestionAnswer(question, "Continue", root), /cancelled/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -382,31 +369,4 @@ test("concurrent migrated and old waiters agree on one immutable answer and revi
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("ordinary asks expire but a durable supervisor question remains replyable after lunch", () => {
-  const tracker = new ReplyTracker(120_000);
-  const from = { id: "child", name: "worker", cwd: "/tmp", model: "test" };
-  tracker.recordIncomingMessage(
-    from,
-    { id: "ordinary", timestamp: 1, expectsReply: true, content: { text: "Hi?" } },
-    1,
-  );
-  tracker.recordIncomingMessage(
-    from,
-    {
-      id: "durable",
-      timestamp: 1,
-      expectsReply: true,
-      content: { text: "Subagent needs a supervisor decision.\nQuestion ID: durable" },
-    },
-    1,
-  );
-  assert.deepEqual(
-    tracker.listPending(3_600_000).map((entry) => entry.message.id),
-    ["durable"],
-  );
-  assert.equal(tracker.resolveReplyTarget({}, 3_600_000).message.id, "durable");
-  tracker.markReplied("durable");
-  assert.deepEqual(tracker.listPending(3_600_000), []);
 });

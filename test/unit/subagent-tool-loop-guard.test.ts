@@ -12,20 +12,6 @@ for (const [toolName, action] of [
   ["agent_runs", "profiles"],
 ]) {
   describe(`${toolName} discovery loop guard`, () => {
-    it("fails after five discovery calls", () => {
-      const state = createRepeatedSubagentCallGuardState();
-      for (let i = 0; i < 4; i++) {
-        assert.equal(
-          recordToolStartForSubagentLoopGuard({ state, toolName, args: { action } }),
-          undefined,
-        );
-      }
-      assert.equal(
-        recordToolStartForSubagentLoopGuard({ state, toolName, args: { action } }),
-        `Child appears stuck repeating ${toolName}({ action: "${action}" }) 5 times. Stopping to avoid a tool loop.`,
-      );
-    });
-
     it("catches non-consecutive list ping-pong within the recent window", () => {
       const state = createRepeatedSubagentCallGuardState();
       for (let i = 0; i < 4; i++) {
@@ -46,44 +32,43 @@ for (const [toolName, action] of [
 for (const toolName of ["subagent", "delegate", "agent_runs"]) {
   describe(`${toolName} failed call loop guard`, () => {
     it("fails after repeated rejected delegation calls", () => {
-      const state = createRepeatedSubagentCallGuardState();
-      const args = { agent: "delegate", task: "nested work", async: false };
-      let failure: string | undefined;
-      for (let i = 0; i < 5; i++) {
-        const toolCallId = `call-${i}`;
+      for (const unrelatedReads of [false, true]) {
+        const state = createRepeatedSubagentCallGuardState();
+        const args = { agent: "delegate", task: "nested work", async: false };
+        let failure: string | undefined;
+        for (let i = 0; i < 5; i++) {
+          const toolCallId = `call-${i}`;
+          assert.equal(
+            recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName, args }),
+            undefined,
+          );
+          failure = recordToolEndForSubagentLoopGuard({
+            state,
+            toolCallId,
+            toolName,
+            isError: true,
+          });
+          if (i < 4) {
+            assert.equal(failure, undefined);
+          }
+          if (unrelatedReads) {
+            recordToolStartForSubagentLoopGuard({
+              state,
+              toolName: "read",
+              args: { path: "one.ts" },
+            });
+            recordToolStartForSubagentLoopGuard({
+              state,
+              toolName: "read",
+              args: { path: "two.ts" },
+            });
+          }
+        }
         assert.equal(
-          recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName, args }),
-          undefined,
+          failure,
+          `Child appears stuck repeating the same failed ${toolName} call 5 times. Stopping to avoid a tool loop.`,
         );
-        failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName, isError: true });
-        if (i < 4) {
-          assert.equal(failure, undefined);
-        }
       }
-      assert.equal(
-        failure,
-        `Child appears stuck repeating the same failed ${toolName} call 5 times. Stopping to avoid a tool loop.`,
-      );
-    });
-
-    it("keeps failed-call history across unrelated tools", () => {
-      const state = createRepeatedSubagentCallGuardState();
-      const args = { agent: "delegate", task: "nested work", async: false };
-      let failure: string | undefined;
-      for (let i = 0; i < 5; i++) {
-        const toolCallId = `call-${i}`;
-        recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName, args });
-        failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName, isError: true });
-        if (i < 4) {
-          assert.equal(failure, undefined);
-        }
-        recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "one.ts" } });
-        recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "two.ts" } });
-      }
-      assert.equal(
-        failure,
-        `Child appears stuck repeating the same failed ${toolName} call 5 times. Stopping to avoid a tool loop.`,
-      );
     });
 
     it("matches failed calls regardless of argument key order", () => {

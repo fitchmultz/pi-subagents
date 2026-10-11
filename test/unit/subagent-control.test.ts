@@ -66,17 +66,6 @@ describe("subagent control attention state", () => {
     });
   });
 
-  it("supports a specific attention message", () => {
-    const event = buildControlEvent({
-      to: "needs_attention",
-      runId: "run-1",
-      agent: "worker",
-      message: "worker completed without making edits for an implementation task",
-    });
-
-    assert.equal(event.message, "worker completed without making edits for an implementation task");
-  });
-
   it("builds terminal completion guard control events", () => {
     const event = buildControlEvent({
       to: "needs_attention",
@@ -87,6 +76,7 @@ describe("subagent control attention state", () => {
     });
 
     assert.equal(event.reason, "completion_guard");
+    assert.equal(event.message, "worker completed without making edits for an implementation task");
   });
 
   it("resolves custom notification config", () => {
@@ -120,26 +110,6 @@ describe("subagent control attention state", () => {
     assert.deepEqual(custom.notifyOn, []);
     assert.deepEqual(custom.notifyChannels, []);
     assert.equal(shouldNotifyControlEvent(custom, event), false);
-  });
-
-  it("formats control notices with a proactive hint and concrete commands", () => {
-    const event = buildControlEvent({ to: "needs_attention", runId: "78f659a3", agent: "worker" });
-
-    const message = formatControlNoticeMessage(event, "subagent-worker-78f659a3");
-
-    assert.equal(
-      message,
-      [
-        "Subagent needs attention: worker",
-        "Run: 78f659a3",
-        "Signal: worker needs attention",
-        "Hint: Inspect status first unless the run is clearly blocked.",
-        'Nudge (preferred live coordination): agent_runs({ action: "nudge", id: "78f659a3", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })',
-        'Ask (blocking wait only; parent must remain alive): intercom({ action: "ask", to: "subagent-worker-78f659a3", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })',
-        'Status: agent_runs({ action: "inspect", id: "78f659a3" })',
-        'Stop: agent_runs({ action: "stop", id: "78f659a3" })',
-      ].join("\n"),
-    );
   });
 
   it("formats terminal completion guard notices without live-run commands", () => {

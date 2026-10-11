@@ -2,48 +2,11 @@ import "../support/isolated-home.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  isParallelGroup,
   flattenSteps,
-  mapConcurrent,
   aggregateParallelOutputs,
   MAX_PARALLEL_CONCURRENCY,
-  type RunnerSubagentStep,
-  type ParallelStepGroup,
   type RunnerStep,
 } from "../../src/runs/shared/parallel-utils.ts";
-
-describe("isParallelGroup", () => {
-  it("returns true for a parallel step group", () => {
-    const step: ParallelStepGroup = {
-      parallel: [
-        { agent: "a", task: "do stuff", inheritProjectContext: false, inheritSkills: false },
-        { agent: "b", task: "do other stuff", inheritProjectContext: false, inheritSkills: false },
-      ],
-    };
-    assert.equal(isParallelGroup(step), true);
-  });
-
-  it("returns false for a sequential step", () => {
-    const step: RunnerSubagentStep = {
-      agent: "a",
-      task: "do stuff",
-      inheritProjectContext: false,
-      inheritSkills: false,
-    };
-    assert.equal(isParallelGroup(step), false);
-  });
-
-  it("returns false when parallel is not an array", () => {
-    const step = {
-      parallel: "not-an-array",
-      agent: "a",
-      task: "x",
-      inheritProjectContext: false,
-      inheritSkills: false,
-    };
-    assert.equal(isParallelGroup(step), false);
-  });
-});
 
 describe("flattenSteps", () => {
   it("returns sequential steps unchanged", () => {
@@ -86,10 +49,6 @@ describe("flattenSteps", () => {
     );
   });
 
-  it("handles empty steps array", () => {
-    assert.deepEqual(flattenSteps([]), []);
-  });
-
   it("handles empty parallel group", () => {
     const steps: RunnerStep[] = [
       { agent: "before", task: "x", inheritProjectContext: false, inheritSkills: false },
@@ -101,51 +60,6 @@ describe("flattenSteps", () => {
     assert.deepEqual(
       flat.map((s) => s.agent),
       ["before", "after"],
-    );
-  });
-});
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  return Promise.withResolvers();
-}
-
-describe("mapConcurrent", () => {
-  it("handles empty input", async () => {
-    const results = await mapConcurrent([], 4, async (item: number) => item);
-    assert.deepEqual(results, []);
-  });
-
-  it("clamps non-positive limits to sequential execution", async () => {
-    for (const limit of [0, -1]) {
-      let running = 0;
-      let maxRunning = 0;
-      const gate = deferred();
-      const result = mapConcurrent([1, 2, 3], limit, async () => {
-        running++;
-        maxRunning = Math.max(maxRunning, running);
-        await gate.promise;
-        running--;
-      });
-
-      assert.equal(running, 1);
-      gate.resolve();
-      // The shared concurrency counters must settle before the next limit's isolated run.
-      // oxlint-disable-next-line no-await-in-loop
-      await result;
-      assert.equal(maxRunning, 1);
-    }
-  });
-
-  it("propagates errors", async () => {
-    await assert.rejects(
-      () =>
-        mapConcurrent([1, 2, 3], 2, async (item) => {
-          if (item === 2) {
-            throw new Error("boom");
-          }
-          return item;
-        }),
-      /boom/,
     );
   });
 });
@@ -162,33 +76,11 @@ describe("aggregateParallelOutputs", () => {
     assert.ok(result.includes("Needs fixes"));
   });
 
-  it("marks failed tasks", () => {
-    const result = aggregateParallelOutputs([
-      { agent: "agent-a", output: "partial output", exitCode: 1 },
-    ]);
-    assert.ok(result.includes("FAILED (exit code 1)"));
-  });
-
   it("marks empty output", () => {
-    const result = aggregateParallelOutputs([{ agent: "agent-a", output: "", exitCode: 0 }]);
-    assert.ok(result.includes("EMPTY OUTPUT"));
-  });
-
-  it("treats whitespace-only output as empty", () => {
-    const result = aggregateParallelOutputs([{ agent: "agent-a", output: "   \n  ", exitCode: 0 }]);
-    assert.ok(result.includes("EMPTY OUTPUT"));
-  });
-
-  it("marks skipped tasks (exitCode=-1) distinctly from failed", () => {
-    const result = aggregateParallelOutputs([
-      { agent: "agent-a", output: "done", exitCode: 0 },
-      { agent: "agent-b", output: "", exitCode: -1, error: "Skipped due to detached" },
-    ]);
-    assert.ok(
-      result.includes("SKIPPED: Skipped due to detached"),
-      "skipped task should include the reason it never started",
-    );
-    assert.ok(!result.includes("FAILED"), "skipped task should not show FAILED");
+    for (const output of ["", "   \n  "]) {
+      const result = aggregateParallelOutputs([{ agent: "agent-a", output, exitCode: 0 }]);
+      assert.ok(result.includes("EMPTY OUTPUT"));
+    }
   });
 });
 

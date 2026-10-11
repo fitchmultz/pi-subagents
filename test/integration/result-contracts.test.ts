@@ -207,6 +207,13 @@ describe("result contracts", () => {
         },
       });
       const expectedOutput = `Final ${satisfied ? "repaired" : "blocked"} answer`;
+      const verificationMarker = path.join(cwd, "unexpected-verification");
+      const contract = satisfied
+        ? acceptance
+        : {
+            ...acceptance,
+            verify: [{ id: "unit-verify", command: `touch '${verificationMarker}'` }],
+          };
       const childCwd = path.join(cwd, "child");
       fs.mkdirSync(childCwd);
       let result;
@@ -217,7 +224,7 @@ describe("result contracts", () => {
           agentConfig: makeAgent("worker"),
           ctx: { pi: { ...native.pi, events: createEventBus() }, cwd, currentSessionId: id },
           cwd: childCwd,
-          acceptance,
+          acceptance: contract,
           artifactsDir: cwd,
           sessionFile: path.join(cwd, "child.jsonl"),
           shareEnabled: false,
@@ -230,6 +237,7 @@ describe("result contracts", () => {
         assertDefined(status.steps);
         assertDefined(status.steps[0].acceptance);
         assert.equal(status.steps[0].acceptance.status, satisfied ? "checked" : "rejected");
+        assert.deepEqual(status.steps[0].acceptance, result.acceptance);
         assert.equal(payload.exitCode, satisfied ? 0 : 1);
       }
       assertDefined(result.artifactPaths);
@@ -254,6 +262,18 @@ describe("result contracts", () => {
       assertDefined(result.artifactPaths.outputPath);
       assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), expectedOutput);
       assert.equal(metadata.initialOutput, "Initial incomplete answer");
+      if (!satisfied) {
+        assertDefined(result.acceptance);
+        assert.equal(result.acceptance.finalization?.status, "failed");
+        assert.equal(result.acceptance.effectiveAcceptance.level, "verified");
+        assert.deepEqual(
+          result.acceptance.effectiveAcceptance.verify.map((command) => command.id),
+          ["unit-verify"],
+        );
+        assert.equal(result.acceptance.effectiveAcceptance.finalization.maxTurns, 1);
+        assert.deepEqual(result.acceptance.verifyRuns, []);
+        assert.equal(fs.existsSync(verificationMarker), false);
+      }
       const attempts = calls();
       assert.equal(attempts.length, 1);
       for (const call of attempts) {
@@ -266,40 +286,12 @@ describe("result contracts", () => {
   }
 
   it(`background report-only native review is rejected while retaining the initial answer for audit`, async () => {
-    mock.onCall({
-      nativeReport: {
-        scenario: "single",
-        initialReport: `Useful answer\n${report()}`,
-        report: report(),
-        receiptPath: path.join(cwd, "native.json"),
-      },
-    });
-    {
-      executeAsyncSingle(id, {
-        agent: "worker",
-        task: "Deliver the result",
-        agentConfig: makeAgent("worker"),
-        ctx: { pi: { ...native.pi, events: createEventBus() }, cwd, currentSessionId: id },
-        acceptance,
-        sessionFile: path.join(cwd, "child.jsonl"),
-        shareEnabled: false,
-        maxSubagentDepth: 2,
-      });
-      const result = (await waitForResult(id)).results[0];
-      assertDefined(result.acceptance);
-      assert.equal(result.acceptance.status, "rejected");
-      assertDefined(result.output);
-      assert.match(result.output, /^UNCONFIRMED task report[\s\S]*Useful answer/);
-    }
-  });
-
-  it(`background report-only native repair summary cannot replace a complete current answer`, async () => {
-    mock.onCall({
-      nativeReport: {
-        scenario: "single",
-        initialReport: `Still incomplete\n${report(false)}`,
-        report:
-          "```acceptance-report\n" +
+    for (const [initial, initialSatisfied, review] of [
+      ["Useful answer", true, report()],
+      [
+        "Still incomplete",
+        false,
+        "```acceptance-report\n" +
           JSON.stringify({
             criteriaSatisfied: [
               { id: "criterion-1", status: "satisfied", evidence: "Repaired and verified" },
@@ -307,38 +299,48 @@ describe("result contracts", () => {
             diffSummary: "Repaired the missing work and verified the final result.",
           }) +
           "\n```",
-        receiptPath: path.join(cwd, "native.json"),
-      },
-    });
-    let result;
-    {
-      executeAsyncSingle(id, {
+      ],
+    ] as const) {
+      mock.reset();
+      mock.onCall({
+        nativeReport: {
+          scenario: "single",
+          initialReport: `${initial}\n${report(initialSatisfied)}`,
+          report: review,
+          receiptPath: path.join(cwd, "native.json"),
+        },
+      });
+      const runId = `${id}-${initialSatisfied ? "plain" : "summary"}`;
+      executeAsyncSingle(runId, {
         agent: "worker",
         task: "Deliver the result",
         agentConfig: makeAgent("worker"),
         ctx: { pi: { ...native.pi, events: createEventBus() }, cwd, currentSessionId: id },
         acceptance,
         artifactsDir: cwd,
-        sessionFile: path.join(cwd, "child.jsonl"),
+        sessionFile: path.join(cwd, `${runId}.jsonl`),
         shareEnabled: false,
         maxSubagentDepth: 2,
       });
-      result = (await waitForResult(id)).results[0];
+      // Finish each detached owner before reconfiguring its native child fixture.
+      // oxlint-disable-next-line no-await-in-loop
+      const result = (await waitForResult(runId)).results[0];
+      assertDefined(result.acceptance);
+      assert.equal(result.acceptance.status, "rejected");
+      assertDefined(result.output);
+      assert.match(result.output, new RegExp(`^UNCONFIRMED task report[\\s\\S]*${initial}`));
+      assertDefined(result.finalOutput);
+      assert.match(result.finalOutput, new RegExp(`^UNCONFIRMED task report[\\s\\S]*${initial}`));
+      assertDefined(result.artifactPaths);
+      assertDefined(result.artifactPaths.metadataPath);
+      const metadata = readChildMetadata(result.artifactPaths.metadataPath);
+      assert.equal(metadata.initialOutput, initial);
+      assertDefined(metadata.acceptance);
+      assertDefined(metadata.acceptance.finalization);
+      assert.equal(metadata.acceptance.finalization.turns[0].report, undefined);
+      fs.rmSync(path.join(RESULTS_DIR, `${runId}.json`), { force: true });
+      removeTempDir(path.join(ASYNC_DIR, runId));
     }
-    assertDefined(result.acceptance);
-    assert.equal(result.acceptance.status, "rejected");
-    assertDefined(result.finalOutput);
-    assert.match(
-      result.finalOutput ?? result.output,
-      /^UNCONFIRMED task report[\s\S]*Still incomplete/,
-    );
-    assertDefined(result.artifactPaths);
-    assertDefined(result.artifactPaths.metadataPath);
-    const metadata = readChildMetadata(result.artifactPaths.metadataPath);
-    assert.equal(metadata.initialOutput, "Still incomplete");
-    assertDefined(metadata.acceptance);
-    assertDefined(metadata.acceptance.finalization);
-    assert.equal(metadata.acceptance.finalization.turns[0].report, undefined);
   });
 
   it(`background finalization preserves an unchanged detailed handoff instead of overwriting it with review prose`, async () => {

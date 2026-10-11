@@ -402,7 +402,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
   return lines.join("\n");
 }
 
-export function createFinalizationTurn(input: {
+function createFinalizationTurn(input: {
   readonly turn: number;
   readonly prompt: string;
   readonly rawOutput: string;
@@ -447,7 +447,7 @@ export function createFinalizationProcessFailureTurn(input: {
   };
 }
 
-export function attachFinalizationToLedger(input: {
+function attachFinalizationToLedger(input: {
   readonly initialLedger: AcceptanceLedger;
   readonly authoritativeLedger: AcceptanceLedger;
   readonly turns: readonly AcceptanceFinalizationTurn[];

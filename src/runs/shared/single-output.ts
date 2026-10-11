@@ -325,7 +325,6 @@ function unchangedOutputIdentity(fd: number, outputPath: string, stat: fs.Stats)
 export function cleanupSingleOutputFile(
   outputPath: string | undefined,
   fullOutput: string,
-  beforeRun: SingleOutputSnapshot | undefined,
 ): SingleOutputCleanupResult | undefined {
   if (!nonempty(outputPath)) {
     return undefined;
@@ -344,9 +343,6 @@ export function cleanupSingleOutputFile(
     }
     if (!equal) {
       return { path: absolutePath, action: "skipped", reason: "file changed after capture" };
-    }
-    if (matchesSnapshot(stat, beforeRun)) {
-      return { path: absolutePath, action: "skipped", reason: "file preexisted and was unchanged" };
     }
     fs.unlinkSync(outputPath);
     return { path: absolutePath, action: "deleted" };

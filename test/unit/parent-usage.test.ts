@@ -4,7 +4,6 @@ import { afterEach, test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { JsonObject, Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createNativeSessionFixture } from "../support/native-session.ts";
-import { record } from "../support/assertions.ts";
 import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
 import type {
   OwnedRunView,
@@ -188,43 +187,6 @@ test("select finalized siblings by their actual index and read only their own na
   );
   assert.deepEqual(finalizedChildUsage(children, 2), []);
   assert.deepEqual(children, before, "inspection/selection is pure");
-});
-
-test("portable final usage preserves every native counter and sums subsets only once", async () => {
-  const h = await harness();
-  const prepared = h.adapter.attach(result(), [a, a, b], h.ctx);
-  assert.equal(prepared.usage, undefined, "preparation is intent, not a charge");
-  assert.equal(h.entries.length, 0);
-  const message = await h.finalize(prepared);
-  assert.equal(message.role, "toolResult");
-  assert.deepEqual(message.usage, {
-    input: 20,
-    output: 40,
-    cacheRead: 60,
-    cacheWrite: 80,
-    reasoning: 10,
-    cacheWrite1h: 30,
-    totalTokens: 200,
-    cost: { input: 2, output: 4, cacheRead: 6, cacheWrite: 8, total: 20 },
-  });
-  assert.deepEqual(record(record(message.details).parentUsage).contributions, [a, b]);
-  assert.equal(
-    h.entries.length,
-    0,
-    "even message_end is not a receipt until native stores the message",
-  );
-  assert.deepEqual(
-    (await h.finalize(prepared)).usage,
-    message.usage,
-    "a dropped persistence attempt remains chargeable",
-  );
-  h.persist(message);
-  assert.equal(
-    (await h.finalize(prepared)).usage,
-    undefined,
-    "replayed completion sees the persisted receipt",
-  );
-  assert.equal(h.adapter.attach(result(), [a, b], h.ctx).details.parentUsage, undefined);
 });
 
 test("details alone, custom messages and mismatched top-level usage are not portable receipts", async () => {

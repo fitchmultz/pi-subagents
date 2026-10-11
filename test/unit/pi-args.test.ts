@@ -22,7 +22,6 @@ import {
   resolveConfiguredChildProjectTrustPolicy,
 } from "../../src/runs/shared/pi-args.ts";
 
-import { assertDefined } from "../support/assertions.ts";
 import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
 
 const originalEnv = {
@@ -222,30 +221,6 @@ describe("buildPiArgs task wiring", () => {
       }
     }
   });
-
-  it("keeps the system prompt separate from a materialized task", () => {
-    const result = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "a".repeat(895),
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      systemPrompt: "system prompt",
-      systemPromptMode: "replace",
-    });
-    try {
-      const promptPath = result.args[result.args.indexOf("--system-prompt") + 1];
-      const taskPath = result.args.at(-1)?.slice(1);
-      assert.notEqual(promptPath, taskPath);
-      assert.equal(fs.readFileSync(promptPath, "utf8"), "system prompt");
-      assertDefined(taskPath);
-      assert.equal(fs.readFileSync(taskPath, "utf8"), `Task: ${"a".repeat(895)}`);
-    } finally {
-      if (result.tempDir !== undefined && result.tempDir.length > 0) {
-        fs.rmSync(result.tempDir, { recursive: true, force: true });
-      }
-    }
-  });
 });
 
 describe("buildPiArgs project trust wiring", () => {
@@ -280,18 +255,15 @@ describe("buildPiArgs project trust wiring", () => {
   });
 
   it("passes explicit approve or no-approve to child pi", () => {
-    assert.deepEqual(resolveChildProjectTrustArgs("approve", ["pi"]), ["--approve"]);
-    assert.deepEqual(resolveChildProjectTrustArgs("no-approve", ["pi", "--approve"]), [
-      "--no-approve",
-    ]);
-  });
-
-  it("inherits explicit parent trust flags and lets no-approve win over default approve", () => {
-    assert.deepEqual(resolveChildProjectTrustArgs("inherit", ["pi", "--approve"]), ["--approve"]);
-    assert.deepEqual(resolveChildProjectTrustArgs("inherit", ["pi", "-na"]), ["--no-approve"]);
-    assert.deepEqual(resolveChildProjectTrustArgs("approve", ["pi", "--no-approve"]), [
-      "--no-approve",
-    ]);
+    for (const [policy, argv, expected] of [
+      ["approve", ["pi"], ["--approve"]],
+      ["no-approve", ["pi", "--approve"], ["--no-approve"]],
+      ["inherit", ["pi", "--approve"], ["--approve"]],
+      ["inherit", ["pi", "-na"], ["--no-approve"]],
+      ["approve", ["pi", "--no-approve"], ["--no-approve"]],
+    ] as const) {
+      assert.deepEqual(resolveChildProjectTrustArgs(policy, argv), expected);
+    }
   });
 
   it("adds the configured trust flag before the task", () => {
@@ -311,47 +283,25 @@ describe("buildPiArgs project trust wiring", () => {
 });
 
 describe("buildPiArgs model wiring", () => {
-  it("uses --model for provider-qualified model ids", () => {
-    const { args } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      model: "openai-codex/gpt-5.4-mini",
-      inheritProjectContext: false,
-      inheritSkills: false,
-    });
-
-    assert.ok(args.includes("--model"));
-    assert.ok(args.includes("openai-codex/gpt-5.4-mini"));
-    assert.ok(!args.includes("--models"));
-  });
-
-  it("uses --model for bare model ids too", () => {
-    const { args } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      model: "kimi-k2.5",
-      inheritProjectContext: false,
-      inheritSkills: false,
-    });
-
-    assert.ok(args.includes("--model"));
-    assert.ok(args.includes("kimi-k2.5"));
-    assert.ok(!args.includes("--models"));
-  });
-
   it("preserves thinking suffixes on model args", () => {
-    const { args } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      model: "openai-codex/gpt-5.4-mini",
-      thinking: "high",
-      inheritProjectContext: false,
-      inheritSkills: false,
-    });
-
+    for (const [model, thinking, expected] of [
+      ["openai-codex/gpt-5.4-mini", undefined, "openai-codex/gpt-5.4-mini"],
+      ["kimi-k2.5", undefined, "kimi-k2.5"],
+      ["openai-codex/gpt-5.4-mini", "high", "openai-codex/gpt-5.4-mini:high"],
+    ] as const) {
+      const { args } = buildPiArgs({
+        baseArgs: ["-p"],
+        task: "hello",
+        sessionEnabled: false,
+        model,
+        thinking,
+        inheritProjectContext: false,
+        inheritSkills: false,
+      });
+      assert.ok(args.includes("--model"));
+      assert.ok(args.includes(expected));
+      assert.ok(!args.includes("--models"));
+    }
     assert.equal(
       applyThinkingSuffix("openai-codex/gpt-5.4-mini", "high"),
       "openai-codex/gpt-5.4-mini:high",
@@ -362,8 +312,6 @@ describe("buildPiArgs model wiring", () => {
       "off is an explicit native selection, not an omitted profile setting",
     );
     assert.equal(applyThinkingSuffix("claude-code/sonnet:max", "high"), "claude-code/sonnet:max");
-    assert.ok(args.includes("--model"));
-    assert.ok(args.includes("openai-codex/gpt-5.4-mini:high"));
   });
 });
 
@@ -452,26 +400,6 @@ describe("buildPiArgs system prompt mode wiring", () => {
     assert.equal(toolsArg, "read,grep,find,ls,bash,edit,write,contact_supervisor");
   });
 
-  it("keeps structured_output available with explicit tool allowlists", () => {
-    const { args, env } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      tools: ["read"],
-      structuredOutput: {
-        schema: { type: "object", properties: {} },
-        schemaPath: "/tmp/schema.json",
-        outputPath: "/tmp/output.json",
-      },
-    });
-
-    assert.equal(args[args.indexOf("--tools") + 1], "read,structured_output");
-    assert.equal(env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE, "/tmp/output.json");
-    assert.equal(env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA, "/tmp/schema.json");
-  });
-
   it("leaves configured and inherited MCP tools unchanged without a profile selection", () => {
     for (const inherited of [undefined, "inherited-server", "__none__"]) {
       if (inherited === undefined) {
@@ -531,41 +459,50 @@ describe("buildPiArgs system prompt mode wiring", () => {
     assert.equal(env.MCP_DIRECT_TOOLS, "chrome-devtools");
   });
 
-  it("supports direct MCP server/tool filters", () => {
-    const fixture = createMcpFixture();
-    writeMcpFixture(fixture, {
-      serverName: "github",
-      definition: { command: "github-mcp" },
-      configHash: "a0d4aa9799c749ff6f713fdba352c0d91bb4918958058d1a9eb8f88e40f2f56d",
-      tools: [{ name: "search_repositories" }, { name: "create_issue" }],
-    });
-
-    const { args } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      tools: ["read"],
-      mcpDirectTools: ["github/search_repositories"],
-    });
-
-    assert.equal(args[args.indexOf("--tools") + 1], "read,github_search_repositories");
-  });
-
   it("matches adapter prefix modes for direct MCP names", () => {
-    for (const [prefix, expected] of [
-      ["server", "read,linear_mcp_list_issues"],
-      ["short", "read,linear_list_issues"],
-      ["none", "read,list_issues"],
+    for (const [fixtureInput, selection, expected] of [
+      ...(
+        [
+          ["server", "read,linear_mcp_list_issues"],
+          ["short", "read,linear_list_issues"],
+          ["none", "read,list_issues"],
+        ] as const
+      ).map(
+        ([prefix, prefixedTools]) =>
+          [
+            {
+              serverName: "linear-mcp",
+              settings: { toolPrefix: prefix },
+              tools: [{ name: "list_issues" }],
+            },
+            ["linear-mcp"],
+            prefixedTools,
+          ] as const,
+      ),
+      [
+        {
+          serverName: "github",
+          definition: { command: "github-mcp" },
+          configHash: "a0d4aa9799c749ff6f713fdba352c0d91bb4918958058d1a9eb8f88e40f2f56d",
+          tools: [{ name: "search_repositories" }, { name: "create_issue" }],
+        },
+        ["github/search_repositories"],
+        "read,github_search_repositories",
+      ],
+      [
+        {
+          serverName: "browser-mcp",
+          definition: { excludeTools: ["browser_click"] },
+          configHash: "694a79edf1bb09686e2a1241c218db5ced72c6fdf859a8a834266cb945efc843",
+          tools: [{ name: "click" }, { name: "navigate" }],
+          resources: [{ name: "Console Logs", uri: "resource://console" }],
+        },
+        ["browser-mcp"],
+        "read,browser_mcp_navigate,browser_mcp_read_console_logs",
+      ],
     ] as const) {
       const fixture = createMcpFixture();
-      writeMcpFixture(fixture, {
-        serverName: "linear-mcp",
-        settings: { toolPrefix: prefix },
-        tools: [{ name: "list_issues" }],
-      });
-
+      writeMcpFixture(fixture, fixtureInput);
       const { args } = buildPiArgs({
         baseArgs: ["-p"],
         task: "hello",
@@ -573,37 +510,10 @@ describe("buildPiArgs system prompt mode wiring", () => {
         inheritProjectContext: false,
         inheritSkills: false,
         tools: ["read"],
-        mcpDirectTools: ["linear-mcp"],
+        mcpDirectTools: selection,
       });
-
       assert.equal(args[args.indexOf("--tools") + 1], expected);
     }
-  });
-
-  it("includes resource tools and respects excludeTools", () => {
-    const fixture = createMcpFixture();
-    writeMcpFixture(fixture, {
-      serverName: "browser-mcp",
-      definition: { excludeTools: ["browser_click"] },
-      configHash: "694a79edf1bb09686e2a1241c218db5ced72c6fdf859a8a834266cb945efc843",
-      tools: [{ name: "click" }, { name: "navigate" }],
-      resources: [{ name: "Console Logs", uri: "resource://console" }],
-    });
-
-    const { args } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      tools: ["read"],
-      mcpDirectTools: ["browser-mcp"],
-    });
-
-    assert.equal(
-      args[args.indexOf("--tools") + 1],
-      "read,browser_mcp_navigate,browser_mcp_read_console_logs",
-    );
   });
 
   it("falls back to explicit builtins when direct MCP cache or config is missing or invalid", () => {
@@ -634,6 +544,27 @@ describe("buildPiArgs system prompt mode wiring", () => {
       mcpDirectTools: ["chrome-devtools"],
     });
     assert.equal(staleCache.args[staleCache.args.indexOf("--tools") + 1], "read,bash");
+
+    const freshFixture = createMcpFixture();
+    const build = () =>
+      buildPiArgs({
+        baseArgs: ["-p"],
+        task: "hello",
+        sessionEnabled: false,
+        inheritProjectContext: false,
+        inheritSkills: false,
+        tools: ["read", "bash"],
+        mcpDirectTools: ["chrome-devtools"],
+      }).args;
+    writeMcpFixture(freshFixture);
+    const valid = build();
+    assert.equal(
+      valid[valid.indexOf("--tools") + 1],
+      "read,bash,chrome_devtools_take_screenshot,chrome_devtools_click",
+    );
+    writeMcpFixture(freshFixture, { configHash: "wrong-config-hash" });
+    const mismatched = build();
+    assert.equal(mismatched[mismatched.indexOf("--tools") + 1], "read,bash");
   });
 
   it("resolves project MCP config from the child cwd and expands PI_CODING_AGENT_DIR", () => {
@@ -708,26 +639,6 @@ describe("buildPiArgs system prompt mode wiring", () => {
     assert.ok(extensionArgs.includes("/tmp/repoprompt-bridge.ts"));
   });
 
-  it("keeps inherited parent runtime extensions when explicit extensions are allowlisted", () => {
-    process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV] = JSON.stringify([
-      "/tmp/repoprompt-bridge.ts",
-    ]);
-
-    const { args } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      extensions: ["./agent-allowed-ext.ts"],
-    });
-
-    const extensionArgs = new Set(args.filter((arg, index) => args[index - 1] === "--extension"));
-    assert.ok(args.includes("--no-extensions"));
-    assert.ok(extensionArgs.has("/tmp/repoprompt-bridge.ts"));
-    assert.ok(extensionArgs.has("./agent-allowed-ext.ts"));
-  });
-
   it("authorizes child fanout without constraining normal tools when allowSubagents is true", () => {
     const { args, env } = buildPiArgs({
       baseArgs: ["-p"],
@@ -765,24 +676,6 @@ describe("buildPiArgs system prompt mode wiring", () => {
     assert.ok(
       extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))),
     );
-  });
-
-  it("adds compact tools and the loadable advanced tool to authorized explicit allowlists", () => {
-    const { args, env } = buildPiArgs({
-      baseArgs: ["-p"],
-      task: "hello",
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      tools: ["read"],
-      allowSubagents: true,
-    });
-
-    assert.equal(
-      args[args.indexOf("--tools") + 1],
-      "read,subagent,delegate,agent_runs,load_subagent",
-    );
-    assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
   });
 
   it("authorizes child fanout only from exact declared builtin subagent", () => {

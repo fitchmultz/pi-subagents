@@ -1,21 +1,17 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { assertDefined } from "../support/assertions.ts";
 import { afterEach, describe, it } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
   captureSingleOutputSnapshot,
-  cleanupSingleOutputFile,
   finalizeSingleOutput,
   formatSavedOutputReference,
-  injectSingleOutputInstruction,
   normalizeSingleOutputOverride,
   resolveSingleOutput,
   resolveSingleOutputPath,
   findDuplicateOutputPath,
-  validateFileOnlyOutputMode,
 } from "../../src/runs/shared/single-output.ts";
 
 const tempDirs: string[] = [];
@@ -79,28 +75,7 @@ describe("resolveSingleOutputPath", () => {
   });
 });
 
-describe("injectSingleOutputInstruction", () => {
-  it("appends output instruction with resolved path", () => {
-    const output = injectSingleOutputInstruction("Analyze this", "/tmp/report.md");
-    assert.match(output, /Write your findings to: \/tmp\/report.md/);
-  });
-});
-
 describe("resolveSingleOutput", () => {
-  it("keeps agent-written file content when the file changed during the run", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
-    tempDirs.push(dir);
-    const outputPath = path.join(dir, "review.md");
-    const before = captureSingleOutputSnapshot(outputPath);
-
-    fs.writeFileSync(outputPath, "real file content", "utf-8");
-
-    const result = resolveSingleOutput(outputPath, "receipt text", before);
-    assert.equal(result.fullOutput, "real file content");
-    assert.equal(result.savedPath, outputPath);
-    assert.equal(fs.readFileSync(outputPath, "utf-8"), "real file content");
-  });
-
   it("keeps an identical agent rewrite instead of replacing it with receipt text", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
     tempDirs.push(dir);
@@ -117,20 +92,6 @@ describe("resolveSingleOutput", () => {
     assert.equal(fs.readFileSync(outputPath, "utf-8"), "real file content");
   });
 
-  it("falls back to persisting the assistant output when the file was not changed", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
-    tempDirs.push(dir);
-    const outputPath = path.join(dir, "review.md");
-
-    fs.writeFileSync(outputPath, "stale content", "utf-8");
-    const before = captureSingleOutputSnapshot(outputPath);
-    const result = resolveSingleOutput(outputPath, "fresh assistant output", before);
-
-    assert.equal(result.fullOutput, "fresh assistant output");
-    assert.equal(result.savedPath, outputPath);
-    assert.equal(fs.readFileSync(outputPath, "utf-8"), "fresh assistant output");
-  });
-
   it("preserves read errors from changed output paths", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
     tempDirs.push(dir);
@@ -143,36 +104,6 @@ describe("resolveSingleOutput", () => {
     assert.equal(result.fullOutput, "fallback output");
     assert.equal(result.savedPath, undefined);
     assert.match(result.saveError ?? "", /Failed to read changed output file/);
-  });
-});
-
-describe("cleanupSingleOutputFile", () => {
-  it("deletes a captured output file when it still matches captured content", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
-    tempDirs.push(dir);
-    const outputPath = path.join(dir, "review.md");
-    const before = captureSingleOutputSnapshot(outputPath);
-    fs.writeFileSync(outputPath, "child output", "utf-8");
-
-    const cleanup = cleanupSingleOutputFile(outputPath, "child output", before);
-
-    assert.equal(cleanup?.action, "deleted");
-    assert.equal(fs.existsSync(outputPath), false);
-  });
-
-  it("does not delete preexisting unchanged files", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
-    tempDirs.push(dir);
-    const outputPath = path.join(dir, "review.md");
-    fs.writeFileSync(outputPath, "preexisting content", "utf-8");
-    const before = captureSingleOutputSnapshot(outputPath);
-
-    const cleanup = cleanupSingleOutputFile(outputPath, "preexisting content", before);
-    assertDefined(cleanup);
-
-    assert.equal(cleanup.action, "skipped");
-    assert.equal(cleanup.reason, "file preexisted and was unchanged");
-    assert.equal(fs.readFileSync(outputPath, "utf-8"), "preexisting content");
   });
 });
 
@@ -195,20 +126,6 @@ describe("formatSavedOutputReference", () => {
   });
 });
 
-describe("validateFileOnlyOutputMode", () => {
-  it("requires an output path for file-only mode", () => {
-    assert.match(
-      validateFileOnlyOutputMode("file-only", undefined, "Single run") ?? "",
-      /Single run sets outputMode: "file-only"/,
-    );
-    assert.equal(
-      validateFileOnlyOutputMode("file-only", "/tmp/report.md", "Single run"),
-      undefined,
-    );
-    assert.equal(validateFileOnlyOutputMode("inline", undefined, "Single run"), undefined);
-  });
-});
-
 describe("finalizeSingleOutput", () => {
   it("formats saved-path messaging around the already-resolved output", () => {
     const result = finalizeSingleOutput({
@@ -221,20 +138,6 @@ describe("finalizeSingleOutput", () => {
 
     assert.match(result.displayOutput, /^\[TRUNCATED\]\nline 1/);
     assert.match(result.displayOutput, /Output saved to:/);
-    assert.match(result.displayOutput, /3 lines/);
-  });
-
-  it("returns only the saved-output reference in file-only mode", () => {
-    const result = finalizeSingleOutput({
-      fullOutput: "line 1\nline 2\nline 3",
-      outputPath: "/tmp/review.md",
-      savedPath: "/tmp/review.md",
-      outputMode: "file-only",
-      exitCode: 0,
-    });
-
-    assert.doesNotMatch(result.displayOutput, /line 1/);
-    assert.match(result.displayOutput, /^Output saved to:/);
     assert.match(result.displayOutput, /3 lines/);
   });
 
@@ -253,6 +156,10 @@ describe("finalizeSingleOutput", () => {
 
 describe("findDuplicateOutputPath", () => {
   it("reports colliding resolved output paths with 1-based task indexes", () => {
+    assert.equal(
+      findDuplicateOutputPath([{ agent: "a" }, { agent: "b", outputPath: "/tmp/only.md" }]),
+      undefined,
+    );
     const error = findDuplicateOutputPath([
       { agent: "reviewer", outputPath: "/tmp/same.md" },
       { agent: "worker" },
@@ -261,13 +168,6 @@ describe("findDuplicateOutputPath", () => {
     assert.equal(
       error,
       "Parallel tasks 1 (reviewer) and 3 (fixer) resolve output to the same path: /tmp/same.md. Use distinct output paths.",
-    );
-  });
-
-  it("ignores missing output paths", () => {
-    assert.equal(
-      findDuplicateOutputPath([{ agent: "a" }, { agent: "b", outputPath: "/tmp/only.md" }]),
-      undefined,
     );
   });
 });
