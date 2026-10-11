@@ -2,7 +2,7 @@
 name: context-builder
 description: Analyzes requirements and codebase, generates context and meta-prompt
 model: openai-codex/gpt-6.1-sol
-fallbackModels: anthropic/claude-opus-5, openai-codex/gpt-6-astra
+fallbackModels: anthropic/claude-opus-5-5
 thinking: xhigh
 systemPromptMode: append
 inheritProjectContext: true

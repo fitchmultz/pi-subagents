@@ -1,9 +1,9 @@
 ---
 name: ui-designer
 description: Visual/UI design specialist for rendered UX, layout, accessibility, and polish
-model: openai-codex/gpt-6-astra
-fallbackModels: anthropic/claude-opus-5
-thinking: medium
+model: anthropic/claude-opus-5-5
+fallbackModels: openai-codex/gpt-6.1-sol
+thinking: xhigh
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

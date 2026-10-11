@@ -422,6 +422,7 @@ export function formatAcceptancePrompt(
       : "Completion is not accepted from prose alone. End the initial response with a structured acceptance report.",
     "After the initial response, the runtime will continue this same session for a bounded self-review/repair loop before accepting the run.",
     "For an observed human-only boundary (such as Touch ID or an unavailable MFA code), report the affected criterion as blocked with concrete evidence and a nonempty humanAction stating the exact user action. Retain completed evidence. This leaves acceptance incomplete and stops finalization/verification until explicit Continue. Do not use blocked for ordinary errors, missing unrelated evidence, or work you can fix.",
+    "Check early whether you can verify each criterion here. Apart from the human-only boundary above, if one needs a service, credential, device, network, or tool you cannot reach, say so right away (send a contact_supervisor progress_update when available), finish the verifiable work, and report that criterion not-satisfied with the missing prerequisite in residualRisks instead of spending turns on workarounds.",
     "",
     ...formatAcceptanceRequirements(
       acceptance.criteria,

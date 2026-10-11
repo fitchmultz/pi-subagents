@@ -128,6 +128,7 @@ describe("acceptance gates", () => {
     assert.match(prompt, /## Acceptance Contract/);
     assert.doesNotMatch(prompt, /Acceptance level:/);
     assert.match(prompt, /same session for a bounded self-review\/repair loop/);
+    assert.match(prompt, /criterion not-satisfied with the missing prerequisite/);
     assert.match(prompt, /Patch the bug/);
     assert.match(
       prompt,

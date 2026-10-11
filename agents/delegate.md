@@ -2,6 +2,7 @@
 name: delegate
 description: Lightweight subagent using GPT-6.1 Sol with no default reads
 model: openai-codex/gpt-6.1-sol
+fallbackModels: anthropic/claude-opus-5-5
 thinking: high
 systemPromptMode: append
 inheritProjectContext: true
