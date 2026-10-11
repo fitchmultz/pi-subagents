@@ -40,13 +40,13 @@ Git fallback (existing tags and branches remain installable):
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That one package includes both extension entries and both skills. For a local checkout, follow the [runtime-only install and rebuild recipe](../README.md#installation): run `npm install --omit=dev` before registering or loading it, including after development validation. Before rebuilding or updating an in-use Pi checkout or extension, checkpoint work and fully quit every Pi session using that installation. Update from a separate terminal, then restart Pi and resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
+That one package includes both extension entries and both skills. For a local checkout, follow the [runtime-only install and rebuild recipe](reference.md#installation): run `npm install --omit=dev` before registering or loading it, including after development validation. Before rebuilding or updating an in-use Pi checkout or extension, checkpoint work and fully quit every Pi session using that installation. Update from a separate terminal, then restart Pi and resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
 
 To restart the shared broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 
 ## Development
 
-Follow the [local validation instructions](../README.md#local-validation). Keep retained/cleared custom-queue, rejected-input and pre-admission preparation regressions intact and report results for the exact selected host; earlier published Pi 0.87.1 failures are historical evidence, not current 1.0 certification.
+Follow the [local validation instructions](development.md#local-validation). Keep retained/cleared custom-queue, rejected-input and pre-admission preparation regressions intact and report results for the exact selected host; earlier published Pi 0.87.1 failures are historical evidence, not current 1.0 certification.
 
 `ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To run just that regression:
 
@@ -79,7 +79,7 @@ If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias l
 
 ### From the Keyboard
 
-With `pi-subagents`, **Option+Shift+M** (**Alt+Shift+M**) opens your task-labelled agent conversations first; press it again to close. The shortcut is configurable below. In native fullscreen mode, clicking the **Agents** entrance again also closes the open view. See [the agent-view controls](../README.md#try-this-first) for direct human messaging, context replies, saved drafts, unread history, pinning, selected-child stop and explicit continuation. The plain `/intercom` command remains the current-project peer list. Type `/intercom all` to include sessions in other projects:
+With `pi-subagents`, **Option+Shift+M** (**Alt+Shift+M**) opens your task-labelled agent conversations first; press it again to close. The shortcut is configurable below. In native fullscreen mode, clicking the **Agents** entrance again also closes the open view. See [the agent-view controls](reference.md#try-this-first) for direct human messaging, context replies, saved drafts, unread history, pinning, selected-child stop and explicit continuation. The plain `/intercom` command remains the current-project peer list. Type `/intercom all` to include sessions in other projects:
 
 1. **Select a session** — Use arrow keys to pick a target session
 2. **Compose message** — Write your message in the compose overlay. Pasted multiline handoffs are preserved.
@@ -148,7 +148,7 @@ intercom({
 
 ### Receiving Messages
 
-With native [compact view](../README.md#compact-view) enabled, ordinary incoming messages use one content row plus Pi's blank line. In native fullscreen mode, click a collapsed row to reveal its full message and attachments; click it again to collapse. Ctrl+O (or the configured tool-expansion key) still expands all messages. Questions, reply guidance, and needs-attention notices stay prominent. The mode defaults off and does not change delivery or model-visible content.
+With native [compact view](reference.md#compact-view) enabled, ordinary incoming messages use one content row plus Pi's blank line. In native fullscreen mode, click a collapsed row to reveal its full message and attachments; click it again to collapse. Ctrl+O (or the configured tool-expansion key) still expands all messages. Questions, reply guidance, and needs-attention notices stay prominent. The mode defaults off and does not change delivery or model-visible content.
 
 When a message arrives, it appears inline in your chat with the sender's info. The cwd label is the sender's **Native session cwd**, not proof of a command's physical directory. Messages sent with `ask` include a reply hint:
 
@@ -289,7 +289,7 @@ When both bundled extension entries are enabled, parent sessions can use `agent_
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
-Intercom provides live coordination and portable background completion notices. Every new subagent run has one detached owner, regardless of whether the parent waits or receives a background receipt. Waiting tools receive their saved result directly; the watcher suppresses an extra Intercom completion notice. See [host capabilities and result delivery](../README.md#host-capabilities-and-result-delivery).
+Intercom provides live coordination and portable background completion notices. Every new subagent run has one detached owner, regardless of whether the parent waits or receives a background receipt. Waiting tools receive their saved result directly; the watcher suppresses an extra Intercom completion notice. See [host capabilities and result delivery](reference.md#host-capabilities-and-result-delivery).
 
 Durable output lives in `pi-subagents` result details and artifact/output paths (`savedOutputPath`, `artifactPaths`, or explicit workspace `output` files). Completion notices include existing saved result and metadata paths, including acceptance details when configured. Use those files as the source of truth for long reports. Broker acceptance, notification delivery, parent review, and runtime acceptance are separate facts.
 
@@ -572,7 +572,7 @@ Assistant-error replies wait for broker acknowledgement during `message_end`, bo
 
 ## Limitations
 
-Historical official Pi 0.87.1 checks exposed queue visibility and prompt-preparation races. Current tests preserve exact-once receipts and input rejection/recovery on the selected host, including the genuine Pi 1.0 pre-admission window described above; they do not promise one combined provider turn. Historical results are not a current 1.0 pass. Use an explicit `async: false` wait when dependent work needs a finalized result. Native pending-call, idle-checkpoint and immediate-usage APIs are no longer supported. See [result delivery](../README.md#host-capabilities-and-result-delivery) and [local qualification](../README.md#local-validation).
+Historical official Pi 0.87.1 checks exposed queue visibility and prompt-preparation races. Current tests preserve exact-once receipts and input rejection/recovery on the selected host, including the genuine Pi 1.0 pre-admission window described above; they do not promise one combined provider turn. Historical results are not a current 1.0 pass. Use an explicit `async: false` wait when dependent work needs a finalized result. Native pending-call, idle-checkpoint and immediate-usage APIs are no longer supported. See [result delivery](reference.md#host-capabilities-and-result-delivery) and [local qualification](development.md#local-validation).
 
 - **Same machine only** — The core broker uses local Unix sockets, no network support. The optional [secure remote bridge](intercom-bridge.md) authenticates remote messaging through a separate loopback mTLS proxy; it does not expose the broker socket.
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox

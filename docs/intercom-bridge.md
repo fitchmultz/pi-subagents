@@ -18,7 +18,7 @@ Optional HTTPS messaging proxy for a remote agent such as **Grok Bot**. Pi-inter
 
 ## Mac setup
 
-Requires Node **24.21.0+**, OpenSSL with `req -addext` (Homebrew OpenSSL works), and a connected Pi session with Intercom. Run commands from this checkout/package directory. A runtime-only installed checkout already has `dist/`; for development use `npm ci` first. See the [installation guide](../README.md#installation) before rebuilding an in-use extension. This standalone helper can run from its own installed copy without touching the live Pi runtime.
+Requires Node **24.21.0+**, OpenSSL with `req -addext` (Homebrew OpenSSL works), and a connected Pi session with Intercom. Run commands from this checkout/package directory. A runtime-only installed checkout already has `dist/`; for development use `npm ci` first. See the [installation guide](reference.md#installation) before rebuilding an in-use extension. This standalone helper can run from its own installed copy without touching the live Pi runtime.
 
 ```bash
 # Use a NEW directory; init refuses to overwrite any existing CA.
