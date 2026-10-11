@@ -1,2 +1,3 @@
 # Unified npm patch context is byte-sensitive.
 patches/npm/*.patch whitespace=-blank-at-eol,-space-before-tab
+generated/** linguist-generated=true

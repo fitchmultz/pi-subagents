@@ -26,6 +26,7 @@
   "files": [
     "dist",
     "src/**/*.ts",
+    "generated",
     "tsconfig.build.json",
     "tsconfig.json",
     "scripts/",

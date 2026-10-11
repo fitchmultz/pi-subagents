@@ -16,6 +16,8 @@
     "package-lock.json",
     "dist/**",
     "dist.staging*/**",
-    "src/runs/background/schemas/RunContracts.json"
+    "src/runs/background/schemas/RunContracts.json",
+    "generated/RunValidators.js",
+    "generated/RunValidators.d.ts"
   ]
 }

@@ -4,6 +4,8 @@
 
 Native journals and canonical run/control/receipt files remain the sources of truth. SQLite supplies private browse observations, not a new execution owner, completion receipt, billing authority or transcript format. Installing the extension does not adopt unrelated archives or remove provider and queue waits.
 
+Persisted run contracts use AJV standalone validators generated from their canonical TypeScript declarations. Pi sessions and detached runners validate disk reads without loading AJV's compiler or compiling guards at startup. `npm run generate:schemas` regenerates the JSON schema, executable guards and type declarations together; `npm run check:schemas` checks all three for drift. Both source and compiled package paths include the guards. Nested-field checks, finite-number rules, forward-compatible fields and validation diagnostics are unchanged.
+
 Startup recovers saved ownership, unanswered questions and Intercom receipts in small batches, allowing input between batches. Queued Intercom delivery also yields between batches, preserving followers before the final wake-up and staging new arrivals durably until the batch finishes. Retention cleanup uses asynchronous filesystem operations. Tools capture their invocation directory before awaiting restoration, and coordination publishes the current session name even if it changes during recovery. Checkpoint reconciliation remains synchronous and strict. Recovery still checks the complete eligible history and legacy records, without increasing or suppressing the host's performance-warning budget. A single recovery record, native append/projection or integrity scan remains atomic.
 
 ### Indexed browsing and lazy Agents work
