@@ -2241,6 +2241,120 @@ test("multiword search matches whole native records before ranking and paginatio
   }
 });
 
+for (const phase of ["before-commit", "committed"]) {
+  test(`cold ingestion killed ${phase} recovers complete text, tools, answers and cursor together`, async (t) => {
+    const f = fixture(t);
+    const native = (id: string, count: number, tail: string) => ({
+      ...message(id, "", "assistant"),
+      message: {
+        role: "assistant",
+        content: [
+          ...Array.from({ length: count }, (_, index) => ({
+            type: "text",
+            text: index === count - 1 ? tail : `fieldword${index}`,
+          })),
+          { type: "toolCall", id: `${id}-tool`, name: "synthetic", arguments: {} },
+        ],
+      },
+    });
+    const first = native("cold-first", 33, "firsttailneedle");
+    const last = native("cold-final", 32, "lasttailneedle");
+    const file = f.file("cold.jsonl", [header(), first, last]);
+    fs.appendFileSync(file, JSON.stringify(message("unpublished", "unpublishedneedle")));
+    const original = fs.readFileSync(file);
+    const child = fork(
+      new URL("../fixtures/history-cold-writer.ts", import.meta.url),
+      [f.agentDir, file, phase],
+      { stdio: ["ignore", "ignore", "inherit", "ipc", "pipe"] },
+    );
+    const exited = once(child, "exit");
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+      await exited;
+    });
+    const gate = child.stdio[4];
+    assert.ok(gate instanceof Socket);
+    await Promise.race([
+      once(gate, "data"),
+      exited.then(() => {
+        throw new Error("Cold writer exited before reaching the native commit boundary.");
+      }),
+    ]);
+    const manifest = objectRecord(
+      JSON.parse(
+        fs.readFileSync(path.join(f.agentDir, "history-index", `${hash("parent")}.json`), "utf8"),
+      ),
+    );
+    const databaseFile = path.join(f.agentDir, "history-index", stringValue(manifest.file));
+    const committed = phase === "committed";
+    const expectedCursor = Buffer.byteLength(
+      lines([header(), first, ...(committed ? [last] : [])]),
+    );
+    const snapshot = () => {
+      const db = new DatabaseSync(databaseFile, { readOnly: true });
+      try {
+        assert.equal(queryRow(db, "PRAGMA quick_check").quick_check, "ok");
+        assert.equal(queryRow(db, "PRAGMA journal_mode").journal_mode, "wal");
+        assert.equal(queryRow(db, "SELECT cursor FROM sources").cursor, expectedCursor);
+        assert.equal(
+          queryRow(db, "SELECT COUNT(*) AS count FROM entries WHERE published=1").count,
+          committed ? 2 : 1,
+        );
+        assert.equal(
+          queryRow(db, "SELECT COUNT(*) AS count FROM entries WHERE published=0").count,
+          0,
+        );
+        assert.equal(
+          queryRow(db, "SELECT COUNT(*) AS count FROM documents").count,
+          committed ? 65 : 33,
+        );
+        assert.equal(
+          queryRow(db, "SELECT COUNT(*) AS count FROM corpus").count,
+          committed ? 65 : 33,
+        );
+        assert.equal(
+          queryRow(db, "SELECT COUNT(*) AS count FROM answers").count,
+          committed ? 67 : 34,
+        );
+        assert.equal(queryRow(db, "SELECT COUNT(*) AS count FROM tools").count, committed ? 2 : 1);
+      } finally {
+        db.close();
+      }
+    };
+    snapshot();
+    child.kill("SIGKILL");
+    assert.deepEqual(await exited, [null, "SIGKILL"]);
+    snapshot();
+    await owned(f.index, [run("cold", file)]);
+    const page = await f.index.historyPage({ runId: "cold", index: 0 });
+    assert.deepEqual(
+      page.entries.map((entry) => entry.id),
+      ["cold-first", "cold-final"],
+    );
+    assert.equal(page.sourceState, "partial");
+    for (const query of ["firsttailneedle", "lasttailneedle"]) {
+      // Observe each recovered native search result before the next request.
+      // oxlint-disable-next-line no-await-in-loop
+      assert.equal((await f.index.search({ query })).matches.length, 1);
+    }
+    assert.equal((await f.index.search({ query: "unpublishedneedle" })).matches.length, 0);
+    assert.equal(
+      (
+        await f.index.entry({
+          runId: "cold",
+          index: 0,
+          toolCallId: "cold-final-tool",
+          kind: "call",
+        })
+      )?.id,
+      "cold-final",
+    );
+    assert.deepEqual(fs.readFileSync(file), original);
+  });
+}
+
 for (const interrupted of [false, true]) {
   test(`concurrent workers preserve staged entries when the first writer ${interrupted ? "is killed" : "finishes"}`, async (t) => {
     const f = fixture(t),
@@ -2260,7 +2374,7 @@ for (const interrupted of [false, true]) {
           modelId: "concurrent",
         },
         {
-          ...message("retained", "concurrentneedle " + "padding ".repeat(9000)),
+          ...message("retained", "concurrentneedle " + "padding ".repeat(9000) + " tailneedle"),
           parentId: "configuration",
         },
       ]),
@@ -2322,6 +2436,7 @@ for (const interrupted of [false, true]) {
     assert.equal(page.configuration.model, "synthetic/concurrent");
     assert.equal(page.freshness.state, "current");
     assert.equal((await f.index.search({ query: "concurrentneedle" })).matches.length, 1);
+    assert.equal((await f.index.search({ query: "tailneedle" })).matches.length, 1);
     assert.deepEqual(fs.readFileSync(file), original);
     await f.restart();
     await owned(f.index, runs);

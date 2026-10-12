@@ -30,7 +30,7 @@ export function pruneHistory(
   return store.transaction(() => {
     let removed = previousSources === undefined && pruneRuns(store, runs);
     for (const source of store.all(
-      `SELECT id,path FROM sources WHERE id NOT IN (SELECT source_id FROM children WHERE source_id IS NOT NULL)${previousSources ? ` AND id IN (${previousSources.map(() => "?").join(",")})` : ""}`,
+      `SELECT id,path FROM sources WHERE NOT EXISTS (SELECT 1 FROM children WHERE children.source_id=sources.id)${previousSources ? ` AND id IN (${previousSources.map(() => "?").join(",")})` : ""}`,
       ...(previousSources ?? []),
     )) {
       const id = text(source, "id");

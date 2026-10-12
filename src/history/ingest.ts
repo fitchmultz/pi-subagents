@@ -9,7 +9,7 @@ import { AnswerTexts } from "./answer-texts.ts";
 import { object } from "./values.ts";
 import { identity, stamp, openSource, requireSource } from "./source-file.ts";
 export { identity, stamp } from "./source-file.ts";
-import { number, text } from "./rows.ts";
+import { number, text, type Row } from "./rows.ts";
 import { stageEntry, publishTools, type IngestRecord } from "./entry-ingestion.ts";
 export { previewProjection, previewLimits, compactEntry } from "./preview.ts";
 
@@ -173,7 +173,6 @@ export class SourceIngest {
       });
       return;
     }
-    this.stagedEntry = stageEntry(this.store, this.source, record);
     this.textCursor = 0;
     this.phase = "text";
   }
@@ -235,64 +234,73 @@ export class SourceIngest {
   }
   private indexText(): void {
     const record = this.record;
-    const rowid = this.stagedEntry;
-    if (!record || rowid === undefined) {
-      throw new HistoryIndexError("CORRUPT", "Missing staged entry.");
+    if (!record) {
+      throw new HistoryIndexError("CORRUPT", "Missing ingestion record.");
     }
     const chunks = this.store.all(
-      "SELECT rowid,* FROM pending_text WHERE rowid>? ORDER BY rowid LIMIT 32",
+      "SELECT rowid,* FROM pending_text WHERE rowid>? ORDER BY rowid LIMIT 33",
       this.textCursor,
     );
-    if (chunks.length > 0) {
-      this.store.transaction(() => {
-        for (const chunk of chunks) {
-          if (!allowed(record.value, text(chunk, "field"))) {
-            continue;
-          }
-          const body = safeText(text(chunk, "text"), 1_048_576);
-          const id = this.store.run(
-            "INSERT INTO documents(entry_rowid,field,text_start,text_end,preview) VALUES (?,?,?,?,?)",
-            rowid,
-            text(chunk, "field"),
-            number(chunk, "position"),
-            number(chunk, "end_position"),
-            safeText(body, 512),
-          ).lastInsertRowid;
-          this.store.run("INSERT INTO corpus(rowid,text) VALUES (?,?)", id, body);
-        }
-      });
-      const last = chunks.at(-1);
-      if (last) {
-        this.textCursor = number(last, "rowid");
+    const complete = chunks.length <= 32;
+    const batch = chunks.slice(0, 32);
+    let rowid: number | undefined;
+    const write = () => {
+      rowid = this.stagedEntry ?? stageEntry(this.store, this.source, record);
+      this.indexChunks(rowid, record, batch);
+      if (complete) {
+        this.publishEntry(rowid, record);
       }
-      return;
+    };
+    if (complete) {
+      this.published(record.end, write);
+      this.stagedEntry = undefined;
+      this.phase = "read";
+    } else {
+      this.store.transaction(write);
+      this.stagedEntry = rowid;
+      this.textCursor = number(batch[31], "rowid");
     }
+  }
+  private indexChunks(rowid: number, record: IngestRecord, chunks: readonly Row[]): void {
+    for (const chunk of chunks) {
+      if (!allowed(record.value, text(chunk, "field"))) {
+        continue;
+      }
+      const body = safeText(text(chunk, "text"), 1_048_576);
+      const id = this.store.run(
+        "INSERT INTO documents(entry_rowid,field,text_start,text_end,preview) VALUES (?,?,?,?,?)",
+        rowid,
+        text(chunk, "field"),
+        number(chunk, "position"),
+        number(chunk, "end_position"),
+        safeText(body, 512),
+      ).lastInsertRowid;
+      this.store.run("INSERT INTO corpus(rowid,text) VALUES (?,?)", id, body);
+    }
+  }
+  private publishEntry(rowid: number, record: IngestRecord): void {
     const value = record.value;
     const answers = this.answerTexts.fingerprints(
       value,
       typeof value.id === "string" ? value.id : `legacy-${record.start}`,
     );
-    this.published(record.end, () => {
-      if (
-        this.store.run(
-          "UPDATE entries SET published=1 WHERE rowid=? AND source_id=? AND generation=? AND published=0",
-          rowid,
-          this.id,
-          this.source.generation,
-        ).changes !== 1
-      ) {
-        throw new HistoryIndexError(
-          "SOURCE_CHANGED",
-          "Staged entry disappeared before publication; reconcile before advancing the source.",
-        );
-      }
-      for (const [digest, item] of answers) {
-        this.store.run("INSERT OR IGNORE INTO answers VALUES (?,?,?)", rowid, digest, item);
-      }
-      publishTools(this.store, this.source, rowid, value);
-    });
-    this.stagedEntry = undefined;
-    this.phase = "read";
+    if (
+      this.store.run(
+        "UPDATE entries SET published=1 WHERE rowid=? AND source_id=? AND generation=? AND published=0",
+        rowid,
+        this.id,
+        this.source.generation,
+      ).changes !== 1
+    ) {
+      throw new HistoryIndexError(
+        "SOURCE_CHANGED",
+        "Staged entry disappeared before publication; reconcile before advancing the source.",
+      );
+    }
+    for (const [digest, item] of answers) {
+      this.store.run("INSERT OR IGNORE INTO answers VALUES (?,?,?)", rowid, digest, item);
+    }
+    publishTools(this.store, this.source, rowid, value);
   }
   /** Each pump reads <=64 KiB or indexes <=32 chunks, then returns to the IPC event loop. */
   step(): boolean {

@@ -171,9 +171,14 @@ export class TextChunks {
       this.fields.clear();
     }
     if (this.staged.length > 0) {
-      const insert = store.db.prepare("INSERT INTO pending_text VALUES (?,?,?,?)");
       for (const item of this.staged) {
-        insert.run(item.field, item.start, item.end, item.text);
+        store.run(
+          "INSERT INTO pending_text VALUES (?,?,?,?)",
+          item.field,
+          item.start,
+          item.end,
+          item.text,
+        );
       }
       this.staged = [];
     }
