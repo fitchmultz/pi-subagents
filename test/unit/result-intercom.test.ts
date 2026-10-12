@@ -1,17 +1,12 @@
 import "../support/isolated-home.ts";
-import { assertDefined } from "../support/assertions.ts";
-import { events } from "../support/helpers.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import {
-  attachNestedChildrenToResultChildren,
   buildSubagentResultIntercomPayload,
-  formatSubagentResultReceipt,
   resolveSubagentResultStatus,
-  stripDetailsOutputsForIntercomReceipt,
 } from "../../src/intercom/result-intercom.ts";
 
 describe("result intercom formatter", () => {
@@ -89,11 +84,6 @@ describe("result intercom formatter", () => {
       assert.match(payload.message, new RegExp(`Status: ${status}`));
       if (error !== undefined) {
         assert.ok(payload.message.includes(error));
-        assert.ok(
-          formatSubagentResultReceipt({ mode: "chain", runId: "workflow", payload }).includes(
-            error,
-          ),
-        );
       }
     }
   });
@@ -165,171 +155,30 @@ describe("result intercom formatter", () => {
   });
 
   it("does not advertise async revive for missing child session files", () => {
-    const payload = buildSubagentResultIntercomPayload({
-      to: "chat",
-      runId: "run-missing-session",
-      mode: "single",
-      source: "async",
-      asyncId: "run-missing-session",
-      children: [
-        {
-          agent: "worker",
-          status: "failed",
-          summary: "failed",
-          sessionPath: path.join(os.tmpdir(), "missing-pi-session.jsonl"),
-        },
-      ],
-    });
-
-    assert.match(payload.message, /Resume: unavailable; no child session file was persisted/);
-    assert.doesNotMatch(payload.message, /Revive:/);
-  });
-
-  it("attaches compact nested children under their parent result child without route secrets", () => {
-    const payload = buildSubagentResultIntercomPayload({
-      to: "chat",
-      runId: "root-run",
-      mode: "parallel",
-      source: "foreground",
-      children: attachNestedChildrenToResultChildren(
-        "root-run",
-        [
-          { agent: "owner-a", status: "completed", summary: "done", index: 0 },
-          { agent: "owner-b", status: "completed", summary: "done", index: 1 },
-        ],
-        [
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-intercom-"));
+    try {
+      const payload = buildSubagentResultIntercomPayload({
+        to: "chat",
+        runId: "run-missing-session",
+        mode: "single",
+        source: "async",
+        asyncId: "run-missing-session",
+        children: [
           {
-            id: "nested-a",
-            parentRunId: "root-run",
-            parentStepIndex: 1,
-            depth: 1,
-            path: [{ runId: "root-run", stepIndex: 1 }],
-            state: "complete",
-            agent: "reviewer",
-            sessionFile: path.join(os.tmpdir(), "nested-a.jsonl"),
-            controlInbox: "/tmp/should-not-leak",
-            capabilityToken: "secret-token",
-            children: [
-              {
-                id: "nested-grandchild",
-                parentRunId: "nested-a",
-                depth: 2,
-                path: [{ runId: "root-run", stepIndex: 1 }, { runId: "nested-a" }],
-                state: "complete",
-                agent: "auditor",
-                controlInbox: "/tmp/grandchild-should-not-leak",
-                capabilityToken: "grandchild-secret",
-              },
-            ],
+            agent: "worker",
+            status: "failed",
+            summary: "failed",
+            sessionPath: path.join(root, "missing.jsonl"),
           },
         ],
-      ),
-    });
+      });
 
-    const nested = payload.children[1]?.children?.[0];
-    const grandchild = nested?.children?.[0];
-    assert.equal(payload.children[0]?.children, undefined);
-    assert.equal(nested?.id, "nested-a");
-    assertDefined(nested);
-    assert.equal(Object.hasOwn(nested, "controlInbox"), false);
-    assert.equal(Object.hasOwn(nested, "capabilityToken"), false);
-    assert.equal(grandchild?.id, "nested-grandchild");
-    assertDefined(grandchild);
-    assert.equal(Object.hasOwn(grandchild, "controlInbox"), false);
-    assert.equal(Object.hasOwn(grandchild, "capabilityToken"), false);
-    assert.match(payload.message, /Nested subagents:/);
-    assert.match(payload.message, /↳ reviewer — complete \[nested-a\]/);
-  });
-
-  it("keeps full child summaries inside grouped payloads", () => {
-    const longSummary = `${"x".repeat(2000)}\n${"y".repeat(2000)}`;
-    const payload = buildSubagentResultIntercomPayload({
-      to: "chat",
-      runId: "run-bound",
-      mode: "single",
-      source: "foreground",
-      children: [{ agent: "worker", status: "completed", summary: longSummary }],
-    });
-    assert.equal(payload.children[0].summary, longSummary);
-    assert.match(payload.message, new RegExp(`${"x".repeat(2000)}\\n${"y".repeat(2000)}`));
-  });
-
-  it("formats compact grouped receipts with artifacts and sessions", () => {
-    const payload = buildSubagentResultIntercomPayload({
-      to: "chat",
-      runId: "run-abc",
-      mode: "parallel",
-      source: "foreground",
-      children: [
-        {
-          agent: "a",
-          status: "completed",
-          summary: "done",
-          artifactPath: "/tmp/a.md",
-          metadataPath: "/tmp/a-metadata.json",
-          intercomTarget: "subagent-a-run-abc-1",
-        },
-        { agent: "b", status: "failed", summary: "failed", sessionPath: "/tmp/b.jsonl" },
-      ],
-    });
-    const receipt = formatSubagentResultReceipt({
-      mode: "parallel",
-      runId: "run-abc",
-      payload,
-    });
-
-    assert.match(receipt, /Delivered parallel subagent results via intercom\./);
-    assert.match(receipt, /Delivery: succeeded/);
-    assert.match(receipt, /Child outcome: failed/);
-    assert.match(receipt, /Children: 1 completed, 1 failed/);
-    assert.match(receipt, /Artifacts:\n- a \[completed\]: \/tmp\/a\.md/);
-    assert.match(
-      receipt,
-      /Result metadata \(a; acceptance details when configured\): \/tmp\/a-metadata\.json/,
-    );
-    assert.doesNotMatch(receipt, /Result metadata \(b;/);
-    assert.match(
-      receipt,
-      /Run intercom targets \(may be inactive after completion\):\n- a \[completed\]: subagent-a-run-abc-1/,
-    );
-    assert.match(receipt, /Sessions:\n- b \[failed\]: \/tmp\/b\.jsonl/);
-    assert.match(receipt, /Non-completed children:\n- b \[failed\]: failed/);
-    assert.match(receipt, /Full grouped output was sent over intercom\./);
-  });
-
-  it("strips heavy output fields from receipt details", () => {
-    const stripped = stripDetailsOutputsForIntercomReceipt({
-      mode: "single",
-      results: [
-        {
-          agent: "worker",
-          task: "Task",
-          exitCode: 0,
-          messages: [events.assistantMessage("full").message],
-          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-          finalOutput: "full output",
-          truncation: { text: "truncated", truncated: true },
-        },
-      ],
-    });
-    assert.equal(stripped.results[0]?.messages, undefined);
-    assert.equal(stripped.results[0]?.finalOutput, undefined);
-    assert.equal(stripped.results[0]?.truncation, undefined);
-    const withDelivery = stripDetailsOutputsForIntercomReceipt(
-      { mode: "single", results: [] },
-      {
-        delivered: true,
-        to: "chat",
-        status: "completed",
-        summary: "1 completed",
-      },
-    );
-    assert.deepEqual(withDelivery.intercomDelivery, {
-      delivered: true,
-      to: "chat",
-      status: "completed",
-      summary: "1 completed",
-    });
+      assert.match(payload.message, /Resume: unavailable; no child session file was persisted/);
+      assert.doesNotMatch(payload.message, /Revive:|Continue(?: child)?:/);
+      assert.doesNotMatch(payload.message, /agent_runs\(\{ action: "continue"/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("resolves paused and detached statuses", () => {

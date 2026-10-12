@@ -1,5 +1,4 @@
 import type { ReadonlyInput } from "../shared/types/inputs.ts";
-import { copyDetails, copyResult } from "../extension/result-snapshot.ts";
 import { compactNestedResultChildren, formatNestedResultLines } from "./nested-result-tree.ts";
 export {
   compactNestedResultChildren,
@@ -13,7 +12,6 @@ import * as fs from "node:fs";
 import { formatRunAction } from "../shared/status-format.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import type {
-  Details,
   SingleResult,
   SubagentResultIntercomChild,
   SubagentResultIntercomPayload,
@@ -307,105 +305,4 @@ export function buildSubagentResultIntercomPayload(
     ...firstChildDetails(firstChild),
   };
   return { ...payload, message: formatSubagentResultIntercomMessage(payload) };
-}
-
-function stripSingleResultOutputs(result: ReadonlyInput<SingleResult>): SingleResult {
-  return {
-    ...copyResult(result),
-    messages: undefined,
-    finalOutput: undefined,
-    truncation: undefined,
-  };
-}
-
-export function stripDetailsOutputsForIntercomReceipt(
-  details: ReadonlyInput<Details>,
-  delivery?: Details["intercomDelivery"],
-): Details {
-  return {
-    ...copyDetails(details),
-    results: details.results.map(stripSingleResultOutputs),
-    ...(delivery ? { intercomDelivery: delivery } : {}),
-  };
-}
-
-function compactReceiptSummary(summary: string): string {
-  const withoutOutput = summary.split(/\n\nOutput:\n|\sOutput:\s/)[0] ?? summary;
-  const normalized = withoutOutput.replace(/\s+/g, " ").trim();
-  return normalized.length > 240 ? `${normalized.slice(0, 239)}…` : normalized;
-}
-
-function formatChildReferences(
-  children: readonly SubagentResultIntercomChild[],
-  field: "artifactPath" | "intercomTarget" | "sessionPath",
-  heading: string,
-): string[] {
-  const lines: string[] = [];
-  for (const child of children) {
-    const value = child[field];
-    if (typeof value === "string") {
-      lines.push(`- ${child.agent} [${child.status}]: ${value}`);
-    }
-  }
-  return lines.length > 0 ? [heading, ...lines] : [];
-}
-
-function formatReceiptReferences(payload: SubagentResultIntercomPayload): string[] {
-  const lines: string[] = [];
-  if (hasText(payload.resultPath)) {
-    lines.push(`Saved result (acceptance details when configured): ${payload.resultPath}`);
-  }
-  for (const child of payload.children) {
-    if (hasText(child.metadataPath)) {
-      lines.push(
-        `Result metadata (${child.agent}; acceptance details when configured): ${child.metadataPath}${fs.existsSync(child.metadataPath) ? "" : " (missing)"}`,
-      );
-    }
-  }
-  lines.push(
-    ...formatChildReferences(payload.children, "artifactPath", "Artifacts:"),
-    ...formatChildReferences(
-      payload.children,
-      "intercomTarget",
-      "Run intercom targets (may be inactive after completion):",
-    ),
-    ...formatChildReferences(payload.children, "sessionPath", "Sessions:"),
-  );
-  const nonCompleted = payload.children.filter((child) => child.status !== "completed");
-  if (nonCompleted.length > 0) {
-    lines.push("Non-completed children:");
-    for (const child of nonCompleted) {
-      lines.push(`- ${child.agent} [${child.status}]: ${compactReceiptSummary(child.summary)}`);
-    }
-  }
-  return lines;
-}
-
-export function formatSubagentResultReceipt(input: {
-  readonly mode: SubagentRunMode;
-  readonly runId: string;
-  readonly payload: SubagentResultIntercomPayload;
-}): string {
-  const counts = countStatuses(input.payload.children);
-  const modeLabel = {
-    single: "single subagent result",
-    parallel: "parallel subagent results",
-    chain: "chain subagent results",
-  }[input.mode];
-  const lines = [
-    `Delivered ${modeLabel} via intercom.`,
-    "Delivery: succeeded",
-    `Run: ${input.runId}`,
-    `Child outcome: ${input.payload.status}`,
-    `Children: ${formatStatusCounts(counts)}`,
-    ...(hasText(input.payload.error)
-      ? [
-          `Workflow ${input.payload.status === "paused" ? "paused" : "error"}: ${input.payload.error}`,
-        ]
-      : []),
-  ];
-
-  lines.push(...formatReceiptReferences(input.payload));
-  lines.push("Full grouped output was sent over intercom.");
-  return lines.join("\n");
 }

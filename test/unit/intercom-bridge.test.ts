@@ -146,12 +146,22 @@ describe("applyIntercomBridgeToAgent", () => {
   });
 
   it("is idempotent", () => {
-    const first = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"] }), bridge);
-    const second = applyIntercomBridgeToAgent(first, bridge);
-    assertDefined(second.tools);
-    assert.equal(second.tools.filter((tool) => tool === "intercom").length, 1);
-    assert.equal(second.tools.filter((tool) => tool === "contact_supervisor").length, 1);
-    assert.equal(second.systemPrompt, first.systemPrompt);
+    for (const extensions of [undefined, ["pi-intercom"]]) {
+      const first = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"], extensions }), bridge);
+      const second = applyIntercomBridgeToAgent(first, bridge);
+      assertDefined(second.tools);
+      assert.equal(second.tools.filter((tool) => tool === "intercom").length, 1);
+      assert.equal(second.tools.filter((tool) => tool === "contact_supervisor").length, 1);
+      assert.deepEqual(second.tools, first.tools);
+      if (extensions) {
+        assertDefined(second.extensions);
+        assert.equal(second.extensions.length, 1);
+      } else {
+        assert.equal(second.extensions, undefined);
+      }
+      assert.deepEqual(second.extensions, first.extensions);
+      assert.equal(second.systemPrompt, first.systemPrompt);
+    }
   });
 
   it("leaves tools undefined when the agent had no explicit tool list", () => {
@@ -183,14 +193,6 @@ describe("applyIntercomBridgeToAgent", () => {
     }
   });
 
-  it("is idempotent after resolving the bundled extension", () => {
-    const first = applyIntercomBridgeToAgent(
-      makeAgent({ tools: ["read"], extensions: ["pi-intercom"] }),
-      bridge,
-    );
-    assert.equal(applyIntercomBridgeToAgent(first, bridge), first);
-  });
-
   it("deduplicates bundled intercom while preserving unrelated allowlist entries", () => {
     const updated = applyIntercomBridgeToAgent(
       makeAgent({
@@ -207,19 +209,16 @@ describe("applyIntercomBridgeToAgent", () => {
   });
 
   it("does not inject when extension sandbox excludes intercom", () => {
-    const agent = makeAgent({ tools: ["read"], extensions: ["/tmp/other-extension/index.ts"] });
-    const updated = applyIntercomBridgeToAgent(agent, bridge);
-    assert.equal(updated, agent);
-  });
-
-  it("does not inject for empty allowlists", () => {
-    const agent = makeAgent({ tools: ["read"], extensions: [] });
-    assert.equal(applyIntercomBridgeToAgent(agent, bridge), agent);
-  });
-
-  it("does not treat not-pi-intercom paths as allowed", () => {
-    const agent = makeAgent({ tools: ["read"], extensions: ["/tmp/not-pi-intercom/index.ts"] });
-    const updated = applyIntercomBridgeToAgent(agent, bridge);
-    assert.equal(updated, agent);
+    for (const extensions of [
+      ["/tmp/other-extension/index.ts"],
+      [],
+      ["/tmp/not-pi-intercom/index.ts"],
+    ]) {
+      const agent = makeAgent({ tools: ["read"], extensions });
+      const original = structuredClone(agent);
+      const updated = applyIntercomBridgeToAgent(agent, bridge);
+      assert.deepEqual(updated, original);
+      assert.deepEqual(agent, original, "sandbox exclusion must leave the input untouched");
+    }
   });
 });
