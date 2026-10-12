@@ -2313,6 +2313,7 @@ describe("async execution utilities", () => {
       const readerRelease = path.join(tempDir, "release-reader");
       const editorStart = path.join(tempDir, "start-editor");
       const editorRelease = path.join(tempDir, "release-editor");
+      const editorFinish = path.join(tempDir, "finish-editor");
       mockPi.onCall({
         matchArgsIncludes: "Read",
         steps: [
@@ -2337,13 +2338,19 @@ describe("async execution utilities", () => {
           },
           {
             waitForFile: editorRelease,
-            jsonl: [
-              ...(ending === "tool end"
+            jsonl:
+              ending === "tool end"
                 ? [mockEvents.toolEnd("edit"), mockEvents.toolResult("edit", "ok")]
-                : []),
-              mockEvents.assistantMessage("editor done"),
-            ],
+                : [mockEvents.assistantMessage("editor done")],
           },
+          ...(ending === "tool end"
+            ? [
+                {
+                  waitForFile: editorFinish,
+                  jsonl: [mockEvents.assistantMessage("editor done")],
+                },
+              ]
+            : []),
         ],
       });
 
@@ -2369,7 +2376,20 @@ describe("async execution utilities", () => {
         fs.writeFileSync(editorStart, "start");
         const editing = await waitForAsyncStatus(id, (status) => status.currentTool === "edit");
         assert.equal(editing.currentPath, "docs.md");
+        assert.equal(editing.steps?.[0]?.currentPath, "README.md");
+        assert.equal(editing.steps[1].currentPath, "docs.md");
         fs.writeFileSync(editorRelease, "finish");
+        if (ending === "tool end") {
+          const betweenTools = await waitForAsyncStatus(
+            id,
+            (status) =>
+              status.steps?.[1]?.status === "running" && status.steps[1].currentTool === undefined,
+          );
+          assert.equal(betweenTools.currentTool, "read");
+          assert.equal(betweenTools.currentPath, "README.md");
+          assert.equal(betweenTools.currentToolStartedAt, reading.currentToolStartedAt);
+          fs.writeFileSync(editorFinish, "finish");
+        }
         const finished = await waitForAsyncStatus(
           id,
           (status) => status.steps?.[1]?.status !== "running",
@@ -2384,7 +2404,7 @@ describe("async execution utilities", () => {
         assert.equal(finished.currentPath, "README.md");
         assert.equal(finished.currentToolStartedAt, reading.currentToolStartedAt);
       } finally {
-        for (const file of [readerRelease, editorStart, editorRelease]) {
+        for (const file of [readerRelease, editorStart, editorRelease, editorFinish]) {
           fs.writeFileSync(file, "finish");
         }
         await waitForAsyncResultFile(id, 10_000);
