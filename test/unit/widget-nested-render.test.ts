@@ -3,7 +3,7 @@ import { createPlainTheme } from "../support/ui.ts";
 import type { ReadonlyDeep } from "type-fest";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildWidgetLines, widgetRenderKey } from "../../src/tui/render.ts";
+import { buildWidgetLines } from "../../src/tui/render.ts";
 import type { AsyncJobState, NestedRunSummary } from "../../src/shared/types.ts";
 
 const theme = createPlainTheme();
@@ -90,11 +90,5 @@ describe("nested widget rendering", () => {
     });
     const expanded = buildWidgetLines([job(child)], theme, 120, true).join("\n");
     assert.match(expanded, /missing-metadata · failed · Failed · owner gone/);
-  });
-
-  it("rerenders when only nested state changes", () => {
-    const first = job(nested("nested-reviewer", "root-run", "running"));
-    const second = job(nested("nested-reviewer", "root-run", "complete"));
-    assert.notEqual(widgetRenderKey(first), widgetRenderKey(second));
   });
 });

@@ -92,6 +92,7 @@ describe("SubagentParams schema", () => {
     assert.equal(hasAnyOfArrayWithStringItems(readsSchema), true);
     assert.equal(hasAnyOfType(readsSchema, "boolean"), true);
     assert.equal(schemaAt(taskSchema, "progress").type, "boolean");
+    assert.equal(schemaAt(SubagentParams, "properties", "progress").type, "boolean");
 
     const concurrencySchema = schemaAt(SubagentParams, "properties", "concurrency");
     assert.notEqual(concurrencySchema, undefined, "concurrency schema should exist");
@@ -115,10 +116,6 @@ describe("SubagentParams schema", () => {
     assert.notEqual(maxRuntimeSchema, undefined, "maxRuntimeMs schema should exist");
     assert.equal(maxRuntimeSchema.minimum, 1);
     assert.match(descriptionOf(maxRuntimeSchema), /alias/i);
-  });
-
-  it("includes top-level progress for single runs", () => {
-    assert.equal(schemaAt(SubagentParams, "properties", "progress").type, "boolean");
   });
 
   it("includes final output truncation limits", () => {
@@ -195,8 +192,12 @@ describe("SubagentParams schema", () => {
     ]);
   });
 
-  it("does not emit description-only schema nodes", () => {
+  it("does not emit provider-rejected union schema shapes", () => {
+    const rejectedPaths: string[] = [];
     const descriptionOnlyPaths: string[] = [];
+    const missingItemsPaths: string[] = [];
+    const untypedRequiredPaths: string[] = [];
+    const repeatedNotPaths: string[] = [];
     for (const { path: nodePath, value: node } of schemaNodes()) {
       if (
         Object.hasOwn(node, "description") &&
@@ -205,42 +206,18 @@ describe("SubagentParams schema", () => {
       ) {
         descriptionOnlyPaths.push(nodePath);
       }
-    }
-    assert.deepEqual(descriptionOnlyPaths, []);
-  });
-
-  it("does not emit array-typed schema nodes without items", () => {
-    const missingItemsPaths: string[] = [];
-    for (const { path: nodePath, value: node } of schemaNodes()) {
       if (node.type === "array" && !Object.hasOwn(node, "items")) {
         missingItemsPaths.push(nodePath);
       }
-    }
-    assert.deepEqual(missingItemsPaths, []);
-  });
-
-  it("uses provider-compatible composed object schemas", () => {
-    const untypedRequiredPaths: string[] = [];
-    const repeatedNotPaths: string[] = [];
-    for (const { path: nodePath, value: node } of schemaNodes()) {
       if (isUntypedRequiredSchema(node)) {
         untypedRequiredPaths.push(nodePath);
       }
-      const allOf = node.allOf;
       if (
-        isUnknownArray(allOf) &&
-        allOf.filter((entry) => isSchemaNode(entry) && Object.hasOwn(entry, "not")).length > 1
+        isUnknownArray(node.allOf) &&
+        node.allOf.filter((entry) => isSchemaNode(entry) && Object.hasOwn(entry, "not")).length > 1
       ) {
         repeatedNotPaths.push(`${nodePath}.allOf`);
       }
-    }
-    assert.deepEqual(untypedRequiredPaths, []);
-    assert.deepEqual(repeatedNotPaths, []);
-  });
-
-  it("does not emit provider-rejected union schema shapes", () => {
-    const rejectedPaths: string[] = [];
-    for (const { path: nodePath, value: node } of schemaNodes()) {
       if (Array.isArray(node.type)) {
         rejectedPaths.push(`${nodePath}.type`);
       }
@@ -249,6 +226,10 @@ describe("SubagentParams schema", () => {
       }
     }
     assert.deepEqual(rejectedPaths, []);
+    assert.deepEqual(descriptionOnlyPaths, []);
+    assert.deepEqual(missingItemsPaths, []);
+    assert.deepEqual(untypedRequiredPaths, []);
+    assert.deepEqual(repeatedNotPaths, []);
   });
 
   it("uses provider-friendly anyOf unions for flexible fields and chain items", () => {

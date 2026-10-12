@@ -32,10 +32,15 @@ import {
   ModelRuntime,
   SettingsManager,
   SessionManager,
+  initTheme,
+  ToolExecutionComponent,
   type AgentSession,
   type CreateAgentSessionOptions,
 } from "@earendil-works/pi-coding-agent";
 import { createMockPi, createTempDir, removeTempDir } from "../support/helpers.ts";
+import { Compile } from "typebox/compile";
+import { TuiAltScreen } from "@earendil-works/pi-tui";
+import { createTestTerminal } from "../support/terminal.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const extensionPath = path.join(projectRoot, "src/extension/index.ts");
@@ -92,20 +97,6 @@ function activeTool(session: AgentSession, name: string) {
 }
 
 describe("subagent lazy activation with SDK tool filters", () => {
-  it("keeps controls active when an allowlist filters out their loader", async () => {
-    for (const name of ["subagent", "agent_runs"]) {
-      // Each scenario owns shared fixture state; complete it before starting the next one.
-      // oxlint-disable-next-line no-await-in-loop
-      await withSdkSession({ tools: [name] }, (session) => {
-        assert.deepEqual(
-          session.getAllTools().map((tool) => tool.name),
-          [name],
-        );
-        assert.deepEqual(session.getActiveToolNames(), [name]);
-      });
-    }
-  });
-
   it("honors native fresh defaults and explicit selection without startup deactivation", async () => {
     for (const [options, expected] of [
       [{ tools: ["read", "load_subagent", "subagent"] }, ["load_subagent", "read", "subagent"]],
@@ -122,6 +113,40 @@ describe("subagent lazy activation with SDK tool filters", () => {
       // oxlint-disable-next-line no-await-in-loop
       await withSdkSession(options, (session) => {
         assert.deepEqual(session.getActiveToolNames().sort(), expected);
+        const tool = session.extensionRunner.getToolDefinition("subagent");
+        assertDefined(tool?.renderCall);
+        initTheme("dark", false);
+        for (const [params, background] of [
+          [{ agent: "worker" }, true],
+          [
+            {
+              tasks: [
+                { agent: "worker", task: "a" },
+                { agent: "reviewer", task: "b" },
+              ],
+            },
+            true,
+          ],
+          [{ agent: "worker", async: false }, false],
+          [{ agent: "worker", timeoutMs: 1000 }, false],
+          [{ chain: [{ agent: "worker" }, { agent: "reviewer" }], clarify: true }, false],
+        ] as const) {
+          assert.equal(
+            new ToolExecutionComponent(
+              "subagent",
+              "label",
+              params,
+              {},
+              tool,
+              new TuiAltScreen(createTestTerminal()),
+              projectRoot,
+            )
+              .render(120)
+              .join("\n")
+              .includes("[async]"),
+            background,
+          );
+        }
       });
     }
   });
@@ -239,6 +264,77 @@ describe("subagent lazy activation with SDK tool filters", () => {
         );
         assert.equal(invalid.isError, true);
         assert.equal(activeTool(session, "agent_runs"), undefined);
+        const advanced = session.extensionRunner.getToolDefinition("subagent");
+        assertDefined(advanced);
+        const task = { agent: "__missing_acceptance_probe__", task: "Check", cwd: repo };
+        const pairs = [
+          { name: "EMPTY", value: "" },
+          { name: "VALUE", value: "a=b" },
+        ];
+        for (const worktree of [false, true]) {
+          const params = {
+            ...task,
+            worktree,
+            context: "fresh",
+            async: false,
+            acceptance: { verify: [{ id: "check", command: "true", env: pairs }] },
+          };
+          const original = structuredClone(params);
+          assert.ok(Compile(delegate.parameters).Check(params));
+          // Admission completes before the next shared SDK request.
+          const admitted = parseSubagentExecutionResult(
+            // oxlint-disable-next-line no-await-in-loop
+            await delegate.execute("delegate-check", params, new AbortController().signal),
+          );
+          assert.equal(
+            admitted.content[0]?.type === "text" && admitted.content[0].text,
+            `Unknown agent: ${task.agent}${worktree ? " (task 1)" : ""}`,
+          );
+          assert.equal(admitted.details.mode, worktree ? "parallel" : "single");
+          assert.deepEqual(params, original);
+          // Admission completes before the next shared SDK request.
+          // oxlint-disable-next-line no-await-in-loop
+          await assert.rejects(
+            () =>
+              delegate.execute(
+                "duplicate",
+                {
+                  ...params,
+                  acceptance: {
+                    verify: [{ id: "check", command: "true", env: [...pairs, pairs[0]] }],
+                  },
+                },
+                new AbortController().signal,
+              ),
+            /Verification environment contains duplicate names/,
+          );
+          const advancedTask = {
+            ...task,
+            acceptance: {
+              verify: [{ id: "check", command: "true", env: { EMPTY: "", VALUE: "a=b" } }],
+            },
+          };
+          const advancedParams = worktree
+            ? { tasks: [advancedTask], worktree: true }
+            : advancedTask;
+          assert.ok(Compile(advanced.parameters).Check(advancedParams));
+          // Admission completes before the next shared SDK request.
+          const advancedResult = parseSubagentExecutionResult(
+            // oxlint-disable-next-line no-await-in-loop
+            await advanced.execute(
+              "advanced-check",
+              advancedParams,
+              undefined,
+              undefined,
+              session.extensionRunner.createToolContext(
+                "advanced-check",
+                new AbortController().signal,
+              ),
+            ),
+          );
+          assert.deepEqual(advancedResult.content, admitted.content);
+          assert.equal(advancedResult.details.mode, admitted.details.mode);
+        }
         for (const route of ["delegate", "worktree", "subagent", "slash", "template"]) {
           const worktree = route === "worktree";
           mock.reset();
@@ -581,17 +677,106 @@ describe("subagent lazy activation with SDK tool filters", () => {
     }
   });
 
-  it("enables the available full tool through Pi's public active-tool API", async () => {
+  it("enables the available full tool through Pi's public active-tool API", async (t) => {
     await withSdkSession({}, async (session) => {
       assert.equal(session.getActiveToolNames().includes("subagent"), false);
+      const advanced = session.extensionRunner.getToolDefinition("subagent");
+      const discovery = session.extensionRunner.getToolDefinition("load_subagent");
+      assertDefined(advanced);
+      assertDefined(discovery);
+      assert.equal(advanced.promptSnippet, undefined);
+      assert.equal(advanced.promptGuidelines, undefined);
+      assert.match(discovery.promptSnippet ?? "", /subagent orchestration/);
+      for (const name of ["scout", "worker", "planner"]) {
+        assert.equal(advanced.description.includes(name), false);
+      }
+      for (const fragment of [
+        '{ action: "list" }',
+        "executable/non-disabled",
+        "output?,reads?,progress?",
+        "maxOutput",
+        "bytes?: number, lines?: number",
+      ]) {
+        assert.ok(advanced.description.includes(fragment), fragment);
+      }
+      session.setActiveToolsByName(["read", "load_subagent"]);
+      const setActive = session.setActiveToolsByName.bind(session);
+      const selection = t.mock.method(session, "setActiveToolsByName", (names: string[]) => {
+        setActive(names);
+      });
       const loader = activeTool(session, "load_subagent");
       assert.ok(loader);
       const result = await loader.execute("load", {}, new AbortController().signal);
       assert.match(JSON.stringify(result.content), /Subagent enabled/);
+      const guidance = result.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+      assert.match(guidance, /^Subagent enabled\./);
+      for (const fragment of [
+        'action: "list"',
+        "parent session responsible",
+        "review-only tasks",
+        "omit acceptance",
+        "incomplete active Pi goal",
+        "yield, then continue the goal after automatic completion delivery",
+        "async:false only for explicitly chosen foreground execution",
+        "non-blocking steer",
+        "supplements the active task",
+      ]) {
+        assert.ok(guidance.includes(fragment), fragment);
+      }
+      assert.deepEqual(session.getActiveToolNames(), [
+        "read",
+        "load_subagent",
+        "agent_runs",
+        "subagent",
+      ]);
       assert.equal(session.getActiveToolNames().includes("subagent"), true);
+      const changes = selection.mock.callCount();
       const repeated = await loader.execute("load-again", {}, new AbortController().signal);
       assert.match(JSON.stringify(repeated.content), /Subagent already enabled/);
+      assert.match(
+        repeated.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+        /^Subagent already enabled\./,
+      );
+      assert.equal(selection.mock.callCount(), changes);
+      assert.deepEqual(session.getActiveToolNames(), [
+        "read",
+        "load_subagent",
+        "agent_runs",
+        "subagent",
+      ]);
       assert.equal(session.getActiveToolNames().filter((name) => name === "subagent").length, 1);
+      let expanded = false;
+      const expansionChanges: boolean[] = [];
+      await session.bindExtensions({
+        mode: "tui",
+        uiContext: {
+          ...session.extensionRunner.createContext().ui,
+          getToolsExpanded: () => expanded,
+          setToolsExpanded: (value) => {
+            expanded = value;
+            expansionChanges.push(value);
+          },
+        },
+      });
+      const tool = activeTool(session, "subagent");
+      assertDefined(tool);
+      const ctx = session.extensionRunner.createContext();
+      assert.equal(ctx.hasUI, true);
+      assert.equal(ctx.mode, "tui");
+      for (const preference of [false, true]) {
+        expanded = preference;
+        // Preserve each UI preference before advancing to the next one.
+        // oxlint-disable-next-line no-await-in-loop
+        await tool.execute("list", { action: "list" }, new AbortController().signal);
+        assert.equal(ctx.ui.getToolsExpanded(), preference);
+        assert.deepEqual(expansionChanges, []);
+      }
     });
   });
 });

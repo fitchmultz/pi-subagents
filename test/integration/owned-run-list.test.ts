@@ -14,7 +14,7 @@ import { createSubagentState, toolText } from "../support/background-fixtures.ts
 const root = createTempDir("owned-list-");
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
-const { ownedRunList, ownedRunStatusResult, rememberOwnedRun, saveForegroundRun } =
+const { ownedRunList, ownedRunStatusResult, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } =
   await import("../../src/runs/shared/run-records.ts");
 const { closeRunHistory, runHistoryIndex } = await import("../../src/runs/shared/history-index.ts");
 const {
@@ -38,30 +38,35 @@ function ownerState(currentSessionId = "parent"): SubagentState {
   return state;
 }
 
-function seedRetainedRuns(sessionFile: string): SubagentState {
+function retainedRun(sessionFile: string, index: number, unreviewed: boolean): OwnedRun {
+  const runId = unreviewed ? `finished-${index}` : `page-${String(index).padStart(2, "0")}`;
+  return {
+    runId,
+    rootRunId: index >= 60 ? "page-00" : runId,
+    ownerSessionId: "parent",
+    source: unreviewed || index === 1 ? "foreground" : "async",
+    mode: "single",
+    cwd: root,
+    task: `Work ${index}`,
+    startedAt: index + 1,
+    children: [{ agent: "worker", index: 0, sessionFile }],
+    ...(!unreviewed && index >= 3 ? { review: { decision: "accepted", reviewedAt: index } } : {}),
+    ...(index >= 60
+      ? { predecessorRunId: index === 60 ? "page-00" : `page-${index - 1}`, predecessorIndex: 0 }
+      : {}),
+    ...(!unreviewed && index === 1 ? { legacy: true } : {}),
+  };
+}
+
+function seedRetainedRuns(sessionFile: string, unreviewed = false): SubagentState {
   const state = ownerState();
-  for (let index = 0; index < 65; index++) {
-    const runId = `page-${String(index).padStart(2, "0")}`;
-    const run: OwnedRun = {
-      runId,
-      rootRunId: index >= 60 ? "page-00" : runId,
-      ownerSessionId: "parent",
-      source: index === 1 ? "foreground" : "async",
-      mode: "single",
-      cwd: root,
-      task: `Work ${index}`,
-      startedAt: index + 1,
-      children: [{ agent: "worker", index: 0, sessionFile }],
-      ...(index >= 3 ? { review: { decision: "accepted", reviewedAt: index } } : {}),
-      ...(index >= 60
-        ? { predecessorRunId: index === 60 ? "page-00" : `page-${index - 1}`, predecessorIndex: 0 }
-        : {}),
-      ...(index === 1 ? { legacy: true } : {}),
-    };
+  for (let index = 0; index < (unreviewed ? 31 : 65); index++) {
+    const run = retainedRun(sessionFile, index, unreviewed),
+      { runId } = run;
     rememberOwnedRun(state, run);
     saveQuestionOwner(runId, "parent");
     saveQuestionContract(runId, 0, { sessionFile, ...(index === 2 ? { pid: process.pid } : {}) });
-    if (index === 2) {
+    if (!unreviewed && index === 2) {
       saveRunStatus(runId, {
         runId,
         mode: "single",
@@ -71,7 +76,7 @@ function seedRetainedRuns(sessionFile: string): SubagentState {
         pid: process.pid,
         steps: [{ agent: "worker", status: "running", sessionFile }],
       });
-    } else if (index === 1) {
+    } else if (unreviewed || index === 1) {
       saveForegroundRun({
         runId,
         mode: "single",
@@ -82,7 +87,7 @@ function seedRetainedRuns(sessionFile: string): SubagentState {
             task: run.task,
             exitCode: 0,
             sessionFile,
-            finalOutput: "Legacy saved foreground evidence",
+            finalOutput: unreviewed ? "Short worker result" : "Legacy saved foreground evidence",
             messages: [],
             usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
           },
@@ -321,6 +326,82 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
     ownedRunStatusResult(firstRun, state).details.run?.continuations.map((run) => run.runId),
     ["page-60", "page-61", "page-62", "page-63", "page-64"],
   );
+
+  const unreviewed = seedRetainedRuns(sessionFile, true);
+  t.after(() => closeRunHistory(unreviewed));
+  const predecessor = resolveOwnedRun(unreviewed, "finished-0");
+  assertDefined(predecessor);
+  const live: OwnedRun = {
+    ...predecessor,
+    runId: "list-live",
+    source: "async",
+    asyncDir: getRunMetadataDir("list-live"),
+    pid: process.pid,
+    rootRunId: "finished-0",
+    predecessorRunId: "finished-0",
+    predecessorIndex: 0,
+  };
+  rememberOwnedRun(unreviewed, live);
+  saveQuestionOwner(live.runId, "parent");
+  saveQuestionContract(live.runId, 0, { sessionFile, pid: process.pid });
+  saveRunStatus(live.runId, {
+    runtimeVersion: 2,
+    runId: live.runId,
+    mode: "single",
+    state: "running",
+    pid: process.pid,
+    startedAt: 1,
+    lastUpdate: 1,
+    steps: [{ agent: "worker", status: "running", sessionFile }],
+  });
+  const liveIndex = await runHistoryIndex(unreviewed);
+  await liveIndex.refresh();
+  const livePage = await ownedRunList(unreviewed, { limit: 2 });
+  assertDefined(livePage.details.runs);
+  assert.equal(livePage.details.runs.length, 2);
+  assert.equal(livePage.details.runs[0].runId, "list-live");
+  assert.match(toolText(livePage.content), /from finished-0:0/);
+  const identities: string[] = [];
+  let lineage = "";
+  for (let offset = 0; offset < 32; offset += 5) {
+    // Every bounded page must retain the live run and all unreviewed identities.
+    // oxlint-disable-next-line no-await-in-loop
+    const result = await ownedRunList(unreviewed, { offset, limit: 5 });
+    assertDefined(result.details.runList);
+    assert.equal(result.details.runList.total, 32);
+    assertDefined(result.details.runs);
+    identities.push(...result.details.runs.map((run) => run.runId));
+    lineage += toolText(result.content);
+  }
+  assert.deepEqual(
+    [...new Set(identities)].sort(),
+    ["list-live", ...Array.from({ length: 31 }, (_, finished) => `finished-${finished}`)].sort(),
+  );
+  assert.equal(identities.length, 32, "pages neither repeat nor drop historical identities");
+  assert.match(lineage, /continued as list-live \(separate results\/reviews\)/);
+  const old = resolveOwnedRun(unreviewed, "finished-30"),
+    successor = resolveOwnedRun(unreviewed, "list-live");
+  assertDefined(old);
+  assertDefined(successor);
+  assert.equal(old.runId, "finished-30");
+  assert.equal(predecessor.review, undefined);
+  assert.equal(successor.review, undefined);
+  const review = { decision: "accepted" as const, reviewedAt: 1, message: "predecessor-only" };
+  rememberOwnedRun(unreviewed, { ...predecessor, review });
+  await unreviewed.historyReady;
+  await liveIndex.refresh();
+  const independentlyReviewed = await ownedRunList(unreviewed, { limit: 32 });
+  assertDefined(independentlyReviewed.details.runs);
+  const reviewedPredecessor = independentlyReviewed.details.runs.find(
+      (run) => run.runId === "finished-0",
+    ),
+    unreviewedSuccessor = independentlyReviewed.details.runs.find(
+      (run) => run.runId === "list-live",
+    );
+  assertDefined(reviewedPredecessor);
+  assertDefined(unreviewedSuccessor);
+  assert.equal(unreviewedSuccessor.review, undefined);
+  assert.deepEqual(reviewedPredecessor.review, review);
 });
 
 test("a stopped browse worker stays unavailable through background requests until explicit retry", async (t) => {

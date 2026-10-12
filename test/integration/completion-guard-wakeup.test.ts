@@ -85,6 +85,7 @@ describe("completion-guard terminal wakeup", () => {
         ],
       );
       assert.match(sent[0].message.content, /Next: read the output artifact or session/);
+      assert.match(sent[0].message.content, /Subagent failed: worker/);
       assert.match(sent[1].message.content, /Background task failed/);
       assert.equal(starts.length, 1, "the native SDK runs only the completion wakeup");
       const persisted = native.session.sessionManager

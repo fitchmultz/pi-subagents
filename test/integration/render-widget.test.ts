@@ -7,7 +7,7 @@ import { buildWidgetLines, renderWidget } from "../../src/tui/render.ts";
 import { createPlainTheme } from "../support/ui.ts";
 import { makeMinimalCtx } from "../support/helpers.ts";
 import { createTestTerminal } from "../support/terminal.ts";
-import { TuiMainScreen } from "@earendil-works/pi-tui";
+import { TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AsyncJobState } from "../../src/shared/types.ts";
 const theme = createPlainTheme();
@@ -102,6 +102,9 @@ describe("subagent async widget rendering", () => {
 
     const text = lines.join("\n");
     assert.match(text, new RegExp(`^${runningGlyphPattern} Async agents · background`));
+    for (const name of ["scout", "planner", "reviewer"]) {
+      assert.ok(text.includes(name), `${name} must be present before comparing order`);
+    }
     assert.ok(
       text.indexOf("scout") < text.indexOf("planner"),
       "running row should precede queued work",
@@ -184,31 +187,6 @@ describe("subagent async widget rendering", () => {
     assert.doesNotMatch(text, /Agent 1\/2: reviewer · failed .*read 46s/);
   });
 
-  it("collapses repeated async parallel agent names", () => {
-    const lines = buildWidgetLines(
-      [
-        {
-          asyncId: "run-1",
-          asyncDir: "/tmp/1",
-          status: "running",
-          mode: "parallel",
-          agents: ["reviewer", "reviewer", "reviewer"],
-          activeParallelGroup: true,
-          runningSteps: 3,
-          completedSteps: 0,
-          stepsTotal: 3,
-        },
-      ],
-      theme,
-      120,
-    );
-
-    const text = lines.join("\n");
-    assert.match(text, /parallel · 3 agents running/);
-    assert.doesNotMatch(text, /parallel · reviewer ×3/);
-    assert.doesNotMatch(text, /reviewer → reviewer → reviewer/);
-  });
-
   it("renders a one-line collapsed component widget for three active parallel agents", () => {
     const now = Date.now();
     const ui = createUiContext();
@@ -269,6 +247,8 @@ describe("subagent async widget rendering", () => {
     const text = lines.join("\n");
     assert.match(text, /parallel · 3 agents running · 0\/3 succeeded/);
     assert.match(text, /Ctrl\+O/);
+    assert.doesNotMatch(text, /parallel · reviewer ×3/);
+    assert.doesNotMatch(text, /reviewer → reviewer → reviewer/);
     assert.doesNotMatch(text, /Agent \d\/3/);
     assert.doesNotMatch(text, /widget truncated/);
     assert.equal(lines.length, 1, "a single collapsed run should cost one terminal line");
@@ -332,11 +312,15 @@ describe("subagent async widget rendering", () => {
       renderWidget(ui.ctx, [job]);
       const widget = ui.widgets.at(-1);
       assert.ok(typeof widget === "function");
-      assert.equal(
-        widget(tui, theme).render(80).length,
-        buildWidgetLines([job], theme, 78, true).length,
-        "padded expanded rows must not wrap into continuation lines",
-      );
+      const lines = widget(tui, theme).render(80);
+      assert.equal(lines.length, 6, "padded expanded rows must not wrap into continuation lines");
+      assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+      assert.match(lines[0] ?? "", /async subagent parallel \(2\) · background/);
+      assert.match(lines[1] ?? "", /parallel · 1 agent running · 1\/2 succeeded/);
+      assert.match(lines[2] ?? "", /Agent 1\/2: reviewer-security · running/);
+      assert.match(lines[3] ?? "", /⎿  thinking…/);
+      assert.match(lines[4] ?? "", outputPathPattern("/tmp/1/output-0.log"));
+      assert.match(lines[5] ?? "", /Agent 2\/2: reviewer-claude · complete/);
     } finally {
       if (columns) {
         Object.defineProperty(process.stdout, "columns", columns);
@@ -875,41 +859,37 @@ describe("subagent async widget rendering", () => {
     assert.equal(firstGrapheme(first[1] ?? ""), firstGrapheme(second[1] ?? ""));
   });
 
-  it("does not animate queued-only widgets", (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-    const ui = createUiContext();
-    renderWidget(ui.ctx, [
-      { asyncId: "queued-only", asyncDir: "/tmp/queued", status: "queued", agents: ["planner"] },
-    ]);
-    const initialWidgetCount = ui.widgets.length;
-    t.mock.timers.tick(190);
-    assert.equal(
-      ui.widgets.length,
-      initialWidgetCount,
-      "static queued widget should not refresh at animation cadence",
-    );
-    assert.equal(ui.renderRequests, 0);
-  });
-
   it("does not refresh running widgets at animation cadence", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-    const ui = createUiContext();
-    renderWidget(ui.ctx, [
-      { asyncId: "run-static", asyncDir: "/tmp/run", status: "running", agents: ["scout"] },
-    ]);
-    const initialWidgetCount = ui.widgets.length;
-    t.mock.timers.tick(190);
-    assert.equal(
-      ui.widgets.length,
-      initialWidgetCount,
-      "running widget should wait for status updates instead of animation ticks",
-    );
-    assert.equal(ui.renderRequests, 0);
+    for (const status of ["running", "queued"] as const) {
+      const ui = createUiContext();
+      renderWidget(ui.ctx, [
+        {
+          asyncId: "run-static",
+          asyncDir: "/tmp/run",
+          status,
+          agents: [status === "running" ? "scout" : "planner"],
+        },
+      ]);
+      const initialWidgetCount = ui.widgets.length;
+      assert.equal(
+        initialWidgetCount,
+        1,
+        "the native widget must be installed before checking inactivity",
+      );
+      t.mock.timers.tick(190);
+      assert.equal(
+        ui.widgets.length,
+        initialWidgetCount,
+        "running widget should wait for status updates instead of animation ticks",
+      );
+      assert.equal(ui.renderRequests, 0);
 
-    renderWidget(ui.ctx, []);
-    const afterClearCount = ui.widgets.length;
-    t.mock.timers.tick(190);
-    assert.equal(ui.widgets.length, afterClearCount, "cleared widget should stay quiet");
-    assert.equal(ui.widgets.at(-1), undefined);
+      renderWidget(ui.ctx, []);
+      const afterClearCount = ui.widgets.length;
+      t.mock.timers.tick(190);
+      assert.equal(ui.widgets.length, afterClearCount, "cleared widget should stay quiet");
+      assert.equal(ui.widgets.at(-1), undefined);
+    }
   });
 });

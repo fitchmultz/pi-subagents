@@ -411,6 +411,10 @@ for (const name of heavy) {
   test(`explicit ${name} policy without loaders stays usable`, async (t) => {
     const f = await fixture(t, { tools: [name] });
     assert.deepEqual(f.active(), [name]);
+    assert.deepEqual(
+      f.session.getAllTools().map((tool) => tool.name),
+      [name],
+    );
   });
 }
 

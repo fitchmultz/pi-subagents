@@ -329,7 +329,7 @@ test("owned slash and notification hints expand through the native custom-messag
 test("native async launch and revival cards collapse without changing their receipts", async (t) => {
   const id = "f5b4b221-5c64-4bc7-9862-70a35d94dc9b";
   const previousId = "622f1dc5-d645-4125-a903-c60e3a568208";
-  for (const mode of ["single", "parallel", "chain", "revival"] as const) {
+  for (const mode of ["single", "parallel", "chain", "revival", "legacy-fork"] as const) {
     // Native renderer cases share the SDK keybinding singleton.
     // oxlint-disable-next-line no-await-in-loop
     await t.test(mode, () => {
@@ -338,15 +338,20 @@ test("native async launch and revival cards collapse without changing their rece
         headline = `Revived async subagent from ${previousId}.\nRun mapping: ${previousId} -> ${id}\nRevived run: ${id}\nAgent: worker\nSession: /tmp/saved-child.jsonl`;
       } else if (mode === "single") {
         headline = `Async: worker [${id}]`;
+      } else if (mode === "legacy-fork") {
+        headline = "Async: reviewer [abc123]";
       }
       const receipt: SubagentExecutionResult = {
-        content: [{ type: "text", text: formatAsyncStartedMessage(headline) }],
+        content: [
+          {
+            type: "text",
+            text: mode === "legacy-fork" ? headline : formatAsyncStartedMessage(headline),
+          },
+        ],
         details: {
-          mode: mode === "revival" ? "single" : mode,
+          mode: mode === "revival" || mode === "legacy-fork" ? "single" : mode,
           results: [],
-          runId: id,
-          asyncId: id,
-          asyncDir: `/tmp/${id}`,
+          ...(mode === "legacy-fork" ? {} : { runId: id, asyncId: id, asyncDir: `/tmp/${id}` }),
           context: "fork",
           ...(mode === "revival"
             ? {
@@ -370,13 +375,15 @@ test("native async launch and revival cards collapse without changing their rece
             component.render(width).length <= 7,
             `${name} ${mode} should not display the instruction paragraphs`,
           );
-          assert.ok(
-            collapsed.includes(id.slice(0, 8)),
-            "the current run must remain identifiable, including after revival",
-          );
+          if (mode !== "legacy-fork") {
+            assert.ok(
+              collapsed.includes(id.slice(0, 8)),
+              "the current run must remain identifiable, including after revival",
+            );
+            assert.match(collapsed, /ctrl\+o/i);
+          }
           assert.match(collapsed, /\[fork\]/);
           assert.doesNotMatch(collapsed, /sleep timers|polling loops|independent work/);
-          assert.match(collapsed, /ctrl\+o/i);
           component.setExpanded(true);
           assert.ok(
             unwrap(renderedText(component, width)).includes(unwrap(receiptText(receipt))),
@@ -440,19 +447,26 @@ test("blocked acceptance renders the human action instead of a completed chain s
 test("async start rendering does not hide errors or management reports", () => {
   const output =
     "Run: existing-run\nState: failed\nDiagnosis: runner could not start\nAction: inspect the saved log";
-  for (const details of [
-    { mode: "single", results: [] },
-    { mode: "management", results: [], asyncId: "existing-run" },
-  ] as const) {
-    const receipt: SubagentExecutionResult = {
-      content: [{ type: "text", text: output }],
-      details: { ...details, results: [] },
-    };
-    assert.equal(
-      renderedText(renderSubagentResult(receipt, { expanded: false }, plainTheme), 1000),
-      output,
-    );
-    assert.ok(unwrap(renderedText(nativeTool("agent_runs", receipt), 40)).includes(unwrap(output)));
+  for (const report of [
+    output,
+    `Runtime\n- cwd: /${"long/".repeat(40)}\n\nFilesystem\n- temp root: /tmp/pi-subagents-test`,
+  ]) {
+    for (const details of [
+      { mode: "single", results: [] },
+      { mode: "management", results: [], asyncId: "existing-run" },
+    ] as const) {
+      const receipt: SubagentExecutionResult = {
+        content: [{ type: "text", text: report }],
+        details: { ...details, results: [] },
+      };
+      assert.equal(
+        renderedText(renderSubagentResult(receipt, { expanded: false }, plainTheme), 1000),
+        report,
+      );
+      assert.ok(
+        unwrap(renderedText(nativeTool("agent_runs", receipt), 40)).includes(unwrap(report)),
+      );
+    }
   }
   const error: SubagentExecutionResult = {
     content: [{ type: "text", text: output }],
@@ -769,6 +783,31 @@ test("native completed failure cards keep the error visible and expandable", () 
     component.setExpanded(true);
     assert.ok(unwrap(renderedText(component, 40)).includes(unwrap(error)));
   }
+  const short: SubagentExecutionResult = {
+    content: [{ type: "text", text: "failed" }],
+    details: {
+      mode: "single",
+      results: [
+        {
+          agent: "reviewer",
+          task: "review",
+          exitCode: 1,
+          error: "boom",
+          messages: [],
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+        },
+      ],
+    },
+  };
+  const compact = renderedText(nativeTool("delegate", short), 120);
+  assert.match(
+    compact
+      .split("\n")
+      .find((line) => line.includes("✗ reviewer"))
+      ?.trimStart() ?? "",
+    /^✗ reviewer/,
+  );
+  assert.match(compact, /⎿  Error: boom/);
 });
 
 test("native fallback notifications truncate long preview lines and expand the full response", () => {
@@ -1031,20 +1070,6 @@ test("direct compact slash cards track live and restored results without collaps
   }
 });
 
-test("empty-result management output preserves every line", () => {
-  const output = `Runtime\n- cwd: /${"long/".repeat(40)}\n\nFilesystem\n- temp root: /tmp/pi-subagents-test`;
-  const component = renderSubagentResult(
-    {
-      content: [{ type: "text", text: output }],
-      details: { mode: "single", results: [] },
-    },
-    { expanded: false },
-    plainTheme,
-  );
-
-  assert.equal(renderedText(component, 1000), output);
-});
-
 test("empty-result management output collapses long reports", () => {
   const output = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n");
   const report: SubagentExecutionResult = {
@@ -1160,89 +1185,91 @@ test("unstarted sequential steps retain their saved paused state in both native 
   );
 });
 
-test("compact chain rendering uses workflow graph spans for dynamic fanout results", () => {
-  const component = renderSubagentResult(
-    {
-      content: [{ type: "text", text: "done" }],
-      details: {
-        mode: "chain",
-        chainAgents: ["scout", "expand:reviewer", "writer"],
-        totalSteps: 3,
-        results: [
-          result("scout", "targets"),
-          result("reviewer", "a"),
-          result("reviewer", "b"),
-          result("writer", "final"),
-        ],
-        workflowGraph: {
-          runId: "render-dynamic",
+test("chain rendering uses workflow graph spans in compact and expanded results", () => {
+  for (const expanded of [false, true]) {
+    const component = renderSubagentResult(
+      {
+        content: [{ type: "text", text: "done" }],
+        details: {
           mode: "chain",
-          phases: [],
-          nodes: [
-            {
-              id: "step-0",
-              kind: "step",
-              agent: "scout",
-              label: "Scout",
-              status: "completed",
-              flatIndex: 0,
-              stepIndex: 0,
-            },
-            {
-              id: "step-1",
-              kind: "dynamic-parallel-group",
-              label: "Review targets",
-              status: "completed",
-              stepIndex: 1,
-              children: [
-                {
-                  id: "step-1-item-a",
-                  kind: "agent",
-                  agent: "reviewer",
-                  label: "Review A",
-                  status: "completed",
-                  flatIndex: 1,
-                  stepIndex: 1,
-                },
-                {
-                  id: "step-1-item-b",
-                  kind: "agent",
-                  agent: "reviewer",
-                  label: "Review B",
-                  status: "completed",
-                  flatIndex: 2,
-                  stepIndex: 1,
-                },
-              ],
-              dynamic: {
-                sourceOutput: "targets",
-                sourcePath: "/items",
-                itemName: "target",
-                collectAs: "reviews",
-              },
-            },
-            {
-              id: "step-2",
-              kind: "step",
-              agent: "writer",
-              label: "Writer",
-              status: "completed",
-              flatIndex: 3,
-              stepIndex: 2,
-            },
+          chainAgents: ["scout", "expand:reviewer", "writer"],
+          totalSteps: 3,
+          results: [
+            result("scout", "targets"),
+            result("reviewer", "a"),
+            result("reviewer", "b"),
+            result("writer", "final"),
           ],
+          workflowGraph: {
+            runId: "render-dynamic",
+            mode: "chain",
+            phases: [],
+            nodes: [
+              {
+                id: "step-0",
+                kind: "step",
+                agent: "scout",
+                label: "Scout",
+                status: "completed",
+                flatIndex: 0,
+                stepIndex: 0,
+              },
+              {
+                id: "step-1",
+                kind: "dynamic-parallel-group",
+                label: "Review targets",
+                status: "completed",
+                stepIndex: 1,
+                children: [
+                  {
+                    id: "step-1-item-a",
+                    kind: "agent",
+                    agent: "reviewer",
+                    label: "Review A",
+                    status: "completed",
+                    flatIndex: 1,
+                    stepIndex: 1,
+                  },
+                  {
+                    id: "step-1-item-b",
+                    kind: "agent",
+                    agent: "reviewer",
+                    label: "Review B",
+                    status: "completed",
+                    flatIndex: 2,
+                    stepIndex: 1,
+                  },
+                ],
+                dynamic: {
+                  sourceOutput: "targets",
+                  sourcePath: "/items",
+                  itemName: "target",
+                  collectAs: "reviews",
+                },
+              },
+              {
+                id: "step-2",
+                kind: "step",
+                agent: "writer",
+                label: "Writer",
+                status: "completed",
+                flatIndex: 3,
+                stepIndex: 2,
+              },
+            ],
+          },
         },
       },
-    },
-    { expanded: false },
-    plainTheme,
-  );
+      { expanded },
+      plainTheme,
+    );
 
-  const text = renderedText(component, 1000);
-  assert.match(text, /Step 1: scout/);
-  assert.match(text, /Agent 1\/2: reviewer/);
-  assert.match(text, /Agent 2\/2: reviewer/);
-  assert.match(text, /Step 3: writer/);
+    const text = renderedText(component, 1000);
+    assert.match(text, /Step 1: scout/);
+    assert.match(text, /Agent 1\/2: reviewer/);
+    assert.match(text, /Agent 2\/2: reviewer/);
+    assert.match(text, /Step 3: writer/);
+  }
 });
 
 test("compact chain rendering shows failed zero-child dynamic fanout groups", () => {
@@ -1306,136 +1333,4 @@ test("compact chain rendering shows failed zero-child dynamic fanout groups", ()
   assert.match(text, /Step 2: Review targets .* failed/);
   assert.match(text, /No review targets materialized/);
   assert.match(text, /Step 3: writer .* pending/);
-});
-
-test("expanded chain rendering uses workflow graph spans for dynamic fanout results", () => {
-  const component = renderSubagentResult(
-    {
-      content: [{ type: "text", text: "done" }],
-      details: {
-        mode: "chain",
-        chainAgents: ["scout", "expand:reviewer", "writer"],
-        totalSteps: 3,
-        results: [
-          result("scout", "targets"),
-          result("reviewer", "a"),
-          result("reviewer", "b"),
-          result("writer", "final"),
-        ],
-        workflowGraph: {
-          runId: "render-dynamic-expanded",
-          mode: "chain",
-          phases: [],
-          nodes: [
-            {
-              id: "step-0",
-              kind: "step",
-              agent: "scout",
-              label: "Scout",
-              status: "completed",
-              flatIndex: 0,
-              stepIndex: 0,
-            },
-            {
-              id: "step-1",
-              kind: "dynamic-parallel-group",
-              label: "Review targets",
-              status: "completed",
-              stepIndex: 1,
-              children: [
-                {
-                  id: "step-1-item-a",
-                  kind: "agent",
-                  agent: "reviewer",
-                  label: "Review A",
-                  status: "completed",
-                  flatIndex: 1,
-                  stepIndex: 1,
-                },
-                {
-                  id: "step-1-item-b",
-                  kind: "agent",
-                  agent: "reviewer",
-                  label: "Review B",
-                  status: "completed",
-                  flatIndex: 2,
-                  stepIndex: 1,
-                },
-              ],
-              dynamic: {
-                sourceOutput: "targets",
-                sourcePath: "/items",
-                itemName: "target",
-                collectAs: "reviews",
-              },
-            },
-            {
-              id: "step-2",
-              kind: "step",
-              agent: "writer",
-              label: "Writer",
-              status: "completed",
-              flatIndex: 3,
-              stepIndex: 2,
-            },
-          ],
-        },
-      },
-    },
-    { expanded: true },
-    plainTheme,
-  );
-
-  const text = renderedText(component, 1000);
-  assert.match(text, /Step 1: scout/);
-  assert.match(text, /Agent 1\/2: reviewer/);
-  assert.match(text, /Agent 2\/2: reviewer/);
-  assert.match(text, /Step 3: writer/);
-});
-
-test("static sequential and static parallel chain rendering keep existing labels", () => {
-  const sequential = renderedText(
-    renderSubagentResult(
-      {
-        content: [{ type: "text", text: "done" }],
-        details: {
-          mode: "chain",
-          chainAgents: ["scout", "writer"],
-          totalSteps: 2,
-          results: [result("scout", "a"), result("writer", "b")],
-        },
-      },
-      { expanded: false },
-      plainTheme,
-    ),
-    1000,
-  );
-  assert.match(sequential, /Step 1: scout/);
-  assert.match(sequential, /Step 2: writer/);
-
-  const parallel = renderedText(
-    renderSubagentResult(
-      {
-        content: [{ type: "text", text: "done" }],
-        details: {
-          mode: "chain",
-          chainAgents: ["scout", "[reviewer+auditor]", "writer"],
-          totalSteps: 3,
-          results: [
-            result("scout", "a"),
-            result("reviewer", "b"),
-            result("auditor", "c"),
-            result("writer", "d"),
-          ],
-        },
-      },
-      { expanded: false },
-      plainTheme,
-    ),
-    1000,
-  );
-  assert.match(parallel, /Step 1: scout/);
-  assert.match(parallel, /Agent 1\/2: reviewer/);
-  assert.match(parallel, /Agent 2\/2: auditor/);
-  assert.match(parallel, /Step 3: writer/);
 });

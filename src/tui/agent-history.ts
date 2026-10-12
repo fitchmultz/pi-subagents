@@ -1,27 +1,10 @@
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
-import { displayHistory, type AgentHistory, type AgentHistoryItem } from "./history-display.ts";
-import type { DisplayEntry } from "./history-record.ts";
+import type { AgentHistory, AgentHistoryItem } from "./history-display.ts";
 import { readableText } from "./history-text.ts";
 export { readableText } from "./history-text.ts";
 export { indexedHistory } from "./indexed-history.ts";
 export type { AgentHistory, AgentHistoryItem } from "./history-display.ts";
 
-/** Read native entries, not a compacted model context: earlier messages remain inspectable. */
-export function historyItems(entries: readonly SessionEntry[]): AgentHistory {
-  const visible: DisplayEntry[] = [];
-  for (const entry of entries) {
-    if (
-      entry.type === "message" ||
-      entry.type === "custom_message" ||
-      entry.type === "compaction" ||
-      entry.type === "branch_summary"
-    ) {
-      visible.push(entry.type === "message" ? { ...entry, native: entry.message } : entry);
-    }
-  }
-  return displayHistory(visible);
-}
 function finalMatch(history: AgentHistory, text: string): string | undefined {
   if (history.finalId !== undefined) {
     return history.finalId;

@@ -5,7 +5,7 @@ import {
   handleSubagentControlNotice,
   SUBAGENT_CONTROL_MESSAGE_TYPE,
 } from "../../src/extension/control-notices.ts";
-import { assertDefined, record, text } from "../support/assertions.ts";
+import { assertDefined } from "../support/assertions.ts";
 import type { ControlEvent } from "../../src/shared/types.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -93,51 +93,33 @@ describe("subagent control notice delivery", () => {
     );
   });
 
-  it("delivers owner needs-attention notices immediately", () => {
-    const recorder = makeRecorder();
-    handleSubagentControlNotice({
-      pi: recorder.pi,
-      visibleControlNotices: new Set(),
-      details: { source: "async", event: needsAttentionEvent() },
-    });
-    assert.equal(recorder.sent.length, 1);
-    assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
-  });
-
-  it("keeps owner completion-guard notices visible without a second automatic wakeup", () => {
-    const recorder = makeRecorder();
-    handleSubagentControlNotice({
-      pi: recorder.pi,
-      visibleControlNotices: new Set(),
-      details: { source: "async", event: needsAttentionEvent({ reason: "completion_guard" }) },
-    });
-    assert.equal(recorder.sent.length, 1);
-    assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: false });
-    assert.match(text(record(recorder.sent[0].message).content), /Subagent failed: worker/);
-  });
-
   it("deduplicates the same owner event without hiding another child's attention", () => {
-    const recorder = makeRecorder(),
-      visibleControlNotices = new Set<string>();
-    const details = {
-      source: "async" as const,
-      event: needsAttentionEvent(),
-      childIntercomTarget: "worker-0",
-    };
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (const childIntercomTarget of [undefined, "worker-0"]) {
+      const recorder = makeRecorder(),
+        visibleControlNotices = new Set<string>();
+      const details = {
+        source: "async" as const,
+        event: needsAttentionEvent(),
+        childIntercomTarget,
+      };
       handleSubagentControlNotice({ pi: recorder.pi, visibleControlNotices, details });
+      assert.equal(recorder.sent.length, 1);
+      assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        handleSubagentControlNotice({ pi: recorder.pi, visibleControlNotices, details });
+      }
+      assert.equal(recorder.sent.length, 1);
+      handleSubagentControlNotice({
+        pi: recorder.pi,
+        visibleControlNotices,
+        details: {
+          ...details,
+          event: needsAttentionEvent({ index: 1 }),
+          childIntercomTarget: "worker-1",
+        },
+      });
+      assert.equal(recorder.sent.length, 2);
+      assert.deepEqual(recorder.sent[1]?.options, { triggerTurn: true });
     }
-    assert.equal(recorder.sent.length, 1);
-    handleSubagentControlNotice({
-      pi: recorder.pi,
-      visibleControlNotices,
-      details: {
-        ...details,
-        event: needsAttentionEvent({ index: 1 }),
-        childIntercomTarget: "worker-1",
-      },
-    });
-    assert.equal(recorder.sent.length, 2);
-    assert.deepEqual(recorder.sent[1]?.options, { triggerTurn: true });
   });
 });

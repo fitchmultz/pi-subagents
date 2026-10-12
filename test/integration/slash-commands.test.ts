@@ -148,7 +148,7 @@ async function captureSlashCommandParams(
   args: string,
   cwd: string,
   setup?: () => void,
-): Promise<{ params: unknown; notifications: string[] }> {
+): Promise<{ params: unknown; notifications: string[]; commands: readonly string[] }> {
   return withIsolatedHome(async () => {
     setup?.();
     const commands = new Map<string, RegisteredSlashCommand>();
@@ -195,7 +195,7 @@ async function captureSlashCommandParams(
         },
       }),
     );
-    return { params: requestedParams, notifications };
+    return { params: requestedParams, notifications, commands: [...commands.keys()] };
   });
 }
 
@@ -331,75 +331,106 @@ describe("slash command custom message delivery", () => {
   });
 
   it("/run finalizes the slash snapshot before the last UI redraw on success", async () => {
-    const sent: unknown[] = [];
-    const log: string[] = [];
-    const commands = new Map<string, RegisteredSlashCommand>();
-    const events = createEventBus();
-    events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const requestId = stringValue(record(data).requestId);
-      events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
-      events.emit(SLASH_SUBAGENT_UPDATE_EVENT, { requestId, toolCount: 2, currentTool: "read" });
-      events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-        requestId,
-        result: {
-          content: [{ type: "text", text: "Scout finished" }],
-          details: { mode: "single", results: [{ sessionFile: "/tmp/child-session.jsonl" }] },
-        },
-        isError: false,
+    for (const failed of [false, true]) {
+      const sent: unknown[] = [];
+      const log: string[] = [];
+      const snapshots: unknown[] = [];
+      const expected = failed ? "Subagent failed" : "Scout finished";
+      const observeSnapshot = () => {
+        const details = resolveSlashMessageDetails(record(sent[0]).details);
+        assertDefined(details);
+        snapshots.push(getSlashRenderableSnapshot(details).result.content[0]);
+      };
+      const commands = new Map<string, RegisteredSlashCommand>();
+      const events = createEventBus();
+      events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
+        const requestId = stringValue(record(data).requestId);
+        events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
+        if (!failed) {
+          events.emit(SLASH_SUBAGENT_UPDATE_EVENT, {
+            requestId,
+            toolCount: 2,
+            currentTool: "read",
+          });
+        }
+        events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+          requestId,
+          result: {
+            content: [{ type: "text", text: expected }],
+            details: {
+              mode: "single",
+              results: failed ? [] : [{ sessionFile: "/tmp/child-session.jsonl" }],
+            },
+          },
+          isError: failed,
+          ...(failed ? { errorText: expected } : {}),
+        });
       });
-    });
-
-    const pi: ExtensionAPI = {
-      ...native.pi,
-      events,
-      registerCommand(name, spec) {
-        commands.set(name, spec);
-      },
-      registerShortcut() {
-        /* The fixture does not need registerShortcut side effects. */
-      },
-      sendMessage(message: unknown) {
-        sent.push(message);
-        log.push(`send:${record(message).display === false ? "hidden" : "visible"}`);
-      },
-    };
-
-    registerSlashCommands(pi, createState(process.cwd()));
-    const defined9256_0 = commands.get("run");
-    assertDefined(defined9256_0);
-    await defined9256_0.handler(
-      "scout inspect this",
-      createCommandContext({
-        hasUI: true,
-        setStatus: (_key, text) => {
-          log.push(`status:${text ?? "clear"}`);
+      const pi: ExtensionAPI = {
+        ...native.pi,
+        events,
+        registerCommand(name, spec) {
+          commands.set(name, spec);
         },
-      }),
-    );
-
-    assert.equal(sent.length, 2);
-    assert.equal(record(sent[0]).customType, SLASH_RESULT_TYPE);
-    assert.equal(record(sent[0]).display, true);
-    assert.equal(record(sent[0]).content, "inspect this");
-    assert.equal(record(sent[1]).customType, SLASH_RESULT_TYPE);
-    assert.equal(record(sent[1]).display, false);
-    assert.match(stringValue(record(sent[1]).content), /Scout finished/);
-    assert.match(
-      stringValue(record(sent[1]).content),
-      /Child session exports\n\n- `\/tmp\/child-session\.jsonl`/,
-    );
-    assert.deepEqual(log, [
-      "send:visible",
-      "status:running...",
-      "status:2 tools read",
-      "send:hidden",
-      "status:clear",
-    ]);
-
-    const visibleDetails = resolveSlashMessageDetails(record(sent[0]).details);
-    assert.ok(visibleDetails);
-    const visibleSnapshot = getSlashRenderableSnapshot(visibleDetails);
-    assert.equal(record(visibleSnapshot.result.content[0]).text, "Scout finished");
+        registerShortcut() {
+          /* No shortcut invocation in this command fixture. */
+        },
+        sendMessage(message: unknown) {
+          sent.push(message);
+          log.push(`send:${record(message).display === false ? "hidden" : "visible"}`);
+          if (record(message).display === false) {
+            observeSnapshot();
+          }
+        },
+      };
+      registerSlashCommands(pi, createState(process.cwd()));
+      const run = commands.get("run");
+      assertDefined(run);
+      // Each request settles before reusing the snapshot owner for the next row.
+      // oxlint-disable-next-line no-await-in-loop
+      await run.handler(
+        "scout inspect this",
+        createCommandContext({
+          hasUI: true,
+          setStatus: (_key, text) => {
+            log.push(`status:${text ?? "clear"}`);
+            if (text === undefined) {
+              observeSnapshot();
+            }
+          },
+        }),
+      );
+      assert.equal(sent.length, 2);
+      assert.equal(record(sent[0]).customType, SLASH_RESULT_TYPE);
+      assert.equal(record(sent[0]).display, true);
+      assert.equal(record(sent[0]).content, "inspect this");
+      assert.equal(record(sent[1]).customType, SLASH_RESULT_TYPE);
+      assert.equal(record(sent[1]).display, false);
+      assert.ok(stringValue(record(sent[1]).content).includes(expected));
+      if (!failed) {
+        assert.match(
+          stringValue(record(sent[1]).content),
+          /Child session exports\n\n- `\/tmp\/child-session\.jsonl`/,
+        );
+      }
+      assert.deepEqual(log, [
+        "send:visible",
+        "status:running...",
+        ...(failed ? [] : ["status:2 tools read"]),
+        "send:hidden",
+        "status:clear",
+      ]);
+      const visibleDetails = resolveSlashMessageDetails(record(sent[0]).details);
+      assert.ok(visibleDetails);
+      assert.equal(
+        record(getSlashRenderableSnapshot(visibleDetails).result.content[0]).text,
+        expected,
+      );
+      assert.deepEqual(snapshots, [
+        { type: "text", text: expected },
+        { type: "text", text: expected },
+      ]);
+    }
   });
 
   it("/run preserves tool output expansion before showing the initial live card", async () => {
@@ -461,68 +492,6 @@ describe("slash command custom message delivery", () => {
     );
     assert.equal(expanded, true);
     assert.equal(log[0], "send");
-  });
-
-  it("/run finalizes the slash snapshot before the last UI redraw on error", async () => {
-    const sent: unknown[] = [];
-    const log: string[] = [];
-    const commands = new Map<string, RegisteredSlashCommand>();
-    const events = createEventBus();
-    events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-      const requestId = stringValue(record(data).requestId);
-      events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
-      events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-        requestId,
-        result: {
-          content: [{ type: "text", text: "Subagent failed" }],
-          details: { mode: "single", results: [] },
-        },
-        isError: true,
-        errorText: "Subagent failed",
-      });
-    });
-
-    const pi: ExtensionAPI = {
-      ...native.pi,
-      events,
-      registerCommand(name, spec) {
-        commands.set(name, spec);
-      },
-      registerShortcut() {
-        /* The fixture does not need registerShortcut side effects. */
-      },
-      sendMessage(message: unknown) {
-        sent.push(message);
-        log.push(`send:${record(message).display === false ? "hidden" : "visible"}`);
-      },
-    };
-
-    registerSlashCommands(pi, createState(process.cwd()));
-    const defined13657_0 = commands.get("run");
-    assertDefined(defined13657_0);
-    await defined13657_0.handler(
-      "scout inspect this",
-      createCommandContext({
-        hasUI: true,
-        setStatus: (_key, text) => {
-          log.push(`status:${text ?? "clear"}`);
-        },
-      }),
-    );
-
-    assert.equal(sent.length, 2);
-    assert.equal(record(sent[0]).customType, SLASH_RESULT_TYPE);
-    assert.equal(record(sent[0]).display, true);
-    assert.equal(record(sent[0]).content, "inspect this");
-    assert.equal(record(sent[1]).customType, SLASH_RESULT_TYPE);
-    assert.equal(record(sent[1]).display, false);
-    assert.match(stringValue(record(sent[1]).content), /Subagent failed/);
-    assert.deepEqual(log, ["send:visible", "status:running...", "send:hidden", "status:clear"]);
-
-    const visibleDetails = resolveSlashMessageDetails(record(sent[0]).details);
-    assert.ok(visibleDetails);
-    const visibleSnapshot = getSlashRenderableSnapshot(visibleDetails);
-    assert.equal(record(visibleSnapshot.result.content[0]).text, "Subagent failed");
   });
 
   it("/parallel forwards inline output behavior config", async () => {
@@ -740,25 +709,34 @@ Review {previous}
 `,
       );
 
-      const { params } = await captureSlashCommandParams(
-        "run-chain",
-        "review-flow -- Audit the auth flow",
-        root,
-      );
-      const runParams = record(params);
+      for (const [flag, background, context] of [
+        ["", undefined, undefined],
+        [" --bg", true, undefined],
+        [" --fg", false, undefined],
+        [" --fork", undefined, "fork"],
+      ] as const) {
+        // Each flag request settles before the next uses the saved fixture.
+        // oxlint-disable-next-line no-await-in-loop
+        const { params } = await captureSlashCommandParams(
+          "run-chain",
+          `review-flow -- Audit the auth flow${flag}`,
+          root,
+        );
+        const runParams = record(params);
 
-      assert.deepEqual(
-        records(runParams.chain).map(({ agent, task }) => ({ agent, task })),
-        [
-          { agent: "scout", task: "Scan {task}" },
-          { agent: "reviewer", task: "Review {previous}" },
-        ],
-      );
-      assert.equal(runParams.task, "Audit the auth flow");
-      assert.equal(runParams.clarify, false);
-      assert.equal(runParams.agentScope, "both");
-      assert.equal(runParams.async, undefined);
-      assert.equal(runParams.context, undefined);
+        assert.deepEqual(
+          records(runParams.chain).map(({ agent, task }) => ({ agent, task })),
+          [
+            { agent: "scout", task: "Scan {task}" },
+            { agent: "reviewer", task: "Review {previous}" },
+          ],
+        );
+        assert.equal(runParams.task, "Audit the auth flow");
+        assert.equal(runParams.clarify, false);
+        assert.equal(runParams.agentScope, "both");
+        assert.equal(runParams.async, background);
+        assert.equal(runParams.context, context);
+      }
     });
   });
 
@@ -1003,59 +981,6 @@ Triage
     });
   });
 
-  it("/run-chain maps --bg to async execution", async () => {
-    await withTempProject("pi-run-chain-bg-", async (root) => {
-      writeProjectChain(
-        root,
-        "review-flow.chain.md",
-        `---
-name: review-flow
-description: Review flow
----
-
-## scout
-
-Scan
-`,
-      );
-
-      const { params } = await captureSlashCommandParams(
-        "run-chain",
-        "review-flow -- Audit --bg",
-        root,
-      );
-
-      assert.equal(record(params).async, true);
-      assert.equal(record(params).context, undefined);
-    });
-  });
-
-  it("/run-chain maps --fg to foreground execution", async () => {
-    await withTempProject("pi-run-chain-fg-", async (root) => {
-      writeProjectChain(
-        root,
-        "review-flow.chain.md",
-        `---
-name: review-flow
-description: Review flow
----
-
-## scout
-
-Scan
-`,
-      );
-
-      const { params } = await captureSlashCommandParams(
-        "run-chain",
-        "review-flow -- Audit --fg",
-        root,
-      );
-
-      assert.equal(record(params).async, false);
-    });
-  });
-
   it("/run-chain rejects conflicting execution flags", async () => {
     await withTempProject("pi-run-chain-mode-conflict-", async (root) => {
       const { params, notifications } = await captureSlashCommandParams(
@@ -1065,33 +990,6 @@ Scan
       );
       assert.equal(params, undefined);
       assert.deepEqual(notifications, ["Choose only one of --bg or --fg"]);
-    });
-  });
-
-  it("/run-chain maps --fork to forked context", async () => {
-    await withTempProject("pi-run-chain-fork-", async (root) => {
-      writeProjectChain(
-        root,
-        "review-flow.chain.md",
-        `---
-name: review-flow
-description: Review flow
----
-
-## scout
-
-Scan
-`,
-      );
-
-      const { params } = await captureSlashCommandParams(
-        "run-chain",
-        "review-flow -- Audit --fork",
-        root,
-      );
-
-      assert.equal(record(params).context, "fork");
-      assert.equal(record(params).async, undefined);
     });
   });
 
@@ -1257,29 +1155,12 @@ describe("subagents-doctor slash command", () => {
   });
 
   it("routes to the doctor tool action", async () => {
-    const { params } = await captureSlashCommandParams("subagents-doctor", "", process.cwd());
+    const { params, commands } = await captureSlashCommandParams(
+      "subagents-doctor",
+      "",
+      process.cwd(),
+    );
     assert.deepEqual(params, { action: "doctor" });
-  });
-
-  it("does not register the removed subagents-status overlay command", async () => {
-    await withIsolatedHome(async () => {
-      const commands = new Map<string, RegisteredSlashCommand>();
-      const pi: ExtensionAPI = {
-        ...native.pi,
-        events: createEventBus(),
-        registerCommand(name, spec) {
-          commands.set(name, spec);
-        },
-        registerShortcut() {
-          /* The fixture does not need registerShortcut side effects. */
-        },
-        sendMessage(_message: unknown) {
-          /* The fixture does not need sendMessage side effects. */
-        },
-      };
-
-      registerSlashCommands(pi, createState(process.cwd()));
-      assert.equal(commands.has("subagents-status"), false);
-    });
+    assert.equal(commands.includes("subagents-status"), false);
   });
 });
