@@ -26,7 +26,7 @@ test("getBrokerSocketPath is pure and uses a short temp socket", () => {
   assert.equal(fs.existsSync(socketPath), false);
 });
 
-test("getBrokerSocketPath includes uid scope while preserving the legacy digest", (t) => {
+test("getBrokerSocketPath includes uid scope and differs from the legacy path", (t) => {
   const agentDir = `/home/shared-${randomUUID()}`;
   const uid = t.mock.property(process, "getuid", () => 501);
   const uid501 = getBrokerSocketPath(agentDir);

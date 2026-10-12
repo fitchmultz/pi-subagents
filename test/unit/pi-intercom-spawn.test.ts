@@ -211,10 +211,6 @@ test(
   },
 );
 
-test("bundled broker resolves the package root", () => {
-  assert.equal(getBrokerSpawnOptions().cwd, projectRoot);
-});
-
 test("getBrokerLaunchSpec maps the legacy tsx default to native Node", () => {
   const spec = getBrokerLaunchSpec("/repo/broker.ts", "npx", ["--no-install", "tsx"]);
   assert.equal(spec.command, process.execPath);

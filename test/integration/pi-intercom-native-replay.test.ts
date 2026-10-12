@@ -784,6 +784,8 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
       });
     },
   });
+  // One-at-a-time steering would let a wrongly steered queue masquerade as a follow-up.
+  receiver.session.setSteeringMode("all");
   receiver.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
     (context: unknown) => {
@@ -797,9 +799,15 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   ]);
   const running = receiver.session.prompt("Start work");
   await waitFor(() => toolStarted, "native tool execution");
-  await receiver.send("steer");
-  await receiver.send("queued", { text: "message:queued", delivery: "queue" });
-  await receiver.send("passive", { text: "message:passive", delivery: "passive" });
+  assert.equal((await receiver.send("steer")).delivered, true);
+  assert.equal(
+    (await receiver.send("queued", { text: "message:queued", delivery: "queue" })).delivered,
+    true,
+  );
+  assert.equal(
+    (await receiver.send("passive", { text: "message:passive", delivery: "passive" })).delivered,
+    true,
+  );
   await waitFor(
     async () => (await receiver.status()).includes("Pending inbound messages: 3"),
     "all inbound messages",
@@ -813,6 +821,7 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   assert.doesNotMatch(seen[1], /message:passive/);
   for (const id of receiver.sends) {
     assert.equal(receiver.visible(id).length, 1, id);
+    assert.equal(receiver.visible(id)[0].customType, "intercom_message");
   }
   assert.equal(receiver.faux.state.callCount, 3);
   assert.equal(receiver.settled(), 1);
@@ -833,6 +842,7 @@ for (const { count, reload, repeat } of [
   } else if (repeat === true) {
     suffix = " through a second abort";
   }
+  const progressPrefix = repeat === true ? "Subagent progress update.\n\n" : "";
   test(`native clearQueue plus abort recovers ${count} messages once${suffix}`, async (t) => {
     const responseGate = gate(t);
     const secondResponseGate = gate(t);
@@ -857,15 +867,29 @@ for (const { count, reload, repeat } of [
     ]);
     const running = receiver.session.prompt("Start abortable work");
     await waitFor(() => receiver.faux.state.callCount === 1, "active provider request");
-    for (let index = 0; index < count; index++) {
-      // Populate native handoffs in send order before the clear.
-      // oxlint-disable-next-line no-await-in-loop
-      await receiver.send(`cleared-${index}`);
+    const now = Date.now;
+    try {
+      Date.now = () => now() - (repeat === true ? 120_000 : 0);
+      for (let index = 0; index < count; index++) {
+        // Populate native handoffs in send order before the clear.
+        // oxlint-disable-next-line no-await-in-loop
+        await receiver.send(`cleared-${index}`, {
+          text: `${progressPrefix}message:cleared-${index}`,
+        });
+      }
+    } finally {
+      Date.now = now;
     }
     await waitFor(
       async () => (await receiver.status()).includes(`Pending inbound messages: ${count}`),
       "native handoffs",
     );
+    if (repeat === true) {
+      assert.match(await receiver.status(), /delivered to model queue; not yet consumed/);
+      for (const id of receiver.sends) {
+        assert.equal(receiver.visible(id).length, 0, "aged handoffs are not yet consumed");
+      }
+    }
     assert.equal(receiver.session.agent.hasQueuedMessages(), true);
     await receiver.session.sendCustomMessage(
       { customType: "fixture-aside", content: "Next user prompt only", display: false },
@@ -1448,6 +1472,11 @@ for (const recovery of [false, true]) {
     assert.doesNotMatch(JSON.stringify(pending), /first-ask/);
     for (const id of receiver.sends) {
       assert.equal(receiver.visible(id).length, 1, id);
+      assert.equal(
+        JSON.stringify(receiver.visible(id)[0].content).includes("To reply"),
+        ["first-ask", "second-ask"].includes(id),
+        id,
+      );
     }
     assert.equal(receiver.faux.state.callCount, recovery ? 3 : 4);
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
@@ -3502,7 +3531,19 @@ test("native topics keep routine state out of conversation and interrupt only re
     ownership: "released",
   });
   await waitFor(() => subscriber.faux.state.callCount === 2, "awaited ownership release");
-  await sleep(1700);
+  await waitFor(
+    () =>
+      late.session.sessionManager
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.type === "custom" &&
+            entry.customType === "intercom-topic" &&
+            at(entry.data, "record", "update", "text") === "The shared tab is released",
+        ),
+    "unawaited release recorded by the late subscriber",
+  );
+  assert.match(await late.status(), /Pending inbound messages: 0/);
   assert.equal(late.faux.state.callCount, 1, "unawaited release only replaces quiet state");
   await call(subscriber, { action: "unsubscribe", topic: "browser/shared-test" });
   await subscriber.send("topic-direct-bypass", {
@@ -4136,18 +4177,20 @@ test("native latest material milestone survives two minutes busy and reload with
   const now = Date.now;
   try {
     Date.now = () => now() - 120_000;
-    await supervisor.send("old-milestone", {
+    const oldReceipt = await supervisor.send("old-milestone", {
       text: "Subagent progress update.\n\nOld finding",
       delivery: "queue",
       queueMode: "replace",
       threadId: "material-progress",
     });
-    await supervisor.send("latest-milestone", {
+    assert.equal(oldReceipt.delivered, true);
+    const latestReceipt = await supervisor.send("latest-milestone", {
       text: "Subagent progress update.\n\nRoot cause confirmed",
       delivery: "queue",
       queueMode: "replace",
       threadId: "material-progress",
     });
+    assert.equal(latestReceipt.delivered, true);
   } finally {
     Date.now = now;
   }
@@ -4155,6 +4198,14 @@ test("native latest material milestone survives two minutes busy and reload with
     async () => (await supervisor.status()).includes("Root cause confirmed"),
     "coalesced latest milestone",
   );
+  const staged = await supervisor.status();
+  assert.match(staged, /queued; not yet delivered to model/);
+  assert.match(staged, /Root cause confirmed/);
+  assert.doesNotMatch(staged, /Old finding/);
+  assert.equal(supervisor.visible("old-milestone").length, 0);
+  assert.equal(supervisor.visible("latest-milestone").length, 0);
+  await supervisor.sender.disconnect();
+  assert.match(await supervisor.status(), /Root cause confirmed/);
   const aborting = supervisor.session.abort();
   toolGate.resolve();
   await running;
