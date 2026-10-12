@@ -212,7 +212,10 @@ describe("result contracts", () => {
         ? acceptance
         : {
             ...acceptance,
-            verify: [{ id: "unit-verify", command: `touch '${verificationMarker}'` }],
+            verify: [
+              { id: "unit-verify", command: `touch '${verificationMarker}'` },
+              { id: "exhaust-verify", command: `"${process.execPath}" -e "process.exit(0)"` },
+            ],
           };
       const childCwd = path.join(cwd, "child");
       fs.mkdirSync(childCwd);
@@ -221,7 +224,7 @@ describe("result contracts", () => {
         const started = executeAsyncSingle(id, {
           agent: "worker",
           task: "Deliver the result",
-          agentConfig: makeAgent("worker"),
+          agentConfig: makeAgent("worker", { completionGuard: true }),
           ctx: { pi: { ...native.pi, events: createEventBus() }, cwd, currentSessionId: id },
           cwd: childCwd,
           acceptance: contract,
@@ -238,6 +241,13 @@ describe("result contracts", () => {
         assertDefined(status.steps[0].acceptance);
         assert.equal(status.steps[0].acceptance.status, satisfied ? "checked" : "rejected");
         assert.deepEqual(status.steps[0].acceptance, result.acceptance);
+        if (!satisfied) {
+          assert.equal(status.steps[0].acceptance.effectiveAcceptance.level, "verified");
+          assert.deepEqual(
+            status.steps[0].acceptance.effectiveAcceptance.verify.map((command) => command.id),
+            ["unit-verify", "exhaust-verify"],
+          );
+        }
         assert.equal(payload.exitCode, satisfied ? 0 : 1);
       }
       assertDefined(result.artifactPaths);
@@ -268,7 +278,7 @@ describe("result contracts", () => {
         assert.equal(result.acceptance.effectiveAcceptance.level, "verified");
         assert.deepEqual(
           result.acceptance.effectiveAcceptance.verify.map((command) => command.id),
-          ["unit-verify"],
+          ["unit-verify", "exhaust-verify"],
         );
         assert.equal(result.acceptance.effectiveAcceptance.finalization.maxTurns, 1);
         assert.deepEqual(result.acceptance.verifyRuns, []);
@@ -654,7 +664,11 @@ describe("result contracts", () => {
         assertDefined(call.env);
         return call.env.PI_SUBAGENT_INTERCOM_SESSION_NAME;
       }),
-      [0, 1, 2, 3, 4].map((index) => childIntercomTarget("worker", index)),
+      [1, 2, 3, 4, 5].map((slot) => `subagent-worker-${id.toLowerCase()}-${slot}`),
+    );
+    assert.deepEqual(
+      results.map((child) => child.intercomTarget),
+      [1, 2, 3, 4, 5].map((slot) => `subagent-worker-${id.toLowerCase()}-${slot}`),
     );
   });
 
@@ -972,6 +986,7 @@ describe("result contracts", () => {
       {
         executeAsyncChain(id, {
           chain,
+          resultMode: dynamic ? "chain" : "parallel",
           agents: [makeAgent("worker")],
           artifactsDir: cwd,
           ctx: { pi: { ...native.pi, events: createEventBus() }, cwd, currentSessionId: id },
@@ -981,6 +996,13 @@ describe("result contracts", () => {
         const payload = await waitForResult(id);
         ({ results, outputs } = payload);
         assert.equal(payload.state, "failed");
+        if (!dynamic) {
+          assert.equal(payload.exitCode, 1);
+          assert.doesNotMatch(payload.summary ?? "", /Paused after interrupt/);
+          const status = readRunStatus(path.join(getRunMetadataDir(id), "status.json"));
+          assert.equal(status.state, "failed");
+          assert.match(status.error ?? "", /worker/);
+        }
       }
       const offset = dynamic ? 1 : 0;
       assert.equal(mock.callCount(), offset + 2);
@@ -1034,9 +1056,15 @@ describe("result contracts", () => {
         ({ results, outputs, workflowGraph: graph } = payload);
         assert.equal(payload.state, "failed");
       }
-      assert.match(results[1]?.error ?? "", /Resource limit exceeded/);
-      assert.equal(results[1]?.resourceLimitExceeded?.kind, limit);
-      assert.equal(results[1]?.resourceLimitExceeded?.limit, 100);
+      const exceeded = results[1].resourceLimitExceeded;
+      assertDefined(exceeded);
+      assert.match(results[1].error ?? "", /Resource limit exceeded/);
+      assert.equal(exceeded.kind, limit);
+      assert.equal(exceeded.limit, 100);
+      if (limit === "maxTokens") {
+        assert.equal(exceeded.observed, 150);
+        assert.match(results[1].error ?? "", /maxTokens 100 \(observed 150\)/);
+      }
       assert.equal(outputs?.answers, undefined);
       assertDefined(graph);
       assert.equal(graph.nodes[1].status, "failed");

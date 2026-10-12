@@ -239,7 +239,10 @@ describe("chain contracts through the detached owner", () => {
         /Duplicate chain output name 'same'/,
       ],
       [[{ agent: "worker", task: "Use {outputs.missing}" }], /Unknown chain output reference/],
-      [[{ agent: "worker", task: "Use {outputs.bad-name}" }], /Invalid chain output reference/],
+      [
+        [{ agent: "worker", task: "Use {outputs.bad-name}" }],
+        /Invalid chain output reference '\{outputs\.bad-name\}'/,
+      ],
     ] as const) {
       // Each scenario owns shared fixture state; complete it before starting the next one.
       // oxlint-disable-next-line no-await-in-loop

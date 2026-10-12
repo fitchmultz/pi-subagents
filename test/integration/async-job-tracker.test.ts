@@ -505,49 +505,42 @@ describe("async job tracker", () => {
     t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
     const asyncRoot = createTempDir("pi-async-job-tracker-");
     try {
-      const state = createState();
-      const ui = createUiContext();
-      const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
-      tracker.resetJobs(ui.ctx);
-      tracker.handleStarted({
-        id: "run-1",
-        asyncDir: path.join(asyncRoot, "run-1"),
-        agent: "worker",
-      });
-      tracker.handleComplete({ id: "run-1", success: true });
+      for (const row of [
+        { completion: { success: true }, expected: "complete" },
+        { completion: { success: false, state: "paused", exitCode: 0 }, expected: "paused" },
+      ]) {
+        const state = createState();
+        const ui = createUiContext();
+        const recorder = createEventRecorder();
+        const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+        tracker.resetJobs(ui.ctx);
+        tracker.handleStarted({
+          id: "run-1",
+          asyncDir: path.join(asyncRoot, "run-1"),
+          agent: "worker",
+        });
+        const beforeCompletion = ui.renderRequests;
+        tracker.handleComplete({ id: "run-1", ...row.completion });
 
-      assert.equal(state.asyncJobs.size, 1);
-      t.mock.timers.tick(9_999);
-      assert.equal(state.asyncJobs.size, 1, "completion is retained for the full native window");
-      t.mock.timers.tick(1);
+        assert.equal(state.asyncJobs.get("run-1")?.status, row.expected);
+        assert.ok(ui.renderRequests > beforeCompletion, "completion requests a rerender");
+        assert.equal(state.asyncJobs.size, 1);
+        t.mock.timers.tick(9_999);
+        assert.equal(state.asyncJobs.size, 1, "completion is retained for the full native window");
+        const beforeCleanup = ui.renderRequests;
+        t.mock.timers.tick(1);
 
-      assert.equal(state.asyncJobs.size, 0);
-      assert.ok(ui.renderRequests > 0, "expected widget cleanup to request a rerender");
-      assert.equal(ui.widgets.at(-1), undefined);
-    } finally {
-      removeTempDir(asyncRoot);
-    }
-  });
-
-  it("keeps paused completion events paused instead of failed", (t) => {
-    t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
-    const asyncRoot = createTempDir("pi-async-job-paused-complete-");
-    try {
-      const state = createState();
-      const ui = createUiContext();
-      const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
-      tracker.resetJobs(ui.ctx);
-      tracker.handleStarted({
-        id: "run-paused",
-        asyncDir: path.join(asyncRoot, "run-paused"),
-        agent: "worker",
-      });
-      tracker.handleComplete({ id: "run-paused", success: false, state: "paused", exitCode: 0 });
-
-      assert.equal(state.asyncJobs.get("run-paused")?.status, "paused");
-      assert.ok(ui.renderRequests > 0, "expected paused completion to request a rerender");
+        assert.equal(state.asyncJobs.size, 0);
+        assert.ok(
+          ui.renderRequests > beforeCleanup,
+          "expected widget cleanup to request a rerender",
+        );
+        assert.equal(ui.widgets.at(-1), undefined);
+        tracker.resetJobs();
+        if (state.poller) {
+          clearInterval(state.poller);
+        }
+      }
     } finally {
       removeTempDir(asyncRoot);
     }
@@ -1032,6 +1025,7 @@ describe("async job tracker", () => {
   it("rerenders changed polled status but not unchanged bookkeeping", (t) => {
     t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
     const asyncRoot = createTempDir("pi-async-job-tracker-");
+    const route = createNestedRoute("run-unchanged");
     try {
       const runDir = path.join(asyncRoot, "run-unchanged");
       fs.mkdirSync(runDir, { recursive: true });
@@ -1056,7 +1050,12 @@ describe("async job tracker", () => {
       const recorder = createEventRecorder();
       const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
       tracker.resetJobs(ui.ctx);
-      tracker.handleStarted({ id: "run-unchanged", asyncDir: runDir, agent: "worker" });
+      tracker.handleStarted({
+        id: "run-unchanged",
+        asyncDir: runDir,
+        agent: "worker",
+        nestedRoute: route,
+      });
 
       const requestsAfterStart = ui.renderRequests;
       t.mock.timers.tick(POLL_INTERVAL_MS);
@@ -1099,8 +1098,38 @@ describe("async job tracker", () => {
         ui.renderRequests > requestsAfterStatusLoaded,
         "changed non-terminal status should redraw the widget",
       );
+      const beforeNested = ui.renderRequests;
+      writeNestedEvent(route, {
+        type: "subagent.nested.started",
+        ts: Date.now(),
+        parentRunId: "run-unchanged",
+        parentStepIndex: 0,
+        child: {
+          id: "nested-reviewer",
+          parentRunId: "run-unchanged",
+          parentStepIndex: 0,
+          depth: 1,
+          path: [{ runId: "run-unchanged", stepIndex: 0 }],
+          state: "running",
+          agent: "reviewer",
+          currentTool: "read",
+        },
+      });
+      t.mock.timers.tick(POLL_INTERVAL_MS);
+      assert.equal(
+        state.asyncJobs.get("run-unchanged")?.steps?.[0]?.children?.[0]?.id,
+        "nested-reviewer",
+      );
+      assert.equal(ui.renderRequests, beforeNested + 1, "a nested-only publication redraws once");
+      assert.match(
+        buildWidgetLines([...state.asyncJobs.values()], ui.ctx.ui.theme, 120, true).join("\n"),
+        /reviewer.*running/,
+      );
+      t.mock.timers.tick(POLL_INTERVAL_MS);
+      assert.equal(ui.renderRequests, beforeNested + 1, "unchanged nested input does not redraw");
     } finally {
       removeTempDir(asyncRoot);
+      removeTempDir(path.dirname(route.eventSink));
     }
   });
 
@@ -1453,179 +1482,100 @@ describe("async job tracker", () => {
     }
   });
 
-  it("honors async control notification channels", (t) => {
-    t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
-    const asyncRoot = createTempDir("pi-async-job-tracker-");
-    try {
-      const runDir = path.join(asyncRoot, "run-channels");
-      fs.mkdirSync(runDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(runDir, "status.json"),
-        JSON.stringify({
-          runId: "run-channels",
-          mode: "single",
-          state: "running",
-          startedAt: Date.now() - 1000,
-          lastUpdate: Date.now(),
-          steps: [{ agent: "worker", status: "running" }],
-        }),
-        "utf-8",
-      );
-      fs.writeFileSync(
-        path.join(runDir, "events.jsonl"),
-        `${JSON.stringify({
-          type: "subagent.control",
-          channels: ["intercom"],
-          event: {
-            type: "needs_attention",
-            to: "needs_attention",
-            ts: 123,
-            runId: "run-channels",
-            agent: "worker",
-            message: "worker needs attention",
-          },
-          intercom: {
-            to: "main",
-            message: "SUBAGENT NEEDS ATTENTION: worker in run run-channels.",
-          },
-        })}\n`,
-        "utf-8",
-      );
-
-      const state = createState();
-      const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
-      tracker.handleStarted({ id: "run-channels", asyncDir: runDir, agent: "worker" });
-
-      t.mock.timers.tick(POLL_INTERVAL_MS);
-      assert.equal(
-        recorder.events.some((event) => event.channel === "subagent:control-event"),
-        false,
-      );
-      assert.equal(
-        recorder.events.some((event) => event.channel === "subagent:control-intercom"),
-        true,
-      );
-    } finally {
-      removeTempDir(asyncRoot);
-    }
-  });
-
-  it("ignores stale removed async control event types", (t) => {
-    t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
-    const asyncRoot = createTempDir("pi-async-job-tracker-");
-    try {
-      const runDir = path.join(asyncRoot, "run-stale-active");
-      fs.mkdirSync(runDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(runDir, "status.json"),
-        JSON.stringify({
-          runId: "run-stale-active",
-          mode: "single",
-          state: "running",
-          startedAt: Date.now() - 1000,
-          lastUpdate: Date.now(),
-          steps: [{ agent: "worker", status: "running" }],
-        }),
-        "utf-8",
-      );
-      fs.writeFileSync(
-        path.join(runDir, "events.jsonl"),
-        `${JSON.stringify({
-          type: "subagent.control",
-          channels: ["event", "intercom"],
-          event: {
-            type: "active_long_running",
-            to: "active_long_running",
-            ts: 123,
-            runId: "run-stale-active",
-            agent: "worker",
-            message: "stale active notice",
-          },
-          intercom: { to: "main", message: "stale active notice" },
-        })}\n`,
-        "utf-8",
-      );
-
-      const state = createState();
-      const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
-      tracker.handleStarted({ id: "run-stale-active", asyncDir: runDir, agent: "worker" });
-
-      t.mock.timers.tick(POLL_INTERVAL_MS);
-      assert.equal(
-        recorder.events.some((event) => event.channel === "subagent:control-event"),
-        false,
-      );
-      assert.equal(
-        recorder.events.some((event) => event.channel === "subagent:control-intercom"),
-        false,
-      );
-    } finally {
-      removeTempDir(asyncRoot);
-    }
-  });
-
   it("bridges async control events from events.jsonl to the parent event bus", (t) => {
     t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
     const asyncRoot = createTempDir("pi-async-job-tracker-");
     try {
-      const runDir = path.join(asyncRoot, "run-3");
-      const noticeText =
-        'Subagent needs attention: worker\nNudge (preferred live coordination): subagent({ action: "nudge", id: "run-3", index: 0, message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })\nAsk (blocking wait only; parent must remain alive): intercom({ action: "ask", to: "subagent-worker-run-3-1", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })';
-      fs.mkdirSync(runDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(runDir, "status.json"),
-        JSON.stringify({
-          runId: "run-3",
-          mode: "single",
-          state: "running",
-          startedAt: Date.now() - 1000,
-          lastUpdate: Date.now(),
-          steps: [{ agent: "worker", status: "running" }],
-        }),
-        "utf-8",
-      );
-      fs.writeFileSync(
-        path.join(runDir, "events.jsonl"),
-        `${JSON.stringify({
-          type: "subagent.control",
-          channels: ["event", "intercom"],
-          childIntercomTarget: "subagent-worker-run-3-1",
-          noticeText,
-          event: {
-            type: "needs_attention",
-            to: "needs_attention",
-            ts: 123,
+      for (const channels of [["event", "intercom"], ["intercom"]]) {
+        const runDir = path.join(asyncRoot, "run-3");
+        const noticeText =
+          'Subagent needs attention: worker\nNudge (preferred live coordination): subagent({ action: "nudge", id: "run-3", index: 0, message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })\nAsk (blocking wait only; parent must remain alive): intercom({ action: "ask", to: "subagent-worker-run-3-1", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })';
+        fs.mkdirSync(runDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(runDir, "status.json"),
+          JSON.stringify({
             runId: "run-3",
-            agent: "worker",
-            message: "worker needs attention",
-          },
-          intercom: { to: "main", message: noticeText },
-        })}\n`,
-        "utf-8",
-      );
+            mode: "single",
+            state: "running",
+            startedAt: Date.now() - 1000,
+            lastUpdate: Date.now(),
+            steps: [{ agent: "worker", status: "running" }],
+          }),
+          "utf-8",
+        );
+        fs.writeFileSync(
+          path.join(runDir, "events.jsonl"),
+          `${JSON.stringify({
+            type: "subagent.control",
+            channels: ["event", "intercom"],
+            event: {
+              type: "active_long_running",
+              to: "active_long_running",
+              ts: 122,
+              runId: "run-3",
+              agent: "worker",
+              message: "stale active notice",
+            },
+            intercom: { to: "main", message: "stale active notice" },
+          })}\n${JSON.stringify({
+            type: "subagent.control",
+            channels,
+            childIntercomTarget: "subagent-worker-run-3-1",
+            noticeText,
+            event: {
+              type: "needs_attention",
+              to: "needs_attention",
+              ts: 123,
+              runId: "run-3",
+              agent: "worker",
+              message: "worker needs attention",
+            },
+            intercom: { to: "main", message: noticeText },
+          })}\n`,
+          "utf-8",
+        );
 
-      const state = createState();
-      const recorder = createEventRecorder();
-      const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
-      tracker.handleStarted({ id: "run-3", asyncDir: runDir, agent: "worker" });
+        const state = createState();
+        const recorder = createEventRecorder();
+        const tracker = createAsyncJobTracker(recorder.pi, state, asyncRoot);
+        tracker.handleStarted({ id: "run-3", asyncDir: runDir, agent: "worker" });
 
-      t.mock.timers.tick(POLL_INTERVAL_MS);
+        t.mock.timers.tick(POLL_INTERVAL_MS);
 
-      const controlEvent = recorder.events.find(
-        (event) => event.channel === "subagent:control-event",
-      );
-      assert.ok(controlEvent);
-      assert.match(text(record(controlEvent.data).noticeText), /subagent-worker-run-3-1/);
-      const intercomEvent = recorder.events.find(
-        (event) => event.channel === "subagent:control-intercom",
-      );
-      assert.ok(intercomEvent);
-      assert.match(
-        text(record(intercomEvent.data).message),
-        /intercom\({ action: "ask", to: "subagent-worker-run-3-1", delivery: "steer"/,
-      );
+        assert.equal(
+          asyncJob(state.asyncJobs.get("run-3")).controlEventCursor,
+          fs.statSync(path.join(runDir, "events.jsonl")).size,
+        );
+        assert.deepEqual(
+          recorder.events.map((event) => event.channel),
+          channels.includes("event")
+            ? ["subagent:control-event", "subagent:control-intercom"]
+            : ["subagent:control-intercom"],
+        );
+        assert.deepEqual(
+          recorder.events.map(({ data }) => record(record(data).event).type),
+          channels.includes("event") ? ["needs_attention", "needs_attention"] : ["needs_attention"],
+        );
+        const controlEvent = recorder.events.find(
+          (event) => event.channel === "subagent:control-event",
+        );
+        if (channels.includes("event")) {
+          assert.ok(controlEvent);
+          assert.match(text(record(controlEvent.data).noticeText), /subagent-worker-run-3-1/);
+        }
+        const intercomEvent = recorder.events.find(
+          (event) => event.channel === "subagent:control-intercom",
+        );
+        assert.ok(intercomEvent);
+        assert.match(
+          text(record(intercomEvent.data).message),
+          /intercom\({ action: "ask", to: "subagent-worker-run-3-1", delivery: "steer"/,
+        );
+        tracker.resetJobs();
+        if (state.poller) {
+          clearInterval(state.poller);
+        }
+      }
     } finally {
       removeTempDir(asyncRoot);
     }

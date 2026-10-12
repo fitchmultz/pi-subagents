@@ -16,7 +16,8 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
     const { resolveOwnedRun } = await import("../../src/runs/shared/run-records.ts");
     const { resolveRememberedForegroundRun } =
       await import("../../src/runs/foreground/foreground-control.ts");
-    const { resolveAsyncRunLocation } = await import("../../src/runs/background/async-resume.ts");
+    const { resolveAsyncRunLocation, resolveAsyncResumeTarget } =
+      await import("../../src/runs/background/async-resume.ts");
     const { resolveSubagentRunId } = await import("../../src/runs/background/run-id-resolver.ts");
     const state = {
       baseCwd: root,
@@ -41,6 +42,27 @@ it("bounds ambiguous run previews without losing history or exact and unique-pre
       resultsDir = path.join(root, "results");
     fs.mkdirSync(asyncDirRoot);
     fs.mkdirSync(resultsDir);
+    for (const [runId, agent] of [
+      ["run-aa", "scout"],
+      ["run-ab", "worker"],
+    ]) {
+      const runDir = path.join(asyncDirRoot, runId);
+      fs.mkdirSync(runDir);
+      fs.writeFileSync(
+        path.join(runDir, "status.json"),
+        JSON.stringify({
+          runId,
+          mode: "single",
+          state: "running",
+          startedAt: 100,
+          steps: [{ agent, status: "running" }],
+        }),
+      );
+    }
+    assert.throws(
+      () => resolveAsyncResumeTarget({ id: "run-a" }, { asyncDirRoot, resultsDir }),
+      /Ambiguous async run id prefix 'run-a' matched: run-aa, run-ab/,
+    );
     const resolvers = [
       (id: string) => resolveOwnedRun(state, id)?.runId,
       (id: string) => resolveRememberedForegroundRun(id, state)?.runId,

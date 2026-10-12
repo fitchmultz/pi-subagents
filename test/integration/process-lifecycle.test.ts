@@ -7,7 +7,10 @@ import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
+import {
+  getRunMetadataDir,
+  readQuestionContract,
+} from "../../src/runs/shared/supervisor-questions.ts";
 import { executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
 import {
   evaluateAcceptance,
@@ -306,7 +309,7 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
       const ready = path.join(cwd, "verify-ready");
       const late = path.join(cwd, "verify-late");
       const next = path.join(cwd, "next-command");
-      const command = `printf ready > '${ready}'; (sleep 1; printf late > '${late}') & wait`;
+      const command = `(printf ready > '${ready}'; sleep 1; printf late > '${late}') & wait`;
       const acceptance = {
         maxFinalizationTurns: 1,
         verify: [
@@ -441,7 +444,16 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
       await delay(20);
     }
     writeAsyncInterruptRequest(asyncDir, id);
-    await delay(300);
+    const eventsFile = path.join(asyncDir, "events.jsonl");
+    while (!fs.readFileSync(eventsFile, "utf8").includes('"type":"subagent.run.stop-requested"')) {
+      assert.ok(Date.now() < deadline, "runner must process Stop before the live-state checks");
+      // Wait for the durable owner acknowledgement, not elapsed time since the request.
+      // oxlint-disable-next-line no-await-in-loop
+      await delay(20);
+    }
+    const childPid = readQuestionContract(id, 0)?.pid;
+    assertDefined(childPid);
+    process.kill(childPid, 0);
     assert.equal(status().state, "running", "stop requested is not a terminal process receipt");
     const stoppingStep = status().steps?.[0];
     assertDefined(stoppingStep);
@@ -487,15 +499,21 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
 
   it("verification timeout kills shell descendants instead of waiting for inherited pipes", async () => {
     const marker = path.join(cwd, "late-write");
+    const ready = path.join(cwd, "timeout-ready");
     const acceptance = resolveEffectiveAcceptance({
       explicit: {
         verify: [
-          { id: "timeout", command: `(sleep 1; printf late > '${marker}') & wait`, timeoutMs: 50 },
+          {
+            id: "timeout",
+            command: `(printf ready > '${ready}'; sleep 1; printf late > '${marker}') & wait`,
+            timeoutMs: 300,
+          },
         ],
       },
     });
     const started = Date.now();
     const ledger = await evaluateAcceptance({ acceptance, output: report, cwd });
+    assert.equal(fs.existsSync(ready), true, "timeout must follow actual descendant admission");
     assert.equal(ledger.verifyRuns[0].status, "timed-out");
     assert.ok(
       Date.now() - started < 800,

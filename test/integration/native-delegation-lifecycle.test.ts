@@ -186,7 +186,9 @@ for (const background of [undefined, true, false]) {
       send(message, options);
     };
     const { default: registerNotify } = await import("../../src/runs/background/notify.ts");
-    registerNotify(f.pi);
+    registerNotify(f.pi, () => {
+      // This fixture observes receipt publication without a delivery queue.
+    });
     const watcher = createResultWatcher(f.pi, f.state, RESULTS_DIR);
     t.after(() => watcher.stopResultWatcher());
     await until(

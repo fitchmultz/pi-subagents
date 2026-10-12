@@ -12,6 +12,7 @@ import type { AsyncStatus, OwnedRun, SubagentState } from "../../src/shared/type
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-durable-storage-"));
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
+const { createSubagentState } = await import("../support/background-fixtures.ts");
 const { ASYNC_DIR, RESULTS_DIR } = await import("../../src/shared/types.ts");
 const { getRunMetadataDir, saveQuestionContract, saveQuestionOwner } =
   await import("../../src/runs/shared/supervisor-questions.ts");
@@ -57,24 +58,9 @@ function snapshot(dir: string): unknown {
   });
 }
 function state(): SubagentState & Required<Pick<SubagentState, "ownedRuns">> {
-  return {
-    baseCwd: root,
-    currentSessionId: "parent-file",
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    ownedRuns: new Map(),
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear() {
-        /* File scheduling is disabled in this storage fixture. */
-      },
-    },
-  };
+  const local = createSubagentState(root);
+  local.currentSessionId = "parent-file";
+  return local;
 }
 function fixture(id: string) {
   const dir = getRunMetadataDir(id);

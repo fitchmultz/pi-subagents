@@ -48,6 +48,10 @@ test("durable controls retain each request and validate deadline extensions", (t
     path.join(dir, "control-requests", "invalid.json"),
     JSON.stringify({ requestId: "bad", runId: "run", action: "extend", extendMs: "500" }),
   );
+  fs.writeFileSync(
+    path.join(dir, "control-requests", "foreign.json"),
+    JSON.stringify({ requestId: "other", runId: "stale-run", action: "interrupt" }),
+  );
   const requests = readAsyncControlRequests(dir, "run");
   assert.deepEqual(
     requests

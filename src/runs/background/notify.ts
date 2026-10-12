@@ -144,7 +144,7 @@ function isUnsubscribe(value: unknown): value is () => void {
 
 export default function registerSubagentNotify(
   pi: ReadonlyInput<ExtensionAPI>,
-  onQueued?: (completionKey: string, runId?: string) => void,
+  onQueued: (completionKey: string, runId?: string) => void,
 ): () => void {
   const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
   const globalStore = globalThis as Record<string, unknown>;
@@ -167,15 +167,12 @@ export default function registerSubagentNotify(
     }
     const key = buildCompletionKey(data, "notify");
     // Owned completion keys are governed by the shared queue/journal lifecycle, not a TTL.
-    if (
-      (onQueued === undefined || !hasText(data.completionKey)) &&
-      markSeenWithTtl(seen, key, Date.now(), 10 * 60 * 1000)
-    ) {
+    if (!hasText(data.completionKey) && markSeenWithTtl(seen, key, Date.now(), 10 * 60 * 1000)) {
       return;
     }
     pi.sendMessage(buildNotification(data), { triggerTurn: true });
     if (hasText(data.completionKey)) {
-      onQueued?.(data.completionKey, data.runId);
+      onQueued(data.completionKey, data.runId);
     }
   };
   const unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);

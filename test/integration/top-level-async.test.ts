@@ -5,23 +5,15 @@ import { applyForceTopLevelAsyncOverride } from "../../src/runs/background/top-l
 
 describe("force top-level async helper", () => {
   it("forces top-level calls async and disables clarify", () => {
-    const params = { async: false, clarify: true, agent: "worker" };
-    const next = applyForceTopLevelAsyncOverride(params, 0, true);
-    assert.notEqual(next, params);
-    assert.equal(next.async, true);
-    assert.equal(next.clarify, false);
-    assert.equal(next.agent, "worker");
-  });
-
-  it("leaves nested calls unchanged", () => {
-    const params = { async: false, clarify: true };
-    const next = applyForceTopLevelAsyncOverride(params, 1, true);
-    assert.equal(next, params);
-  });
-
-  it("leaves top-level calls unchanged when the feature is off", () => {
-    const params = { async: false, clarify: true };
-    const next = applyForceTopLevelAsyncOverride(params, 0, false);
-    assert.equal(next, params);
+    for (const [depth, enabled, expectedAsync, expectedClarify] of [
+      [0, true, true, false],
+      [1, true, false, true],
+      [0, false, false, true],
+    ] as const) {
+      const params = { async: false, clarify: true, agent: "worker" };
+      const next = applyForceTopLevelAsyncOverride(params, depth, enabled);
+      assert.deepEqual(next, { async: expectedAsync, clarify: expectedClarify, agent: "worker" });
+      assert.deepEqual(params, { async: false, clarify: true, agent: "worker" });
+    }
   });
 });

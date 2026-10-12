@@ -1,6 +1,7 @@
 // Real native parents, owning async runner/watcher and intercom relay; only child transport is controlled.
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -329,12 +330,39 @@ try {
   } else if (phase === "foreign") {
     const run = seed.runs.find((ownedRun) => ownedRun.name === "foreign");
     const identityQueries = events("subagent:intercom-identity-request").length;
-    release(run);
-    await wait(() => fs.existsSync(resultPath(run)), "foreign owner's real result file");
-    await sleep(350);
+    const openResult = fs.openSync,
+      closeResult = fs.closeSync,
+      resultReads = new Set();
+    evidence.foreignResultReads = 0;
+    fs.openSync = (file, flags, ...args) => {
+      const fd = openResult(file, flags, ...args);
+      if (String(file) === resultPath(run) && flags === "r") {
+        resultReads.add(fd);
+      }
+      return fd;
+    };
+    fs.closeSync = (fd) => {
+      closeResult(fd);
+      if (resultReads.delete(fd)) {
+        evidence.foreignResultReads++;
+      }
+    };
+    syncBuiltinESMExports();
+    try {
+      release(run);
+      await wait(
+        () => evidence.foreignResultReads > 0,
+        "foreign native watcher completes its result read",
+      );
+    } finally {
+      fs.openSync = openResult;
+      fs.closeSync = closeResult;
+      syncBuiltinESMExports();
+    }
     verify(
       "a native fork with the same cwd/name and copied receipts cannot adopt or retarget its parent's result",
       () => {
+        assert.ok(evidence.foreignResultReads > 0);
         assert.notEqual(evidence.sessionId, seed.sessionId);
         assert.notEqual(evidence.sessionFile, seed.sessionFile);
         assert.ok(
@@ -380,8 +408,18 @@ try {
       .getEntries()
       .filter((entry) => entry.type === "custom_message");
     const completionsBefore = events("subagent:async-complete").length;
+    const replay =
+      phase === "resume" ? seed.runs.find((ownedRun) => ownedRun.name === "repaired") : run;
+    const terminal = JSON.parse(
+      fs.readFileSync(path.join(getRunMetadataDir(replay.id), "result.json"), "utf8"),
+    );
+    assert.ok(typeof terminal.completionId === "string" && terminal.completionId.length > 0);
     await session.reload();
-    await sleep(600);
+    fs.writeFileSync(resultPath(replay), JSON.stringify(terminal));
+    await wait(
+      () => !fs.existsSync(resultPath(replay)),
+      "reloaded owner retires the real duplicate completion hint",
+    );
     await session.waitForIdle();
     verify(
       "native reload does not redeliver consumed results or lose the saved delivery diagnosis",

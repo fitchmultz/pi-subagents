@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { createSubagentState } from "../support/background-fixtures.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
 import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
 import { getRunMetadataDir, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
@@ -18,40 +19,19 @@ afterEach(() => {
 });
 
 function stateWithOwnedRun(id: string): SubagentState & Required<Pick<SubagentState, "ownedRuns">> {
-  return {
-    baseCwd: "",
-    currentSessionId: null,
-    asyncJobs: new Map(),
-    foregroundRuns: new Map(),
-    ownedRuns: new Map([
-      [
-        id,
-        {
-          runId: id,
-          rootRunId: id,
-          ownerSessionId: "parent",
-          source: "async",
-          mode: "single",
-          startedAt: 1,
-          cwd: "",
-          task: "Fixture",
-          children: [],
-        },
-      ],
-    ]),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear: () => {
-        /* This fixture has no queued file handlers. */
-      },
-    },
-  };
+  const state = createSubagentState("");
+  state.ownedRuns.set(id, {
+    runId: id,
+    rootRunId: id,
+    ownerSessionId: "parent",
+    source: "async",
+    mode: "single",
+    startedAt: 1,
+    cwd: "",
+    task: "Fixture",
+    children: [],
+  });
+  return state;
 }
 
 function nested(rootRunId: string, id: string) {

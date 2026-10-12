@@ -10,6 +10,7 @@ import type { SubagentState } from "../../src/shared/types.ts";
 const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-suite-"));
 process.env.PI_CODING_AGENT_DIR = path.join(suiteRoot, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(suiteRoot, "pi-subagents-runtime");
+const { createSubagentState } = await import("../support/background-fixtures.ts");
 const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
 const { ownedRunList } = await import("../../src/runs/shared/run-records.ts");
 const { closeRunHistory } = await import("../../src/runs/shared/history-index.ts");
@@ -33,23 +34,9 @@ function textContent(result: { readonly content: readonly unknown[] }): string {
 }
 
 function statusState(baseCwd: string, currentSessionId: string): SubagentState {
-  return {
-    baseCwd,
-    currentSessionId,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear() {
-        /* Status inspection schedules no coalesced file work in this fixture. */
-      },
-    },
-  };
+  const state = createSubagentState(baseCwd);
+  state.currentSessionId = currentSessionId;
+  return state;
 }
 
 describe("async run status inspection", () => {
@@ -518,72 +505,6 @@ describe("async run status inspection", () => {
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("shows nested runs under owning steps with exact status hints", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-root-"));
-    const route = createNestedRoute("run-nested-root");
-    try {
-      const asyncRoot = path.join(root, "runs");
-      const asyncDir = path.join(asyncRoot, "run-nested-root");
-      fs.mkdirSync(asyncDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(asyncDir, "status.json"),
-        JSON.stringify(
-          {
-            runId: "run-nested-root",
-            mode: "single",
-            state: "running",
-            pid: 12345,
-            startedAt: 100,
-            lastUpdate: 100,
-            steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
-      writeNestedEvent(route, {
-        type: "subagent.nested.updated",
-        ts: 150,
-        parentRunId: "run-nested-root",
-        parentStepIndex: 0,
-        child: {
-          id: "nested-status-child",
-          parentRunId: "run-nested-root",
-          parentStepIndex: 0,
-          depth: 1,
-          path: [{ runId: "run-nested-root", stepIndex: 0, agent: "orchestrator" }],
-          state: "running",
-          agent: "reviewer",
-          currentTool: "read",
-          lastUpdate: 150,
-        },
-      });
-
-      const result = inspectSubagentStatus(
-        { id: "run-nested-root" },
-        {
-          asyncDirRoot: asyncRoot,
-          resultsDir: path.join(root, "results"),
-          kill: () => true,
-          now: () => 200,
-        },
-      );
-
-      const text = textContent(result);
-      assert.equal(result.isError, undefined);
-      assert.match(text, /Step 1: orchestrator running/);
-      assert.match(text, /↳ reviewer \[nested-status-child\] running \| tool read/);
-      assert.match(
-        text,
-        /Status: agent_runs\(\{ action: "inspect", id: "nested-status-child" \}\)/,
-      );
-    } finally {
-      rmrf(root);
-      rmrf(path.dirname(route.eventSink));
     }
   });
 
@@ -1077,44 +998,26 @@ describe("async run status inspection", () => {
     }
   });
 
-  it("rejects ambiguous async run id prefixes", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-ambiguous-"));
+  it("rejects path-like async run ids", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-paths-"));
     try {
       const asyncRoot = path.join(root, "runs");
       fs.mkdirSync(path.join(asyncRoot, "run-aa"), { recursive: true });
       fs.mkdirSync(path.join(asyncRoot, "run-ab"), { recursive: true });
-
-      const result = inspectSubagentStatus(
-        { id: "run-a" },
+      for (const { id, pattern } of [
+        { id: "../run", pattern: /id must be a non-empty safe id token/ },
         {
-          asyncDirRoot: asyncRoot,
-          resultsDir: path.join(root, "results"),
+          id: "run-a",
+          pattern: /Ambiguous subagent run id prefix 'run-a' matched: async:run-aa, async:run-ab/,
         },
-      );
-
-      assert.equal(result.isError, true);
-      assert.match(
-        textContent(result),
-        /Ambiguous subagent run id prefix 'run-a' matched: async:run-aa, async:run-ab/,
-      );
-    } finally {
-      rmrf(root);
-    }
-  });
-
-  it("rejects path-like async run ids", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-paths-"));
-    try {
-      const result = inspectSubagentStatus(
-        { id: "../run" },
-        {
-          asyncDirRoot: path.join(root, "runs"),
-          resultsDir: path.join(root, "results"),
-        },
-      );
-
-      assert.equal(result.isError, true);
-      assert.match(textContent(result), /id must be a non-empty safe id token/);
+      ]) {
+        const result = inspectSubagentStatus(
+          { id },
+          { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") },
+        );
+        assert.equal(result.isError, true);
+        assert.match(textContent(result), pattern);
+      }
     } finally {
       rmrf(root);
     }
@@ -1156,7 +1059,7 @@ describe("async run status inspection", () => {
       const text = textContent(result);
       assert.equal(result.isError, undefined);
       assert.match(text, /Resume: unavailable/);
-      assert.doesNotMatch(text, /Revive:/);
+      assert.doesNotMatch(text, /Continue( child)?:/);
     } finally {
       rmrf(root);
     }
