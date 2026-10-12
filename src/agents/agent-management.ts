@@ -1,4 +1,5 @@
-import { discoverAgents, discoverAgentsAll } from "./agents.ts";
+import { discoverAgentsAll } from "./agents.ts";
+import { mergeAgents } from "./agent-selection.ts";
 import { formatAgentGroups, formatAgentDetail, formatChainDetail } from "./management-format.ts";
 import { handleCreate, handleUpdate, handleDelete } from "./management-persistence.ts";
 import {
@@ -24,9 +25,12 @@ export function handleList(
     return result("agentScope must be 'user', 'project', or 'both'.", true);
   }
   const discovery = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx), scope);
-  const agents = discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents.sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+  const agents = mergeAgents(discovery.user, discovery.project, [
+    ...discovery.builtin,
+    ...discovery.package,
+  ])
+    .filter((agent) => agent.disabled !== true)
+    .sort((a, b) => a.name.localeCompare(b.name));
   const chains = discovery.chains
     .filter((chain) => scope === "both" || chain.source === scope)
     .sort((a, b) => a.name.localeCompare(b.name));

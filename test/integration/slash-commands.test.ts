@@ -7,11 +7,13 @@ import {
 } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 import { setImmediate as nextDispatch } from "node:timers/promises";
+import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -598,6 +600,95 @@ describe("slash command custom message delivery", () => {
 describe("saved chain slash command", () => {
   beforeEach(() => {
     clearSlashSnapshots();
+  });
+
+  it("native completions skip irrelevant discovery and keep profile/chain updates and trust fresh", async (t) => {
+    await withTempProject("pi-native-completion-discovery-", async (root) => {
+      const profile = path.join(root, ".pi", "agents", "completion-worker.md");
+      fs.writeFileSync(profile, "---\nname: completion-worker\ndescription: Fixture\n---\nWork");
+      writeProjectChain(
+        root,
+        "completion-flow.chain.json",
+        JSON.stringify({
+          name: "completion-flow",
+          description: "Fixture",
+          chain: [{ agent: "completion-worker", task: "Inspect" }],
+        }),
+      );
+      await withIsolatedHome(async () => {
+        const commands: Array<Pick<RegisteredCommand, "name" | "getArgumentCompletions">> = [];
+        let trusted = true;
+        const pi: ExtensionAPI = {
+          ...native.pi,
+          events: createEventBus(),
+          registerCommand(name, spec) {
+            commands.push({ name, getArgumentCompletions: spec.getArgumentCompletions });
+          },
+        };
+        registerSlashCommands(pi, {
+          baseCwd: root,
+          lastUiContext: {
+            ...createCommandContext({ cwd: root }),
+            isProjectTrusted: () => trusted,
+          },
+        });
+        const provider = new CombinedAutocompleteProvider(commands, root);
+        const complete = (line: string) =>
+          provider.getSuggestions([line], 0, line.length, {
+            signal: new AbortController().signal,
+          });
+        const reads = t.mock.method(fs, "readFileSync");
+        syncBuiltinESMExports();
+        t.after(() => {
+          t.mock.restoreAll();
+          syncBuiltinESMExports();
+        });
+        for (const line of [
+          "/run completion-worker inspect",
+          '/chain completion-worker "inspect',
+          "/parallel completion-worker -- inspect",
+          "/run-chain completion-flow -- inspect",
+        ]) {
+          // Complete each editor state before checking that no filesystem discovery was needed.
+          // oxlint-disable-next-line no-await-in-loop
+          assert.equal(await complete(line), null);
+        }
+        assert.equal(reads.mock.callCount(), 0);
+        assert.deepEqual((await complete("/run completion-"))?.items, [
+          { value: "completion-worker", label: "completion-worker" },
+        ]);
+        fs.writeFileSync(profile, "---\nname: completion-updated\ndescription: Fixture\n---\nWork");
+        assert.deepEqual((await complete('/chain scout "inspect" -> completion-'))?.items, [
+          {
+            value: 'scout "inspect" -> completion-updated',
+            label: "completion-updated",
+          },
+        ]);
+        reads.mock.resetCalls();
+        assert.deepEqual((await complete("/run-chain completion-"))?.items, [
+          { value: "completion-flow", label: "completion-flow" },
+        ]);
+        assert.ok(
+          reads.mock.calls.every((call) => String(call.arguments[0]).endsWith(".chain.json")),
+          "saved-chain completion must read chains, never profiles or profile settings",
+        );
+        writeProjectChain(
+          root,
+          "completion-flow.chain.json",
+          JSON.stringify({
+            name: "completion-updated-flow",
+            description: "Updated fixture",
+            chain: [{ agent: "completion-updated", task: "Inspect" }],
+          }),
+        );
+        assert.deepEqual((await complete("/run-chain completion-"))?.items, [
+          { value: "completion-updated-flow", label: "completion-updated-flow" },
+        ]);
+        trusted = false;
+        assert.equal(await complete("/run completion-"), null);
+        assert.equal(await complete("/run-chain completion-"), null);
+      });
+    });
   });
 
   it("/run and /chain accept dotted packaged runtime agent names", async () => {

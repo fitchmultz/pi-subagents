@@ -1,4 +1,5 @@
 import { errorText } from "./text-values.ts";
+import { isDeepStrictEqual } from "node:util";
 import {
   historyStatus,
   pageNotices,
@@ -183,9 +184,22 @@ export class ConversationHistory {
         ? { ...item, load: () => this.controller.savedResult(this.key, item.id) }
         : item,
     );
+    const previous = task.page,
+      sameSource =
+        previous !== undefined &&
+        previous.sourceId === result.page.sourceId &&
+        previous.generation === result.page.generation &&
+        previous.sessionId === result.page.sessionId &&
+        previous.sourceState === result.page.sourceState &&
+        isDeepStrictEqual(
+          previous.entries.map((entry) => entry.ref),
+          result.page.entries.map((entry) => entry.ref),
+        );
     this.seenSource ||= result.page.count > 0;
     this.controller.applyHistoryPage(this.key, { ...history, items }, result.page, this.seenSource);
-    this.source.clearCards();
+    if (!sameSource) {
+      this.source.clearCards();
+    }
   }
 
   assignment(): AgentHistoryItem {
