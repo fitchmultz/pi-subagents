@@ -1,4 +1,66 @@
-# Long-session performance
+# Performance
+
+## 0.46.2 measurements
+
+The baseline is `e00b241` (0.46.1). These synthetic workloads exercise the real storage, SQLite, discovery, native-card and broker owners. Counts describe work removed, not a guaranteed reduction in end-to-end latency, retained memory or provider cost.
+
+| Workload                                                               | Counted operation                                                   |                0.46.1 |          0.46.2 |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------: | --------------: |
+| 10,000 text deltas                                                     | Empty text-spool truncations                                        |                10,000 |               0 |
+| Same deltas                                                            | 64 KiB scratch allocations / allocated bytes                        |  10,000 / 655,360,000 |           0 / 0 |
+| 1,000 one-window native records, cold index                            | SQL prepares                                                        |                14,015 |              19 |
+| Same records                                                           | Explicit main-database commits / changed-main autocommit statements |         2,002 / 1,002 |       1,002 / 2 |
+| 1,000 narrowed prune calls beside 1,000 linked sources                 | Child rows visited                                                  |             1,000,000 |           1,000 |
+| 1,000 pending human-message IDs with no later reply                    | Assistant-tail candidates / statements                              |       499,500 / 1,000 |         999 / 1 |
+| 200 attempts sharing 1,000 common matching records, relevance search   | Final entry-predicate evaluations                                   |               200,000 |           1,000 |
+| 217 profiles, completion after task text or inside an unfinished quote | Profile-file reads                                                  |                   217 |               0 |
+| Same profiles, management list                                         | Profile-file reads                                                  |                   434 |             217 |
+| Same profiles and 10 saved chains, saved-chain completion              | Profile-file / chain-file reads                                     |              217 / 10 |          0 / 10 |
+| Three identical 100-record history pages                               | Native cards constructed, including assignment                      |                   303 |             101 |
+| One 1 MiB Intercom frame, 4 KiB fragments                              | Bytes copied by frame assembly                                      |           135,790,596 |       1,048,576 |
+| Same frame, 1 KiB fragments                                            | Bytes copied by frame assembly                                      |           538,443,780 |       1,048,576 |
+| 1,000 streamed topic rows                                              | Topic text validations                                              |               500,500 |           1,000 |
+| Real broker restoring 1,000 topics                                     | JSON encodings / serialized bytes                                   | 505,504 / 112,612,468 | 7,003 / 873,268 |
+| One socket message write                                               | JSON encodings                                                      |                     2 |               1 |
+| 10,000 thinking deltas, 1,000 retained workflow steps                  | Step-status reads in event projection                               |            10,000,000 |           1,000 |
+| Inert root extension, emitted static local import graph                | Modules / JavaScript source bytes / TUI modules                     |  287 / 3,248,709 / 47 | 11 / 20,587 / 0 |
+
+### Method and retained contracts
+
+Measurements used Node **24.21.0**, SQLite **3.53.4** and synthetic private files on macOS/APFS. Discovery used 100 user, 100 trusted-project and 17 builtin profiles. Repeated count probes produced identical results. The history counts begin at cold `SourceIngest` construction after database/source setup; they are SQL transaction and statement boundaries, **not measured fsync counts**. A 100-record control also falls from 1,415 prepares to 19 and from 202 explicit commits plus 102 changed-main autocommit statements to 102 plus 2.
+
+Every streaming delta still reaches the observer and schedules status publication; exact wire bytes, malformed-record diagnostics, member ordering, surrogate handling and completed-text output remain covered. Tool aggregation still scans steps on actual tool transitions and coalesced status writes. The event-projection probe has no intervening status publication; its 10,000 scheduling requests are retained, rather than suppressed to obtain the count.
+
+Reply lookup reads the latest matching human copy for each requested ID, then answers all IDs from one bounded assistant-tail lookup; physical order and terminal/time boundaries remain authoritative. Empty, missing and latest-singleton requests retain zero assistant-candidate scans.
+
+Search qualification used 100,000 documents across 100 owned sources, including 99,000 out-of-scope documents and 200 attempts sharing the selected source. All 12 rare/common × child/shared-agent/global × relevance/newest cases retained independent native-`bm25` ordering and exact first/second-page output. Relevance uses hit-driven attribution; newest retains its previous fixed join order. Scoped eligible-ID materialization remains intentional: replacing it with a correlated entry lookup made common scoped queries about three times slower and was rejected. Contended medians for shared-source relevance were 62.00→29.25 ms (common) and 6.23→3.12 ms (rare); small timing differences in other cases are treated as variation, not gains. Common FTS postings still require scanning, and a bounded page does not bound all search work.
+
+SQLite statement reuse is bounded to 128 SQL shapes. Records with at most 32 text windows stage and publish their entry, documents and cursor in one transaction; longer records keep bounded staging transactions. No browse transaction spans a pump yield. Native cold-kill coverage brackets both sides of publication at the 32/33-window boundary. WAL, `synchronous=FULL`, generation checks, the separate writer lock, strict source validation and detail budgets remain intact.
+
+Settled pages reuse only their native display components. Equal refreshes advance the comparison item so subsequent frames retain the identity fast path. Selected detail loaders remain fresh; source generation/reference changes and theme invalidation rebuild cards, while unchanged refreshes retain expanded thinking and reading position. Completion and list work still observes current profile edits, overrides, disabled profiles and project trust rather than keeping a persistent discovery cache.
+
+Intercom retains the 1 MiB encoded-frame limit, request-ID and escaped-envelope checks, unknown fields, duplicate ordering, first-match subscriptions, stale-revision behavior and validation before state commit or publication. Legacy identity-only lists do not reconstruct discarded peer topic arrays. Replacing or removing the largest cached topic record still scans cached numeric sizes; a requested full snapshot necessarily remains linear in its returned rows.
+
+Dynamic output schemas deliberately retain native compilation. Object identity or JSON content alone cannot safely cache nested mutations, recursive references and host format-registry changes. Authoritative receipt/accounting checks, native publication/fsync boundaries, fallback polling, child isolation, fork/fresh choices and acceptance verification are not removed for a better benchmark.
+
+The regression owners include `test/integration/{storage-owner-boundaries,history-index,agent-interaction,slash-commands,pi-intercom-broker,async-execution,process-lifecycle,parent-usage}.test.ts` and `test/unit/{compact-child-tools,agent-disabled,pi-intercom-framing}.test.ts`. These protect observable contracts and meaningful operation counts; there are no timing thresholds in CI.
+
+### Startup qualification
+
+Both production-only packages were loaded through the real official **Pi 1.1.0** and maintained fork **c329e624e73ba2086bd3ce15e091d667879dca9c** SDKs and bundled CLIs, using physical Node 24.21.0 and private HOME/agent/temp directories. SDK preflights asserted error-free registration and expected tools for both package entries, the inert root child, and the actual leaf route (prompt runtime plus both package entries and supervisor metadata). The compiled root deliberately imports the host SDK before deferred imports so production installs retain Pi's host-peer mapping; it does not install another SDK.
+
+Fresh-process offline `--list-models zzznomatch` samples below used the same pruned artifacts, one warmup and nine rotated/interleaved runs per case on an Apple M5 Pro. Values are **minimum / median / maximum milliseconds**. Parent loads both entries; root-child loads only the inert global root; leaf loads the real non-delegating child route. No-op/native controls had minima 154.6/143.6 ms on official and 306.5/284.0 ms on the fork.
+
+| Host           | Route      | 0.46.1                 | 0.46.2                 |
+| -------------- | ---------- | ---------------------- | ---------------------- |
+| Official 1.1.0 | parent     | 421.1 / 479.4 / 652.1  | 408.4 / 527.5 / 1138.0 |
+| Official 1.1.0 | root-child | 382.4 / 497.8 / 1105.7 | 252.7 / 301.9 / 498.8  |
+| Official 1.1.0 | leaf       | 414.4 / 509.0 / 687.9  | 283.2 / 406.7 / 715.7  |
+| Fork c329e624e | parent     | 615.2 / 717.2 / 1416.8 | 629.9 / 676.2 / 796.5  |
+| Fork c329e624e | root-child | 592.5 / 635.8 / 732.1  | 379.3 / 417.5 / 688.3  |
+| Fork c329e624e | leaf       | 610.4 / 666.0 / 1160.6 | 464.1 / 481.0 / 607.8  |
+
+The machine was contended and observed ranges overlap. These samples do **not** establish an isolated startup-latency gain or regression; operation counts and the smaller local import graph are the repeatable evidence. This measures extension-factory loading, not TUI readiness, model/provider requests or full-session latency. An additional production SDK/CLI/broker/history smoke passed on each host, and the previous fork revision `9007fefef` was qualified separately. No timing threshold is added to CI.
 
 ## Current behavior
 
@@ -77,7 +139,7 @@ Cold recovery still enumerates genuine owner handles and verifies relevant publi
 
 Pi 1.0 still eagerly loads native session bodies at its own startup; extension installation alone cannot remove that host cost. Explicit fork context still copies and publishes each sibling, with required fsync. An explicit full individual record must fit its detail budget and the consumer's heap.
 
-Full-archive backfill/capacity, sustained contention, power-loss durability and cross-platform performance are not qualified by these macOS/APFS synthetic regressions. No journal deletion, live archive migration, installed-runtime activation or inference request is part of this work. Intentional tool/queue boundaries, provider response time, host rendering and other extensions remain separate possible costs.
+Full-archive backfill/capacity, sustained contention, power-loss durability and cross-platform performance are not qualified by these macOS/APFS synthetic regressions. The measurement workloads do not delete or migrate native journals, inspect personal transcripts or make inference requests. Installed extension updates are separate from these workloads. Intentional tool/queue boundaries, provider response time, host rendering and other extensions remain separate possible costs.
 
 ## Cached-input traffic and delegation
 
