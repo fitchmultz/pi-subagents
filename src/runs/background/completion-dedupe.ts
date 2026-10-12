@@ -2,29 +2,8 @@ import { createHash } from "node:crypto";
 import { isRecord, hasText } from "./async-value.ts";
 
 interface CompletionDataLike {
-  completionId?: unknown;
-  id?: unknown;
-  agent?: unknown;
-  timestamp?: unknown;
-  sessionId?: unknown;
-  taskIndex?: unknown;
-  totalTasks?: unknown;
-  success?: unknown;
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function asFiniteNumber(value: unknown): number | undefined {
-  if (typeof value !== "number") {
-    return undefined;
-  }
-  return Number.isFinite(value) ? value : undefined;
+  completionId?: string;
+  id: string;
 }
 
 function stableStringify(value: unknown): string {
@@ -48,32 +27,11 @@ function payloadDigest(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
 }
 
-export function buildCompletionKey(data: Readonly<CompletionDataLike>, fallback: string): string {
-  const completionId = asNonEmptyString(data.completionId);
-  if (hasText(completionId)) {
-    return `completion:${completionId}`;
+export function buildCompletionKey(data: Readonly<CompletionDataLike>): string {
+  if (hasText(data.completionId)) {
+    return `completion:${data.completionId.trim()}`;
   }
-  const id = asNonEmptyString(data.id);
-  if (hasText(id)) {
-    return `id:${id}:${payloadDigest(data)}`;
-  }
-  const sessionId = asNonEmptyString(data.sessionId) ?? "no-session";
-  const agent = asNonEmptyString(data.agent) ?? "unknown";
-  const timestamp = asFiniteNumber(data.timestamp);
-  const taskIndex = asFiniteNumber(data.taskIndex);
-  const totalTasks = asFiniteNumber(data.totalTasks);
-  const success = data.success === true ? "1" : "?";
-  const successIdentity = data.success === false ? "0" : success;
-  return [
-    "meta",
-    sessionId,
-    agent,
-    timestamp !== undefined ? String(timestamp) : "no-ts",
-    taskIndex !== undefined ? String(taskIndex) : "-",
-    totalTasks !== undefined ? String(totalTasks) : "-",
-    successIdentity,
-    fallback,
-  ].join(":");
+  return `id:${data.id.trim()}:${payloadDigest(data)}`;
 }
 
 /** Mutable identity store owned by the completion-admission lifecycle. */
@@ -104,25 +62,4 @@ export function markSeenWithTtl(
   }
   seen.set(key, now);
   return false;
-}
-
-function isSeenMap(value: unknown): value is Map<string, number> {
-  if (!(value instanceof Map)) {
-    return false;
-  }
-  const entries: Map<unknown, unknown> = value;
-  return [...entries].every(
-    ([key, timestamp]) => typeof key === "string" && typeof timestamp === "number",
-  );
-}
-
-export function getGlobalSeenMap(storeKey: string): Map<string, number> {
-  const globalStore = globalThis as Record<string, unknown>;
-  const existing = globalStore[storeKey];
-  if (isSeenMap(existing)) {
-    return existing;
-  }
-  const map = new Map<string, number>();
-  globalStore[storeKey] = map;
-  return map;
 }

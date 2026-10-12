@@ -1999,6 +1999,7 @@ describe("async execution utilities", () => {
     assert.equal(payload.success, false);
     assert.equal(payload.exitCode, 1);
     assert.equal(payload.results[0].success, false);
+    assert.match(payload.results[0].error ?? "", /connection refused/);
   });
 
   for (const toolName of ["subagent"]) {

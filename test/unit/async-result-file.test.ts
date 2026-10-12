@@ -77,6 +77,11 @@ describe("async result file decoder", () => {
   it("normalizes state-only terminal result files for legacy compatibility", () => {
     assert.equal(readFixture(JSON.stringify({ state: "complete" })).terminalState, "complete");
     assert.equal(readFixture(JSON.stringify({ state: "failed" })).terminalState, "failed");
+    assert.equal(readFixture(JSON.stringify({ success: true })).terminalState, "complete");
+    assert.equal(
+      readFixture(JSON.stringify({ success: true, exitCode: 0 })).terminalState,
+      "complete",
+    );
   });
 
   it("normalizes paused result files from state or zero exit code", () => {

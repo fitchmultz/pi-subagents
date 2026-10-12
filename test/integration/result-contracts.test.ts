@@ -962,7 +962,7 @@ describe("result contracts", () => {
           }
         : {
             parallel: ["Fail now", "Wait slowly", "Queued must not run"].map((task) => ({
-              agent: "worker",
+              agent: task === "Fail now" ? "worker" : "reviewer",
               task,
             })),
             concurrency: 2,
@@ -987,7 +987,7 @@ describe("result contracts", () => {
         executeAsyncChain(id, {
           chain,
           resultMode: dynamic ? "chain" : "parallel",
-          agents: [makeAgent("worker")],
+          agents: [makeAgent("worker"), makeAgent("reviewer")],
           artifactsDir: cwd,
           ctx: { pi: { ...native.pi, events: createEventBus() }, cwd, currentSessionId: id },
           shareEnabled: false,

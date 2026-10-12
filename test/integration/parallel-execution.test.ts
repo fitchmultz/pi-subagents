@@ -856,10 +856,13 @@ describe("parallel agent execution", () => {
     });
 
     const details = result.details;
+    assert.equal(result.isError, undefined);
+    assertDefined(details.runId);
+    const saved = readRunResult(path.join(getRunMetadataDir(details.runId), "result.json"));
+    assert.equal(saved.results.length, 2);
     const paths = details.results
       .map((child) => child.outputReference?.path)
       .filter((value): value is string => value !== undefined && value.length > 0);
-    assert.equal(result.isError, undefined);
     assert.equal(mockPi.callCount(), 2);
     assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
     assert.equal(paths.length, 2);
@@ -868,8 +871,6 @@ describe("parallel agent execution", () => {
     assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_0_context\.md$/.test(p)));
     assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_1_context\.md$/.test(p)));
     assert.ok(details.results.every((child) => child.outputCleanup?.action === "deleted"));
-    assertDefined(details.runId);
-    const saved = readRunResult(path.join(getRunMetadataDir(details.runId), "result.json"));
     assert.ok(
       saved.results.every(
         (child, index) => child.output?.includes(`Output file consumed: ${paths[index]}`) === true,

@@ -18,7 +18,7 @@ async function createPi(t: TestContext) {
         },
       };
       registerSubagentNotify(capture, () => {
-        // Key-less compatibility inputs do not enter the owned queue lifecycle.
+        // This fixture observes messages without owning the delivery queue.
       });
     },
   });
@@ -33,6 +33,7 @@ describe("registerSubagentNotify", () => {
       [
         {
           id: "notify-table-summary",
+          exitCode: 0,
           summary: "  Done streaming\nAll clear  ",
           taskIndex: 1,
           totalTasks: 3,
@@ -40,11 +41,16 @@ describe("registerSubagentNotify", () => {
         "Background task completed: **worker** (2/3)\n\n  Done streaming\nAll clear  ",
       ],
       [
-        { id: "notify-table-empty", summary: "" },
+        { id: "notify-table-empty", exitCode: 0, summary: "" },
         "Background task completed: **worker**\n\n(no output)",
       ],
       [
-        { id: "notify-table-path", summary: "Done", sessionFile: "/tmp/session.jsonl" },
+        {
+          id: "notify-table-path",
+          exitCode: 0,
+          summary: "Done",
+          sessionFile: "/tmp/session.jsonl",
+        },
         "Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl",
       ],
       [
@@ -82,14 +88,7 @@ describe("registerSubagentNotify", () => {
     }
 
     sent.length = 0;
-    const first = {
-      id: "notify-correction",
-      agent: "worker",
-      success: false,
-      summary: "Result",
-      timestamp: 789,
-    };
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, first);
+    const first = { agent: "worker", success: false, summary: "Result" };
     events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, first);
     assert.deepEqual(sent, [
       {
@@ -102,13 +101,10 @@ describe("registerSubagentNotify", () => {
       },
     ]);
     const replacement = await createPi(t);
-    const corrected = { ...first, success: true };
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, corrected);
+    const completed = { ...first, success: true, exitCode: 0 };
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completed);
     assert.equal(sent.length, 1, "re-registration detaches the old bus");
-    replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, first);
-    assert.deepEqual(replacement.sent, [], "reload retains duplicate identity");
-    replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, corrected);
-    replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, corrected);
+    replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completed);
     assert.deepEqual(replacement.sent, [
       {
         message: {
@@ -119,36 +115,5 @@ describe("registerSubagentNotify", () => {
         options: { triggerTurn: true },
       },
     ]);
-
-    replacement.sent.length = 0;
-    for (const input of [
-      {},
-      { taskIndex: 0 },
-      { taskIndex: 0, sessionId: "parent-a" },
-      { taskIndex: 0, sessionId: "parent-b" },
-      { taskIndex: 1, sessionId: "parent-b" },
-    ]) {
-      const data = {
-        agent: "worker",
-        success: true,
-        summary: "Same content",
-        timestamp: 900,
-        totalTasks: 2,
-        ...input,
-      };
-      replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, data);
-      replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, data);
-    }
-    assert.deepEqual(
-      replacement.sent,
-      ["", " (1/2)", " (1/2)", " (1/2)", " (2/2)"].map((task) => ({
-        message: {
-          customType: "subagent-notify",
-          content: `Background task completed: **worker**${task}\n\nSame content`,
-          display: true,
-        },
-        options: { triggerTurn: true },
-      })),
-    );
   });
 });
