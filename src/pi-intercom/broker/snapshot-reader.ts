@@ -116,16 +116,14 @@ export class SnapshotReader {
   }
 
   finish(): SessionSnapshot {
-    return {
-      sessions: [...this.sessions.values()].map(({ info, topics, subscriptions }) =>
-        Object.assign(
-          {},
-          info,
-          topics !== undefined ? { topics } : {},
-          subscriptions !== undefined ? { subscriptions } : {},
-        ),
-      ),
-      receipts: this.receipts,
-    };
+    const sessions: SessionInfo[] = [];
+    for (const { info, topics, subscriptions } of this.sessions.values()) {
+      sessions.push({
+        ...info,
+        ...(topics !== undefined ? { topics } : {}),
+        ...(subscriptions !== undefined ? { subscriptions } : {}),
+      });
+    }
+    return { sessions, receipts: this.receipts };
   }
 }

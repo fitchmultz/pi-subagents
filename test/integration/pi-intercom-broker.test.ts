@@ -13,7 +13,7 @@ import {
   writeMessage,
 } from "../../src/pi-intercom/broker/framing.ts";
 import { prepareBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
-import { array, assertDefined, record, text } from "../support/assertions.ts";
+import { array, assertDefined, json, record, text } from "../support/assertions.ts";
 
 function isolatedAgent(t: TestContext): void {
   const previous = process.env.PI_CODING_AGENT_DIR;
@@ -184,7 +184,12 @@ for (const outcome of [
     isolatedAgent(t);
     let socket: net.Socket | undefined;
     let requestId: unknown;
-    const identity = { id: "stream-peer", cwd: "/synthetic", model: "synthetic" };
+    const identity = {
+      ...record(json('{"__proto__":{"pendingAsks":99},"snapshotExtension":{"retained":true}}')),
+      id: "stream-peer",
+      cwd: "/synthetic",
+      model: "synthetic",
+    };
     const first = topic("first"),
       second = topic("second");
     const server = net.createServer((peer) => {
@@ -316,7 +321,15 @@ for (const outcome of [
       writeMessage(socket, { type: "sessions", requestId, sessions: rows, receipts, more: false });
     }
     if (outcome === "complete") {
-      assert.deepEqual(await result, {
+      const snapshot = await result;
+      const session = snapshot.sessions[0];
+      assert.equal(Object.getPrototypeOf(session), Object.prototype);
+      assert.equal(Object.hasOwn(session, "__proto__"), true);
+      assert.deepEqual(Object.getOwnPropertyDescriptor(session, "__proto__")?.value, {
+        pendingAsks: 99,
+      });
+      assert.equal("pendingAsks" in session, false);
+      assert.deepEqual(snapshot, {
         sessions: [
           {
             ...identity,
