@@ -244,16 +244,18 @@ class IntercomBroker {
         : session.topics.snapshot(session.info, prepared);
       const from = messageSender(nextInfo);
       const deliveries = this.planPublications(currentId, from, prepared.publication);
-      const restore = prepared.restore;
       // Validate every frame before committing state or delivering publications.
-      if (restore) {
+      if (prepared.restore) {
         session.topics.validateRestore(session.info, prepared, requestId);
       }
-      const infos = restore
+      const infos = prepared.restore
         ? []
-        : [...this.sessions.values()].map((entry) =>
-            entry === session ? nextInfo : entry.topics.snapshot(entry.info),
-          );
+        : [...this.sessions.values()].map((entry) => {
+            if (entry === session) {
+              return nextInfo;
+            }
+            return msg.stream === true ? entry.topics.snapshot(entry.info) : entry.info;
+          });
       const frames = snapshotFrames(requestId, infos, msg.stream === true);
       const last = frames.pop();
       session.topics.commit(prepared);

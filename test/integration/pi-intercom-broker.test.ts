@@ -143,7 +143,12 @@ test("broker restores transactionally with exact cached frame limits and ordered
   assert.deepEqual(final.subscriptions, before.subscriptions);
 
   writeMessage(socket, { type: "presence", status: "idle" });
-  await request({ type: "list", requestId: "presence-barrier" });
+  const legacy = await request({ type: "list", requestId: "presence-barrier", stream: false });
+  assert.equal(array(legacy.sessions).length, 2);
+  for (const row of array(legacy.sessions)) {
+    assert.equal(Object.hasOwn(record(row), "topics"), false);
+    assert.equal(Object.hasOwn(record(row), "subscriptions"), false);
+  }
   const identityUpdate = await observed();
   assert.equal(identityUpdate.status, "idle");
   assert.deepEqual(identityUpdate.topics, final.topics);
