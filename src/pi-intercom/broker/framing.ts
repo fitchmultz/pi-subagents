@@ -19,15 +19,65 @@ export function validateIntercomMessageSize(msg: unknown): Error | null {
  * Format: 4-byte big-endian length + JSON payload
  */
 export function writeMessage(socket: Socket, msg: unknown): void {
-  const tooLarge = validateIntercomMessageSize(msg);
-  if (tooLarge) {
-    throw tooLarge;
-  }
   const json = JSON.stringify(msg);
+  const size = Buffer.byteLength(json, "utf-8");
+  if (size > MAX_FRAME_SIZE_BYTES) {
+    throw new Error(`Intercom message too large (${size} bytes; max ${MAX_FRAME_SIZE_BYTES})`);
+  }
   const payload = Buffer.from(json, "utf-8");
   const header = Buffer.alloc(4);
   header.writeUInt32BE(payload.length, 0);
   socket.write(Buffer.concat([header, payload]));
+}
+
+/** Retain fragments until a header or payload is complete; copy each fragmented value once. */
+class MessageBuffer {
+  private chunks: Buffer[] = [];
+  private index = 0;
+  length = 0;
+
+  append(data: Buffer): void {
+    if (data.length > 0) {
+      this.chunks.push(data);
+      this.length += data.length;
+    }
+  }
+
+  clear(): void {
+    this.chunks = [];
+    this.index = 0;
+    this.length = 0;
+  }
+
+  read(size: number): Buffer {
+    const first = this.chunks[this.index];
+    if (size === 0) {
+      return Buffer.alloc(0);
+    }
+    const result = first.length >= size ? first.subarray(0, size) : Buffer.allocUnsafe(size);
+    let written = 0;
+    while (written < size) {
+      const chunk = this.chunks[this.index];
+      const count = Math.min(chunk.length, size - written);
+      if (first.length < size) {
+        chunk.copy(result, written, 0, count);
+      }
+      written += count;
+      this.length -= count;
+      if (count === chunk.length) {
+        this.index++;
+      } else {
+        this.chunks[this.index] = chunk.subarray(count);
+      }
+    }
+    if (this.index === this.chunks.length) {
+      this.clear();
+    } else if (this.index * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.index);
+      this.index = 0;
+    }
+    return result;
+  }
 }
 
 /**
@@ -39,27 +89,28 @@ export function createMessageReader(
   onMessage: (msg: unknown) => void,
   onError: (error: Readonly<Error>) => void,
 ): (data: Buffer) => void {
-  let buffer = Buffer.alloc(0);
+  const buffer = new MessageBuffer();
+  let length: number | undefined;
 
   return (data: Buffer) => {
-    buffer = Buffer.concat([buffer, data]);
+    buffer.append(data);
 
-    while (buffer.length >= 4) {
-      const length = buffer.readUInt32BE(0);
-      if (length > MAX_FRAME_SIZE_BYTES) {
-        onError(
-          new Error(`Intercom frame too large (${length} bytes; max ${MAX_FRAME_SIZE_BYTES})`),
-        );
-        buffer = Buffer.alloc(0);
-        return;
+    while (buffer.length >= (length ?? 4)) {
+      if (length === undefined) {
+        length = buffer.read(4).readUInt32BE(0);
+        if (length > MAX_FRAME_SIZE_BYTES) {
+          onError(
+            new Error(`Intercom frame too large (${length} bytes; max ${MAX_FRAME_SIZE_BYTES})`),
+          );
+          buffer.clear();
+          length = undefined;
+          return;
+        }
+        continue;
       }
 
-      if (buffer.length < 4 + length) {
-        break;
-      }
-
-      const payload = buffer.subarray(4, 4 + length);
-      buffer = buffer.subarray(4 + length);
+      const payload = buffer.read(length);
+      length = undefined;
 
       let msg: unknown;
       try {
