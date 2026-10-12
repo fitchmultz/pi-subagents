@@ -358,23 +358,24 @@ it("keeps launch allowlists and prompt discovery aligned with the reversible fla
         "compact names alone do not grant delegation permission",
       );
     }
+    let role: string | undefined;
     // The current flag must govern this native registration, before the next loop changes it.
     // oxlint-disable-next-line no-await-in-loop
     const prompt = await createNativeSessionFixture({
       cwd: root,
       agentDir: root,
-      configure: registerPrompt,
+      configure(pi) {
+        registerPrompt(pi);
+        pi.on("before_agent_start", (event) => {
+          role = event.systemPromptOptions.sections.subagent_role;
+        });
+      },
     });
     shutdowns.push(prompt.dispose);
-    const options = { cwd: root, sections: {}, skills: [] };
     // Prompt sections must be inspected before switching the shared launch policy.
     // oxlint-disable-next-line no-await-in-loop
-    const emitted = await prompt.session.extensionRunner.emitBeforeAgentStart(
-      "Parent policy",
-      undefined,
-      options,
-    );
-    const role = emitted.systemPromptOptions.sections.subagent_role;
+    await prompt.session.prompt("Parent policy");
+    assertDefined(role);
     assert.match(
       role,
       compactChildTools

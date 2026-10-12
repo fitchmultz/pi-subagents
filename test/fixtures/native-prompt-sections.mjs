@@ -67,6 +67,11 @@ const strictRole = [
   "Do not propose or run subagents. Complete only your assigned role-specific task with the tools available to you.",
   "If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
+const structuredInstructions = [
+  "This subagent step has a strict structured output contract.",
+  "Your final action must be to call the `structured_output` tool with JSON matching the provided schema.",
+  "Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
+].join("\n");
 const skills = ["safe-skill", "pi-subagents"].map((name) => ({
   name,
   description: `${name} catalog sentinel`,
@@ -75,6 +80,19 @@ const skills = ["safe-skill", "pi-subagents"].map((name) => ({
   disableModelInvocation: false,
   sourceInfo: { path: root, source: "fixture", scope: "temporary", origin: "top-level" },
 }));
+
+function prepareStructuredOutput(enabled) {
+  process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE = enabled ? path.join(root, "output.json") : "";
+  process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA = enabled
+    ? path.join(root, "output-schema.json")
+    : "";
+  if (enabled) {
+    fs.writeFileSync(
+      process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA,
+      JSON.stringify({ type: "object", properties: { answer: { type: "string" } } }),
+    );
+  }
+}
 
 async function make({
   child = true,
@@ -88,11 +106,13 @@ async function make({
   full = false,
   fullAfter = false,
   peer = false,
+  structured,
   script = [ai.fauxAssistantMessage("done")],
 } = {}) {
   process.env.PI_SUBAGENT_INHERIT_SKILLS = inherited ? "1" : "0";
   process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = inherited ? "1" : "0";
   process.env.PI_SUBAGENT_FANOUT_CHILD = fanout ? "1" : "0";
+  prepareStructuredOutput(structured);
   const faux = ai.fauxProvider({ provider: "prompt-fixture", api: "openai-responses" });
   const model = {
     ...faux.getModel(),
@@ -110,6 +130,7 @@ async function make({
     cacheWarming: { enabled: false },
   });
   const captures = [];
+  const starts = [];
   const fullWriter = (pi) =>
     pi.on("before_agent_start", (event) => ({
       systemPrompt: exactOverride ?? `${event.systemPrompt}\nOPAQUE FULL OVERRIDE`,
@@ -133,6 +154,11 @@ async function make({
         ...(child ? [childRuntime] : []),
         ...(peer ? [intercom] : []),
         ...(fullAfter ? [fullWriter] : []),
+        (pi) => {
+          pi.on("before_agent_start", (event) => {
+            starts.push("messageType" in event ? event.messageType : "legacy-user");
+          });
+        },
       ],
     };
   }
@@ -182,10 +208,14 @@ async function make({
       return message;
     }),
   );
-  return { session, sm, captures, payloads: [], model, faux, errors };
+  return { session, sm, captures, payloads: [], model, faux, errors, starts };
 }
-async function run(instance, text = "ASSIGNED TASK") {
-  await instance.session.prompt(text);
+async function run(instance, input = "ASSIGNED TASK") {
+  if (typeof input === "string") {
+    await instance.session.prompt(input);
+  } else {
+    await instance.session.sendCustomMessage(input, { triggerTurn: true });
+  }
   await instance.session.waitForIdle();
   assert.deepEqual(instance.errors, []);
   for (const context of instance.captures.slice(instance.payloads.length)) {
@@ -490,11 +520,20 @@ test("opaque full writers before and after child sections keep provider-visible 
   ]) {
     // Capture each native instance's environment before the next scenario changes it.
     // oxlint-disable-next-line no-await-in-loop
-    const child = await run(await make({ full: true, fullAfter, exactOverride }));
+    const child = await make({
+      full: true,
+      fullAfter,
+      exactOverride,
+      structured: true,
+      script: Array.from({ length: 3 }, () => ai.fauxAssistantMessage("done")),
+    });
+    // Keep this instance's native start and provider capture together before changing policy.
+    // oxlint-disable-next-line no-await-in-loop
+    await run(child);
     if (exactOverride) {
       assert.equal(
         currentPrompt(child),
-        `EXACT OVERRIDE\n\n<subagent_role>\n${strictRole}\n</subagent_role>`,
+        `EXACT OVERRIDE\n\n<subagent_role>\n${strictRole}\n</subagent_role>\n\n<subagent_output>\n${structuredInstructions}\n</subagent_output>`,
       );
     } else {
       assert.match(currentPrompt(child), /OPAQUE FULL OVERRIDE/);
@@ -505,6 +544,25 @@ test("opaque full writers before and after child sections keep provider-visible 
     assert.equal(currentPrompt(child).split("<subagent_role>").length, 2);
     assert.equal(currentPrompt(child).split("</subagent_role>").length, 2);
     assert.doesNotMatch(currentPrompt(child), /delegation enabled for your assigned task/);
+    for (const customType of ["background_command", "intercom_message"]) {
+      // Idle notifications exercise the real custom-start path, not synthetic user fixtures.
+      // oxlint-disable-next-line no-await-in-loop
+      await run(child, { customType, content: "CUSTOM WAKEUP", display: false });
+    }
+    assert.deepEqual(
+      child.starts,
+      child.starts[0] === "legacy-user" ? ["legacy-user"] : ["user", "custom", "custom"],
+    );
+    for (const index of [1, 2]) {
+      const prompt = currentPrompt(child, index);
+      assert.ok(prompt.includes(strictRole));
+      assert.equal(prompt.split("<subagent_role>").length, 2);
+      assert.equal(prompt.split("<subagent_output>").length, 2);
+      assert.ok(prompt.includes(structuredInstructions));
+      if (child.starts[0] !== "legacy-user") {
+        assert.equal(prompt, currentPrompt(child), "custom hooks must not accumulate sections");
+      }
+    }
     save(`full-${fullAfter ? "after" : "before"}`, child);
   }
 });
@@ -532,10 +590,15 @@ test("intercom uses a stable provider-visible section and preserves earlier opaq
       await sleep(10);
     }
     await client.connect({ name: "prompt-peer", cwd: root, model: "fixture" });
-    for (const full of [false, true]) {
+    for (const [child, full] of [
+      [false, false],
+      [false, true],
+      [true, false],
+      [true, true],
+    ]) {
       // Native sessions share the broker and global inheritance controls.
       // oxlint-disable-next-line no-await-in-loop
-      const instance = await make({ child: false, peer: true, full });
+      const instance = await make({ child, peer: true, full });
       const brokerId = `pi-${createHash("sha256").update(instance.session.sessionId).digest("hex").slice(0, 32)}`;
       const connectedBy = Date.now() + 5_000;
       // Prove registration via acknowledged broker queries, not elapsed time.
@@ -562,7 +625,33 @@ test("intercom uses a stable provider-visible section and preserves earlier opaq
       // oxlint-disable-next-line no-await-in-loop
       await run(instance, "SECOND TURN");
       assert.equal(currentPrompt(instance, 1), currentPrompt(instance));
-      save(`intercom-${full ? "opaque" : "sections"}`, instance);
+      instance.faux.appendResponses(
+        ["background_command", "intercom_message"].map(() => (context) => {
+          instance.captures.push(structuredClone(context));
+          return ai.fauxAssistantMessage("done");
+        }),
+      );
+      for (const customType of ["background_command", "intercom_message"]) {
+        // Both parent and child sessions retain a single peer hint on native wakeups.
+        // oxlint-disable-next-line no-await-in-loop
+        await run(instance, { customType, content: "CUSTOM WAKEUP", display: false });
+      }
+      assert.deepEqual(
+        instance.starts,
+        instance.starts[0] === "legacy-user"
+          ? ["legacy-user", "legacy-user"]
+          : ["user", "user", "custom", "custom"],
+      );
+      for (const index of [2, 3]) {
+        const prompt = currentPrompt(instance, index);
+        assert.equal(prompt.split("<intercom_peers>").length, 2);
+        assert.equal(prompt.split("<subagent_role>").length, child ? 2 : 1);
+        assert.doesNotMatch(prompt, /prompt-peer/);
+        if (instance.starts[0] !== "legacy-user") {
+          assert.equal(prompt, currentPrompt(instance), "custom peer hints remain byte-stable");
+        }
+      }
+      save(`intercom-${child ? "child" : "parent"}-${full ? "opaque" : "sections"}`, instance);
     }
   } finally {
     await client.disconnect();

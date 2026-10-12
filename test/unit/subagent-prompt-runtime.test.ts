@@ -19,7 +19,7 @@ const envSnapshot = {
   PI_SUBAGENT_INTERCOM_SESSION_NAME: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
 };
 
-function promptEvent(): BeforeAgentStartEvent {
+function promptEvent() {
   const systemPromptOptions = {
     cwd: "/fixture",
     selectedTools: [],
@@ -34,10 +34,11 @@ function promptEvent(): BeforeAgentStartEvent {
   };
   return {
     type: "before_agent_start",
+    messageType: "user",
     prompt: "Assigned task",
     systemPrompt: "Opaque prompt is never parsed",
     systemPromptOptions,
-  };
+  } satisfies BeforeAgentStartEvent & { messageType: "user" };
 }
 
 const disposals: Array<() => Promise<void>> = [];

@@ -1581,8 +1581,8 @@ test("native rejected input leaves the active intercom run and idle wait intact"
   const responseRelease = gate(t);
   const losingInput = "User input held before admission";
   const preflight: unknown[] = [];
+  const beforeStarts: unknown[] = [];
   let inputHeld = false,
-    beforeStarts = 0,
     seen = "";
   const receiver = await makeSession(t, "input-rejection", {
     configure(pi) {
@@ -1592,8 +1592,8 @@ test("native rejected input leaves the active intercom run and idle wait intact"
           await inputRelease.promise;
         }
       });
-      pi.on("before_agent_start", () => {
-        beforeStarts++;
+      pi.on("before_agent_start", (event) => {
+        beforeStarts.push("messageType" in event ? property(event, "messageType") : "user");
       });
     },
   });
@@ -1616,6 +1616,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     await waitFor(() => inputHeld, "held input interception");
     await receiver.send("input-owner");
     await waitFor(() => receiver.faux.state.callCount === 1, "custom-owned provider request");
+    const expectedStarts = beforeStarts.includes("custom") ? ["custom"] : [];
     const signal = receiver.context().signal;
     const systemPrompt = receiver.session.systemPrompt;
     assert.ok(signal && !signal.aborted);
@@ -1629,7 +1630,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     receiver.events.push({
       type: "fixture.input_rejection",
       preflight: [...preflight],
-      beforeStarts,
+      beforeStarts: [...beforeStarts],
       idle: receiver.session.isIdle,
       streaming: receiver.session.isStreaming,
       signalUnchanged: receiver.context().signal === signal,
@@ -1652,10 +1653,10 @@ test("native rejected input leaves the active intercom run and idle wait intact"
       "a rejected input cannot release the owning run's idle waiter",
     );
     assert.equal(receiver.settled(), 0);
-    assert.equal(
+    assert.deepEqual(
       beforeStarts,
-      0,
-      "custom delivery bypasses user preparation; rejected input must not prepare replay",
+      expectedStarts,
+      "only the owning custom run may prepare; rejected user input must not prepare replay",
     );
     assert.equal(receiver.faux.state.callCount, 1);
     assert.equal(receiver.visible("input-owner").length, 1);
@@ -1666,7 +1667,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     assert.equal(receiver.context().isIdle(), true);
     assert.equal(receiver.context().signal, undefined);
     assert.equal(receiver.context().hasPendingMessages(), false);
-    assert.equal(beforeStarts, 0);
+    assert.deepEqual(beforeStarts, expectedStarts);
     assert.equal(receiver.faux.state.callCount, 1);
     assert.equal(receiver.visible("input-owner").length, 1);
     assert.equal(seen.split("message:input-owner").length - 1, 1);
@@ -1696,16 +1697,20 @@ test("native rejected input leaves the active intercom run and idle wait intact"
   }
 });
 
-test("native pre-admission user preparation allows a separate custom run without losing or duplicating either input", async (t) => {
+test("native user preparation preserves both inputs through separate admission or busy-start steering", async (t) => {
   const startupRelease = gate(t);
   const userPrompt = "User startup held before the agent runs";
   let beforeStarts = 0;
+  let inputHeld = false;
+  const host = { customStartEvents: false };
   const seen: string[] = [];
   const receiver = await makeSession(t, "startup-queued", {
     configure(pi) {
       pi.on("before_agent_start", async (event) => {
         beforeStarts++;
-        if (event.prompt === userPrompt) {
+        host.customStartEvents = "messageType" in event;
+        if ("prompt" in event && event.prompt === userPrompt) {
+          inputHeld = true;
           await startupRelease.promise;
         }
       });
@@ -1714,40 +1719,59 @@ test("native pre-admission user preparation allows a separate custom run without
   receiver.faux.setResponses([
     (context: unknown) => {
       seen.push(JSON.stringify(context));
-      return fauxAssistantMessage("Custom input handled");
+      return fauxAssistantMessage("First request handled");
     },
     (context: unknown) => {
       seen.push(JSON.stringify(context));
-      return fauxAssistantMessage("User input handled");
+      return fauxAssistantMessage("Second request handled");
     },
   ]);
   const running = receiver.session.prompt(userPrompt);
   try {
-    await waitFor(() => beforeStarts === 1, "held user preparation");
+    await waitFor(() => inputHeld, "held user preparation");
+    const preparationIdle = receiver.context().isIdle();
+    assert.equal(preparationIdle, !host.customStartEvents);
     receiver.events.push({
       type: "fixture.user_preparation",
-      idle: receiver.context().isIdle(),
+      idle: preparationIdle,
       streaming: receiver.session.isStreaming,
       beforeStarts,
       providerCalls: receiver.faux.state.callCount,
     });
     assert.equal(receiver.faux.state.callCount, 0);
     await receiver.send("startup-queued");
-    await waitFor(
-      () => receiver.settled() === 1 && receiver.session.isIdle,
-      "separate custom run settlement before user admission",
-    );
-    assert.equal(beforeStarts, 1, "custom delivery does not run user preparation hooks");
-    assert.equal(receiver.faux.state.callCount, 1);
-    assert.equal(receiver.visible("startup-queued").length, 1);
-    assert.doesNotMatch(seen[0], /User startup held before the agent runs/);
-    assert.equal(seen[0].split("message:startup-queued").length - 1, 1);
+    if (preparationIdle) {
+      await waitFor(
+        () => receiver.settled() === 1 && receiver.session.isIdle,
+        "separate custom run settlement before user admission",
+      );
+      assert.equal(receiver.faux.state.callCount, 1);
+      assert.equal(receiver.visible("startup-queued").length, 1);
+      assert.doesNotMatch(seen[0], /User startup held before the agent runs/);
+      assert.equal(seen[0].split("message:startup-queued").length - 1, 1);
+    } else {
+      await waitFor(
+        () =>
+          receiver.session.agent
+            .peekQueuedMessages()
+            .some((message) => inboundId(message) === "startup-queued"),
+        "native steering receipt during busy preparation",
+      );
+      assert.equal(receiver.context().isIdle(), false);
+      const signal = receiver.context().signal;
+      assert.ok(signal && !signal.aborted);
+      assert.equal(receiver.faux.state.callCount, 0);
+      assert.equal(receiver.settled(), 0);
+      assert.equal(receiver.visible("startup-queued").length, 0);
+    }
+    assert.equal(beforeStarts, 1, "busy delivery queues without preparing another run");
     startupRelease.resolve();
     await running;
     await receiver.session.waitForIdle();
     assert.equal(beforeStarts, 1);
-    assert.equal(receiver.faux.state.callCount, 2);
-    assert.equal(receiver.settled(), 2);
+    const requests = preparationIdle ? 2 : 1;
+    assert.equal(receiver.faux.state.callCount, requests);
+    assert.equal(receiver.settled(), requests);
     assert.equal(receiver.visible("startup-queued").length, 1);
     const users = receiver.session.sessionManager
       .getEntries()
@@ -1758,9 +1782,18 @@ test("native pre-admission user preparation allows a separate custom run without
           JSON.stringify(entry.message.content).includes(userPrompt),
       );
     assert.equal(users.length, 1);
+    const owningContext = seen.at(-1);
+    assertDefined(owningContext);
     for (const body of [userPrompt, "message:startup-queued"]) {
-      assert.equal(seen[1].split(body).length - 1, 1, body);
+      assert.equal(owningContext.split(body).length - 1, 1, body);
     }
+    assert.equal(
+      receiver.events.filter(
+        (event) => event.type === "extension.message_end" && event.id === "startup-queued",
+      ).length,
+      1,
+      "custom input publishes one native receipt",
+    );
     assert.equal(receiver.context().isIdle(), true);
     assert.equal(receiver.context().signal, undefined);
     assert.equal(receiver.context().hasPendingMessages(), false);
@@ -1768,7 +1801,7 @@ test("native pre-admission user preparation allows a separate custom run without
       receiver.events
         .filter((event) => event.type === "extension.message_end" && event.role === "assistant")
         .map((event) => event.stopReason),
-      ["stop", "stop"],
+      Array.from({ length: requests }, () => "stop"),
     );
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
     assert.deepEqual(receiver.errors, []);
@@ -1778,7 +1811,9 @@ test("native pre-admission user preparation allows a separate custom run without
       settled: receiver.settled(),
     });
     t.diagnostic(
-      "Official 1.0 preparation precedes admission: custom input legitimately runs separately, then user admission retains both inputs exactly once without replay.",
+      preparationIdle
+        ? "User-only preparation is idle: custom input runs separately, then user admission retains both inputs once."
+        : "Discriminated preparation is busy: native steering preserves both inputs once in the owning request.",
     );
   } finally {
     startupRelease.resolve();
