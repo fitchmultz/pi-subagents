@@ -182,7 +182,7 @@ async function createQueuedOwner(
     noThemes: true,
     noPromptTemplates: true,
     extensionFactories: [
-      (pi) => {
+      async (pi) => {
         lifetime.factoryRuns++;
         const send = pi.sendMessage.bind(pi);
         const observedSend: ExtensionAPI["sendMessage"] = (message, options) => {
@@ -192,7 +192,11 @@ async function createQueuedOwner(
           send(message, options);
         };
         t.mock.method(pi, "sendMessage", observedSend);
-        (childSafe ? registerChild : registerRoot)(pi);
+        if (childSafe) {
+          registerChild(pi);
+        } else {
+          await registerRoot(pi);
+        }
         pi.on("session_start", (_event, context) => {
           lifetime.context = context;
         });

@@ -73,7 +73,7 @@ const loader = new sdk.DefaultResourceLoader({
   noThemes: true,
   noPromptTemplates: true,
   extensionFactories: [
-    (pi) => {
+    async (pi) => {
       const send = pi.sendMessage.bind(pi);
       // Observe actual native notification calls and forward them; pi is this factory's SDK boundary.
       pi.sendMessage = (message, options) => {
@@ -82,7 +82,7 @@ const loader = new sdk.DefaultResourceLoader({
         }
         send(message, options);
       };
-      register(pi);
+      await register(pi);
     },
   ],
 });
