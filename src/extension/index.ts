@@ -1,18 +1,22 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
-import { ensureTempRoot } from "../shared/temp-root.ts";
 import { errorMessage } from "../shared/unknown.ts";
 import { loadConfig } from "./config.ts";
-import { ParentSubagentRuntime } from "./parent-runtime.ts";
-import { cleanupStaleRuntime } from "./runtime-reload.ts";
 
 export { loadConfig } from "./config.ts";
 
-export default function registerSubagentExtension(pi: ExtensionAPI): void {
+export default async function registerSubagentExtension(pi: ExtensionAPI): Promise<void> {
   if (process.env[SUBAGENT_CHILD_ENV] === "1") {
     // Explicit fanout-child owns nested delegation; globally discovered parent code remains inert.
     return;
   }
+  // Children discover this entry too; keep the parent execution/history/UI graph behind the guard.
+  const [{ ensureTempRoot }, { ParentSubagentRuntime }, { cleanupStaleRuntime }] =
+    await Promise.all([
+      import("../shared/temp-root.ts"),
+      import("./parent-runtime.ts"),
+      import("./runtime-reload.ts"),
+    ]);
   try {
     ensureTempRoot();
   } catch (error) {

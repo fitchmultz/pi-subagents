@@ -6,11 +6,12 @@ import {
 } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { test, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createCompletionDelivery } from "../../src/runs/background/completion-delivery.ts";
@@ -116,6 +117,10 @@ test(
 );
 
 test("reordered messages, split JSON surrogate escapes, and malformed diagnostics preserve callbacks and exact output without publishing partial decoded text", async (t) => {
+  const delta = `${JSON.stringify({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Live text" },
+  })}\n`;
   const valid =
     '{"message":{"content":[{"type":"text","text":"\\uD83E\\uDD84"},{"type":"text","text":"second"}],"role":"assistant","provider":"fixture","model":"faux","stopReason":"stop","usage":' +
     JSON.stringify(usage) +
@@ -124,10 +129,22 @@ test("reordered messages, split JSON surrogate escapes, and malformed diagnostic
     '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"DO NOT PUBLISH"}]},"broken":truX}\n';
   const { root, env } = fixture(
     t,
-    `process.stdout.write(${JSON.stringify(malformed)});for(const byte of Buffer.from(${JSON.stringify(valid)})) process.stdout.write(Buffer.from([byte]));`,
+    `process.stdout.write(${JSON.stringify(delta)}.repeat(1000));process.stdout.write(${JSON.stringify(malformed)});for(const byte of Buffer.from(${JSON.stringify(valid)})) process.stdout.write(Buffer.from([byte]));process.stdout.write(${JSON.stringify(delta)}.repeat(1000));`,
   );
   let output = "",
-    messages = 0;
+    messages = 0,
+    deltas = 0,
+    truncations = 0;
+  const truncate = fs.ftruncateSync;
+  t.mock.method(fs, "ftruncateSync", (fd: number, length?: number) => {
+    truncations++;
+    truncate(fd, length);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
   const result = await runChildAttempt({
     args: [],
     cwd: root,
@@ -140,16 +157,24 @@ test("reordered messages, split JSON surrogate escapes, and malformed diagnostic
     onEvent: (event) => {
       if (event.type === "message_end") {
         messages++;
+      } else if (event.type === "message_update") {
+        deltas++;
       }
     },
   });
   assert.equal(result.exitCode, 0);
   assert.equal(result.finalOutput, "second");
   assert.equal(messages, 1);
+  assert.equal(deltas, 2000, "all live updates reach the owner before checking empty-spool work");
   assert.equal(output, `${malformed}🦄\nsecond\n`);
   assert.deepEqual(
     result.auditRecords?.map((record) => record.kind),
     ["diagnostic", "message_end"],
+  );
+  assert.equal(
+    truncations,
+    2,
+    "only the malformed and completed text require clearing; deltas never truncate empty scratch files",
   );
 });
 
