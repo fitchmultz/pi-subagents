@@ -1275,7 +1275,7 @@ test("settled native history refreshes retain card state without rebuilding and 
   t.mock.timers.enable({ apis: ["setInterval"] });
   const f = await fixture(t, "fullscreen"),
     manager = f.childSessions[0];
-  manager.appendMessage({
+  const nativeId = manager.appendMessage({
     role: "assistant",
     content: [
       { type: "thinking", thinking: "Retained reasoning" },
@@ -1288,7 +1288,10 @@ test("settled native history refreshes retain card state without rebuilding and 
     usage,
     timestamp: Date.now(),
   });
-  await indexedReady(f);
+  await f.complete();
+  assert.equal(requiredTask(f).child.state, "completed");
+  assert.equal(requiredTask(f).child.result?.finalOutput, "Finished");
+  assert.equal(requiredTask(f).finalId, `result:${f.run.runId}`);
   f.terminal.resize(110, 48);
   const opening = f.controller.open(f.key);
   await historyReady(f);
@@ -1321,9 +1324,9 @@ test("settled native history refreshes retain card state without rebuilding and 
   assert.notEqual(requiredPage(f).generation, before);
   assert.doesNotMatch(plain(f.overlay), /Retained reasoning/);
   assert.ok(builds.mock.callCount() > 0, "a replaced source invalidates native card state");
-  const latest = requiredTask(f).history.findLast((item) => item.kind === "assistant");
-  assertDefined(latest?.load);
-  assert.match((await latest.load()).text, /Retained reasoning[\s\S]*Stable refresh proof/);
+  const nativeItem = requiredTask(f).history.find((item) => item.id === `${nativeId}:0`);
+  assertDefined(nativeItem?.load);
+  assert.match((await nativeItem.load()).text, /Retained reasoning[\s\S]*Stable refresh proof/);
   f.conversation.invalidate();
   assert.doesNotMatch(plain(f.overlay), /Retained reasoning/);
   f.interactiveOverlay.handleInput("\x1b");

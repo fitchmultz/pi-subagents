@@ -172,10 +172,11 @@ export class HistoryCards {
   private card(item: AgentHistoryItem, expanded: boolean, detail: boolean): Component {
     const signature = `${expanded}:${detail}`,
       cached = this.components.get(item.id);
-    if (
-      cached?.signature === signature &&
-      (cached.item === item || sameDisplay(cached.item, item))
-    ) {
+    if (cached?.signature === signature && cached.item === item) {
+      return cached.component;
+    }
+    if (cached?.signature === signature && sameDisplay(cached.item, item)) {
+      this.components.set(item.id, { ...cached, item });
       return cached.component;
     }
     const component = this.create(item, { expanded, detail });
