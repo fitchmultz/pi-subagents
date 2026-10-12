@@ -255,11 +255,13 @@ describe("intercom result delivery cutover", () => {
 
   for (const mode of ["single", "parallel", "chain"] as const) {
     for (const failed of [false, true]) {
+      const longSummary = `${"x".repeat(2000)}\n${"y".repeat(2000)}`;
+      const lastOutput = failed ? "LAST_EVIDENCE" : `LAST_EVIDENCE\n${longSummary}`;
       it(`${mode} owner results retain evidence and deliver one truthful grouped completion (${failed ? "failed" : "completed"})`, async () => {
         mockPi.onCall({ matchArgsIncludes: "FIRST", output: "FIRST_EVIDENCE" });
         mockPi.onCall({
           matchArgsIncludes: "LAST",
-          output: "LAST_EVIDENCE",
+          output: lastOutput,
           ...(failed ? { exitCode: 1, stderr: "Expected last-child failure" } : {}),
         });
         const { executor, events: bus, state } = await makeExecutor();
@@ -280,7 +282,7 @@ describe("intercom result delivery cutover", () => {
         });
         assert.equal(result.isError, failed || undefined, textAt(result.content));
         assert.match(textAt(result.content), /LAST_EVIDENCE/);
-        assert.equal(record(result.details.results.at(-1)).finalOutput, "LAST_EVIDENCE");
+        assert.equal(record(result.details.results.at(-1)).finalOutput, lastOutput);
         const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR);
         try {
           watcher.primeExistingResults();
@@ -318,6 +320,10 @@ describe("intercom result delivery cutover", () => {
             requireText(record(records(payload.children).at(-1)).summary),
             /LAST_EVIDENCE/,
           );
+          if (!failed) {
+            assert.equal(record(records(payload.children).at(-1)).summary, lastOutput);
+            assert.ok(requireText(payload.message).includes(longSummary));
+          }
           assert.equal(
             payload.resultPath,
             path.join(getRunMetadataDir(requireText(result.details.runId)), "result.json"),

@@ -22,11 +22,6 @@ import { createTestTerminal } from "../support/terminal.ts";
 
 import registerSubagentExtension from "../../src/extension/index.ts";
 import { formatAsyncStartedMessage } from "../../src/runs/background/async-execution.ts";
-import {
-  buildSubagentResultIntercomPayload,
-  formatSubagentResultReceipt,
-  stripDetailsOutputsForIntercomReceipt,
-} from "../../src/intercom/result-intercom.ts";
 import { buildWorkflowGraphSnapshot } from "../../src/runs/shared/workflow-graph.ts";
 import type { ChainStep } from "../../src/shared/settings.ts";
 import type { SingleResult, SubagentExecutionResult } from "../../src/shared/types.ts";
@@ -709,40 +704,42 @@ test("native stopped chain expansion includes the prefix before the retained par
 
 test("foreground intercom receipts retain full metadata without claiming separately delivered responses are empty", () => {
   for (const mode of ["single", "parallel", "chain"] as const) {
-    const payload = buildSubagentResultIntercomPayload({
-      to: "parent",
-      runId: "receipt-run",
-      mode,
-      source: "foreground",
-      children: [
-        {
-          agent: "worker",
-          status: "completed",
-          summary: "Full response is in the completion message.",
-        },
-      ],
-    });
+    const modeLabel = {
+      single: "single subagent result",
+      parallel: "parallel subagent results",
+      chain: "chain subagent results",
+    }[mode];
     const receipt: SubagentExecutionResult = {
       content: [
         {
           type: "text",
-          text: formatSubagentResultReceipt({ mode, runId: "receipt-run", payload }),
+          text: `Delivered ${modeLabel} via intercom.
+Delivery: succeeded
+Run: receipt-run
+Child outcome: completed
+Children: 1 completed
+Full grouped output was sent over intercom.`,
         },
       ],
-      details: stripDetailsOutputsForIntercomReceipt(
-        {
-          mode,
-          runId: "receipt-run",
-          chainAgents: mode === "chain" ? ["worker"] : undefined,
-          results: [result("worker", payload.children[0].summary)],
-        },
-        {
+      details: {
+        mode,
+        runId: "receipt-run",
+        chainAgents: mode === "chain" ? ["worker"] : undefined,
+        results: [
+          {
+            agent: "worker",
+            task: "worker task",
+            exitCode: 0,
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          },
+        ],
+        intercomDelivery: {
           delivered: true,
-          to: payload.to,
-          status: payload.status,
-          summary: payload.summary,
+          to: "parent",
+          status: "completed",
+          summary: "1 completed",
         },
-      ),
+      },
     };
     const original = structuredClone(receipt);
     const component = nativeTool("delegate", receipt);
