@@ -2319,6 +2319,19 @@ test("multiword search matches whole native records before ranking and paginatio
           "scoping preserves global scores and time ordering",
         );
       }
+      const orderedScores = expected
+        .map((id) => {
+          const entry = id.slice(0, id.lastIndexOf(":"));
+          return sort === "relevance"
+            ? numberValue(scores.get(entry))
+            : -(Date.parse(timestamp) + (entry === "separate-fields" ? 1000 : 0));
+        })
+        .sort((a, b) => a - b);
+      assert.deepEqual(
+        matches.map((match) => match.score),
+        orderedScores,
+        "both sorts retain their independent score order across scoped cursor pages",
+      );
       assert.equal(
         // Native publication/cursor state must settle before advancing this sequence.
         // oxlint-disable-next-line no-await-in-loop
