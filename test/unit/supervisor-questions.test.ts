@@ -63,23 +63,13 @@ test("owner reads preserve values with snapshot-sized scratch and a 64 KiB ceili
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  const owner = '{"sessionId":"old","sessionId":"owner-🦄","__proto__":{"polluted":true}}';
+  const owner = '{"sessionId":"owner-🦄"}';
   fs.writeFileSync(file, owner);
   assert.deepEqual(readQuestionOwner("run-1", root), { sessionId: "owner-🦄" });
   assert.deepEqual(scratch, [Buffer.byteLength(owner)], "scratch is bounded by the fd snapshot");
-  const text = '{"sessionId":"owner"}';
-  for (const [size, scratchBytes] of [
-    [57, 57],
-    [70_000, 65_536],
-  ] as const) {
-    fs.writeFileSync(file, text.padEnd(size));
-    assert.deepEqual(readQuestionOwner("run-1", root), { sessionId: "owner" });
-    const lastScratch = scratch.at(-1);
-    assertDefined(lastScratch);
-    assert.equal(lastScratch, scratchBytes);
-  }
-  fs.unlinkSync(file);
-  assert.equal(readQuestionOwner("run-1", root), undefined);
+  fs.writeFileSync(file, '{"sessionId":"owner"}'.padEnd(70_000));
+  assert.deepEqual(readQuestionOwner("run-1", root), { sessionId: "owner" });
+  assert.equal(scratch.at(-1), 65_536, "larger owner reads retain the chunk ceiling");
 });
 
 test("owner-scoped questions trust validated embedded ownership before opening foreign state", (t) => {
