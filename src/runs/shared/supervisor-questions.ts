@@ -216,7 +216,10 @@ export function createSupervisorQuestion(
   return question;
 }
 
-export function listRunQuestions(runDir: string): SupervisorQuestionView[] {
+export function listRunQuestions(
+  runDir: string,
+  ownerSessionId?: string,
+): SupervisorQuestionView[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(path.join(runDir, "questions"), { withFileTypes: true });
@@ -233,7 +236,10 @@ export function listRunQuestions(runDir: string): SupervisorQuestionView[] {
         path.join(runDir, "questions", entry.name, "question.json"),
         parseSupervisorQuestion,
       );
-      return question ? [readQuestionState(question, path.dirname(runDir))] : [];
+      return question &&
+        (ownerSessionId === undefined || question.ownerSessionId === ownerSessionId)
+        ? [readQuestionState(question, path.dirname(runDir))]
+        : [];
     });
 }
 
@@ -243,9 +249,7 @@ export function listOwnedRunQuestions(
   runId: string,
 ): SupervisorQuestionView[] {
   migrateSupervisorQuestions(ownerSessionId, runId);
-  return listRunQuestions(getRunMetadataDir(runId)).filter(
-    (question) => question.ownerSessionId === ownerSessionId,
-  );
+  return listRunQuestions(getRunMetadataDir(runId), ownerSessionId);
 }
 
 export function pendingSupervisorQuestion(input: {
@@ -321,11 +325,7 @@ function* supervisorQuestionSteps(
   for (const entry of runs) {
     yield;
     try {
-      questions.push(
-        ...listRunQuestions(path.join(root, entry.name)).filter(
-          (question) => question.ownerSessionId === ownerSessionId,
-        ),
-      );
+      questions.push(...listRunQuestions(path.join(root, entry.name), ownerSessionId));
     } catch (error) {
       if (runId !== undefined) {
         throw error;

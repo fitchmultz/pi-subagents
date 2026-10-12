@@ -51,8 +51,11 @@ export class ChildObservationSpool {
     fs.writeFileSync(this.stderr, text);
   }
   resetText(): void {
-    this.textOffset = 0;
+    if (this.textOffset === 0) {
+      return;
+    }
     fs.ftruncateSync(this.text, 0);
+    this.textOffset = 0;
   }
   appendText(text: string): void {
     const bytes = Buffer.from(text);
@@ -72,14 +75,16 @@ export class ChildObservationSpool {
     this.textOffset += bytes.length;
   }
   replayText(consume: (text: string) => void): void {
-    this.decode(this.text, 0, this.textOffset, consume);
+    if (this.textOffset > 0) {
+      this.decode(this.text, 0, this.textOffset, consume);
+    }
   }
   replayWire(start: number, end: number, consume: (text: string) => void): void {
     this.decode(this.wire, start, end, consume);
   }
 
   private copy(fd: number, start: number, end: number, consume: (bytes: Buffer) => void): void {
-    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, end - start));
     for (let position = start; position < end;) {
       const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, end - position), position);
       if (count === 0) {

@@ -109,7 +109,7 @@ async function harness(t: TestContext) {
   modelRuntime.registerNativeProvider(faux.provider);
   async function open(
     file?: string,
-    delegation?: Readonly<{ tool: string; register: (pi: ExtensionAPI) => void }>,
+    delegation?: Readonly<{ tool: string; register: (pi: ExtensionAPI) => void | Promise<void> }>,
   ) {
     let adapter!: ReturnType<typeof registerParentUsage>;
     let ctx!: ExtensionContext;
@@ -129,7 +129,7 @@ async function harness(t: TestContext) {
       noThemes: true,
       noContextFiles: true,
       extensionFactories: [
-        (pi: ExtensionAPI) => {
+        async (pi: ExtensionAPI) => {
           adapter = registerParentUsage(pi, ["usage_wait"]);
           pi.on("session_start", (_event, context) => {
             ctx = context;
@@ -156,7 +156,7 @@ async function harness(t: TestContext) {
               return final;
             },
           });
-          delegation?.register(pi);
+          await delegation?.register(pi);
         },
       ],
     });
@@ -394,8 +394,12 @@ for (const surface of ["parent", "child-advanced", "child-compact"]) {
     const direct: { usage: Usage | undefined } = { usage: undefined };
     const parent = await h.open(savedParentFile, {
       tool: advanced ? "subagent" : "agent_runs",
-      register(pi) {
-        (childSafe ? registerFanoutSubagent : registerSubagents)(pi);
+      async register(pi) {
+        if (childSafe) {
+          registerFanoutSubagent(pi);
+        } else {
+          await registerSubagents(pi);
+        }
         for (const [send, delivered] of [
           [SUBAGENT_LIVE_INTERCOM_EVENT, SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT],
           [SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT],

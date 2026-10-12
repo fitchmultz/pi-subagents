@@ -1,4 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { isDeepStrictEqual } from "node:util";
 import {
   AssistantMessageComponent,
   UserMessageComponent,
@@ -47,29 +48,9 @@ interface CardLine {
   readonly contentStart: number;
   readonly end: number;
 }
-function plainItem(item: AgentHistoryItem): boolean {
-  return (
-    item.load === undefined &&
-    item.assistant === undefined &&
-    item.previewAssistant === undefined &&
-    item.call === undefined &&
-    item.result === undefined
-  );
-}
-function plainSignature(item: AgentHistoryItem): string {
-  return JSON.stringify([
-    item.kind,
-    item.title,
-    item.text,
-    item.details,
-    item.diff,
-    item.model,
-    item.timestamp,
-    item.messageId,
-  ]);
-}
 function sameDisplay(left: AgentHistoryItem, right: AgentHistoryItem): boolean {
-  return plainItem(left) && plainItem(right) && plainSignature(left) === plainSignature(right);
+  // Detail loaders stay fresh in contentItems; only the native display component is reused.
+  return isDeepStrictEqual({ ...left, load: undefined }, { ...right, load: undefined });
 }
 function previewStop(reason: string | undefined): AssistantMessage["stopReason"] {
   if (reason === "error" || reason === "aborted" || reason === "length") {
@@ -191,10 +172,11 @@ export class HistoryCards {
   private card(item: AgentHistoryItem, expanded: boolean, detail: boolean): Component {
     const signature = `${expanded}:${detail}`,
       cached = this.components.get(item.id);
-    if (
-      cached?.signature === signature &&
-      (cached.item === item || sameDisplay(cached.item, item))
-    ) {
+    if (cached?.signature === signature && cached.item === item) {
+      return cached.component;
+    }
+    if (cached?.signature === signature && sameDisplay(cached.item, item)) {
+      this.components.set(item.id, { ...cached, item });
       return cached.component;
     }
     const component = this.create(item, { expanded, detail });

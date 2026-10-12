@@ -10,7 +10,11 @@ import {
   type TopicSubscription,
   type SendResult,
 } from "../types.ts";
-import { validateIntercomMessageSize } from "./framing.ts";
+import {
+  intercomMessageSizeBytes,
+  MAX_FRAME_SIZE_BYTES,
+  validateIntercomMessageSize,
+} from "./framing.ts";
 
 /** Direct messages and old clients receive identity, not potentially large topic state. */
 export function messageSender(info: SessionInfo): SessionInfo {
@@ -124,72 +128,201 @@ function publicationUpdate(
   return { ...topic, revision };
 }
 
-class TopicSnapshot {
-  private readonly info: SessionInfo;
-  private readonly topics: Map<string, TopicUpdate>;
-  private readonly subscriptions: Map<string, TopicSubscription>;
+class SnapshotRecords<T extends { readonly topic: string }> {
+  private readonly records = new Map<string, { readonly value: T; readonly bytes: number }>();
+  private largest = 0;
+  private initial: readonly T[] | undefined;
+  private present: boolean;
 
-  constructor(info: SessionInfo) {
-    this.info = info;
-    this.topics = new Map((info.topics ?? []).map((topic) => [topic.topic, topic]));
-    this.subscriptions = new Map((info.subscriptions ?? []).map((entry) => [entry.topic, entry]));
-  }
-
-  apply(mutation: TopicMutation): TopicUpdate | undefined {
-    switch (mutation.kind) {
-      case "publication": {
-        const previous = this.topics.get(mutation.topic.topic);
-        const update = publicationUpdate(mutation.topic, previous, mutation.publish);
-        if (mutation.publish || (previous?.revision ?? 0) < update.revision) {
-          this.topics.set(update.topic, update);
-        }
-        if (mutation.publish) {
-          return update;
-        }
-        return;
-      }
-      case "subscription":
-        this.subscriptions.set(mutation.subscription.topic, mutation.subscription);
-        return;
-      case "unsubscribe":
-        this.subscriptions.delete(mutation.topic);
-        return;
+  constructor(values: readonly T[] | undefined) {
+    this.initial = values;
+    this.present = values !== undefined;
+    for (const value of values ?? []) {
+      this.set(value, intercomMessageSizeBytes(value));
     }
   }
 
-  snapshot(publication?: TopicUpdate): SessionInfo {
-    return {
-      ...this.info,
-      topics: [...this.topics.values()],
-      subscriptions: [...this.subscriptions.values()],
-      ...(publication ? { lastIntercomActivity: Date.now() } : {}),
-    };
+  get(topic: string, first = false): T | undefined {
+    if (first && this.initial !== undefined) {
+      return this.initial.find((record) => record.topic === topic);
+    }
+    return this.records.get(topic)?.value;
+  }
+
+  maximumAfter(topic?: string, bytes = 0): number {
+    const previous = topic === undefined ? undefined : this.records.get(topic);
+    if (previous?.bytes !== this.largest || bytes >= this.largest) {
+      return Math.max(this.largest, bytes);
+    }
+    // ponytail: shrinking the largest record scans cached sizes; index sizes if churn warrants it.
+    let largest = bytes;
+    for (const [key, record] of this.records) {
+      if (key !== topic) {
+        largest = Math.max(largest, record.bytes);
+      }
+    }
+    return largest;
+  }
+
+  set(value: T, bytes: number): void {
+    this.largest = this.maximumAfter(value.topic, bytes);
+    this.records.set(value.topic, { value, bytes });
+  }
+
+  delete(topic: string): void {
+    this.largest = this.maximumAfter(topic);
+    this.records.delete(topic);
+  }
+
+  accept(): void {
+    this.initial = undefined;
+    this.present = true;
+  }
+
+  valuesAfter(topic?: string, value?: T, changed = false): readonly T[] | undefined {
+    if (!changed) {
+      if (this.initial !== undefined) {
+        return this.initial;
+      }
+      if (!this.present) {
+        return;
+      }
+    }
+    const values: T[] = [];
+    for (const [key, record] of this.records) {
+      const next = key === topic ? value : record.value;
+      if (next !== undefined) {
+        values.push(next);
+      }
+    }
+    if (value !== undefined && !this.records.has(value.topic)) {
+      values.push(value);
+    }
+    return values;
   }
 }
 
-/** Prepare a change without mutating the usable broker snapshot before frame validation. */
-export function prepareTopicChange(
-  info: SessionInfo,
-  change: unknown,
-  supported: boolean,
-): {
-  readonly info: SessionInfo;
+interface PreparedTopicChange {
+  readonly topic?: TopicUpdate;
+  readonly subscription?: TopicSubscription;
+  readonly unsubscribe?: string;
   readonly publication?: TopicUpdate;
   readonly restore: boolean;
-} {
-  if (change === undefined) {
-    return { info, restore: false };
+  readonly changed: boolean;
+  readonly bytes: number;
+}
+
+const UNCHANGED: PreparedTopicChange = { restore: false, changed: false, bytes: 0 };
+
+/** Keep committed records indexed; restores validate only new bytes and cached envelope maxima. */
+export class TopicSnapshot {
+  private readonly topics: SnapshotRecords<TopicUpdate>;
+  private readonly subscriptions: SnapshotRecords<TopicSubscription>;
+
+  constructor(info: SessionInfo) {
+    this.topics = new SnapshotRecords(info.topics);
+    this.subscriptions = new SnapshotRecords(info.subscriptions);
   }
-  if (!supported || !isRecord(change)) {
-    throw new Error("Topic snapshots unavailable for this client");
+
+  subscription(topic: string): TopicSubscription | undefined {
+    return this.subscriptions.get(topic, true);
   }
-  const pending = new TopicSnapshot(info);
-  const publication = pending.apply(topicMutation(change));
-  return {
-    info: pending.snapshot(publication),
-    restore: change.action === "restore",
-    ...(publication ? { publication } : {}),
-  };
+
+  prepare(change: unknown, supported: boolean): PreparedTopicChange {
+    if (change === undefined) {
+      return UNCHANGED;
+    }
+    if (!supported || !isRecord(change)) {
+      throw new Error("Topic snapshots unavailable for this client");
+    }
+    const mutation = topicMutation(change);
+    const base = { restore: change.action === "restore", changed: true, bytes: 0 };
+    switch (mutation.kind) {
+      case "publication":
+        return this.preparePublication(mutation, base);
+      case "subscription":
+        return {
+          ...base,
+          subscription: mutation.subscription,
+          bytes: intercomMessageSizeBytes(mutation.subscription),
+        };
+      case "unsubscribe":
+        return { ...base, unsubscribe: mutation.topic };
+    }
+  }
+
+  private preparePublication(
+    mutation: Extract<TopicMutation, { readonly kind: "publication" }>,
+    base: PreparedTopicChange,
+  ): PreparedTopicChange {
+    const previous = this.topics.get(mutation.topic.topic);
+    const update = publicationUpdate(mutation.topic, previous, mutation.publish);
+    if (!mutation.publish && (previous?.revision ?? 0) >= update.revision) {
+      return base;
+    }
+    return {
+      ...base,
+      topic: update,
+      bytes: intercomMessageSizeBytes(update),
+      ...(mutation.publish ? { publication: update } : {}),
+    };
+  }
+
+  snapshot(info: SessionInfo, prepared = UNCHANGED): SessionInfo {
+    const topics = this.topics.valuesAfter(prepared.topic?.topic, prepared.topic, prepared.changed);
+    const subscriptions = this.subscriptions.valuesAfter(
+      prepared.subscription?.topic ?? prepared.unsubscribe,
+      prepared.subscription,
+      prepared.changed,
+    );
+    return {
+      ...info,
+      ...(topics !== undefined ? { topics } : {}),
+      ...(subscriptions !== undefined ? { subscriptions } : {}),
+      ...(prepared.publication ? { lastIntercomActivity: Date.now() } : {}),
+    };
+  }
+
+  validateRestore(info: SessionInfo, prepared: PreparedTopicChange, requestId: string): void {
+    snapshotFrames(requestId, [{ ...info, topics: [], subscriptions: [] }], true);
+    const topicBytes = this.topics.maximumAfter(
+      prepared.topic?.topic,
+      prepared.topic ? prepared.bytes : 0,
+    );
+    const subscriptionBytes = this.subscriptions.maximumAfter(
+      prepared.subscription?.topic,
+      prepared.subscription ? prepared.bytes : 0,
+    );
+    for (const [field, bytes] of [
+      ["topics", topicBytes],
+      ["subscriptions", subscriptionBytes],
+    ] as const) {
+      const size =
+        intercomMessageSizeBytes({
+          type: "sessions",
+          requestId,
+          sessions: [{ id: info.id, [field]: [] }],
+          more: true,
+        }) + bytes;
+      if (size > MAX_FRAME_SIZE_BYTES) {
+        throw new Error(`Intercom message too large (${size} bytes; max ${MAX_FRAME_SIZE_BYTES})`);
+      }
+    }
+  }
+
+  commit(prepared: PreparedTopicChange): void {
+    if (prepared.changed) {
+      this.topics.accept();
+      this.subscriptions.accept();
+    }
+    if (prepared.topic) {
+      this.topics.set(prepared.topic, prepared.bytes);
+    } else if (prepared.subscription) {
+      this.subscriptions.set(prepared.subscription, prepared.bytes);
+    } else if (prepared.unsubscribe !== undefined) {
+      this.subscriptions.delete(prepared.unsubscribe);
+    }
+  }
 }
 
 export function deliveryAcknowledgement(receipt: SendResult): BrokerMessage {

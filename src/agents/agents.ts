@@ -124,17 +124,26 @@ function loadChainsFromDir(
   }
   return { chains, diagnostics };
 }
-function discoverChains(
-  userDir: string,
-  projectDirs: readonly string[],
-  scope: AgentScope,
-): { chains: ChainConfig[]; chainDiagnostics: ChainDiscoveryDiagnostic[] } {
-  const projectChains = (scope === "user" ? [] : projectDirs).map((dir) =>
+export function discoverChains(
+  cwd: string,
+  options: AgentDiscoveryOptions = {},
+  scope: AgentScope = "both",
+): {
+  chains: ChainConfig[];
+  chainDiagnostics: ChainDiscoveryDiagnostic[];
+  userChainDir: string;
+  projectChainDir: string | null;
+} {
+  const userChainDir = path.join(getAgentDir(), "chains");
+  const project = resolveNearestProjectChainDirs(cwd, options);
+  const projectChains = (scope === "user" ? [] : project.readDirs).map((dir) =>
     loadChainsFromDir(dir, "project"),
   );
   const userChains =
-    scope === "project" ? { chains: [], diagnostics: [] } : loadChainsFromDir(userDir, "user");
+    scope === "project" ? { chains: [], diagnostics: [] } : loadChainsFromDir(userChainDir, "user");
   return {
+    userChainDir,
+    projectChainDir: project.preferredDir,
     chains: [...userChains.chains, ...projectChains.flatMap((entry) => entry.chains)],
     chainDiagnostics: [
       ...userChains.diagnostics,
@@ -186,10 +195,8 @@ export function discoverAgentsAll(
   projectSettingsPath: string | null;
 } {
   const paths = profilePaths(cwd, options);
-  const userChainDir = path.join(getAgentDir(), "chains");
-  const projectChainPaths = resolveNearestProjectChainDirs(cwd, options);
   const profiles = discoverLocalProfiles(paths, scope);
-  const chains = discoverChains(userChainDir, projectChainPaths.readDirs, scope);
+  const chains = discoverChains(cwd, options, scope);
   const packages = loadConfiguredPackageAgents(cwd, scope, options);
   return {
     ...profiles,
@@ -201,8 +208,6 @@ export function discoverAgentsAll(
     ],
     userDir: paths.userDirs.at(0) ?? path.join(getAgentDir(), "agents"),
     projectDir: paths.projectDir,
-    userChainDir,
-    projectChainDir: projectChainPaths.preferredDir,
     userSettingsPath: paths.userSettingsPath,
     projectSettingsPath: paths.projectSettingsPath,
   };

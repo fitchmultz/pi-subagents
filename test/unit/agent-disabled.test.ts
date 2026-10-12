@@ -1,6 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -209,28 +210,41 @@ describe("builtin agent disabling", () => {
     }
   });
 
-  it("management list shows effective agents instead of duplicate shadowed builtins", () => {
-    writeAgent(
-      path.join(tempHome, ".pi", "agent", "agents", "reviewer.md"),
-      "reviewer",
-      "User reviewer override",
-      "openai/gpt-user",
-    );
-
-    const text = readText(
-      handleList(
-        {},
-        {
-          cwd: tempProject,
-          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
-          isProjectTrusted: () => true,
-        },
-      ),
-    );
+  it("management list reads each profile once and shows fresh effective overrides", (t) => {
+    const userProfile = path.join(tempHome, ".pi", "agent", "agents", "reviewer.md");
+    writeAgent(userProfile, "reviewer", "User reviewer override", "openai/gpt-user");
+    let trusted = true;
+    const ctx = {
+      cwd: tempProject,
+      modelRegistry: makeExtensionContext(tempProject).modelRegistry,
+      isProjectTrusted: () => trusted,
+    };
+    const reads = t.mock.method(fs, "readFileSync");
+    syncBuiltinESMExports();
+    t.after(() => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    });
+    const text = readText(handleList({}, ctx));
 
     assert.match(text, /^- reviewer \(user\): User reviewer override$/m);
     assert.doesNotMatch(text, /^- reviewer \(builtin/m);
     assert.equal((text.match(/^- reviewer /gm) ?? []).length, 1);
+    assert.equal(
+      reads.mock.calls.filter((call) => String(call.arguments[0]) === userProfile).length,
+      1,
+      "listing diagnostics and effective profiles must share one filesystem observation",
+    );
+    const projectProfile = path.join(tempProject, ".pi", "agents", "reviewer.md");
+    writeAgent(projectProfile, "reviewer", "Project reviewer override", "openai/gpt-project");
+    assert.match(
+      readText(handleList({}, ctx)),
+      /^- reviewer \(project\): Project reviewer override$/m,
+    );
+    trusted = false;
+    assert.match(readText(handleList({}, ctx)), /^- reviewer \(user\): User reviewer override$/m);
+    writeAgent(userProfile, "reviewer", "Updated user reviewer", "openai/gpt-user");
+    assert.match(readText(handleList({}, ctx)), /^- reviewer \(user\): Updated user reviewer$/m);
   });
 
   it("management get returns the effective override instead of every same-named agent", () => {

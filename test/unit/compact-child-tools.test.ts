@@ -398,7 +398,7 @@ it("returns before registering anything for fanout children", () => {
         `
       const { default: register } = await import("./src/extension/index.ts");
       const calls = [];
-      register(new Proxy({}, { get(_target, key) {
+      await register(new Proxy({}, { get(_target, key) {
         return () => { calls.push(String(key)); };
       }}));
       if (calls.length) throw new Error("Unexpected child-mode registrations: " + calls.join(", "));

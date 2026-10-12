@@ -6,11 +6,12 @@ import {
 } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { test, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createCompletionDelivery } from "../../src/runs/background/completion-delivery.ts";
@@ -116,6 +117,10 @@ test(
 );
 
 test("reordered messages, split JSON surrogate escapes, and malformed diagnostics preserve callbacks and exact output without publishing partial decoded text", async (t) => {
+  const delta = `${JSON.stringify({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Live text" },
+  })}\n`;
   const valid =
     '{"message":{"content":[{"type":"text","text":"\\uD83E\\uDD84"},{"type":"text","text":"second"}],"role":"assistant","provider":"fixture","model":"faux","stopReason":"stop","usage":' +
     JSON.stringify(usage) +
@@ -124,10 +129,22 @@ test("reordered messages, split JSON surrogate escapes, and malformed diagnostic
     '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"DO NOT PUBLISH"}]},"broken":truX}\n';
   const { root, env } = fixture(
     t,
-    `process.stdout.write(${JSON.stringify(malformed)});for(const byte of Buffer.from(${JSON.stringify(valid)})) process.stdout.write(Buffer.from([byte]));`,
+    `process.stdout.write(${JSON.stringify(delta)}.repeat(1000));process.stdout.write(${JSON.stringify(malformed)});for(const byte of Buffer.from(${JSON.stringify(valid)})) process.stdout.write(Buffer.from([byte]));process.stdout.write(${JSON.stringify(delta)}.repeat(1000));`,
   );
   let output = "",
-    messages = 0;
+    messages = 0,
+    deltas = 0,
+    truncations = 0;
+  const truncate = fs.ftruncateSync;
+  t.mock.method(fs, "ftruncateSync", (fd: number, length?: number) => {
+    truncations++;
+    truncate(fd, length);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
   const result = await runChildAttempt({
     args: [],
     cwd: root,
@@ -140,16 +157,24 @@ test("reordered messages, split JSON surrogate escapes, and malformed diagnostic
     onEvent: (event) => {
       if (event.type === "message_end") {
         messages++;
+      } else if (event.type === "message_update") {
+        deltas++;
       }
     },
   });
   assert.equal(result.exitCode, 0);
   assert.equal(result.finalOutput, "second");
   assert.equal(messages, 1);
+  assert.equal(deltas, 2000, "all live updates reach the owner before checking empty-spool work");
   assert.equal(output, `${malformed}🦄\nsecond\n`);
   assert.deepEqual(
     result.auditRecords?.map((record) => record.kind),
     ["diagnostic", "message_end"],
+  );
+  assert.equal(
+    truncations,
+    2,
+    "only the malformed and completed text require clearing; deltas never truncate empty scratch files",
   );
 });
 
@@ -159,7 +184,7 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
     fd = fs.openSync(file, "wx");
   fs.writeSync(
     fd,
-    '{"id":"saved","state":"complete","success":true,"results":[{"agent":"fixture","messages":[{"content":[{"text":"',
+    '{"sessionId":"owner","id":"saved","state":"complete","success":true,"results":[{"agent":"fixture","messages":[{"content":[{"text":"',
   );
   const block = Buffer.alloc(65536, 120);
   for (let index = 0; index < 1600; index++) {
@@ -167,6 +192,8 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
   }
   fs.writeSync(fd, '"}]}],"finalOutput":"Exact saved answer","exitCode":0}]}');
   fs.closeSync(fd);
+  fs.mkdirSync(path.join(root, "saved"));
+  fs.linkSync(file, path.join(root, "saved", "question-owner.json"));
   const module = new URL("../../src/runs/shared/supervisor-questions.ts", import.meta.url).href;
   const child = spawnSync(
     process.execPath,
@@ -175,10 +202,11 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
       "--input-type=module",
       "-e",
       `
-		import assert from 'node:assert/strict'; import {readRunJson} from ${JSON.stringify(module)};
+		import assert from 'node:assert/strict'; import {readRunJson,readQuestionOwner} from ${JSON.stringify(module)};
 		const result=readRunJson(process.argv[1]);
 		assert.equal(result.id,'saved');assert.equal(result.success,true);assert.equal(result.state,'complete');
 		assert.deepEqual(result.results,[{agent:'fixture',finalOutput:'Exact saved answer',exitCode:0}]);
+		assert.deepEqual(readQuestionOwner('saved',${JSON.stringify(root)}),{sessionId:'owner'},'large supplemental owners retain bounded streaming reads');
 		console.log('compact owner result preserved; discarded nested100 MiB message never assembled; old-space32 MiB');
 	`,
       file,

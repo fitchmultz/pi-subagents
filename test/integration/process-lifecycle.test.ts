@@ -459,6 +459,7 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
     assertDefined(stoppingStep);
     assert.equal(stoppingStep.currentTool, "bash");
     assert.equal(stoppingStep.endedAt, undefined);
+    assert.equal(status().currentTool, "bash");
     const resultPath = path.join(RESULTS_DIR, `${id}.json`);
     await waitForFile(resultPath);
     const result = readResult(resultPath);
@@ -468,6 +469,10 @@ describe("process lifecycle regressions", { timeout: 60_000 }, () => {
     assertDefined(receipt);
     assert.equal(receipt.signal, "SIGKILL");
     assert.deepEqual(status().steps?.[0]?.agentProcessExit, receipt);
+    assert.equal(status().steps?.[0]?.currentTool, undefined);
+    assert.equal(status().currentTool, undefined);
+    assert.equal(status().currentToolStartedAt, undefined);
+    assert.equal(status().currentPath, undefined);
   });
 
   it("does not start verification commands when already cancelled", async () => {

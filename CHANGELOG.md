@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.46.2] - 2026-10-12
+
+### Changed
+
+- Keep parent execution, history and UI imports behind the child-mode guard. Skip empty streaming-spool replay/truncation and right-size copy buffers while preserving exact native wire logs and completed-text output.
+- Reuse a bounded set of SQLite statements, prune through indexed source lookups and publish small indexed records in one transaction. Bound pending-human reply lookup and improve relevance search without changing global scores, attempt boundaries or pagination.
+- Avoid irrelevant completion discovery and duplicate profile reads when listing agents. Reuse unchanged native history cards while retaining fresh detail validation, expanded state and source/theme invalidation.
+- Assemble fragmented Intercom frames and restore topic snapshots incrementally. Encode socket payloads once and keep legacy lists identity-only without reconstructing discarded topic arrays; encoded limits and validation-before-commit remain unchanged.
+- Aggregate workflow activity on tool transitions and coalesced status publication rather than every streaming delta. Preserve all observer updates and scheduling requests.
+- Right-size saved-owner JSON scratch buffers and share supplemental-owner reads across recovery. Filter validated embedded question owners before reading foreign answer/delivery/revival/cancellation state, preserving full archive discovery, selected validation and fresh publication.
+- Record reproducible operation-count baselines and qualified startup measurements in the performance guide.
+
+### Fixed
+
+- Clear stale top-level tool/path activity when a parallel child exits or fails without a tool-end event, while retaining activity until a resistant process actually exits.
+
 ## [0.46.1] - 2026-10-11
 
 ### Fixed

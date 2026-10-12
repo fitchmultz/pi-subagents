@@ -166,6 +166,8 @@ export class RunnerMonitor {
       clearTimeout(this.statusWriteTimer);
       this.statusWriteTimer = undefined;
     }
+    // Step completion, interruption and expansion can change activity without a tool-end event.
+    this.childObserver.syncTopLevelCurrentTool();
     this.refreshWorkflowGraph();
     writeAtomicJson(this.statusPath, this.statusPayload);
     if (this.config.runtimeVersion !== 2) {

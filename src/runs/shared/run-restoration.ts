@@ -22,6 +22,7 @@ import {
 import {
   getRunMetadataDir,
   migrateSupervisorQuestionSteps,
+  readQuestionOwner,
   readRunJson,
   saveQuestionOwner,
   saveRunStatus,
@@ -254,14 +255,13 @@ function nativeLaunchCwd(run: OwnedRun, details: ReadonlyDetails): OwnedRun {
 }
 
 function repairQuestionOwner(run: OwnedRun): void {
-  let owner: unknown;
+  let sessionId: string | undefined;
   try {
-    owner = readRunJson(path.join(getRunMetadataDir(run.runId), "question-owner.json"));
+    sessionId = readQuestionOwner(run.runId)?.sessionId;
   } catch {
     // A genuine receipt can repair unusable supplemental metadata.
   }
-  const sessionId = isRecord(owner) ? owner.sessionId : undefined;
-  if (typeof sessionId !== "string" || sessionId.trim() === "") {
+  if (sessionId === undefined || sessionId.trim() === "") {
     saveQuestionOwner(run.runId, run.ownerSessionId);
   }
 }

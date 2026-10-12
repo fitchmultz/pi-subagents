@@ -59,6 +59,7 @@ export class RunnerChildObserver {
     this.id = config.id;
     this.hooks = hooks;
     this.mutatingFailureStates = statusPayload.steps.map(() => createMutatingFailureState());
+    this.syncTopLevelCurrentTool();
   }
 
   expandChildren(flatIndex: number, count: number): void {
@@ -69,16 +70,21 @@ export class RunnerChildObserver {
     );
   }
 
-  private syncTopLevelCurrentTool(): void {
-    const active = this.statusPayload.steps
-      .filter(
-        (step) =>
-          step.status === "running" &&
-          typeof step.currentTool === "string" &&
-          step.currentTool.length > 0,
-      )
-      .sort((left, right) => (right.currentToolStartedAt ?? 0) - (left.currentToolStartedAt ?? 0))
-      .at(0);
+  syncTopLevelCurrentTool(): void {
+    const active =
+      this.statusPayload.state === "running" || this.statusPayload.state === "queued"
+        ? this.statusPayload.steps
+            .filter(
+              (step) =>
+                step.status === "running" &&
+                typeof step.currentTool === "string" &&
+                step.currentTool.length > 0,
+            )
+            .sort(
+              (left, right) => (right.currentToolStartedAt ?? 0) - (left.currentToolStartedAt ?? 0),
+            )
+            .at(0)
+        : undefined;
     this.statusPayload.currentTool = active?.currentTool;
     this.statusPayload.currentToolStartedAt = active?.currentToolStartedAt;
     this.statusPayload.currentPath = active?.currentPath;
@@ -106,7 +112,9 @@ export class RunnerChildObserver {
     }
     step.streamingText = updateStreamingText(step.streamingText, event);
     this.recordChildActivity(flatIndex, event, toolSnapshot, now);
-    this.syncTopLevelCurrentTool();
+    if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+      this.syncTopLevelCurrentTool();
+    }
     step.lastActivityAt = now;
     this.statusPayload.lastActivityAt = now;
     this.statusPayload.lastUpdate = now;

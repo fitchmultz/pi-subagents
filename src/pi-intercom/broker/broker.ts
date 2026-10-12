@@ -23,7 +23,7 @@ import { errorMessage, isRecord, type UnknownRecord } from "../../shared/unknown
 import {
   messageSender,
   snapshotFrames,
-  prepareTopicChange,
+  TopicSnapshot,
   publicationMessage,
   deliveryAcknowledgement,
   shouldReplaceDelivery,
@@ -36,6 +36,7 @@ const REPLACE_DELIVERY_DELAY_MS = 1500;
 interface ConnectedSession {
   readonly socket: net.Socket;
   info: SessionInfo;
+  topics: TopicSnapshot;
   readonly topicFrames: boolean;
 }
 
@@ -178,7 +179,12 @@ class IntercomBroker {
     const info: SessionInfo = { ...msg.session, id, lastSeen: msg.session.lastSeen ?? Date.now() };
     snapshotFrames(randomUUID(), [info], true);
     const topicFrames = msg.topicFrames === true;
-    this.sessions.set(id, { socket, info, topicFrames });
+    this.sessions.set(id, {
+      socket,
+      info: messageSender(info),
+      topics: new TopicSnapshot(info),
+      topicFrames,
+    });
     setId(id);
     if (this.shutdownTimer) {
       clearTimeout(this.shutdownTimer);
@@ -208,9 +214,7 @@ class IntercomBroker {
       return deliveries;
     }
     for (const target of this.sessions.values()) {
-      const subscription = target.info.subscriptions?.find(
-        (entry) => entry.topic === publication.topic,
-      );
+      const subscription = target.topics.subscription(publication.topic);
       if (target.info.id === fromId || !subscription) {
         continue;
       }
@@ -234,24 +238,28 @@ class IntercomBroker {
       if (!session) {
         throw new Error("Sender session not found");
       }
-      const prepared = prepareTopicChange(session.info, msg.change, session.topicFrames);
-      const nextInfo = prepared.info;
+      const prepared = session.topics.prepare(msg.change, session.topicFrames);
+      const nextInfo = prepared.restore
+        ? session.info
+        : session.topics.snapshot(session.info, prepared);
       const from = messageSender(nextInfo);
       const deliveries = this.planPublications(currentId, from, prepared.publication);
-      const restore = prepared.restore;
-      const infos = [...this.sessions.values()].map((entry) =>
-        entry === session ? nextInfo : entry.info,
-      );
       // Validate every frame before committing state or delivering publications.
-      if (restore) {
-        snapshotFrames(requestId, [nextInfo], true);
+      if (prepared.restore) {
+        session.topics.validateRestore(session.info, prepared, requestId);
       }
-      const frames = snapshotFrames(requestId, restore ? [] : infos, msg.stream === true);
+      const infos = prepared.restore
+        ? []
+        : [...this.sessions.values()].map((entry) => {
+            if (entry === session) {
+              return nextInfo;
+            }
+            return msg.stream === true ? entry.topics.snapshot(entry.info) : entry.info;
+          });
+      const frames = snapshotFrames(requestId, infos, msg.stream === true);
       const last = frames.pop();
-      if (!last) {
-        throw new Error("Missing final snapshot frame");
-      }
-      session.info = nextInfo;
+      session.topics.commit(prepared);
+      session.info = messageSender(nextInfo);
       const receipts: Array<SessionSnapshot["receipts"][number]> = [];
       for (const { to, message } of deliveries) {
         receipts.push({ to, ...this.sendToSession(currentId, to, from, message) });
@@ -326,7 +334,10 @@ class IntercomBroker {
     if (!session) {
       return;
     }
-    const update: Record<string, unknown> = { ...session.info, lastSeen: Date.now() };
+    const update: Record<string, unknown> = {
+      ...session.topics.snapshot(session.info),
+      lastSeen: Date.now(),
+    };
     for (const key of [
       "name",
       "status",
@@ -346,7 +357,10 @@ class IntercomBroker {
       throw new Error("Invalid presence update");
     }
     snapshotFrames(randomUUID(), [nextInfo], true);
-    session.info = nextInfo;
+    if (msg.topics !== undefined || msg.subscriptions !== undefined) {
+      session.topics = new TopicSnapshot(nextInfo);
+    }
+    session.info = messageSender(nextInfo);
   }
 
   private sendToSession(

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { discoverAgents, discoverAgentsAll } from "../agents/agents.ts";
+import { discoverAgents, discoverChains } from "../agents/agents.ts";
 import type { ChainConfig } from "../shared/types/config.ts";
 import { resolveExecutionCwd } from "../shared/execution-cwd.ts";
 
@@ -51,21 +51,19 @@ export function makeAgentCompletions(
   multiAgent: boolean,
 ): (prefix: string) => Completion[] | null {
   return (prefix) => {
+    const position = multiAgent ? completionPosition(prefix) : { word: prefix, before: "" };
+    if (!position || (!multiAgent && prefix.includes(" "))) {
+      return null;
+    }
     const cwd = completionCwd(pi, state);
     if (cwd === null || cwd.length === 0) {
       return null;
     }
     const agents = discoverAgents(cwd, "both", { projectTrusted: projectTrusted(state) }).agents;
     if (!multiAgent) {
-      return prefix.includes(" ")
-        ? null
-        : agents
-            .filter((agent) => agent.name.startsWith(prefix))
-            .map((agent) => ({ value: agent.name, label: agent.name }));
-    }
-    const position = completionPosition(prefix);
-    if (!position) {
-      return null;
+      return agents
+        .filter((agent) => agent.name.startsWith(prefix))
+        .map((agent) => ({ value: agent.name, label: agent.name }));
     }
     const { word: lastWord, before: beforeLastWord } = position;
     if (lastWord === "->") {
@@ -79,7 +77,7 @@ export function makeAgentCompletions(
 
 export function discoverSavedChains(cwd: string, trusted: boolean): ChainConfig[] {
   const chains = new Map<string, ChainConfig>();
-  for (const chain of discoverAgentsAll(cwd, { projectTrusted: trusted }).chains) {
+  for (const chain of discoverChains(cwd, { projectTrusted: trusted }).chains) {
     const existing = chains.get(chain.name);
     const projectOverride = existing?.source === "user" && chain.source === "project";
     const jsonOverride =
@@ -98,8 +96,11 @@ export function makeChainCompletions(
   state: SlashDiscoveryState,
 ): (prefix: string) => Completion[] | null {
   return (prefix) => {
+    if (prefix.includes(" ")) {
+      return null;
+    }
     const cwd = completionCwd(pi, state);
-    if (prefix.includes(" ") || cwd === null || cwd.length === 0) {
+    if (cwd === null || cwd.length === 0) {
       return null;
     }
     return discoverSavedChains(cwd, projectTrusted(state))

@@ -1,14 +1,17 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { spawnSync, spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import {
   claimQuestionRevival,
   createSupervisorQuestion,
   listSupervisorQuestions,
+  listRunQuestions,
+  readQuestionOwner,
   readQuestionContract,
   readQuestionState,
   recordQuestionDelivery,
@@ -40,6 +43,97 @@ function fixture() {
   );
   return { root, question };
 }
+
+test("owner reads preserve values with snapshot-sized scratch and a 64 KiB ceiling", (t) => {
+  const { root } = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "run-1", "question-owner.json"),
+    read = fs.readSync;
+  const scratch: number[] = [];
+  t.mock.method(
+    fs,
+    "readSync",
+    (fd: number, bytes: Buffer, offset: number, length: number, position: number | null) => {
+      scratch.push(bytes.length);
+      return read(fd, bytes, offset, length, position);
+    },
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const owner = '{"sessionId":"owner-🦄"}';
+  fs.writeFileSync(file, owner);
+  assert.deepEqual(readQuestionOwner("run-1", root), { sessionId: "owner-🦄" });
+  assert.deepEqual(scratch, [Buffer.byteLength(owner)], "scratch is bounded by the fd snapshot");
+  fs.writeFileSync(file, '{"sessionId":"owner"}'.padEnd(70_000));
+  assert.deepEqual(readQuestionOwner("run-1", root), { sessionId: "owner" });
+  assert.equal(scratch.at(-1), 65_536, "larger owner reads retain the chunk ceiling");
+});
+
+test("owner-scoped questions trust validated embedded ownership before opening foreign state", (t) => {
+  const { root, question } = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const foreign = { ...question, questionId: "foreign", ownerSessionId: "other-session" },
+    foreignDir = path.join(root, question.runId, "questions", foreign.questionId),
+    selectedDir = path.join(root, question.runId, "questions", question.questionId),
+    ownerFile = path.join(root, question.runId, "question-owner.json");
+  fs.mkdirSync(foreignDir);
+  fs.writeFileSync(path.join(foreignDir, "question.json"), JSON.stringify(foreign));
+  for (const file of ["answer.json", "delivery.json", "revival.json", "cancelled.json"]) {
+    fs.writeFileSync(path.join(foreignDir, file), "{");
+  }
+  saveQuestionAnswer(question, "Selected answer.", root);
+  const open = fs.openSync,
+    opened: string[] = [];
+  t.mock.method(fs, "openSync", (...args: Readonly<Parameters<typeof fs.openSync>>) => {
+    opened.push(String(args[0]));
+    return Reflect.apply(open, fs, args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.equal(listSupervisorQuestions("owner-session", "run-1", root)[0]?.state, "answer_pending");
+  assert.deepEqual(
+    opened.filter((file) => file.startsWith(foreignDir)),
+    [path.join(foreignDir, "question.json")],
+    "foreign state is not opened, even when corrupt",
+  );
+  assert.equal(opened.filter((file) => file.startsWith(selectedDir)).length, 5);
+  for (const metadata of [undefined, "{", '{"sessionId":"other-session"}']) {
+    if (metadata === undefined) {
+      fs.unlinkSync(ownerFile);
+    } else {
+      fs.writeFileSync(ownerFile, metadata);
+    }
+    assert.equal(
+      listSupervisorQuestions("owner-session", "run-1", root)[0]?.questionId,
+      question.questionId,
+    );
+  }
+  assert.throws(() => listRunQuestions(path.join(root, "run-1")), SyntaxError);
+  assert.throws(() => listSupervisorQuestions("other-session", "run-1", root), SyntaxError);
+  for (const file of ["answer.json", "delivery.json", "revival.json", "cancelled.json"]) {
+    fs.writeFileSync(path.join(selectedDir, file), "{");
+    assert.throws(() => listSupervisorQuestions("owner-session", "run-1", root), SyntaxError);
+    fs.unlinkSync(path.join(selectedDir, file));
+  }
+  fs.writeFileSync(
+    path.join(foreignDir, "question.json"),
+    JSON.stringify({ ...foreign, ownerSessionId: 7 }),
+  );
+  assert.throws(
+    () => listSupervisorQuestions("owner-session", "run-1", root),
+    /Invalid supervisor question/,
+    "even foreign question records must validate before their owner is used",
+  );
+  fs.writeFileSync(path.join(foreignDir, "question.json"), JSON.stringify(foreign));
+  recordQuestionDelivery(question, { kind: "live", runId: question.runId, deliveredAt: 100 }, root);
+  assert.equal(listSupervisorQuestions("owner-session", "run-1", root)[0]?.state, "answered");
+});
 
 test("questions and immutable answers survive fresh reads, reject conflicting duplicates, and claim one revival", () => {
   const { root, question } = fixture();

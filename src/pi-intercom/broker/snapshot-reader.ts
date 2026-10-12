@@ -1,5 +1,11 @@
 import { isRecord, isUnknownArray, type UnknownRecord } from "../../shared/unknown.ts";
-import { normalizeSessionInfo, type SessionInfo, type SessionSnapshot } from "../types.ts";
+import {
+  normalizeSessionInfo,
+  type SessionInfo,
+  type SessionSnapshot,
+  type TopicSubscription,
+  type TopicUpdate,
+} from "../types.ts";
 
 type Receipt = SessionSnapshot["receipts"][number];
 
@@ -46,9 +52,30 @@ function receipt(value: unknown): Receipt {
   };
 }
 
+interface SessionParts {
+  readonly info: SessionInfo;
+  readonly topics: TopicUpdate[] | undefined;
+  readonly subscriptions: TopicSubscription[] | undefined;
+}
+
+function appendRows<T>(
+  previous: T[] | undefined,
+  rows: readonly T[] | undefined,
+  supplied: boolean,
+): T[] | undefined {
+  if (rows === undefined) {
+    return supplied ? undefined : previous;
+  }
+  const result = previous ?? [];
+  for (const row of rows) {
+    result.push(row);
+  }
+  return result;
+}
+
 /** Multipart frames build a private cache; only a complete validated snapshot escapes. */
 export class SnapshotReader {
-  private readonly sessions = new Map<string, SessionInfo>();
+  private readonly sessions = new Map<string, SessionParts>();
   private readonly receipts: Receipt[] = [];
 
   private addSession(row: unknown): void {
@@ -59,17 +86,20 @@ export class SnapshotReader {
     const subscriptions = optionalArray(row.subscriptions);
     const previous = this.sessions.get(row.id);
     const info = normalizeSessionInfo({
-      ...previous,
+      ...previous?.info,
       ...row,
-      ...(topics !== undefined ? { topics: [...(previous?.topics ?? []), ...topics] } : {}),
-      ...(subscriptions !== undefined
-        ? { subscriptions: [...(previous?.subscriptions ?? []), ...subscriptions] }
-        : {}),
+      ...(topics !== undefined ? { topics } : {}),
+      ...(subscriptions !== undefined ? { subscriptions } : {}),
     });
     if (!info) {
       throw new Error("Invalid session snapshot");
     }
-    this.sessions.set(info.id, info);
+    const { topics: newTopics, subscriptions: newSubscriptions, ...identity } = info;
+    this.sessions.set(info.id, {
+      info: identity,
+      topics: appendRows(previous?.topics, newTopics, "topics" in row),
+      subscriptions: appendRows(previous?.subscriptions, newSubscriptions, "subscriptions" in row),
+    });
   }
 
   append(sessions: readonly unknown[], receipts: unknown): void {
@@ -86,6 +116,14 @@ export class SnapshotReader {
   }
 
   finish(): SessionSnapshot {
-    return { sessions: [...this.sessions.values()], receipts: this.receipts };
+    const sessions: SessionInfo[] = [];
+    for (const { info, topics, subscriptions } of this.sessions.values()) {
+      sessions.push({
+        ...info,
+        ...(topics !== undefined ? { topics } : {}),
+        ...(subscriptions !== undefined ? { subscriptions } : {}),
+      });
+    }
+    return { sessions, receipts: this.receipts };
   }
 }

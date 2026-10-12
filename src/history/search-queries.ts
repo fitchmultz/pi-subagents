@@ -93,7 +93,8 @@ function plan(
     clauses.push("c.agent=?");
     params.push(input.agent);
   }
-  // Scope physical records once before aggregation; bm25 still uses the whole corpus.
+  // Materialized IDs reject common out-of-scope postings without per-hit entry lookups.
+  // Each source is scoped once; bm25 still uses the whole corpus.
   const eligible =
     hasText(input.runId) || hasText(input.agent)
       ? `eligible AS MATERIALIZED (SELECT e.rowid FROM entries e JOIN sources s ON s.id=e.source_id WHERE e.published=1 AND e.generation=s.generation AND e.source_id IN (SELECT c.source_id FROM children c WHERE ${clauses.slice(4).join(" AND ")})),`
@@ -166,6 +167,12 @@ export class SearchQueries {
     limit: number,
   ): readonly Row[] {
     // Match every token across a record's visible windows; a quoted phrase cannot span fields.
+    // Relevance benefits from hit-driven attribution. Newest keeps the native join order:
+    // forcing hit order regresses newest sorting across many shared attempts.
+    const joined =
+      score === "matched.score"
+        ? "FROM matched CROSS JOIN entries e ON e.rowid=matched.entry_rowid CROSS JOIN sources s ON s.id=e.source_id CROSS JOIN children c ON c.source_id=s.id JOIN excerpts ON excerpts.entry_rowid=matched.entry_rowid AND excerpts.choice=1 JOIN documents d ON d.id=excerpts.id"
+        : "FROM matched JOIN excerpts ON excerpts.entry_rowid=matched.entry_rowid AND excerpts.choice=1 JOIN documents d ON d.id=excerpts.id JOIN entries e ON e.rowid=matched.entry_rowid JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id";
     // Ranking/filters precede LIMIT. The parent owns the hard deadline for a costly FTS scan.
     return this.scope.store.all(
       `WITH ${filter.eligible} hits AS MATERIALIZED (
@@ -173,7 +180,7 @@ export class SearchQueries {
     ), terms AS (SELECT entry_rowid,term,MIN(score) AS score FROM hits GROUP BY entry_rowid,term),
     matched AS (SELECT entry_rowid,SUM(score) AS score FROM terms GROUP BY entry_rowid HAVING COUNT(*)=${expression.length}),
     excerpts AS (SELECT id,entry_rowid,ROW_NUMBER() OVER (PARTITION BY entry_rowid ORDER BY score,id) AS choice FROM hits)
-    SELECT d.*,${score} AS score,e.*,d.id AS document_id,s.path,s.session_id,c.run_id,c.child_index,c.agent,d.preview AS document_preview FROM matched JOIN excerpts ON excerpts.entry_rowid=matched.entry_rowid AND excerpts.choice=1 JOIN documents d ON d.id=excerpts.id JOIN entries e ON e.rowid=matched.entry_rowid JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1 WHERE ${filter.clauses.join(" AND ")} ORDER BY score,d.id,c.run_id,c.child_index LIMIT ?`,
+    SELECT d.*,${score} AS score,e.*,d.id AS document_id,s.path,s.session_id,c.run_id,c.child_index,c.agent,d.preview AS document_preview ${joined} LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1 WHERE ${filter.clauses.join(" AND ")} ORDER BY score,d.id,c.run_id,c.child_index LIMIT ?`,
       ...filter.eligibleParams,
       ...filter.params,
       limit + 1,

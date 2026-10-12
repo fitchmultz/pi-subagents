@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   CustomMessageComponent,
+  AssistantMessageComponent,
   initTheme,
   getSelectListTheme,
   type SessionManager as NativeSessionManager,
@@ -1268,6 +1269,68 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
   t.diagnostic(
     "50 visited rows (49 terminal): two unchanged ticks query only the live row; pin/outbox/question/selection and changed results remain observable.",
   );
+});
+
+test("settled native history refreshes retain card state without rebuilding and revalidate source changes", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await fixture(t, "fullscreen"),
+    manager = f.childSessions[0];
+  const nativeId = manager.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "thinking", thinking: "Retained reasoning" },
+      { type: "text", text: "Stable refresh proof" },
+    ],
+    provider: "fixture",
+    model: "fixture",
+    api: "openai-responses",
+    stopReason: "stop",
+    usage,
+    timestamp: Date.now(),
+  });
+  await f.complete();
+  assert.equal(requiredTask(f).child.state, "completed");
+  assert.equal(requiredTask(f).child.result?.finalOutput, "Finished");
+  assert.equal(requiredTask(f).finalId, `result:${f.run.runId}`);
+  f.terminal.resize(110, 48);
+  const opening = f.controller.open(f.key);
+  await historyReady(f);
+  f.tui.start();
+  f.tui.renderNow();
+  await clickHint(f, "Thinking · open details to read");
+  assert.match(plain(f.overlay), /Retained reasoning/);
+  f.conversation.scroll.scrollToEnd();
+  assert.equal(f.conversation.scroll.isFollowingEnd, true);
+  const builds = t.mock.method(AssistantMessageComponent.prototype, "updateContent"),
+    reads = t.mock.method(f.controller.conversation, "historyPage");
+  for (let pass = 0; pass < 2; pass++) {
+    f.conversation.refresh();
+    // Observe actual page application before checking retained native click state and build counts.
+    // oxlint-disable-next-line no-await-in-loop
+    await historyReady(f);
+    assert.match(plain(f.overlay), /Retained reasoning/);
+  }
+  assert.ok(reads.mock.callCount() >= 2, "unchanged refreshes must reach the real indexed owner");
+  assert.equal(builds.mock.callCount(), 0, "unchanged pages must retain the native Markdown cards");
+  assert.ok(f.overlay.render(64).every((line) => visibleWidth(line) <= 64));
+  assert.match(plain(f.overlay), /Retained reasoning/);
+  const before = requiredPage(f).generation,
+    file = sessionFile(manager);
+  fs.copyFileSync(file, `${file}.replacement`);
+  fs.renameSync(`${file}.replacement`, file);
+  await indexedReady(f);
+  f.conversation.refresh();
+  await historyReady(f);
+  assert.notEqual(requiredPage(f).generation, before);
+  assert.doesNotMatch(plain(f.overlay), /Retained reasoning/);
+  assert.ok(builds.mock.callCount() > 0, "a replaced source invalidates native card state");
+  const nativeItem = requiredTask(f).history.find((item) => item.id === `${nativeId}:0`);
+  assertDefined(nativeItem?.load);
+  assert.match((await nativeItem.load()).text, /Retained reasoning[\s\S]*Stable refresh proof/);
+  f.conversation.invalidate();
+  assert.doesNotMatch(plain(f.overlay), /Retained reasoning/);
+  f.interactiveOverlay.handleInput("\x1b");
+  await opening;
 });
 
 test("selected Agents controls refresh their own authority without touching unrelated completed histories", async (t) => {

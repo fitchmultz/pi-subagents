@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { openGeneration } from "./database-generation.ts";
 import { OutputDigests } from "./output-digests.ts";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { historyTransaction, openHistoryDatabase } from "./database.ts";
 import { hash, safeText, hasText } from "./text.ts";
 export { hash, exactTextDigest, safeText, integer, pageLimit } from "./text.ts";
@@ -45,6 +45,7 @@ export class HistoryStore {
     this.counters[operation] += amount;
   }
   private ingestLock?: DatabaseSync;
+  private readonly statements = new Map<string, StatementSync>();
   private readonly outputDigests = new OutputDigests();
   constructor(agentDir: string, owner: string) {
     this.owner = owner;
@@ -72,12 +73,11 @@ export class HistoryStore {
     return row;
   }
   get(sql: string, ...params: readonly IndexInput[]): Row | undefined {
-    const row = this.db.prepare(sql).get(...params);
+    const row = this.statement(sql).get(...params);
     return row === undefined ? undefined : indexRow(row);
   }
   all(sql: string, ...params: readonly IndexInput[]): readonly Row[] {
-    return this.db
-      .prepare(sql)
+    return this.statement(sql)
       .all(...params)
       .map(indexRow);
   }
@@ -85,7 +85,22 @@ export class HistoryStore {
     sql: string,
     ...params: readonly IndexInput[]
   ): ReturnType<ReturnType<DatabaseSync["prepare"]>["run"]> {
-    return this.db.prepare(sql).run(...params);
+    return this.statement(sql).run(...params);
+  }
+  private statement(sql: string): StatementSync {
+    let statement = this.statements.get(sql);
+    if (!statement) {
+      statement = this.db.prepare(sql);
+      // Dynamic browse/filter shapes cannot grow this connection's cache indefinitely.
+      if (this.statements.size >= 128) {
+        const oldest = this.statements.keys().next().value;
+        if (oldest !== undefined) {
+          this.statements.delete(oldest);
+        }
+      }
+      this.statements.set(sql, statement);
+    }
+    return statement;
   }
   deleteDocuments(sourceId: string, unpublishedOnly = false): void {
     const where = `entry_rowid IN (SELECT rowid FROM entries WHERE source_id=?${unpublishedOnly ? " AND published=0" : ""})`;
@@ -279,6 +294,7 @@ export class HistoryStore {
     }
   }
   close(): void {
+    this.statements.clear();
     this.ingestLock?.close();
     this.db.close();
   }
