@@ -35,6 +35,10 @@ function topic(name: string, body = "current state", revision = 1) {
 
 test("broker restores transactionally with exact cached frame limits and ordered records", async (t) => {
   isolatedAgent(t);
+  const observer = new IntercomClient();
+  observer.on("error", (error: Error) => assert.fail(error.message));
+  // After hooks run in registration order; disconnect before the broker shutdown below.
+  t.after(() => observer.disconnect());
   const broker = spawn(process.execPath, ["src/pi-intercom/broker/broker.ts"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -88,10 +92,7 @@ test("broker restores transactionally with exact cached frame limits and ordered
     session: { cwd: "/synthetic", model: "synthetic", topics: initial, subscriptions: [] },
   });
   assert.equal(registered.sessionId, "restore-owner");
-  const observer = new IntercomClient();
-  observer.on("error", (error: Error) => assert.fail(error.message));
   await observer.connect({ cwd: "/observer", model: "synthetic" });
-  t.after(() => observer.disconnect());
   const observed = async () => {
     const row = (await observer.listSessions()).find((info) => info.id === "restore-owner");
     assertDefined(row);
