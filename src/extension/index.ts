@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+import { SUBAGENT_CHILD_ENV } from "../runs/shared/child-route-env.ts";
 import { errorMessage } from "../shared/unknown.ts";
 import { loadConfig } from "./config.ts";
 
