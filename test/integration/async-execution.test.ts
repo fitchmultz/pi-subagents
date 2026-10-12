@@ -2643,7 +2643,6 @@ describe("async execution utilities", () => {
         spawnSignalResistantDescendantPidFile: pidFile,
       });
       const id = `async-descendant-${Date.now().toString(36)}`;
-      const startedAt = Date.now();
       executeAsyncSingle(id, {
         agent: "worker",
         task: "Finish and clean descendants",
@@ -2656,11 +2655,11 @@ describe("async execution utilities", () => {
         shareEnabled: false,
         maxSubagentDepth: 2,
       });
-      await waitForAsyncResultFile(id, 10_000);
-      assert.ok(
-        Date.now() - startedAt < 3_000,
-        "background descendants should be killed when the process-group leader exits",
-      );
+      const payload = readResult(await waitForAsyncResultFile(id, 10_000));
+      const leaderExit = payload.results[0].agentProcessExit;
+      assertDefined(leaderExit);
+      assert.equal(leaderExit.code, 0);
+      assert.equal(leaderExit.signal, null);
       const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
@@ -2670,6 +2669,7 @@ describe("async execution utilities", () => {
           if (hasErrorCode(error, "ESRCH")) {
             return;
           }
+          throw error;
         }
         // Observe runner publication one polling interval at a time.
         // oxlint-disable-next-line no-await-in-loop
