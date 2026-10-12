@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // Keep deferred imports on Pi's host-peer mapping path in production-only installs.
+// oxlint-disable-next-line import/no-unassigned-import
 import "@earendil-works/pi-coding-agent";
 import { SUBAGENT_CHILD_ENV } from "../runs/shared/child-route-env.ts";
 import { errorMessage } from "../shared/unknown.ts";
