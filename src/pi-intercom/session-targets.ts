@@ -18,7 +18,6 @@ export interface TargetResolution<T extends TargetIdentity> {
   readonly status: "none" | "found" | "ambiguous" | "prefix_too_short";
   readonly target?: T;
   readonly matches: readonly T[];
-  readonly minLength?: number;
 }
 
 export function shortSessionId(sessionId: string): string {
@@ -180,7 +179,6 @@ function shortTargetResolution<T extends TargetIdentity>(
     return {
       status: "prefix_too_short",
       matches: prefixes,
-      minLength: MIN_SESSION_TARGET_PREFIX_LENGTH,
     };
   }
   const byId = new Map<string, T>();

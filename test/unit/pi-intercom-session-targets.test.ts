@@ -33,7 +33,6 @@ test("targetDisplayName adds a safe target when a name collides with another id 
 test("resolveSessionTarget rejects too-short id prefixes with a specific status", () => {
   const resolution = resolveSessionTarget(sessions, "abcdefg");
   assert.equal(resolution.status, "prefix_too_short");
-  assert.equal(resolution.minLength, 8);
   assert.deepEqual(
     resolution.matches.map((session) => session.id).sort(),
     [sessions[0].id, sessions[1].id].sort(),

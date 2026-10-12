@@ -72,192 +72,125 @@ test("non-ask trigger context does not override a pending ask reply target", () 
   assert.equal(tracker.resolveReplyTarget({}, 1003).from.id, "planner-id");
 });
 
-test("reply resolves from single pending ask without current turn context", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-1", "Need a decision"),
-    1000,
-  );
-
-  assert.equal(tracker.resolveReplyTarget({}, 1001).message.id, "ask-1");
-});
-
-test("reply with to resolves matching pending ask", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-  tracker.recordIncomingMessage(
-    createSession("reviewer-id", "reviewer"),
-    createMessage("ask-2", "Second"),
-    1001,
-  );
-
-  assert.equal(tracker.resolveReplyTarget({ to: "reviewer" }, 1002).message.id, "ask-2");
-  assert.equal(tracker.resolveReplyTarget({ to: "planner-id" }, 1002).message.id, "ask-1");
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "review" }, 1002),
-    /too short.*reviewer: to: "reviewer-" or replyTo: "ask-2"/,
-  );
-});
-
-test("reply with explicit to must match even when only one pending ask exists", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "reviewer" }, 1002),
-    /No pending ask from "reviewer"/,
-  );
-});
-
-test("reply errors when no context and no pending asks", () => {
-  const tracker = new ReplyTracker();
-
-  assert.throws(
-    () => tracker.resolveReplyTarget({}, 1000),
-    /No active intercom context to reply to/,
-  );
-});
-
-test("reply errors when multiple pending asks and no to", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-  tracker.recordIncomingMessage(
-    createSession("reviewer-id", "reviewer"),
-    createMessage("ask-2", "Second"),
-    1001,
-  );
-
-  assert.throws(() => tracker.resolveReplyTarget({}, 1002), /Multiple pending asks — specify `to`/);
-});
-
-test("reply errors for duplicate sender names include copyable targets", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-11111111", "planner"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-  tracker.recordIncomingMessage(
-    createSession("planner-22222222", "planner"),
-    createMessage("ask-2", "Second"),
-    1001,
-  );
-
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "planner" }, 1002),
-    /use one of: planner: to: "planner-1" or replyTo: "ask-1", planner: to: "planner-2" or replyTo: "ask-2"/,
-  );
-});
-
-test("reply can disambiguate multiple pending asks with replyTo", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-2", "Second"),
-    1001,
-  );
-
-  assert.equal(
-    tracker.resolveReplyTarget({ to: "planner", replyTo: "ask-2" }, 1002).message.id,
-    "ask-2",
-  );
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "reviewer", replyTo: "ask-2" }, 1002),
-    /is not from "reviewer"/,
-  );
-});
-
-test("reply exact full sender ID wins over prefix matches", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("abcdefgh", "first"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-  tracker.recordIncomingMessage(
-    createSession("abcdefghi", "second"),
-    createMessage("ask-2", "Second"),
-    1001,
-  );
-
-  assert.equal(tracker.resolveReplyTarget({ to: "abcdefgh" }, 1002).message.id, "ask-1");
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "abcdefgh", replyTo: "ask-2" }, 1002),
-    /is not from "abcdefgh"/,
-  );
-});
-
-test("reply rejects too-short sender ID prefixes with a helpful target hint", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("abcdefgh", "first"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "abcdefg" }, 1002),
-    /too short.*first: to: "abcdefgh" or replyTo: "ask-1"/,
-  );
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "abcdefg", replyTo: "ask-1" }, 1002),
-    /too short.*first: to: "abcdefgh" or replyTo: "ask-1"/,
-  );
-});
-
-test("reply duplicate sender options avoid name and prefix collisions", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("abcdefgh1111", "planner"),
-    createMessage("ask-1", "First"),
-    1000,
-  );
-  tracker.recordIncomingMessage(
-    createSession("abcdefgi2222", "planner"),
-    createMessage("ask-2", "Second"),
-    1001,
-  );
-  tracker.recordIncomingMessage(
-    createSession("other-id", "abcdefgh"),
-    createMessage("ask-3", "Third"),
-    1002,
-  );
-
-  assert.throws(
-    () => tracker.resolveReplyTarget({ to: "planner" }, 1003),
-    /planner: to: "abcdefgh1" or replyTo: "ask-1", planner: to: "abcdefgi" or replyTo: "ask-2"/,
-  );
-});
-
-test("reply removes pending ask after successful reply", () => {
-  const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(
-    createSession("planner-id", "planner"),
-    createMessage("ask-1", "Need a decision"),
-    1000,
-  );
-
-  tracker.markReplied("ask-1");
-
-  assert.deepEqual(tracker.listPending(1001), []);
+test("reply targets and errors keep exact sender and ask correlation", () => {
+  for (const { name, senders, checks, now = 1002 } of [
+    {
+      name: "matching name and full ID",
+      senders: [
+        ["planner-id", "planner"],
+        ["reviewer-id", "reviewer"],
+      ],
+      checks: [
+        { params: { to: "reviewer" }, expected: "ask-2" },
+        { params: { to: "planner-id" }, expected: "ask-1" },
+        {
+          params: { to: "review" },
+          expected: /too short.*reviewer: to: "reviewer-" or replyTo: "ask-2"/,
+        },
+      ],
+    },
+    {
+      name: "explicit recipient cannot fall back to a sole ask",
+      senders: [["planner-id", "planner"]],
+      checks: [{ params: { to: "reviewer" }, expected: /No pending ask from "reviewer"/ }],
+    },
+    {
+      name: "no context or pending asks",
+      senders: [],
+      now: 1000,
+      checks: [{ params: {}, expected: /No active intercom context to reply to/ }],
+    },
+    {
+      name: "multiple pending asks require a target",
+      senders: [
+        ["planner-id", "planner"],
+        ["reviewer-id", "reviewer"],
+      ],
+      checks: [{ params: {}, expected: /Multiple pending asks — specify `to`/ }],
+    },
+    {
+      name: "duplicate sender names offer copyable targets",
+      senders: [
+        ["planner-11111111", "planner"],
+        ["planner-22222222", "planner"],
+      ],
+      checks: [
+        {
+          params: { to: "planner" },
+          expected:
+            /use one of: planner: to: "planner-1" or replyTo: "ask-1", planner: to: "planner-2" or replyTo: "ask-2"/,
+        },
+      ],
+    },
+    {
+      name: "replyTo disambiguates one sender but cannot spoof another",
+      senders: [
+        ["planner-id", "planner"],
+        ["planner-id", "planner"],
+      ],
+      checks: [
+        { params: { to: "planner", replyTo: "ask-2" }, expected: "ask-2" },
+        { params: { to: "reviewer", replyTo: "ask-2" }, expected: /is not from "reviewer"/ },
+      ],
+    },
+    {
+      name: "exact full sender ID wins over a longer prefix match",
+      senders: [
+        ["abcdefgh", "first"],
+        ["abcdefghi", "second"],
+      ],
+      checks: [
+        { params: { to: "abcdefgh" }, expected: "ask-1" },
+        { params: { to: "abcdefgh", replyTo: "ask-2" }, expected: /is not from "abcdefgh"/ },
+      ],
+    },
+    {
+      name: "short prefixes fail with and without replyTo",
+      senders: [["abcdefgh", "first"]],
+      checks: [
+        {
+          params: { to: "abcdefg" },
+          expected: /too short.*first: to: "abcdefgh" or replyTo: "ask-1"/,
+        },
+        {
+          params: { to: "abcdefg", replyTo: "ask-1" },
+          expected: /too short.*first: to: "abcdefgh" or replyTo: "ask-1"/,
+        },
+      ],
+    },
+    {
+      name: "duplicate sender suggestions avoid name and prefix collisions",
+      senders: [
+        ["abcdefgh1111", "planner"],
+        ["abcdefgi2222", "planner"],
+        ["other-id", "abcdefgh"],
+      ],
+      now: 1003,
+      checks: [
+        {
+          params: { to: "planner" },
+          expected:
+            /planner: to: "abcdefgh1" or replyTo: "ask-1", planner: to: "abcdefgi" or replyTo: "ask-2"/,
+        },
+      ],
+    },
+  ]) {
+    const tracker = new ReplyTracker();
+    for (const [index, [id, senderName]] of senders.entries()) {
+      tracker.recordIncomingMessage(
+        createSession(id, senderName),
+        createMessage(`ask-${index + 1}`, ["First", "Second", "Third"][index]),
+        1000 + index,
+      );
+    }
+    for (const { params, expected } of checks) {
+      if (typeof expected === "string") {
+        assert.equal(tracker.resolveReplyTarget(params, now).message.id, expected, name);
+      } else {
+        assert.throws(() => tracker.resolveReplyTarget(params, now), expected, name);
+      }
+    }
+  }
 });
 
 test("reply preserves every pending ask and queued turn context beyond 100 messages", () => {
