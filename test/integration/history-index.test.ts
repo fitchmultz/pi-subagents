@@ -1751,6 +1751,95 @@ test("conversation metadata spans unloaded pages and matches the exact sanitized
   );
 });
 
+test("delivery observations use the latest duplicate human ID and physical reply order within published terminal/time boundaries", async (t) => {
+  const f = fixture(t),
+    time = Date.parse(timestamp);
+  const human = (id: string, messageId: string, at = time) => ({
+    type: "custom_message",
+    id,
+    timestamp: new Date(at).toISOString(),
+    customType: "subagent-human-message",
+    details: { message: { id: messageId }, bodyText: "human direction" },
+  });
+  const file = f.file("delivery.jsonl", [
+    header(),
+    human("first-human", "early"),
+    human("first-repeat", "repeat"),
+    message("first-reply", "first reply", "assistant"),
+    human("latest-repeat", "repeat", time + 2000),
+    human("pending-human", "pending", time + 2000),
+    {
+      ...message("future-reply", "future reply", "assistant"),
+      timestamp: new Date(time + 5000).toISOString(),
+    },
+    {
+      ...message("backdated-reply", "backdated reply", "assistant"),
+      timestamp: new Date(time + 1000).toISOString(),
+    },
+    human("last-human", "last", time + 2000),
+  ]);
+  await owned(f.index, [{ ...run("delivery", file), pid: process.pid }]);
+  const input = {
+    runId: "delivery",
+    index: 0,
+    limit: 1,
+    messageIds: ["last", "repeat", "early", "pending", "repeat", "not-delivered"],
+  };
+  const bounded = await f.index.historyPage({
+    ...input,
+    terminalEntryId: "pending-human",
+    endedAt: time - 1,
+  });
+  assert.deepEqual(
+    bounded.deliveredMessages,
+    [
+      ["repeat", false],
+      ["early", true],
+      ["pending", false],
+    ],
+    "terminal byte order takes precedence over time; an earlier copy's reply does not answer the latest copy",
+  );
+  assert.deepEqual(
+    (await f.index.historyPage({ ...input, endedAt: time + 2000 })).deliveredMessages,
+    [
+      ["last", false],
+      ["repeat", true],
+      ["early", true],
+      ["pending", true],
+    ],
+    "a later physical assistant record can reply even when its timestamp is earlier",
+  );
+  fs.appendFileSync(
+    file,
+    JSON.stringify({
+      ...message("unpublished-reply", "latest reply", "assistant"),
+      timestamp: new Date(time + 5000).toISOString(),
+    }),
+  );
+  await f.index.refresh("delivery");
+  const partial = await f.index.historyPage(input);
+  assert.equal(partial.sourceState, "partial");
+  assert.deepEqual(partial.deliveredMessages, [
+    ["last", false],
+    ["repeat", true],
+    ["early", true],
+    ["pending", true],
+  ]);
+  fs.appendFileSync(file, "\n");
+  await f.index.refresh("delivery");
+  assert.deepEqual((await f.index.historyPage(input)).deliveredMessages, [
+    ["last", true],
+    ["repeat", true],
+    ["early", true],
+    ["pending", true],
+  ]);
+  assert.deepEqual(
+    (await f.index.historyPage({ ...input, endedAt: time + 2000 })).deliveredMessages,
+    partial.deliveredMessages,
+    "the published future reply is still outside the time boundary",
+  );
+});
+
 test("a published native record replaced by malformed same-size bytes reports SOURCE_CHANGED and closes its descriptor", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "history-selected-race-"));
   const file = path.join(root, "native.jsonl");

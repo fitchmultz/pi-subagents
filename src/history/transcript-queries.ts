@@ -58,7 +58,7 @@ export class TranscriptQueries {
     boundary: Boundary,
     ids: readonly string[],
   ): readonly (readonly [string, boolean])[] {
-    const delivered: (readonly [string, boolean])[] = [];
+    const humans: (readonly [string, number])[] = [];
     const where = boundary.clauses.join(" AND ");
     for (const id of new Set(ids)) {
       const human = this.scope.store.get(
@@ -67,17 +67,23 @@ export class TranscriptQueries {
         id,
       );
       if (human) {
-        delivered.push([
-          id,
-          this.scope.store.get(
-            `SELECT rowid FROM entries WHERE ${where} AND start>? AND assistant_text=1 LIMIT 1`,
-            ...boundary.params,
-            number(human, "start"),
-          ) !== undefined,
-        ]);
+        humans.push([id, number(human, "start")]);
       }
     }
-    return delivered;
+    if (humans.length === 0) {
+      return [];
+    }
+    // One tail lookup answers every ID, without scanning before the earliest requested human.
+    const assistant = this.scope.store.get(
+      `SELECT start FROM entries WHERE ${where} AND start>? AND assistant_text=1 ORDER BY start DESC LIMIT 1`,
+      ...boundary.params,
+      Math.min(...humans.map(([, start]) => start)),
+    );
+    const assistantStart = assistant ? number(assistant, "start") : undefined;
+    return humans.map(([id, start]): readonly [string, boolean] => [
+      id,
+      assistantStart !== undefined && start < assistantStart,
+    ]);
   }
   private readMetadata(
     boundary: Boundary,
