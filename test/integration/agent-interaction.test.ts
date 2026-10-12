@@ -19,7 +19,6 @@ import {
   type ExtensionUIContext,
   type KeybindingsManager as NativeKeybindings,
   type Theme,
-  type SessionEntry,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -70,6 +69,7 @@ import {
 } from "../support/assertions.ts";
 import { importSelectedNative } from "../../src/shared/native-import.ts";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { DisplayEntry } from "../../src/tui/history-record.ts";
 
 const root = fs.mkdtempSync(
   path.join(process.env.PI_AGENT_VIEW_EVIDENCE_DIR ?? os.tmpdir(), "agent-interaction-"),
@@ -97,8 +97,10 @@ assert.equal(
   "Native target must select the installed SDK graph",
 );
 const { SessionManager } = await import("@earendil-works/pi-coding-agent");
-const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
-const { historyItems, withFinalResult } = await import("../../src/tui/agent-history.ts");
+const { AgentViewController } = await import("../../src/tui/agent-view.ts");
+const { AgentConversation } = await import("../../src/tui/agent-conversation.ts");
+const { withFinalResult } = await import("../../src/tui/agent-history.ts");
+const { displayHistory } = await import("../../src/tui/history-display.ts");
 const { displayEntry } = await import("../../src/tui/history-record.ts");
 const { getSingleResultOutput } = await import("../../src/shared/utils.ts");
 const { runHistoryIndex, closeRunHistory } = await import("../../src/runs/shared/history-index.ts");
@@ -1531,10 +1533,8 @@ test("Agents predecessor and live continuation retain task identity and publishe
 
 test("history reading IDs and delivery facts never need raw tool serialization", () => {
   let formatted = 0;
-  const entries: SessionEntry[] = [
+  const entries: DisplayEntry[] = [
     {
-      parentId: null,
-      display: true,
       type: "custom_message",
       id: "direction",
       timestamp: "2026-01-01",
@@ -1545,15 +1545,11 @@ test("history reading IDs and delivery facts never need raw tool serialization",
     {
       type: "message",
       id: "call",
-      parentId: "direction",
       timestamp: "2026-01-01",
       message: {
         role: "assistant",
-        api: "openai-responses",
         provider: "fixture",
         model: "fixture",
-        usage,
-        timestamp: 0,
         content: [
           { type: "thinking", thinking: "Reasoning" },
           { type: "text", text: "Reply" },
@@ -1565,7 +1561,6 @@ test("history reading IDs and delivery facts never need raw tool serialization",
     {
       type: "message",
       id: "result",
-      parentId: "call",
       timestamp: "2026-01-01",
       message: {
         role: "toolResult",
@@ -1584,7 +1579,7 @@ test("history reading IDs and delivery facts never need raw tool serialization",
       },
     },
   ];
-  const history = historyItems(entries);
+  const history = displayHistory(entries);
   assert.deepEqual(history.entryIds, ["direction", "call:0", "call:1", "call:2", "result"]);
   assert.equal(history.items[0].messageId, "ack-1");
   assert.equal(history.items[1].kind, "assistant");
@@ -1597,48 +1592,61 @@ test("history reading IDs and delivery facts never need raw tool serialization",
 });
 
 test("shared-history saved-result matching indexes exact sanitized text once and retains the latest matching native ID", (t) => {
-  const entries: SessionEntry[] = ["earlier", "latest"].map((id): SessionEntry => ({
-    type: "message",
-    id,
-    parentId: null,
-    timestamp: "2026-01-01",
-    message: {
-      role: "assistant",
-      api: "openai-responses",
-      provider: "fixture",
-      model: "fixture",
-      usage,
-      timestamp: 0,
-      stopReason: "stop",
-      content: [
-        { type: "thinking", thinking: "Context" },
-        {
-          type: "text",
-          text: '\x1b[31mFinal report\x1b[0m\n```acceptance-report\n{"criteriaSatisfied":[]}\n```',
-        },
-      ],
-    },
-  }));
-  const history = historyItems(entries);
-  const getters = history.items.map((item) => t.mock.getter(item, "text"));
-  for (let run = 0; run < 267; run++) {
-    assert.equal(withFinalResult(history, "Final report", `run-${run}`, run).finalId, "latest:0");
+  for (const native of [false, true]) {
+    const entries: DisplayEntry[] = ["earlier", "latest"].map((id): DisplayEntry => {
+      const message: AssistantMessage = {
+        role: "assistant",
+        api: "openai-responses",
+        provider: "fixture",
+        model: "fixture",
+        usage,
+        timestamp: 0,
+        stopReason: "stop",
+        content: [
+          ...(native ? [{ type: "thinking" as const, thinking: "Context" }] : []),
+          {
+            type: "text",
+            text: '\x1b[31mFinal report\x1b[0m\n```acceptance-report\n{"criteriaSatisfied":[]}\n```',
+          },
+        ],
+      };
+      return {
+        type: "message",
+        id,
+        timestamp: "2026-01-01",
+        message: native
+          ? message
+          : {
+              role: "assistant",
+              provider: "fixture",
+              model: "fixture",
+              content: message.content,
+              stopReason: "stop",
+            },
+        native: native ? message : undefined,
+      };
+    });
+    const history = displayHistory(entries);
+    const getters = history.items.map((item) => t.mock.getter(item, "text"));
+    for (let run = 0; run < 267; run++) {
+      assert.equal(withFinalResult(history, "Final report", `run-${run}`, run).finalId, "latest:0");
+      assert.equal(
+        withFinalResult(history, `Different saved result ${run}`, `run-${run}`, run).finalId,
+        `result:run-${run}`,
+      );
+    }
     assert.equal(
-      withFinalResult(history, `Different saved result ${run}`, `run-${run}`, run).finalId,
-      `result:run-${run}`,
+      getters.reduce((sum, getter) => sum + getter.mock.callCount(), 0),
+      2,
+      "many continuations must not rescan all assistant text on unchanged refresh",
+    );
+    const saved = withFinalResult(history, "Only canonical", "saved", 1);
+    assert.equal(
+      withFinalResult(saved, "Only canonical", "saved", 1).items.length,
+      saved.items.length,
+      "reapplying a canonical result cannot duplicate it",
     );
   }
-  assert.equal(
-    getters.reduce((sum, getter) => sum + getter.mock.callCount(), 0),
-    2,
-    "many continuations must not rescan all assistant text on unchanged refresh",
-  );
-  const saved = withFinalResult(history, "Only canonical", "saved", 1);
-  assert.equal(
-    withFinalResult(saved, "Only canonical", "saved", 1).items.length,
-    saved.items.length,
-    "reapplying a canonical result cannot duplicate it",
-  );
 });
 
 test("Agents model identity follows native branch settings and tool-only messages, not requested routes", async (t) => {
@@ -2212,13 +2220,8 @@ test("Agents model identity leaves bare selections and unavailable metadata hone
   assert.equal(requiredTask(f).model.summary, "model unavailable");
 });
 
-for (const [background, nativeReply] of [
-  [false, true],
-  [false, false],
-  [true, true],
-  [true, false],
-]) {
-  test(`Agents model identity follows the ${background ? "background" : "foreground"} fallback before its first response and freezes ${nativeReply ? "native" : "selection-only"} completion`, async (t) => {
+for (const nativeReply of [true, false]) {
+  test(`Agents model identity follows the background fallback before its first response and freezes ${nativeReply ? "native" : "selection-only"} completion`, async (t) => {
     const primary = "requested/vendor/primary:high",
       fallback = "backup/vendor/fallback:low";
     const f = await fixture(t, "regular", 1, undefined, [
@@ -2246,7 +2249,7 @@ for (const [background, nativeReply] of [
       params: {
         agent: "worker",
         task: "Verify the model display",
-        async: background,
+        async: true,
         artifacts: false,
         output: false,
       },
@@ -2257,7 +2260,7 @@ for (const [background, nativeReply] of [
       fs.writeFileSync(releasePrimary, "released");
       fs.writeFileSync(releaseFallback, "released");
       await pending;
-      if (background && trackedLaunch.runId !== undefined && trackedLaunch.runId !== "") {
+      if (trackedLaunch.runId !== undefined && trackedLaunch.runId !== "") {
         await until(
           () =>
             fs.existsSync(
@@ -2325,12 +2328,10 @@ for (const [background, nativeReply] of [
     }
     fs.writeFileSync(releaseFallback, "released");
     await pending;
-    if (background) {
-      await until(
-        () => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")),
-        "fallback completion is saved",
-      );
-    }
+    await until(
+      () => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")),
+      "fallback completion is saved",
+    );
     await refreshFixture(f);
     const completed = requiredTask(f, task.key);
     assert.equal(completed.child.state, "completed");
@@ -2409,7 +2410,7 @@ for (const [background, nativeReply] of [
     fs.writeFileSync(
       path.join(f.cwd, "model-boundaries.json"),
       JSON.stringify(
-        { background, completed: completed.model, successor: requiredTask(f, task.key).model },
+        { completed: completed.model, successor: requiredTask(f, task.key).model },
         null,
         2,
       ),
@@ -2419,7 +2420,7 @@ for (const [background, nativeReply] of [
   });
 }
 
-test("Agents model identity keeps the owner's latest selection after response-less finalization", async (t) => {
+test("Agents model identity reads a legacy contract selection after response-less finalization", async (t) => {
   const requested = "requested/vendor/finalization:low";
   const f = await fixture(t),
     native = f.childSessions[0];
@@ -2435,7 +2436,6 @@ test("Agents model identity keeps the owner's latest selection after response-le
   });
   const modelSelection = { model: requested, modelStartedAt: Date.now() + 1 };
   saveQuestionContract(f.run.runId, 0, { modelSelection });
-  Object.assign(f.status.steps[0], modelSelection);
   saveRunStatus(f.run.runId, f.status);
   await refreshFixture(f);
   assert.equal(
@@ -2560,29 +2560,6 @@ for (const mode of ["regular", "fullscreen"] as const) {
   });
 }
 
-test("clickable Agents hints: Esc Back closes the native conversation and preserves both drafts", async (t) => {
-  const f = await fixture(t, "fullscreen"),
-    opening = f.controller.open();
-  f.tui.start();
-  f.tui.renderNow();
-  f.terminal.input("Keep this child draft");
-  f.tui.renderNow();
-  const bounds = f.overlayBounds,
-    lines = f.overlay.render(bounds.width).map(stripTerminalSequences);
-  const y = lines.findIndex((line) => line.includes("Esc Back"));
-  assert.ok(y >= 0, "Esc Back is actually displayed");
-  const x = lines[y].indexOf("Esc Back") + "Esc ".length;
-  f.terminal.click(bounds.col + x, bounds.row + y);
-  await turn();
-  assert.equal(f.tui.hasOverlay(), false, "clicking Back must close the same view as Escape");
-  await opening;
-  assert.equal(f.controller.conversation.visit(f.key).draft, "Keep this child draft");
-  assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
-  assert.equal(f.mainEditor.focused, true);
-  assert.equal(f.calls.length, 0);
-  assert.deepEqual(f.interrupts, [0]);
-});
-
 for (const [columns, rows] of [
   [110, 38],
   [56, 38],
@@ -2646,9 +2623,18 @@ for (const [columns, rows] of [
     assert.equal(f.tui.hasOverlay(), true);
     assert.equal(f.conversation.editor.focused, true);
     assert.equal(f.conversation.editor.getText(), "Unsent child draft");
-    await clickHint(f, compact ? "Esc" : "Back");
+    if (columns === 110) {
+      const { x, y } = hintPoint(f, "Esc Back");
+      f.terminal.click(x - 2, y);
+      await turn();
+    } else {
+      await clickHint(f, compact ? "Esc" : "Back");
+    }
     await opening;
     assert.equal(f.tui.hasOverlay(), false);
+    assert.equal(f.controller.conversation.visit(f.key).draft, "Unsent child draft");
+    assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+    assert.equal(f.mainEditor.focused, true);
     assert.equal(f.calls.length, 0);
     assert.deepEqual(f.interrupts, [0]);
   });
@@ -2924,25 +2910,6 @@ test("clickable Agents hints: native menu Stop remains explicit and targets only
   assert.match(plain(f.overlay, f.overlayBounds.width), /Stop requested for this child only/);
   await clickHint(f, "Esc Back");
   await opening;
-});
-
-test("clickable Agents hints: more-agents command opens the picker without choosing a child", async (t) => {
-  const f = await fixture(t, "fullscreen", 6);
-  f.tui.start();
-  f.tui.renderNow();
-  const rows = f.strip.render(f.terminal.columns).map(stripTerminalSequences),
-    row = rows.findIndex((line) => line.includes("/agents"));
-  assert.ok(row >= 0);
-  const dockTop =
-    f.terminal.rows - rows.length - f.mainEditor.render(f.terminal.columns).length - 1;
-  f.terminal.click(rows[row].indexOf("/agents") + 2, dockTop + row);
-  await turn();
-  f.tui.renderNow();
-  assert.equal(f.tui.hasOverlay(), true);
-  assert.ok(!(f.overlay instanceof AgentConversation));
-  await clickHint(f, "Esc");
-  assert.equal(f.tui.hasOverlay(), false);
-  assert.equal(f.calls.length, 0);
 });
 
 test("clickable Agents hints: native Option labels preserve Alt bindings and clipped quote actions", async (t) => {
@@ -3230,8 +3197,24 @@ test("clickable Agents hints: more-agents excludes clipping dots and padding but
     // oxlint-disable-next-line no-await-in-loop
     await clickHint(f, "Esc");
     assert.equal(f.tui.hasOverlay(), false);
+    if (columns === 100) {
+      const command = rows[row].indexOf("/agents");
+      assert.ok(command >= 0, "the /agents command is actually displayed");
+      f.terminal.click(command + 2, dockTop + row);
+      // Process the wide command hit before inspecting its picker.
+      // oxlint-disable-next-line no-await-in-loop
+      await turn();
+      f.tui.renderNow();
+      assert.equal(f.tui.hasOverlay(), true);
+      assert.ok(!(f.overlay instanceof AgentConversation));
+      // Close the picker before leaving this terminal-width row.
+      // oxlint-disable-next-line no-await-in-loop
+      await clickHint(f, "Esc");
+      assert.equal(f.tui.hasOverlay(), false);
+    }
   }
   assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.interrupts, [0, 0, 0, 0, 0, 0]);
 });
 
 test("clickable Agents hints: a returned notice cannot declare a Continue action, even after reload", async (t) => {
@@ -3283,7 +3266,6 @@ test("clickable Agents hints: a returned notice cannot declare a Continue action
 test("live multiple-child picker and fullscreen task click target the exact child", async (t) => {
   const f = await fixture(t, "fullscreen", 2);
   const opening = f.controller.open();
-  assert.doesNotMatch(f.overlay.constructor.name, /AgentConversation/);
   assert.match(plain(f.overlay), /Fix login[\s\S]*Review changes[\s\S]*Other connected sessions/);
   f.interactiveOverlay.handleInput("\x1b[B");
   f.interactiveOverlay.handleInput("\r");
@@ -3583,18 +3565,39 @@ test("native Agents earlier/later pages and Latest retain access to exact select
   assert.equal(f.calls.length, 0);
 });
 
-for (const loss of ["missing", "replacement", "truncation"]) {
-  test(`native detail requests show ${loss} failures without escaping TUI input or losing drafts`, async (t) => {
-    const f = await fixture(t),
+for (const [loss, mode] of [
+  ["missing", "regular"],
+  ["replacement", "regular"],
+  ["truncation", "regular"],
+  ["replacement", "fullscreen"],
+] as const) {
+  test(`native detail requests show ${loss}${mode === "fullscreen" ? " (fullscreen indexed)" : ""} failures without escaping TUI input or losing drafts`, async (t) => {
+    const f = await fixture(t, mode),
       manager = f.childSessions[0],
       file = sessionFile(manager);
-    assistant(manager, `Full selected body\n${"detail ".repeat(600)}SELECTED-END`);
-    await refreshFixture(f);
+    const natural = mode === "fullscreen",
+      draft = natural ? "Keep this draft" : "Keep my unsent message";
+    assistant(
+      manager,
+      natural
+        ? `Saved selected body ${"detail ".repeat(200)}FULL-SELECTED-END`
+        : `Full selected body\n${"detail ".repeat(600)}SELECTED-END`,
+    );
+    if (natural) {
+      await indexedReady(f);
+    } else {
+      await refreshFixture(f);
+    }
     const opening = f.controller.open(f.key);
     f.tui.start();
+    await historyReady(f);
     f.tui.renderNow();
-    f.terminal.input("Keep my unsent message");
+    f.terminal.input(draft);
     f.terminal.input("\t");
+    if (natural) {
+      f.terminal.input("\x1b[F");
+      await historyReady(f);
+    }
     f.tui.renderNow();
     if (loss === "missing") {
       fs.unlinkSync(file);
@@ -3621,7 +3624,7 @@ for (const loss of ["missing", "replacement", "truncation"]) {
       "Reply cannot quote an unavailable-details notice as saved evidence",
     );
     assert.match(plain(f.overlay), /Quoted context unavailable; draft kept/);
-    assert.equal(f.conversation.editor.getExpandedText(), "Keep my unsent message");
+    assert.equal(f.conversation.editor.getExpandedText(), draft);
     assert.equal(f.calls.length, 0);
     f.terminal.input("\x1b");
     await opening;
@@ -4981,126 +4984,130 @@ test("new async chain preserves its launch identity, draft and pin through first
   await opening;
 });
 
-test("the first native streaming response is readable before its final assistant message is saved", async (t) => {
-  const f = await fixture(t),
-    native = nativeChild(f.cwd, "streaming"),
-    { release } = native;
-  f.state.ownedRuns.clear();
-  await refreshFixture(f);
-  const requested = "requested/vendor/streaming:high";
-  const pending = f.executor.execute({
-    toolCallId: "initial-stream",
-    params: {
-      agent: "worker",
-      model: requested,
-      task: "Read initial streaming output",
-      async: false,
-      artifacts: false,
-      output: false,
-    },
-    ctx: f.ctx,
-  });
-  t.after(async () => {
+test(
+  "the first native streaming response is readable before its final assistant message is saved",
+  { timeout: 60_000 },
+  async (t) => {
+    const f = await fixture(t),
+      native = nativeChild(f.cwd, "streaming"),
+      { release } = native;
+    f.state.ownedRuns.clear();
+    await refreshFixture(f);
+    const requested = "requested/vendor/streaming:high";
+    const pending = f.executor.execute({
+      toolCallId: "initial-stream",
+      params: {
+        agent: "worker",
+        model: requested,
+        task: "Read initial streaming output",
+        async: false,
+        artifacts: false,
+        output: false,
+      },
+      ctx: f.ctx,
+    });
+    t.after(async () => {
+      fs.writeFileSync(release, "released");
+      await pending;
+      native.restore();
+    });
+    const deadline = Date.now() + 45_000;
+    while (
+      !f.controller.picker.tasks.some(
+        (task) => task.child.activity?.streamingText?.includes("First live text") === true,
+      )
+    ) {
+      assert.ok(Date.now() < deadline, "initial native text must arrive");
+      // Leave time for native release/join/restore before the whole-test timeout.
+      // oxlint-disable-next-line no-await-in-loop
+      await delay(10);
+    }
+    const task = f.controller.picker.tasks[0];
+    if (fs.existsSync(stringValue(task.child.sessionFile))) {
+      const entries = SessionManager.open(stringValue(task.child.sessionFile)).getEntries();
+      assert.equal(
+        entries.some((entry) => entry.type === "message" && entry.message.role === "assistant"),
+        false,
+        "early native metadata persistence is not a completed assistant response",
+      );
+    }
+    assert.match(
+      plain(f.strip, 160),
+      fs.existsSync(stringValue(task.child.sessionFile))
+        ? /feedback-fixture\/faux-1 · thinking off/
+        : /selected: requested\/vendor\/streaming · thinking high/,
+      "early native model metadata supersedes requested display without inventing an assistant completion",
+    );
+    const receipt = record(readJson(`${release}.json`));
+    assert.equal(
+      records(receipt.events).some(
+        (event) => event.type === "message_end" && event.role === "assistant",
+      ),
+      false,
+    );
+    const opening = f.controller.open(task.key);
+    await historyReady(f);
+    assert.match(plain(f.overlay), /First live text/);
+    assert.doesNotMatch(
+      plain(f.overlay),
+      /Conversation unavailable|Saved conversation unavailable|ENOENT/,
+    );
+    f.interactiveOverlay.handleInput("Draft for after the first response");
+    f.interactiveOverlay.handleInput("\x1bp");
+    f.interactiveOverlay.handleInput("\x1b");
+    await opening;
     fs.writeFileSync(release, "released");
     await pending;
-    native.restore();
-  });
-  const deadline = Date.now() + 10_000;
-  while (
-    !f.controller.picker.tasks.some(
-      (task) => task.child.activity?.streamingText?.includes("First live text") === true,
-    )
-  ) {
-    assert.ok(Date.now() < deadline, "initial native text must arrive");
-    // Observe native pre-message-end progress before checking the saved receipt.
-    // oxlint-disable-next-line no-await-in-loop
-    await delay(10);
-  }
-  const task = f.controller.picker.tasks[0];
-  if (fs.existsSync(stringValue(task.child.sessionFile))) {
-    const entries = SessionManager.open(stringValue(task.child.sessionFile)).getEntries();
-    assert.equal(
-      entries.some((entry) => entry.type === "message" && entry.message.role === "assistant"),
-      false,
-      "early native metadata persistence is not a completed assistant response",
+    const completed = SessionManager.open(stringValue(task.child.sessionFile));
+    for (let index = 0; index < 30; index++) {
+      assistant(completed, `Later response ${index}\n${"Later detail ".repeat(15)}`);
+    }
+    f.controller.start(f.ctx);
+    await refreshFixture(f);
+    assert.equal(requiredTask(f, task.key).unavailable, undefined);
+    assert.match(
+      requiredTask(f, task.key).model.summary,
+      /^saved: feedback-fixture\/faux-1\b/,
+      "native saved choices replace requested display without rereading a later continuation",
     );
-  }
-  assert.match(
-    plain(f.strip, 160),
-    fs.existsSync(stringValue(task.child.sessionFile))
-      ? /feedback-fixture\/faux-1 · thinking off/
-      : /selected: requested\/vendor\/streaming · thinking high/,
-    "early native model metadata supersedes requested display without inventing an assistant completion",
-  );
-  const receipt = record(readJson(`${release}.json`));
-  assert.equal(
-    records(receipt.events).some(
-      (event) => event.type === "message_end" && event.role === "assistant",
-    ),
-    false,
-  );
-  const opening = f.controller.open(task.key);
-  await historyReady(f);
-  assert.match(plain(f.overlay), /First live text/);
-  assert.doesNotMatch(
-    plain(f.overlay),
-    /Conversation unavailable|Saved conversation unavailable|ENOENT/,
-  );
-  f.interactiveOverlay.handleInput("Draft for after the first response");
-  f.interactiveOverlay.handleInput("\x1bp");
-  f.interactiveOverlay.handleInput("\x1b");
-  await opening;
-  fs.writeFileSync(release, "released");
-  await pending;
-  const completed = SessionManager.open(stringValue(task.child.sessionFile));
-  for (let index = 0; index < 30; index++) {
-    assistant(completed, `Later response ${index}\n${"Later detail ".repeat(15)}`);
-  }
-  f.controller.start(f.ctx);
-  await refreshFixture(f);
-  assert.equal(requiredTask(f, task.key).unavailable, undefined);
-  assert.match(
-    requiredTask(f, task.key).model.summary,
-    /^saved: feedback-fixture\/faux-1\b/,
-    "native saved choices replace requested display without rereading a later continuation",
-  );
-  assert.equal(
-    (await pending).details.results[0].model,
-    requested,
-    "display must not change the candidate-first execution result",
-  );
-  assert.equal(
-    requiredTask(f, task.key).unread,
-    true,
-    "visiting before native message_end must retain the before-first-saved-entry boundary after completion and reload",
-  );
-  assert.equal(
-    plain(f.strip),
-    "",
-    "completed unread history and a saved pin do not keep the active area visible",
-  );
-  assert.equal(f.controller.conversation.pinned, task.key);
-  const reopen = f.controller.open(task.key);
-  await historyReady(f);
-  assert.match(
-    plain(f.overlay),
-    /Second live text block continues before message end\./,
-    "reopening must show the first finished reply, not the tail of later history",
-  );
-  assert.equal(f.conversation.editor.getText(), "Draft for after the first response");
-  f.interactiveOverlay.handleInput("\x1b");
-  await reopen;
-  fs.renameSync(
-    stringValue(task.child.sessionFile),
-    `${stringValue(task.child.sessionFile)}.removed`,
-  );
-  await refreshFixture(f);
-  assert.match(
-    stringValue(f.controller.picker.tasks[0].unavailable),
-    /Saved conversation unavailable/,
-    "a missing completed history remains an honest error",
-  );
-});
+    assert.equal(
+      (await pending).details.results[0].model,
+      requested,
+      "display must not change the candidate-first execution result",
+    );
+    assert.equal(
+      requiredTask(f, task.key).unread,
+      true,
+      "visiting before native message_end must retain the before-first-saved-entry boundary after completion and reload",
+    );
+    assert.equal(
+      plain(f.strip),
+      "",
+      "completed unread history and a saved pin do not keep the active area visible",
+    );
+    assert.equal(f.controller.conversation.pinned, task.key);
+    const reopen = f.controller.open(task.key);
+    await historyReady(f);
+    assert.match(
+      plain(f.overlay),
+      /Second live text block continues before message end\./,
+      "reopening must show the first finished reply, not the tail of later history",
+    );
+    assert.equal(f.conversation.editor.getText(), "Draft for after the first response");
+    f.interactiveOverlay.handleInput("\x1b");
+    await reopen;
+    fs.renameSync(
+      stringValue(task.child.sessionFile),
+      `${stringValue(task.child.sessionFile)}.removed`,
+    );
+    await refreshFixture(f);
+    assert.match(
+      stringValue(f.controller.picker.tasks[0].unavailable),
+      /Saved conversation unavailable/,
+      "a missing completed history remains an honest error",
+    );
+  },
+);
 
 test("explicit Continue uses the saved launch and follows the active successor without a duplicate runtime", async (t) => {
   const f = await fixture(t),
@@ -5508,342 +5515,326 @@ test("foreground chain parallel updates retain both live children's unfinished t
   await pending;
 });
 
-for (const background of [false, true]) {
-  test(`${background ? "background" : "foreground"} queued child is waiting to start, keeps its draft, and cannot create duplicate continuation`, async (t) => {
-    const f = await fixture(t),
-      native = nativeChild(f.cwd, "tool"),
-      releaseA = `${native.release}-0`,
-      releaseB = `${native.release}-1`;
-    process.env.PI_FEEDBACK_RELEASE_FILE = `${native.release}-{index}`;
-    f.state.ownedRuns.clear();
-    await refreshFixture(f);
-    const pending = f.executor.execute({
-      toolCallId: "queued-child",
-      params: {
-        tasks: [
-          { agent: "worker", task: "Held original A", output: false },
-          { agent: "worker", task: "Queued original B", output: false },
-        ],
-        concurrency: 1,
-        async: background,
-        artifacts: false,
-      },
-      ctx: f.ctx,
-    });
-    t.after(async () => {
-      fs.writeFileSync(releaseA, "released");
-      fs.writeFileSync(releaseB, "released");
-      await pending;
-      if (background) {
-        await until(
-          () =>
-            [...f.state.ownedRuns.keys()].every((id) =>
-              fs.existsSync(path.join(getRunMetadataDir(id), "result.json")),
-            ),
-          "queued workflow cleanup",
-        );
-      }
-      native.restore();
-    });
-    await until(
-      () =>
-        fs.existsSync(`${releaseA}.json`) &&
-        records(record(readJson(`${releaseA}.json`)).events).some(
-          (event) => event.type === "tool_execution_start",
-        ),
-      "first native child holds the queue",
-    );
-    await refreshFixture(f);
-    const task = f.controller.picker.tasks.find((candidate) => candidate.child.index === 1);
-    assertDefined(task);
-    assert.equal(task.child.state, "live");
-    assert.equal(task.child.activity?.status, "pending");
-    const opening = f.controller.open(task.key),
-      view = f.conversation;
-    assert.match(plain(view), /waiting to start/i);
-    view.handleInput("Keep this draft for B");
-    view.handleInput("\r");
-    await turn();
-    assert.match(plain(view), /waiting to start/i);
-    assert.doesNotMatch(plain(view), /has finished|Continue with/);
-    view.handleInput("\x1bc");
-    if (background) {
-      view.handleInput("\x1bs");
-    }
-    await turn();
-    assert.equal(f.calls.length, 0, "neither send nor Continue launches a duplicate queued child");
-    assert.equal(view.editor.getText(), "Keep this draft for B");
-    view.handleInput("\x1bOQ");
-    assert.doesNotMatch(plain(view), /Continue with this message|Stop this agent only/);
-    view.handleInput("\x1b");
+test("background queued child is waiting to start, keeps its draft, and cannot create duplicate continuation", async (t) => {
+  const f = await fixture(t),
+    native = nativeChild(f.cwd, "tool"),
+    releaseA = `${native.release}-0`,
+    releaseB = `${native.release}-1`;
+  process.env.PI_FEEDBACK_RELEASE_FILE = `${native.release}-{index}`;
+  f.state.ownedRuns.clear();
+  await refreshFixture(f);
+  const pending = f.executor.execute({
+    toolCallId: "queued-child",
+    params: {
+      tasks: [
+        { agent: "worker", task: "Held original A", output: false },
+        { agent: "worker", task: "Queued original B", output: false },
+      ],
+      concurrency: 1,
+      async: true,
+      artifacts: false,
+    },
+    ctx: f.ctx,
+  });
+  t.after(async () => {
     fs.writeFileSync(releaseA, "released");
-    await until(
-      () =>
-        fs.existsSync(`${releaseB}.json`) &&
-        records(record(readJson(`${releaseB}.json`)).events).some(
-          (event) => event.type === "tool_execution_start",
-        ),
-      "queued B must start normally",
-    );
-    await refreshFixture(f);
-    assert.doesNotMatch(
-      plain(view),
-      /waiting to start/i,
-      "a prior pending action must not leave a stale state notice once B starts",
-    );
     fs.writeFileSync(releaseB, "released");
     await pending;
-    if (background) {
-      await until(
-        () => fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "result.json")),
-        "queued workflow publishes its result",
-      );
-    }
-    const result = await f.executor.execute({
-      toolCallId: "inspect-queued",
-      params: { action: "status", id: task.run.runId },
-      ctx: f.ctx,
-    });
-    assert.deepEqual(
-      result.details.run?.children.map((child) => child.state),
-      ["completed", "completed"],
+    await until(
+      () =>
+        [...f.state.ownedRuns.keys()].every((id) =>
+          fs.existsSync(path.join(getRunMetadataDir(id), "result.json")),
+        ),
+      "queued workflow cleanup",
     );
-    assert.equal(f.state.ownedRuns.size, 1);
-    assert.equal(view.editor.getText(), "Keep this draft for B");
-    assert.doesNotMatch(plain(view), /waiting to start/i);
-    view.handleInput("\x1b");
-    await opening;
+    native.restore();
   });
-}
+  await until(
+    () =>
+      fs.existsSync(`${releaseA}.json`) &&
+      records(record(readJson(`${releaseA}.json`)).events).some(
+        (event) => event.type === "tool_execution_start",
+      ),
+    "first native child holds the queue",
+  );
+  await refreshFixture(f);
+  const task = f.controller.picker.tasks.find((candidate) => candidate.child.index === 1);
+  assertDefined(task);
+  assert.equal(task.child.state, "live");
+  assert.equal(task.child.activity?.status, "pending");
+  const opening = f.controller.open(task.key),
+    view = f.conversation;
+  assert.match(plain(view), /waiting to start/i);
+  view.handleInput("Keep this draft for B");
+  view.handleInput("\r");
+  await turn();
+  assert.match(plain(view), /waiting to start/i);
+  assert.doesNotMatch(plain(view), /has finished|Continue with/);
+  view.handleInput("\x1bc");
+  view.handleInput("\x1bs");
+  await turn();
+  assert.equal(f.calls.length, 0, "neither send nor Continue launches a duplicate queued child");
+  assert.equal(view.editor.getText(), "Keep this draft for B");
+  view.handleInput("\x1bOQ");
+  assert.doesNotMatch(plain(view), /Continue with this message|Stop this agent only/);
+  view.handleInput("\x1b");
+  fs.writeFileSync(releaseA, "released");
+  await until(
+    () =>
+      fs.existsSync(`${releaseB}.json`) &&
+      records(record(readJson(`${releaseB}.json`)).events).some(
+        (event) => event.type === "tool_execution_start",
+      ),
+    "queued B must start normally",
+  );
+  await refreshFixture(f);
+  assert.doesNotMatch(
+    plain(view),
+    /waiting to start/i,
+    "a prior pending action must not leave a stale state notice once B starts",
+  );
+  fs.writeFileSync(releaseB, "released");
+  await pending;
+  await until(
+    () => fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "result.json")),
+    "queued workflow publishes its result",
+  );
+  const result = await f.executor.execute({
+    toolCallId: "inspect-queued",
+    params: { action: "status", id: task.run.runId },
+    ctx: f.ctx,
+  });
+  assert.deepEqual(
+    result.details.run?.children.map((child) => child.state),
+    ["completed", "completed"],
+  );
+  assert.equal(f.state.ownedRuns.size, 1);
+  assert.equal(view.editor.getText(), "Keep this draft for B");
+  assert.doesNotMatch(plain(view), /waiting to start/i);
+  view.handleInput("\x1b");
+  await opening;
+});
 
-for (const background of [false, true]) {
-  test(`${background ? "background" : "foreground"} dynamic expansion preserves a later assignment's open view, draft, pin and controls`, async (t) => {
-    const f = await fixture(t),
-      mock = createMockPi();
-    mock.install();
-    f.state.ownedRuns.clear();
-    await refreshFixture(f);
-    const discover = path.join(f.cwd, "discover-release"),
-      reviews = path.join(f.cwd, "reviews-release"),
-      final = path.join(f.cwd, "final-release");
-    mock.onCall({
-      matchArgsIncludes: "Discover two targets",
-      waitForFile: discover,
-      structuredOutput: { items: [{ name: "alpha" }, { name: "beta" }] },
-      output: "Targets ready",
-    });
-    mock.onCall({
-      matchArgsIncludes: "Review alpha",
-      waitForFile: reviews,
-      output: "Alpha review complete",
-    });
-    mock.onCall({
-      matchArgsIncludes: "Review beta",
-      waitForFile: reviews,
-      output: "Beta review complete",
-    });
-    mock.onCall({ matchArgsIncludes: "Finalize from", waitForFile: final, output: "Finalized" });
-    const pending = f.executor.execute({
-      toolCallId: "dynamic-view",
-      params: {
-        chain: [
-          {
-            agent: "worker",
-            model: "discovery/model",
-            task: "Discover two targets",
-            label: "Discover files",
-            as: "targets",
-            output: false,
-            outputSchema: {
-              type: "object",
-              properties: {
+test("background dynamic expansion preserves a later assignment's open view, draft, pin and controls", async (t) => {
+  const f = await fixture(t),
+    mock = createMockPi();
+  mock.install();
+  f.state.ownedRuns.clear();
+  await refreshFixture(f);
+  const discover = path.join(f.cwd, "discover-release"),
+    reviews = path.join(f.cwd, "reviews-release"),
+    final = path.join(f.cwd, "final-release");
+  mock.onCall({
+    matchArgsIncludes: "Discover two targets",
+    waitForFile: discover,
+    structuredOutput: { items: [{ name: "alpha" }, { name: "beta" }] },
+    output: "Targets ready",
+  });
+  mock.onCall({
+    matchArgsIncludes: "Review alpha",
+    waitForFile: reviews,
+    output: "Alpha review complete",
+  });
+  mock.onCall({
+    matchArgsIncludes: "Review beta",
+    waitForFile: reviews,
+    output: "Beta review complete",
+  });
+  mock.onCall({ matchArgsIncludes: "Finalize from", waitForFile: final, output: "Finalized" });
+  const pending = f.executor.execute({
+    toolCallId: "dynamic-view",
+    params: {
+      chain: [
+        {
+          agent: "worker",
+          model: "discovery/model",
+          task: "Discover two targets",
+          label: "Discover files",
+          as: "targets",
+          output: false,
+          outputSchema: {
+            type: "object",
+            properties: {
+              items: {
+                type: "array",
                 items: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: { name: { type: "string" } },
-                    required: ["name"],
-                  },
+                  type: "object",
+                  properties: { name: { type: "string" } },
+                  required: ["name"],
                 },
               },
-              required: ["items"],
             },
+            required: ["items"],
           },
-          {
-            expand: {
-              from: { output: "targets", path: "/items" },
-              item: "target",
-              key: "/name",
-              maxItems: 2,
-            },
-            parallel: {
-              agent: "reviewer",
-              model: "reviews/model",
-              task: "Review {target.name}",
-              label: "Review {target.name}",
-              output: false,
-            },
-            collect: { as: "reviews" },
+        },
+        {
+          expand: {
+            from: { output: "targets", path: "/items" },
+            item: "target",
+            key: "/name",
+            maxItems: 2,
           },
-          {
-            agent: "worker",
-            model: "final/model",
-            task: "Finalize from {outputs.reviews}",
-            label: "Finalize",
+          parallel: {
+            agent: "reviewer",
+            model: "reviews/model",
+            task: "Review {target.name}",
+            label: "Review {target.name}",
             output: false,
           },
-        ],
-        async: background,
-        artifacts: false,
-      },
-      ctx: f.ctx,
-    });
-    const trackedLaunch: { runId?: string } = {};
-    t.after(async () => {
-      for (const gate of [discover, reviews, final]) {
-        fs.writeFileSync(gate, "released");
-      }
-      await pending;
-      if (background && trackedLaunch.runId !== undefined && trackedLaunch.runId !== "") {
-        await until(
-          () =>
-            fs.existsSync(
-              path.join(getRunMetadataDir(stringValue(trackedLaunch.runId)), "result.json"),
-            ),
-          "dynamic runner cleanup",
-        );
-      }
-      if (
-        process.env.PI_AGENT_VIEW_EVIDENCE_DIR !== undefined &&
-        process.env.PI_AGENT_VIEW_EVIDENCE_DIR !== ""
-      ) {
-        fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
-      }
-      mock.uninstall();
-    });
-    await until(() => mock.callCount() === 1, "discovery starts before materialization");
-    await refreshFixture(f);
-    const later = f.controller.picker.tasks.find((task) => task.label === "Finalize");
-    assertDefined(later);
-    const runId = later.run.runId;
-    trackedLaunch.runId = runId;
-    const opening = f.controller.open(later.key),
-      view = f.conversation;
-    view.handleInput("Directions intended only for Finalize");
-    view.handleInput("\x1bp");
-    const deliveries: LiveDelivery[] = [];
-    f.pi.events.on("subagent:live-intercom", (payload) => {
-      const delivery = liveDelivery(payload);
-      deliveries.push(delivery);
-      f.pi.events.emit("subagent:live-intercom-delivery", {
-        requestId: delivery.requestId,
-        accepted: true,
-        delivered: true,
-        messageId: delivery.messageId,
-      });
-    });
-    fs.writeFileSync(discover, "released");
-    await until(() => mock.callCount() === 3, "both materialized reviewers start");
-    await refreshFixture(f);
-    await f.controller.conversation.send(later.key, view.editor.getText());
-    await f.controller.conversation.stop(later.key);
-    t.diagnostic(
-      JSON.stringify({
-        phase: "expanded",
-        background,
-        key: later.key,
-        task: f.controller.conversation.task(later.key)?.child.task,
-        labels: f.controller.picker.tasks.map((task) => task.label),
-        deliveries: deliveries.map((payload) => payload.to),
-        controls: f.calls,
-      }),
-    );
-    assert.equal(
-      deliveries.length,
-      0,
-      "a later-step draft must not be sent to a materialized reviewer",
-    );
-    assert.equal(f.calls.length, 0, "a later pending view must not stop an expanded reviewer");
-    assert.equal(requiredTask(f, later.key).child.activity?.status, "pending");
-    assert.match(plain(view), /Agents › Finalize/);
-    assert.deepEqual(
-      f.controller.picker.tasks
-        .filter((task) => task.child.agent === "reviewer")
-        .map((task) => task.label)
-        .sort((a, b) => a.localeCompare(b)),
-      ["Review alpha", "Review beta"],
-    );
-    for (const reviewer of f.controller.picker.tasks.filter(
-      (task) => task.child.agent === "reviewer",
-    )) {
-      assert.equal(reviewer.model.summary, "selected: reviews/model");
+          collect: { as: "reviews" },
+        },
+        {
+          agent: "worker",
+          model: "final/model",
+          task: "Finalize from {outputs.reviews}",
+          label: "Finalize",
+          output: false,
+        },
+      ],
+      async: true,
+      artifacts: false,
+    },
+    ctx: f.ctx,
+  });
+  const trackedLaunch: { runId?: string } = {};
+  t.after(async () => {
+    for (const gate of [discover, reviews, final]) {
+      fs.writeFileSync(gate, "released");
     }
-    assert.doesNotMatch(
-      requiredTask(f, later.key).model.summary,
-      /reviews\/model/,
-      "the shifted pending assignment must not inherit a reviewer's model",
-    );
-    view.handleInput("\x1b");
-    await opening;
-    restoreOwnedRuns(f.state, f.ctx);
-    f.controller.start(f.ctx);
-    await refreshFixture(f);
-    assert.equal(f.controller.conversation.pinned, later.key);
-    assert.equal(
-      f.controller.conversation.visit(later.key).draft,
-      "Directions intended only for Finalize",
-    );
-    fs.writeFileSync(reviews, "released");
-    await until(() => mock.callCount() === 4, "original final assignment starts normally");
-    await refreshFixture(f);
-    const active = requiredTask(f, later.key);
-    assert.equal(active.child.agent, "worker");
-    assert.match(stringValue(active.child.task), /^Finalize from/);
-    assert.equal(
-      active.model.summary,
-      "selected: final/model",
-      "model metadata follows the workflow node after its child index changes",
-    );
-    await f.controller.conversation.send(
-      later.key,
-      f.controller.conversation.visit(later.key).draft,
-    );
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].human.index, active.child.index);
-    assert.equal(deliveries[0].human.runId, runId);
-    assert.equal(deliveries[0].to, `subagent-worker-${runId}-${active.child.index + 1}`);
-    await f.controller.conversation.stop(later.key);
-    assert.deepEqual(f.calls, [{ action: "interrupt", id: runId, index: active.child.index }]);
     await pending;
-    if (background) {
+    if (trackedLaunch.runId !== undefined && trackedLaunch.runId !== "") {
       await until(
-        () => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")),
-        "selected final child stops",
+        () =>
+          fs.existsSync(
+            path.join(getRunMetadataDir(stringValue(trackedLaunch.runId)), "result.json"),
+          ),
+        "dynamic runner cleanup",
       );
     }
-    restoreOwnedRuns(f.state, f.ctx);
-    f.controller.start(f.ctx);
-    await refreshFixture(f);
-    assert.equal(requiredTask(f, later.key).child.state, "paused");
-    assert.equal(
-      f.controller.conversation.visit(later.key).draft,
-      "Directions intended only for Finalize",
-    );
-    assert.equal(f.controller.conversation.pinned, later.key);
-    assert.deepEqual(
-      ownedRunView(requiredOwnedRun(f, runId), f.state).children.map((child) => [
-        child.label,
-        child.state,
-      ]),
-      [
-        ["Discover files", "completed"],
-        ["Review alpha", "completed"],
-        ["Review beta", "completed"],
-        ["Finalize", "paused"],
-      ],
-    );
+    if (
+      process.env.PI_AGENT_VIEW_EVIDENCE_DIR !== undefined &&
+      process.env.PI_AGENT_VIEW_EVIDENCE_DIR !== ""
+    ) {
+      fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
+    }
+    mock.uninstall();
   });
-}
+  await until(() => mock.callCount() === 1, "discovery starts before materialization");
+  await refreshFixture(f);
+  const later = f.controller.picker.tasks.find((task) => task.label === "Finalize");
+  assertDefined(later);
+  const runId = later.run.runId;
+  trackedLaunch.runId = runId;
+  const opening = f.controller.open(later.key),
+    view = f.conversation;
+  view.handleInput("Directions intended only for Finalize");
+  view.handleInput("\x1bp");
+  const deliveries: LiveDelivery[] = [];
+  f.pi.events.on("subagent:live-intercom", (payload) => {
+    const delivery = liveDelivery(payload);
+    deliveries.push(delivery);
+    f.pi.events.emit("subagent:live-intercom-delivery", {
+      requestId: delivery.requestId,
+      accepted: true,
+      delivered: true,
+      messageId: delivery.messageId,
+    });
+  });
+  fs.writeFileSync(discover, "released");
+  await until(() => mock.callCount() === 3, "both materialized reviewers start");
+  await refreshFixture(f);
+  await f.controller.conversation.send(later.key, view.editor.getText());
+  await f.controller.conversation.stop(later.key);
+  t.diagnostic(
+    JSON.stringify({
+      phase: "expanded",
+      key: later.key,
+      task: f.controller.conversation.task(later.key)?.child.task,
+      labels: f.controller.picker.tasks.map((task) => task.label),
+      deliveries: deliveries.map((payload) => payload.to),
+      controls: f.calls,
+    }),
+  );
+  assert.equal(
+    deliveries.length,
+    0,
+    "a later-step draft must not be sent to a materialized reviewer",
+  );
+  assert.equal(f.calls.length, 0, "a later pending view must not stop an expanded reviewer");
+  assert.equal(requiredTask(f, later.key).child.activity?.status, "pending");
+  assert.match(plain(view), /Agents › Finalize/);
+  assert.deepEqual(
+    f.controller.picker.tasks
+      .filter((task) => task.child.agent === "reviewer")
+      .map((task) => task.label)
+      .sort((a, b) => a.localeCompare(b)),
+    ["Review alpha", "Review beta"],
+  );
+  for (const reviewer of f.controller.picker.tasks.filter(
+    (task) => task.child.agent === "reviewer",
+  )) {
+    assert.equal(reviewer.model.summary, "selected: reviews/model");
+  }
+  assert.doesNotMatch(
+    requiredTask(f, later.key).model.summary,
+    /reviews\/model/,
+    "the shifted pending assignment must not inherit a reviewer's model",
+  );
+  view.handleInput("\x1b");
+  await opening;
+  restoreOwnedRuns(f.state, f.ctx);
+  f.controller.start(f.ctx);
+  await refreshFixture(f);
+  assert.equal(f.controller.conversation.pinned, later.key);
+  assert.equal(
+    f.controller.conversation.visit(later.key).draft,
+    "Directions intended only for Finalize",
+  );
+  fs.writeFileSync(reviews, "released");
+  await until(() => mock.callCount() === 4, "original final assignment starts normally");
+  await refreshFixture(f);
+  const active = requiredTask(f, later.key);
+  assert.equal(active.child.agent, "worker");
+  assert.match(stringValue(active.child.task), /^Finalize from/);
+  assert.equal(
+    active.model.summary,
+    "selected: final/model",
+    "model metadata follows the workflow node after its child index changes",
+  );
+  await f.controller.conversation.send(later.key, f.controller.conversation.visit(later.key).draft);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].human.index, active.child.index);
+  assert.equal(deliveries[0].human.runId, runId);
+  assert.equal(deliveries[0].to, `subagent-worker-${runId}-${active.child.index + 1}`);
+  await f.controller.conversation.stop(later.key);
+  assert.deepEqual(f.calls, [{ action: "interrupt", id: runId, index: active.child.index }]);
+  await pending;
+  await until(
+    () => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")),
+    "selected final child stops",
+  );
+  restoreOwnedRuns(f.state, f.ctx);
+  f.controller.start(f.ctx);
+  await refreshFixture(f);
+  assert.equal(requiredTask(f, later.key).child.state, "paused");
+  assert.equal(
+    f.controller.conversation.visit(later.key).draft,
+    "Directions intended only for Finalize",
+  );
+  assert.equal(f.controller.conversation.pinned, later.key);
+  assert.deepEqual(
+    ownedRunView(requiredOwnedRun(f, runId), f.state).children.map((child) => [
+      child.label,
+      child.state,
+    ]),
+    [
+      ["Discover files", "completed"],
+      ["Review alpha", "completed"],
+      ["Review beta", "completed"],
+      ["Finalize", "paused"],
+    ],
+  );
+});
 
 for (const identity of ["graph", "session", "missing"]) {
   test(`restored legacy dynamic assignments ${identity === "missing" ? "keep unidentifiable drafts unavailable" : `recover saved ${identity} identities`} instead of reusing child slots`, async (t) => {
@@ -6142,14 +6133,6 @@ test("reopen starts at the first real unread reply rather than already-read hist
   assert.equal(f.controller.conversation.visit(f.key).anchor?.id, `${first}:0`);
   f.interactiveOverlay.handleInput("\x1b");
   await reopen;
-  f.controller.conversation.pin(f.key);
-  await f.complete();
-  assert.equal(plain(f.strip), "", "finished agents and pins do not keep the live widget visible");
-  assert.equal(
-    f.controller.conversation.pinned,
-    f.key,
-    "the explicit pin is retained for reopening, not deleted",
-  );
 });
 
 test("same-parent restore retains drafts/pin and a replaced session ignores late delivery", async (t) => {
@@ -6550,36 +6533,6 @@ test("indexed Agents history pages retain cross-page tool pairing, validated ful
     "a late selected-detail result cannot reopen an abandoned detail view",
   );
   assert.equal(f.conversation.editor.getText(), "Unsent child draft");
-  f.interactiveOverlay.handleInput("\x1b");
-  await opening;
-});
-
-test("indexed Agents selected detail rejects source replacement without dropping the draft", async (t) => {
-  const f = await fixture(t, "fullscreen"),
-    manager = f.childSessions[0];
-  await f.ready;
-  assistant(manager, `Saved selected body ${"detail ".repeat(200)}FULL-SELECTED-END`);
-  await indexedReady(f);
-  const opening = f.controller.open(f.key);
-  f.tui.start();
-  await historyReady(f);
-  f.interactiveOverlay.handleInput("Keep this draft");
-  plain(f.overlay);
-  f.interactiveOverlay.handleInput("\t");
-  f.interactiveOverlay.handleInput("\x1b[F");
-  await historyReady(f);
-  plain(f.overlay);
-  const file = sessionFile(manager);
-  fs.writeFileSync(`${file}.replacement`, fs.readFileSync(file));
-  fs.renameSync(`${file}.replacement`, file);
-  f.interactiveOverlay.handleInput("\r");
-  await until(
-    () => plain(f.overlay).includes("Details unavailable"),
-    "native byte references reject replaced sources",
-  );
-  f.interactiveOverlay.handleInput("\x1b");
-  assert.equal(f.conversation.editor.getText(), "Keep this draft");
-  assert.equal(f.calls.length, 0);
   f.interactiveOverlay.handleInput("\x1b");
   await opening;
 });

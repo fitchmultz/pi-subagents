@@ -61,121 +61,92 @@ function records(value: unknown): ReadonlyArray<Readonly<Record<string, unknown>
 
 describe("prompt-template delegation bridge", () => {
   it("emits started/update/response on successful request", async () => {
-    const events = new FakeEvents();
-    let executeCalls = 0;
-    const bridge = registerPromptTemplateDelegationBridge({
-      events,
-      getContext: () => ({ cwd: "/repo" }),
-      execute: async ({ onUpdate }) => {
-        assertDefined(onUpdate);
-        executeCalls++;
-        onUpdate({
-          details: {
-            results: [{ agent: "worker", model: "openai/gpt-5-mini" }],
-            progress: [
-              {
-                index: 0,
-                agent: "worker",
-                currentTool: "read",
-                currentToolArgs: "src/extension/index.ts",
-                recentOutput: ["line 1"],
-                recentTools: [{ tool: "read", args: '{"path":"src/extension/index.ts"}' }],
-                toolCount: 1,
-                durationMs: 10,
-                tokens: 42,
-              },
-            ],
-          },
-        });
-        return {
-          details: {
-            results: [
-              { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
-            ],
-          },
-        };
-      },
-    });
+    for (const recentOutput of [["line 1"], ["line 1", 123]]) {
+      const events = new FakeEvents();
+      let executeCalls = 0;
+      let executeCwd: string | undefined;
+      const bridge = registerPromptTemplateDelegationBridge({
+        events,
+        getContext: () => ({ cwd: "/actual" }),
+        execute: async ({ onUpdate, request }) => {
+          executeCwd = request.cwd;
+          assertDefined(onUpdate);
+          executeCalls++;
+          onUpdate({
+            details: {
+              results: [{ agent: "worker", model: "openai/gpt-5-mini" }],
+              progress: [
+                {
+                  index: 0,
+                  agent: "worker",
+                  currentTool: "read",
+                  currentToolArgs: "src/extension/index.ts",
+                  recentOutput,
+                  recentTools: [{ tool: "read", args: '{"path":"src/extension/index.ts"}' }],
+                  toolCount: 1,
+                  durationMs: 10,
+                  tokens: 42,
+                },
+              ],
+            },
+          });
+          return {
+            details: {
+              results: [
+                { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+              ],
+            },
+          };
+        },
+      });
 
-    const startedPromise = once(events, PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT);
-    const updatePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT);
-    const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
+      const startedPromise = once(events, PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT);
+      const updatePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT);
+      const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
 
-    events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
-      requestId: "r1",
-      agent: "worker",
-      task: "do work",
-      context: "fresh",
-      model: "openai/gpt-5",
-      cwd: "/repo",
-    });
+      events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
+        requestId: "r1",
+        agent: "worker",
+        task: "do work",
+        context: "fresh",
+        model: "openai/gpt-5",
+        cwd: "/repo",
+      });
 
-    const started = await startedPromise;
-    assert.equal(started.requestId, "r1");
+      // Finish this bridge's event sequence before installing the next output variant.
+      // oxlint-disable-next-line no-await-in-loop
+      const started = await startedPromise;
+      assert.equal(started.requestId, "r1");
 
-    const update = await updatePromise;
-    assert.equal(update.requestId, "r1");
-    assert.equal(update.currentTool, "read");
-    assert.equal(update.toolCount, 1);
-    assert.deepEqual(update.recentOutputLines, ["line 1"]);
-    assert.deepEqual(update.recentTools, [
-      { tool: "read", args: '{"path":"src/extension/index.ts"}' },
-    ]);
-    assert.equal(update.model, "openai/gpt-5-mini");
-    assert.equal(records(update.taskProgress)[0].model, "openai/gpt-5-mini");
+      // oxlint-disable-next-line no-await-in-loop
+      const update = await updatePromise;
+      assert.equal(update.requestId, "r1");
+      assert.equal(update.currentTool, "read");
+      assert.equal(update.toolCount, 1);
+      assert.deepEqual(update.recentOutputLines, ["line 1"]);
+      assert.equal(update.recentOutput, recentOutput.length === 1 ? "line 1" : undefined);
+      assert.equal(
+        records(update.taskProgress)[0].recentOutput,
+        recentOutput.length === 1 ? "line 1" : undefined,
+      );
+      assert.deepEqual(records(update.taskProgress)[0].recentOutputLines, ["line 1"]);
+      assert.deepEqual(update.recentTools, [
+        { tool: "read", args: '{"path":"src/extension/index.ts"}' },
+      ]);
+      assert.equal(update.model, "openai/gpt-5-mini");
+      assert.equal(records(update.taskProgress)[0].model, "openai/gpt-5-mini");
 
-    const response = await responsePromise;
-    assert.equal(response.requestId, "r1");
-    assert.equal(response.isError, false);
-    assert.equal(Array.isArray(response.messages), true);
-    assert.equal(executeCalls, 1);
+      // Complete this bridge's response before disposing it and installing the next row.
+      // oxlint-disable-next-line no-await-in-loop
+      const response = await responsePromise;
+      assert.equal(response.requestId, "r1");
+      assert.equal(response.isError, false);
+      assert.equal(Array.isArray(response.messages), true);
+      assert.equal(executeCalls, 1);
+      assert.equal(executeCwd, "/repo");
 
-    bridge.dispose();
-  });
-
-  it("filters malformed recent output entries in updates", async () => {
-    const events = new FakeEvents();
-    const bridge = registerPromptTemplateDelegationBridge({
-      events,
-      getContext: () => ({ cwd: "/repo" }),
-      execute: async ({ onUpdate }) => {
-        assertDefined(onUpdate);
-        onUpdate({
-          details: {
-            results: [{ agent: "worker", model: "openai/gpt-5-mini" }],
-            progress: [
-              {
-                index: 0,
-                agent: "worker",
-                recentOutput: ["line 1", 123],
-              },
-            ],
-          },
-        });
-        return { details: { results: [{ messages: [] }] } };
-      },
-    });
-
-    const updatePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT);
-    const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
-    events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
-      requestId: "r-malformed-output",
-      agent: "worker",
-      task: "do work",
-      context: "fresh",
-      model: "openai/gpt-5",
-      cwd: "/repo",
-    });
-
-    const update = await updatePromise;
-    const progress = records(update.taskProgress)[0];
-    assert.equal(update.recentOutput, undefined);
-    assert.deepEqual(update.recentOutputLines, ["line 1"]);
-    assert.equal(progress.recentOutput, undefined);
-    assert.deepEqual(progress.recentOutputLines, ["line 1"]);
-
-    await responsePromise;
-    bridge.dispose();
+      bridge.dispose();
+    }
   });
 
   it("returns structured error when no active context", async () => {
@@ -200,35 +171,6 @@ describe("prompt-template delegation bridge", () => {
     assert.equal(response.isError, true);
     assert.ok(typeof response.errorText === "string");
     assert.match(response.errorText, /No active extension context/);
-
-    bridge.dispose();
-  });
-
-  it("accepts requests when delegated cwd differs from active context", async () => {
-    const events = new FakeEvents();
-    let executeCwd: string | undefined;
-    const bridge = registerPromptTemplateDelegationBridge({
-      events,
-      getContext: () => ({ cwd: "/actual" }),
-      execute: async ({ request }) => {
-        executeCwd = request.cwd;
-        return { details: { results: [{ messages: [] }] } };
-      },
-    });
-
-    const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
-    events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
-      requestId: "r3",
-      agent: "worker",
-      task: "do work",
-      context: "fresh",
-      model: "openai/gpt-5",
-      cwd: "/repo",
-    });
-
-    const response = await responsePromise;
-    assert.equal(response.isError, false);
-    assert.equal(executeCwd, "/repo");
 
     bridge.dispose();
   });
@@ -302,110 +244,79 @@ describe("prompt-template delegation bridge", () => {
   });
 
   it("accepts tasks payloads and emits parallelResults", async () => {
-    const events = new FakeEvents();
-    let executeTasks:
-      | ReadonlyArray<{
-          readonly agent: string;
-          readonly task: string;
-          readonly model?: string;
-          readonly cwd?: string;
-        }>
-      | undefined;
-    const bridge = registerPromptTemplateDelegationBridge({
-      events,
-      getContext: () => ({ cwd: "/repo" }),
-      execute: async ({ request }) => {
-        executeTasks = request.tasks;
-        return {
-          details: {
-            results: [
-              {
-                agent: "worker-a",
-                messages: [{ role: "assistant", content: [{ type: "text", text: "a" }] }],
-                exitCode: 0,
-              },
-              { agent: "worker-b", messages: [], exitCode: 1, error: "failed" },
-            ],
-          },
-        };
-      },
-    });
-
-    const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
-    events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
-      requestId: "r6",
-      tasks: [
-        { agent: "worker-a", task: "A", model: "openai/gpt-5", cwd: "/repo/a" },
-        {
-          agent: "worker-b",
-          task: "B",
-          model: "anthropic/claude-sonnet-4-20250514",
-          cwd: "/repo/b",
-        },
-      ],
-      context: "fresh",
-      model: "openai/gpt-5",
-      cwd: "/repo",
-    });
-
-    const response = await responsePromise;
-    const parallelResults = records(response.parallelResults);
-    assertDefined(executeTasks);
-    assert.equal(Array.isArray(executeTasks), true);
-    assert.equal(executeTasks.length, 2);
-    assert.equal(executeTasks[0].model, "openai/gpt-5");
-    assert.equal(executeTasks[1].model, "anthropic/claude-sonnet-4-20250514");
-    assert.equal(executeTasks[0].cwd, "/repo/a");
-    assert.equal(executeTasks[1].cwd, "/repo/b");
-    assert.equal(response.isError, false);
-    assert.equal(parallelResults[0].agent, "worker-a");
-    assert.equal(parallelResults[0].isError, false);
-    assert.equal(parallelResults[1].agent, "worker-b");
-    assert.equal(parallelResults[1].isError, true);
-    assert.equal(parallelResults[1].errorText, "failed");
-
-    bridge.dispose();
-  });
-
-  it("marks missing parallel task results as errors", async () => {
-    const events = new FakeEvents();
-    const bridge = registerPromptTemplateDelegationBridge({
-      events,
-      getContext: () => ({ cwd: "/repo" }),
-      execute: async () => ({
-        details: {
-          results: [
-            {
-              agent: "worker-a",
-              messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
-              exitCode: 0,
+    for (const missing of [false, true]) {
+      const events = new FakeEvents();
+      let executeTasks:
+        | ReadonlyArray<{
+            readonly agent: string;
+            readonly task: string;
+            readonly model?: string;
+            readonly cwd?: string;
+          }>
+        | undefined;
+      const bridge = registerPromptTemplateDelegationBridge({
+        events,
+        getContext: () => ({ cwd: "/repo" }),
+        execute: async ({ request }) => {
+          executeTasks = request.tasks;
+          return {
+            details: {
+              results: [
+                {
+                  agent: "worker-a",
+                  messages: [{ role: "assistant", content: [{ type: "text", text: "a" }] }],
+                  exitCode: 0,
+                },
+                ...(missing
+                  ? []
+                  : [{ agent: "worker-b", messages: [], exitCode: 1, error: "failed" }]),
+              ],
             },
-          ],
+          };
         },
-      }),
-    });
+      });
 
-    const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
-    events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
-      requestId: "r7",
-      tasks: [
-        { agent: "worker-a", task: "A" },
-        { agent: "worker-b", task: "B" },
-      ],
-      context: "fresh",
-      model: "openai/gpt-5",
-      cwd: "/repo",
-    });
+      const responsePromise = once(events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT);
+      events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, {
+        requestId: "r6",
+        tasks: [
+          { agent: "worker-a", task: "A", model: "openai/gpt-5", cwd: "/repo/a" },
+          {
+            agent: "worker-b",
+            task: "B",
+            model: "anthropic/claude-sonnet-4-20250514",
+            cwd: "/repo/b",
+          },
+        ],
+        context: "fresh",
+        model: "openai/gpt-5",
+        cwd: "/repo",
+      });
 
-    const response = await responsePromise;
-    const parallelResults = records(response.parallelResults);
-    assert.equal(response.isError, false);
-    assert.equal(parallelResults[0].isError, false);
-    assert.equal(parallelResults[1].agent, "worker-b");
-    assert.equal(parallelResults[1].isError, true);
-    assert.ok(typeof parallelResults[1].errorText === "string");
-    assert.match(parallelResults[1].errorText, /missing result/i);
+      // Complete this bridge's response before disposing it and installing the next row.
+      // oxlint-disable-next-line no-await-in-loop
+      const response = await responsePromise;
+      const parallelResults = records(response.parallelResults);
+      assertDefined(executeTasks);
+      assert.equal(Array.isArray(executeTasks), true);
+      assert.equal(executeTasks.length, 2);
+      assert.equal(executeTasks[0].model, "openai/gpt-5");
+      assert.equal(executeTasks[1].model, "anthropic/claude-sonnet-4-20250514");
+      assert.equal(executeTasks[0].cwd, "/repo/a");
+      assert.equal(executeTasks[1].cwd, "/repo/b");
+      assert.equal(response.isError, false);
+      assert.equal(parallelResults[0].agent, "worker-a");
+      assert.equal(parallelResults[0].isError, false);
+      assert.equal(parallelResults[1].agent, "worker-b");
+      assert.equal(parallelResults[1].isError, true);
+      if (missing) {
+        assert.ok(typeof parallelResults[1].errorText === "string");
+        assert.match(parallelResults[1].errorText, /missing result/i);
+      } else {
+        assert.equal(parallelResults[1].errorText, "failed");
+      }
 
-    bridge.dispose();
+      bridge.dispose();
+    }
   });
 });

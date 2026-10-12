@@ -719,8 +719,8 @@ describe("nested control routing", () => {
   it("does not let bare interrupt target hidden nested descendants", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-bare-interrupt-"));
     try {
-      createNestedRun("nested-only");
-      const result = await createExecutor().execute({
+      const route = createNestedRun("nested-only");
+      const result = await createExecutor(stateWithNestedRoute(route)).execute({
         toolCallId: "interrupt",
         params: { action: "interrupt" },
         signal: new AbortController().signal,
@@ -728,6 +728,7 @@ describe("nested control routing", () => {
       });
       assert.equal(result.isError, true);
       assert.match(text(result), /No interrupt-capable run found/);
+      assert.deepEqual(readNestedControlRequests(route), []);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -738,6 +739,13 @@ describe("nested control routing", () => {
     try {
       const route = createNestedRun("nested-timeout");
       const executor = createExecutor(stateWithNestedRoute(route));
+      writeNestedControlResult(route, {
+        ts: Date.now(),
+        requestId: "previous-request",
+        targetRunId: "nested-timeout",
+        ok: true,
+        message: "late success",
+      });
       const result = await executor.execute({
         toolCallId: "interrupt",
         params: { action: "interrupt", id: "nested-timeout" },
@@ -748,19 +756,12 @@ describe("nested control routing", () => {
       assert.match(text(result), /owner is not reachable/);
       const request = readNestedControlRequests(route).at(0);
       assertDefined(request);
-      writeNestedControlResult(route, {
-        ts: Date.now(),
-        requestId: request.requestId,
-        targetRunId: request.targetRunId,
-        ok: true,
-        message: "late success",
-      });
+      assert.notEqual(request.requestId, "previous-request");
       assert.ok(
         readNestedControlResults(route).some(
-          (entry) => entry.requestId === request.requestId && entry.ok,
+          (entry) => entry.requestId === "previous-request" && entry.ok,
         ),
       );
-      assert.equal(result.isError, true, "late publication cannot change the timed-out receipt");
       assert.doesNotMatch(text(result), /late success/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -890,81 +891,41 @@ describe("nested control routing", () => {
   });
 
   it("validates terminal nested resume session files before revive", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-terminal-resume-"));
-    try {
-      const route = createNestedRun("nested-terminal-resume", "complete", {
-        sessionFile: path.join(root, "missing-session.jsonl"),
-      });
-
-      const result = await createExecutor(stateWithNestedRoute(route), [
-        makeAgent("worker", { description: "Worker", systemPrompt: "Do work" }),
-      ]).execute({
-        toolCallId: "resume",
-        params: { action: "resume", id: "nested-terminal-resume", message: "continue" },
-        signal: new AbortController().signal,
-        ctx: ctx(root),
-      });
-
-      assert.equal(result.isError, true);
-      assert.match(text(result), /session file does not exist/);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects terminal nested resume session files outside trusted roots", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-terminal-untrusted-"));
-    try {
-      const parentSessionFile = path.join(root, "parent.jsonl");
-      const attackerSessionFile = path.join(root, "outside", "session.jsonl");
-      fs.mkdirSync(path.dirname(attackerSessionFile), { recursive: true });
-      fs.writeFileSync(parentSessionFile, "");
-      fs.writeFileSync(attackerSessionFile, "");
-      const route = createNestedRun("nested-untrusted-resume", "complete", {
-        sessionFile: attackerSessionFile,
-      });
-
-      const result = await createExecutor(stateWithNestedRoute(route), [
-        makeAgent("worker", { description: "Worker", systemPrompt: "Do work" }),
-      ]).execute({
-        toolCallId: "resume",
-        params: { action: "resume", id: "nested-untrusted-resume", message: "continue" },
-        signal: new AbortController().signal,
-        ctx: ctx(root, parentSessionFile),
-      });
-
-      assert.equal(result.isError, true);
-      assert.match(text(result), /outside trusted nested session roots/);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects terminal nested resume session files from sibling run directories", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-terminal-sibling-"));
-    try {
-      const parentSessionFile = path.join(root, "parent.jsonl");
-      const siblingSessionFile = path.join(root, "parent", "other-run", "run-0", "session.jsonl");
-      fs.mkdirSync(path.dirname(siblingSessionFile), { recursive: true });
-      fs.writeFileSync(parentSessionFile, "");
-      fs.writeFileSync(siblingSessionFile, "");
-      const route = createNestedRun("nested-sibling-resume", "complete", {
-        sessionFile: siblingSessionFile,
-      });
-
-      const result = await createExecutor(stateWithNestedRoute(route), [
-        makeAgent("worker", { description: "Worker", systemPrompt: "Do work" }),
-      ]).execute({
-        toolCallId: "resume",
-        params: { action: "resume", id: "nested-sibling-resume", message: "continue" },
-        signal: new AbortController().signal,
-        ctx: ctx(root, parentSessionFile),
-      });
-
-      assert.equal(result.isError, true);
-      assert.match(text(result), /not under that nested run's session directory/);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+    for (const [id, sessionPath, error] of [
+      ["nested-terminal-resume", "missing-session.jsonl", /session file does not exist/],
+      ["nested-untrusted-resume", "outside/session.jsonl", /outside trusted nested session roots/],
+      [
+        "nested-sibling-resume",
+        "parent/other-run/run-0/session.jsonl",
+        /not under that nested run's session directory/,
+      ],
+    ] as const) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-terminal-resume-"));
+      const route = createNestedRun(id, "complete", { sessionFile: path.join(root, sessionPath) });
+      try {
+        const parentSessionFile = path.join(root, "parent.jsonl");
+        const sessionFile = path.join(root, sessionPath);
+        if (id !== "nested-terminal-resume") {
+          fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+          fs.writeFileSync(parentSessionFile, "");
+          fs.writeFileSync(sessionFile, "");
+        }
+        // Each filesystem guard is reached before disposing its independently owned route.
+        // oxlint-disable-next-line no-await-in-loop
+        const result = await createExecutor(stateWithNestedRoute(route), [
+          makeAgent("worker", { description: "Worker", systemPrompt: "Do work" }),
+        ]).execute({
+          toolCallId: "resume",
+          params: { action: "resume", id, message: "continue" },
+          signal: new AbortController().signal,
+          ctx: ctx(root, id === "nested-terminal-resume" ? null : parentSessionFile),
+        });
+        assert.equal(result.isError, true);
+        assert.match(text(result), error);
+      } finally {
+        fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 

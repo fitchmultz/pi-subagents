@@ -58,6 +58,7 @@ test("history query admission keeps filters and cursors scoped to their public a
       limit: 5,
     },
     { action: "history", id: "run", index: 1, before: 101, limit: 50 },
+    { action: "continue", id: "run", message: "Proceed", async: false },
     {
       action: "search",
       query: 'login "API unchanged"',
@@ -78,41 +79,12 @@ test("history query admission keeps filters and cursors scoped to their public a
     { action: "stop", id: "run", text: "login" },
     { action: "list", before: 101 },
     { action: "history", id: "run", limit: 101 },
+    { action: "review", id: "run" },
+    { action: "review", decision: "accepted" },
+    { action: "answer", id: "run", message: "Proceed" },
+    { action: "inspect", id: "run", acceptance: { evidence: ["manual-notes"] } },
+    { action: "stop", id: "run", full: true },
   ]) {
     assert.throws(() => normalizeEverydayParams(params, true), /Invalid agent_runs/);
   }
-});
-
-test("closed control sampling retains action-specific validation before execution", () => {
-  assert.throws(
-    () => normalizeEverydayParams({ action: "review", id: "run" }, true),
-    /Invalid agent_runs/,
-  );
-  assert.throws(
-    () => normalizeEverydayParams({ action: "review", decision: "accepted" }, true),
-    /Invalid agent_runs/,
-  );
-  assert.throws(
-    () => normalizeEverydayParams({ action: "answer", id: "run", message: "Proceed" }, true),
-    /Invalid agent_runs/,
-  );
-  assert.throws(
-    () =>
-      normalizeEverydayParams(
-        { action: "inspect", id: "run", acceptance: { evidence: ["manual-notes"] } },
-        true,
-      ),
-    /Invalid agent_runs/,
-  );
-  assert.throws(
-    () => normalizeEverydayParams({ action: "stop", id: "run", full: true }, true),
-    /Invalid agent_runs/,
-  );
-  assert.deepEqual(
-    normalizeEverydayParams(
-      { action: "continue", id: "run", message: "Proceed", async: false },
-      true,
-    ),
-    { action: "continue", id: "run", message: "Proceed", async: false },
-  );
 });

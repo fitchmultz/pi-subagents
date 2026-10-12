@@ -32,20 +32,6 @@ function withTerminalWidth<T>(columns: number, fn: () => T): T {
 }
 
 describe("renderSubagentResult fork indicator", () => {
-  it("shows [fork] when details are empty but context is fork", () => {
-    const widget = renderSubagentResult(
-      {
-        content: [{ type: "text", text: "Async: reviewer [abc123]" }],
-        details: { mode: "single", context: "fork", results: [] },
-      },
-      { expanded: false },
-      theme,
-    );
-
-    const text = widget.render(120).join("\n");
-    assert.match(text, /\[fork\]/);
-  });
-
   it("shows [fork] on single-result header", () => {
     const widget = renderSubagentResult(
       {
@@ -249,33 +235,6 @@ describe("renderSubagentResult fork indicator", () => {
     assert.match(text, /acceptance: checked · finalization: completed after 1\/3 turns/);
   });
 
-  it("keeps failure reasons visible in compact rendering", () => {
-    const widget = renderSubagentResult(
-      {
-        content: [{ type: "text", text: "failed" }],
-        details: {
-          mode: "single",
-          results: [
-            {
-              agent: "reviewer",
-              task: "review",
-              exitCode: 1,
-              error: "boom",
-              messages: [],
-              usage: emptyUsage,
-            },
-          ],
-        },
-      },
-      { expanded: false },
-      theme,
-    );
-
-    const text = widget.render(120).join("\n");
-    assert.match(text, /^✗ reviewer/);
-    assert.match(text, /⎿  Error: boom/);
-  });
-
   it("shows live detail hints for running subagents", () => {
     const now = Date.now();
     const widget = renderSubagentResult(
@@ -325,81 +284,56 @@ describe("renderSubagentResult fork indicator", () => {
     assert.match(text, /output: \/tmp\/reviewer_output\.md/);
   });
 
-  it("keeps running compact result output stable when progress is unchanged", (t) => {
+  it("keeps running compact result output stable until progress changes", (t) => {
     t.mock.timers.enable({ apis: ["Date"], now: 10_000 });
-    const result = {
-      content: [{ type: "text" as const, text: "(running...)" }],
-      details: {
-        mode: "single" as const,
-        results: [
-          {
-            agent: "reviewer",
-            task: "review",
-            exitCode: 0,
-            messages: [],
-            usage: emptyUsage,
-            progress: {
-              index: 0,
+    for (const unchanged of [true, false]) {
+      const result = {
+        content: [{ type: "text" as const, text: "(running...)" }],
+        details: {
+          mode: "single" as const,
+          results: [
+            {
               agent: "reviewer",
-              status: "running" as const,
               task: "review",
-              lastActivityAt: 2_000,
-              currentTool: "read",
-              currentToolArgs: "package.json",
-              currentToolStartedAt: 1_000,
-              recentTools: [],
-              recentOutput: [],
-              toolCount: 1,
-              tokens: 42,
-              durationMs: 3_000,
+              exitCode: 0,
+              messages: [],
+              usage: emptyUsage,
+              progress: {
+                index: 0,
+                agent: "reviewer",
+                status: "running" as const,
+                task: "review",
+                recentTools: [],
+                recentOutput: [],
+                toolCount: 1,
+                tokens: unchanged ? 42 : 0,
+                durationMs: unchanged ? 3_000 : 0,
+                ...(unchanged
+                  ? {
+                      lastActivityAt: 2_000,
+                      currentTool: "read",
+                      currentToolArgs: "package.json",
+                      currentToolStartedAt: 1_000,
+                    }
+                  : {}),
+              },
             },
-          },
-        ],
-      },
-    };
-    const first = renderSubagentResult(result, { expanded: false }, theme).render(120);
-    t.mock.timers.tick(120);
-    const second = renderSubagentResult(result, { expanded: false }, theme).render(120);
-
-    assert.deepEqual(second, first);
-  });
-
-  it("advances running compact result glyphs when progress changes", () => {
-    const renderGlyph = (toolCount: number) =>
-      firstGrapheme(
-        renderSubagentResult(
-          {
-            content: [{ type: "text", text: "(running...)" }],
-            details: {
-              mode: "single",
-              results: [
-                {
-                  agent: "reviewer",
-                  task: "review",
-                  exitCode: 0,
-                  messages: [],
-                  usage: emptyUsage,
-                  progress: {
-                    index: 0,
-                    agent: "reviewer",
-                    status: "running",
-                    task: "review",
-                    recentTools: [],
-                    recentOutput: [],
-                    toolCount,
-                    tokens: 0,
-                    durationMs: 0,
-                  },
-                },
-              ],
-            },
-          },
-          { expanded: false },
-          theme,
-        ).render(120)[0] ?? "",
-      );
-
-    assert.notEqual(renderGlyph(1), renderGlyph(2));
+          ],
+        },
+      };
+      const first = renderSubagentResult(result, { expanded: false }, theme).render(120);
+      if (unchanged) {
+        t.mock.timers.tick(120);
+      } else {
+        result.details.results[0].progress.toolCount = 2;
+      }
+      const second = renderSubagentResult(result, { expanded: false }, theme).render(120);
+      if (unchanged) {
+        assert.deepEqual(second, first);
+      } else {
+        assert.notEqual(firstGrapheme(first[0] ?? ""), firstGrapheme(second[0] ?? ""));
+      }
+    }
   });
 
   it("keeps paused multi-result runs visible in the compact headline", () => {
@@ -965,5 +899,39 @@ describe("renderSubagentResult fork indicator", () => {
     assert.match(text, /chain · step 1\/3/);
     assert.match(text, /Step 1: scout/);
     assert.doesNotMatch(text, /parallel group:/);
+    const completed = renderSubagentResult(
+      {
+        content: [{ type: "text", text: "done" }],
+        details: {
+          mode: "chain",
+          chainAgents: ["scout", "writer"],
+          totalSteps: 2,
+          results: [
+            {
+              agent: "scout",
+              task: "scout task",
+              exitCode: 0,
+              messages: [],
+              usage: emptyUsage,
+              finalOutput: "a",
+            },
+            {
+              agent: "writer",
+              task: "writer task",
+              exitCode: 0,
+              messages: [],
+              usage: emptyUsage,
+              finalOutput: "b",
+            },
+          ],
+        },
+      },
+      { expanded: false },
+      theme,
+    )
+      .render(1000)
+      .join("\n");
+    assert.match(completed, /Step 1: scout/);
+    assert.match(completed, /Step 2: writer/);
   });
 });

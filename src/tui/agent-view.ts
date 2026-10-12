@@ -400,5 +400,4 @@ export class AgentViewController {
     this.lastSaved = "";
   }
 }
-export { AgentConversation } from "./agent-conversation.ts";
 export { agentTaskLabel, type AgentTask, type AgentVisit } from "./view-model.ts";

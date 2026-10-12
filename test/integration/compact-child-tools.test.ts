@@ -1,5 +1,5 @@
 import { parseSubagentExecutionResult } from "../../src/runs/background/run-schemas.ts";
-import { record, assertDefined } from "../support/assertions.ts";
+import { assertDefined } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -106,10 +106,15 @@ test("native child startup reduces serialized definitions and preserves lazy, le
           name: tool.name,
           description: tool.description,
           parameters: tool.parameters,
-          promptSnippet: record(tool).promptSnippet,
+          promptSnippet: session.extensionRunner.getToolDefinition(tool.name)?.promptSnippet,
           promptGuidelines: tool.promptGuidelines,
         }));
       measurements[compact ? "compactChars" : "legacyChars"] = JSON.stringify(definitions).length;
+      measurements[compact ? "compactDelegationChars" : "legacyDelegationChars"] = JSON.stringify(
+        definitions.filter((tool) =>
+          ["subagent", "delegate", "agent_runs", "load_subagent"].includes(tool.name),
+        ),
+      ).length;
       if (compact) {
         // Each scenario owns shared fixture state; complete it before starting the next one.
         // oxlint-disable-next-line no-await-in-loop
@@ -156,6 +161,10 @@ test("native child startup reduces serialized definitions and preserves lazy, le
     }
   }
   assert.ok(measurements.compactChars < measurements.legacyChars);
+  assert.ok(
+    measurements.compactDelegationChars < measurements.legacyDelegationChars * 0.5,
+    `${measurements.legacyDelegationChars} -> ${measurements.compactDelegationChars} serialized delegation characters`,
+  );
   console.log(
     JSON.stringify({
       measurement:

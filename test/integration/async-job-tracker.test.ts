@@ -1098,6 +1098,14 @@ describe("async job tracker", () => {
         ui.renderRequests > requestsAfterStatusLoaded,
         "changed non-terminal status should redraw the widget",
       );
+      t.mock.method(ui.ctx.ui, "getToolsExpanded", () => true);
+      const renderInstalled = () => {
+        const installed = ui.widgets.at(-1);
+        assert.ok(typeof installed === "function", "the tracker published its native widget");
+        return installed(new TuiMainScreen(createTestTerminal()), ui.ctx.ui.theme)
+          .render(120)
+          .join("\n");
+      };
       const beforeNested = ui.renderRequests;
       writeNestedEvent(route, {
         type: "subagent.nested.started",
@@ -1121,12 +1129,38 @@ describe("async job tracker", () => {
         "nested-reviewer",
       );
       assert.equal(ui.renderRequests, beforeNested + 1, "a nested-only publication redraws once");
-      assert.match(
-        buildWidgetLines([...state.asyncJobs.values()], ui.ctx.ui.theme, 120, true).join("\n"),
-        /reviewer.*running/,
-      );
+      assert.match(renderInstalled(), /reviewer.*running/);
       t.mock.timers.tick(POLL_INTERVAL_MS);
       assert.equal(ui.renderRequests, beforeNested + 1, "unchanged nested input does not redraw");
+      writeNestedEvent(route, {
+        type: "subagent.nested.completed",
+        ts: Date.now(),
+        parentRunId: "run-unchanged",
+        parentStepIndex: 0,
+        child: {
+          id: "nested-reviewer",
+          parentRunId: "run-unchanged",
+          parentStepIndex: 0,
+          depth: 1,
+          path: [{ runId: "run-unchanged", stepIndex: 0 }],
+          state: "complete",
+          agent: "reviewer",
+        },
+      });
+      t.mock.timers.tick(POLL_INTERVAL_MS);
+      const job = state.asyncJobs.get("run-unchanged");
+      assertDefined(job);
+      assert.equal(job.steps?.[0]?.children?.[0]?.state, "complete");
+      assert.equal(job.status, "running");
+      assert.equal(job.toolCount, 1, "root progress is unchanged by nested completion");
+      assert.equal(ui.renderRequests, beforeNested + 2, "nested-only state changes redraw once");
+      assert.match(renderInstalled(), /reviewer.*complete/);
+      t.mock.timers.tick(POLL_INTERVAL_MS);
+      assert.equal(
+        ui.renderRequests,
+        beforeNested + 2,
+        "unchanged completed input does not redraw",
+      );
     } finally {
       removeTempDir(asyncRoot);
       removeTempDir(path.dirname(route.eventSink));

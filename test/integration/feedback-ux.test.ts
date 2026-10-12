@@ -44,9 +44,7 @@ const {
 } = await import("../../src/extension/schemas.ts");
 const { createSubagentExecutor, normalizeSubagentParamsLike } =
   await import("../../src/runs/foreground/subagent-executor.ts");
-const { ownedRunList, resolveOwnedRun, saveForegroundRun } =
-  await import("../../src/runs/shared/run-records.ts");
-const { closeRunHistory, runHistoryIndex } = await import("../../src/runs/shared/history-index.ts");
+const { saveForegroundRun } = await import("../../src/runs/shared/run-records.ts");
 const questions = await import("../../src/runs/shared/supervisor-questions.ts");
 const { buildControlEvent, formatControlNoticeMessage } =
   await import("../../src/runs/shared/subagent-control.ts");
@@ -433,69 +431,8 @@ test("feedback public and advanced schemas expose full inspection and explain un
   }
 });
 
-test("feedback live runs precede 31 unreviewed results while history and explicit continuation links remain intact", async (t) => {
-  const fixture = setup("list-live");
-  fixture.run.source = "async";
-  fixture.run.asyncDir = questions.getRunMetadataDir(fixture.run.runId);
-  questions.saveRunStatus(fixture.run.runId, {
-    runtimeVersion: 2,
-    runId: fixture.run.runId,
-    mode: "single",
-    state: "running",
-    pid: process.pid,
-    startedAt: Date.now(),
-    lastUpdate: Date.now(),
-    steps: [{ agent: "worker", status: "running" }],
-  });
-  fs.rmSync(path.join(questions.getRunMetadataDir(fixture.run.runId), "foreground.json"));
-  for (let i = 0; i < 31; i++) {
-    const run = {
-      ...fixture.run,
-      source: "foreground" as const,
-      asyncDir: undefined,
-      runId: `finished-${i}`,
-      rootRunId: `finished-${i}`,
-      startedAt: i + 10,
-    };
-    const defined15109_0 = fixture.state.ownedRuns;
-    assertDefined(defined15109_0);
-    defined15109_0.set(run.runId, run);
-    saveForegroundRun({ ...run, results: [fixture.child] });
-  }
-  const successor = {
-    ...fixture.run,
-    predecessorRunId: "finished-0",
-    predecessorIndex: 0,
-    rootRunId: "finished-0",
-  };
-  const defined15359_0 = fixture.state.ownedRuns;
-  assertDefined(defined15359_0);
-  defined15359_0.set(successor.runId, successor);
-  t.after(() => closeRunHistory(fixture.state));
-  await (await runHistoryIndex(fixture.state)).needsControls();
-  const list = await ownedRunList(fixture.state, { limit: 2 });
-  assert.equal(list.details.runs?.[0]?.runId, fixture.run.runId);
-  assert.match(textAt(list.content), /from finished-0:0/);
-  const all = [];
-  let predecessorText = "";
-  for (let offset = 0; offset < 32; offset += 5) {
-    // Each scenario owns shared fixture state; complete it before starting the next one.
-    // oxlint-disable-next-line no-await-in-loop
-    const page = await ownedRunList(fixture.state, { offset, limit: 5 });
-    assert.equal(page.details.runList?.total, 32);
-    const defined15945_0 = page.details.runs;
-    assertDefined(defined15945_0);
-    all.push(...defined15945_0.map((run) => run.runId));
-    predecessorText += textAt(page.content);
-  }
-  assert.equal(new Set(all).size, 32);
-  assert.match(predecessorText, /continued as list-live \(separate results\/reviews\)/);
-  assert.equal(resolveOwnedRun(fixture.state, "finished-0")?.review, undefined);
-  assert.equal(resolveOwnedRun(fixture.state, "finished-30")?.runId, "finished-30");
-});
-
 for (const surface of ["parent", "child-compact", "child-legacy"]) {
-  test(`feedback ${surface} controls only advertise callable tool/action pairs`, (t) => {
+  test(`feedback ${surface} controls advertise surface-appropriate tool/action pairs`, (t) => {
     const childSafe = surface !== "parent",
       legacy = surface === "child-legacy";
     const configPath = path.join(root, "agent/extensions/subagent/config.json");

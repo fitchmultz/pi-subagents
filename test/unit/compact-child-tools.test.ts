@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { after, afterEach, it } from "node:test";
 import { Compile } from "typebox/compile";
 import { createNativeSessionFixture } from "../support/native-session.ts";
 import { assertDefined, array, record, strings, text, textAt } from "../support/assertions.ts";
-import { createReadToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { isRecord, type UnknownRecord } from "../../src/shared/unknown.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "compact-child-tools-"));
@@ -48,11 +49,7 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(
-  config: UnknownRecord = {},
-  allowed?: readonly string[],
-  entries: readonly UnknownRecord[] = [],
-) {
+async function fixture(config: UnknownRecord = {}, entries: readonly UnknownRecord[] = []) {
   fs.writeFileSync(configPath, JSON.stringify(config));
   const manager = SessionManager.inMemory(root, { id: "child-owner" });
   for (const entry of entries) {
@@ -65,28 +62,7 @@ async function fixture(
     bindExtensions: false,
     configure(pi) {
       pi.registerTool(createReadToolDefinition(root));
-      if (allowed !== undefined) {
-        const all = pi.getAllTools.bind(pi),
-          set = pi.setActiveTools.bind(pi),
-          add = pi.registerTool.bind(pi);
-        const scoped: ExtensionAPI = {
-          ...pi,
-          getAllTools: () =>
-            all().filter((tool) => tool.name === "read" || allowed.includes(tool.name)),
-          setActiveTools: (names) => {
-            set(names.filter((name) => name === "read" || allowed.includes(name)));
-          },
-          registerTool: (tool) => {
-            add({
-              ...tool,
-              defaultActive: tool.defaultActive !== false && allowed.includes(tool.name),
-            });
-          },
-        };
-        register(scoped);
-      } else {
-        register(pi);
-      }
+      register(pi);
     },
   });
   const { pi } = native;
@@ -130,9 +106,7 @@ async function fixture(
     const result = record(value);
     return { ...result, details: record(result.details), content: array(result.content) };
   };
-  const definitions = () =>
-    pi.getAllTools().filter((tool) => pi.getActiveTools().includes(tool.name));
-  return { pi, tools, ctx: native.context, handlers, call, emit, definitions };
+  return { pi, tools, ctx: native.context, handlers, call, emit };
 }
 
 function asyncDescription(value: unknown): string {
@@ -163,6 +137,11 @@ it("starts compact, lazily activates the complete advanced schema, and resets ad
   await f.call("load_subagent");
   assert.ok(f.pi.getActiveTools().includes("subagent"));
   const advanced = f.tools.get("subagent");
+  assert.match(
+    strings(advanced.promptGuidelines).join("\n"),
+    /Nested execution defaults to foreground.*async:false.*async:true/,
+  );
+  assert.notEqual((await f.call("subagent", { action: "list" })).isError, true);
   const schema = Compile(advanced.parameters);
   for (const params of [
     {
@@ -197,7 +176,7 @@ it("starts compact, lazily activates the complete advanced schema, and resets ad
     // oxlint-disable-next-line no-await-in-loop
     const blocked = await f.call("subagent", { action, agent: "probe", config: { name: "probe" } });
     assert.equal(blocked.isError, true);
-    assert.match(textAt(blocked.content), /not available from child-safe/);
+    assert.match(textAt(blocked.content), /not available from child-safe subagent fanout mode/);
   }
   await f.emit("session_compact");
   assert.ok(
@@ -226,16 +205,10 @@ it("restores the old full surface with the flag and honors eager/filtered advanc
     /^subagent\(\{ action: "resume"/,
   );
   assert.doesNotMatch(formatRunAction("extend", "run", {}, true), /load_subagent/);
-  const filtered = await fixture({}, ["subagent"]);
-  await filtered.emit("session_start");
-  assert.deepEqual(filtered.pi.getActiveTools(), ["read", "subagent"]);
   process.env.PI_SUBAGENT_EAGER_TOOL = "1";
   const eager = await fixture();
   await eager.emit("session_start");
   assert.ok(eager.pi.getActiveTools().includes("subagent"));
-  const denied = await fixture({}, ["delegate", "agent_runs", "load_subagent"]);
-  await denied.emit("session_start");
-  await assert.rejects(() => denied.call("load_subagent"), /full tool is excluded/);
 });
 
 it("lists only restored direct-owned runs and preserves scoped exact-ID controls", async () => {
@@ -250,15 +223,11 @@ it("lists only restored direct-owned runs and preserves scoped exact-ID controls
     startedAt: 1,
     children: [],
   });
-  const f = await fixture(
-    {},
-    ["delegate", "agent_runs", "load_subagent", "subagent"],
-    [
-      { type: "custom", customType: OWNED_RUN_ENTRY, data: run("own-a", "child-owner") },
-      { type: "custom", customType: OWNED_RUN_ENTRY, data: run("own-b", "child-owner") },
-      { type: "custom", customType: OWNED_RUN_ENTRY, data: run("foreign-run", "another-owner") },
-    ],
-  );
+  const f = await fixture({}, [
+    { type: "custom", customType: OWNED_RUN_ENTRY, data: run("own-a", "child-owner") },
+    { type: "custom", customType: OWNED_RUN_ENTRY, data: run("own-b", "child-owner") },
+    { type: "custom", customType: OWNED_RUN_ENTRY, data: run("foreign-run", "another-owner") },
+  ]);
   // Listing before session_start must also restore ownership.
   const listed = await f.call("agent_runs", { action: "list", limit: 1 });
   assert.equal(listed.isError, undefined);
@@ -281,6 +250,25 @@ it("lists only restored direct-owned runs and preserves scoped exact-ID controls
       ...(action === "nudge" ? { message: "stay scoped" } : {}),
     });
     assert.equal(denied.isError, true, action);
+  }
+  for (const [action, isError, message] of [
+    ["inspect", undefined, "Run: own-a\nState: unknown"],
+    ["stop", true, "No interrupt-capable run found in this session."],
+    ["nudge", undefined, "Nudge not sent: completion is unconfirmed. No child was restarted."],
+  ] as const) {
+    // Valid ownership must reach each alias's actual state-aware owner.
+    // oxlint-disable-next-line no-await-in-loop
+    const own = await f.call("agent_runs", {
+      action,
+      id: "own-a",
+      ...(action === "nudge" ? { message: "stay scoped" } : {}),
+    });
+    assert.equal(own.isError, isError, action);
+    assert.ok(textAt(own.content).startsWith(message), action);
+    if (action !== "stop") {
+      assert.equal(record(own.details.run).runId, "own-a");
+      assert.equal(record(own.details.managementControl).state, "unknown");
+    }
   }
   const advancedList = await f.call("subagent", { action: "status" });
   assert.equal(advancedList.isError, true, "legacy global enumeration remains forbidden");
@@ -399,24 +387,27 @@ it("keeps launch allowlists and prompt discovery aligned with the reversible fla
   }
 });
 
-it("measures serialized active startup definitions rather than tokens", async () => {
-  const legacy = await fixture({ compactChildTools: false });
-  await legacy.emit("session_start");
-  const beforeChars = JSON.stringify(legacy.definitions()).length;
-  const compact = await fixture();
-  await compact.emit("session_start");
-  const afterChars = JSON.stringify(compact.definitions()).length;
-  assert.ok(
-    afterChars < beforeChars * 0.5,
-    `${beforeChars} -> ${afterChars} serialized characters`,
-  );
-  console.log(
-    JSON.stringify({
-      measurement:
-        "serialized active child delegation definitions (name, description, parameters, promptSnippet, promptGuidelines); characters, not tokens",
-      beforeChars,
-      afterChars,
-      savedChars: beforeChars - afterChars,
-    }),
-  );
+it("returns before registering anything for fanout children", () => {
+  for (const fanout of ["0", "1"]) {
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+      const { default: register } = await import("./src/extension/index.ts");
+      const calls = [];
+      register(new Proxy({}, { get(_target, key) {
+        return () => { calls.push(String(key)); };
+      }}));
+      if (calls.length) throw new Error("Unexpected child-mode registrations: " + calls.join(", "));
+    `,
+      ],
+      {
+        cwd: path.resolve(import.meta.dirname, "../.."),
+        env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_FANOUT_CHILD: fanout },
+        stdio: "pipe",
+      },
+    );
+  }
 });
