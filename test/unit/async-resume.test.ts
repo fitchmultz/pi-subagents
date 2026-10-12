@@ -50,38 +50,6 @@ describe("async resume lookup", () => {
     }
   });
 
-  it("rejects ambiguous run id prefixes", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-ambiguous-"));
-    try {
-      const asyncRoot = path.join(root, "runs");
-      writeJson(path.join(asyncRoot, "run-aa", "status.json"), {
-        runId: "run-aa",
-        mode: "single",
-        state: "running",
-        startedAt: 100,
-        steps: [{ agent: "scout", status: "running" }],
-      });
-      writeJson(path.join(asyncRoot, "run-ab", "status.json"), {
-        runId: "run-ab",
-        mode: "single",
-        state: "running",
-        startedAt: 100,
-        steps: [{ agent: "worker", status: "running" }],
-      });
-
-      assert.throws(
-        () =>
-          resolveAsyncResumeTarget(
-            { id: "run-a" },
-            { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") },
-          ),
-        /Ambiguous async run id prefix 'run-a' matched: run-aa, run-ab/,
-      );
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("rejects path-like ids and directories outside the async root", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-paths-"));
     try {

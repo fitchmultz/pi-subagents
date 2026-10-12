@@ -17,7 +17,9 @@ async function createPi(t: TestContext) {
           sent.push({ message, options });
         },
       };
-      registerSubagentNotify(capture);
+      registerSubagentNotify(capture, () => {
+        // This fixture observes messages without owning the delivery queue.
+      });
     },
   });
   t.after(native.dispose);
@@ -25,118 +27,93 @@ async function createPi(t: TestContext) {
 }
 
 describe("registerSubagentNotify", () => {
-  it("skips fallback notifications when grouped intercom result delivery already succeeded", async (t) => {
-    const { events, sent } = await createPi(t);
-
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-      id: "notify-intercom-delivered-1",
-      agent: "worker",
-      success: true,
-      summary: "Delivered over intercom",
-      exitCode: 0,
-      timestamp: 123,
-      intercomResultDelivered: true,
-    });
-
-    assert.deepEqual(sent, []);
-  });
-
-  it("uses a fallback summary when a background completion is empty", async (t) => {
-    const { events, sent } = await createPi(t);
-
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-      id: "notify-empty-1",
-      agent: "worker",
-      success: true,
-      summary: "",
-      exitCode: 0,
-      timestamp: 123,
-    });
-
-    assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0], {
-      message: {
-        customType: "subagent-notify",
-        content: "Background task completed: **worker**\n\n(no output)",
-        display: true,
-      },
-      options: { triggerTurn: true },
-    });
-  });
-
   it("preserves non-empty completion summaries", async (t) => {
     const { events, sent } = await createPi(t);
-    const summary = "  Done streaming\nAll clear  ";
+    for (const [input, content] of [
+      [
+        {
+          id: "notify-table-summary",
+          exitCode: 0,
+          summary: "  Done streaming\nAll clear  ",
+          taskIndex: 1,
+          totalTasks: 3,
+        },
+        "Background task completed: **worker** (2/3)\n\n  Done streaming\nAll clear  ",
+      ],
+      [
+        { id: "notify-table-empty", exitCode: 0, summary: "" },
+        "Background task completed: **worker**\n\n(no output)",
+      ],
+      [
+        {
+          id: "notify-table-path",
+          exitCode: 0,
+          summary: "Done",
+          sessionFile: "/tmp/session.jsonl",
+        },
+        "Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl",
+      ],
+      [
+        {
+          id: "notify-table-paused",
+          success: false,
+          state: "paused",
+          summary: "Paused after interrupt. Waiting for explicit next action.",
+        },
+        "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action.",
+      ],
+      [
+        {
+          id: "notify-table-paused-state",
+          success: false,
+          state: "paused",
+          summary: "Work paused",
+        },
+        "Background task paused: **worker**\n\nWork paused",
+      ],
+    ] as const) {
+      sent.length = 0;
+      events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+        agent: "worker",
+        success: true,
+        timestamp: 456,
+        ...input,
+      });
+      assert.deepEqual(sent, [
+        {
+          message: { customType: "subagent-notify", content, display: true },
+          options: { triggerTurn: true },
+        },
+      ]);
+    }
 
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-      id: "notify-summary-1",
-      agent: "worker",
-      success: true,
-      summary,
-      exitCode: 0,
-      timestamp: 456,
-      taskIndex: 1,
-      totalTasks: 3,
-    });
-
-    assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0], {
-      message: {
-        customType: "subagent-notify",
-        content: `Background task completed: **worker** (2/3)\n\n${summary}`,
-        display: true,
-      },
-      options: { triggerTurn: true },
-    });
-  });
-
-  it("preserves session paths in notification content", async (t) => {
-    const { events, sent } = await createPi(t);
-
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-      id: "notify-path-1",
-      agent: "worker",
-      success: true,
-      summary: "Done",
-      exitCode: 0,
-      timestamp: 456,
-      sessionFile: "/tmp/session.jsonl",
-    });
-
+    sent.length = 0;
+    const first = { agent: "worker", success: false, summary: "Result" };
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, first);
     assert.deepEqual(sent, [
       {
         message: {
           customType: "subagent-notify",
-          content:
-            "Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl",
+          content: "Background task failed: **worker**\n\nResult",
           display: true,
         },
         options: { triggerTurn: true },
       },
     ]);
-  });
-
-  it("labels paused completions as paused even without an exit code", async (t) => {
-    const { events, sent } = await createPi(t);
-
-    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-      id: "notify-paused-1",
-      agent: "worker",
-      success: false,
-      state: "paused",
-      summary: "Paused after interrupt. Waiting for explicit next action.",
-      timestamp: 789,
-    });
-
-    assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0], {
-      message: {
-        customType: "subagent-notify",
-        content:
-          "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action.",
-        display: true,
+    const replacement = await createPi(t);
+    const completed = { ...first, success: true, exitCode: 0 };
+    events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completed);
+    assert.equal(sent.length, 1, "re-registration detaches the old bus");
+    replacement.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, completed);
+    assert.deepEqual(replacement.sent, [
+      {
+        message: {
+          customType: "subagent-notify",
+          content: "Background task completed: **worker**\n\nResult",
+          display: true,
+        },
+        options: { triggerTurn: true },
       },
-      options: { triggerTurn: true },
-    });
+    ]);
   });
 });

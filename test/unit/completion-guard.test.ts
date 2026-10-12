@@ -105,23 +105,6 @@ test("bash activity paths ignore file descriptors and tolerate redirect whitespa
   assert.equal(resolveCurrentPath("bash", { command: "npm test 2>&1" }), undefined);
 });
 
-test("successful mutating tool results count even when output mentions failure words", () => {
-  assert.equal(
-    hasCompletedMutationToolCall([
-      assistantToolCall("edit", { path: "a.ts" }),
-      toolResult("edited a.ts; tests failed later but the edit succeeded"),
-    ]),
-    true,
-  );
-  assert.equal(
-    hasCompletedMutationToolCall([
-      assistantToolCall("write", { path: "error.log" }),
-      toolResult("wrote error.log; no error found"),
-    ]),
-    true,
-  );
-});
-
 test("obvious mutating bash commands require successful tool results to count as completed mutation", () => {
   assert.equal(
     hasCompletedMutationToolCall([

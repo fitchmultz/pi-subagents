@@ -41,7 +41,10 @@ describe("completion-guard terminal wakeup", () => {
         starts.push(event);
       }
     });
-    const unsubscribe = registerSubagentNotify(pi);
+    const queued: string[] = [];
+    const unsubscribe = registerSubagentNotify(pi, (key) => {
+      queued.push(key);
+    });
     try {
       handleSubagentControlNotice({
         pi,
@@ -62,6 +65,8 @@ describe("completion-guard terminal wakeup", () => {
       });
       pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
         id: "resume-run",
+        runId: "resume-run",
+        completionKey: "completion:resume-run",
         agent: "worker",
         success: false,
         summary: "Subagent completed without making edits for an implementation task.",
@@ -69,6 +74,7 @@ describe("completion-guard terminal wakeup", () => {
       });
       await native.session.waitForIdle();
 
+      assert.deepEqual(queued, ["completion:resume-run"]);
       assert.equal(sent.length, 2);
       assert.equal(sent.filter((entry) => entry.options?.triggerTurn === true).length, 1);
       assert.deepEqual(

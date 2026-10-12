@@ -14,7 +14,7 @@ import type {
   CreateAgentSessionRuntimeFactory,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AsyncResultFile, SubagentState } from "../../src/shared/types.ts";
+import type { AsyncResultFile } from "../../src/shared/types.ts";
 import type { ReadonlyDeep } from "type-fest";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
@@ -50,6 +50,7 @@ const {
   recordQuestionDelivery,
   saveQuestionContract,
 } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { createSubagentState } = await import("../support/background-fixtures.ts");
 const { RESULTS_DIR } = await import("../../src/shared/types.ts");
 const { default: registerRoot } = await import("../../src/extension/index.ts");
 const { default: registerChild } = await import("../../src/extension/fanout-child.ts");
@@ -61,26 +62,6 @@ function sessionFile(manager: SessionManager): string {
   assertDefined(file);
   return file;
 }
-function deliveryState(cwd: string): SubagentState {
-  return {
-    baseCwd: cwd,
-    currentSessionId: null,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear() {
-        // This independent native controller registers admission lifecycle only, not a file coalescer.
-      },
-    },
-  };
-}
-
 function setChildMode(t: TestContext, childSafe: boolean): void {
   const previous = {
     PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
@@ -306,7 +287,7 @@ async function verifyIndependentController(
     extensionFactories: [
       (pi) => {
         // An independent admission controller must not stop the first root's watcher.
-        createCompletionDelivery(pi, deliveryState(cwd), registerParentUsage(pi, []));
+        createCompletionDelivery(pi, createSubagentState(cwd), registerParentUsage(pi, []));
       },
     ],
   });

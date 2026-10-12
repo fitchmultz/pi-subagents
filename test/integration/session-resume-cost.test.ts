@@ -12,7 +12,7 @@ import { pathToFileURL } from "node:url";
 import { importSelectedNative } from "../../src/shared/native-import.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { createSubagentState } from "../support/background-fixtures.ts";
-import type { TrackedOwnedRun } from "../../src/shared/types.ts";
+import { RESULTS_DIR, type TrackedOwnedRun } from "../../src/shared/types.ts";
 import { createEventBus, createNativeSessionFixture, makeMinimalCtx } from "../support/helpers.ts";
 
 const defined565_0 = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
@@ -405,9 +405,39 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
     t.diagnostic(
       `${fileBytes} journal bytes; ${parsedChars} parsed characters; ${historicalLookups} historical result lookups; ${guardedHistoricalEntries} guarded lazy entries; ${historicalBodyReads} lazy body reads.`,
     );
+    const checkpoint = path.join(RESULTS_DIR, `${path.basename(root)}-recovery-checkpoint.json`);
+    const opened = spy(fs, "openSync"),
+      closed = spy(fs, "closeSync");
+    syncBuiltinESMExports();
+    t.after(() => {
+      opened.restore();
+      closed.restore();
+      syncBuiltinESMExports();
+      fs.rmSync(checkpoint, { force: true });
+    });
     delivery.start();
-    await delay(30);
-    delivery.stop();
+    // This fresh watcher input follows any canonical recovery work queued by start().
+    fs.writeFileSync(
+      checkpoint,
+      JSON.stringify({
+        id: `${path.basename(root)}-checkpoint`,
+        sessionId: "foreign-recovery-checkpoint",
+        success: true,
+        summary: "Recovery checkpoint",
+      }),
+    );
+    const recoveryDeadline = performance.now() + 5000;
+    while (
+      !opened
+        .getCalls()
+        .some((call) => String(call.args[0]) === checkpoint && closed.calledWith(call.returnValue))
+    ) {
+      assert.ok(performance.now() < recoveryDeadline, "the restarted owner processes fresh input");
+      // Observe an actual completed read, not elapsed recovery time.
+      // oxlint-disable-next-line no-await-in-loop
+      await delay(10);
+    }
+    await delivery.stopAndJoin();
     assert.equal(ownerWrites, 16, "a second start does not migrate completed runs again");
     assert.equal(sent, 0);
   } finally {
@@ -436,7 +466,6 @@ test("unchanged completion hits share verified parent bytes only within each syn
     },
     timestamp: 0,
   });
-  const { RESULTS_DIR } = await import("../../src/shared/types.ts");
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   const hints = Array.from({ length: 8 }, (_, index) => {
     const runId = `batch-${path.basename(root)}-${index}`;

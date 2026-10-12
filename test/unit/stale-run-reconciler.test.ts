@@ -53,103 +53,77 @@ describe("async stale-run reconciliation", () => {
   });
 
   it("marks a running async run failed when the runner pid is dead and no result exists", () => {
-    const root = tempRoot("pi-stale-run-");
-    try {
-      const asyncDir = path.join(root, "run-dead");
-      const resultsDir = path.join(root, "results");
-      writeStatus(asyncDir, {
-        runId: "run-dead",
-        sessionId: "session-current",
-        mode: "single",
-        state: "running",
-        pid: 12345,
-        startedAt: 1000,
-        lastUpdate: 1000,
-        currentStep: 0,
-        steps: [{ agent: "scout", status: "running", startedAt: 1000 }],
-      });
-      const runnerStderr = `${"noisy bootstrap output\n".repeat(1000)}\u001b[31mCannot find module 'typebox/compile'\u001b[0m\n`;
-      fs.writeFileSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), runnerStderr, "utf-8");
+    for (const queued of [false, true]) {
+      const root = tempRoot("pi-stale-run-");
+      try {
+        const asyncDir = path.join(root, "run-dead");
+        const resultsDir = path.join(root, "results");
+        writeStatus(asyncDir, {
+          runId: "run-dead",
+          sessionId: "session-current",
+          mode: queued ? "parallel" : "single",
+          state: queued ? "queued" : "running",
+          pid: 12345,
+          startedAt: 1000,
+          lastUpdate: 1000,
+          currentStep: 0,
+          steps: [
+            {
+              agent: queued ? "worker" : "scout",
+              status: queued ? "pending" : "running",
+              startedAt: 1000,
+            },
+          ],
+        });
+        const runnerStderr = `${"noisy bootstrap output\n".repeat(1000)}\u001b[31mCannot find module 'typebox/compile'\u001b[0m\n`;
+        if (!queued) {
+          fs.writeFileSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), runnerStderr, "utf-8");
+        }
 
-      const result = reconcileAsyncRun(asyncDir, {
-        resultsDir,
-        kill: () => {
-          throw errno("ESRCH");
-        },
-        now: () => 2000,
-      });
+        const result = reconcileAsyncRun(asyncDir, {
+          resultsDir,
+          kill: () => {
+            throw errno("ESRCH");
+          },
+          now: () => 2000,
+        });
 
-      assertDefined(result.status);
-      assertDefined(result.status.steps);
-      assert.equal(result.repaired, true);
-      assert.equal(result.status.state, "failed");
-      assert.match(result.message ?? "", /process 12345 exited or disappeared/);
-      assert.match(
-        result.message ?? "",
-        /Runner stderr:\n\[runner stderr truncated to last 16384 bytes\]/,
-      );
-      assert.match(result.message ?? "", /Cannot find module 'typebox\/compile'/);
-      assert.equal((result.message ?? "").includes("\u001b"), false);
-      assert.ok((result.message?.length ?? Infinity) < runnerStderr.length);
-      const status = json(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
-      const first = record(array(status.steps)[0]);
-      assert.equal(status.state, "failed");
-      assert.equal(status.sessionId, "session-current");
-      assert.equal(first.status, "failed");
-      assert.match(text(first.error), /process 12345 exited or disappeared/);
-      assert.match(text(first.error), /Cannot find module 'typebox\/compile'/);
-      const resultJson = json(fs.readFileSync(path.join(resultsDir, "run-dead.json"), "utf-8"));
-      assert.equal(resultJson.success, false);
-      assert.equal(resultJson.sessionId, "session-current");
-      assert.equal(resultJson.state, "failed");
-      assert.equal(resultJson.exitCode, 1);
-      assert.match(text(resultJson.summary), /process 12345 exited or disappeared/);
-      assert.match(
-        fs.readFileSync(path.join(asyncDir, "events.jsonl"), "utf-8"),
-        /subagent\.run\.repaired_stale/,
-      );
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("marks a queued async run failed when the runner pid is dead and no result exists", () => {
-    const root = tempRoot("pi-stale-queued-run-");
-    try {
-      const asyncDir = path.join(root, "run-queued-dead");
-      const resultsDir = path.join(root, "results");
-      writeStatus(asyncDir, {
-        runId: "run-queued-dead",
-        mode: "parallel",
-        state: "queued",
-        pid: 12345,
-        startedAt: 1000,
-        lastUpdate: 1000,
-        steps: [{ agent: "worker", status: "pending", startedAt: 1000 }],
-      });
-
-      const result = reconcileAsyncRun(asyncDir, {
-        resultsDir,
-        kill: () => {
-          throw errno("ESRCH");
-        },
-        now: () => 2000,
-      });
-
-      assertDefined(result.status);
-      assertDefined(result.status.steps);
-      assert.equal(result.repaired, true);
-      assert.equal(result.status.state, "failed");
-      const status = json(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
-      const first = record(array(status.steps)[0]);
-      assert.equal(status.state, "failed");
-      assert.equal(first.status, "failed");
-      assert.equal(
-        json(fs.readFileSync(path.join(resultsDir, "run-queued-dead.json"), "utf-8")).success,
-        false,
-      );
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+        assertDefined(result.status);
+        assertDefined(result.status.steps);
+        assert.equal(result.repaired, true);
+        assert.equal(result.status.state, "failed");
+        assert.match(result.message ?? "", /process 12345 exited or disappeared/);
+        if (!queued) {
+          assert.match(
+            result.message ?? "",
+            /Runner stderr:\n\[runner stderr truncated to last 16384 bytes\]/,
+          );
+          assert.match(result.message ?? "", /Cannot find module 'typebox\/compile'/);
+          assert.equal((result.message ?? "").includes("\u001b"), false);
+          assert.ok((result.message?.length ?? Infinity) < runnerStderr.length);
+        }
+        const status = json(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
+        const first = record(array(status.steps)[0]);
+        assert.equal(status.state, "failed");
+        assert.equal(status.sessionId, "session-current");
+        assert.equal(first.status, "failed");
+        assert.match(text(first.error), /process 12345 exited or disappeared/);
+        if (!queued) {
+          assert.match(text(first.error), /Cannot find module 'typebox\/compile'/);
+        }
+        const resultJson = json(fs.readFileSync(path.join(resultsDir, "run-dead.json"), "utf-8"));
+        assert.equal(resultJson.success, false);
+        assert.equal(resultJson.sessionId, "session-current");
+        assert.equal(resultJson.state, "failed");
+        assert.equal(resultJson.exitCode, 1);
+        assert.match(text(resultJson.summary), /process 12345 exited or disappeared/);
+        assert.match(
+          fs.readFileSync(path.join(asyncDir, "events.jsonl"), "utf-8"),
+          /subagent\.run\.repaired_stale/,
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 

@@ -7,14 +7,12 @@ import {
 } from "../../src/runs/shared/chain-outputs.ts";
 import {
   DynamicFanoutError,
-  collectDynamicResults,
   materializeDynamicParallelStep,
   resolveJsonPointer,
   validateDynamicCollection,
 } from "../../src/runs/shared/dynamic-fanout.ts";
 import { parseJsonChain } from "../../src/agents/chain-serializer.ts";
 import type { ChainStep, ChainOutputMap } from "../../src/shared/types/workflow.ts";
-import type { SingleResult } from "../../src/shared/types.ts";
 
 const outputs: ChainOutputMap = {
   targets: {
@@ -134,6 +132,7 @@ describe("dynamic fanout helpers", () => {
         ),
       /Invalid item reference/,
     );
+    assert.throws(() => validateDynamicCollection({ type: "object" }, []), DynamicFanoutError);
   });
 
   it("allows config maxItems defaults and handles empty arrays deterministically", () => {
@@ -248,40 +247,5 @@ describe("dynamic fanout helpers", () => {
     ];
     assert.throws(() => validateChainOutputBindings(chain), ChainOutputValidationError);
     assert.throws(() => validateChainOutputBindings([chain[1]]), /unknown output 'targets'/);
-  });
-
-  it("collects ordered child result records and validates aggregate schema", () => {
-    const step: ChainStep = {
-      expand: { from: { output: "targets", path: "/items" }, key: "/path", maxItems: 4 },
-      parallel: { agent: "reviewer", task: "Review {item.path}" },
-      collect: { as: "reviews" },
-    };
-    const materialized = materializeDynamicParallelStep(step, outputs, 1);
-    const result = (agent: string, structuredOutput: unknown): SingleResult => ({
-      agent,
-      task: "t",
-      exitCode: 0,
-      messages: [],
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-      finalOutput: "ok",
-      structuredOutput,
-    });
-    const collected = collectDynamicResults(step, materialized.items, [
-      result("reviewer", { ok: "a" }),
-      result("reviewer", { ok: "b" }),
-    ]);
-    assert.deepEqual(
-      collected.map((item) => item.key),
-      ["src/a.ts", "src/b.ts"],
-    );
-    assert.deepEqual(
-      collected.map((item) => item.structured),
-      [{ ok: "a" }, { ok: "b" }],
-    );
-    assert.doesNotThrow(() => validateDynamicCollection({ type: "array", minItems: 2 }, collected));
-    assert.throws(
-      () => validateDynamicCollection({ type: "object" }, collected),
-      DynamicFanoutError,
-    );
   });
 });

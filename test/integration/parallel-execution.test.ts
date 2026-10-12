@@ -1,5 +1,6 @@
 import { createSubagentState } from "../support/background-fixtures.ts";
 import { readChildCall } from "../support/child-process-receipts.ts";
+import { readRunResult } from "../support/run-publications.ts";
 import { assertDefined, parseJson, textAt, record, numberValue } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 /** Parallel execution through the public executor. */
@@ -695,6 +696,7 @@ describe("parallel agent execution", () => {
             {
               agent: "echo",
               task: "Write the requested report",
+              reads: ["tracked.txt"],
               output: ".scratchpad/report.md",
               outputMode,
             },
@@ -722,13 +724,25 @@ describe("parallel agent execution", () => {
         });
       }
       assertDefined(callFile);
-      const childCwd = readChildCall(path.join(mockPi.dir, callFile)).cwd;
+      const call = readChildCall(path.join(mockPi.dir, callFile));
+      const childCwd = call.cwd;
+      const task = call.expandedArgs.at(-1) ?? "";
       const report = "ONLY_COPY_OF_THE_REQUESTED_REPORT\n";
       const outputPath = path.join(childCwd, ".scratchpad/report.md");
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-      fs.writeFileSync(outputPath, report);
-      fs.writeFileSync(release, "go");
-      const result = await pending;
+      let result;
+      try {
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, report);
+        const readPath = task.match(/\[Read from: ([^\]]+)\]/)?.[1];
+        const requestedOutput = task.match(/Write your findings to: (.+)/)?.[1];
+        assertDefined(readPath);
+        assertDefined(requestedOutput);
+        assert.equal(fs.realpathSync(readPath), path.join(childCwd, "tracked.txt"));
+        assert.equal(fs.realpathSync(requestedOutput), outputPath);
+      } finally {
+        fs.writeFileSync(release, "go");
+        result = await pending;
+      }
       const child = result.details.results[0];
       assert.equal(child.exitCode, 0);
       assert.equal(fs.existsSync(childCwd), false, "successful worktree cleanup still runs");
@@ -842,10 +856,13 @@ describe("parallel agent execution", () => {
     });
 
     const details = result.details;
+    assert.equal(result.isError, undefined);
+    assertDefined(details.runId);
+    const saved = readRunResult(path.join(getRunMetadataDir(details.runId), "result.json"));
+    assert.equal(saved.results.length, 2);
     const paths = details.results
       .map((child) => child.outputReference?.path)
       .filter((value): value is string => value !== undefined && value.length > 0);
-    assert.equal(result.isError, undefined);
     assert.equal(mockPi.callCount(), 2);
     assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
     assert.equal(paths.length, 2);
@@ -854,6 +871,11 @@ describe("parallel agent execution", () => {
     assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_0_context\.md$/.test(p)));
     assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_1_context\.md$/.test(p)));
     assert.ok(details.results.every((child) => child.outputCleanup?.action === "deleted"));
+    assert.ok(
+      saved.results.every(
+        (child, index) => child.output?.includes(`Output file consumed: ${paths[index]}`) === true,
+      ),
+    );
   });
 
   it("treats string false as disabled output in top-level parallel runs", async () => {

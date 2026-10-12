@@ -292,7 +292,7 @@ class ResultWatcher {
       if (this.foreign(envelope)) {
         return;
       }
-      const key = buildCompletionKey({ ...envelope.data, id: envelope.runId }, "result");
+      const key = buildCompletionKey({ ...envelope.data, id: envelope.runId });
       if (this.alreadyHandled(envelope, key)) {
         return;
       }

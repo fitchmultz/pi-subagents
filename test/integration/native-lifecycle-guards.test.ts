@@ -20,6 +20,7 @@ import net from "node:net";
 import { createNativeSessionFixture } from "../support/helpers.ts";
 import { assertDefined, assertRecord } from "../support/assertions.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
+import type { Message } from "../../src/pi-intercom/types.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const root = realpathSync(mkdtempSync(path.join(tmpdir(), "native-lifecycle-")));
@@ -113,9 +114,9 @@ test("real broker startup writes a backward-readable PID identity and stays prot
 // Kept as counterexamples to unsafe disconnect/stop approaches, not proposed fixes.
 test("unchanged protocol: accepted replace delivery is lost on recipient disconnect", async () => {
   const recipient = new IntercomClient();
-  let received = 0;
-  recipient.on("message", () => {
-    received++;
+  const received: string[] = [];
+  recipient.on("message", (_from: unknown, message: Message) => {
+    received.push(message.content.text);
   });
   await recipient.connect({
     name: "queue-loss",
@@ -132,11 +133,27 @@ test("unchanged protocol: accepted replace delivery is lost on recipient disconn
   });
   assert.equal(receipt.accepted, true);
   assert.equal(receipt.queued, true);
-  assert.equal(received, 0);
+  assert.deepEqual([...received], []);
+  const originalId = recipient.sessionId;
+  assertDefined(originalId);
+  const left = once(keeper, "session_left");
   await recipient.disconnect();
-  await recipient.connect({ name: "queue-loss", cwd: root, model: "none", status: "idle" });
-  await sleep(1700);
-  assert.equal(received, 0);
+  assert.deepEqual(await left, [originalId]);
+  await recipient.connect(
+    { name: "queue-loss", cwd: root, model: "none", status: "idle" },
+    originalId,
+  );
+  assert.equal(recipient.sessionId, originalId);
+  const fresh = await keeper.send("queue-loss", {
+    text: "fresh processed delivery",
+    delivery: "queue",
+    queueMode: "replace",
+    threadId: "fresh-proof",
+  });
+  assert.equal(fresh.accepted, true);
+  assert.equal(fresh.queued, true);
+  await waitFor(() => received.includes("fresh processed delivery"));
+  assert.deepEqual(received, ["fresh processed delivery"]);
   await recipient.disconnect();
   writeFileSync(
     path.join(root, "accepted-queued-disconnect.json"),

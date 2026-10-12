@@ -601,7 +601,7 @@ describe("nested control routing", () => {
   it("renders nested children from the durable owner's status output", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-foreground-status-"));
     try {
-      const route = createNestedRun("nested-foreground");
+      const route = createNestedRun("nested-foreground", "running", { currentTool: "read" });
       const state = stateWithNestedRoute(route);
       const run = state.ownedRuns?.get(route.rootRunId);
       assertDefined(run);
@@ -626,7 +626,8 @@ describe("nested control routing", () => {
 
       assert.equal(result.isError, undefined);
       assert.match(text(result), /Run: root-control/);
-      assert.match(text(result), /↳ worker \[nested-foreground\] running/);
+      assert.match(text(result), /Step 1: orchestrator running/);
+      assert.match(text(result), /↳ worker \[nested-foreground\] running \| tool read/);
       assert.match(
         text(result),
         /Status: agent_runs\(\{ action: "inspect", id: "nested-foreground" \}\)/,
