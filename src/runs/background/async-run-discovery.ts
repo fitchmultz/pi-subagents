@@ -6,12 +6,12 @@ import { runSynchronously } from "../../shared/cooperative.ts";
 import { asyncRunRoots, readAsyncRunRecord } from "./async-resume.ts";
 import type { AsyncRunRecord } from "./async-run-record.ts";
 import type { AsyncRunSummary } from "./async-run-summary.ts";
-import { getRunMetadataDir, readRunJson } from "../shared/supervisor-questions.ts";
+import { readQuestionOwner } from "../shared/supervisor-questions.ts";
 import { findNestedRouteForRootId } from "../shared/nested-events.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { validateStatusForSummary } from "./async-status-validation.ts";
 import { asyncStatusToSummary } from "./async-status-projection.ts";
-import { errorCode, errorMessage, hasText, isRecord } from "./async-value.ts";
+import { errorCode, errorMessage, hasText } from "./async-value.ts";
 
 interface AsyncRunListOptions {
   readonly states?: readonly AsyncRunSummary["state"][];
@@ -112,14 +112,8 @@ class AsyncRunDiscovery {
     let owner = this.owners.get(entry);
     if (!hasText(owner) && hasText(this.ownerSessionId)) {
       try {
-        const saved: unknown = readRunJson(
-          path.join(getRunMetadataDir(entry), "question-owner.json"),
-        );
-        if (
-          isRecord(saved) &&
-          typeof saved.sessionId === "string" &&
-          saved.sessionId.trim().length > 0
-        ) {
+        const saved = readQuestionOwner(entry);
+        if (saved?.sessionId !== undefined && saved.sessionId.trim().length > 0) {
           owner = saved.sessionId;
           this.owners.set(entry, owner);
         }

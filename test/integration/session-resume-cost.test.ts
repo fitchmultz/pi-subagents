@@ -89,7 +89,14 @@ test("native session startup services input during archive discovery and restore
     message: "Keep this question available.",
   });
   for (let index = 0; index < foreignCount; index++) {
-    saveQuestionOwner(`${prefix}-foreign-${index}`, "another-parent");
+    const foreignId = `${prefix}-foreign-${index}`;
+    saveQuestionOwner(foreignId, "another-parent");
+    const directory = path.join(getRunMetadataDir(foreignId), "questions", question.questionId);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "question.json"),
+      JSON.stringify({ ...question, runId: foreignId, ownerSessionId: "another-parent" }),
+    );
   }
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
@@ -130,19 +137,44 @@ test("native session startup services input during archive discovery and restore
     }
   });
   const open = fs.openSync;
+  const read = fs.readSync,
+    ownerFds = new Set<number>();
   let foreignReads = 0,
+    foreignStateReads = 0,
+    ownerScratchBytes = 0,
     running = true,
     input: NodeJS.Immediate;
   const readsAtInput: number[] = [];
   t.mock.method(fs, "openSync", (...args: Readonly<Parameters<typeof fs.openSync>>) => {
+    const file = String(args[0]),
+      foreign = file.includes(`${prefix}-foreign-`);
     if (
-      String(args[0]).includes(`${prefix}-foreign-`) &&
-      String(args[0]).endsWith("question-owner.json")
+      foreign &&
+      file.includes(`${path.sep}questions${path.sep}`) &&
+      !file.endsWith("question.json")
     ) {
-      foreignReads++;
+      foreignStateReads++;
     }
-    return Reflect.apply(open, fs, args);
+    if (foreign && file.endsWith("question-owner.json")) {
+      foreignReads++;
+      const fd = Reflect.apply(open, fs, args);
+      ownerFds.add(fd);
+      return fd;
+    }
+    const fd = Reflect.apply(open, fs, args);
+    ownerFds.delete(fd);
+    return fd;
   });
+  t.mock.method(
+    fs,
+    "readSync",
+    (fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => {
+      if (ownerFds.has(fd)) {
+        ownerScratchBytes += buffer.length;
+      }
+      return read(fd, buffer, offset, length, position);
+    },
+  );
   syncBuiltinESMExports();
   t.after(() => {
     t.mock.restoreAll();
@@ -170,6 +202,15 @@ test("native session startup services input during archive discovery and restore
     clearImmediate(defined5134_0);
   }
   assert.equal(foreignReads, foreignCount, "each unrelated owner is classified once");
+  assert.equal(
+    ownerScratchBytes,
+    foreignCount * Buffer.byteLength('{\n  "sessionId": "another-parent"\n}'),
+    "tiny owner census allocates only snapshot-sized scratch, not 64 KiB per record",
+  );
+  assert.equal(foreignStateReads, 0, "embedded foreign question owners prevent state hydration");
+  t.diagnostic(
+    `${foreignReads} foreign owners; ${ownerScratchBytes} scratch bytes; ${foreignStateReads} foreign question-state opens.`,
+  );
   assert.ok(
     readsAtInput.some((count) => count > 0 && count < foreignCount),
     "input must run before the archive census finishes",

@@ -223,6 +223,8 @@ describe("async job tracker", () => {
         foreign.push(seed(`foreign-${index}`, other, other, index % 2 === 0, 2_147_483_647));
       }
       selected.push(seed("missing-owner", owner, undefined, false));
+      selected.push(seed("empty-owner", owner, "", false));
+      selected.push(seed("blank-owner", owner, " \n\t", false));
       const malformed = seed("malformed-owner", owner, undefined, false);
       selected.push(malformed);
       fs.mkdirSync(getRunMetadataDir(malformed), { recursive: true });

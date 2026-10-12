@@ -184,7 +184,7 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
     fd = fs.openSync(file, "wx");
   fs.writeSync(
     fd,
-    '{"id":"saved","state":"complete","success":true,"results":[{"agent":"fixture","messages":[{"content":[{"text":"',
+    '{"sessionId":"owner","id":"saved","state":"complete","success":true,"results":[{"agent":"fixture","messages":[{"content":[{"text":"',
   );
   const block = Buffer.alloc(65536, 120);
   for (let index = 0; index < 1600; index++) {
@@ -192,6 +192,8 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
   }
   fs.writeSync(fd, '"}]}],"finalOutput":"Exact saved answer","exitCode":0}]}');
   fs.closeSync(fd);
+  fs.mkdirSync(path.join(root, "saved"));
+  fs.linkSync(file, path.join(root, "saved", "question-owner.json"));
   const module = new URL("../../src/runs/shared/supervisor-questions.ts", import.meta.url).href;
   const child = spawnSync(
     process.execPath,
@@ -200,10 +202,11 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
       "--input-type=module",
       "-e",
       `
-		import assert from 'node:assert/strict'; import {readRunJson} from ${JSON.stringify(module)};
+		import assert from 'node:assert/strict'; import {readRunJson,readQuestionOwner} from ${JSON.stringify(module)};
 		const result=readRunJson(process.argv[1]);
 		assert.equal(result.id,'saved');assert.equal(result.success,true);assert.equal(result.state,'complete');
 		assert.deepEqual(result.results,[{agent:'fixture',finalOutput:'Exact saved answer',exitCode:0}]);
+		assert.deepEqual(readQuestionOwner('saved',${JSON.stringify(root)}),{sessionId:'owner'},'large supplemental owners retain bounded streaming reads');
 		console.log('compact owner result preserved; discarded nested100 MiB message never assembled; old-space32 MiB');
 	`,
       file,

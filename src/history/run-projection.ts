@@ -147,10 +147,8 @@ export function projectRun(
   foreground: Readonly<ReadonlyMap<string, ReadonlyForegroundResumeRun>>,
 ): HistoryRunRow {
   const state: OwnedRunReadState = { ownedRuns: runs, foregroundRuns: foreground };
-  const questions = listRunQuestions(getRunMetadataDir(run.runId)).filter(
-    (question) =>
-      question.ownerSessionId === ownerSessionId &&
-      ["awaiting_input", "answer_pending"].includes(question.state),
+  const questions = listRunQuestions(getRunMetadataDir(run.runId), ownerSessionId).filter(
+    (question) => ["awaiting_input", "answer_pending"].includes(question.state),
   );
   return {
     ...ownedRunView(run, state, {

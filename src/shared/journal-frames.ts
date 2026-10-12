@@ -172,7 +172,7 @@ export function readJsonProjection(file: string, select: Projection): UnknownRec
   const projection = new JsonProjection(select, undefined, () => Infinity);
   try {
     const end = fs.fstatSync(fd).size;
-    const bytes = Buffer.allocUnsafe(64 * 1024);
+    const bytes = Buffer.allocUnsafe(Math.min(64 * 1024, end));
     for (let offset = 0; offset < end;) {
       const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, end - offset), offset);
       if (count === 0) {

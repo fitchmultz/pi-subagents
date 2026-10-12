@@ -9,6 +9,7 @@
 - Avoid irrelevant completion discovery and duplicate profile reads when listing agents. Reuse unchanged native history cards while retaining fresh detail validation, expanded state and source/theme invalidation.
 - Assemble fragmented Intercom frames and restore topic snapshots incrementally. Encode socket payloads once and keep legacy lists identity-only without reconstructing discarded topic arrays; encoded limits and validation-before-commit remain unchanged.
 - Aggregate workflow activity on tool transitions and coalesced status publication rather than every streaming delta. Preserve all observer updates and scheduling requests.
+- Right-size saved-owner JSON scratch buffers and share supplemental-owner reads across recovery. Filter validated embedded question owners before reading foreign answer/delivery/revival/cancellation state, preserving full archive discovery, selected validation and fresh publication.
 - Record reproducible operation-count baselines and qualified startup measurements in the performance guide.
 
 ### Fixed

@@ -4,26 +4,29 @@
 
 The baseline is `e00b241` (0.46.1). These synthetic workloads exercise the real storage, SQLite, discovery, native-card and broker owners. Counts describe work removed, not a guaranteed reduction in end-to-end latency, retained memory or provider cost.
 
-| Workload                                                               | Counted operation                                                   |                0.46.1 |          0.46.2 |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------: | --------------: |
-| 10,000 text deltas                                                     | Empty text-spool truncations                                        |                10,000 |               0 |
-| Same deltas                                                            | 64 KiB scratch allocations / allocated bytes                        |  10,000 / 655,360,000 |           0 / 0 |
-| 1,000 one-window native records, cold index                            | SQL prepares                                                        |                14,015 |              19 |
-| Same records                                                           | Explicit main-database commits / changed-main autocommit statements |         2,002 / 1,002 |       1,002 / 2 |
-| 1,000 narrowed prune calls beside 1,000 linked sources                 | Child rows visited                                                  |             1,000,000 |           1,000 |
-| 1,000 pending human-message IDs with no later reply                    | Assistant-tail candidates / statements                              |       499,500 / 1,000 |         999 / 1 |
-| 200 attempts sharing 1,000 common matching records, relevance search   | Final entry-predicate evaluations                                   |               200,000 |           1,000 |
-| 217 profiles, completion after task text or inside an unfinished quote | Profile-file reads                                                  |                   217 |               0 |
-| Same profiles, management list                                         | Profile-file reads                                                  |                   434 |             217 |
-| Same profiles and 10 saved chains, saved-chain completion              | Profile-file / chain-file reads                                     |              217 / 10 |          0 / 10 |
-| Three identical 100-record history pages                               | Native cards constructed, including assignment                      |                   303 |             101 |
-| One 1 MiB Intercom frame, 4 KiB fragments                              | Bytes copied by frame assembly                                      |           135,790,596 |       1,048,576 |
-| Same frame, 1 KiB fragments                                            | Bytes copied by frame assembly                                      |           538,443,780 |       1,048,576 |
-| 1,000 streamed topic rows                                              | Topic text validations                                              |               500,500 |           1,000 |
-| Real broker restoring 1,000 topics                                     | JSON encodings / serialized bytes                                   | 505,504 / 112,612,468 | 7,003 / 873,268 |
-| One socket message write                                               | JSON encodings                                                      |                     2 |               1 |
-| 10,000 thinking deltas, 1,000 retained workflow steps                  | Step-status reads in event projection                               |            10,000,000 |           1,000 |
-| Inert root extension, emitted static local import graph                | Modules / JavaScript source bytes / TUI modules                     |  287 / 3,248,709 / 47 | 11 / 20,587 / 0 |
+| Workload                                                               | Counted operation                                                   |                0.46.1 |                0.46.2 |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------: | --------------------: |
+| 10,000 text deltas                                                     | Empty text-spool truncations                                        |                10,000 |                     0 |
+| Same deltas                                                            | 64 KiB scratch allocations / allocated bytes                        |  10,000 / 655,360,000 |                 0 / 0 |
+| 1,000 one-window native records, cold index                            | SQL prepares                                                        |                14,015 |                    19 |
+| Same records                                                           | Explicit main-database commits / changed-main autocommit statements |         2,002 / 1,002 |             1,002 / 2 |
+| 1,000 narrowed prune calls beside 1,000 linked sources                 | Child rows visited                                                  |             1,000,000 |                 1,000 |
+| 1,000 pending human-message IDs with no later reply                    | Assistant-tail candidates / statements                              |       499,500 / 1,000 |               999 / 1 |
+| 200 attempts sharing 1,000 common matching records, relevance search   | Final entry-predicate evaluations                                   |               200,000 |                 1,000 |
+| 217 profiles, completion after task text or inside an unfinished quote | Profile-file reads                                                  |                   217 |                     0 |
+| Same profiles, management list                                         | Profile-file reads                                                  |                   434 |                   217 |
+| Same profiles and 10 saved chains, saved-chain completion              | Profile-file / chain-file reads                                     |              217 / 10 |                0 / 10 |
+| Three identical 100-record history pages                               | Native cards constructed, including assignment                      |                   303 |                   101 |
+| One 1 MiB Intercom frame, 4 KiB fragments                              | Bytes copied by frame assembly                                      |           135,790,596 |             1,048,576 |
+| Same frame, 1 KiB fragments                                            | Bytes copied by frame assembly                                      |           538,443,780 |             1,048,576 |
+| 1,000 streamed topic rows                                              | Topic text validations                                              |               500,500 |                 1,000 |
+| Real broker restoring 1,000 topics                                     | JSON encodings / serialized bytes                                   | 505,504 / 112,612,468 |       7,003 / 873,268 |
+| One socket message write                                               | JSON encodings                                                      |                     2 |                     1 |
+| 10,000 thinking deltas, 1,000 retained workflow steps                  | Step-status reads in event projection                               |            10,000,000 |                 1,000 |
+| Inert root extension, emitted static local import graph                | Modules / JavaScript source bytes / TUI modules                     |  287 / 3,248,709 / 47 |       11 / 20,587 / 0 |
+| 1,000 foreign async owners, 23-byte supplemental records               | Allocated owner-read scratch bytes                                  |            65,536,000 |                23,000 |
+| Same owner census                                                      | Opens / reads / closes                                              | 1,000 / 1,000 / 1,000 | 1,000 / 1,000 / 1,000 |
+| 128 foreign questions beside one selected answered question            | Foreign question-state opens                                        |                   512 |                     0 |
 
 ### Method and retained contracts
 
@@ -32,6 +35,10 @@ Measurements used Node **24.21.0**, SQLite **3.53.4** and synthetic private file
 Every streaming delta still reaches the observer and schedules status publication; exact wire bytes, malformed-record diagnostics, member ordering, surrogate handling and completed-text output remain covered. Tool aggregation still scans steps on actual tool transitions and coalesced status writes. The event-projection probe has no intervening status publication; its 10,000 scheduling requests are retained, rather than suppressed to obtain the count.
 
 Reply lookup reads the latest matching human copy for each requested ID, then answers all IDs from one bounded assistant-tail lookup; physical order and terminal/time boundaries remain authoritative. Empty, missing and latest-singleton requests retain zero assistant-candidate scans.
+
+Recovery right-sizes the existing fixed-snapshot streaming JSON buffer to the file's size, up to the unchanged **64 KiB** ceiling. It retains fatal UTF-8 decoding, complete JSON/object validation, positional reads on one opened descriptor and large discarded-field handling. The 1,000-owner probe still reads all 1,000 records and performs the same 3,000 streaming-parser writes; it removes oversized scratch allocation, not filesystem discovery or parsing. A separate native-startup keeper beside 2,048 35-byte foreign owners reduces observed read-buffer bytes from 134,217,728 to 71,680.
+
+Owner-scoped question access still reads and validates all 129 question records in the probe, using each question's embedded owner before opening answer, delivery, revival or cancellation state. The selected question retains all four state opens; missing, corrupt or disagreeing supplemental owner files do not hide its question. Unfiltered readers retain full state validation, selected corruption still fails, and later publications are read afresh. There is no archive cap, persistent negative-owner cache or question-state cache.
 
 Search qualification used 100,000 documents across 100 owned sources, including 99,000 out-of-scope documents and 200 attempts sharing the selected source. All 12 rare/common × child/shared-agent/global × relevance/newest cases retained independent native-`bm25` ordering and exact first/second-page output. Relevance uses hit-driven attribution; newest retains its previous fixed join order. Scoped eligible-ID materialization remains intentional: replacing it with a correlated entry lookup made common scoped queries about three times slower and was rejected. Contended medians for shared-source relevance were 62.00→29.25 ms (common) and 6.23→3.12 ms (rare); small timing differences in other cases are treated as variation, not gains. Common FTS postings still require scanning, and a bounded page does not bound all search work.
 
@@ -43,7 +50,7 @@ Intercom retains the 1 MiB encoded-frame limit, request-ID and escaped-envelope 
 
 Dynamic output schemas deliberately retain native compilation. Object identity or JSON content alone cannot safely cache nested mutations, recursive references and host format-registry changes. Authoritative receipt/accounting checks, native publication/fsync boundaries, fallback polling, child isolation, fork/fresh choices and acceptance verification are not removed for a better benchmark.
 
-The regression owners include `test/integration/{storage-owner-boundaries,history-index,agent-interaction,slash-commands,pi-intercom-broker,async-execution,process-lifecycle,parent-usage}.test.ts` and `test/unit/{compact-child-tools,agent-disabled,pi-intercom-framing}.test.ts`. These protect observable contracts and meaningful operation counts; there are no timing thresholds in CI.
+The regression owners include `test/integration/{storage-owner-boundaries,session-resume-cost,async-job-tracker,history-index,agent-interaction,slash-commands,pi-intercom-broker,async-execution,process-lifecycle,parent-usage}.test.ts` and `test/unit/{supervisor-questions,compact-child-tools,agent-disabled,pi-intercom-framing}.test.ts`. These protect observable contracts and meaningful operation counts; there are no timing thresholds in CI.
 
 ### Startup qualification
 
@@ -94,7 +101,7 @@ Best-effort timeout samples use a separate `run-timing.sqlite` metadata database
 The changed boundaries are exercised through real extension functions and registered SDK tools with synthetic isolated data, not personal transcripts or provider inference:
 
 - 20 and 227 genuinely owned runs beside 8,000 unrelated records: Agents startup does no parent-thread child transcript reads or global question listing; only the selected conversation is formatted.
-- Native extension startup beside 2,048 foreign owner directories services input during discovery and restores only the current parent's saved runs and unanswered questions.
+- Native extension startup beside 2,048 foreign owner directories and questions services input during discovery, uses snapshot-sized owner scratch, never opens foreign question state and restores only the current parent's saved runs and unanswered questions.
 - Native Intercom reload restores all 1,024 historical receipts while servicing input. Cleared-queue recovery also services input before its 100 followers finish appending, retaining each message once and one final wake-up across an in-flight reload or a cleared busy handoff. New results and explicit steers are staged before acknowledgement and handed to native steering for the next tool boundary; ordinary queued and passive arrivals wait.
 - 125 owned assignments: global filtering finds an item beyond the first two picker pages; all later pages remain reachable without UI-thread source access.
 - 65 retained runs: off-page reads/stats and migration scans are zero while displayed controls, questions, review and continuation identities remain fresh.
