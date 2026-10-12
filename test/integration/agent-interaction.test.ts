@@ -5011,15 +5011,16 @@ test(
       await pending;
       native.restore();
     });
+    const deadline = Date.now() + 45_000;
     while (
       !f.controller.picker.tasks.some(
         (task) => task.child.activity?.streamingText?.includes("First live text") === true,
       )
     ) {
-      assert.ok(!t.signal.aborted, "initial native text must arrive");
-      // Observe native pre-message-end progress within the whole test's timeout.
+      assert.ok(Date.now() < deadline, "initial native text must arrive");
+      // Leave time for native release/join/restore before the whole-test timeout.
       // oxlint-disable-next-line no-await-in-loop
-      await delay(10, undefined, { signal: t.signal });
+      await delay(10);
     }
     const task = f.controller.picker.tasks[0];
     if (fs.existsSync(stringValue(task.child.sessionFile))) {

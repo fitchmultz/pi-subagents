@@ -385,6 +385,9 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
   assertDefined(successor);
   assert.equal(old.runId, "finished-30");
   assert.equal(predecessor.review, undefined);
+  const currentPredecessor = resolveOwnedRun(unreviewed, "finished-0");
+  assertDefined(currentPredecessor);
+  assert.equal(currentPredecessor.review, undefined);
   assert.equal(successor.review, undefined);
   const review = { decision: "accepted" as const, reviewedAt: 1, message: "predecessor-only" };
   rememberOwnedRun(unreviewed, { ...predecessor, review });

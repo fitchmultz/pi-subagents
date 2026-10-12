@@ -176,7 +176,7 @@ it("starts compact, lazily activates the complete advanced schema, and resets ad
     // oxlint-disable-next-line no-await-in-loop
     const blocked = await f.call("subagent", { action, agent: "probe", config: { name: "probe" } });
     assert.equal(blocked.isError, true);
-    assert.match(textAt(blocked.content), /not available from child-safe/);
+    assert.match(textAt(blocked.content), /not available from child-safe subagent fanout mode/);
   }
   await f.emit("session_compact");
   assert.ok(
