@@ -2,7 +2,6 @@ import * as path from "node:path";
 import { inspect } from "node:util";
 import type { ReadonlyDeep } from "type-fest";
 import { appendJsonl } from "../../shared/artifacts.ts";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { completeWorkflowStep, runParallelTasks } from "../shared/workflow-policy.ts";
 import {
@@ -194,7 +193,7 @@ export class RunnerParallelGroup {
     status.currentStep = position.flatIndex;
     status.lastUpdate = failedAt;
     status.outputFile = path.join(this.config.asyncDir, `output-${position.flatIndex}.log`);
-    writeAtomicJson(path.join(this.config.asyncDir, "status.json"), status);
+    this.monitor.writeStatusPayload();
     this.append({
       type: "subagent.parallel.completed",
       ts: failedAt,
@@ -224,7 +223,7 @@ export class RunnerParallelGroup {
     status.lastActivityAt = startedAt;
     status.lastUpdate = startedAt;
     status.outputFile = path.join(this.config.asyncDir, `output-${position.flatIndex}.log`);
-    writeAtomicJson(path.join(this.config.asyncDir, "status.json"), status);
+    this.monitor.writeStatusPayload();
     this.append({
       type: "subagent.parallel.started",
       ts: startedAt,

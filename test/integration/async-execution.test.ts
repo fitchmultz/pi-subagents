@@ -2308,89 +2308,89 @@ describe("async execution utilities", () => {
     }
   });
 
-  it("keeps top-level current tool/path aligned with still-running parallel children", async () => {
-    mockPi.onCall({
-      steps: [
-        { jsonl: [mockEvents.toolStart("read", { path: "README.md" })] },
-        {
-          delay: 900,
-          jsonl: [
-            mockEvents.toolEnd("read"),
-            mockEvents.toolResult("read", "done"),
-            mockEvents.assistantMessage("reader done"),
-          ],
-        },
-      ],
-    });
-    mockPi.onCall({
-      steps: [
-        { delay: 100, jsonl: [mockEvents.toolStart("edit", { path: "docs.md" })] },
-        { delay: 100, jsonl: [mockEvents.toolEnd("edit"), mockEvents.toolResult("edit", "ok")] },
-        { delay: 700, jsonl: [mockEvents.assistantMessage("editor done")] },
-      ],
-    });
+  for (const ending of ["tool end", "process exit", "process failure"] as const) {
+    it(`keeps top-level tool/path aligned after a parallel child's ${ending}`, async () => {
+      const readerRelease = path.join(tempDir, "release-reader");
+      const editorStart = path.join(tempDir, "start-editor");
+      const editorRelease = path.join(tempDir, "release-editor");
+      mockPi.onCall({
+        matchArgsIncludes: "Read",
+        steps: [
+          { jsonl: [mockEvents.toolStart("read", { path: "README.md" })] },
+          {
+            waitForFile: readerRelease,
+            jsonl: [
+              mockEvents.toolEnd("read"),
+              mockEvents.toolResult("read", "done"),
+              mockEvents.assistantMessage("reader done"),
+            ],
+          },
+        ],
+      });
+      mockPi.onCall({
+        matchArgsIncludes: "Edit",
+        exitCode: ending === "process failure" ? 1 : 0,
+        steps: [
+          {
+            waitForFile: editorStart,
+            jsonl: [mockEvents.toolStart("edit", { path: "docs.md" })],
+          },
+          {
+            waitForFile: editorRelease,
+            jsonl: [
+              ...(ending === "tool end"
+                ? [mockEvents.toolEnd("edit"), mockEvents.toolResult("edit", "ok")]
+                : []),
+              mockEvents.assistantMessage("editor done"),
+            ],
+          },
+        ],
+      });
 
-    const id = `itest-ae-${process.pid}-parallel-tool-sync-${Date.now().toString(36)}`;
-    const asyncDir = getRunMetadataDir(id);
-    const resultPath = path.join(RESULTS_DIR, `${id}.json`);
-
-    executeAsyncChain(id, {
-      chain: [
-        {
-          parallel: [
-            { agent: "reader", task: "Read" },
-            { agent: "editor", task: "Edit" },
-          ],
-        },
-      ],
-      agents: [makeAgent("reader"), makeAgent("editor")],
-      ctx: { pi: { events: createEventBus() }, cwd: tempDir, currentSessionId: "session-1" },
-      shareEnabled: false,
-      sessionRoot: path.join(tempDir, "sessions"),
-      maxSubagentDepth: 2,
-    });
-
-    const statusPath = path.join(asyncDir, "status.json");
-    const doneDeadline = Date.now() + 10_000;
-    let sawRunningTool = false;
-    let invariantViolated = false;
-    while (!fs.existsSync(resultPath) && Date.now() < doneDeadline) {
-      if (fs.existsSync(statusPath)) {
-        const status = readStatusFile(statusPath);
-        const running = (status.steps ?? []).filter(
-          (step) => step.status === "running" && typeof step.currentTool === "string",
+      const id = `itest-ae-${process.pid}-parallel-tool-sync-${Date.now().toString(36)}`;
+      executeAsyncChain(id, {
+        chain: [
+          {
+            parallel: [
+              { agent: "reader", task: "Read" },
+              { agent: "editor", task: "Edit" },
+            ],
+          },
+        ],
+        agents: [makeAgent("reader"), makeAgent("editor")],
+        ctx: { pi: { events: createEventBus() }, cwd: tempDir, currentSessionId: "session-1" },
+        shareEnabled: false,
+        sessionRoot: path.join(tempDir, "sessions"),
+        maxSubagentDepth: 2,
+      });
+      try {
+        const reading = await waitForAsyncStatus(id, (status) => status.currentTool === "read");
+        assert.equal(reading.currentPath, "README.md");
+        fs.writeFileSync(editorStart, "start");
+        const editing = await waitForAsyncStatus(id, (status) => status.currentTool === "edit");
+        assert.equal(editing.currentPath, "docs.md");
+        fs.writeFileSync(editorRelease, "finish");
+        const finished = await waitForAsyncStatus(
+          id,
+          (status) => status.steps?.[1]?.status !== "running",
         );
-        if (running.length > 0) {
-          sawRunningTool = true;
-          const paths: Readonly<Record<string, string>> = { read: "README.md", edit: "docs.md" };
-          if (
-            !running.some(
-              (step) =>
-                step.currentTool === status.currentTool && step.currentPath === status.currentPath,
-            ) ||
-            running.some((step) => step.currentPath !== paths[textValue(step.currentTool)])
-          ) {
-            invariantViolated = true;
-            break;
-          }
+        assert.equal(finished.steps?.[0]?.status, "running");
+        assert.equal(finished.steps[0].currentTool, "read");
+        assert.equal(
+          finished.steps[1].status,
+          ending === "process failure" ? "failed" : "complete",
+        );
+        assert.equal(finished.currentTool, "read");
+        assert.equal(finished.currentPath, "README.md");
+        assert.equal(finished.currentToolStartedAt, reading.currentToolStartedAt);
+      } finally {
+        for (const file of [readerRelease, editorStart, editorRelease]) {
+          fs.writeFileSync(file, "finish");
         }
+        await waitForAsyncResultFile(id, 10_000);
       }
-      // Observe runner publication one polling interval at a time.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(50);
-    }
-    await waitForAsyncResultFile(id, 10_000);
-    assert.equal(
-      sawRunningTool,
-      true,
-      "expected at least one polling interval with a running step tool",
-    );
-    assert.equal(
-      invariantViolated,
-      false,
-      "top-level tool/path must belong to the same actual running child",
-    );
-  });
+    });
+  }
 
   for (const fault of ["descriptor", "tracking"] as const) {
     it(`keeps a real detached launch truthful after ${fault} publication fails`, async (t) => {
