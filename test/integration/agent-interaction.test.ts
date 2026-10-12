@@ -5435,6 +5435,20 @@ test("answering in the view releases the real native durable question with human
     "native child consumes the saved answer",
   );
   try {
+    // Live delivery precedes the SDK's tool-result journal write.
+    await until(
+      () =>
+        SessionManager.open(question.sessionFile, undefined, f.cwd)
+          .getEntries()
+          .some(
+            (entry) =>
+              entry.type === "message" &&
+              entry.message.role === "toolResult" &&
+              entry.message.toolCallId === questionCallId &&
+              entry.message.toolName === "contact_supervisor",
+          ),
+      "native human-answer tool result is durably published",
+    );
     await refreshFixture(f);
   } catch (error) {
     const current = f.controller.conversation.task(task.key),
