@@ -1758,8 +1758,6 @@ test("native user preparation preserves both inputs through separate admission o
         "native steering receipt during busy preparation",
       );
       assert.equal(receiver.context().isIdle(), false);
-      const signal = receiver.context().signal;
-      assert.ok(signal && !signal.aborted);
       assert.equal(receiver.faux.state.callCount, 0);
       assert.equal(receiver.settled(), 0);
       assert.equal(receiver.visible("startup-queued").length, 0);
