@@ -7,7 +7,7 @@
 - Unattended remote Intercom: private durable mailboxes with bounded cursor drains, persistent authenticated presence, and optional HTTPS fallback wake after two minutes without consumer acknowledgement. Helper crashes, idle leases and broker outages retain unread messages and unanswered asks. Consumer acknowledgement suppresses fallback without discarding reply obligations.
 - Remote live/saved session discovery, workspace-aware spawn with task/model selection, and resume by stable ID or unique name. Reuse discoverable live owners rather than reopening their journal; retain native model selection and history on resume. Owned cancellation preserves accepted queues, while owned stop observes actual process closure.
 - Certificate-authenticated native control and bounded recent transcripts for updated live Pi owners, plus read-only saved transcripts. Foreign cancellation/shutdown receipts describe the requested native stage and mode limitations; they do not claim process exit or terminate detached work.
-- Persistent named peer groups and broadcasts with per-recipient receipts, explicit partial outcomes and no automatic mutation retries. Client provisioning supports distinct bridge ports and configurable certificate lifetimes for independent instances.
+- Persistent named peer groups and broadcasts with per-recipient receipts, explicit partial outcomes and no automatic mutation retries. Client provisioning supports distinct bridge ports, configurable certificate lifetimes and same-CA server renewal for independent instances.
 
 ### Fixed
 

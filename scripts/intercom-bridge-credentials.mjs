@@ -22,15 +22,16 @@ function errorMessage(error) {
 }
 
 function help() {
-  console.log(`Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke> DIR [NAME] [--cwd PATH] [--port N] [--days N]
+  console.log(`Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke|renew-server> DIR [NAME] [--cwd PATH] [--port N] [--days N]
 
 init    Create a new private CA, loopback server certificate and grok-bot credential.
 issue   Issue a fresh client certificate; preserve local identity policies.
 revoke  Remove the named client from the allowlist. Does not delete saved credentials.
+renew-server  Renew the loopback server key/certificate using the same CA; preserve clients.
 
 Options: --cwd PATH  Local project identity for init/issue (default: current directory)
          --port N    Loopback bridge port for init (default: 9443)
-         --days N    Client certificate validity for init/issue (1–3650, default: 7)
+         --days N    Certificate validity (1–3650; client default: 7, renew-server: 365)
          -h, --help  Show help
 Environment: OPENSSL  OpenSSL executable (default: openssl; requires -addext support)
 
@@ -40,6 +41,7 @@ Examples:
   node scripts/intercom-bridge-credentials.mjs revoke ~/.pi/intercom-bridge grok-bot
 
 After issue/revoke, send SIGHUP to the helper PID to activate the allowlist.
+After renew-server, restart only the helper; existing client credentials remain valid.
 Rotation/revocation stops that identity's helper-launched Pi children; journals remain.
 Concurrent credential commands fail rather than overwrite each other's authorization.
 After a crashed command, inspect DIR/.credentials.lock/owner and remove that lock
@@ -82,7 +84,7 @@ function key(path) {
   privatePath(path);
 }
 
-function issueCertificate(dir, stem, name, server = false) {
+function issueCertificate(dir, stem, name, { server = false, days = 7 } = {}) {
   const keyPath = join(dir, `${stem}.key`);
   const certPath = join(dir, `${stem}.crt`);
   const csrPath = join(dir, `${stem}.csr`);
@@ -107,7 +109,7 @@ function issueCertificate(dir, stem, name, server = false) {
       "-set_serial",
       `0x${randomBytes(16).toString("hex")}`,
       "-days",
-      server ? "365" : String(clientDays),
+      String(days),
       "-sha256",
       "-extfile",
       extPath,
@@ -148,7 +150,7 @@ function readConfig(path) {
 
 let args;
 let port;
-let clientDays;
+let certificateDays;
 try {
   args = parseArgs({
     allowPositionals: true,
@@ -165,21 +167,23 @@ try {
   }
   const [action, dir, name] = args.positionals;
   port = args.values.port === undefined ? 9443 : Number(args.values.port);
-  clientDays = args.values.days === undefined ? 7 : Number(args.values.days);
+  const defaultDays = action === "renew-server" ? 365 : 7;
+  certificateDays = args.values.days === undefined ? defaultDays : Number(args.values.days);
   if (
-    !["init", "issue", "revoke"].includes(action) ||
+    !["init", "issue", "revoke", "renew-server"].includes(action) ||
     !dir ||
     args.positionals.length > 3 ||
-    (action !== "init" && !name) ||
+    (["issue", "revoke"].includes(action) && !name) ||
+    (action === "renew-server" && (name || args.values.cwd)) ||
     (name && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) ||
     (action === "revoke" && (args.values.cwd || args.values.days)) ||
     (action !== "init" && args.values.port !== undefined) ||
     !Number.isInteger(port) ||
     port < 0 ||
     port > 65535 ||
-    !Number.isInteger(clientDays) ||
-    clientDays < 1 ||
-    clientDays > 3650
+    !Number.isInteger(certificateDays) ||
+    certificateDays < 1 ||
+    certificateDays > 3650
   ) {
     throw new Error("Invalid arguments; use --help.");
   }
@@ -235,7 +239,7 @@ try {
       "-out",
       join(dir, "ca.crt"),
     );
-    const server = issueCertificate(dir, "server", "localhost", true);
+    const server = issueCertificate(dir, "server", "localhost", { server: true, days: 365 });
     config = {
       port,
       ca: join(dir, "ca.crt"),
@@ -257,9 +261,29 @@ try {
     console.log(
       JSON.stringify({ revoked: name, config: configPath, next: "Send SIGHUP to the helper PID." }),
     );
+  } else if (action === "renew-server") {
+    privatePath(join(dir, "ca.key"));
+    const server = issueCertificate(dir, `server-${randomBytes(8).toString("hex")}`, "localhost", {
+      server: true,
+      days: certificateDays,
+    });
+    config.cert = server.cert;
+    config.key = server.key;
+    atomicConfig(configPath, config);
+    console.log(
+      JSON.stringify({
+        renewed: "server",
+        ...server,
+        ca: config.ca,
+        config: configPath,
+        next: "Restart only this helper; client keys and CA are unchanged.",
+      }),
+    );
   } else {
     privatePath(join(dir, "ca.key"));
-    const credential = issueCertificate(dir, `${name}-${randomBytes(8).toString("hex")}`, name);
+    const credential = issueCertificate(dir, `${name}-${randomBytes(8).toString("hex")}`, name, {
+      days: certificateDays,
+    });
     const previous = config.clients.find((client) => client.name === name);
     config.clients = config.clients.filter((client) => client.name !== name);
     config.clients.push({

@@ -6,6 +6,7 @@ import { createServer } from "node:https";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { X509Certificate } from "node:crypto";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { bridgeApi, exec, parseCredential, start, stop } from "../support/intercom-bridge.ts";
 import {
@@ -209,6 +210,36 @@ test(
         broker.child.exitCode,
         null,
         "helper lifecycle must preserve the existing shared broker",
+      );
+      await stop(bridge.child);
+
+      const beforeRenewal = record(readJson(configPath));
+      await exec(
+        process.execPath,
+        [
+          join(repo, "scripts/intercom-bridge-credentials.mjs"),
+          "renew-server",
+          join(root, "keys"),
+          "--days",
+          "3650",
+        ],
+        { env },
+      );
+      const renewed = record(readJson(configPath));
+      assert.equal(renewed.ca, beforeRenewal.ca);
+      assert.deepEqual(renewed.clients, beforeRenewal.clients);
+      assert.notEqual(renewed.cert, beforeRenewal.cert);
+      assert.ok(
+        Date.parse(new X509Certificate(readFileSync(text(renewed.cert))).validTo) - Date.now() >
+          9 * 365 * 24 * 60 * 60 * 1000,
+      );
+      Object.assign(config, renewed);
+      bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], helperEnv);
+      const afterRenewal = await bridgeApi(bridge, credential);
+      assert.equal(
+        (await afterRenewal.api("register", {})).body.name,
+        "fitch-os",
+        "same-CA server renewal preserves the existing client key and authorization",
       );
       await stop(bridge.child);
 
