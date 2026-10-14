@@ -1,8 +1,10 @@
 import { EventEmitter, once } from "node:events";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { resolve, join } from "node:path";
-import { errorMessage } from "../../src/shared/unknown.ts";
-import { record, text } from "./assertions.ts";
+import https from "node:https";
+import { readFileSync } from "node:fs";
+import { errorMessage, type UnknownRecord } from "../../src/shared/unknown.ts";
+import { assertDefined, json, numberValue, record, text } from "./assertions.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 interface Credential {
@@ -15,6 +17,66 @@ export interface BridgeProcess {
   readonly child: ChildProcess;
   readonly output: () => string;
   readonly wait: (pattern: RegExp, after?: number) => Promise<string>;
+}
+export interface BridgeApi {
+  readonly url: string;
+  readonly host: unknown;
+  readonly api: (
+    action: string,
+    body?: unknown,
+    extra?: object,
+  ) => Promise<{ readonly status: number; readonly body: UnknownRecord }>;
+}
+export async function bridgeApi(bridge: BridgeProcess, credential: Credential): Promise<BridgeApi> {
+  const listening = await bridge.wait(/"event":"listening"/);
+  const ready = listening
+    .split("\n")
+    .filter((line) => line !== "")
+    .map(json)
+    .find((line) => line.event === "listening");
+  assertDefined(ready);
+  const url = `https://127.0.0.1:${numberValue(ready.port)}`;
+  const tls = {
+    ca: readFileSync(credential.ca),
+    cert: readFileSync(credential.cert),
+    key: readFileSync(credential.key),
+    rejectUnauthorized: true,
+    agent: false as const,
+  };
+  const api = (action: string, body?: unknown, extra = {}) =>
+    new Promise<{ readonly status: number; readonly body: UnknownRecord }>((resolveApi, reject) => {
+      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const req = https.request(
+        `${url}/v1/${action}`,
+        {
+          ...tls,
+          method: payload === undefined ? "GET" : "POST",
+          headers: payload === undefined ? {} : { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(15000),
+          ...extra,
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk: Buffer) => {
+            data += chunk.toString("utf8");
+          });
+          res.on("error", reject);
+          res.on("end", () => {
+            let parsed: UnknownRecord;
+            try {
+              parsed = json(data);
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error(errorMessage(error)));
+              return;
+            }
+            resolveApi({ status: res.statusCode ?? 0, body: parsed });
+          });
+        },
+      );
+      req.on("error", reject);
+      req.end(payload);
+    });
+  return { url, api, host: ready.host };
 }
 export function parseCredential(value: unknown): Credential {
   const input = record(value);

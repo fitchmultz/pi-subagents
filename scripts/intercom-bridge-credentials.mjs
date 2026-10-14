@@ -22,13 +22,15 @@ function errorMessage(error) {
 }
 
 function help() {
-  console.log(`Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke> DIR [NAME] [--cwd PATH]
+  console.log(`Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke> DIR [NAME] [--cwd PATH] [--port N] [--days N]
 
 init    Create a new private CA, loopback server certificate and grok-bot credential.
-issue   Issue a fresh 7-day client certificate; preserve local launch policy.
+issue   Issue a fresh client certificate; preserve local identity policies.
 revoke  Remove the named client from the allowlist. Does not delete saved credentials.
 
 Options: --cwd PATH  Local project identity for init/issue (default: current directory)
+         --port N    Loopback bridge port for init (default: 9443)
+         --days N    Client certificate validity for init/issue (1–3650, default: 7)
          -h, --help  Show help
 Environment: OPENSSL  OpenSSL executable (default: openssl; requires -addext support)
 
@@ -105,7 +107,7 @@ function issueCertificate(dir, stem, name, server = false) {
       "-set_serial",
       `0x${randomBytes(16).toString("hex")}`,
       "-days",
-      server ? "365" : "7",
+      server ? "365" : String(clientDays),
       "-sha256",
       "-extfile",
       extPath,
@@ -145,23 +147,39 @@ function readConfig(path) {
 }
 
 let args;
+let port;
+let clientDays;
 try {
   args = parseArgs({
     allowPositionals: true,
-    options: { help: { type: "boolean", short: "h" }, cwd: { type: "string" } },
+    options: {
+      help: { type: "boolean", short: "h" },
+      cwd: { type: "string" },
+      port: { type: "string" },
+      days: { type: "string" },
+    },
   });
   if (args.values.help) {
     help();
     process.exit(0);
   }
   const [action, dir, name] = args.positionals;
+  port = args.values.port === undefined ? 9443 : Number(args.values.port);
+  clientDays = args.values.days === undefined ? 7 : Number(args.values.days);
   if (
     !["init", "issue", "revoke"].includes(action) ||
     !dir ||
     args.positionals.length > 3 ||
     (action !== "init" && !name) ||
     (name && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) ||
-    (action === "revoke" && args.values.cwd)
+    (action === "revoke" && (args.values.cwd || args.values.days)) ||
+    (action !== "init" && args.values.port !== undefined) ||
+    !Number.isInteger(port) ||
+    port < 0 ||
+    port > 65535 ||
+    !Number.isInteger(clientDays) ||
+    clientDays < 1 ||
+    clientDays > 3650
   ) {
     throw new Error("Invalid arguments; use --help.");
   }
@@ -219,7 +237,7 @@ try {
     );
     const server = issueCertificate(dir, "server", "localhost", true);
     config = {
-      port: 9443,
+      port,
       ca: join(dir, "ca.crt"),
       cert: server.cert,
       key: server.key,
@@ -245,10 +263,10 @@ try {
     const previous = config.clients.find((client) => client.name === name);
     config.clients = config.clients.filter((client) => client.name !== name);
     config.clients.push({
+      ...previous,
       fingerprint256: credential.fingerprint256,
       name,
       cwd: resolve(args.values.cwd || previous?.cwd || process.cwd()),
-      ...(previous?.launch === undefined ? {} : { launch: previous.launch }),
     });
     atomicConfig(configPath, config);
     console.log(

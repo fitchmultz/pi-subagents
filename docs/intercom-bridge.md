@@ -12,7 +12,7 @@ Optional HTTPS messaging proxy and locally controlled Pi-session launcher for a 
 
 **Socket discovery:** reuse the actual `IntercomClient`, `getBrokerSocketPath()` and framing code. With the same Mac uid, `PI_CODING_AGENT_DIR` (default `~/.pi/agent`) and `TMPDIR` as Pi, the preferred path is `$TMPDIR/pi-intercom-<sha256(uid:agentDir)[0:16]>/broker.sock`; long paths fall back to `/tmp`. The client's existing owned-socket legacy fallback is retained. No hardcoded `/var/folders` path, chmod, broker spawn, PID-file operation, or broker restart. An unavailable broker returns an error; start a normal Pi session to bring it up.
 
-**Delivery/lifecycle:** one broker peer per authorized certificate, registered lazily on the first API call, with a five-minute inactivity lease. Poll inbox to maintain presence. Send returns broker acceptance, not proof a model consumed it. Ask steers the recipient and waits at most two minutes for both the exact recipient ID and exact `replyTo`. One outgoing ask per identity. Revocation/expiry/shutdown/client disconnect terminate waits. Inbox is bounded and volatile; overflow is reported, not silently described as successful receipt. Restarting the helper loses inbox contents and pending replies. Upgrade to a durable inbox journal if restart recovery is required; existing Pi recipients still save their own messages normally.
+**Delivery/lifecycle:** one broker peer per authorized certificate, registered lazily when an operation needs the broker, with a five-minute inactivity lease. Poll inbox to maintain presence. Send returns broker acceptance, not proof a model consumed it. Ask steers the recipient and waits at most two minutes for both the exact recipient ID and exact `replyTo`. One outgoing ask per identity. Revocation/expiry/shutdown/client disconnect terminate waits. With a local `stateDir`, inbox intake is committed to private SQLite storage before publication or satisfying an outgoing ask. Unacked messages and unanswered inbound asks survive helper restart, idle-lease retirement and broker outage. Inbox reads are non-destructive, bounded cursor pages; ack deletes only ordinary inbox payloads, and successful reply retires an inbound ask. Sender departure does not discard a reply obligation: reply still targets the saved exact sender ID and returns `peer_offline` without deletion while that ID is offline. Without `stateDir`, the legacy 256-message/4 MiB volatile inbox remains; overflow and lease/shutdown loss are reported. Outgoing HTTP ask waits themselves are not resumed after helper restart; persistent mode retains received answers in inbox for recovery and ack.
 
 **Audit:** JSONL metadata on stdout: request/connection identity, certificate fingerprint, operation, peer/message IDs and outcome. `session_closed` confirms broker disconnection and removal of the retiring session; cancellation still rejects requests immediately. Message/attachment bodies and keys are not logged. Protect logs (0700 directory, 0600 files); rotate them with your normal log tooling. Never publish private config/keys or raw inbox/list output as smoke evidence.
 
@@ -45,6 +45,24 @@ The last JSON line contains paths to the issued client `cert`/`key`, trusted `ca
 }
 ```
 
+### Enable durable mailboxes
+
+Create a dedicated owned **0700** directory and add its absolute path as top-level `stateDir` in the private configuration:
+
+```bash
+mkdir -m 700 "$BRIDGE/mailboxes"
+```
+
+```json
+{ "stateDir": "/Users/mitch/.pi/intercom-bridge/mailboxes" }
+```
+
+This opt-in does not enable launches, change the broker, or require a Pi SDK. Each certificate fingerprint owns a separate **0600** SQLite database. Directory symlinks, database/SQLite-sidecar symlinks, wrong ownership/modes and hard-linked files are rejected. SQLite uses full synchronous commits and a bounded cache; no mailbox-wide hydration is needed. Protect the directory and any backups: databases contain private message bodies, though audit logs do not. `stateDir` changes require helper restart, not SIGHUP.
+
+There is no automatic retention limit on unacked messages or unanswered asks. Pages contain at most 256 messages and 4 MiB of serialized envelopes (plus small response metadata); read additional pages with `nextCursor` while `hasMore` is true. Message IDs remain as payload-free tombstones after completion to suppress duplicate/replayed IDs, including after restart. Provision and monitor disk space. Failed disk admission sets durable `overflow`, `lostMessages` and `storageError` when the loss ledger can still be committed; if that also fails, the helper reports `mailbox_storage_failed` (HTTP 507), closes the affected broker peer and logs metadata with `lossRecorded:false`. A failing disk cannot guarantee durable loss bookkeeping. Broker acceptance alone never proves mailbox persistence or remote consumption.
+
+Persistent inbox/ack calls remain available while the broker is down; they do not require or initiate broker registration. Call `register` or `list` at startup and after an offline period longer than the five-minute presence lease. Regular inbox polling then keeps the current lease alive. Revoked/expired certificates still cannot read stored mail. Mailboxes are fingerprint-scoped: rotating a certificate does not transfer old private mail to its replacement. Retain the old database for local recovery rather than automatically authorizing a new credential to read it.
+
 `cwd` controls presence/project association, **not** an authorization restriction. `list` intentionally returns all connected peer identities, omitting topics/subscriptions. Target full IDs or the returned `target` when names collide. Port `0` requests an ephemeral port, reported in the listening log; a fixed port is easier for SSH.
 
 Start the helper in a dedicated terminal (or supervise this exact command with launchd):
@@ -70,7 +88,7 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fitchmultz.pi-i
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fitchmultz.pi-intercom-bridge.plist"
 ```
 
-The installed agent has no `KeepAlive` auto-restart; stopping its helper really stops access. Remove its plist to disable future login starts permanently. Inspect/drain inbox before a planned helper restart because it is volatile.
+The installed agent has no `KeepAlive` auto-restart; stopping its helper really stops access. Remove its plist to disable future login starts permanently. With `stateDir` enabled, unacked mail survives helper restart. Inspect/drain inbox before restarting a legacy volatile-mode helper.
 
 ### Tunnel and provision Grok
 
@@ -172,7 +190,7 @@ node "$REMOTE" reply --reply-to QUESTION_ID_FROM_INBOX --message 'Proceed with t
 node "$REMOTE" ack ORDINARY_MESSAGE_ID_FROM_INBOX
 ```
 
-Poll inbox at a reasonable cadence (for example every 5–15 seconds) while Grok is available. Fetch is non-destructive, so retrying a fetch cannot lose messages; persist/consume then ack ordinary messages. Inbound asks remain in the inbox until `reply` succeeds; ack does not discard a reply obligation. Use `send` for most coordination and `ask` only when Grok really needs a blocking answer. The CLI has a hard request deadline (ask timeout + 15 seconds), validates TLS, emits JSON, and exits 1 on errors / 2 on invalid arguments. It never retries mutations automatically.
+Poll inbox at a reasonable cadence (for example every 5–15 seconds) while Grok is available. Fetch is non-destructive, so retrying a fetch cannot lose messages; persist/consume then ack ordinary messages. In persistent mode, follow `hasMore` using `inbox --after NEXT_CURSOR --limit 256`; do not treat the first page as the entire inbox. Restart a drain from cursor `0` to revisit unacked messages. Inbound asks remain in the inbox until `reply` succeeds; ack does not discard a reply obligation. Use `send` for most coordination and `ask` only when Grok really needs a blocking answer. The CLI has a hard request deadline (ask timeout + 15 seconds), validates TLS, emits JSON, and exits 1 on errors / 2 on invalid arguments. It never retries mutations automatically.
 
 Curl works too, with bounded waiting and the same TLS files:
 
@@ -188,18 +206,22 @@ curl --fail-with-body --max-time 135 \
 
 All routes require mTLS and the certificate allowlist. Unknown routes/fields, wrong methods, non-JSON bodies, unsafe control characters, and requests larger than 64 KiB are rejected. No CORS; browser-origin requests are rejected. Success is `{ "ok": true, ... }`; application failures are `{ "ok": false, "error": { "code": "...", "message": "..." } }` with a non-2xx status. Certificate/allowlist admission can terminate TLS before HTTP; the CLI reports that as a TLS/transport error. No remote-controlled broker frame or command is passed through.
 
-| Route               | Request                   | Success fields                                                            |
-| ------------------- | ------------------------- | ------------------------------------------------------------------------- |
-| `POST /v1/register` | `{}`                      | `sessionId`, `name` (also automatic on other operations)                  |
-| `GET /v1/list`      | none                      | `sessionId`, `sessions` (metadata + unambiguous targets)                  |
-| `POST /v1/send`     | `{to,message}`            | `id`, `accepted`, `delivered`                                             |
-| `POST /v1/ask`      | `{to,message,timeoutMs?}` | send receipt and `reply:{from,message}`                                   |
-| `GET /v1/inbox`     | none                      | `messages:[{from,message}]`, `overflow`, `lostMessages`                   |
-| `POST /v1/reply`    | `{replyTo,message}`       | send receipt; target derived from the received ask                        |
-| `POST /v1/ack`      | `{ids:[...]}`             | `acked`, `retained`                                                       |
-| `POST /v1/start`    | `{name}`                  | `session:{sessionId,peerId,name,status,pid,sessionFile,error?}`, `reused` |
-| `GET /v1/sessions`  | none                      | `sessions` (only current helper/identity-owned launch records)            |
-| `POST /v1/stop`     | `{sessionId}`             | `session` with observed `exited` status; journal retained                 |
+| Route               | Request                            | Success fields                                                                                   |
+| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `POST /v1/register` | `{}`                               | `sessionId`, `name` (also automatic on other operations)                                         |
+| `GET /v1/list`      | none                               | `sessionId`, `sessions` (metadata + unambiguous targets)                                         |
+| `POST /v1/send`     | `{to,message}`                     | `id`, `accepted`, `delivered`                                                                    |
+| `POST /v1/ask`      | `{to,message,timeoutMs?}`          | send receipt and `reply:{from,message}`                                                          |
+| `GET /v1/inbox`     | `?after=CURSOR&limit=N` (optional) | `messages:[{from,message}]`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
+| `POST /v1/reply`    | `{replyTo,message}`                | send receipt; target derived from the received ask                                               |
+| `POST /v1/ack`      | `{ids:[...]}`                      | `acked`, `retained`                                                                              |
+| `POST /v1/start`    | `{name}`                           | `session:{sessionId,peerId,name,status,pid,sessionFile,error?}`, `reused`                        |
+| `GET /v1/sessions`  | none                               | `sessions` (only current helper/identity-owned launch records)                                   |
+| `POST /v1/stop`     | `{sessionId}`                      | `session` with observed `exited` status; journal retained                                        |
+
+Inbox `after` is an opaque decimal sequence cursor (`0` starts a drain), not a message ID or offset. `limit` is 1–256, default 256; unknown/repeated query keys and invalid cursors are rejected. Ack accepts at most 256 IDs per request and is idempotent; it returns asks in `retained`. Persistent duplicate IDs never increment loss counts or replace the original envelope. In persistent mode an answer returned by `ask` is also retained in inbox; ack its `reply.message.id` after consuming it.
+
+The storage API also supports opt-in durable notification intents for a local delivery worker: `Mailbox(stateDir, fingerprint, true)`, `pendingNotifications(after, limit)` and `notificationAccepted(messageId)`. Pending envelopes expose local `receivedAt` and `acknowledged` metadata. Intake and notification intent commit in one SQLite insert. Remote ack/reply hides the inbox row but preserves the notification envelope until the worker marks it accepted; notification acceptance never acknowledges unread mail. This API does not post webhooks or enable any wake service on its own.
 
 Timeout does **not** retract a delivered ask; a late answer can arrive in inbox. Offline/missing peers, broker outages, ambiguous/self targets, a second concurrent ask, invalid/revoked credentials, timeout, and resource limits have explicit errors. HTTP send/list deadlines are bounded by the real client (8/5 seconds); broker registration by 10 seconds. A lost HTTP response or acknowledgement timeout means **delivery unknown**—inspect inbox/local peer before retrying to avoid duplicate instructions.
 
@@ -230,7 +252,7 @@ Confirm the reload/revocation audit record, that Grok disappears from the local 
 
 ## Verification / smoke transcript
 
-The process-boundary tests use a private real broker, real TLS certificates, actual HTTPS requests and the remote CLI. Launch tests use the actually installed Pi dependency graph with a selected-host native faux provider (no paid inference or external credentials); they prove native persistence, zero pre-startup inference, real Intercom wake/tool reply, ownership/caps, startup failure/abort/deadline, safe dialog cancellation, presence-lease independence, short-lived certificate expiry, rotation/revocation and child exit before helper shutdown completes:
+The process-boundary tests use a private real broker, real TLS certificates, actual HTTPS requests and the remote CLI. Mailbox coverage includes cold SIGKILL restart, sender reconnection, idle-lease retirement, broker-outage reads/acks, more than both former count/byte caps, bounded cursor drains, deduplication, failed storage admission, private-file enforcement and notification/ack races across process restarts. Launch tests use the actually installed Pi dependency graph with a selected-host native faux provider (no paid inference or external credentials); they prove native persistence, zero pre-startup inference, real Intercom wake/tool reply, ownership/caps, startup failure/abort/deadline, safe dialog cancellation, presence-lease independence, short-lived certificate expiry, rotation/revocation and child exit before helper shutdown completes:
 
 ```bash
 node --test test/integration/intercom-bridge.test.ts test/integration/intercom-bridge-launch.test.ts

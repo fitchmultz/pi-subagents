@@ -4,7 +4,8 @@ import { ASK_TIMEOUT, Fault, INBOX_COUNT, label, object, text } from "./bridge-p
 import { body } from "./bridge-http.ts";
 
 export type Operation =
-  | { readonly route: "GET /v1/list" | "GET /v1/inbox" | "POST /v1/register" }
+  | { readonly route: "GET /v1/list" | "POST /v1/register" }
+  | { readonly route: "GET /v1/inbox"; readonly after: number; readonly limit: number }
   | { readonly route: "GET /v1/sessions" }
   | { readonly route: "POST /v1/start"; readonly name: string }
   | { readonly route: "POST /v1/stop"; readonly sessionId: string }
@@ -46,10 +47,18 @@ export function routeFor(req: IncomingMessage): Route {
   ) {
     throw new Fault(403, "browser_forbidden", "Browser access is not supported.");
   }
-  const route = `${req.method ?? ""} ${req.url ?? ""}`;
+  const route = `${req.method ?? ""} ${(req.url ?? "").split("?")[0]}`;
   if (!isRoute(route)) {
     throw new Fault(404, "not_found", "Unknown method or path.");
   }
+  if (req.url?.includes("?") === true && route !== "GET /v1/inbox") {
+    throw new Fault(400, "invalid_input", "Only inbox accepts query parameters.");
+  }
+  checkGetBody(req);
+  return route;
+}
+
+function checkGetBody(req: IncomingMessage): void {
   if (
     req.method === "GET" &&
     (req.headers["transfer-encoding"] !== undefined ||
@@ -57,7 +66,34 @@ export function routeFor(req: IncomingMessage): Route {
   ) {
     throw new Fault(400, "invalid_input", "GET requests must not have a body.");
   }
-  return route;
+}
+
+function inboxQuery(req: IncomingMessage): Extract<Operation, { readonly route: "GET /v1/inbox" }> {
+  const url = req.url ?? "";
+  const separator = url.indexOf("?");
+  const query = new URLSearchParams(separator === -1 ? "" : url.slice(separator + 1));
+  if (
+    [...query.keys()].some(
+      (key) => !["after", "limit"].includes(key) || query.getAll(key).length !== 1,
+    )
+  ) {
+    throw new Fault(400, "invalid_input", "Unknown or repeated inbox query parameter.");
+  }
+  const after = query.get("after") ?? "0";
+  const limit = query.get("limit") ?? String(INBOX_COUNT);
+  if (
+    !/^(0|[1-9]\d{0,15})$/.test(after) ||
+    !Number.isSafeInteger(Number(after)) ||
+    !/^[1-9]\d{0,2}$/.test(limit) ||
+    Number(limit) > INBOX_COUNT
+  ) {
+    throw new Fault(
+      400,
+      "invalid_input",
+      "after must be a nonnegative safe integer cursor; limit must be 1..256.",
+    );
+  }
+  return { route: "GET /v1/inbox", after: Number(after), limit: Number(limit) };
 }
 
 function timeout(value: unknown): number {
@@ -76,10 +112,11 @@ export async function operationFor(
   const input = req.method === "POST" ? object(await body(req, signal), fields[route]) : {};
   switch (route) {
     case "GET /v1/list":
-    case "GET /v1/inbox":
     case "POST /v1/register":
     case "GET /v1/sessions":
       return { route };
+    case "GET /v1/inbox":
+      return inboxQuery(req);
     case "POST /v1/start":
       return { route, name: label(input.name, "session name", 64).trim() };
     case "POST /v1/stop":
