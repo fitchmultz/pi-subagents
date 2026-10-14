@@ -114,11 +114,14 @@ export function start(
   file: string,
   args: readonly string[],
   env: Readonly<NodeJS.ProcessEnv>,
+  extraPipe = false,
 ): BridgeProcess {
   const child = spawn(process.execPath, [join(repo, file), ...args], {
     env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", ...(extraPipe ? (["pipe"] as const) : [])],
   });
+  assertDefined(child.stdout);
+  assertDefined(child.stderr);
   const events = new EventEmitter();
   let output = "";
   child.stdout.on("data", (chunk) => {

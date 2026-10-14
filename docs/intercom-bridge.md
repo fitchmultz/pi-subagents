@@ -227,10 +227,10 @@ api() { # api METHOD PATH [JSON]
 | ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `POST /v1/register`     | `{}`                                                      | `sessionId`, `name`; other routes register automatically                        |
 | `GET /v1/list`          | —                                                         | live peers with unambiguous `target`s                                           |
-| `POST /v1/send`         | `{to,message}`                                            | `id`, `accepted`, `delivered`                                                   |
+| `POST /v1/send`         | `{to,message,passive?,messageId?}`                        | `id`, `accepted`, `delivered`                                                   |
 | `POST /v1/ask`          | `{to,message,timeoutMs?}`                                 | send receipt and `reply:{from,message}`                                         |
 | `POST /v1/reply`        | `{replyTo,message}`                                       | send receipt to the ask's saved sender                                          |
-| `GET /v1/inbox`         | `?after=CURSOR&limit=1..256`                              | `messages`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
+| `GET /v1/inbox`         | `?after=CURSOR&limit=1..256&waitMs=0..10000`              | `messages`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
 | `POST /v1/ack`          | `{ids:[...]}`, at most 256                                | `acked`, `retained`                                                             |
 | `POST /v1/broadcast`    | `{message,group?}`                                        | `status`, per-target `receipts`, member `errors`                                |
 | `GET /v1/groups`        | —                                                         | this identity's `groups`                                                        |
@@ -248,19 +248,27 @@ api() { # api METHOD PATH [JSON]
 
 Ask waits up to two minutes (`timeoutMs` 100–120000) for the exact recipient and `replyTo`; each identity has one outgoing ask at a time. A timeout doesn't retract a delivered ask, and a late answer arrives in the inbox. Spawn, resume and transcript lookup have a 75-second helper deadline (90 seconds in the CLI); ask has its timeout plus 15 seconds; other routes have 15 seconds. Live transcript controls keep their separate native response deadline; saved name lookup may scan the full catalog.
 
+Send defaults to active delivery (`steer`). Only `send` accepts the optional boolean `passive`; `true` maps to native `delivery:"passive"`, and `false` keeps the default. Use `node intercom-remote.mjs send --passive --to PEER --message TEXT` for mail without a model wake. Older helpers reject the unknown `passive` field before sending; the client never retries without it or redirects a failed mutation. Upgrade the receiving helper and consumer before relying on end-to-end no-wake delivery.
+
+Only `send` accepts an optional `messageId` (`--id ID` in the CLI): a nonblank string of at most 512 characters with no C0/C1 control characters or DEL. The ID is passed unchanged to the native recipient and returned as the receipt's `id`; omitting it still generates a random UUID. A stable ID does not guarantee deduplication, exactly-once delivery or a single provider run, and does not make retrying an unknown outcome safe. Older helpers reject the unknown field without sending; the client never retries without it.
+
 ### Mailbox, presence and wake
 
 **Intake.** Every message addressed to the identity is committed to its SQLite mailbox (full synchronous writes) before the helper surfaces it or completes a waiting ask. Unread mail and unanswered asks survive helper crashes, restarts and broker outages. There is no retention limit, so monitor disk space. If a write fails, the mailbox records `overflow`, `lostMessages` and `storageError`. If the loss itself can't be recorded, requests return 507 `mailbox_storage_failed` and the audit log shows `lossRecorded:false`.
 
 **Reading.** `GET /v1/inbox` returns a non-destructive page of at most 256 messages and 4 MiB. Keep reading with `after=nextCursor` while `hasMore` is true; start again from `0` to revisit unacked mail. The cursor is an opaque sequence number. Inbox and ack work while the broker is down.
 
+`waitMs` is an optional integer from 0 to 10000 (default 0, an immediate read). If the requested cursor page is empty, a positive wait returns as soon as matching mail is committed, a new admission loss is recorded, or the wait expires. Existing backlog returns immediately. Timeout returns a fresh empty page with the same cursor and current loss status; reads and waits never ack or consume mail. Use `node intercom-remote.mjs inbox --after CURSOR --wait-ms 10000`. Cancelling an inbox request cancels only that read, not other requests or the identity's broker connection. Revocation, certificate expiry, broker disconnect and helper shutdown still cancel the Session's outstanding requests. All requests, including waiting reads, share the eight-request cap per identity.
+
 **Acknowledging.** Ack an ordinary message to delete its payload; its ID stays as a tombstone so replays are ignored. Ack an ask to record that you've stored it: it appears in `retained`, stays in the inbox as a reply obligation and never triggers a fallback wake. A successful `reply` retires the ask. Reply goes to the ask's saved sender ID; if that sender is offline, it returns `peer_offline` and keeps the obligation. Ack is idempotent. In persistent mode, an answer returned by `ask` is also kept in the inbox; ack `reply.message.id` once you've consumed it.
 
 **Presence.** After the first authenticated connection, the helper writes a private presence proof (identity, `cwd` and certificate expiry) to `stateDir` and keeps the identity registered with the broker, refreshing every 15 seconds. It stays registered without remote polling until the certificate expires, the identity changes or is revoked, or the helper stops. A restarted helper restores presence from that proof without any remote request. A revoked identity is never restored.
 
-**Primary wake.** The remote consumer owns waking its agent. Poll the inbox, for example every 15 seconds; append each message to durable storage and fsync it; only then ack it. A crash before the ack replays the message, so deduplicate by `message.id`.
+**Primary wake.** The remote consumer owns waking its agent. Reissue bounded inbox waits without a polling sleep; append each message to durable storage and fsync it; only then ack it. Advance an in-memory tail cursor only after durable intake, draining all `hasMore` pages immediately. Keep that cursor across waits so already-stored retained asks don't cause a busy loop; restart from `0` after a crash and deduplicate by `message.id`. Keep failed ack obligations for retry even after advancing the tail. Each identity needs its own outstanding wait so an empty inbox cannot delay another identity. A wait timeout or reconnect is not a reason to wake an agent. This notification path requires a running consumer; cold-consumer fallback remains separate.
 
-**Fallback wake.** If a message stays unacked for at least 120 seconds, the helper POSTs one wake for the oldest such message to `GROK_WAKE_WEBHOOK_URL` with `Authorization: Bearer <GROK_WAKE_WEBHOOK_KEY>` and this body:
+**Passive mail.** Native `delivery:"passive"` and legacy `passive:true` messages stay readable and ACKable in the mailbox, but never trigger the helper's fallback webhook, including after restart. Suppressing a notification does not acknowledge or consume the message. Consumers must also honor these flags: durably store and expose passive mail without invoking their own wake webhook. Passive backlogs do not prevent active mail on later pages from triggering fallback.
+
+**Fallback wake.** If an active message stays unacked for at least 120 seconds, the helper POSTs one wake for the oldest such message to `GROK_WAKE_WEBHOOK_URL` with `Authorization: Bearer <GROK_WAKE_WEBHOOK_KEY>` and this body:
 
 ```json
 {

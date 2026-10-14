@@ -9,9 +9,20 @@ import { transcriptOptions, type TranscriptOptions } from "./transcript.ts";
 
 export type MessagingOperation =
   | { readonly route: "GET /v1/list" | "POST /v1/register" }
-  | { readonly route: "GET /v1/inbox"; readonly after: number; readonly limit: number }
+  | {
+      readonly route: "GET /v1/inbox";
+      readonly after: number;
+      readonly limit: number;
+      readonly waitMs: number;
+    }
   | { readonly route: "POST /v1/ack"; readonly ids: readonly string[] }
-  | { readonly route: "POST /v1/send"; readonly to: string; readonly message: string }
+  | {
+      readonly route: "POST /v1/send";
+      readonly to: string;
+      readonly message: string;
+      readonly passive?: boolean;
+      readonly messageId?: string;
+    }
   | {
       readonly route: "POST /v1/ask";
       readonly to: string;
@@ -73,7 +84,7 @@ const fields = {
   "GET /v1/inbox": [],
   "POST /v1/register": [],
   "POST /v1/ack": ["ids"],
-  "POST /v1/send": ["to", "message"],
+  "POST /v1/send": ["to", "message", "passive", "messageId"],
   "POST /v1/ask": ["to", "message", "timeoutMs"],
   "POST /v1/reply": ["replyTo", "message"],
   "POST /v1/start": ["name"],
@@ -134,22 +145,29 @@ function queryFor(req: IncomingMessage, allowed: readonly string[]): URLSearchPa
   return query;
 }
 function inboxQuery(req: IncomingMessage): Extract<Operation, { readonly route: "GET /v1/inbox" }> {
-  const query = queryFor(req, ["after", "limit"]);
+  const query = queryFor(req, ["after", "limit", "waitMs"]);
   const after = query.get("after") ?? "0";
   const limit = query.get("limit") ?? String(INBOX_COUNT);
+  const waitMs = query.get("waitMs") ?? "0";
   if (
     !/^(0|[1-9]\d{0,15})$/.test(after) ||
     !Number.isSafeInteger(Number(after)) ||
     !/^[1-9]\d{0,2}$/.test(limit) ||
-    Number(limit) > INBOX_COUNT
+    Number(limit) > INBOX_COUNT ||
+    !/^(0|[1-9]\d{0,3}|10000)$/.test(waitMs)
   ) {
     throw new Fault(
       400,
       "invalid_input",
-      "after must be a nonnegative safe integer cursor; limit must be 1..256.",
+      "after must be a nonnegative safe integer cursor; limit must be 1..256; waitMs must be 0..10000.",
     );
   }
-  return { route: "GET /v1/inbox", after: Number(after), limit: Number(limit) };
+  return {
+    route: "GET /v1/inbox",
+    after: Number(after),
+    limit: Number(limit),
+    waitMs: Number(waitMs),
+  };
 }
 function pageNumber(value: string | null, fallback: number, min: number, max: number): number {
   const number = value === null ? fallback : Number(value);
@@ -288,7 +306,7 @@ function messagingOperation(
       }
       return { route, ids: [...new Set(input.ids.map((id) => label(id, "message ID")))] };
     case "POST /v1/send":
-      return { route, message: text(input.message), to: label(input.to, "to").trim() };
+      return send(input);
     case "POST /v1/ask":
       return {
         route,
@@ -304,6 +322,18 @@ function messagingOperation(
     case "POST /v1/capabilities":
       return nativeControl(route, input);
   }
+}
+function send(input: Readonly<Record<string, unknown>>): MessagingOperation {
+  if (input.passive !== undefined && typeof input.passive !== "boolean") {
+    throw new Fault(400, "invalid_input", "passive must be a boolean.");
+  }
+  return {
+    route: "POST /v1/send",
+    message: text(input.message),
+    to: label(input.to, "to").trim(),
+    passive: input.passive,
+    messageId: input.messageId === undefined ? undefined : label(input.messageId, "message ID"),
+  };
 }
 export async function operationFor(
   req: IncomingMessage,

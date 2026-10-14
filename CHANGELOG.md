@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Event-driven remote inbox waits through optional `waitMs` (0–10000 ms) and CLI `inbox --wait-ms`, preserving immediate reads by default, durable cursor paging and explicit acknowledgement.
+
+### Fixed
+
+- Cancelling an inbox read no longer disconnects the certificate-bound native identity or interrupts unrelated requests. Revocation, expiry, broker disconnect and shutdown still cancel outstanding waits.
+
 ## [0.48.0] - 2026-10-14
 
 ### Added

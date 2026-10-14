@@ -2,12 +2,13 @@ import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
-import { on } from "node:events";
+import { on, once } from "node:events";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { Duplex } from "node:stream";
 import { Type } from "typebox";
 import {
   createAgentSessionRuntime,
@@ -190,11 +191,20 @@ test(
     mkdirSync(join(root, "state"), { mode: 0o700 });
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
     process.env.PI_INTERCOM_BRIDGE_CONFIG = configPath;
-    const broker = start("src/pi-intercom/broker/broker.ts", [], env);
+    const broker = start("test/fixtures/intercom-fanout-broker.ts", [], env, true);
+    const gate = broker.child.stdio[3];
+    assert.ok(gate instanceof Duplex);
+    gate.on("error", () => {
+      // Killing the isolated broker may reset this pipe; gate entry and outcomes are asserted.
+    });
     let bridge: ReturnType<typeof start> | undefined;
     const clients: IntercomClient[] = [];
     const cleanup: { owner?: Awaited<ReturnType<typeof nativeOwner>> } = {};
     t.after(async () => {
+      if (broker.child.exitCode === null && broker.child.signalCode === null) {
+        broker.child.kill("SIGCONT");
+        gate.write(Buffer.from([1]));
+      }
       await cleanup.owner?.runtime.dispose();
       await Promise.all(clients.map((client) => client.disconnect()));
       if (bridge !== undefined) {
@@ -587,16 +597,18 @@ test(
           assert.equal(targets.length, 6);
           const message = `FANOUT_${mode}`;
           const received = new Map<string, string[]>();
+          const secondDelivery: PromiseWithResolvers<void> = Promise.withResolvers();
+          const entered = once(gate, "data", { signal: AbortSignal.timeout(15000) });
+          const outputStart = broker.output().length;
           let interrupted = false;
+          let gateHeld = false;
           const listeners = targets.map((client) => {
             const id = text(client.sessionId);
             const listener = (_from: SessionInfo, incoming: Message) => {
               if (incoming.content.text === message) {
                 received.set(id, [...(received.get(id) ?? []), incoming.id]);
-                // Sequential sends prove an earlier acknowledgement before the second delivery.
-                if (!interrupted && received.size === 2) {
-                  interrupted = true;
-                  broker.child.kill(mode === "stall" ? "SIGSTOP" : "SIGKILL");
+                if (received.size === 2) {
+                  secondDelivery.resolve();
                 }
               }
             };
@@ -604,7 +616,13 @@ test(
             return { client, listener };
           });
           try {
-            const result = await cli("broadcast", "--message", message);
+            const pending = cli("broadcast", "--message", message);
+            const [witness] = await Promise.all([entered, secondDelivery.promise]);
+            assert.equal(String(witness[0]), "E");
+            gateHeld = true;
+            const gated = await broker.wait(/"event":"ack_gate_entered"/, outputStart);
+            interrupted = broker.child.kill(mode === "stall" ? "SIGSTOP" : "SIGKILL");
+            const result = await pending;
             assert.equal(interrupted, true, "outage begins only after a real recipient receives");
             assert.equal(result.ok, false);
             assert.equal(result.cliExitCode, 1);
@@ -621,6 +639,7 @@ test(
             );
             const accepted = receipts.filter((receipt) => receipt.accepted === true);
             assert.ok(accepted.length > 0, "prior broker acknowledgements survive the outage");
+            assert.equal(accepted.length, 1);
             for (const receipt of accepted) {
               assert.ok(received.get(text(receipt.peer))?.includes(text(receipt.id)) === true);
             }
@@ -631,6 +650,15 @@ test(
             assert.equal(unknown.length, 1, "only the in-flight mutation may be unknown");
             const uncertain = record(unknown[0]);
             const uncertainId = text(record(uncertain.error).id);
+            assert.ok(
+              gated
+                .slice(outputStart)
+                .split("\n")
+                .filter((line) => line.startsWith("{"))
+                .map(json)
+                .some((entry) => entry.messageId === uncertainId),
+              "the unknown mutation is held before its native delivered acknowledgement",
+            );
             assertDefined(bridge);
             assert.ok(
               bridge
@@ -648,12 +676,15 @@ test(
             );
             const unattempted = receipts.filter((receipt) => receipt.attempted === false);
             assert.ok(unattempted.length > 0);
+            assert.equal(unattempted.length, 4);
             for (const receipt of unattempted) {
               assert.equal(received.has(text(receipt.peer)), false);
               assert.equal(record(receipt.error).deliveryUnknown, false);
             }
             if (mode === "stall") {
               broker.child.kill("SIGCONT");
+              gate.write(Buffer.from([1]));
+              gateHeld = false;
               // A native round-trip fence consumes prior frames without retrying the uncertain mutation.
               await Promise.all(
                 targets.map(async (client) => {
@@ -665,15 +696,14 @@ test(
             }
             assert.ok([...received.values()].every((ids) => ids.length === 1));
             const eventual = received.get(text(uncertain.peer));
-            if (eventual !== undefined) {
-              assert.deepEqual(eventual, [uncertainId], "late delivery uses the same unknown ID");
-            }
+            assert.deepEqual(eventual, [uncertainId], "late delivery uses the same unknown ID");
             for (const receipt of unattempted) {
               assert.equal(received.has(text(receipt.peer)), false, "no automatic fanout retry");
             }
           } finally {
-            if (mode === "stall") {
+            if (mode === "stall" && gateHeld) {
               broker.child.kill("SIGCONT");
+              gate.write(Buffer.from([1]));
             }
             for (const { client, listener } of listeners) {
               client.off("message", listener);

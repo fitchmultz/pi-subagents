@@ -133,6 +133,12 @@ test(
           ["send", { to: peer.sessionId, message: "unsafe", type: "unregister" }],
           ["presence", {}],
           ["send", { to: peer.sessionId, message: "bad\u001bcontrol" }],
+          ...[null, "true", 1, {}, []].map(
+            (passive) =>
+              ["send", { to: peer.sessionId, message: "invalid passive flag", passive }] as const,
+          ),
+          ["ask", { to: peer.sessionId, message: "invalid passive ask", passive: true }],
+          ["reply", { replyTo: "missing", message: "invalid passive reply", passive: true }],
         ] as const) {
           // Each rejection is acknowledged before the next security case is sent.
           // oxlint-disable-next-line no-await-in-loop
@@ -176,8 +182,165 @@ test(
           message: "BODY_SENTINEL_NOT_FOR_LOGS",
         });
         assert.equal(sent.body.accepted, true);
-        assert.equal((await receiving).from.id, remoteId);
+        const received = await receiving;
+        assert.equal(received.from.id, remoteId);
+        assert.equal(received.message.id, sent.body.id);
+        assert.match(
+          text(sent.body.id),
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        assert.equal(received.message.delivery, "steer");
+        for (const passive of [false, true]) {
+          const messageId = passive ? " exact HTTP passive ID " : "x".repeat(512);
+          const incoming = nextMessage(peer);
+          // oxlint-disable-next-line no-await-in-loop
+          const receipt = await api("send", {
+            to: peer.sessionId,
+            message: `HTTP passive=${passive}`,
+            passive,
+            messageId,
+          });
+          assert.equal(receipt.body.accepted, true);
+          assert.equal(receipt.body.id, messageId);
+          // oxlint-disable-next-line no-await-in-loop
+          const delivered = await incoming;
+          assert.equal(delivered.message.id, messageId);
+          assert.equal(delivered.message.delivery, passive ? "passive" : "steer");
+          assert.equal(delivered.message.content.text, `HTTP passive=${passive}`);
+        }
+        for (const messageId of [undefined, " exact CLI passive ID ", "c".repeat(512)]) {
+          const passiveIncoming = nextMessage(peer);
+          // oxlint-disable-next-line no-await-in-loop
+          const output = await exec(
+            process.execPath,
+            [
+              join(repo, "scripts/intercom-remote.mjs"),
+              "send",
+              "--passive",
+              ...(messageId === undefined ? [] : ["--id", messageId]),
+              "--to",
+              text(peer.sessionId),
+              "--message",
+              "CLI passive\nexact text",
+            ],
+            { env: cliEnv },
+          );
+          const passiveReceipt = json(output.stdout);
+          assert.equal(passiveReceipt.accepted, true);
+          if (messageId === undefined) {
+            assert.match(
+              text(passiveReceipt.id),
+              /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+            );
+            assert.notEqual(passiveReceipt.id, sent.body.id);
+          } else {
+            assert.equal(passiveReceipt.id, messageId);
+          }
+          // oxlint-disable-next-line no-await-in-loop
+          const passiveMessage = await passiveIncoming;
+          assert.equal(passiveMessage.message.id, passiveReceipt.id);
+          assert.equal(passiveMessage.message.delivery, "passive");
+          assert.equal(passiveMessage.message.content.text, "CLI passive\nexact text");
+        }
+        await assert.rejects(
+          exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), "ask", "--passive"], {
+            env: cliEnv,
+          }),
+          /Unexpected arguments for this action/,
+        );
         assert.equal((await api("send", { to: "offline-peer", message: "hello" })).status, 404);
+      });
+
+      await t.test("stable IDs reject invalid and non-send inputs before dispatch", async () => {
+        const received: string[] = [];
+        const observe = (...args: readonly unknown[]) => {
+          received.push(envelope({ from: args[0], message: args[1] }).message.id);
+        };
+        peer.on("message", observe);
+        try {
+          const invalidIds = ["", " ", "x".repeat(513), "a\nb", "a\u0000b", "a\u007fb", "a\u009fb"];
+          for (const messageId of [...invalidIds, null, true, 1, {}, []]) {
+            // oxlint-disable-next-line no-await-in-loop
+            const rejected = await api("send", {
+              to: peer.sessionId,
+              message: "invalid ID",
+              messageId,
+            });
+            assert.equal(rejected.status, 400);
+            assert.equal(record(rejected.body.error).code, "invalid_input");
+            assert.equal(record(rejected.body.error).message, "Invalid message ID.");
+          }
+          for (const [action, body] of [
+            ["ask", { to: peer.sessionId, message: "invalid ask", timeoutMs: 100 }],
+            ["reply", { replyTo: "missing", message: "invalid reply" }],
+            ["broadcast", { message: "invalid broadcast" }],
+            ["register", {}],
+          ] as const) {
+            // oxlint-disable-next-line no-await-in-loop
+            const rejected = await api(action, { ...body, messageId: "send-only" });
+            assert.equal(rejected.status, 400);
+            assert.equal(record(rejected.body.error).code, "invalid_input");
+            assert.equal(record(rejected.body.error).message, "Unknown field.");
+          }
+          for (const { args, reason } of [
+            // NUL cannot occur in an OS argv; its public HTTP boundary is covered above.
+            ...invalidIds
+              .filter((id) => !id.includes("\u0000"))
+              .map((id) => ({
+                args: [
+                  "send",
+                  "--to",
+                  text(peer.sessionId),
+                  "--message",
+                  "invalid ID",
+                  `--id=${id}`,
+                ],
+                reason: "Invalid message ID.",
+              })),
+            {
+              args: [
+                "send",
+                "--to",
+                text(peer.sessionId),
+                "--message",
+                "duplicate ID",
+                "--id=one",
+                "--id=two",
+              ],
+              reason: "--id must not be repeated.",
+            },
+            ...["ask", "reply", "broadcast", "group-send", "list", "ack", "spawn"].map(
+              (action) => ({
+                args: [action, "--id=send-only"],
+                reason: "Unexpected arguments for this action.",
+              }),
+            ),
+          ]) {
+            // No TLS credentials: argument validation must happen before any transport setup.
+            // oxlint-disable-next-line no-await-in-loop
+            await assert.rejects(
+              exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), ...args], {
+                env: {},
+              }),
+              (error: unknown) =>
+                error instanceof Error &&
+                record(error.cause).code === 2 &&
+                error.message.includes('"code":"invalid_arguments"') &&
+                error.message.includes(reason),
+            );
+          }
+          const fence = nextMessage(peer);
+          const sent = await api("send", { to: peer.sessionId, message: "ID rejection fence" });
+          assert.equal(sent.body.accepted, true);
+          assert.equal((await fence).message.id, sent.body.id);
+          assert.deepEqual(
+            received,
+            [sent.body.id],
+            "rejected requests must publish no native message",
+          );
+        } finally {
+          peer.off("message", observe);
+        }
       });
 
       await t.test(
@@ -265,6 +428,30 @@ test(
             (await peer.listSessions()).find((row) => row.id === remoteId)?.acceptsAsks,
             false,
           );
+          const offset = activeBridge.output().length;
+          const waiting = api(`inbox?after=${text(full.body.nextCursor)}&waitMs=10000`, undefined, {
+            signal: AbortSignal.timeout(3000),
+          });
+          await activeBridge.wait(/"event":"inbox_wait"/, offset);
+          const duplicateId = messages(full.body)[0].message.id;
+          await peer.send(remoteId, {
+            text: "volatile duplicate records a loss",
+            messageId: duplicateId,
+          });
+          await activeBridge.wait(
+            new RegExp(`"messageId":"${duplicateId}".*"result":"duplicate"`),
+            offset,
+          );
+          const released = await waiting;
+          assert.equal(released.status, 200);
+          assert.deepEqual(messages(released.body), []);
+          assert.equal(released.body.nextCursor, full.body.nextCursor);
+          assert.equal(
+            released.body.lostMessages,
+            2,
+            "a volatile duplicate releases the wait on its recorded loss",
+          );
+          assert.equal(released.body.overflow, true);
           await api("ack", { ids: messages(full.body).map((item) => item.message.id) });
           assert.equal(messages((await api("inbox")).body).length, 0);
         },
@@ -320,8 +507,8 @@ test(
           assert.equal(messages(afterLoss).length, 0);
           assert.equal(
             afterLoss.lostMessages,
-            2,
-            "legacy overflow plus cancellation loss remain visible",
+            3,
+            "legacy overflow, duplicate replay and cancellation loss remain visible",
           );
           await stop(activeBroker.child);
           const down = await api("list");
@@ -466,6 +653,13 @@ test(
       );
       assert.equal(statSync(mailboxPath).mode & 0o777, 0o600);
       assert.equal(statSync(mailboxPath).uid, process.getuid?.());
+      const cliEnv = {
+        ...env,
+        INTERCOM_BRIDGE_URL: restarted.url,
+        INTERCOM_BRIDGE_CA: credential.ca,
+        INTERCOM_BRIDGE_CERT: credential.cert,
+        INTERCOM_BRIDGE_KEY: credential.key,
+      };
 
       await t.test(
         "ordinary ack and exact saved sender survive departure and reconnection",
@@ -515,6 +709,194 @@ test(
           assert.equal(envelope(result.body.reply).message.id, reply.id);
           assert.equal(messages((await api("inbox")).body)[0].message.id, reply.id);
           await api("ack", { ids: [reply.id] });
+        },
+      );
+
+      await t.test(
+        "inbox waits release after commit, respect cursors and never consume mail",
+        async () => {
+          assertDefined(bridge);
+          const started = Date.now();
+          const empty = await api("inbox?waitMs=80");
+          assert.equal(empty.status, 200);
+          assert.deepEqual(messages(empty.body), []);
+          assert.equal(empty.body.nextCursor, "0");
+          assert.ok(Date.now() - started >= 70, "an empty longpoll waits for its bounded timeout");
+
+          let offset = bridge.output().length;
+          const waiting = api("inbox?waitMs=10000", undefined, {
+            signal: AbortSignal.timeout(3000),
+          });
+          await bridge.wait(/"event":"inbox_wait"/, offset);
+          const passive = await peer.send(remoteId, {
+            text: "passive release after durable admission",
+            delivery: "passive",
+          });
+          const released = await waiting;
+          assert.equal(released.status, 200);
+          assert.deepEqual(
+            messages(released.body).map((item) => item.message.id),
+            [passive.id],
+          );
+          assert.equal(messages(released.body)[0].message.delivery, "passive");
+          const db = new DatabaseSync(mailboxPath);
+          try {
+            const row = db.prepare("SELECT envelope,acked FROM mailbox WHERE id=?").get(passive.id);
+            assertDefined(row);
+            assert.equal(row.acked, 0);
+            assert.equal(envelope(json(text(row.envelope))).message.id, passive.id);
+          } finally {
+            db.close();
+          }
+          const backlog = await api("inbox?waitMs=10000", undefined, {
+            signal: AbortSignal.timeout(3000),
+          });
+          assert.deepEqual(backlog.body.messages, released.body.messages);
+          assert.equal(backlog.body.nextCursor, released.body.nextCursor);
+          assert.deepEqual((await api("inbox?waitMs=0")).body.messages, released.body.messages);
+          const cliImmediate = json(
+            (
+              await exec(
+                process.execPath,
+                [join(repo, "scripts/intercom-remote.mjs"), "inbox", "--wait-ms=0"],
+                { env: cliEnv },
+              )
+            ).stdout,
+          );
+          assert.deepEqual(cliImmediate.messages, released.body.messages);
+          await api("ack", { ids: [passive.id] });
+
+          const ask = await peer.send(remoteId, { text: "retained ask", expectsReply: true });
+          await bridge.wait(new RegExp(`"messageId":"${ask.id}"`));
+          const tail = text((await api("inbox")).body.nextCursor);
+          assert.deepEqual((await api("ack", { ids: [ask.id] })).body.retained, [ask.id]);
+          offset = bridge.output().length;
+          let settled = false;
+          const next = api(`inbox?after=${tail}&waitMs=10000`, undefined, {
+            signal: AbortSignal.timeout(3000),
+          }).then((result) => {
+            settled = true;
+            return result;
+          });
+          await bridge.wait(/"event":"inbox_wait"/, offset);
+          await peer.send(remoteId, {
+            text: "duplicate retained ask must not cause a read spin",
+            messageId: ask.id,
+            expectsReply: true,
+          });
+          await bridge.wait(new RegExp(`"messageId":"${ask.id}".*"result":"duplicate"`), offset);
+          await api("list"); // Owner processed the duplicate before this negative assertion.
+          assert.equal(settled, false, "a retained ask before the cursor must not release a wait");
+          const futureCursor = String(Number(tail) + 10);
+          offset = bridge.output().length;
+          const future = api(`inbox?after=${futureCursor}&waitMs=150`);
+          await bridge.wait(new RegExp(`"event":"inbox_wait".*"after":${futureCursor}`), offset);
+          const activeNotice = await peer.send(remoteId, {
+            text: "active cursor release",
+            delivery: "steer",
+          });
+          const page = (await next).body;
+          assert.deepEqual(
+            messages(page).map((item) => item.message.id),
+            [activeNotice.id],
+          );
+          assert.equal(messages(page)[0].message.content.text, "active cursor release");
+          assert.equal(messages(page)[0].message.delivery, "steer");
+          const unmatched = (await future).body;
+          assert.deepEqual(messages(unmatched), []);
+          assert.equal(unmatched.nextCursor, futureCursor, "notifications never advance a cursor");
+
+          offset = bridge.output().length;
+          const cliWait = exec(
+            process.execPath,
+            [
+              join(repo, "scripts/intercom-remote.mjs"),
+              "inbox",
+              "--after",
+              text(page.nextCursor),
+              "--wait-ms",
+              "10000",
+            ],
+            { env: cliEnv },
+          );
+          await bridge.wait(/"event":"inbox_wait"/, offset);
+          const cliNotice = await peer.send(remoteId, { text: "maintained CLI longpoll" });
+          assert.deepEqual(
+            messages(json((await cliWait).stdout)).map((item) => item.message.id),
+            [cliNotice.id],
+          );
+          assert.deepEqual(
+            (await api("ack", { ids: [activeNotice.id, cliNotice.id] })).body.acked,
+            [activeNotice.id, cliNotice.id],
+          );
+          const receiving = nextMessage(peer);
+          await api("reply", { replyTo: ask.id, message: "retire retained obligation" });
+          assert.equal((await receiving).message.replyTo, ask.id);
+        },
+      );
+
+      await t.test(
+        "cancelling inbox leaves a concurrent ask and native identity intact",
+        async () => {
+          assertDefined(bridge);
+          const receiving = nextMessage(peer);
+          const asking = api("ask", {
+            to: peer.sessionId,
+            message: "survive read cancellation",
+            timeoutMs: 5000,
+          });
+          const outgoing = await receiving;
+          const cancelled = new AbortController();
+          const offset = bridge.output().length;
+          const waiting = api("inbox?waitMs=10000", undefined, { signal: cancelled.signal });
+          const rejected = assert.rejects(waiting);
+          await bridge.wait(/"event":"inbox_wait"/, offset);
+          cancelled.abort();
+          await rejected;
+          await bridge.wait(/"event":"request".*"result":"client_aborted"/, offset);
+          assert.ok(!bridge.output().slice(offset).includes('"event":"session_closed"'));
+          assert.equal(
+            (await peer.listSessions()).find((row) => row.id === remoteId)?.name,
+            "grok-bot",
+          );
+          const reply = await peer.send(remoteId, {
+            text: "ask remained live",
+            replyTo: outgoing.message.id,
+          });
+          const answer = await asking;
+          assert.equal(answer.status, 200);
+          assert.equal(envelope(answer.body.reply).message.id, reply.id);
+          assert.deepEqual((await api("ack", { ids: [reply.id] })).body.acked, [reply.id]);
+        },
+      );
+
+      await t.test(
+        "inbox waits share the eight-request cap and release slots on cancellation",
+        async () => {
+          assertDefined(bridge);
+          const offset = bridge.output().length;
+          const controllers = Array.from({ length: 8 }, () => new AbortController());
+          const pending = controllers.map((controller) =>
+            assert.rejects(
+              api("inbox?waitMs=10000", undefined, {
+                signal: controller.signal,
+              }),
+            ),
+          );
+          await bridge.wait(/(?:[\s\S]*?"event":"inbox_wait"){8}/, offset);
+          const excess = await api("inbox");
+          assert.equal(excess.status, 429);
+          assert.equal(record(excess.body.error).code, "too_many_requests");
+          for (const controller of controllers) {
+            controller.abort();
+          }
+          await Promise.all(pending);
+          await bridge.wait(
+            /(?:[\s\S]*?"event":"request"[^\n]*"result":"client_aborted"){8}/,
+            offset,
+          );
+          assert.equal((await api("register", {})).body.sessionId, remoteId);
+          assert.ok(!bridge.output().slice(offset).includes('"event":"session_closed"'));
         },
       );
 
@@ -572,6 +954,10 @@ test(
             "after=01",
             "limit=1&limit=2",
             "unknown=1",
+            ...["", "-1", "10001", "1.5", "1e3", "01", "+1", " 1", "Infinity"].map(
+              (value) => `waitMs=${encodeURIComponent(value)}`,
+            ),
+            "waitMs=1&waitMs=2",
           ]) {
             // Each invalid request must reach the public parser and be rejected.
             // oxlint-disable-next-line no-await-in-loop
@@ -588,6 +974,8 @@ test(
                   text(firstPage.nextCursor),
                   "--limit",
                   "1",
+                  "--wait-ms",
+                  "10000",
                 ],
                 {
                   env: {
@@ -602,6 +990,32 @@ test(
             ).stdout,
           );
           assert.equal(messages(result)[0].message.id, expected[256]);
+          for (const value of ["", "-1", "10001", "1.5", "1e3", "01", "+1", " 1", "Infinity"]) {
+            // Validation must fail before TLS/file loading, with the maintained CLI's argument exit.
+            // oxlint-disable-next-line no-await-in-loop
+            await assert.rejects(
+              exec(process.execPath, [
+                join(repo, "scripts/intercom-remote.mjs"),
+                "inbox",
+                `--wait-ms=${value}`,
+              ]),
+              (error: unknown) =>
+                error instanceof Error &&
+                record(error.cause).code === 2 &&
+                error.message.includes("--wait-ms must be 0..10000"),
+            );
+          }
+          for (const args of [
+            ["inbox", "--wait-ms=1", "--wait-ms=2"],
+            ["list", "--wait-ms=0"],
+          ]) {
+            // Repeated and misplaced wait options cannot silently select a different operation.
+            // oxlint-disable-next-line no-await-in-loop
+            await assert.rejects(
+              exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), ...args]),
+              (error: unknown) => error instanceof Error && record(error.cause).code === 2,
+            );
+          }
           const ackFirst = expected.slice(0, 256);
           assert.deepEqual((await api("ack", { ids: ackFirst })).body.acked, ackFirst);
           assert.deepEqual(
@@ -669,6 +1083,161 @@ test(
       );
 
       await t.test(
+        "broker disconnect, revocation, invalid reload and shutdown settle admitted inbox waits",
+        async () => {
+          assertDefined(bridge);
+          await stop(bridge.child);
+          bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
+          api = (await bridgeApi(bridge, credential)).api;
+          await api("register", {});
+          let offset = bridge.output().length;
+          const disconnected = api("inbox?after=9007199254740991&waitMs=10000");
+          await bridge.wait(/"event":"inbox_wait"/, offset);
+          assertDefined(broker);
+          await stop(broker.child);
+          const down = await disconnected;
+          assert.equal(down.status, 503);
+          assert.equal(record(down.body.error).code, "broker_disconnected");
+          await bridge.wait(/"event":"session_closed".*"result":"broker_disconnected"/, offset);
+          broker = start("src/pi-intercom/broker/broker.ts", [], env);
+          await broker.wait(/Intercom broker started/);
+          await peer.connect({ name: "saved-sender", cwd: root, model: "fixture" });
+          await api("register", {});
+
+          const clients = config.clients;
+          for (const mode of ["revoked", "invalid", "shutdown"]) {
+            // Each transition owns a distinct pending HTTP request, admitted by its audit event.
+            offset = bridge.output().length;
+            const pending = api("inbox?after=9007199254740991&waitMs=10000").catch(() => null);
+            // oxlint-disable-next-line no-await-in-loop
+            await bridge.wait(/"event":"inbox_wait"/, offset);
+            if (mode === "shutdown") {
+              // oxlint-disable-next-line no-await-in-loop
+              await stop(bridge.child);
+              assert.equal(
+                bridge.child.exitCode,
+                0,
+                "shutdown must finish without the SIGKILL guard",
+              );
+              assert.match(bridge.output().slice(offset), /"event":"shutdown","result":"closed"/);
+            } else {
+              config.clients = [];
+              writeFileSync(
+                configPath,
+                mode === "invalid" ? '{"clients":' : JSON.stringify(config),
+                { mode: 0o600 },
+              );
+              bridge.child.kill("SIGHUP");
+              // oxlint-disable-next-line no-await-in-loop
+              await bridge.wait(/"event":"allowlist_reloaded"/, offset);
+              // oxlint-disable-next-line no-await-in-loop
+              await assert.rejects(api("inbox"));
+            }
+            // oxlint-disable-next-line no-await-in-loop
+            const result = await pending;
+            assert.ok(result === null || result.body.ok === false, "no revoked data is exposed");
+            if (mode !== "shutdown") {
+              // The denied generation owns its socket until retirement, even after HTTP ends.
+              // oxlint-disable-next-line no-await-in-loop
+              await bridge.wait(/"event":"session_closed"/, offset);
+            }
+            config.clients = clients;
+            writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+            if (mode === "shutdown") {
+              bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
+              // oxlint-disable-next-line no-await-in-loop
+              api = (await bridgeApi(bridge, credential)).api;
+            } else {
+              offset = bridge.output().length;
+              bridge.child.kill("SIGHUP");
+              // oxlint-disable-next-line no-await-in-loop
+              await bridge.wait(/"event":"allowlist_reloaded"/, offset);
+            }
+            // oxlint-disable-next-line no-await-in-loop
+            assert.equal((await api("register", {})).body.ok, true);
+          }
+        },
+      );
+
+      await t.test(
+        "certificate expiry settles an admitted inbox wait and retires its identity",
+        async () => {
+          assertDefined(bridge);
+          const dir = join(root, "short-lived");
+          mkdirSync(dir, { mode: 0o700 });
+          writeFileSync(join(dir, "index"), "");
+          writeFileSync(join(dir, "serial"), "0100\n");
+          const caConfig = join(dir, "openssl.cnf");
+          writeFileSync(
+            caConfig,
+            `[ca]\ndefault_ca=local\n[local]\ndatabase=${dir}/index\nserial=${dir}/serial\nnew_certs_dir=${dir}\ncertificate=${root}/keys/ca.crt\nprivate_key=${root}/keys/ca.key\ndefault_md=sha256\npolicy=names\nx509_extensions=client\n[names]\ncommonName=supplied\n[client]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n`,
+            { mode: 0o600 },
+          );
+          const csr = join(dir, "client.csr");
+          const cert = join(dir, "client.crt");
+          await exec("openssl", [
+            "req",
+            "-new",
+            "-key",
+            credential.key,
+            "-subj",
+            "/CN=short-lived",
+            "-out",
+            csr,
+          ]);
+          const date = (ms: number) =>
+            new Date(ms).toISOString().replace(/[-:]/g, "").replace("T", "").slice(2, 14) + "Z";
+          await exec("openssl", [
+            "ca",
+            "-batch",
+            "-notext",
+            "-config",
+            caConfig,
+            "-in",
+            csr,
+            "-out",
+            cert,
+            "-startdate",
+            date(Date.now() - 1000),
+            "-enddate",
+            date(Date.now() + 5000),
+          ]);
+          const short = {
+            ...credential,
+            cert,
+            fingerprint256: new X509Certificate(readFileSync(cert)).fingerprint256,
+          };
+          const clients = config.clients;
+          config.clients = [
+            ...records(clients),
+            { fingerprint256: short.fingerprint256, name: "short-lived", cwd: root },
+          ];
+          writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+          let offset = bridge.output().length;
+          bridge.child.kill("SIGHUP");
+          await bridge.wait(/"event":"allowlist_reloaded"/, offset);
+          const shortApi = (await bridgeApi(bridge, short)).api;
+          const shortId = text((await shortApi("register", {})).body.sessionId);
+          offset = bridge.output().length;
+          const pending = shortApi("inbox?waitMs=10000").catch(() => null);
+          await bridge.wait(/"event":"inbox_wait".*"name":"short-lived"/, offset);
+          const result = await pending;
+          assert.ok(result === null || result.body.ok === false);
+          await bridge.wait(
+            /"event":"session_closed".*"name":"short-lived".*"result":"certificate_expired"/,
+            offset,
+          );
+          await assert.rejects(shortApi("inbox"));
+          assert.ok(!(await peer.listSessions()).some((row) => row.id === shortId));
+          config.clients = clients;
+          writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+          offset = bridge.output().length;
+          bridge.child.kill("SIGHUP");
+          await bridge.wait(/"event":"allowlist_reloaded"/, offset);
+        },
+      );
+
+      await t.test(
         "storage admission failure is recorded durably without a false receipt",
         async () => {
           const db = new DatabaseSync(mailboxPath);
@@ -676,16 +1245,22 @@ test(
             db.exec(
               "CREATE TRIGGER reject_intake BEFORE INSERT ON mailbox BEGIN SELECT RAISE(FAIL, 'BODY_SENTINEL_NOT_FOR_LOGS'); END",
             );
-            const rejected = await peer.send(remoteId, { text: "BODY_SENTINEL_NOT_FOR_LOGS" });
             assertDefined(bridge);
+            const offset = bridge.output().length;
+            const waiting = api("inbox?waitMs=10000", undefined, {
+              signal: AbortSignal.timeout(3000),
+            });
+            await bridge.wait(/"event":"inbox_wait"/, offset);
+            const rejected = await peer.send(remoteId, { text: "BODY_SENTINEL_NOT_FOR_LOGS" });
             await bridge.wait(
               new RegExp(`"messageId":"${rejected.id}".*"result":"storage_failed"`),
             );
-            const failed = (await api("inbox")).body;
+            const failed = (await waiting).body;
             assert.equal(failed.overflow, true);
             assert.equal(failed.storageError, true);
             assert.equal(failed.lostMessages, 1);
             assert.equal(messages(failed).length, 0);
+            assert.deepEqual((await api("inbox")).body.messages, failed.messages);
             assert.equal(
               (await peer.listSessions()).find((row) => row.id === remoteId)?.acceptsAsks,
               false,
