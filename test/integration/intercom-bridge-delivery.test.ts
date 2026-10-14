@@ -8,8 +8,10 @@ import { performance } from "node:perf_hooks";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { X509Certificate } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
+import { createMessageReader, writeMessage } from "../../src/pi-intercom/broker/framing.ts";
+import { getBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { bridgeApi, exec, parseCredential, start, stop } from "../support/intercom-bridge.ts";
 import {
   assertDefined,
@@ -23,6 +25,12 @@ import {
 
 const repo = resolve(import.meta.dirname, "../..");
 const relayDelayMs = 250;
+
+async function advanceClock(bridge: ReturnType<typeof start>, signal: NodeJS.Signals) {
+  const after = bridge.output().length;
+  bridge.child.kill(signal);
+  await bridge.wait(/"event":"fixture_clock"/, after);
+}
 
 function delayedRelay(port: number) {
   const sockets = new Set<Socket>();
@@ -180,8 +188,126 @@ test(
       await broker.wait(/Intercom broker started/);
       await peer.connect({ name: "local-sender", cwd: root, model: "fixture" });
       bridge = start("test/fixtures/intercom-bridge-clock.ts", ["--config", configPath], helperEnv);
-      const first = await bridgeApi(bridge, credential);
+      let first = await bridgeApi(bridge, credential);
       const remoteId = text((await first.api("register", {})).body.sessionId);
+      const mailboxPath = join(
+        stateDir,
+        `${credential.fingerprint256.replaceAll(":", "").toUpperCase()}.sqlite`,
+      );
+      const passive: { readonly id: string; readonly text: string }[] = [];
+      const modes = [{ delivery: "passive" as const }, { passive: true }];
+      for (let index = 0; index < 257; index++) {
+        const body = `passive ${index}: exact\nmailbox text`;
+        // Cross the notification count boundary through the real broker, using both native forms.
+        // oxlint-disable-next-line no-await-in-loop
+        const sent = await peer.send(remoteId, {
+          text: body,
+          ...modes[index % 2],
+        });
+        passive.push({ id: sent.id, text: body });
+      }
+      await bridge.wait(new RegExp(`"messageId":"${passive[256].id}"`));
+      await advanceClock(bridge, "SIGUSR1");
+      await advanceClock(bridge, "SIGALRM");
+      assert.ok(
+        !bridge.output().includes('"event":"fixture_fetch"'),
+        "unacknowledged passive messages must never invoke the webhook after the fallback threshold",
+      );
+      const suppressed = new DatabaseSync(mailboxPath);
+      try {
+        assert.equal(
+          suppressed.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE notified=0").get()?.count,
+          0,
+          "the entire passive notification backlog must be retired, not only its first page",
+        );
+      } finally {
+        suppressed.close();
+      }
+      const coldBody = "passive intake just before crash";
+      // Older senders emitted only passive:true; the current SDK also adds delivery:"passive".
+      const legacy = createConnection({ path: getBrokerSocketPath() });
+      t.after(() => legacy.destroy());
+      const registration = new Promise<unknown>((resolveRegistration, reject) => {
+        legacy.on("data", createMessageReader(resolveRegistration, reject));
+        legacy.once("error", reject);
+      });
+      writeMessage(legacy, {
+        type: "register",
+        requestedId: "legacy-sender",
+        session: { cwd: root, model: "fixture" },
+      });
+      assert.equal(record(await registration).sessionId, "legacy-sender");
+      const coldId = randomUUID();
+      writeMessage(legacy, {
+        type: "send",
+        to: remoteId,
+        message: {
+          id: coldId,
+          timestamp: Date.now(),
+          passive: true,
+          content: { text: coldBody },
+        },
+      });
+      passive.push({ id: coldId, text: coldBody });
+      await bridge.wait(new RegExp(`"messageId":"${coldId}"`));
+      legacy.end();
+      const passiveCrash = once(bridge.child, "close", { signal: t.signal });
+      bridge.child.kill("SIGKILL");
+      await passiveCrash;
+      bridge = start("test/fixtures/intercom-bridge-clock.ts", ["--config", configPath], helperEnv);
+      await bridge.wait(/"event":"listening"/);
+      bridge.child.kill("SIGALRM");
+      await bridge.wait(/"event":"registered"/);
+      await bridge.wait(/"event":"fixture_clock"/);
+      const passiveRecovered = await bridgeApi(bridge, credential);
+      first = passiveRecovered;
+      await advanceClock(bridge, "SIGUSR1");
+      await advanceClock(bridge, "SIGALRM");
+      // Restart resets the fixture clock; also age mail received under the previous clock.
+      await advanceClock(bridge, "SIGUSR1");
+      assert.ok(!bridge.output().includes('"event":"fixture_fetch"'));
+      const pageOne = (await passiveRecovered.api("inbox")).body;
+      const pageTwo = (await passiveRecovered.api(`inbox?after=${text(pageOne.nextCursor)}`)).body;
+      assert.equal(pageOne.hasMore, true);
+      assert.equal(pageTwo.hasMore, false);
+      const recoveredPassive = [...records(pageOne.messages), ...records(pageTwo.messages)];
+      assert.deepEqual(
+        recoveredPassive.map((entry) => ({
+          id: record(entry.message).id,
+          text: record(record(entry.message).content).text,
+        })),
+        passive,
+        "suppressing a notification must not acknowledge, prune or consume passive mail",
+      );
+      assert.deepEqual(
+        (await passiveRecovered.api("ack", { ids: passive.slice(0, 256).map((entry) => entry.id) }))
+          .body.acked,
+        passive.slice(0, 256).map((entry) => entry.id),
+      );
+      assert.deepEqual(
+        (await passiveRecovered.api("ack", { ids: passive.slice(256).map((entry) => entry.id) }))
+          .body.acked,
+        passive.slice(256).map((entry) => entry.id),
+      );
+      assert.deepEqual((await passiveRecovered.api("inbox")).body.messages, []);
+      await stop(bridge.child);
+      bridge = start("test/fixtures/intercom-bridge-clock.ts", ["--config", configPath], helperEnv);
+      await bridge.wait(/"event":"listening"/);
+      bridge.child.kill("SIGALRM");
+      await bridge.wait(/"event":"registered"/);
+      first = await bridgeApi(bridge, credential);
+      assert.deepEqual((await first.api("inbox")).body.messages, []);
+
+      // An active message behind another full passive page still gets the normal delayed fallback.
+      const largePassive: string[] = [];
+      for (let index = 0; index < 6; index++) {
+        // oxlint-disable-next-line no-await-in-loop
+        const sent = await peer.send(remoteId, {
+          text: `${index}:${"x".repeat(850000)}`,
+          delivery: "passive",
+        });
+        largePassive.push(sent.id);
+      }
       const notice = await peer.send(remoteId, { text: "fallback payload" });
       const ask = await peer.send(remoteId, {
         text: "already durably consumed ask",
@@ -189,10 +315,6 @@ test(
       });
       await bridge.wait(new RegExp(`"messageId":"${ask.id}"`));
       assert.deepEqual((await first.api("ack", { ids: [ask.id] })).body.retained, [ask.id]);
-      const mailboxPath = join(
-        stateDir,
-        `${credential.fingerprint256.replaceAll(":", "").toUpperCase()}.sqlite`,
-      );
       const db = new DatabaseSync(mailboxPath);
       let receivedAt: number;
       try {
@@ -202,8 +324,7 @@ test(
       } finally {
         db.close();
       }
-      bridge.child.kill("SIGUSR1");
-      await bridge.wait(/"event":"fixture_clock"/);
+      await advanceClock(bridge, "SIGUSR1");
       bridge.child.kill("SIGALRM");
       await bridge.wait(/"result":"http_rejected"/);
       assert.equal(
@@ -265,7 +386,7 @@ test(
       try {
         assert.equal(
           stored.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE acked=0").get()?.count,
-          2,
+          8,
           "webhook acceptance is not consumer acknowledgement or model consumption",
         );
       } finally {
@@ -299,6 +420,10 @@ test(
       }
       t.diagnostic(JSON.stringify({ relayDelayMs, elapsed }));
       const recovered = await bridgeApi(bridge, credential);
+      assert.deepEqual(
+        (await recovered.api("ack", { ids: largePassive })).body.acked,
+        largePassive,
+      );
       assert.deepEqual((await recovered.api("ack", { ids: [notice.id] })).body.acked, [notice.id]);
       const afterAck = bridge.output().length;
       bridge.child.kill("SIGUSR2");

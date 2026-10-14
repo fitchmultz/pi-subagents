@@ -18,10 +18,8 @@ const IDLE_TIMEOUT = 5 * 60 * 1000;
 const SEND_TIMEOUT = 8000;
 const LIST_TIMEOUT = 5000;
 
-interface SendOptions {
+interface SendOptions extends Pick<Message, "replyTo" | "expectsReply" | "delivery"> {
   readonly messageId?: string;
-  readonly replyTo?: string;
-  readonly expectsReply?: boolean;
 }
 export interface SessionOwner {
   readonly stateDir?: string;
@@ -502,6 +500,7 @@ export class Session {
             (await this.target(operation.to, context.signal)).id,
             operation.message,
             context,
+            { delivery: operation.passive === true ? "passive" : "steer" },
           )),
         };
       case "POST /v1/reply":

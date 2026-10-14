@@ -11,7 +11,12 @@ export type MessagingOperation =
   | { readonly route: "GET /v1/list" | "POST /v1/register" }
   | { readonly route: "GET /v1/inbox"; readonly after: number; readonly limit: number }
   | { readonly route: "POST /v1/ack"; readonly ids: readonly string[] }
-  | { readonly route: "POST /v1/send"; readonly to: string; readonly message: string }
+  | {
+      readonly route: "POST /v1/send";
+      readonly to: string;
+      readonly message: string;
+      readonly passive?: boolean;
+    }
   | {
       readonly route: "POST /v1/ask";
       readonly to: string;
@@ -73,7 +78,7 @@ const fields = {
   "GET /v1/inbox": [],
   "POST /v1/register": [],
   "POST /v1/ack": ["ids"],
-  "POST /v1/send": ["to", "message"],
+  "POST /v1/send": ["to", "message", "passive"],
   "POST /v1/ask": ["to", "message", "timeoutMs"],
   "POST /v1/reply": ["replyTo", "message"],
   "POST /v1/start": ["name"],
@@ -288,7 +293,7 @@ function messagingOperation(
       }
       return { route, ids: [...new Set(input.ids.map((id) => label(id, "message ID")))] };
     case "POST /v1/send":
-      return { route, message: text(input.message), to: label(input.to, "to").trim() };
+      return send(input);
     case "POST /v1/ask":
       return {
         route,
@@ -304,6 +309,17 @@ function messagingOperation(
     case "POST /v1/capabilities":
       return nativeControl(route, input);
   }
+}
+function send(input: Readonly<Record<string, unknown>>): MessagingOperation {
+  if (input.passive !== undefined && typeof input.passive !== "boolean") {
+    throw new Fault(400, "invalid_input", "passive must be a boolean.");
+  }
+  return {
+    route: "POST /v1/send",
+    message: text(input.message),
+    to: label(input.to, "to").trim(),
+    passive: input.passive,
+  };
 }
 export async function operationFor(
   req: IncomingMessage,

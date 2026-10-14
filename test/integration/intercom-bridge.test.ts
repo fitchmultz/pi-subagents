@@ -133,6 +133,12 @@ test(
           ["send", { to: peer.sessionId, message: "unsafe", type: "unregister" }],
           ["presence", {}],
           ["send", { to: peer.sessionId, message: "bad\u001bcontrol" }],
+          ...[null, "true", 1, {}, []].map(
+            (passive) =>
+              ["send", { to: peer.sessionId, message: "invalid passive flag", passive }] as const,
+          ),
+          ["ask", { to: peer.sessionId, message: "invalid passive ask", passive: true }],
+          ["reply", { replyTo: "missing", message: "invalid passive reply", passive: true }],
         ] as const) {
           // Each rejection is acknowledged before the next security case is sent.
           // oxlint-disable-next-line no-await-in-loop
@@ -176,7 +182,53 @@ test(
           message: "BODY_SENTINEL_NOT_FOR_LOGS",
         });
         assert.equal(sent.body.accepted, true);
-        assert.equal((await receiving).from.id, remoteId);
+        const received = await receiving;
+        assert.equal(received.from.id, remoteId);
+        assert.equal(received.message.delivery, "steer");
+        for (const passive of [false, true]) {
+          const incoming = nextMessage(peer);
+          // oxlint-disable-next-line no-await-in-loop
+          const receipt = await api("send", {
+            to: peer.sessionId,
+            message: `HTTP passive=${passive}`,
+            passive,
+          });
+          assert.equal(receipt.body.accepted, true);
+          // oxlint-disable-next-line no-await-in-loop
+          const delivered = await incoming;
+          assert.equal(delivered.message.id, receipt.body.id);
+          assert.equal(delivered.message.delivery, passive ? "passive" : "steer");
+          assert.equal(delivered.message.content.text, `HTTP passive=${passive}`);
+        }
+        const passiveIncoming = nextMessage(peer);
+        const passiveReceipt = json(
+          (
+            await exec(
+              process.execPath,
+              [
+                join(repo, "scripts/intercom-remote.mjs"),
+                "send",
+                "--passive",
+                "--to",
+                text(peer.sessionId),
+                "--message",
+                "CLI passive\nexact text",
+              ],
+              { env: cliEnv },
+            )
+          ).stdout,
+        );
+        assert.equal(passiveReceipt.accepted, true);
+        const passiveMessage = await passiveIncoming;
+        assert.equal(passiveMessage.message.id, passiveReceipt.id);
+        assert.equal(passiveMessage.message.delivery, "passive");
+        assert.equal(passiveMessage.message.content.text, "CLI passive\nexact text");
+        await assert.rejects(
+          exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), "ask", "--passive"], {
+            env: cliEnv,
+          }),
+          /Unexpected arguments for this action/,
+        );
         assert.equal((await api("send", { to: "offline-peer", message: "hello" })).status, 404);
       });
 

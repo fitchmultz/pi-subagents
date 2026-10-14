@@ -227,7 +227,7 @@ api() { # api METHOD PATH [JSON]
 | ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `POST /v1/register`     | `{}`                                                      | `sessionId`, `name`; other routes register automatically                        |
 | `GET /v1/list`          | —                                                         | live peers with unambiguous `target`s                                           |
-| `POST /v1/send`         | `{to,message}`                                            | `id`, `accepted`, `delivered`                                                   |
+| `POST /v1/send`         | `{to,message,passive?}`                                   | `id`, `accepted`, `delivered`                                                   |
 | `POST /v1/ask`          | `{to,message,timeoutMs?}`                                 | send receipt and `reply:{from,message}`                                         |
 | `POST /v1/reply`        | `{replyTo,message}`                                       | send receipt to the ask's saved sender                                          |
 | `GET /v1/inbox`         | `?after=CURSOR&limit=1..256`                              | `messages`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
@@ -248,6 +248,8 @@ api() { # api METHOD PATH [JSON]
 
 Ask waits up to two minutes (`timeoutMs` 100–120000) for the exact recipient and `replyTo`; each identity has one outgoing ask at a time. A timeout doesn't retract a delivered ask, and a late answer arrives in the inbox. Spawn, resume and transcript lookup have a 75-second helper deadline (90 seconds in the CLI); ask has its timeout plus 15 seconds; other routes have 15 seconds. Live transcript controls keep their separate native response deadline; saved name lookup may scan the full catalog.
 
+Send defaults to active delivery (`steer`). Only `send` accepts the optional boolean `passive`; `true` maps to native `delivery:"passive"`, and `false` keeps the default. Use `node intercom-remote.mjs send --passive --to PEER --message TEXT` for mail without a model wake. Older helpers reject the unknown `passive` field before sending; the client never retries without it or redirects a failed mutation. Upgrade the receiving helper and consumer before relying on end-to-end no-wake delivery.
+
 ### Mailbox, presence and wake
 
 **Intake.** Every message addressed to the identity is committed to its SQLite mailbox (full synchronous writes) before the helper surfaces it or completes a waiting ask. Unread mail and unanswered asks survive helper crashes, restarts and broker outages. There is no retention limit, so monitor disk space. If a write fails, the mailbox records `overflow`, `lostMessages` and `storageError`. If the loss itself can't be recorded, requests return 507 `mailbox_storage_failed` and the audit log shows `lossRecorded:false`.
@@ -260,7 +262,9 @@ Ask waits up to two minutes (`timeoutMs` 100–120000) for the exact recipient a
 
 **Primary wake.** The remote consumer owns waking its agent. Poll the inbox, for example every 15 seconds; append each message to durable storage and fsync it; only then ack it. A crash before the ack replays the message, so deduplicate by `message.id`.
 
-**Fallback wake.** If a message stays unacked for at least 120 seconds, the helper POSTs one wake for the oldest such message to `GROK_WAKE_WEBHOOK_URL` with `Authorization: Bearer <GROK_WAKE_WEBHOOK_KEY>` and this body:
+**Passive mail.** Native `delivery:"passive"` and legacy `passive:true` messages stay readable and ACKable in the mailbox, but never trigger the helper's fallback webhook, including after restart. Suppressing a notification does not acknowledge or consume the message. Consumers must also honor these flags: durably store and expose passive mail without invoking their own wake webhook. Passive backlogs do not prevent active mail on later pages from triggering fallback.
+
+**Fallback wake.** If an active message stays unacked for at least 120 seconds, the helper POSTs one wake for the oldest such message to `GROK_WAKE_WEBHOOK_URL` with `Authorization: Bearer <GROK_WAKE_WEBHOOK_KEY>` and this body:
 
 ```json
 {

@@ -15,6 +15,7 @@ Environment (required):
 Options:
   --to PEER            Recipient name, peer ID or native ID for messages/controls
   --message TEXT       Message for send/ask/reply
+  --passive            Send only: mailbox delivery without waking the recipient
   --reply-to ID        Inbound ask ID from inbox, for reply
   --timeout-ms MS      Ask: 100..120000 (default 120000); control: 100..10000 (default 3000)
   --after CURSOR       Inbox cursor from nextCursor (default: 0)
@@ -68,7 +69,7 @@ function allowedOptions(action) {
     broadcast: ["message", "group"],
     "group-send": ["message", "group"],
     "group-upsert": ["name", "members", "name-pattern", "cwd-pattern"],
-    send: ["to", "message"],
+    send: ["to", "message", "passive"],
     ask: ["to", "message", "timeout-ms"],
     reply: ["reply-to", "message"],
   };
@@ -183,6 +184,7 @@ function requestBody(action, options, ids, timeout) {
       to: recipient,
       message: options.message,
       ...(action === "ask" ? { timeoutMs: timeout } : {}),
+      ...(options.passive === true ? { passive: true } : {}),
     };
   }
   if (action === "ack") {
@@ -249,6 +251,7 @@ try {
       help: { type: "boolean", short: "h" },
       to: { type: "string" },
       message: { type: "string" },
+      passive: { type: "boolean" },
       "reply-to": { type: "string" },
       "timeout-ms": { type: "string" },
       after: { type: "string" },

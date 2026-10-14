@@ -55,21 +55,29 @@ export class WakeDelivery {
     if (!this.authorized()) {
       return;
     }
-    const entries = this.mailbox.pendingNotifications().messages;
-    for (const entry of entries) {
-      if (entry.acknowledged) {
-        // The box's durable worker owns primary wake/replay after acknowledgement.
-        this.mailbox.notificationAccepted(entry.message.id);
+    let after = 0;
+    let page;
+    do {
+      page = this.mailbox.pendingNotifications(after);
+      let next: PendingNotification | undefined;
+      for (const entry of page.messages) {
+        if (
+          entry.acknowledged ||
+          entry.message.passive === true ||
+          entry.message.delivery === "passive"
+        ) {
+          // Retire only the wake intent; unread passive mail keeps its payload until real inbox ACK.
+          this.mailbox.notificationAccepted(entry.message.id);
+        } else if (!next && Date.now() - entry.receivedAt >= FALLBACK_AFTER_MS) {
+          next = entry;
+        }
       }
-    }
-    const next = entries.find(
-      (entry) => !entry.acknowledged && Date.now() - entry.receivedAt >= FALLBACK_AFTER_MS,
-    );
-    if (next) {
-      // One fallback wakes the box to drain the remaining mailbox; never flood a reset VM.
-      await this.post(next);
-      return;
-    }
+      if (next) {
+        // One fallback wakes the box to drain the remaining mailbox; never flood a reset VM.
+        return this.post(next);
+      }
+      after = Number(page.nextCursor);
+    } while (page.hasMore);
     this.backoff = POLL_MS;
   }
 
