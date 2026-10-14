@@ -180,6 +180,8 @@ export class WakeDeliveries {
     if (!state) {
       return next;
     }
+    // ACK can remove the final candidate while its failed completion write still needs recovery.
+    state.retrySettlement();
     for (const [key, candidate] of this.groups()) {
       if (!candidate) {
         state.retire(key);
@@ -197,8 +199,13 @@ export class WakeDeliveries {
       }
       // ponytail: two cold Macs can each admit one wake. Literal cross-Mac single admission
       // requires a neutral quota authority governing every writer, not a URL hash or HTTP 2xx.
-      // oxlint-disable-next-line no-await-in-loop
-      await this.post(candidate);
+      try {
+        // oxlint-disable-next-line no-await-in-loop
+        await this.post(candidate);
+      } finally {
+        // Expiry starts after response/error/abort, never before COMMIT or connect/TLS.
+        state.settle();
+      }
       // Re-read ACKs and all groups after transport I/O; a snapshot must not wake already consumed mail.
       return Date.now();
     }
