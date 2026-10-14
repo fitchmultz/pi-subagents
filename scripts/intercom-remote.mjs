@@ -15,6 +15,7 @@ Environment (required):
 Options:
   --to PEER            Recipient name, peer ID or native ID for messages/controls
   --message TEXT       Message for send/ask/reply
+  --id ID              Send only: exact message ID (default: random; no deduplication guarantee)
   --passive            Send only: mailbox delivery without waking the recipient
   --reply-to ID        Inbound ask ID from inbox, for reply
   --timeout-ms MS      Ask: 100..120000 (default 120000); control: 100..10000 (default 3000)
@@ -70,7 +71,7 @@ function allowedOptions(action) {
     broadcast: ["message", "group"],
     "group-send": ["message", "group"],
     "group-upsert": ["name", "members", "name-pattern", "cwd-pattern"],
-    send: ["to", "message", "passive"],
+    send: ["to", "message", "passive", "id"],
     ask: ["to", "message", "timeout-ms"],
     reply: ["reply-to", "message"],
   };
@@ -86,6 +87,16 @@ function requireMessage(recipient, message) {
   ) {
     throw new Error("Recipient/ask ID and message are required.");
   }
+}
+
+function sendId(id) {
+  // Match the bridge's label bounds without changing the caller's ID.
+  // oxlint-disable-next-line no-control-regex
+  const controls = /[\u0000-\u001f\u007f-\u009f]/;
+  if (id !== undefined && (id.trim() === "" || id.length > 512 || controls.test(id))) {
+    throw new Error("Invalid message ID.");
+  }
+  return id;
 }
 
 function resumeBody(options) {
@@ -184,6 +195,7 @@ function requestBody(action, options, ids, timeout) {
     return {
       to: recipient,
       message: options.message,
+      messageId: sendId(options.id),
       ...(action === "ask" ? { timeoutMs: timeout } : {}),
       ...(options.passive === true ? { passive: true } : {}),
     };
@@ -261,6 +273,7 @@ try {
       help: { type: "boolean", short: "h" },
       to: { type: "string" },
       message: { type: "string" },
+      id: { type: "string" },
       passive: { type: "boolean" },
       "reply-to": { type: "string" },
       "timeout-ms": { type: "string" },
@@ -292,10 +305,12 @@ try {
     process.exit(0);
   }
   const options = parsed.values;
-  if (
-    parsed.tokens.filter((token) => token.kind === "option" && token.name === "wait-ms").length > 1
-  ) {
-    throw new Error("--wait-ms must not be repeated.");
+  for (const name of ["wait-ms", "id"]) {
+    if (
+      parsed.tokens.filter((token) => token.kind === "option" && token.name === name).length > 1
+    ) {
+      throw new Error(`--${name} must not be repeated.`);
+    }
   }
   [action] = parsed.positionals;
   if (

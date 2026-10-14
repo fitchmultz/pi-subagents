@@ -76,9 +76,7 @@ export class Session {
   }
 
   guard(signal?: AbortSignal): void {
-    if (signal) {
-      cancelled(signal);
-    }
+    signal?.throwIfAborted();
     if (this.closed) {
       throw this.closeReason;
     }
@@ -267,10 +265,10 @@ export class Session {
       );
       return;
     }
-    if (result === "lost" || (result === "duplicate" && !this.inbox.persistent)) {
-      this.owner.lost(this.identity.fingerprint256);
-    }
-    if (result !== "duplicate") {
+    if (result !== "duplicate" || !this.inbox.persistent) {
+      if (result !== "stored") {
+        this.owner.lost(this.identity.fingerprint256);
+      }
       this.inboxChanged.abort();
       this.inboxChanged = new AbortController();
     }
@@ -492,20 +490,21 @@ export class Session {
     switch (operation.route) {
       case "POST /v1/register":
         return { sessionId: this.client.sessionId, name: this.identity.name };
-      case "GET /v1/list": {
-        const sessions = await this.peers(context.signal);
+      case "GET /v1/list":
         return {
           sessionId: this.client.sessionId,
-          sessions: bridgeSessionList(sessions),
+          sessions: bridgeSessionList(await this.peers(context.signal)),
         };
-      }
       case "POST /v1/send":
         return {
           ...(await this.send(
             (await this.target(operation.to, context.signal)).id,
             operation.message,
             context,
-            { delivery: operation.passive === true ? "passive" : "steer" },
+            {
+              messageId: operation.messageId,
+              delivery: operation.passive === true ? "passive" : "steer",
+            },
           )),
         };
       case "POST /v1/reply":

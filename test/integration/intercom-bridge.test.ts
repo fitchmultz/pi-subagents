@@ -184,45 +184,64 @@ test(
         assert.equal(sent.body.accepted, true);
         const received = await receiving;
         assert.equal(received.from.id, remoteId);
+        assert.equal(received.message.id, sent.body.id);
+        assert.match(
+          text(sent.body.id),
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
         assert.equal(received.message.delivery, "steer");
         for (const passive of [false, true]) {
+          const messageId = passive ? " exact HTTP passive ID " : "x".repeat(512);
           const incoming = nextMessage(peer);
           // oxlint-disable-next-line no-await-in-loop
           const receipt = await api("send", {
             to: peer.sessionId,
             message: `HTTP passive=${passive}`,
             passive,
+            messageId,
           });
           assert.equal(receipt.body.accepted, true);
+          assert.equal(receipt.body.id, messageId);
           // oxlint-disable-next-line no-await-in-loop
           const delivered = await incoming;
-          assert.equal(delivered.message.id, receipt.body.id);
+          assert.equal(delivered.message.id, messageId);
           assert.equal(delivered.message.delivery, passive ? "passive" : "steer");
           assert.equal(delivered.message.content.text, `HTTP passive=${passive}`);
         }
-        const passiveIncoming = nextMessage(peer);
-        const passiveReceipt = json(
-          (
-            await exec(
-              process.execPath,
-              [
-                join(repo, "scripts/intercom-remote.mjs"),
-                "send",
-                "--passive",
-                "--to",
-                text(peer.sessionId),
-                "--message",
-                "CLI passive\nexact text",
-              ],
-              { env: cliEnv },
-            )
-          ).stdout,
-        );
-        assert.equal(passiveReceipt.accepted, true);
-        const passiveMessage = await passiveIncoming;
-        assert.equal(passiveMessage.message.id, passiveReceipt.id);
-        assert.equal(passiveMessage.message.delivery, "passive");
-        assert.equal(passiveMessage.message.content.text, "CLI passive\nexact text");
+        for (const messageId of [undefined, " exact CLI passive ID ", "c".repeat(512)]) {
+          const passiveIncoming = nextMessage(peer);
+          // oxlint-disable-next-line no-await-in-loop
+          const output = await exec(
+            process.execPath,
+            [
+              join(repo, "scripts/intercom-remote.mjs"),
+              "send",
+              "--passive",
+              ...(messageId === undefined ? [] : ["--id", messageId]),
+              "--to",
+              text(peer.sessionId),
+              "--message",
+              "CLI passive\nexact text",
+            ],
+            { env: cliEnv },
+          );
+          const passiveReceipt = json(output.stdout);
+          assert.equal(passiveReceipt.accepted, true);
+          if (messageId === undefined) {
+            assert.match(
+              text(passiveReceipt.id),
+              /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+            );
+            assert.notEqual(passiveReceipt.id, sent.body.id);
+          } else {
+            assert.equal(passiveReceipt.id, messageId);
+          }
+          // oxlint-disable-next-line no-await-in-loop
+          const passiveMessage = await passiveIncoming;
+          assert.equal(passiveMessage.message.id, passiveReceipt.id);
+          assert.equal(passiveMessage.message.delivery, "passive");
+          assert.equal(passiveMessage.message.content.text, "CLI passive\nexact text");
+        }
         await assert.rejects(
           exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), "ask", "--passive"], {
             env: cliEnv,
@@ -230,6 +249,98 @@ test(
           /Unexpected arguments for this action/,
         );
         assert.equal((await api("send", { to: "offline-peer", message: "hello" })).status, 404);
+      });
+
+      await t.test("stable IDs reject invalid and non-send inputs before dispatch", async () => {
+        const received: string[] = [];
+        const observe = (...args: readonly unknown[]) => {
+          received.push(envelope({ from: args[0], message: args[1] }).message.id);
+        };
+        peer.on("message", observe);
+        try {
+          const invalidIds = ["", " ", "x".repeat(513), "a\nb", "a\u0000b", "a\u007fb", "a\u009fb"];
+          for (const messageId of [...invalidIds, null, true, 1, {}, []]) {
+            // oxlint-disable-next-line no-await-in-loop
+            const rejected = await api("send", {
+              to: peer.sessionId,
+              message: "invalid ID",
+              messageId,
+            });
+            assert.equal(rejected.status, 400);
+            assert.equal(record(rejected.body.error).code, "invalid_input");
+            assert.equal(record(rejected.body.error).message, "Invalid message ID.");
+          }
+          for (const [action, body] of [
+            ["ask", { to: peer.sessionId, message: "invalid ask", timeoutMs: 100 }],
+            ["reply", { replyTo: "missing", message: "invalid reply" }],
+            ["broadcast", { message: "invalid broadcast" }],
+            ["register", {}],
+          ] as const) {
+            // oxlint-disable-next-line no-await-in-loop
+            const rejected = await api(action, { ...body, messageId: "send-only" });
+            assert.equal(rejected.status, 400);
+            assert.equal(record(rejected.body.error).code, "invalid_input");
+            assert.equal(record(rejected.body.error).message, "Unknown field.");
+          }
+          for (const { args, reason } of [
+            // NUL cannot occur in an OS argv; its public HTTP boundary is covered above.
+            ...invalidIds
+              .filter((id) => !id.includes("\u0000"))
+              .map((id) => ({
+                args: [
+                  "send",
+                  "--to",
+                  text(peer.sessionId),
+                  "--message",
+                  "invalid ID",
+                  `--id=${id}`,
+                ],
+                reason: "Invalid message ID.",
+              })),
+            {
+              args: [
+                "send",
+                "--to",
+                text(peer.sessionId),
+                "--message",
+                "duplicate ID",
+                "--id=one",
+                "--id=two",
+              ],
+              reason: "--id must not be repeated.",
+            },
+            ...["ask", "reply", "broadcast", "group-send", "list", "ack", "spawn"].map(
+              (action) => ({
+                args: [action, "--id=send-only"],
+                reason: "Unexpected arguments for this action.",
+              }),
+            ),
+          ]) {
+            // No TLS credentials: argument validation must happen before any transport setup.
+            // oxlint-disable-next-line no-await-in-loop
+            await assert.rejects(
+              exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), ...args], {
+                env: {},
+              }),
+              (error: unknown) =>
+                error instanceof Error &&
+                record(error.cause).code === 2 &&
+                error.message.includes('"code":"invalid_arguments"') &&
+                error.message.includes(reason),
+            );
+          }
+          const fence = nextMessage(peer);
+          const sent = await api("send", { to: peer.sessionId, message: "ID rejection fence" });
+          assert.equal(sent.body.accepted, true);
+          assert.equal((await fence).message.id, sent.body.id);
+          assert.deepEqual(
+            received,
+            [sent.body.id],
+            "rejected requests must publish no native message",
+          );
+        } finally {
+          peer.off("message", observe);
+        }
       });
 
       await t.test(
@@ -317,6 +428,30 @@ test(
             (await peer.listSessions()).find((row) => row.id === remoteId)?.acceptsAsks,
             false,
           );
+          const offset = activeBridge.output().length;
+          const waiting = api(`inbox?after=${text(full.body.nextCursor)}&waitMs=10000`, undefined, {
+            signal: AbortSignal.timeout(3000),
+          });
+          await activeBridge.wait(/"event":"inbox_wait"/, offset);
+          const duplicateId = messages(full.body)[0].message.id;
+          await peer.send(remoteId, {
+            text: "volatile duplicate records a loss",
+            messageId: duplicateId,
+          });
+          await activeBridge.wait(
+            new RegExp(`"messageId":"${duplicateId}".*"result":"duplicate"`),
+            offset,
+          );
+          const released = await waiting;
+          assert.equal(released.status, 200);
+          assert.deepEqual(messages(released.body), []);
+          assert.equal(released.body.nextCursor, full.body.nextCursor);
+          assert.equal(
+            released.body.lostMessages,
+            2,
+            "a volatile duplicate releases the wait on its recorded loss",
+          );
+          assert.equal(released.body.overflow, true);
           await api("ack", { ids: messages(full.body).map((item) => item.message.id) });
           assert.equal(messages((await api("inbox")).body).length, 0);
         },
@@ -372,8 +507,8 @@ test(
           assert.equal(messages(afterLoss).length, 0);
           assert.equal(
             afterLoss.lostMessages,
-            2,
-            "legacy overflow plus cancellation loss remain visible",
+            3,
+            "legacy overflow, duplicate replay and cancellation loss remain visible",
           );
           await stop(activeBroker.child);
           const down = await api("list");

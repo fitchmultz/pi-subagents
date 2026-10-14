@@ -227,7 +227,7 @@ api() { # api METHOD PATH [JSON]
 | ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `POST /v1/register`     | `{}`                                                      | `sessionId`, `name`; other routes register automatically                        |
 | `GET /v1/list`          | —                                                         | live peers with unambiguous `target`s                                           |
-| `POST /v1/send`         | `{to,message,passive?}`                                   | `id`, `accepted`, `delivered`                                                   |
+| `POST /v1/send`         | `{to,message,passive?,messageId?}`                        | `id`, `accepted`, `delivered`                                                   |
 | `POST /v1/ask`          | `{to,message,timeoutMs?}`                                 | send receipt and `reply:{from,message}`                                         |
 | `POST /v1/reply`        | `{replyTo,message}`                                       | send receipt to the ask's saved sender                                          |
 | `GET /v1/inbox`         | `?after=CURSOR&limit=1..256&waitMs=0..10000`              | `messages`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
@@ -249,6 +249,8 @@ api() { # api METHOD PATH [JSON]
 Ask waits up to two minutes (`timeoutMs` 100–120000) for the exact recipient and `replyTo`; each identity has one outgoing ask at a time. A timeout doesn't retract a delivered ask, and a late answer arrives in the inbox. Spawn, resume and transcript lookup have a 75-second helper deadline (90 seconds in the CLI); ask has its timeout plus 15 seconds; other routes have 15 seconds. Live transcript controls keep their separate native response deadline; saved name lookup may scan the full catalog.
 
 Send defaults to active delivery (`steer`). Only `send` accepts the optional boolean `passive`; `true` maps to native `delivery:"passive"`, and `false` keeps the default. Use `node intercom-remote.mjs send --passive --to PEER --message TEXT` for mail without a model wake. Older helpers reject the unknown `passive` field before sending; the client never retries without it or redirects a failed mutation. Upgrade the receiving helper and consumer before relying on end-to-end no-wake delivery.
+
+Only `send` accepts an optional `messageId` (`--id ID` in the CLI): a nonblank string of at most 512 characters with no C0/C1 control characters or DEL. The ID is passed unchanged to the native recipient and returned as the receipt's `id`; omitting it still generates a random UUID. A stable ID does not guarantee deduplication, exactly-once delivery or a single provider run, and does not make retrying an unknown outcome safe. Older helpers reject the unknown field without sending; the client never retries without it.
 
 ### Mailbox, presence and wake
 

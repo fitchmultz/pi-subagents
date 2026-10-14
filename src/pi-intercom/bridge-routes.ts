@@ -21,6 +21,7 @@ export type MessagingOperation =
       readonly to: string;
       readonly message: string;
       readonly passive?: boolean;
+      readonly messageId?: string;
     }
   | {
       readonly route: "POST /v1/ask";
@@ -83,7 +84,7 @@ const fields = {
   "GET /v1/inbox": [],
   "POST /v1/register": [],
   "POST /v1/ack": ["ids"],
-  "POST /v1/send": ["to", "message", "passive"],
+  "POST /v1/send": ["to", "message", "passive", "messageId"],
   "POST /v1/ask": ["to", "message", "timeoutMs"],
   "POST /v1/reply": ["replyTo", "message"],
   "POST /v1/start": ["name"],
@@ -331,6 +332,7 @@ function send(input: Readonly<Record<string, unknown>>): MessagingOperation {
     message: text(input.message),
     to: label(input.to, "to").trim(),
     passive: input.passive,
+    messageId: input.messageId === undefined ? undefined : label(input.messageId, "message ID"),
   };
 }
 export async function operationFor(
