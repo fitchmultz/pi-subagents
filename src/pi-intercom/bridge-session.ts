@@ -25,6 +25,7 @@ interface SendOptions extends Pick<Message, "replyTo" | "expectsReply" | "delive
 export interface SessionOwner {
   readonly stateDir?: string;
   readonly notifications?: boolean;
+  readonly mailboxChanged?: () => void;
   readonly allowed: (identity: Identity) => boolean;
   readonly lost: (fp: string, count?: number) => void;
   readonly retired: (fp: string, generation: string) => void;
@@ -280,6 +281,7 @@ export class Session {
     });
     if (result !== "lost") {
       this.resolveReply(from, message);
+      this.owner.mailboxChanged?.();
     }
     this.presence();
   }
@@ -463,6 +465,7 @@ export class Session {
       }
       const data = { ...(await this.send(peer, message, context, { replyTo })) };
       this.inbox.remove(replyTo);
+      this.owner.mailboxChanged?.();
       this.presence();
       return data;
     } finally {
@@ -481,6 +484,7 @@ export class Session {
       }
       if (operation.route === "POST /v1/ack") {
         const result = this.inbox.ack(operation.ids);
+        this.owner.mailboxChanged?.();
         this.presence();
         return result;
       }
@@ -495,18 +499,14 @@ export class Session {
           sessionId: this.client.sessionId,
           sessions: bridgeSessionList(await this.peers(context.signal)),
         };
-      case "POST /v1/send":
-        return {
-          ...(await this.send(
-            (await this.target(operation.to, context.signal)).id,
-            operation.message,
-            context,
-            {
-              messageId: operation.messageId,
-              delivery: operation.passive === true ? "passive" : "steer",
-            },
-          )),
-        };
+      case "POST /v1/send": {
+        const peer = await this.target(operation.to, context.signal);
+        const receipt = await this.send(peer.id, operation.message, context, {
+          messageId: operation.messageId,
+          delivery: operation.passive === true ? "passive" : "steer",
+        });
+        return { ...receipt };
+      }
       case "POST /v1/reply":
         return this.answer(operation.replyTo, operation.message, context);
     }

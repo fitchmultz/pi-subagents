@@ -95,7 +95,7 @@ function delayedRelay(port: number) {
 }
 
 test(
-  "persistent presence and delayed HTTPS fallback survive helper crashes without consumer polling",
+  "persistent presence and event-driven HTTPS fallback survive helper crashes without consumer polling",
   { timeout: 60000 },
   async (t) => {
     const root = mkdtempSync("/tmp/pib-delivery-");
@@ -183,7 +183,11 @@ test(
       config.stateDir = stateDir;
       records(config.clients)[0].wake = { envFile };
       writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
-      const helperEnv = { ...env, NODE_EXTRA_CA_CERTS: credential.ca };
+      const helperEnv = {
+        ...env,
+        NODE_EXTRA_CA_CERTS: credential.ca,
+        PI_FIXTURE_CLOCK_FILE: join(root, "fixture-clock"),
+      };
       broker = start("src/pi-intercom/broker/broker.ts", [], env);
       await broker.wait(/Intercom broker started/);
       await peer.connect({ name: "local-sender", cwd: root, model: "fixture" });
@@ -298,7 +302,7 @@ test(
       first = await bridgeApi(bridge, credential);
       assert.deepEqual((await first.api("inbox")).body.messages, []);
 
-      // An active message behind another full passive page still gets the normal delayed fallback.
+      // An active message behind another full passive page still gets prompt event-driven fallback.
       const largePassive: string[] = [];
       for (let index = 0; index < 6; index++) {
         // oxlint-disable-next-line no-await-in-loop
@@ -324,8 +328,7 @@ test(
       } finally {
         db.close();
       }
-      await advanceClock(bridge, "SIGUSR1");
-      bridge.child.kill("SIGALRM");
+      await advanceClock(bridge, "SIGWINCH");
       await bridge.wait(/"result":"http_rejected"/);
       assert.equal(
         requests.length,
@@ -350,10 +353,9 @@ test(
         .map(json)
         .filter((entry) => entry.event === "fixture_fetch");
       assert.equal(attempts.length, 1);
-      assert.ok(
-        numberValue(attempts[0].timestamp) - receivedAt >= 120000,
-        "no HTTP request before the unacked fallback threshold",
-      );
+      const wakeLatency = numberValue(attempts[0].timestamp) - receivedAt;
+      assert.ok(wakeLatency >= 2000, "ACK grace precedes fallback");
+      assert.ok(wakeLatency < 3000, "mailbox commit promptly wakes after two-second ACK grace");
       assert.ok(!bridge.output().includes("fixture-bearer-secret"));
       const crashed = once(bridge.child, "close", { signal: t.signal });
       bridge.child.kill("SIGKILL");
@@ -399,6 +401,8 @@ test(
       await bridge.wait(/"event":"listening"/);
       bridge.child.kill("SIGALRM");
       await bridge.wait(/"event":"registered"/);
+      await advanceClock(bridge, "SIGALRM");
+      assert.equal(requests.length, 2, "restart does not reset the persisted retry deadline");
       bridge.child.kill("SIGUSR2");
       await bridge.wait(/"result":"accepted"/);
       assert.equal(requests.length, 3);

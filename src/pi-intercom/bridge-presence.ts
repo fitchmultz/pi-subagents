@@ -15,6 +15,7 @@ interface PresenceOwner {
   readonly stateDir: string;
   readonly clients: () => ReadonlyMap<string, Identity>;
   readonly connect: (identity: Identity, expires: number) => Promise<void>;
+  readonly restored: (identity: Identity, expires: number) => void;
 }
 
 export class PersistentPresence {
@@ -26,7 +27,11 @@ export class PersistentPresence {
 
   constructor(owner: PresenceOwner) {
     this.owner = owner;
-    for (const identity of owner.clients().values()) {
+    this.restoreAll();
+  }
+
+  restoreAll(): void {
+    for (const identity of this.owner.clients().values()) {
       this.restore(identity);
     }
   }
@@ -55,6 +60,7 @@ export class PersistentPresence {
           cwd: identity.cwd,
           expires: value.expires,
         });
+        this.owner.restored(identity, value.expires);
       }
     } catch {
       // An absent/invalid saved registration never grants a certificate identity.
