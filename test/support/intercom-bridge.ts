@@ -1,8 +1,8 @@
 import { EventEmitter, once } from "node:events";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { resolve, join } from "node:path";
 import https from "node:https";
 import { readFileSync } from "node:fs";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { resolve, join } from "node:path";
 import { errorMessage, type UnknownRecord } from "../../src/shared/unknown.ts";
 import { assertDefined, json, numberValue, record, text } from "./assertions.ts";
 
@@ -36,6 +36,18 @@ export async function bridgeApi(bridge: BridgeProcess, credential: Credential): 
     .find((line) => line.event === "listening");
   assertDefined(ready);
   const url = `https://127.0.0.1:${numberValue(ready.port)}`;
+  return { url, api: bridgeRequest(url, credential), host: ready.host };
+}
+export function parseCredential(value: unknown): Credential {
+  const input = record(value);
+  return {
+    ca: text(input.ca),
+    cert: text(input.cert),
+    key: text(input.key),
+    fingerprint256: text(input.fingerprint256),
+  };
+}
+export function bridgeRequest(url: string, credential: Credential): BridgeApi["api"] {
   const tls = {
     ca: readFileSync(credential.ca),
     cert: readFileSync(credential.cert),
@@ -43,7 +55,7 @@ export async function bridgeApi(bridge: BridgeProcess, credential: Credential): 
     rejectUnauthorized: true,
     agent: false as const,
   };
-  const api = (action: string, body?: unknown, extra = {}) =>
+  return (action: string, body?: unknown, extra = {}) =>
     new Promise<{ readonly status: number; readonly body: UnknownRecord }>((resolveApi, reject) => {
       const payload = body === undefined ? undefined : JSON.stringify(body);
       const req = https.request(
@@ -66,7 +78,7 @@ export async function bridgeApi(bridge: BridgeProcess, credential: Credential): 
             try {
               parsed = json(data);
             } catch (error) {
-              reject(error instanceof Error ? error : new Error(errorMessage(error)));
+              reject(error instanceof Error ? error : new Error("Invalid bridge response"));
               return;
             }
             resolveApi({ status: res.statusCode ?? 0, body: parsed });
@@ -76,16 +88,6 @@ export async function bridgeApi(bridge: BridgeProcess, credential: Credential): 
       req.on("error", reject);
       req.end(payload);
     });
-  return { url, api, host: ready.host };
-}
-export function parseCredential(value: unknown): Credential {
-  const input = record(value);
-  return {
-    ca: text(input.ca),
-    cert: text(input.cert),
-    key: text(input.key),
-    fingerprint256: text(input.fingerprint256),
-  };
 }
 export function exec(
   file: string,
@@ -96,7 +98,11 @@ export function exec(
     (resolveExec, reject) => {
       execFile(file, args, { ...options, encoding: "utf8" }, (error, stdout, stderr) => {
         if (error) {
-          reject(error instanceof Error ? error : new Error(errorMessage(error)));
+          reject(
+            new Error(`${errorMessage(error)}\nstdout:\n${stdout}\nstderr:\n${stderr}`, {
+              cause: error,
+            }),
+          );
         } else {
           resolveExec({ stdout, stderr });
         }

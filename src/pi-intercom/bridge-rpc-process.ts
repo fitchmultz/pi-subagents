@@ -3,7 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { RpcCommand, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import { trySignalChildTree } from "../shared/post-exit-stdio-guard.ts";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
-import { Fault, log, wait } from "./bridge-protocol.ts";
+import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
 import type { LaunchPolicy } from "./bridge-launch-policy.ts";
 
 const FRAME_LIMIT = 4 * 1024 * 1024;
@@ -15,7 +15,7 @@ function launchEnvironment(packageRoot: string): NodeJS.ProcessEnv {
 }
 
 // Native RpcClient lacks public EOF/exit/UI control and retains/reprints unbounded stderr.
-// This owner implements only get_state and dialog cancellation, never a remote RPC proxy.
+// This owner implements state, owned-run cancellation and dialog dismissal, never a raw RPC proxy.
 export class RpcProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   readonly exited: Promise<void>;
@@ -27,15 +27,17 @@ export class RpcProcess {
   private sequence = 0;
   private pending?: {
     readonly id: string;
+    readonly command: "get_state" | "abort";
     readonly resolve: (data: UnknownRecord) => void;
     readonly reject: (error: Readonly<Error>) => void;
   };
   private stopping?: Promise<void>;
   private stderrBytes = 0;
   private exitObserved = false;
+  private cancelling = false;
 
-  constructor(policy: LaunchPolicy, cwd: string, sessionFile: string) {
-    this.child = spawn(process.execPath, this.arguments(policy, sessionFile), {
+  constructor(policy: LaunchPolicy, cwd: string, sessionFile: string, resuming = false) {
+    this.child = spawn(process.execPath, this.arguments(policy, sessionFile, resuming), {
       cwd,
       detached: true,
       env: launchEnvironment(policy.packageRoot),
@@ -78,19 +80,19 @@ export class RpcProcess {
   get pid(): number | undefined {
     return this.child.pid;
   }
-  private arguments(policy: LaunchPolicy, sessionFile: string): string[] {
+  private arguments(policy: LaunchPolicy, sessionFile: string, resuming: boolean): string[] {
     const args = [
       policy.cli,
       "--mode",
       "rpc",
       "--session",
       sessionFile,
-      "--provider",
-      policy.provider,
-      "--model",
-      policy.model,
       policy.trustProject ? "--approve" : "--no-approve",
     ];
+    // Resume leaves native model/thinking restoration authoritative; never force the launch default.
+    if (!resuming && policy.provider !== undefined && policy.model !== undefined) {
+      args.push("--provider", policy.provider, "--model", policy.model);
+    }
     if (!policy.discoverResources) {
       args.push(
         "--no-extensions",
@@ -191,8 +193,12 @@ export class RpcProcess {
   private response(data: UnknownRecord): void {
     const pending = this.pending;
     this.pending = undefined;
-    if (data.success === true && data.command === "get_state" && isRecord(data.data)) {
-      pending?.resolve(data.data);
+    if (
+      data.success === true &&
+      data.command === pending?.command &&
+      (pending?.command !== "get_state" || isRecord(data.data))
+    ) {
+      pending?.resolve(isRecord(data.data) ? data.data : {});
     } else {
       pending?.reject(new Fault(503, "rpc_failed", "Pi RPC state request failed."));
     }
@@ -218,7 +224,7 @@ export class RpcProcess {
   }
   private write(
     command: Readonly<
-      | Extract<RpcCommand, { type: "get_state" }>
+      | Extract<RpcCommand, { type: "get_state" | "abort" }>
       | Extract<RpcExtensionUIResponse, { cancelled: true }>
     >,
   ): void {
@@ -228,19 +234,50 @@ export class RpcProcess {
       this.cleanup();
     }
   }
-  async state(signal: AbortSignal): Promise<UnknownRecord> {
+  private async command(
+    command: "get_state" | "abort",
+    signal: AbortSignal,
+  ): Promise<UnknownRecord> {
+    cancelled(signal);
     if (this.failure) {
       throw this.failure;
     }
-    const id = `state-${++this.sequence}`;
+    if (this.pending) {
+      throw new Fault(
+        409,
+        "control_in_progress",
+        "A native control operation is already in flight.",
+      );
+    }
+    const id = `control-${++this.sequence}`;
     const result = new Promise<UnknownRecord>((resolve, reject) => {
-      this.pending = { id, resolve, reject };
-      this.write({ type: "get_state", id });
+      this.pending = { id, command, resolve, reject };
+      this.write({ type: command, id });
     });
     try {
       return await wait(result, signal);
     } finally {
       this.pending = undefined;
+    }
+  }
+  async state(signal: AbortSignal): Promise<UnknownRecord> {
+    return this.command("get_state", signal);
+  }
+  async cancel(signal: AbortSignal): Promise<UnknownRecord> {
+    if (this.cancelling) {
+      throw new Fault(409, "control_in_progress", "Native cancellation is already in flight.");
+    }
+    this.cancelling = true;
+    try {
+      await this.command("abort", signal);
+      const state = await this.state(signal);
+      if (state.isStreaming !== false) {
+        throw new Fault(409, "cancel_unconfirmed", "Native Pi has not reached idle after abort.");
+      }
+      this.status = "idle";
+      return { isStreaming: false, pendingMessageCount: state.pendingMessageCount };
+    } finally {
+      this.cancelling = false;
     }
   }
   ready(): void {

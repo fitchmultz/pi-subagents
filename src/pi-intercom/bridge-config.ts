@@ -87,11 +87,28 @@ function identities(value: unknown): Map<string, Identity> {
   return clients;
 }
 
-export function loadConfig(path: string): Config {
+function configInput(path: string): Record<string, unknown> {
   const raw: unknown = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(readBridgeFile(path, true, BODY_LIMIT)),
   );
-  const input = object(raw, ["port", "ca", "cert", "key", "clients", "stateDir"]);
+  return object(raw, ["port", "ca", "cert", "key", "clients", "stateDir"]);
+}
+
+/** Recipient admission reads private policy and the public CA, never the server key. */
+export function loadControlPolicy(path: string): {
+  readonly clients: ReadonlyMap<string, Identity>;
+  readonly ca: Buffer;
+} {
+  const input = configInput(path);
+  const ca = label(input.ca, "ca path", 4096);
+  if (!isAbsolute(ca)) {
+    throw new Error("CA path must be absolute.");
+  }
+  return { clients: identities(input.clients), ca: readBridgeFile(ca, false, 1024 * 1024) };
+}
+
+export function loadConfig(path: string): Config {
+  const input = configInput(path);
   const port = input.port === undefined ? 9443 : input.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error("Invalid HTTPS port.");

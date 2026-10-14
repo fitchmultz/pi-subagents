@@ -50,6 +50,14 @@ export default function (pi) {
     ),
     fauxAssistantMessage("Reply sent."),
   ]);
+  if (input.scenario === "task") {
+    faux.setResponses([fauxAssistantMessage("Native task completed.")]);
+  }
+  if (input.scenario === "cancel") {
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("launch_wait", {}), { stopReason: "toolUse" }),
+    ]);
+  }
   if (input.scenario === "early-work") {
     faux.setResponses([fauxAssistantMessage("Early activity observed.")]);
   }
@@ -73,6 +81,24 @@ export default function (pi) {
       details: { payload: "LARGE_EVENT_SENTINEL" + "x".repeat(5 * 1024 * 1024) },
     }),
   });
+  pi.registerTool({
+    name: "launch_wait",
+    label: "Cancellable native wait",
+    description: "Wait for native cancellation without blocking the process.",
+    parameters: Type.Object({}),
+    execute: async (_id, _args, signal) => {
+      receipt.waiting = true;
+      save();
+      if (!signal.aborted) {
+        await new Promise((resolveWait) =>
+          signal.addEventListener("abort", resolveWait, { once: true }),
+        );
+      }
+      receipt.toolAborted = signal.aborted;
+      save();
+      return { content: [{ type: "text", text: "Native wait cancelled." }] };
+    },
+  });
   pi.registerProvider("launch-fixture", {
     api: faux.api,
     baseUrl: faux.getModel().baseUrl,
@@ -88,6 +114,9 @@ export default function (pi) {
     receipt.sessionId = ctx.sessionManager.getSessionId();
     receipt.sessionFile = ctx.sessionManager.getSessionFile();
     receipt.started = true;
+    receipt.model = ctx.model?.id;
+    receipt.tools = pi.getAllTools().map((tool) => tool.name);
+    receipt.entryCount = ctx.sessionManager.getEntries().length;
     save();
     if (input.scenario === "hang") {
       setInterval(() => {

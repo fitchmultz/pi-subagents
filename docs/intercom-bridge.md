@@ -1,178 +1,184 @@
 # Secure remote Intercom bridge
 
-Optional HTTPS messaging proxy and locally controlled Pi-session launcher for a remote agent such as **Grok Bot**. Pi-intercom's broker remains same-machine Unix IPC. Nothing is added to the Pi extension loader, and starting Pi alone never starts this proxy.
+The bridge lets one authenticated remote agent, such as a Grok bot, work with Pi on your Mac unattended. It can message and ask any live Pi session, keep incoming messages and asks in a durable mailbox, wake the agent when mail sits unread, browse live and saved sessions, spawn and resume sessions, read recent transcripts, cancel or stop work, and broadcast to named groups.
 
-## Design note
+The bridge is a standalone Node HTTPS helper, `dist/pi-intercom/bridge.js`. Starting Pi never starts it. Pi-intercom's broker stays a same-machine Unix socket, and remote callers can't send raw broker frames.
 
-**Transport:** a Mac-local Node HTTPS server bound to **127.0.0.1**, carried by a Mac-initiated **SSH reverse TCP forward** to the Linux box's loopback interface. Grok calls HTTPS on its own loopback. Unlike a Unix-socket tunnel, only the local helper and normal local Pi peers use `broker.sock`; neither the remote nor SSH can issue raw broker frames. This choice needs no cloud account, public DNS, inbound Mac SSH, or per-call laptop approval. An existing SSH account on Linux is the only tunnel prerequisite. SSH authenticates the tunnel host; end-to-end mTLS authenticates both application endpoints even to other processes on Linux.
+## Design
 
-**Threat model:** deny unauthenticated local/network callers, stolen credentials after revocation/expiry, identity spoofing, arbitrary broker commands, forged replies, accidental LAN exposure, and unbounded waits/resource use. The Mac user, local broker, OS, private CA, and approved remote host are trusted. A compromised authorized Grok credential can read peer metadata and send agent-visible text to local peers (including instructions); mTLS does not sandbox those agents or make the content trustworthy. Listed peers can be in other projects. Approve only a host allowed to see that metadata and message those peers. Root/compromised endpoints and denial of service beyond fixed connection/request limits are outside this boundary.
+**Transport.** The helper listens only on `127.0.0.1`. Tailscale Serve exposes that port to your tailnet as a raw TCP forwarder, and the remote host reaches it through a forwarder on its own loopback. TLS runs end to end between the remote client and the helper; Tailscale carries encrypted bytes and never terminates TLS. Don't use Funnel, `--https` or `--tls-terminated-tcp` for this port. A Mac-initiated [SSH reverse forward](#ssh-alternative) also works.
 
-**Auth/authority:** TLS 1.2+ with client certificates issued by a private CA **and** an explicit SHA-256 certificate fingerprint allowlist. Each allowlisted certificate fixes the peer name and Mac project directory; remote payloads cannot change identity, cwd, socket, shell commands, or presence. Certificates last seven days. TLS verifies the server CA and loopback SAN; never use `curl -k` or disable certificate checks. The proxy exposes register/list/send/ask/reply, inbox/ack receipt plumbing, and optional name-only start plus own-launched sessions/stop operations. No broker admin, topic operations, file reads, or shell endpoint.
+**Authentication.** TLS 1.2+ mutual authentication. A client presents a certificate issued by the bridge's private CA, and its SHA-256 fingerprint must be in the private allowlist. The client verifies the server against the same CA and its loopback SAN (`localhost`, `127.0.0.1`), so remote clients always use a loopback URL. Never use `curl -k` or disable verification.
 
-**Socket discovery:** reuse the actual `IntercomClient`, `getBrokerSocketPath()` and framing code. With the same Mac uid, `PI_CODING_AGENT_DIR` (default `~/.pi/agent`) and `TMPDIR` as Pi, the preferred path is `$TMPDIR/pi-intercom-<sha256(uid:agentDir)[0:16]>/broker.sock`; long paths fall back to `/tmp`. The client's existing owned-socket legacy fallback is retained. No hardcoded `/var/folders` path, socket chmod, or broker restart. Without `stateDir`, an unavailable broker returns an error; start a normal Pi session to bring it up. Durable presence uses Intercom's safe acquisition to start a detached broker only when none is running, including before any Pi session starts after reboot. Acquisition maintains the normal PID-file/spawn-lock bookkeeping, reuses a healthy broker and refuses to replace a live unhealthy broker that may own accepted work.
+**Authority.** Each allowlisted certificate fixes one identity: its peer name, its Intercom ID (`remote-<fingerprint>`) and its home `cwd`. Request payloads can't change identity, and display names grant nothing. An authorized identity can use every bridge capability: list peers in any project, send text that agents treat as instructions, read transcripts, manage groups, spawn and resume sessions in any locally approved directory with any model, and cancel or stop work. Spawned sessions use your local tools, credentials and model budget. mTLS authenticates the caller; it doesn't sandbox the agents or make messages trustworthy. Issue certificates only to agents you trust with that authority. There is no broker-admin, raw RPC, shell or caller-supplied file-path endpoint.
 
-**Delivery/lifecycle:** one broker peer per authorized certificate. Without `stateDir`, registration is lazy and has a five-minute inactivity lease; poll inbox to maintain presence. With `stateDir`, an authenticated identity has durable presence restored after helper restart and refreshed without remote polling until expiry, revocation or helper shutdown. Send returns broker acceptance, not proof a model consumed it. Ask steers the recipient and waits at most two minutes for both the exact recipient ID and exact `replyTo`. One outgoing ask per identity. Revocation/expiry/shutdown/client disconnect terminate waits. With a local `stateDir`, inbox intake is committed to private SQLite storage before publication or satisfying an outgoing ask. Unacked messages and unanswered inbound asks survive helper restart, idle-lease retirement and broker outage. Inbox reads are non-destructive, bounded cursor pages; ack deletes only ordinary inbox payloads, and successful reply retires an inbound ask. Sender departure does not discard a reply obligation: reply still targets the saved exact sender ID and returns `peer_offline` without deletion while that ID is offline. Without `stateDir`, the legacy 256-message/4 MiB volatile inbox remains; overflow and lease/shutdown loss are reported. Outgoing HTTP ask waits themselves are not resumed after helper restart; persistent mode retains received answers in inbox for recovery and ack.
+**Threat model.** The bridge denies unauthenticated callers on the tailnet or the Mac, revoked or expired certificates, identity spoofing, forged replies and control results, browser-origin requests and unbounded waits. It trusts the Mac user account, the OS, the broker, the private CA and the authorized remote host. Compromised endpoints and denial of service beyond the fixed connection and request limits are out of scope.
 
-**Audit:** JSONL metadata on stdout: request/connection identity, certificate fingerprint, operation, peer/message IDs and outcome. `session_closed` confirms broker disconnection and removal of the retiring session; cancellation still rejects requests immediately. Message/attachment bodies and keys are not logged. Protect logs (0700 directory, 0600 files); rotate them with your normal log tooling. Never publish private config/keys or raw inbox/list output as smoke evidence.
+**Broker.** The helper reuses Intercom's client, socket discovery and framing, so run it with Pi's `PI_CODING_AGENT_DIR` (default `~/.pi/agent`) and macOS per-user `TMPDIR`. It never restarts or replaces a live broker. Legacy messaging without `stateDir` never starts a broker. Persistent presence, spawn and resume use Pi's safe acquisition, including before any Pi session starts after reboot: reuse a healthy broker, start a detached broker only when none is running, and refuse a second broker while an unhealthy broker process may still own accepted work. Acquisition uses the normal PID-file/spawn-lock bookkeeping.
+
+**Availability.** The Mac must be awake, online and logged in, because the helper runs as a per-user LaunchAgent. Mail for the remote agent waits in its Mac mailbox while the agent is away. Nothing reaches Pi while the Mac is asleep, powered off or offline.
+
+**Audit.** stdout is JSONL metadata: identity, fingerprint, route, peer and message IDs, and outcomes, including wake and launch results. Message bodies, wake keys and private keys are never logged. Keep logs in a 0700 directory with 0600 files.
 
 ## Mac setup
 
-Requires Node **24.21.0+**, OpenSSL with `req -addext` (Homebrew OpenSSL works), and a connected Pi session with Intercom. Run commands from this checkout/package directory. A runtime-only installed checkout already has `dist/`; for development use `npm ci` first. See the [installation guide](reference.md#installation) before rebuilding an in-use extension. This standalone helper can run from its own installed copy without touching the live Pi runtime.
+You need Node 24.21.0+, OpenSSL with `req -addext` (Homebrew OpenSSL works), Tailscale on both machines, and Pi with this package's Intercom extension. Examples use the identity `fitch-os` on port 9443. Replace `/Users/you` and other placeholders.
+
+### 1. Install a release
+
+Install each helper version into a new directory and never edit it afterward. The service runs whatever `current` points to.
 
 ```bash
-# Use a NEW directory; init refuses to overwrite any existing CA.
-umask 077
-BRIDGE="$HOME/.pi/intercom-bridge"
-node scripts/intercom-bridge-credentials.mjs init "$BRIDGE" --cwd "$PWD"
+RELEASES="$HOME/.pi/intercom-bridge-releases"
+NEW="$RELEASES/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$NEW"
+npm install --prefix "$NEW" --omit=dev @fitchmultz/pi-subagents
+PKG="$NEW/node_modules/@fitchmultz/pi-subagents"
+node "$PKG/dist/pi-intercom/bridge.js" --help
+ln -sfn "$NEW" "$RELEASES/current"
 ```
 
-The last JSON line contains paths to the issued client `cert`/`key`, trusted `ca`, and `config`; it does not print secret contents. Keep those paths for the copy step. Configuration is local-only, owned by the Mac user and private:
+### 2. Create credentials
+
+```bash
+umask 077
+BRIDGE="$HOME/.pi/intercom-bridge"
+node "$PKG/scripts/intercom-bridge-credentials.mjs" init "$BRIDGE" fitch-os --cwd "$HOME" --port 9443 --days 3650
+```
+
+`init` refuses an existing directory. It creates a ten-year CA, a one-year loopback server certificate, a client certificate whose CN is the identity name, and a private 0600 `config.json`. `--port` (default 9443) sets the helper port. `--days` (1–3650, default 7) sets the client certificate lifetime for `init` and `issue`. Authorization uses only the fingerprint. The last JSON line lists file paths and never secrets. `ca.key` and `server.key` stay on the Mac.
+
+### 3. Configure
+
+```bash
+mkdir -m 700 "$BRIDGE/state" "$BRIDGE/sessions" "$BRIDGE/wake" "$BRIDGE/logs"
+# Two lines in a 0600 file. Keep it out of Git, logs and shell history.
+(umask 077; printf 'GROK_WAKE_WEBHOOK_URL=%s\nGROK_WAKE_WEBHOOK_KEY=%s\n' "$WAKE_URL" "$WAKE_KEY" > "$BRIDGE/wake/fitch-os.env")
+```
+
+Add `stateDir`, `wake` and `launch` to the generated `config.json`. Keep the file 0600.
 
 ```json
 {
   "port": 9443,
-  "ca": "/Users/mitch/.pi/intercom-bridge/ca.crt",
-  "cert": "/Users/mitch/.pi/intercom-bridge/server.crt",
-  "key": "/Users/mitch/.pi/intercom-bridge/server.key",
+  "ca": "/Users/you/.pi/intercom-bridge/ca.crt",
+  "cert": "/Users/you/.pi/intercom-bridge/server.crt",
+  "key": "/Users/you/.pi/intercom-bridge/server.key",
+  "stateDir": "/Users/you/.pi/intercom-bridge/state",
   "clients": [
     {
-      "fingerprint256": "SHA256_FINGERPRINT_FROM_ISSUE",
-      "name": "grok-bot",
-      "cwd": "/Users/mitch/project"
+      "fingerprint256": "FINGERPRINT_FROM_INIT",
+      "name": "fitch-os",
+      "cwd": "/Users/you",
+      "wake": { "envFile": "/Users/you/.pi/intercom-bridge/wake/fitch-os.env" },
+      "launch": {
+        "packageRoot": "/absolute/path/to/node_modules/@earendil-works/pi-coding-agent",
+        "sessionDir": "/Users/you/.pi/intercom-bridge/sessions",
+        "workspaceRoots": ["/"],
+        "resumeDirs": ["/Users/you/.pi/agent/sessions"],
+        "context": "You were started by the remote fitch-os agent through the Intercom bridge. Reply through Intercom.",
+        "extensions": [
+          "/absolute/path/to/pi-subagents/dist/pi-intercom/index.js",
+          "/absolute/path/to/pi-subagents/dist/extension/index.js"
+        ],
+        "discoverResources": true,
+        "trustProject": true,
+        "maxSessions": 16
+      }
     }
   ]
 }
 ```
 
-### Enable durable mailboxes
+This example gives the agent full authority over every Mac path. The defaults stay restrictive for other identities.
 
-Create a dedicated owned **0700** directory and add its absolute path as top-level `stateDir` in the private configuration:
+| Field                             | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stateDir`                        | Owned 0700 directory, required for unattended use. Holds one 0600 SQLite mailbox per certificate fingerprint, presence proofs and groups. Symlinks, wrong owner or mode, and hard links are rejected. Change it only with a helper restart. Without it, the helper falls back to a legacy volatile inbox (256 messages, 4 MiB) with no wake or presence restore, and keeps groups in `$PI_CODING_AGENT_DIR/intercom/bridge-state`. |
+| `cwd`                             | The identity's presence and project association, the legacy `start` directory and the default spawn directory. It doesn't limit access.                                                                                                                                                                                                                                                                                            |
+| `wake.envFile`                    | Absolute path to an owned 0600 file defining `GROK_WAKE_WEBHOOK_URL` (HTTPS, without URL credentials or fragment) and `GROK_WAKE_WEBHOOK_KEY`. Requires `stateDir`. Reread on SIGHUP.                                                                                                                                                                                                                                              |
+| `launch`                          | Enables saved-session browsing, spawn and resume. Omit it for a messaging-only identity.                                                                                                                                                                                                                                                                                                                                           |
+| `packageRoot`                     | The installed Pi package for children. The helper runs that package's `bin.pi` with its own physical Node. Use the intended installed Pi, not a development SDK with the same version.                                                                                                                                                                                                                                             |
+| `sessionDir`                      | Owned 0700 directory for new journals, written 0600.                                                                                                                                                                                                                                                                                                                                                                               |
+| `workspaceRoots`                  | Up to 32 directories. Spawn and resume directories must be inside one. `["/"]` approves every path; the default empty list rejects spawn and resume.                                                                                                                                                                                                                                                                               |
+| `resumeDirs`                      | Up to 32 owned directories searched, with `sessionDir`, for saved sessions. Every journal path component must be owned and symlink-free.                                                                                                                                                                                                                                                                                           |
+| `provider`, `model`               | Optional default model; set both or neither. Omit them to use Pi's normal model selection.                                                                                                                                                                                                                                                                                                                                         |
+| `extensions`                      | 1–32 absolute extension paths, including Intercom. With `discoverResources: true`, use the same physical Intercom path that native settings load, so a session never runs two Intercom copies.                                                                                                                                                                                                                                     |
+| `discoverResources`               | Default `false`. `true` keeps Pi's normal discovery of extensions, skills, prompts and context files.                                                                                                                                                                                                                                                                                                                              |
+| `trustProject`                    | Default `false`. Chooses native `--approve` or `--no-approve` for the selected directory.                                                                                                                                                                                                                                                                                                                                          |
+| `offline`                         | Default `false`. `true` disables automatic catalog and network activity; requested inference still runs.                                                                                                                                                                                                                                                                                                                           |
+| `maxSessions`, `startupTimeoutMs` | Owned-session cap per identity, 1–16 (default 4; 32 per helper), and readiness deadline, 1–60000 ms (default 15000).                                                                                                                                                                                                                                                                                                               |
+
+Children inherit the helper's environment, minus enclosing `PI_SUBAGENT_*` metadata, so set `PATH` in the service. A launch succeeds only when the exact saved session ID, name and file run idle in RPC mode and the session's own Intercom peer is published. That proves startup, not working provider credentials. A Pi dialog that needs a human is cancelled, and the session is stopped with `interaction_required`.
+
+### 4. Run as a LaunchAgent
+
+Save as `~/Library/LaunchAgents/com.example.pi-intercom-bridge.fitch-os.plist`. Use your real Node path, and the output of `getconf DARWIN_USER_TEMP_DIR` for `TMPDIR`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.pi-intercom-bridge.fitch-os</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/absolute/path/to/node</string>
+    <string>/Users/you/.pi/intercom-bridge-releases/current/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/bridge.js</string>
+    <string>--config</string>
+    <string>/Users/you/.pi/intercom-bridge/config.json</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PI_CODING_AGENT_DIR</key><string>/Users/you/.pi/agent</string>
+    <key>TMPDIR</key><string>/var/folders/XX/YYYY/T/</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ExitTimeOut</key><integer>30</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>/Users/you/.pi/intercom-bridge/logs/audit.jsonl</string>
+  <key>StandardErrorPath</key><string>/Users/you/.pi/intercom-bridge/logs/stderr.log</string>
+</dict>
+</plist>
+```
 
 ```bash
-mkdir -m 700 "$BRIDGE/mailboxes"
+LABEL=com.example.pi-intercom-bridge.fitch-os
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+plutil -lint "$PLIST" && launchctl bootstrap "gui/$(id -u)" "$PLIST"
+lsof -nP -iTCP:9443 -sTCP:LISTEN   # expect only 127.0.0.1:9443
 ```
 
-```json
-{ "stateDir": "/Users/mitch/.pi/intercom-bridge/mailboxes" }
-```
-
-This opt-in does not enable Pi-session launches or require a Pi SDK. It does enable unattended broker acquisition for durable presence: after reboot or broker exit, the helper can start a broker without a running Pi session. It never restarts or replaces a live broker. Each certificate fingerprint owns a separate **0600** SQLite database. Directory symlinks, database/SQLite-sidecar symlinks, wrong ownership/modes and hard-linked files are rejected. SQLite uses full synchronous commits and a bounded cache; no mailbox-wide hydration is needed. Protect the directory and any backups: databases contain private message bodies, though audit logs do not. `stateDir` changes require helper restart, not SIGHUP.
-
-There is no automatic retention limit on unacked messages or unanswered asks. Pages contain at most 256 messages and 4 MiB of serialized envelopes (plus small response metadata); read additional pages with `nextCursor` while `hasMore` is true. Message IDs remain as payload-free tombstones after completion to suppress duplicate/replayed IDs, including after restart. Provision and monitor disk space. Failed disk admission sets durable `overflow`, `lostMessages` and `storageError` when the loss ledger can still be committed; if that also fails, the helper reports `mailbox_storage_failed` (HTTP 507), closes the affected broker peer and logs metadata with `lossRecorded:false`. A failing disk cannot guarantee durable loss bookkeeping. Broker acceptance alone never proves mailbox persistence or remote consumption.
-
-Persistent inbox/ack calls remain available while the broker is down; they do not require broker registration. Authenticate once with `register` or another successful connection to establish the private presence proof. Durable presence then reconnects independently, including after helper restart, without remote polling. Revoked/expired certificates still cannot read stored mail or restore presence. Mailboxes are fingerprint-scoped: rotating a certificate does not transfer old private mail to its replacement. Retain the old database for local recovery rather than automatically authorizing a new credential to read it.
-
-`cwd` controls presence/project association, **not** an authorization restriction. `list` intentionally returns all connected peer identities, omitting topics/subscriptions. Target full IDs or the returned `target` when names collide. Port `0` requests an ephemeral port, reported in the listening log; a fixed port is easier for SSH.
-
-Start the helper in a dedicated terminal (or supervise this exact command with launchd):
+Wait for the `listening` audit record before making requests. Day-to-day control:
 
 ```bash
-# Match Pi's agent directory and temp environment, especially for launchd.
-export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
-node dist/pi-intercom/bridge.js --config "$BRIDGE/config.json" >> "$BRIDGE/audit.jsonl"
+launchctl kill SIGHUP "gui/$(id -u)/$LABEL"    # reload allowlist, launch and wake policy
+launchctl kill SIGTERM "gui/$(id -u)/$LABEL"   # graceful restart; KeepAlive starts the current release
+launchctl bootout "gui/$(id -u)" "$PLIST"      # stop and stay stopped
 ```
 
-The listening record includes the helper PID and port. Record the PID as `HELPER_PID` in your administration terminal; **do not use the broker PID**. Wait for that readiness record before making a request: a running process is not proof its listener is ready. Verify `lsof -nP -iTCP:9443 -sTCP:LISTEN` shows only `127.0.0.1:9443`. Keep the helper running; no per-message approvals are needed.
+SIGHUP can't change the port, TLS files or `stateDir`; restart for those. With `KeepAlive`, killing the process only restarts it, so use `bootout` to stop access. SIGTERM stops owned sessions before exit, which is why `ExitTimeOut` allows 30 seconds.
 
-For the installed Mac LaunchAgent (`com.fitchmultz.pi-intercom-bridge`), inspect and administer it with:
+### 5. Publish on the tailnet
 
 ```bash
-launchctl print "gui/$(id -u)/com.fitchmultz.pi-intercom-bridge"
-# Reload allowlist without restarting:
-launchctl kill SIGHUP "gui/$(id -u)/com.fitchmultz.pi-intercom-bridge"
-# Stop immediately; remove the plist too to disable future login starts:
-launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fitchmultz.pi-intercom-bridge.plist"
-# Start again explicitly:
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.fitchmultz.pi-intercom-bridge.plist"
+tailscale serve --bg --tcp=9443 tcp://localhost:9443
+tailscale serve status
 ```
 
-The installed agent has no `KeepAlive` auto-restart; stopping its helper really stops access. Remove its plist to disable future login starts permanently. With `stateDir` enabled, unacked mail survives helper restart. Inspect/drain inbox before restarting a legacy volatile-mode helper.
+Restrict that port in your tailnet policy to the remote host. To withdraw it, run the same `serve` command with `off` appended.
 
-### Tunnel and provision Grok
+### 6. Provision the remote host
 
-Use the **known, approved** Linux SSH host/account, not an invented example host. Preserve SSH host-key verification and do not forward your SSH agent:
+Copy only the client certificate and key printed by `init`, `ca.crt`, and `scripts/intercom-remote.mjs`, over an existing secure channel, into a 0700 directory with 0600 files. Then run a supervised loopback forwarder from `127.0.0.1:9443` to the Mac's tailnet name on port 9443. With kernel-mode Tailscale:
 
 ```bash
-GROK_SSH='grok@YOUR_LINUX_HOST'
-# On Linux, first inspect effective SSH config with the administrator:
-# sudo sshd -T | grep gatewayports
-# Require GatewayPorts=no (default) or clientspecified, NEVER yes.
-
-# On the Mac, dedicated terminal/supervised process:
-ssh -NT -a -o BatchMode=yes -o StrictHostKeyChecking=yes \
-  -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -R 127.0.0.1:9443:127.0.0.1:9443 "$GROK_SSH"
+socat TCP-LISTEN:9443,bind=127.0.0.1,reuseaddr,fork TCP:mac-name.example-tailnet.ts.net:9443
 ```
 
-**On Linux, verify `ss -ltn '( sport = :9443 )'` shows only `127.0.0.1:9443` before use.** `GatewayPorts=yes` forces wildcard binding even when `-R` requests loopback. If it shows `0.0.0.0`, `*`, or `[::]`, stop the tunnel and correct that SSH policy. Do not open a firewall port. OpenSSH references: [ssh `-R`](https://man.openbsd.org/ssh.1) and [sshd `GatewayPorts`](https://man.openbsd.org/sshd_config.5#GatewayPorts).
-
-Transfer **only** the client certificate/key, public `ca.crt`, and the dependency-free remote script through the existing approved SSH/SFTP channel:
-
-```bash
-# Use cert/key paths printed by init/issue, not the CA or server keys.
-CLIENT_CERT='/absolute/path/from/issue/grok-bot-ISSUED.crt'
-CLIENT_KEY='/absolute/path/from/issue/grok-bot-ISSUED.key'
-ssh "$GROK_SSH" 'umask 077; mkdir -p ~/.config/pi-intercom; chmod 700 ~/.config/pi-intercom'
-scp "$CLIENT_CERT" "$GROK_SSH:.config/pi-intercom/client.crt"
-scp "$CLIENT_KEY" "$GROK_SSH:.config/pi-intercom/client.key"
-scp "$BRIDGE/ca.crt" scripts/intercom-remote.mjs "$GROK_SSH:.config/pi-intercom/"
-ssh "$GROK_SSH" 'chmod 600 ~/.config/pi-intercom/*'
-```
-
-For a least-privileged dedicated Linux SSH tunnel account, the administrator can restrict its key to remote forwarding with `restrict,port-forwarding,permitlisten="127.0.0.1:9443",command="/bin/false"` and `AllowTcpForwarding remote`, `GatewayPorts no`. `-N` requests no shell. Provision files separately; do not reuse Grok's client key as an SSH key. No SSH login credential for the Mac is given to Grok.
-
-## Enable controlled destination-session launches
-
-Launching is **disabled by default**, independently for each certificate identity. Messaging-only installs and helper `--help` do not require a Pi SDK. To enable launches, add `launch` to the selected client in the private Mac configuration and create an owned **0700** session directory first:
-
-```bash
-mkdir -m 700 "$BRIDGE/sessions"
-```
-
-```json
-{
-  "packageRoot": "/absolute/immutable/node_modules/@earendil-works/pi-coding-agent",
-  "sessionDir": "/Users/mitch/.pi/intercom-bridge/sessions",
-  "provider": "openai-codex",
-  "model": "EXACT_MODEL_ID",
-  "context": "This is a locally authorized remote Intercom session. Stay idle until an Intercom task arrives and reply through Intercom.",
-  "extensions": [
-    "/absolute/pi-subagents/dist/pi-intercom/index.js",
-    "/absolute/pi-subagents/dist/extension/index.js"
-  ],
-  "discoverResources": false,
-  "trustProject": false,
-  "offline": false,
-  "maxSessions": 4,
-  "startupTimeoutMs": 15000
-}
-```
-
-The helper runs its **physical Node executable**, resolves only the pinned package's manifest `bin.pi`, and uses the identity's fixed, canonical Mac `cwd`. Use the intended installed fork, not a development SDK with the same version. `provider` and `model` must be exact IDs, without fuzzy matching or a thinking suffix. Local settings still choose model reasoning. Native launch context is a genuine user instruction written using that package's exported `SessionManager`; it creates a **0600 native JSONL journal without submitting a prompt or running inference**. The session then starts idle in RPC mode. Success requires exact saved ID/name/file/model, idle RPC state, and actual publication of its named Intercom broker peer. This proves startup, **not provider credential usability**; verify the first real task/reply separately.
-
-Resources are locally controlled. `extensions` requires 1–32 existing absolute paths including Intercom; include subagents and any other useful locally approved extensions there. By default (`discoverResources:false`), discovered/configured/built-in extensions, skills, templates, themes and context-file discovery are disabled; explicit extensions still load. This is an explicit resource selection, not full normal discovery. Set `discoverResources:true` to retain normal native discovery; use the **same physical Intercom extension path already selected by native settings**, avoiding duplicate owners loaded from separate installed copies. `trustProject` (default false) chooses native `--approve` versus `--no-approve` for the fixed local project; it is not a remote approval. `offline` (default false) disables automatic catalog/network activity, not requested model inference. The child retains local credentials and normal environment, but strips enclosing `PI_SUBAGENT_*` identity/control metadata so it is an independent session.
-
-Send SIGHUP after editing policy. Removing/changing an identity or its launch policy stops its existing children; invalid reload denies everyone and stops all owned children. Credential `issue` preserves launch policy but replaces the fingerprint, so rotation also stops the old credential's children. Only this helper's own children may be stopped, never arbitrary Pi sessions or the broker.
-
-```bash
-node "$REMOTE" start --name planner
-node "$REMOTE" sessions
-# Use peerId from start/sessions as the ordinary messaging target:
-node "$REMOTE" ask --to PI_PEER_ID --message 'Review the current project and reply with your findings.'
-node "$REMOTE" stop --session-id NATIVE_SESSION_ID
-```
-
-Names are prefixed `remote:IDENTITY:NAME` to avoid impersonating local peers. An already-live name for the same identity is reused; a concurrent start/stop returns a conflict, not a duplicate launch. After a lost start response, inspect `sessions` or repeat the **same name**, not a fresh name. Name is the **only** remote launch input: no task, cwd, shell, environment, flags, model, resource paths or raw RPC commands. Submit tasks afterward through ordinary Intercom. Fixed cwd and launch settings are **not a sandbox**: the authorized agent can use its locally enabled tools and credentials. Grant launch permission only to a remote identity trusted with that authority and potential model costs.
-
-Caps are 4 sessions per identity by default (local range 1–16), and 32 active launches helper-wide. Readiness deadline defaults to 15 seconds (local range 1–60000 ms). HTTP start has a 75-second outer deadline; CLI start has 90 seconds including cleanup. Startup failure, abort, deadline, explicit stop, identity revocation, certificate expiry and helper SIGINT/SIGTERM stop owned children. Each launch has a private, helper-owned process group. Cleanup closes stdin, escalates that group to TERM/KILL after 1/3 seconds if needed (including unresponsive native workers), and observes actual process closure within 8 seconds; it does not report a signal request as a completed exit. A cleanup deadline returns `stop_timeout`; inspect `sessions` and retry stop, even if the process has since exited. Unsupported RPC dialogs are cancelled and the session is stopped with `interaction_required`; they are never automatically approved. RPC events/diagnostics are continuously drained. Control records are bounded to 4 MiB; oversized unused native transcript/tool events are discarded through their LF boundary with metadata-only overflow reporting, without truncating the native session/tool result or killing a healthy peer. Raw stderr/model/tool content is never sent to the audit log.
-
-Long-lived peers are **not tied to the remote presence peer's five-minute idle lease** or an HTTP connection. They remain available while the helper and certificate authorization remain valid. Journals survive stop/failure/restart and can be resumed locally with the pinned Pi's `--session PATH`; the helper does not silently restart or adopt old/native processes. `sessions` reports current helper ownership, state, PID, native journal path and metadata-only error codes; at most 64 recent records are retained. The PID identifies the owned manifest-CLI process; a supervised fork can run Pi in its native worker. It is not an all-machine session admin API. Planned helper shutdown stops its children; do not SIGKILL the helper to perform routine cleanup.
-
-## Grok Bot: exact remote commands
-
-On Linux, configure Grok's shell environment:
+Without root, run `tailscaled --tun=userspace-networking --socks5-server=127.0.0.1:1055` and relay the same loopback listener through that SOCKS5 proxy.
 
 ```bash
 export INTERCOM_BRIDGE_URL='https://127.0.0.1:9443'
@@ -180,110 +186,214 @@ export INTERCOM_BRIDGE_CA="$HOME/.config/pi-intercom/ca.crt"
 export INTERCOM_BRIDGE_CERT="$HOME/.config/pi-intercom/client.crt"
 export INTERCOM_BRIDGE_KEY="$HOME/.config/pi-intercom/client.key"
 REMOTE="$HOME/.config/pi-intercom/intercom-remote.mjs"
-
-node "$REMOTE" register
-node "$REMOTE" list
-node "$REMOTE" send --to planner --message 'Grok checking in. Please send your current status.'
-node "$REMOTE" ask --to planner --message 'What is the current status?' --timeout-ms 120000
-node "$REMOTE" inbox
-node "$REMOTE" reply --reply-to QUESTION_ID_FROM_INBOX --message 'Proceed with the stable API.'
-node "$REMOTE" ack ORDINARY_MESSAGE_ID_FROM_INBOX
+node "$REMOTE" register && node "$REMOTE" list
 ```
 
-Poll inbox at a reasonable cadence (for example every 5–15 seconds) while Grok is available. Fetch is non-destructive, so retrying a fetch cannot lose messages; persist/consume then ack ordinary messages. In persistent mode, follow `hasMore` using `inbox --after NEXT_CURSOR --limit 256`; do not treat the first page as the entire inbox. Restart a drain from cursor `0` to revisit unacked messages. Inbound asks remain in the inbox until `reply` succeeds; ack does not discard a reply obligation. Use `send` for most coordination and `ask` only when Grok really needs a blocking answer. The CLI has a hard request deadline (ask timeout + 15 seconds), validates TLS, emits JSON, and exits 1 on errors / 2 on invalid arguments. It never retries mutations automatically.
+The first authenticated connection establishes persistent presence (see [Mailbox, presence and wake](#mailbox-presence-and-wake)).
 
-Curl works too, with bounded waiting and the same TLS files:
+### More instances
+
+Run one helper per remote agent instance. Each instance gets its own client name and key, port, `stateDir`, wake webhook, LaunchAgent label, Tailscale Serve port and remote host.
+
+Helpers on the same Mac must share one CA; `init` always creates a new one. Pi sessions on the Mac check every native control (see [Stop and cancel](#stop-and-cancel)) against a single policy file: `PI_INTERCOM_BRIDGE_CONFIG`, else `$PI_CODING_AGENT_DIR/intercom/bridge.json`, else `~/.pi/intercom-bridge/config.json`. That file must name the common CA and list the current pin of every instance, so update it whenever you issue, rotate or revoke any instance's certificate. A different Mac has its own CA and policy file.
+
+### SSH alternative
+
+A Mac-initiated SSH reverse forward can replace steps 5 and 6. Use an approved Linux account, keep host-key checking and don't forward your agent:
 
 ```bash
-curl --fail-with-body --max-time 135 \
-  --cacert "$INTERCOM_BRIDGE_CA" --cert "$INTERCOM_BRIDGE_CERT" --key "$INTERCOM_BRIDGE_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"to":"planner","message":"Please reply with your status.","timeoutMs":120000}' \
-  "$INTERCOM_BRIDGE_URL/v1/ask"
+ssh -NT -a -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -R 127.0.0.1:9443:127.0.0.1:9443 user@linux-host
 ```
 
-### JSON API contract
+On Linux, `ss -ltn '( sport = :9443 )'` must show only `127.0.0.1:9443`. `GatewayPorts=yes` forces a wildcard bind; require `no` or `clientspecified`. A dedicated tunnel key can be limited with `restrict,port-forwarding,permitlisten="127.0.0.1:9443",command="/bin/false"`. Never reuse the bridge client key as an SSH key.
 
-All routes require mTLS and the certificate allowlist. Unknown routes/fields, wrong methods, non-JSON bodies, unsafe control characters, and requests larger than 64 KiB are rejected. No CORS; browser-origin requests are rejected. Success is `{ "ok": true, ... }`; application failures are `{ "ok": false, "error": { "code": "...", "message": "..." } }` with a non-2xx status. Certificate/allowlist admission can terminate TLS before HTTP; the CLI reports that as a TLS/transport error. No remote-controlled broker frame or command is passed through.
+## Remote API
 
-| Route               | Request                            | Success fields                                                                                   |
-| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `POST /v1/register` | `{}`                               | `sessionId`, `name` (also automatic on other operations)                                         |
-| `GET /v1/list`      | none                               | `sessionId`, `sessions` (metadata + unambiguous targets)                                         |
-| `POST /v1/send`     | `{to,message}`                     | `id`, `accepted`, `delivered`                                                                    |
-| `POST /v1/ask`      | `{to,message,timeoutMs?}`          | send receipt and `reply:{from,message}`                                                          |
-| `GET /v1/inbox`     | `?after=CURSOR&limit=N` (optional) | `messages:[{from,message}]`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
-| `POST /v1/reply`    | `{replyTo,message}`                | send receipt; target derived from the received ask                                               |
-| `POST /v1/ack`      | `{ids:[...]}`                      | `acked`, `retained`                                                                              |
-| `POST /v1/start`    | `{name}`                           | `session:{sessionId,peerId,name,status,pid,sessionFile,error?}`, `reused`                        |
-| `GET /v1/sessions`  | none                               | `sessions` (only current helper/identity-owned launch records)                                   |
-| `POST /v1/stop`     | `{sessionId}`                      | `session` with observed `exited` status; journal retained                                        |
+Every route requires mTLS and the allowlist. Bodies are JSON up to 64 KiB. Unknown routes, fields, query keys and browser-origin requests are rejected. Success is `{ "ok": true, ... }`; failure is `{ "ok": false, "error": { "code", "message", ... } }` with a non-2xx status. A failed certificate check can end the TLS handshake before any HTTP response. Nothing retries a mutation automatically. A lost response means the outcome is unknown, so inspect the inbox, sessions or peer before retrying.
 
-Inbox `after` is an opaque decimal sequence cursor (`0` starts a drain), not a message ID or offset. `limit` is 1–256, default 256; unknown/repeated query keys and invalid cursors are rejected. Ack accepts at most 256 IDs per request and is idempotent; it returns asks in `retained`. Persistent duplicate IDs never increment loss counts or replace the original envelope. In persistent mode an answer returned by `ask` is also retained in inbox; ack its `reply.message.id` after consuming it.
-
-The storage API also supports opt-in durable notification intents for a local delivery worker: `Mailbox(stateDir, fingerprint, true)`, `pendingNotifications(after, limit)` and `notificationAccepted(messageId)`. Pending envelopes expose local `receivedAt` and `acknowledged` metadata. Intake and notification intent commit in one SQLite insert. Remote ack/reply hides the inbox row but preserves the notification envelope until the worker marks it accepted; notification acceptance never acknowledges unread mail. This API does not post webhooks or enable any wake service on its own.
-
-Timeout does **not** retract a delivered ask; a late answer can arrive in inbox. Offline/missing peers, broker outages, ambiguous/self targets, a second concurrent ask, invalid/revoked credentials, timeout, and resource limits have explicit errors. HTTP send/list deadlines are bounded by the real client (8/5 seconds); broker registration by 10 seconds. A lost HTTP response or acknowledgement timeout means **delivery unknown**—inspect inbox/local peer before retrying to avoid duplicate instructions.
-
-## Rotate credentials
-
-Client renewal replaces its old fingerprint rather than authorizing both indefinitely. Credential commands hold a private directory lock across the complete config read/modify/write and certificate issuance, so concurrent operations fail instead of restoring a revoked fingerprint. After a crashed command, inspect `DIR/.credentials.lock/owner`, confirm that process is gone, then remove that lock and retry; never clear a live command's lock.
-
-Renew with:
+`intercom-remote.mjs` wraps the routes with the verbs `register`, `list`, `send`, `ask`, `inbox`, `reply`, `ack`, `start`, `spawn`, `resume`, `sessions`, `stop`, `cancel`, `capabilities`, `transcript`, `groups`, `group-upsert`, `broadcast` and `group-send` (broadcast that requires `--group`). Run it with `--help` for options. It prints JSON and exits 0 on success, 1 on an API, TLS or transport failure and 2 on invalid arguments. The examples below call routes directly:
 
 ```bash
-node scripts/intercom-bridge-credentials.mjs issue "$BRIDGE" grok-bot
-# Transfer the NEW cert/key using the same private copy commands above.
-kill -HUP "$HELPER_PID"
-```
-
-SIGHUP rereads the private config, drops removed/changed peers and their TLS connections, and cancels pending waits. Confirm the reload audit record and verify the old certificate is denied. Invalid reload fails closed. Client expiry also applies to existing connections/peer leases, not just new TLS handshakes. Restart Grok's client process if it caches its files.
-
-Server certificate expires after one year; CA after ten. To rotate server/CA, create a **new** credential directory with `init`, transfer its new public CA and new client credential, stop/restart **only this helper** with the new config, and retain the old directory briefly as a private rollback. Never restart the shared broker or change its socket permissions for rotation. If the CA key is compromised, replace the entire CA immediately. Old private key files retained by `issue` should be removed only when no rollback is needed.
-
-## How to revoke Grok
-
-```bash
-node scripts/intercom-bridge-credentials.mjs revoke "$BRIDGE" grok-bot
-kill -HUP "$HELPER_PID"
-```
-
-Confirm the reload/revocation audit record, that Grok disappears from the local peer list, and that its old cert cannot call `/v1/list`. Stop the SSH forward too if no other client needs it. Remove Grok's saved client key on Linux and obsolete local client keys when no longer needed. Emergency immediate cut-off: stop **the helper process**, not Pi or the broker. Certificate renewal cannot bypass the removed fingerprint; reauthorization requires a new local `issue` + reload.
-
-## Verification / smoke transcript
-
-The process-boundary tests use a private real broker, real TLS certificates, actual HTTPS requests and the remote CLI. Mailbox coverage includes cold SIGKILL restart, sender reconnection, idle-lease retirement, broker-outage reads/acks, more than both former count/byte caps, bounded cursor drains, deduplication, failed storage admission, private-file enforcement and notification/ack races across process restarts. Launch tests use the actually installed Pi dependency graph with a selected-host native faux provider (no paid inference or external credentials); they prove native persistence, zero pre-startup inference, real Intercom wake/tool reply, ownership/caps, startup failure/abort/deadline, safe dialog cancellation, presence-lease independence, short-lived certificate expiry, rotation/revocation and child exit before helper shutdown completes:
-
-```bash
-node --test test/integration/intercom-bridge.test.ts test/integration/intercom-bridge-launch.test.ts
-# Do not inject host startup diagnostics into native fixture stderr:
-env -u PI_TIMING -u PI_EXTENSION_PERFORMANCE npm run ci
-```
-
-For a live smoke, from a separate Mac process and then Linux use the remote CLI to list peers and ask an intentionally selected connected session:
-
-```bash
-node "$REMOTE" list
-node "$REMOTE" ask --to KNOWN_FULL_SESSION_ID --message 'Bridge smoke only: reply with bridge-smoke-ok.' --timeout-ms 120000
-```
-
-Save only a redacted transcript: platform, operation, returned peer names relevant to the test, accepted/delivered, and reply text. Do not publish unrelated cwd/model/topic/message content.
-
-Observed **2026-10-06**, from a separate process on the Mac through the installed runtime-only helper to the live broker and a real connected Pi session (not a mocked recipient):
-
-```json
-{
-  "platform": "darwin",
-  "transport": "loopback HTTPS mTLS",
-  "list": { "ok": true, "peers": ["secure-intercom-bridge", "grok-bot"] },
-  "ask": {
-    "ok": true,
-    "accepted": true,
-    "delivered": true,
-    "replied": true,
-    "reply": "bridge-smoke-ok"
-  }
+api() { # api METHOD PATH [JSON]
+  curl --fail-with-body -sS --max-time 135 \
+    --cacert "$INTERCOM_BRIDGE_CA" --cert "$INTERCOM_BRIDGE_CERT" --key "$INTERCOM_BRIDGE_KEY" \
+    -X "$1" -H 'Content-Type: application/json' ${3+--data "$3"} "$INTERCOM_BRIDGE_URL$2"
 }
 ```
 
-**Off-box deployment/smoke is not yet verified:** the actual Grok Linux SSH destination/access was unavailable. No credentials were transferred to an unverified host. Once that access is supplied, verify Linux's listener and repeat these exact list/ask commands there.
+| Route                   | Request                                                   | Result                                                                          |
+| ----------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `POST /v1/register`     | `{}`                                                      | `sessionId`, `name`; other routes register automatically                        |
+| `GET /v1/list`          | —                                                         | live peers with unambiguous `target`s                                           |
+| `POST /v1/send`         | `{to,message}`                                            | `id`, `accepted`, `delivered`                                                   |
+| `POST /v1/ask`          | `{to,message,timeoutMs?}`                                 | send receipt and `reply:{from,message}`                                         |
+| `POST /v1/reply`        | `{replyTo,message}`                                       | send receipt to the ask's saved sender                                          |
+| `GET /v1/inbox`         | `?after=CURSOR&limit=1..256`                              | `messages`, `nextCursor`, `hasMore`, `overflow`, `lostMessages`, `storageError` |
+| `POST /v1/ack`          | `{ids:[...]}`, at most 256                                | `acked`, `retained`                                                             |
+| `POST /v1/broadcast`    | `{message,group?}`                                        | `status`, per-target `receipts`, member `errors`                                |
+| `GET /v1/groups`        | —                                                         | this identity's `groups`                                                        |
+| `POST /v1/groups`       | `{name,members:[...]}` or `{name,match}`                  | upserted `groups`                                                               |
+| `GET /v1/sessions`      | `?live=true&saved=true&q=&offset=&limit=`                 | `sessions`, `nextOffset?`, `liveTruncated?`                                     |
+| `POST /v1/spawn`        | `{name,cwd?,task?,model?}`                                | `session`, `id`, `reused`, `task?`                                              |
+| `POST /v1/resume`       | `{target,task?}`                                          | `session`, `id`, `reused`, `task?`                                              |
+| `POST /v1/stop`         | one of `sessionId`, `target`, `to`; `mode?`, `timeoutMs?` | see [Stop and cancel](#stop-and-cancel)                                         |
+| `POST /v1/cancel`       | one of `sessionId`, `target`, `to`; `timeoutMs?`          | same as `stop` with `mode:"cancel"`                                             |
+| `GET /v1/transcript`    | `?target=&limit=&maxBytes=&cursor=&timeoutMs=`            | live or saved transcript page; see [Transcripts](#transcripts)                  |
+| `POST /v1/transcript`   | `{to,limit?,maxBytes?,cursor?,timeoutMs?}`                | same as `GET /v1/transcript`                                                    |
+| `POST /v1/capabilities` | `{to,timeoutMs?}`                                         | native capabilities receipt                                                     |
+| `POST /v1/control`      | `{to,verb,options?,timeoutMs?}`                           | native control receipt; `verb:"transcript"` behaves like `/v1/transcript`       |
+| `POST /v1/start`        | `{name}`                                                  | legacy idle launch in the identity `cwd`                                        |
+
+Ask waits up to two minutes (`timeoutMs` 100–120000) for the exact recipient and `replyTo`; each identity has one outgoing ask at a time. A timeout doesn't retract a delivered ask, and a late answer arrives in the inbox. Spawn, resume and transcript lookup have a 75-second helper deadline (90 seconds in the CLI); ask has its timeout plus 15 seconds; other routes have 15 seconds. Live transcript controls keep their separate native response deadline; saved name lookup may scan the full catalog.
+
+### Mailbox, presence and wake
+
+**Intake.** Every message addressed to the identity is committed to its SQLite mailbox (full synchronous writes) before the helper surfaces it or completes a waiting ask. Unread mail and unanswered asks survive helper crashes, restarts and broker outages. There is no retention limit, so monitor disk space. If a write fails, the mailbox records `overflow`, `lostMessages` and `storageError`. If the loss itself can't be recorded, requests return 507 `mailbox_storage_failed` and the audit log shows `lossRecorded:false`.
+
+**Reading.** `GET /v1/inbox` returns a non-destructive page of at most 256 messages and 4 MiB. Keep reading with `after=nextCursor` while `hasMore` is true; start again from `0` to revisit unacked mail. The cursor is an opaque sequence number. Inbox and ack work while the broker is down.
+
+**Acknowledging.** Ack an ordinary message to delete its payload; its ID stays as a tombstone so replays are ignored. Ack an ask to record that you've stored it: it appears in `retained`, stays in the inbox as a reply obligation and never triggers a fallback wake. A successful `reply` retires the ask. Reply goes to the ask's saved sender ID; if that sender is offline, it returns `peer_offline` and keeps the obligation. Ack is idempotent. In persistent mode, an answer returned by `ask` is also kept in the inbox; ack `reply.message.id` once you've consumed it.
+
+**Presence.** After the first authenticated connection, the helper writes a private presence proof (identity, `cwd` and certificate expiry) to `stateDir` and keeps the identity registered with the broker, refreshing every 15 seconds. It stays registered without remote polling until the certificate expires, the identity changes or is revoked, or the helper stops. A restarted helper restores presence from that proof without any remote request. A revoked identity is never restored.
+
+**Primary wake.** The remote consumer owns waking its agent. Poll the inbox, for example every 15 seconds; append each message to durable storage and fsync it; only then ack it. A crash before the ack replays the message, so deduplicate by `message.id`.
+
+**Fallback wake.** If a message stays unacked for at least 120 seconds, the helper POSTs one wake for the oldest such message to `GROK_WAKE_WEBHOOK_URL` with `Authorization: Bearer <GROK_WAKE_WEBHOOK_KEY>` and this body:
+
+```json
+{
+  "from": "sender name",
+  "from_id": "pi-…",
+  "to": "fitch-os",
+  "message_id": "…",
+  "ask_id": null,
+  "text": "…"
+}
+```
+
+`ask_id` is the message ID for asks. A 2xx response is logged as `accepted`, but it can't prove the consumer stored the message, so the wake stays pending: the helper posts the same oldest unacked message again every 5 minutes until the consumer acks it. Acking an ask counts. Deduplicate wakes by `message_id`. Other responses and transport failures retry with doubling backoff up to 5 minutes. Redirects are refused, each request times out after 10 seconds, and the helper sends at most one wake per cycle. Fallback stops while the identity is revoked or its certificate has expired.
+
+### Sessions
+
+`GET /v1/sessions?live=true&saved=true` returns rows of `id`, `sessionId`, `peerId`, `name`, `cwd`, `status`, `lastSeen`, `saved` and `owned`. `owned` is true only for this identity's current helper subprocesses. Saved rows require `launch` policy and come from `sessionDir` and `resumeDirs`; rows never include journal paths or transcript bodies. `q` filters ID, name and cwd. `limit` is 1–100 (default 50). `offset` and `nextOffset` are filesystem candidate cursors, with at most 1,000 candidates scanned per request, not row counts. `liveTruncated` means live-only peers didn't fit; page them with `live=true` alone. A bare `GET /v1/sessions` keeps the legacy list of this identity's owned processes, including PID and journal path.
+
+```bash
+api GET '/v1/sessions?live=true&saved=true&limit=50'
+api POST /v1/spawn '{"name":"reviewer","cwd":"/Users/you/src/app","task":"Review the current branch and reply with findings.","model":"provider/model-id"}'
+api POST /v1/resume '{"target":"NATIVE_SESSION_ID","task":"Continue where you left off."}'
+```
+
+**Spawn** creates a session named `remote:IDENTITY:NAME` in `cwd` (default: the identity `cwd`). `model` is `provider/id`, split at the first slash; you can also send `provider` and `model` separately. The helper writes a new 0600 journal containing the launch context without running inference, starts Pi idle in RPC mode, and waits for readiness. It then sends `task` as an ordinary Intercom message from the identity, so the session's replies land in the mailbox. `task:{id,accepted,delivered,completed:false}` is broker acceptance. A live session with the same name is reused (`reused:true`), or rejected with `cwd_conflict` or `model_conflict` when those differ. If the task send fails, the error includes the live `session`; deliver the task with `/v1/send` instead of spawning again. After a lost response, check sessions or repeat the same name.
+
+**Resume** takes `target` (or exactly one of `sessionId` or `name`) plus an optional `task`. A target matches an exact native session ID or peer ID first, then a unique saved name. Name lookups scan the whole catalog to prove uniqueness and fail rather than accept a partial match. Resume reuses a live owned process, then a live Intercom peer proven to own that journal, without reopening the journal. Otherwise it opens the original journal in place, with the same session ID, cwd, name and history, and restores the recorded model. If Pi falls back to a different model, resume fails with `model_restore_failed` and submits no task. It refuses with `active_session` when a live peer matches the name and cwd but can't be proven to own the journal. A process that resume starts is helper-owned.
+
+Duplicate-writer protection covers helper-owned startups and discoverable Intercom peers. Pi's `SessionManager` has no cross-process journal lock, so a Pi process without Intercom, or one that hasn't published its peer yet, is invisible to the bridge. The helper never adopts processes after a restart. A surviving child that is still a live Intercom peer is reused by resume rather than reopened.
+
+### Stop and cancel
+
+Both routes take exactly one of `sessionId`, `target` or `to`. `stop` also takes `mode`: `kill` (default) or `cancel`. `POST /v1/cancel` is `stop` with `mode:"cancel"`. The helper first looks for this identity's helper-owned process by native session ID, peer ID or name. Only when the identity owns no match (`unknown_session`) does it send a native control to a live Pi, with `timeoutMs` 100–10000 (default 3000). Any other failure, including an unknown outcome, is returned as is and never redirected. Ownership decides what the bridge can guarantee:
+
+| Target                                       | `mode: "cancel"`                                                                                                                                           | `mode: "kill"` (default)                                                                                                                                                                                            |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| This identity's helper-owned process         | Native RPC abort. Returns after observed idle with `queuesPreserved:true` and the pending count, or `cancel_unconfirmed`. Future Intercom tasks still run. | Closes stdin and signals the private process group (TERM after 1 s, KILL after 3 s). Returns `status:"exited"` only after observing exit within 8 seconds; otherwise `stop_timeout`, so retry. The journal is kept. |
+| Any other live Pi with the updated extension | Native control `cancel_requested`: the current operation is aborted and accepted queued input is kept (`queueCleared:false`).                              | Native shutdown request: `shutdown_requested`, or `unsupported` while still requesting shutdown and abort. Always `processExited:false`.                                                                            |
+
+For other sessions, TUI shuts down in order, idle RPC waits for its next command, and print or JSON modes report `unsupported`. A disconnect doesn't prove exit, and detached background jobs keep their own lifecycle. The bridge never signals another process by PID and never stops the broker.
+
+**Native controls** travel as passive, typed Intercom messages. Before acting, the recipient checks that the sender is `remote-<fingerprint>` and that the TLS certificate chain supplied by the bridge is current, issued by the configured CA and pinned in its policy file, then replies with a correlated result. A Pi process still running older extension code receives only a short passive note; the request then fails with `control_unconfirmed` and `deliveryUnknown:true`. Don't retry automatically. Use `POST /v1/control` with `verb` `capabilities`, `cancel`, `stop` or `transcript` for the direct form; it skips the owned-process lookup. `timeoutMs` is 100–10000 (default 3000), with at most eight controls in flight per identity.
+
+### Transcripts
+
+`GET /v1/transcript?target=TARGET&limit=20`, `POST /v1/transcript {to,...}` and `POST /v1/control` with `verb:"transcript"` read the same way. The helper first resolves the target against live Intercom peers:
+
+- **Live.** A live Pi with the updated extension answers through native control. The result is the control receipt plus `source:"live"` and `transcript`, the page (also still at `native.transcript`). A live Pi running older extension code fails with `control_unconfirmed`; the helper doesn't fall back to its journal.
+- **Saved.** Only when no live peer matches (`peer_offline`) does the helper read the saved journal. That requires `launch` policy (otherwise 403 `launch_disabled`). The target resolves through the saved catalog by stable ID or unique name, and the result is `{status:"ok", source:"saved", session, transcript}`. The journal is parsed read-only with the identity's `packageRoot` and is never opened for writing or migrated. Saved reads reject journals over 64 MiB or 50,000 entries, ignore an unfinished trailing record, and fail with 409 `session_changed` if the journal's session ID changes during the read.
+
+A page holds `records` (`id`, `timestamp`, `role`, `text`, `truncated`) in chronological order. Only finalized user, assistant, tool-result and custom text on the active branch is included; thinking, images, tool arguments, and system or provider data are not, and streaming output isn't available. Defaults are 50 records and 64 KiB, with maximums of 100 records and 128 KiB (`maxBytes` minimum 256). A read scans at most 1,024 entries and reports `scanLimitReached`. `cursor` continues to older output while the selected branch is unchanged.
+
+### Groups and broadcast
+
+```bash
+api POST /v1/groups '{"name":"app","members":["reviewer","pi-0123456789abcdef0123456789abcdef"]}'
+api POST /v1/groups '{"name":"workers","match":"remote:fitch-os:*"}'
+api POST /v1/broadcast '{"group":"workers","message":"Report status."}'
+```
+
+Groups are upserted by name and private to the certificate fingerprint, stored in `stateDir` (or `$PI_CODING_AGENT_DIR/intercom/bridge-state`, created 0700, when `stateDir` is unset). Each identity can have 64 groups of up to 256 explicit members, within 1 MiB. `match` is a name glob or `{id?, nameglob?, cwd?}`; the canonical fields are `members`, `namePattern` and `cwdPattern`. Explicit members are unioned with glob matches, and when both globs are set a peer must match both. Globs use Node's `path.matchesGlob`.
+
+Broadcast resolves current live Pi sessions, excluding remote identities, and deduplicates them. Without `group` it targets every live Pi session. Each target is sent once, sequentially, with its own receipt or error. Offline or ambiguous members appear in `errors`, and any failure makes `status` `partial`.
+
+If the broker stalls or disconnects mid-broadcast, the HTTP request fails (`ok:false`) but retains `status:"partial"`, all per-target `receipts` and member `errors`. A receipt with `accepted:true` is confirmed; an in-flight failure carries its message `id` and `deliveryUnknown:true`; targets not sent have `attempted:false` and `deliveryUnknown:false`. Revocation or certificate expiry denies the response instead. Nothing is retried automatically. Resend only definite failures or unattempted targets; inspect unknown outcomes before deciding whether to resend.
+
+## Update and roll back
+
+**Helper.** Install a new release (step 1), point `current` at it, then restart gracefully:
+
+```bash
+ln -sfn "$RELEASES/NEW_RELEASE" "$RELEASES/current"
+launchctl kill SIGTERM "gui/$(id -u)/$LABEL"
+```
+
+To roll back, point `current` at the previous release and restart the same way. A restart stops the helper's owned sessions; their journals remain, so resume them afterward. Mailboxes, presence proofs and groups persist. Delete an old release only when no helper or broker process still runs from it, because a broker started by the helper runs from that release.
+
+**Pi extension.** Update Pi's own installation by following the [installation guide](reference.md#installation), and never overwrite extension files that a running Pi has loaded. New Pi processes use the newly selected extension. Each existing process keeps the code it loaded and gains native controls only after it adopts the update at a safe boundary: finish or checkpoint its work, quit, and resume the same saved session with `pi --session PATH`. Until then it stays messageable and listed, but controls to it fail with `control_unconfirmed`. The bridge can't force old processes to reload and doesn't kill them.
+
+## Credentials
+
+**Rotate a client.** `issue` always creates a new fingerprint, keeps the identity's `launch` and `wake` policy, and replaces the old pin. Don't run it for a long-lived certificate you mean to keep.
+
+```bash
+node "$PKG/scripts/intercom-bridge-credentials.mjs" issue "$BRIDGE" fitch-os --days 3650
+launchctl kill SIGHUP "gui/$(id -u)/$LABEL"
+```
+
+Copy the new certificate and key to the remote host. After the reload, the old certificate is denied and its owned sessions stop. Mailboxes, presence proofs and groups are keyed by fingerprint, so the new certificate starts empty; the old files stay on the Mac for local recovery.
+
+**Renew the server certificate.** The server certificate from `init` lasts one year. Before it expires, reissue it from the same CA and restart the helper, because SIGHUP can't change TLS files:
+
+```bash
+node "$PKG/scripts/intercom-bridge-credentials.mjs" renew-server "$BRIDGE" --days 3650
+launchctl kill SIGTERM "gui/$(id -u)/$LABEL"
+```
+
+`renew-server` takes no identity name or `--cwd`. `--days` is 1–3650 (default 365). It writes a new `server-<hex>` key and certificate and points `cert` and `key` in `config.json` at them. The CA, client certificates and pins don't change, so remote hosts need nothing new. Check any certificate with `openssl x509 -noout -enddate -in FILE`; the CA itself expires ten years after `init`.
+
+**Revoke.**
+
+```bash
+node "$PKG/scripts/intercom-bridge-credentials.mjs" revoke "$BRIDGE" fitch-os
+launchctl kill SIGHUP "gui/$(id -u)/$LABEL"
+```
+
+Confirm the `allowlist_reloaded` record, that the identity has left the peer list, and that its certificate can't call `/v1/list`. Revocation also stops its owned sessions and fallback wakes. For an immediate cut-off, `bootout` the helper or withdraw the Tailscale Serve port. If the CA key is compromised, start over with a new `init`.
+
+Credential commands hold `DIR/.credentials.lock` for the whole update and fail rather than overwrite each other. After a crash, confirm the PID in `DIR/.credentials.lock/owner` has exited before removing the lock.
+
+## Recovery
+
+| Symptom                                                     | What to do                                                                                                                                                              |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| TLS handshake fails from the remote host                    | Check client, server and CA expiry; the remote forwarder; `tailscale serve status`; and the helper's `listening` record.                                                |
+| Local peers get `peer_offline` for the remote identity      | The helper is stopped or the certificate expired or was revoked. A restarted helper re-registers from a valid presence proof; otherwise one authenticated request does. |
+| `broker_unavailable`, or a refusal to start a second broker | Let the unhealthy broker exit, or start a normal Pi session, then retry. Don't delete broker files or kill a working broker.                                            |
+| 507 `mailbox_storage_failed`                                | Fix disk space or `stateDir` permissions, then restart the helper. `lossRecorded:false` audit records mark uncounted losses.                                            |
+| No fallback wakes                                           | Check `wake_delivery` records (`http_rejected` with status, `transport_unconfirmed`, `storage_unavailable`) and the env file's mode and URL. Acked messages never wake. |
+| Repeated wakes for one `message_id`                         | Expected every 5 minutes after an `accepted` wake until the consumer acks the message. Fix the consumer's store-then-ack loop.                                          |
+| Lost response, `task_unconfirmed` or `control_unconfirmed`  | The outcome is unknown. Inspect the inbox, sessions or peer before retrying.                                                                                            |
+| `launch_in_progress` or `stop_timeout`                      | Inspect `GET /v1/sessions`; retry stop until it reports `exited`.                                                                                                       |
+| `allowlist_reloaded` with `failed_closed`                   | The config is invalid; every identity is denied and owned sessions stopped. Fix the config and send SIGHUP again.                                                       |
+
+## Verification
+
+The process-boundary tests use a private real broker, real certificates, real HTTPS and the remote CLI. Launch tests use the installed Pi dependency graph with a native faux provider, so no paid inference or external credentials are needed. Coverage includes cold SIGKILL restarts with mailbox and presence recovery, delayed fallback wakes and ack suppression, bounded cursor drains, storage failures, spawn and resume identity and model preservation, owned cancel and observed exit, native control authorization and old-owner timeouts, live transcripts and the saved-journal reader, same-CA server renewal with an unchanged client key, and restart-persistent groups.
+
+```bash
+node --test test/integration/intercom-bridge.test.ts test/integration/intercom-bridge-delivery.test.ts \
+  test/integration/intercom-bridge-launch.test.ts test/integration/intercom-bridge-lifecycle.test.ts \
+  test/integration/intercom-native-control.test.ts test/unit/intercom-transcript.test.ts
+env -u PI_TIMING -u PI_EXTENSION_PERFORMANCE npm run ci
+```
+
+For a live smoke test from the remote host, run `list`, ask one deliberately chosen session to reply `bridge-smoke-ok`, and fetch `GET /v1/sessions?live=true&saved=true`. Pause the remote consumer for more than two minutes to confirm a fallback wake. Keep only a redacted record: platform, route, accepted or delivered flags and the reply text. Never publish config, keys, wake URLs or raw inbox and list output.

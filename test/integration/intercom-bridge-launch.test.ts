@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import https from "node:https";
+
 import {
   mkdirSync,
   mkdtempSync,
@@ -18,7 +18,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { X509Certificate } from "node:crypto";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
-import { exec, start, stop, parseCredential } from "../support/intercom-bridge.ts";
+import {
+  exec,
+  start,
+  stop,
+  parseCredential,
+  bridgeRequest as api,
+} from "../support/intercom-bridge.ts";
 import { nativeSdkRoot, nativeCli } from "../support/native-sdk.ts";
 import { json, readJson, record, records, text, numberValue } from "../support/assertions.ts";
 import { hasErrorCode, type UnknownRecord } from "../../src/shared/unknown.ts";
@@ -56,47 +62,6 @@ async function nativeIdentity(pid: number): Promise<string | undefined> {
     env: { ...process.env, LC_ALL: "C" },
   }).catch(() => null);
   return result?.stdout.trim();
-}
-
-function api(url: string, credential: ReturnType<typeof parseCredential>) {
-  const tls = {
-    ca: readFileSync(credential.ca),
-    cert: readFileSync(credential.cert),
-    key: readFileSync(credential.key),
-    agent: false as const,
-  };
-  return (action: string, body?: unknown, signal = AbortSignal.timeout(20000)) =>
-    new Promise<{ readonly status: number; readonly body: UnknownRecord }>((resolveApi, reject) => {
-      const payload = body === undefined ? undefined : JSON.stringify(body);
-      const req = https.request(
-        `${url}/v1/${action}`,
-        {
-          ...tls,
-          method: payload === undefined ? "GET" : "POST",
-          headers: payload === undefined ? {} : { "Content-Type": "application/json" },
-          signal,
-        },
-        (res) => {
-          let data = "";
-          res.on("data", (chunk: Buffer) => {
-            data += chunk.toString("utf8");
-          });
-          res.on("error", reject);
-          res.on("end", () => {
-            let parsed: UnknownRecord;
-            try {
-              parsed = json(data);
-            } catch (error) {
-              reject(error instanceof Error ? error : new Error("Invalid bridge response"));
-              return;
-            }
-            resolveApi({ status: res.statusCode ?? 0, body: parsed });
-          });
-        },
-      );
-      req.on("error", reject);
-      req.end(payload);
-    });
 }
 
 test(
@@ -159,6 +124,7 @@ test(
     const policy = {
       packageRoot: sdk,
       sessionDir: sessions,
+      workspaceRoots: [cwd],
       provider: "launch-fixture",
       model: "faux-1",
       context,
@@ -249,13 +215,13 @@ test(
       deadlocks.set(runtimePid, identity);
       return runtimePid;
     };
-    const block = async (peer: UnknownRecord) => {
+    const block = async (peer: UnknownRecord, calls = 0) => {
       assert.equal(peer.status, "idle", "native readiness must precede the deadlock");
       const pid = numberValue(peer.pid);
       await ownRuntime(pid);
       writeFileSync(join(root, `${text(peer.sessionId)}.block`), "", { mode: 0o600 });
       await until(() => receipt(pid).blocked === true);
-      assert.equal(receipt(pid).calls, 0, "deadlock must not require inference");
+      assert.equal(receipt(pid).calls, calls, "deadlock must not initiate inference");
       assert.equal(receipt(pid).networkRequests, 0);
       return pid;
     };
@@ -316,9 +282,17 @@ test(
           assert.equal(reused.reused, true);
           assert.equal(record(reused.session).sessionId, peer.sessionId);
           assert.equal((await running.request("start", { name: "second" })).status, 429);
+          const foreignStop = await api(running.url, other)("stop", { sessionId: peer.sessionId });
           assert.equal(
-            (await api(running.url, other)("stop", { sessionId: peer.sessionId })).status,
-            404,
+            foreignStop.body.session,
+            undefined,
+            "foreign credentials cannot claim owned process control",
+          );
+          assert.equal(foreignStop.body.processExited, false);
+          assert.equal(
+            record(foreignStop.body.native).status,
+            "denied",
+            "recipient has no configured native-control policy",
           );
           const reply = await running.request("ask", {
             to: peer.peerId,
@@ -347,7 +321,11 @@ test(
           scenario("stall");
           const previousReceipts = new Set(readdirSync(receipts));
           const controller = new AbortController();
-          const pending = running.request("start", { name: "cancelled" }, controller.signal);
+          const pending = running.request(
+            "start",
+            { name: "cancelled" },
+            { signal: controller.signal },
+          );
           const observed = pending.catch((error: unknown) => error);
           await until(() =>
             readdirSync(receipts).some(
@@ -747,12 +725,28 @@ test(
           await next.wait(/"event":"fixture_clock"/, offset);
           await next.wait(/"result":"lease_expired"/, offset);
           assert.equal(gone(leasePid), false);
-          assert.equal(
-            record((await request("start", { name: "past-presence-lease" })).body.session)
-              .sessionId,
-            leased.sessionId,
+          const task = "TASK_AFTER_REMOTE_PRESENCE_RETIREMENT";
+          const reused = await request("spawn", { name: "past-presence-lease", task });
+          assert.equal(reused.status, 200, JSON.stringify(reused.body));
+          assert.equal(reused.body.reused, true);
+          assert.equal(record(reused.body.session).sessionId, leased.sessionId);
+          assert.equal(record(reused.body.task).accepted, true);
+          await until(
+            () =>
+              numberValue(receipt(leasePid).calls) > 0 &&
+              SessionManager.open(text(leased.sessionFile))
+                .getEntries()
+                .filter(
+                  (entry) =>
+                    entry.type === "custom_message" && JSON.stringify(entry.content).includes(task),
+                ).length === 1,
           );
-          await block(leased);
+          await until(async () =>
+            records((await request("sessions")).body.sessions).some(
+              (session) => session.sessionId === leased.sessionId && session.status === "idle",
+            ),
+          );
+          await block(leased, numberValue(receipt(leasePid).calls));
           // The helper clock suspends escalation; AbortSignal's real deadline still bounds stop.
           const timedOut = await request("stop", { sessionId: leased.sessionId });
           assert.equal(timedOut.status, 503);

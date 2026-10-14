@@ -8,14 +8,23 @@ import { getBrokerSocketPath } from "./broker/paths.ts";
 import { loadConfig, sameListener, type Config, type Identity } from "./bridge-config.ts";
 import { ASK_TIMEOUT, Fault, fingerprint, log } from "./bridge-protocol.ts";
 import { Session } from "./bridge-session.ts";
-import { operationFor, routeFor, type Operation } from "./bridge-routes.ts";
-import { reply } from "./bridge-http.ts";
-import { Launcher, sameIdentity } from "./bridge-launch.ts";
+import { operationFor, routeFor } from "./bridge-routes.ts";
+import { reply, replyFault } from "./bridge-http.ts";
+import { sameIdentity } from "./bridge-launch.ts";
+import { BridgeOperations } from "./bridge-operations.ts";
+import { authenticatedCertificateChain } from "./native-control-auth.ts";
 import { PersistentPresence } from "./bridge-presence.ts";
 import { WakeDeliveries } from "./bridge-wake.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 
 const MAX_CONNECTIONS = 128;
+const LONG_ROUTES = new Set([
+  "POST /v1/start",
+  "POST /v1/spawn",
+  "POST /v1/resume",
+  "GET /v1/transcript",
+  "POST /v1/transcript",
+]);
 
 function validCertificateDates(starts: number, expires: number): boolean {
   return (
@@ -37,7 +46,7 @@ class Bridge {
   private readonly configPath: string;
   private readonly sessions = new Map<string, Session>();
   private readonly losses = new Map<string, number>();
-  private readonly launcher = new Launcher();
+  private readonly operations: BridgeOperations;
   private readonly sockets = new Set<Socket>();
   private readonly connections = new Map<TLSSocket, Connection>();
   private readonly server: Server;
@@ -49,6 +58,7 @@ class Bridge {
   constructor(config: Config, configPath: string) {
     this.config = config;
     this.configPath = configPath;
+    this.operations = new BridgeOperations(config.stateDir);
     this.deliveries = new WakeDeliveries(config.stateDir, (identity) => this.allowed(identity));
     if (config.stateDir !== undefined) {
       this.presence = new PersistentPresence({
@@ -245,12 +255,12 @@ class Bridge {
       }
       this.config = next;
       this.revokeRemoved();
-      this.launcher.revoke(next.clients).catch(() => log("launch_cleanup", { result: "failed" }));
+      this.operations.revoke(next.clients).catch(() => log("launch_cleanup", { result: "failed" }));
       log("allowlist_reloaded", { result: "accepted", clients: next.clients.size });
     } catch {
       this.config = { ...this.config, clients: new Map() };
       this.deliveries.reload();
-      this.launcher
+      this.operations
         .revoke(this.config.clients)
         .catch(() => log("launch_cleanup", { result: "failed" }));
       for (const session of this.sessions.values()) {
@@ -312,7 +322,7 @@ class Bridge {
     await Promise.all([
       ...this.handlers,
       ...sessions.map((session) => session.settled()),
-      this.launcher.shutdown(),
+      this.operations.shutdown(),
       this.presence?.stop(),
       this.deliveries.stop(),
     ]);
@@ -321,6 +331,7 @@ class Bridge {
   private admission(req: IncomingMessage): {
     readonly identity: Identity;
     readonly expires: number;
+    readonly certificate: string;
   } {
     const socket = req.socket;
     const connection = socket instanceof TLSSocket ? this.connections.get(socket) : undefined;
@@ -339,7 +350,11 @@ class Bridge {
       this.drop(connection.fingerprint, fault);
       throw fault;
     }
-    return { identity, expires: connection.expires };
+    return {
+      identity,
+      expires: connection.expires,
+      certificate: authenticatedCertificateChain(socket),
+    };
   }
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const requestId = randomUUID();
@@ -372,7 +387,7 @@ class Bridge {
       );
     };
     try {
-      const { identity, expires } = this.admission(req);
+      const { identity, expires, certificate } = this.admission(req);
       const route = routeFor(req);
       session = this.session(identity, expires);
       controller = session.begin();
@@ -380,15 +395,18 @@ class Bridge {
       req.once("aborted", abort);
       res.once("close", onClose);
       const duration = route === "POST /v1/ask" ? ASK_TIMEOUT + 15000 : 15000;
-      setDeadline(route === "POST /v1/start" ? 75000 : duration);
+      setDeadline(LONG_ROUTES.has(route) ? 75000 : duration);
       const operation = await operationFor(req, route, signal);
       if (operation.route === "POST /v1/ask") {
         setDeadline(operation.timeoutMs + 15000);
+      } else if (operation.route === "GET /v1/transcript") {
+        setDeadline(75000);
       }
-      const data = await this.execute(operation, session, {
+      const data = await this.operations.execute(operation, session, {
         signal,
         requestId,
         expires,
+        certificate,
         onPeer: (id) => {
           peer = id;
         },
@@ -402,10 +420,7 @@ class Bridge {
           ? error
           : new Fault(503, "broker_unavailable", "Local broker operation failed.");
       log("request", { ...session?.fields(), requestId, peer, result: fault.code });
-      reply(res, requestId, fault.status, {
-        ok: false,
-        error: { code: fault.code, message: fault.message, ...fault.details },
-      });
+      replyFault(res, requestId, fault);
     } finally {
       clearTimeout(deadline);
       req.off("aborted", abort);
@@ -413,38 +428,6 @@ class Bridge {
       if (controller && session) {
         session.end(controller);
       }
-    }
-  }
-  private async execute(
-    operation: Operation,
-    session: Readonly<Session>,
-    context: {
-      readonly signal: AbortSignal;
-      readonly requestId: string;
-      readonly expires: number;
-      readonly onPeer: (id: string) => void;
-    },
-  ) {
-    switch (operation.route) {
-      case "POST /v1/start":
-        return this.launcher.start(operation.name, {
-          identity: session.identity,
-          expires: context.expires,
-          signal: context.signal,
-          peers: (signal) => session.connectedPeers(signal),
-        });
-      case "GET /v1/sessions":
-        return this.launcher.list(session.identity);
-      case "POST /v1/stop":
-        return this.launcher.stop(session.identity, operation.sessionId);
-      case "GET /v1/list":
-      case "GET /v1/inbox":
-      case "POST /v1/register":
-      case "POST /v1/ask":
-      case "POST /v1/send":
-      case "POST /v1/reply":
-      case "POST /v1/ack":
-        return session.execute(operation, context);
     }
   }
 }

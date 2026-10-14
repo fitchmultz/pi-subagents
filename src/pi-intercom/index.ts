@@ -9,6 +9,7 @@ import { InboundDeliveryOwner } from "./inbound-delivery.ts";
 import { ReplyWait } from "./reply-wait.ts";
 import { IntercomConnection } from "./connection.ts";
 import { IntercomInbound } from "./inbound.ts";
+import { NativeControls } from "./native-control.ts";
 import { IntercomOutbound } from "./outbound.ts";
 import { IntercomInspection } from "./inspection.ts";
 import { IntercomTopicActions } from "./topic-actions.ts";
@@ -33,7 +34,11 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
   const connection = new IntercomConnection(lifecycle, config, topics, {
     restoring: () => delivery.restoring,
     pendingAsks: () => replies.listPending().length,
-    incoming: (ctx, from, message) => inbound.receive(ctx, from, message),
+    incoming: async (ctx, from, message) => {
+      if (!(await controls.receive(ctx, from, message))) {
+        await inbound.receive(ctx, from, message);
+      }
+    },
     peerLeft: (id) => {
       wait.peerDisconnected(id);
       journal.peerLeft(id);
@@ -46,6 +51,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
       }
     },
   });
+  const controls = new NativeControls(lifecycle, connection);
   const delivery = new InboundDeliveryOwner(pi, lifecycle, journal, {
     replies,
     syncStatus: () => connection.syncStatus(),

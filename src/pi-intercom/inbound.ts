@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
@@ -13,6 +12,7 @@ import type { Message, SessionInfo } from "./types.ts";
 import { requestedDelivery, isBlockingSupervisorMessage } from "./inbound-record.ts";
 import { formatAttachments } from "./message-format.ts";
 import { readQuestionOwner } from "../runs/shared/supervisor-questions.ts";
+import { nativePeerId } from "./session-targets.ts";
 
 type Lifecycle = Readonly<
   Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "markActivity">
@@ -53,9 +53,7 @@ export class IntercomInbound {
     }
     const owner = readQuestionOwner(origin.runId);
     return (
-      owner?.sessionId === origin.ownerSessionId &&
-      from.id ===
-        `pi-${createHash("sha256").update(origin.ownerSessionId).digest("hex").slice(0, 32)}`
+      owner?.sessionId === origin.ownerSessionId && from.id === nativePeerId(origin.ownerSessionId)
     );
   }
   private normalize(from: SessionInfo, input: Message): Message {
