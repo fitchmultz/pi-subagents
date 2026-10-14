@@ -5,7 +5,7 @@ import { parseEnv } from "node:util";
 import { isUnknownArray } from "../shared/unknown.ts";
 import { BODY_LIMIT, object, label, fingerprint } from "./bridge-protocol.ts";
 import { launchPolicy, type LaunchPolicy } from "./bridge-launch-policy.ts";
-import { stateDirectory } from "./bridge-mailbox.ts";
+import { stateDirectory } from "./bridge-storage.ts";
 import { readBridgeFile } from "./bridge-files.ts";
 
 const MAX_CLIENTS = 64;

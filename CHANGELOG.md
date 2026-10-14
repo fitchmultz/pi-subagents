@@ -5,6 +5,8 @@
 ### Added
 
 - Event-driven remote inbox waits through optional `waitMs` (0–10000 ms) and CLI `inbox --wait-ms`, preserving immediate reads by default, durable cursor paging and explicit acknowledgement.
+- Native fallback wake two seconds after mailbox commit without intake acknowledgement, with durable shared admission of at most 20 attempts per sliding hour across all identities and URLs. Pending cold batches coalesce, retain retry deadlines across crashes and rotations, and recover automatically when allowance returns.
+- Stopped-helper audit preflight for preserving known remaining wake allowance during migration; unverified legacy usage conservatively reserves the first hour.
 
 ### Fixed
 

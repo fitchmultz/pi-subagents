@@ -64,6 +64,7 @@ class Bridge {
       this.presence = new PersistentPresence({
         stateDir: config.stateDir,
         clients: () => this.config.clients,
+        restored: (identity, expires) => this.deliveries.session(identity, expires),
         connect: async (identity, expires) => {
           await spawnBrokerIfNeeded(process.execPath, []);
           if (!this.allowed(identity)) {
@@ -153,6 +154,7 @@ class Bridge {
         {
           stateDir: this.config.stateDir,
           notifications: identity.wake !== undefined,
+          mailboxChanged: () => this.deliveries.changed(),
           allowed: (candidate) => this.allowed(candidate),
           lost: (fp, count) => this.lost(fp, count),
           losses: (fp) => this.losses.get(fp) ?? 0,
@@ -299,6 +301,9 @@ class Bridge {
         this.losses.delete(fp);
       }
     }
+    // Retire stale sessions before publishing replacement delivery membership for the same pin.
+    this.presence?.restoreAll();
+    this.deliveries.changed();
   }
   private stop(): void {
     this.shutdown().catch(() => {
