@@ -14,6 +14,10 @@ export interface ProjectSessionIdentity extends TargetIdentity {
 
 export const MIN_SESSION_TARGET_PREFIX_LENGTH = 8;
 
+export function nativePeerId(sessionId: string): string {
+  return `pi-${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}`;
+}
+
 export interface TargetResolution<T extends TargetIdentity> {
   readonly status: "none" | "found" | "ambiguous" | "prefix_too_short";
   readonly target?: T;

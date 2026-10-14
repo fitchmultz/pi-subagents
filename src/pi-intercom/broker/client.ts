@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import type net from "net";
 import { randomUUID } from "crypto";
+import type { NativeControlEnvelope } from "../native-control-protocol.ts";
 import { writeMessage } from "./framing.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
@@ -51,6 +52,7 @@ interface SendOptions {
   readonly messageId?: string;
   readonly human?: HumanMessageOrigin;
   readonly topic?: TopicUpdate;
+  readonly control?: NativeControlEnvelope;
 }
 
 function toError(error: unknown): Error {
@@ -405,6 +407,7 @@ export class IntercomClient extends EventEmitter {
       expectsReply: options.expectsReply,
       ...(options.human ? { human: options.human } : {}),
       ...(options.topic ? { topic: options.topic } : {}),
+      ...(options.control ? { control: options.control } : {}),
       delivery: messageDelivery(options),
       queueMode: options.queueMode,
       threadId: options.threadId,

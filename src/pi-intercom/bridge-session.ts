@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { IntercomClient } from "./broker/client.ts";
-import {
-  formatSessionTarget,
-  resolveSessionProjectId,
-  resolveSessionTarget,
-} from "./session-targets.ts";
+import { resolveSessionProjectId } from "./session-targets.ts";
 import type { Message, SendResult, SessionInfo } from "./types.ts";
 import type { Identity } from "./bridge-config.ts";
 import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
 import { Mailbox } from "./bridge-mailbox.ts";
 import type { UnknownRecord } from "../shared/unknown.ts";
 import type { MessagingOperation as Operation } from "./bridge-routes.ts";
+import type { RequestContext } from "./bridge-http.ts";
+import { resolveBridgeTarget, bridgeSessionList } from "./bridge-target.ts";
+import { ControlReplies } from "./bridge-control.ts";
+import type { NativeControlOperation } from "./native-control-protocol.ts";
 
 import { WaitingAsk } from "./bridge-ask.ts";
 const MAX_REQUESTS = 8;
@@ -18,11 +18,6 @@ const IDLE_TIMEOUT = 5 * 60 * 1000;
 const SEND_TIMEOUT = 8000;
 const LIST_TIMEOUT = 5000;
 
-interface RequestContext {
-  readonly signal: AbortSignal;
-  readonly requestId: string;
-  readonly onPeer: (peer: string) => void;
-}
 interface SendOptions {
   readonly messageId?: string;
   readonly replyTo?: string;
@@ -50,6 +45,7 @@ export class Session {
   private readonly inbox: Mailbox;
   private readonly replying = new Set<string>();
   private pending?: WaitingAsk;
+  private readonly controls = new ControlReplies();
   private closed = false;
   private connecting?: Promise<void>;
   private disconnecting?: Promise<void>;
@@ -86,6 +82,9 @@ export class Session {
     if (this.closed) {
       throw this.closeReason;
     }
+    this.authorize();
+  }
+  authorize(): void {
     if (!this.owner.allowed(this.identity)) {
       throw new Fault(403, "revoked", "Identity is no longer authorized.");
     }
@@ -197,21 +196,19 @@ export class Session {
     this.owner.retired(this.identity.fingerprint256, this.generation);
     log("session_closed", { ...this.fields(), result: this.closeReason.code });
   }
-  close(error: Readonly<Fault>): void {
+  close(fault: Readonly<Fault>): void {
     if (this.closed) {
       return;
     }
     this.closed = true;
-    this.closeReason = error;
+    this.closeReason = fault;
     clearTimeout(this.lease);
-    this.pending?.reject(error);
+    this.pending?.reject(fault);
+    this.controls.close(fault);
     for (const controller of this.requests) {
-      controller.abort(error);
+      controller.abort(fault);
     }
     // Retain the generation until acquisition/registration AND final disconnect settle.
-    this.startRetirement();
-  }
-  private startRetirement(): void {
     this.retirement = this.retire().catch((caught: unknown) => this.cleanupFailed(caught));
   }
   async settled(): Promise<void> {
@@ -219,6 +216,7 @@ export class Session {
   }
 
   private peerLeft(id: string): void {
+    this.controls.peerLeft(id);
     if (this.pending?.peer === id && !this.pending.settled) {
       this.pending.reject(
         new Fault(409, "peer_offline", "Ask recipient disconnected.", { id: this.pending.id }),
@@ -238,6 +236,9 @@ export class Session {
           ? error
           : new Fault(403, "revoked", "Identity is no longer authorized."),
       );
+      return;
+    }
+    if (this.controls.receive(from.id, message)) {
       return;
     }
     if (!this.inbox.persistent && this.resolveReply(from, message)) {
@@ -320,29 +321,29 @@ export class Session {
     await this.connect(signal);
     return this.peers(signal);
   }
-  private async target(to: string, signal: AbortSignal): Promise<SessionInfo> {
-    const resolution = resolveSessionTarget(await this.peers(signal), to);
-    if (resolution.status === "none") {
-      throw new Fault(404, "peer_offline", "Peer is not connected.");
-    }
-    if (resolution.status !== "found" || !resolution.target) {
-      throw new Fault(
-        409,
-        "ambiguous_target",
-        "Use an unambiguous peer name or session ID (prefixes need at least 8 characters).",
-      );
-    }
-    if (resolution.target.id === this.client.sessionId) {
-      throw new Fault(400, "self_target", "Choose another peer.");
-    }
-    return resolution.target;
+  async nativeControl(
+    operation: NativeControlOperation,
+    certificate: string,
+    context: RequestContext,
+  ): Promise<UnknownRecord> {
+    await this.connect(context.signal);
+    const peer = await this.target(operation.to, context.signal);
+    return this.controls.request(
+      this.client,
+      { ...operation, peer: peer.id, certificate },
+      { ...context, guard: () => this.guard(context.signal) },
+    );
   }
-  private async send(
+  private async target(to: string, signal: AbortSignal): Promise<SessionInfo> {
+    return resolveBridgeTarget(await this.peers(signal), to, this.client.sessionId);
+  }
+  async send(
     peer: string,
     message: string,
     context: RequestContext,
     options: SendOptions = {},
   ): Promise<SendResult> {
+    await this.connect(context.signal);
     const { signal, requestId } = context;
     context.onPeer(peer);
     this.guard(signal);
@@ -492,9 +493,7 @@ export class Session {
         const sessions = await this.peers(context.signal);
         return {
           sessionId: this.client.sessionId,
-          sessions: sessions.map(({ topics: _topics, subscriptions: _subscriptions, ...entry }) => {
-            return Object.assign(entry, { target: formatSessionTarget(entry, sessions) });
-          }),
+          sessions: bridgeSessionList(sessions),
         };
       }
       case "POST /v1/send":

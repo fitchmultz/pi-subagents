@@ -1,23 +1,34 @@
-import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { loadNativeSession } from "../shared/native-session-loader.ts";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
-import type { SessionInfo } from "./types.ts";
+import type { SendResult, SessionInfo } from "./types.ts";
 import type { Identity } from "./bridge-config.ts";
-import type { LaunchPolicy } from "./bridge-launch-policy.ts";
+import { launchCwd, spawnPolicy, type LaunchPolicy } from "./bridge-launch-policy.ts";
 import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
 import { RpcProcess } from "./bridge-rpc-process.ts";
+import {
+  exactPeer,
+  savedView,
+  browseSessions,
+  type CatalogQuery,
+  type SessionCatalog,
+} from "./bridge-catalog.ts";
+import {
+  createLaunchJournal,
+  resumeLaunchJournal,
+  validateLaunchState,
+  type LaunchJournal,
+} from "./bridge-launch-journal.ts";
+import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
+import { resolveIntercomPresenceName } from "./identity.ts";
 
 interface Launch {
   readonly identity: Identity;
-  readonly name: string;
+  readonly name?: string;
+  readonly cwd: string;
   readonly controller: Readonly<AbortController>;
   readonly expires: number;
   admitted: boolean;
-  sessionId?: string;
-  peerId?: string;
-  sessionFile?: string;
+  journal?: LaunchJournal;
   process?: RpcProcess;
   timer?: NodeJS.Timeout;
 }
@@ -25,11 +36,23 @@ interface StartContext {
   readonly identity: Identity;
   readonly expires: number;
   readonly signal: AbortSignal;
-  readonly peers: (
-    signal: AbortSignal,
-  ) => Promise<readonly Readonly<Pick<SessionInfo, "id" | "name" | "cwd">>[]>;
+  readonly peers: (signal: AbortSignal) => Promise<readonly SessionInfo[]>;
+  readonly submit: (peer: string, task: string) => Promise<SendResult>;
 }
-
+type ControlContext = Pick<StartContext, "signal" | "peers">;
+interface SpawnInput {
+  readonly name: string;
+  readonly cwd?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly task?: string;
+}
+interface ResumeInput {
+  readonly sessionId?: string;
+  readonly target?: string;
+  readonly name?: string;
+  readonly task?: string;
+}
 export function sameIdentity(left: Identity, right: Identity | undefined): boolean {
   return (
     left.name === right?.name &&
@@ -39,19 +62,28 @@ export function sameIdentity(left: Identity, right: Identity | undefined): boole
 }
 function view(entry: Readonly<Launch>): UnknownRecord {
   return {
-    sessionId: entry.sessionId,
-    peerId: entry.peerId,
+    id: entry.journal?.sessionId,
+    sessionId: entry.journal?.sessionId,
+    peerId: entry.journal?.peerId,
     name: entry.name,
-    sessionFile: entry.sessionFile,
+    cwd: entry.cwd,
+    sessionFile: entry.journal?.sessionFile,
     pid: entry.process?.pid,
     status: entry.process?.status ?? "starting",
     error: entry.process?.failure?.code,
+    saved: entry.journal !== undefined,
+    owned: true,
   };
 }
-
 export class Launcher {
   private readonly launches = new Set<Launch>();
+  private readonly catalog: SessionCatalog;
+  private readonly resuming = new Set<string>();
   private stopping = false;
+
+  constructor(catalog: SessionCatalog) {
+    this.catalog = catalog;
+  }
 
   list(identity: Identity): UnknownRecord {
     return {
@@ -60,42 +92,252 @@ export class Launcher {
         .map(view),
     };
   }
-  async stop(identity: Identity, sessionId: string): Promise<UnknownRecord> {
-    const entry = [...this.launches].find(
-      (candidate) =>
-        candidate.identity.fingerprint256 === identity.fingerprint256 &&
-        candidate.sessionId === sessionId,
+  async browse(query: CatalogQuery, context: StartContext): Promise<UnknownRecord> {
+    return browseSessions(this.catalog, query, {
+      policy: context.identity.launch,
+      signal: context.signal,
+      peers: context.peers,
+      activeState: (id) => {
+        const entry = this.active(id) ?? this.activePeer(id);
+        return entry?.identity.fingerprint256 === context.identity.fingerprint256
+          ? (entry.process?.status ?? "starting")
+          : undefined;
+      },
+    });
+  }
+  private active(sessionId: string): Launch | undefined {
+    return [...this.launches].find(
+      (entry) => entry.journal?.sessionId === sessionId && entry.process?.status !== "exited",
     );
-    if (!entry) {
-      throw new Fault(404, "unknown_session", "Session is not owned by this identity and helper.");
+  }
+  private activePeer(peerId: string): Launch | undefined {
+    return [...this.launches].find(
+      (entry) => entry.journal?.peerId === peerId && entry.process?.status !== "exited",
+    );
+  }
+  private async owned(identity: Identity, id: string, context: ControlContext): Promise<Launch> {
+    const candidates = [...this.launches].filter(
+      (candidate) => candidate.identity.fingerprint256 === identity.fingerprint256,
+    );
+    const byId = candidates.findLast(
+      (candidate) => candidate.journal?.sessionId === id || candidate.journal?.peerId === id,
+    );
+    const named = candidates.filter(
+      (candidate) =>
+        candidate.process?.status !== "exited" &&
+        (candidate.name === id || candidate.name === `remote:${identity.name}:${id}`),
+    );
+    if (!byId && named.length > 1) {
+      throw new Fault(
+        409,
+        "ambiguous_session",
+        "Multiple owned live processes match this name; use their native IDs.",
+      );
     }
+    const entry = byId ?? named.at(0);
+    if (!entry?.process) {
+      throw new Fault(
+        404,
+        "unknown_session",
+        "Control is available only for this identity's helper-owned subprocesses, not unrelated live peers or saved history.",
+      );
+    }
+    if (entry.process.status === "exited") {
+      const peers = await context.peers(context.signal);
+      if (peers.some((peer) => peer.id === entry.journal?.peerId)) {
+        throw new Fault(
+          404,
+          "unknown_session",
+          "This journal has a newer live owner; the historical process is not current ownership.",
+        );
+      }
+    }
+    return entry;
+  }
+  async stop(
+    identity: Identity,
+    sessionId: string,
+    context: ControlContext,
+  ): Promise<UnknownRecord> {
+    const entry = await this.owned(identity, sessionId, context);
     await this.retire(entry, new Fault(410, "session_stopped", "Session stopped by its owner."));
     return { session: view(entry) };
   }
+  async cancel(
+    identity: Identity,
+    sessionId: string,
+    context: ControlContext,
+  ): Promise<UnknownRecord> {
+    const entry = await this.owned(identity, sessionId, context);
+    if (!entry.admitted || entry.process?.status === "exited" || !entry.process) {
+      throw new Fault(
+        409,
+        "session_not_ready",
+        "Only an admitted live owned session can be cancelled.",
+      );
+    }
+    const state = await entry.process.cancel(context.signal);
+    return { session: view(entry), cancelled: true, state, queuesPreserved: true };
+  }
   async start(name: string, context: StartContext): Promise<UnknownRecord> {
+    return this.spawn({ name }, context, true);
+  }
+  async spawn(input: SpawnInput, context: StartContext, legacy = false): Promise<UnknownRecord> {
+    const policy = spawnPolicy(this.policy(context), input);
+    const cwd = legacy
+      ? context.identity.cwd
+      : launchCwd(policy, input.cwd ?? context.identity.cwd);
+    const name = `remote:${context.identity.name}:${input.name}`;
+    const existing = [...this.launches].find(
+      (entry) =>
+        entry.identity.fingerprint256 === context.identity.fingerprint256 &&
+        entry.name === name &&
+        entry.process?.status !== "exited",
+    );
+    const result = existing
+      ? this.reuseSpawn(existing, input, policy, cwd)
+      : await this.launch({ name, cwd }, context, policy);
+    return this.task(result, input.task, context);
+  }
+  private reuseSpawn(
+    entry: Readonly<Launch>,
+    input: SpawnInput,
+    policy: LaunchPolicy,
+    cwd: string,
+  ): UnknownRecord {
+    if (entry.cwd !== cwd) {
+      throw new Fault(
+        409,
+        "cwd_conflict",
+        "This live name already belongs to a different workspace.",
+      );
+    }
+    if (
+      input.model !== undefined &&
+      (entry.journal?.model?.provider !== policy.provider ||
+        entry.journal?.model?.modelId !== policy.model)
+    ) {
+      throw new Fault(
+        409,
+        "model_conflict",
+        "This live name already belongs to a different model selection; resume it without overriding history.",
+      );
+    }
+    return this.reuse(entry);
+  }
+  async resume(input: ResumeInput, context: StartContext): Promise<UnknownRecord> {
+    const policy = this.policy(context);
+    const selector = input.sessionId ?? input.target ?? `name:${input.name ?? ""}`;
+    if (this.resuming.has(selector)) {
+      throw new Fault(409, "launch_in_progress", "This resume selector is already starting.");
+    }
+    this.resuming.add(selector);
+    try {
+      const saved = await this.catalog.resolve(policy, input, context.signal);
+      launchCwd(policy, saved.cwd);
+      const owned = this.active(saved.sessionId);
+      if (owned) {
+        const result = this.reuse(owned);
+        const reused =
+          owned.identity.fingerprint256 === context.identity.fingerprint256
+            ? result
+            : {
+                ...result,
+                session: {
+                  ...savedView(saved),
+                  peerId: saved.peerId,
+                  status: owned.process?.status,
+                },
+              };
+        return await this.task(reused, input.task, context);
+      }
+      await wait(spawnBrokerIfNeeded(process.execPath, []), context.signal);
+      const peer = exactPeer(saved, await context.peers(context.signal));
+      if (peer) {
+        return await this.task(
+          { session: savedView(saved, peer), id: saved.sessionId, reused: true },
+          input.task,
+          context,
+        );
+      }
+      // A different selector/identity may have completed catalog resolution during the peer lookup.
+      if (this.active(saved.sessionId)) {
+        throw new Fault(409, "launch_in_progress", "This native session is already starting.");
+      }
+      const result = await this.launch(saved, context, policy);
+      return await this.task(result, input.task, context);
+    } finally {
+      this.resuming.delete(selector);
+    }
+  }
+  private policy(context: StartContext): LaunchPolicy {
     cancelled(context.signal);
     const policy = context.identity.launch;
     if (!policy || this.stopping) {
       throw new Fault(403, "launch_disabled", "Session launching is not enabled by local policy.");
     }
-    const fullName = `remote:${context.identity.name}:${name}`;
-    const existing = [...this.launches].find(
-      (entry) =>
-        entry.identity.fingerprint256 === context.identity.fingerprint256 &&
-        entry.name === fullName &&
-        entry.process?.status !== "exited",
-    );
-    if (existing) {
-      return this.reuse(existing);
+    return policy;
+  }
+  private async task(
+    result: UnknownRecord,
+    task: string | undefined,
+    context: StartContext,
+  ): Promise<UnknownRecord> {
+    const session = result.session;
+    if (task === undefined || !isRecord(session) || typeof session.peerId !== "string") {
+      return result;
     }
+    try {
+      const receipt = await context.submit(session.peerId, task);
+      return { ...result, id: session.sessionId, task: { ...receipt, completed: false } };
+    } catch (error) {
+      const fault =
+        error instanceof Fault
+          ? error
+          : new Fault(
+              503,
+              "task_unconfirmed",
+              "Task acceptance is unknown; inspect the session before retrying.",
+            );
+      throw new Fault(fault.status, fault.code, fault.message, {
+        ...fault.details,
+        session,
+        reused: result.reused,
+      });
+    }
+  }
+  private async launch(
+    target: {
+      readonly name?: string;
+      readonly cwd: string;
+      readonly sessionFile?: string;
+      readonly sessionId?: string;
+      readonly peerId?: string;
+    },
+    context: StartContext,
+    policy: LaunchPolicy,
+  ): Promise<UnknownRecord> {
     this.capacity(context.identity, policy);
     const entry: Launch = {
       identity: context.identity,
-      name: fullName,
+      name: target.name,
+      cwd: target.cwd,
       controller: new AbortController(),
       expires: context.expires,
       admitted: false,
     };
+    if (
+      target.sessionId !== undefined &&
+      target.peerId !== undefined &&
+      target.sessionFile !== undefined
+    ) {
+      entry.journal = {
+        ...target,
+        sessionId: target.sessionId,
+        peerId: target.peerId,
+        sessionFile: target.sessionFile,
+      };
+    }
     this.launches.add(entry);
     try {
       return await this.establish(entry, policy, context);
@@ -108,11 +350,7 @@ export class Launcher {
       }
       throw error instanceof Fault
         ? error
-        : new Fault(
-            503,
-            "launch_failed",
-            "Pi startup failed; inspect the pinned local policy and resources.",
-          );
+        : new Fault(503, "launch_failed", "Pi startup failed; inspect local policy and resources.");
     }
   }
   private reuse(entry: Readonly<Launch>): UnknownRecord {
@@ -120,12 +358,12 @@ export class Launcher {
       entry.admitted &&
       (entry.process?.status === "idle" || entry.process?.status === "running")
     ) {
-      return { session: view(entry), reused: true };
+      return { session: view(entry), id: entry.journal?.sessionId, reused: true };
     }
     throw new Fault(
       409,
       "launch_in_progress",
-      "This named session is starting or stopping; inspect sessions before retrying.",
+      "This session is starting or stopping; inspect sessions before retrying.",
     );
   }
   private capacity(identity: Identity, policy: LaunchPolicy): void {
@@ -147,43 +385,6 @@ export class Launcher {
       }
     }
   }
-  private async journal(entry: Launch, policy: LaunchPolicy): Promise<void> {
-    const { SessionManager } = await wait(
-      loadNativeSession(policy.packageRoot),
-      entry.controller.signal,
-    );
-    cancelled(entry.controller.signal);
-    const storage = statSync(policy.sessionDir);
-    if (
-      !storage.isDirectory() ||
-      storage.uid !== process.getuid?.() ||
-      (storage.mode & 0o777) !== 0o700
-    ) {
-      throw new Fault(503, "storage_invalid", "Private launch storage is no longer valid.");
-    }
-    const previous = process.umask(0o077);
-    try {
-      const manager = SessionManager.create(entry.identity.cwd, policy.sessionDir);
-      manager.appendSessionInfo(entry.name);
-      manager.appendMessage({ role: "user", content: policy.context, timestamp: Date.now() });
-      entry.sessionId = manager.getSessionId();
-      entry.sessionFile = manager.getSessionFile();
-      entry.peerId = `pi-${createHash("sha256").update(entry.sessionId).digest("hex").slice(0, 32)}`;
-      if (entry.sessionFile === undefined || (statSync(entry.sessionFile).mode & 0o777) !== 0o600) {
-        throw new Fault(503, "journal_invalid", "Native journal was not privately persisted.");
-      }
-      const saved = SessionManager.open(entry.sessionFile, policy.sessionDir);
-      if (
-        saved.getSessionId() !== entry.sessionId ||
-        saved.getSessionName() !== entry.name ||
-        saved.getCwd() !== entry.identity.cwd
-      ) {
-        throw new Fault(503, "journal_invalid", "Native journal identity did not persist.");
-      }
-    } finally {
-      process.umask(previous);
-    }
-  }
   private async establish(
     entry: Launch,
     policy: LaunchPolicy,
@@ -203,15 +404,14 @@ export class Launcher {
       );
     signal.addEventListener("abort", abort, { once: true });
     try {
-      await this.journal(entry, policy);
+      const resuming = entry.journal !== undefined;
+      entry.journal = entry.journal
+        ? await resumeLaunchJournal(policy, entry.journal, signal)
+        : await createLaunchJournal(policy, { cwd: entry.cwd, name: entry.name ?? "" }, signal);
       cancelled(signal);
-      if (entry.sessionFile === undefined) {
-        throw new Fault(503, "journal_invalid", "Native journal path unavailable.");
-      }
-      entry.process = new RpcProcess(policy, entry.identity.cwd, entry.sessionFile);
+      entry.process = new RpcProcess(policy, entry.cwd, entry.journal.sessionFile, resuming);
       this.expiry(entry);
-      const state = await entry.process.state(signal);
-      this.validateState(entry, policy, state);
+      validateLaunchState(entry.journal, await entry.process.state(signal));
       await this.peerReady(entry, context.peers, signal);
       cancelled(signal);
       entry.process.ready();
@@ -219,32 +419,14 @@ export class Launcher {
       log("launch_ready", {
         fingerprint: entry.identity.fingerprint256,
         name: entry.name,
-        peer: entry.peerId,
+        peer: entry.journal.peerId,
         pid: entry.process.pid,
         result: "ready",
       });
-      return { session: view(entry), reused: false };
+      return { session: view(entry), id: entry.journal.sessionId, reused: false };
     } finally {
       clearTimeout(deadline);
       signal.removeEventListener("abort", abort);
-    }
-  }
-  private validateState(entry: Readonly<Launch>, policy: LaunchPolicy, state: UnknownRecord): void {
-    if (
-      state.sessionId !== entry.sessionId ||
-      state.sessionFile !== entry.sessionFile ||
-      state.sessionName !== entry.name ||
-      state.isStreaming !== false ||
-      state.pendingMessageCount !== 0 ||
-      !isRecord(state.model) ||
-      state.model.provider !== policy.provider ||
-      state.model.id !== policy.model
-    ) {
-      throw new Fault(
-        503,
-        "readiness_failed",
-        "Pi did not start idle with the exact saved session and configured model.",
-      );
     }
   }
   private async peerReady(
@@ -254,18 +436,19 @@ export class Launcher {
   ): Promise<void> {
     while (!entry.process?.failure) {
       cancelled(signal);
-      // Registration is asynchronous after native session_start; observe real broker publication.
+      // Native startup alone is insufficient: observe the exact Intercom publication.
       // oxlint-disable-next-line no-await-in-loop
       const rows = await peers(signal);
       if (
         rows.some(
           (peer) =>
-            peer.id === entry.peerId && peer.name === entry.name && peer.cwd === entry.identity.cwd,
+            peer.id === entry.journal?.peerId &&
+            peer.name === resolveIntercomPresenceName(entry.name, entry.journal.sessionId) &&
+            peer.cwd === entry.cwd,
         )
       ) {
         return;
       }
-      // Bounded readiness polling is not an acknowledgement substitute; only the row above succeeds.
       // oxlint-disable-next-line no-await-in-loop
       await delay(100, undefined, { signal });
     }

@@ -8,6 +8,7 @@ import {
   safeLabel,
   safeText,
 } from "./validation.ts";
+import type { NativeControlEnvelope } from "./native-control-protocol.ts";
 
 export interface SessionInfo {
   readonly id: string;
@@ -106,6 +107,7 @@ export interface Message {
   readonly timestamp: number;
   readonly replyTo?: string;
   readonly expectsReply?: boolean;
+  readonly control?: NativeControlEnvelope;
   /** Recipients verify parent ownership before elevating human origin. */
   readonly human?: HumanMessageOrigin;
   readonly topic?: TopicUpdate;

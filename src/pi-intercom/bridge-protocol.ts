@@ -17,6 +17,14 @@ export class Fault extends Error {
   }
 }
 
+export class BroadcastFault extends Fault {
+  readonly outcome: UnknownRecord;
+  constructor(fault: Fault, outcome: UnknownRecord) {
+    super(fault.status, fault.code, fault.message, fault.details);
+    this.outcome = { ...outcome, status: "partial" };
+  }
+}
+
 export function object(value: unknown, fields: readonly string[]): UnknownRecord {
   if (!isRecord(value)) {
     throw new Fault(400, "invalid_input", "Expected a JSON object.");

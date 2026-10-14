@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { IntercomClient } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
@@ -8,7 +7,7 @@ import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { IntercomTopics } from "./topics.ts";
 import type { Message, SessionInfo, TopicChange } from "./types.ts";
 import { asError, errorMessage } from "./validation.ts";
-import { formatTargetOptions, resolveSessionTarget } from "./session-targets.ts";
+import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
 
 export type ConnectionReason = "startup" | "background" | "tool" | "overlay" | "peer-awareness";
 type Lifecycle = Readonly<
@@ -233,7 +232,7 @@ export class IntercomConnection {
       }
       await next.connect(
         await this.lifecycle.registration(this.hooks.pendingAsks()),
-        `pi-${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}`,
+        nativePeerId(sessionId),
       );
       if (!this.lifecycle.live(ctx, generation)) {
         await next.disconnect();
