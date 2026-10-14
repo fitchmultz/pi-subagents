@@ -9,7 +9,12 @@ import { transcriptOptions, type TranscriptOptions } from "./transcript.ts";
 
 export type MessagingOperation =
   | { readonly route: "GET /v1/list" | "POST /v1/register" }
-  | { readonly route: "GET /v1/inbox"; readonly after: number; readonly limit: number }
+  | {
+      readonly route: "GET /v1/inbox";
+      readonly after: number;
+      readonly limit: number;
+      readonly waitMs: number;
+    }
   | { readonly route: "POST /v1/ack"; readonly ids: readonly string[] }
   | {
       readonly route: "POST /v1/send";
@@ -139,22 +144,29 @@ function queryFor(req: IncomingMessage, allowed: readonly string[]): URLSearchPa
   return query;
 }
 function inboxQuery(req: IncomingMessage): Extract<Operation, { readonly route: "GET /v1/inbox" }> {
-  const query = queryFor(req, ["after", "limit"]);
+  const query = queryFor(req, ["after", "limit", "waitMs"]);
   const after = query.get("after") ?? "0";
   const limit = query.get("limit") ?? String(INBOX_COUNT);
+  const waitMs = query.get("waitMs") ?? "0";
   if (
     !/^(0|[1-9]\d{0,15})$/.test(after) ||
     !Number.isSafeInteger(Number(after)) ||
     !/^[1-9]\d{0,2}$/.test(limit) ||
-    Number(limit) > INBOX_COUNT
+    Number(limit) > INBOX_COUNT ||
+    !/^(0|[1-9]\d{0,3}|10000)$/.test(waitMs)
   ) {
     throw new Fault(
       400,
       "invalid_input",
-      "after must be a nonnegative safe integer cursor; limit must be 1..256.",
+      "after must be a nonnegative safe integer cursor; limit must be 1..256; waitMs must be 0..10000.",
     );
   }
-  return { route: "GET /v1/inbox", after: Number(after), limit: Number(limit) };
+  return {
+    route: "GET /v1/inbox",
+    after: Number(after),
+    limit: Number(limit),
+    waitMs: Number(waitMs),
+  };
 }
 function pageNumber(value: string | null, fallback: number, min: number, max: number): number {
   const number = value === null ? fallback : Number(value);

@@ -19,6 +19,7 @@ Options:
   --reply-to ID        Inbound ask ID from inbox, for reply
   --timeout-ms MS      Ask: 100..120000 (default 120000); control: 100..10000 (default 3000)
   --after CURSOR       Inbox cursor from nextCursor (default: 0)
+  --wait-ms MS         Inbox: wait for new mail, 0..10000 (default: 0)
   --limit COUNT        Inbox: 1..256; sessions/transcript: 1..100
   --name NAME          Start/reuse a named idle Pi session under local policy
   --session-id ID      Native ID for resume, stop or cancel
@@ -57,7 +58,7 @@ No automatic retries: a lost response does not prove a message was unsent.`);
 
 function allowedOptions(action) {
   const fields = {
-    inbox: ["after", "limit"],
+    inbox: ["after", "limit", "wait-ms"],
     start: ["name"],
     spawn: ["name", "cwd", "task", "provider", "model"],
     resume: ["session-id", "name", "target", "task"],
@@ -221,15 +222,23 @@ function privateKey(path) {
 function inboxQuery(options) {
   const after = options.after ?? "0";
   const limit = options.limit ?? "256";
+  const waitMs = options["wait-ms"] ?? "0";
   if (
     !/^(0|[1-9]\d{0,15})$/.test(after) ||
     !Number.isSafeInteger(Number(after)) ||
     !/^[1-9]\d{0,2}$/.test(limit) ||
-    Number(limit) > 256
+    Number(limit) > 256 ||
+    !/^(0|[1-9]\d{0,3}|10000)$/.test(waitMs)
   ) {
-    throw new Error("--after must be a nonnegative safe integer cursor; --limit must be 1..256.");
+    throw new Error(
+      "--after must be a nonnegative safe integer cursor; --limit must be 1..256; --wait-ms must be 0..10000.",
+    );
   }
-  return new URLSearchParams({ after, limit }).toString();
+  const query = new URLSearchParams({ after, limit });
+  if (options["wait-ms"] !== undefined) {
+    query.set("waitMs", waitMs);
+  }
+  return query.toString();
 }
 
 function requestQuery(action, options) {
@@ -247,6 +256,7 @@ let body, action, origin, timeout, query;
 try {
   const parsed = parseArgs({
     allowPositionals: true,
+    tokens: true,
     options: {
       help: { type: "boolean", short: "h" },
       to: { type: "string" },
@@ -255,6 +265,7 @@ try {
       "reply-to": { type: "string" },
       "timeout-ms": { type: "string" },
       after: { type: "string" },
+      "wait-ms": { type: "string" },
       limit: { type: "string" },
       name: { type: "string" },
       "session-id": { type: "string" },
@@ -281,6 +292,11 @@ try {
     process.exit(0);
   }
   const options = parsed.values;
+  if (
+    parsed.tokens.filter((token) => token.kind === "option" && token.name === "wait-ms").length > 1
+  ) {
+    throw new Error("--wait-ms must not be repeated.");
+  }
   [action] = parsed.positionals;
   if (
     ![

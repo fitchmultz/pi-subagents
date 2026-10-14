@@ -363,8 +363,11 @@ class Bridge {
     let controller: AbortController | undefined;
     let deadline: NodeJS.Timeout | undefined;
     let peer: string | undefined;
+    let readOnlyInbox = false;
+    const cancel = (fault: Readonly<Fault>) =>
+      readOnlyInbox ? controller?.abort(fault) : session?.close(fault);
     const abort = () =>
-      session?.close(
+      cancel(
         new Fault(499, "client_aborted", "HTTP client disconnected; delivery may be unknown."),
       );
     const onClose = () => {
@@ -376,7 +379,7 @@ class Bridge {
       clearTimeout(deadline);
       deadline = setTimeout(
         () =>
-          session?.close(
+          cancel(
             new Fault(
               504,
               "request_timeout",
@@ -389,6 +392,7 @@ class Bridge {
     try {
       const { identity, expires, certificate } = this.admission(req);
       const route = routeFor(req);
+      readOnlyInbox = route === "GET /v1/inbox";
       session = this.session(identity, expires);
       controller = session.begin();
       const signal = controller.signal;

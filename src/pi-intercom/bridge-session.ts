@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { IntercomClient } from "./broker/client.ts";
 import { resolveSessionProjectId } from "./session-targets.ts";
 import type { Message, SendResult, SessionInfo } from "./types.ts";
@@ -41,6 +42,7 @@ export class Session {
   });
   private readonly requests = new Set<AbortController>();
   private readonly inbox: Mailbox;
+  private inboxChanged = new AbortController();
   private readonly replying = new Set<string>();
   private pending?: WaitingAsk;
   private readonly controls = new ControlReplies();
@@ -268,7 +270,16 @@ export class Session {
     if (result === "lost" || (result === "duplicate" && !this.inbox.persistent)) {
       this.owner.lost(this.identity.fingerprint256);
     }
-    this.recordReceive(from.id, message.id, result);
+    if (result !== "duplicate") {
+      this.inboxChanged.abort();
+      this.inboxChanged = new AbortController();
+    }
+    log(result === "lost" ? "inbox_overflow" : "received", {
+      ...this.fields(),
+      peer: from.id,
+      messageId: message.id,
+      result: result === "lost" && this.inbox.persistent ? "storage_failed" : result,
+    });
     if (result !== "lost") {
       this.resolveReply(from, message);
     }
@@ -281,18 +292,6 @@ export class Session {
     }
     pending.resolve({ from, message });
     return true;
-  }
-  private recordReceive(
-    peer: string,
-    messageId: string,
-    result: "stored" | "duplicate" | "lost",
-  ): void {
-    log(result === "lost" ? "inbox_overflow" : "received", {
-      ...this.fields(),
-      peer,
-      messageId,
-      result: result === "lost" && this.inbox.persistent ? "storage_failed" : result,
-    });
   }
   private presence(): void {
     if (this.closed) {
@@ -391,22 +390,6 @@ export class Session {
     const waiting = new WaitingAsk();
     this.pending = waiting;
     const { signal } = context;
-    const abort = () => {
-      try {
-        cancelled(signal);
-      } catch (error) {
-        waiting.reject(
-          error instanceof Error
-            ? error
-            : new Fault(
-                499,
-                "client_aborted",
-                "HTTP client disconnected; delivery may be unknown.",
-              ),
-        );
-      }
-    };
-    signal.addEventListener("abort", abort, { once: true });
     try {
       await this.connect(signal);
       const peer = await this.target(operation.to, signal);
@@ -422,16 +405,39 @@ export class Session {
       return { ...waiting.receipt, replied: true, reply: answer };
     } finally {
       waiting.clear();
-      signal.removeEventListener("abort", abort);
-      if (this.pending === waiting) {
-        this.pending = undefined;
-      }
+      this.pending = undefined;
     }
   }
-  private ack(ids: readonly string[]): UnknownRecord {
-    const result = this.inbox.ack(ids);
-    this.presence();
-    return result;
+  private async readInbox(
+    operation: Extract<Operation, { readonly route: "GET /v1/inbox" }>,
+    context: RequestContext,
+  ): Promise<UnknownRecord> {
+    const read = (): ReturnType<Mailbox["page"]> & UnknownRecord => ({
+      ...this.inbox.page(operation.after, operation.limit),
+      ...this.inbox.status(this.owner.losses(this.identity.fingerprint256)),
+    });
+    const deadline = performance.now() + operation.waitMs;
+    const losses = read().lostMessages;
+    for (;;) {
+      // Subscribe to the post-commit signal before rereading the authoritative cursor page.
+      const signal = AbortSignal.any([this.inboxChanged.signal, context.signal]);
+      const page = read();
+      const remaining = deadline - performance.now();
+      if (page.messages.length > 0 || page.lostMessages !== losses || remaining <= 0) {
+        return page;
+      }
+      log("inbox_wait", { ...this.fields(), requestId: context.requestId, after: operation.after });
+      try {
+        // A nonmatching commit must rearm the same cursor, not start parallel readers.
+        // oxlint-disable-next-line no-await-in-loop
+        await delay(remaining, undefined, { signal });
+      } catch (error) {
+        if (!signal.aborted) {
+          throw error;
+        }
+      }
+      this.guard(context.signal);
+    }
   }
   private async answer(
     replyTo: string,
@@ -476,12 +482,11 @@ export class Session {
         await this.connect(context.signal);
       }
       if (operation.route === "POST /v1/ack") {
-        return this.ack(operation.ids);
+        const result = this.inbox.ack(operation.ids);
+        this.presence();
+        return result;
       }
-      return {
-        ...this.inbox.page(operation.after, operation.limit),
-        ...this.inbox.status(this.owner.losses(this.identity.fingerprint256)),
-      };
+      return this.readInbox(operation, context);
     }
     await this.connect(context.signal);
     switch (operation.route) {
