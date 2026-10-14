@@ -200,7 +200,7 @@ function installProduction(packed) {
   );
   if (
     !credentialHelp.includes(
-      "Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke>",
+      "Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke|renew-server>",
     )
   ) {
     throw new Error("installed credential CLI did not provide usage help");
