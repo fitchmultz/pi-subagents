@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.49.0] - 2026-10-14
+
 ### Added
 
 - Event-driven remote inbox waits through optional `waitMs` (0–10000 ms) and CLI `inbox --wait-ms`, preserving immediate reads by default, durable cursor paging and explicit acknowledgement.
