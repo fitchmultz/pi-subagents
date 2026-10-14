@@ -3,6 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:https";
+import { createServer as createTcpServer, createConnection, type Socket } from "node:net";
+import { performance } from "node:perf_hooks";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -20,6 +22,69 @@ import {
 } from "../support/assertions.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
+const relayDelayMs = 250;
+
+function delayedRelay(port: number) {
+  const sockets = new Set<Socket>();
+  const timings = new Map<
+    number,
+    { readonly acceptedAt: number; forwardedAt: number; handshakeAt: number; requestedAt: number }
+  >();
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    const timing = {
+      acceptedAt: performance.now(),
+      forwardedAt: 0,
+      handshakeAt: 0,
+      requestedAt: 0,
+    };
+    let upstream: Socket | undefined;
+    let timer: NodeJS.Timeout;
+    const forward = () => {
+      const remaining = timing.acceptedAt + relayDelayMs - performance.now();
+      if (remaining > 0) {
+        timer = setTimeout(forward, Math.ceil(remaining));
+        return;
+      }
+      const outgoing = createConnection({ host: "127.0.0.1", port });
+      upstream = outgoing;
+      sockets.add(outgoing);
+      outgoing.once("connect", () => {
+        timing.forwardedAt = performance.now();
+        timings.set(outgoing.localPort ?? 0, timing);
+        socket.pipe(outgoing).pipe(socket);
+      });
+      outgoing.on("error", () => {
+        socket.destroy();
+      });
+      outgoing.once("close", () => {
+        sockets.delete(outgoing);
+        socket.destroy();
+      });
+    };
+    timer = setTimeout(forward, relayDelayMs);
+    socket.on("error", () => {
+      socket.destroy();
+    });
+    socket.once("close", () => {
+      clearTimeout(timer);
+      upstream?.destroy();
+      sockets.delete(socket);
+    });
+  });
+  return {
+    server,
+    timings,
+    close: async () => {
+      const closed = once(server, "close", { signal: AbortSignal.timeout(5000) });
+      server.close();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await closed;
+    },
+  };
+}
 
 test(
   "persistent presence and delayed HTTPS fallback survive helper crashes without consumer polling",
@@ -39,6 +104,7 @@ test(
     let broker: ReturnType<typeof start> | undefined;
     let bridge: ReturnType<typeof start> | undefined;
     let server: ReturnType<typeof createServer> | undefined;
+    let relay: ReturnType<typeof delayedRelay> | undefined;
     try {
       const credential = parseCredential(
         json(
@@ -70,6 +136,10 @@ test(
             body += chunk.toString("utf8");
           });
           req.on("end", () => {
+            const timing = relay?.timings.get(req.socket.remotePort ?? 0);
+            if (timing) {
+              timing.requestedAt = performance.now();
+            }
             requests.push({
               authorization: req.headers.authorization,
               body: JSON.parse(body) as unknown,
@@ -79,21 +149,26 @@ test(
           });
         },
       );
-      // Keep TLS I/O pending while the helper advances its clock; transport time must not race ahead.
-      server.on("connection", (socket) => {
-        socket.pause();
-        setTimeout(() => {
-          socket.resume();
-        }, 250);
+      server.on("secureConnection", (socket) => {
+        const timing = relay?.timings.get(socket.remotePort ?? 0);
+        if (timing) {
+          timing.handshakeAt = performance.now();
+        }
       });
       server.listen(0, "127.0.0.1");
       await once(server, "listening", { signal: t.signal });
       const address = server.address();
       assert.ok(address !== null && typeof address !== "string");
+      // Delay the native TCP relay before connecting upstream; HTTPS socket.pause does not gate TLS.
+      relay = delayedRelay(address.port);
+      relay.server.listen(0, "127.0.0.1");
+      await once(relay.server, "listening", { signal: t.signal });
+      const relayAddress = relay.server.address();
+      assert.ok(relayAddress !== null && typeof relayAddress !== "string");
       const envFile = join(root, "wake.env");
       writeFileSync(
         envFile,
-        `GROK_WAKE_WEBHOOK_URL=https://127.0.0.1:${address.port}/wake\nGROK_WAKE_WEBHOOK_KEY=fixture-bearer-secret\n`,
+        `GROK_WAKE_WEBHOOK_URL=https://127.0.0.1:${relayAddress.port}/wake\nGROK_WAKE_WEBHOOK_KEY=fixture-bearer-secret\n`,
         { mode: 0o600 },
       );
       config.port = 0;
@@ -211,6 +286,18 @@ test(
         requests[1],
         "HTTP acceptance without durable intake ACK must retry after a cold helper crash",
       );
+      assert.equal(relay.timings.size, requests.length);
+      const elapsed = [...relay.timings.values()].map((timing) => ({
+        forwardedMs: timing.forwardedAt - timing.acceptedAt,
+        handshakeMs: timing.handshakeAt - timing.acceptedAt,
+        requestedMs: timing.requestedAt - timing.acceptedAt,
+      }));
+      for (const timing of elapsed) {
+        assert.ok(timing.forwardedMs >= relayDelayMs, JSON.stringify(timing));
+        assert.ok(timing.handshakeMs >= relayDelayMs, JSON.stringify(timing));
+        assert.ok(timing.requestedMs >= relayDelayMs, JSON.stringify(timing));
+      }
+      t.diagnostic(JSON.stringify({ relayDelayMs, elapsed }));
       const recovered = await bridgeApi(bridge, credential);
       assert.deepEqual((await recovered.api("ack", { ids: [notice.id] })).body.acked, [notice.id]);
       const afterAck = bridge.output().length;
@@ -278,6 +365,7 @@ test(
       if (broker) {
         await stop(broker.child);
       }
+      await relay?.close();
       if (server) {
         server.closeAllConnections();
         await new Promise<void>((resolveClose, reject) => {
