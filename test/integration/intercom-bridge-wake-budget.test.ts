@@ -181,6 +181,7 @@ async function fixture(t: test.TestContext, identities = 1, realClock = false) {
     apis,
     remoteIds,
     requests,
+    server,
     peer,
     clock,
     restart,
@@ -495,6 +496,37 @@ test(
     );
   },
 );
+
+test("failed POST settlement recovers after ACK even with no remaining candidate", async (t) => {
+  const f = await fixture(t);
+  // At the wire boundary the pre-POST reservation is already durable; deny only its completion.
+  f.server.once("request", () => chmodSync(f.quotaPath, 0o644));
+  const sent = await f.peer.send(f.remoteIds[0], {
+    text: "actionable work ACKed after failed completion write",
+  });
+  await f.current().wait(new RegExp(`"messageId":"${sent.id}".*"result":"stored"`));
+  const publicationDeadline = performance.now() + 5000;
+  while (f.rows("SELECT due FROM wake_batches").length === 0) {
+    assert.ok(performance.now() < publicationDeadline, "owner published the post-commit grace");
+    // oxlint-disable-next-line no-await-in-loop
+    await delay(5);
+  }
+  const after = f.current().output().length;
+  await f.clock("SIGWINCH");
+  await f.current().wait(/"result":"storage_unavailable"/, after);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.rows("SELECT settledAt FROM wake_attempts")[0].settledAt, null);
+  chmodSync(f.quotaPath, 0o600);
+  assert.deepEqual((await f.apis[0].api("ack", { ids: [sent.id] })).body.acked, [sent.id]);
+  await f.clock("SIGALRM");
+  assert.equal(f.rows("SELECT due FROM wake_batches").length, 0, "real ACK retired the candidate");
+  assert.equal(
+    typeof f.rows("SELECT settledAt FROM wake_attempts")[0].settledAt,
+    "number",
+    "empty reconciliation still retries the failed durable settlement",
+  );
+  assert.equal(f.requests.length, 1, "settlement repair never replays the consumed payload");
+});
 
 test(
   "reservation survives crash before POST; permission and corrupt ledger fail closed",
