@@ -593,7 +593,8 @@ test(
             const listener = (_from: SessionInfo, incoming: Message) => {
               if (incoming.content.text === message) {
                 received.set(id, [...(received.get(id) ?? []), incoming.id]);
-                if (!interrupted) {
+                // Sequential sends prove an earlier acknowledgement before the second delivery.
+                if (!interrupted && received.size === 2) {
                   interrupted = true;
                   broker.child.kill(mode === "stall" ? "SIGSTOP" : "SIGKILL");
                 }
