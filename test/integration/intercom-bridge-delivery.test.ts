@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter, once } from "node:events";
+import { once } from "node:events";
 import { createServer } from "node:https";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -24,7 +24,7 @@ const repo = resolve(import.meta.dirname, "../..");
 test(
   "persistent presence and delayed HTTPS fallback survive helper crashes without consumer polling",
   { timeout: 60000 },
-  async () => {
+  async (t) => {
     const root = mkdtempSync("/tmp/pib-delivery-");
     const previousAgent = process.env.PI_CODING_AGENT_DIR;
     const previousTmp = process.env.TMPDIR;
@@ -36,7 +36,6 @@ test(
       /* Owned broker is stopped during teardown. */
     });
     const requests: { readonly authorization: string | undefined; readonly body: unknown }[] = [];
-    const wakes = new EventEmitter();
     let broker: ReturnType<typeof start> | undefined;
     let bridge: ReturnType<typeof start> | undefined;
     let server: ReturnType<typeof createServer> | undefined;
@@ -77,12 +76,18 @@ test(
             });
             res.writeHead(requests.length === 1 ? 503 : 204);
             res.end();
-            wakes.emit("request");
           });
         },
       );
+      // Keep TLS I/O pending while the helper advances its clock; transport time must not race ahead.
+      server.on("connection", (socket) => {
+        socket.pause();
+        setTimeout(() => {
+          socket.resume();
+        }, 250);
+      });
       server.listen(0, "127.0.0.1");
-      await once(server, "listening");
+      await once(server, "listening", { signal: t.signal });
       const address = server.address();
       assert.ok(address !== null && typeof address !== "string");
       const envFile = join(root, "wake.env");
@@ -124,9 +129,7 @@ test(
       }
       bridge.child.kill("SIGUSR1");
       await bridge.wait(/"event":"fixture_clock"/);
-      const rejectedWake = once(wakes, "request");
       bridge.child.kill("SIGALRM");
-      await rejectedWake;
       await bridge.wait(/"result":"http_rejected"/);
       assert.equal(
         requests.length,
@@ -156,7 +159,7 @@ test(
         "no HTTP request before the unacked fallback threshold",
       );
       assert.ok(!bridge.output().includes("fixture-bearer-secret"));
-      const crashed = once(bridge.child, "close");
+      const crashed = once(bridge.child, "close", { signal: t.signal });
       bridge.child.kill("SIGKILL");
       await crashed;
 
@@ -170,9 +173,7 @@ test(
           (entry) => entry.id === remoteId && entry.name === "fitch-os",
         ),
       );
-      const acceptedWake = once(wakes, "request");
       bridge.child.kill("SIGUSR2");
-      await acceptedWake;
       await bridge.wait(/"result":"accepted"/);
       assert.equal(requests.length, 2);
       assert.deepEqual(
@@ -195,16 +196,14 @@ test(
       } finally {
         stored.close();
       }
-      const acceptedCrash = once(bridge.child, "close");
+      const acceptedCrash = once(bridge.child, "close", { signal: t.signal });
       bridge.child.kill("SIGKILL");
       await acceptedCrash;
       bridge = start("test/fixtures/intercom-bridge-clock.ts", ["--config", configPath], helperEnv);
       await bridge.wait(/"event":"listening"/);
       bridge.child.kill("SIGALRM");
       await bridge.wait(/"event":"registered"/);
-      const recoveredWake = once(wakes, "request", { signal: AbortSignal.timeout(5000) });
       bridge.child.kill("SIGUSR2");
-      await recoveredWake;
       await bridge.wait(/"result":"accepted"/);
       assert.equal(requests.length, 3);
       assert.deepEqual(
