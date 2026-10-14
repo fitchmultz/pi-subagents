@@ -12,12 +12,14 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionManager, parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
+import { getBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { SessionCatalog } from "../../src/pi-intercom/bridge-catalog.ts";
 import { loadConfig } from "../../src/pi-intercom/bridge-config.ts";
 import { hasErrorCode, isUnknownArray, type UnknownRecord } from "../../src/shared/unknown.ts";
@@ -1011,6 +1013,47 @@ test(
           assert.equal(ambiguous.status, 409, JSON.stringify(ambiguous.body));
           assert.equal(record(ambiguous.body.error).code, "ambiguous_session");
           assert.ok(!JSON.stringify(page.body).includes("CATALOG_BODY_MUST_NOT_LEAK"));
+        },
+      );
+      await t.test(
+        "unreachable live broker rejects spawn and resume without replacing accepted work",
+        async () => {
+          assert.ok(brokerPid !== undefined && !gone(brokerPid));
+          const pidFile = join(agent, "intercom/broker.pid");
+          const identity = readFileSync(pidFile, "utf8");
+          assert.equal(Number.parseInt(identity, 10), brokerPid);
+          await observer.listSessions();
+          unlinkSync(getBrokerSocketPath(agent));
+          scenario("task");
+          const failed = await running.request("spawn", {
+            name: "unhealthy-broker",
+            task: "TASK_MUST_NOT_BE_ACCEPTED",
+          });
+          assert.equal(failed.status, 503, JSON.stringify(failed.body));
+          assert.equal(record(failed.body.error).code, "broker_unavailable");
+          const session = own(
+            record(
+              records((await running.request("sessions")).body.sessions).find(
+                (row) => row.name === "remote:grok-bot:unhealthy-broker",
+              ),
+            ),
+          );
+          assert.equal(session.status, "exited");
+          await until(() => gone(numberValue(session.pid)));
+          assert.equal(receipt(text(session.sessionId)).calls, 0);
+          const files = readdirSync(receipts).sort();
+          const journal = readFileSync(text(session.sessionFile));
+          const resumed = await running.request("resume", { sessionId: session.sessionId });
+          assert.equal(resumed.status, 503, JSON.stringify(resumed.body));
+          assert.equal(record(resumed.body.error).code, "broker_unavailable");
+          assert.deepEqual(readdirSync(receipts).sort(), files, "resume opens no second writer");
+          assert.deepEqual(readFileSync(text(session.sessionFile)), journal);
+          assert.equal(readFileSync(pidFile, "utf8"), identity);
+          assert.equal(gone(brokerPid), false);
+          assert.ok(
+            (await observer.listSessions()).some((peer) => peer.id === observer.sessionId),
+            "the same broker still serves its already-connected peer",
+          );
         },
       );
     } finally {

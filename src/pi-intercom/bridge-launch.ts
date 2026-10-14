@@ -412,7 +412,12 @@ export class Launcher {
       entry.process = new RpcProcess(policy, entry.cwd, entry.journal.sessionFile, resuming);
       this.expiry(entry);
       validateLaunchState(entry.journal, await entry.process.state(signal));
-      await wait(spawnBrokerIfNeeded(process.execPath, []), signal);
+      await wait(
+        spawnBrokerIfNeeded(process.execPath, []).catch(() => {
+          throw new Fault(503, "broker_unavailable", "Local broker could not be acquired safely.");
+        }),
+        signal,
+      );
       await this.peerReady(entry, context.peers, signal);
       cancelled(signal);
       entry.process.ready();
