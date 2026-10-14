@@ -188,10 +188,6 @@ test(
       const stored = new DatabaseSync(mailboxPath);
       try {
         assert.equal(
-          stored.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE notified=0").get()?.count,
-          0,
-        );
-        assert.equal(
           stored.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE acked=0").get()?.count,
           2,
           "webhook acceptance is not consumer acknowledgement or model consumption",
@@ -199,6 +195,29 @@ test(
       } finally {
         stored.close();
       }
+      const acceptedCrash = once(bridge.child, "close");
+      bridge.child.kill("SIGKILL");
+      await acceptedCrash;
+      bridge = start("test/fixtures/intercom-bridge-clock.ts", ["--config", configPath], helperEnv);
+      await bridge.wait(/"event":"listening"/);
+      bridge.child.kill("SIGALRM");
+      await bridge.wait(/"event":"registered"/);
+      const recoveredWake = once(wakes, "request", { signal: AbortSignal.timeout(5000) });
+      bridge.child.kill("SIGUSR2");
+      await recoveredWake;
+      await bridge.wait(/"result":"accepted"/);
+      assert.equal(requests.length, 3);
+      assert.deepEqual(
+        requests[2],
+        requests[1],
+        "HTTP acceptance without durable intake ACK must retry after a cold helper crash",
+      );
+      const recovered = await bridgeApi(bridge, credential);
+      assert.deepEqual((await recovered.api("ack", { ids: [notice.id] })).body.acked, [notice.id]);
+      const afterAck = bridge.output().length;
+      bridge.child.kill("SIGUSR2");
+      await bridge.wait(/"event":"fixture_clock"/, afterAck);
+      assert.equal(requests.length, 3, "durable intake ACK suppresses repeated accepted wakes");
       await stop(bridge.child);
       bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], helperEnv);
       await bridge.wait(/"event":"registered"/);
@@ -251,7 +270,7 @@ test(
         !(await peer.listSessions()).some((entry) => entry.id === remoteId),
         "saved proof cannot restore a revoked identity",
       );
-      assert.equal(requests.length, 2);
+      assert.equal(requests.length, 3);
     } finally {
       await peer.disconnect();
       if (bridge) {

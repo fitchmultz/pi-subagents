@@ -98,8 +98,8 @@ export class WakeDelivery {
       });
       await response.body?.cancel();
       if (response.ok && !this.controller.signal.aborted && this.authorized()) {
-        this.mailbox.notificationAccepted(entry.message.id);
-        this.backoff = POLL_MS;
+        // HTTP acceptance cannot prove durable intake; the same ID remains pending until inbox ACK.
+        this.backoff = MAX_BACKOFF_MS;
         log("wake_delivery", { ...fields, result: "accepted" });
       } else {
         this.backoff = Math.min(this.backoff * 2, MAX_BACKOFF_MS);
