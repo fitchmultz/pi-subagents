@@ -98,7 +98,11 @@ export function exec(
     (resolveExec, reject) => {
       execFile(file, args, { ...options, encoding: "utf8" }, (error, stdout, stderr) => {
         if (error) {
-          reject(error instanceof Error ? error : new Error(errorMessage(error)));
+          reject(
+            new Error(`${errorMessage(error)}\nstdout:\n${stdout}\nstderr:\n${stderr}`, {
+              cause: error,
+            }),
+          );
         } else {
           resolveExec({ stdout, stderr });
         }
