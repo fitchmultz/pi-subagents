@@ -1,24 +1,29 @@
 import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import https from "node:https";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, watch } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  renameSync,
+  symlinkSync,
+  unlinkSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  statSync,
+  watch,
+} from "node:fs";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { X509Certificate } from "node:crypto";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { getBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { normalizeMessage, normalizeSessionInfo } from "../../src/pi-intercom/types.ts";
 import { hasErrorCode, errorMessage, type UnknownRecord } from "../../src/shared/unknown.ts";
-import { exec, start, stop, parseCredential } from "../support/intercom-bridge.ts";
-import {
-  assertDefined,
-  json,
-  readJson,
-  record,
-  records,
-  text,
-  numberValue,
-} from "../support/assertions.ts";
+import { exec, start, stop, parseCredential, bridgeApi } from "../support/intercom-bridge.ts";
+import { assertDefined, json, readJson, record, records, text } from "../support/assertions.ts";
 
 function envelope(value: unknown) {
   const input = record(value);
@@ -75,13 +80,28 @@ test(
     };
     try {
       const credential = parseCredential(
-        await runTool("init", credentials, "grok-bot", "--cwd", project),
+        await runTool(
+          "init",
+          credentials,
+          "grok-bot",
+          "--cwd",
+          project,
+          "--port",
+          "0",
+          "--days",
+          "3650",
+        ),
       );
       const unpinned = parseCredential(await runTool("issue", credentials, "unapproved"));
       const configPath = join(credentials, "config.json");
       const config = record(readJson(configPath));
       config.clients = records(config.clients).filter((client) => client.name === "grok-bot");
-      config.port = 0;
+      assert.equal(config.port, 0, "each bridge can choose its own loopback port");
+      assert.ok(
+        Date.parse(new X509Certificate(readFileSync(credential.cert)).validTo) - Date.now() >
+          9 * 365 * 24 * 60 * 60 * 1000,
+        "explicit unattended credentials can remain valid for ten years",
+      );
       writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
       broker = start("src/pi-intercom/broker/broker.ts", [], env);
       await broker.wait(/Intercom broker started/);
@@ -90,57 +110,8 @@ test(
       bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
       const activeBridge = bridge;
       const activeBroker = broker;
-      const listening = await activeBridge.wait(/"event":"listening"/);
-      const listeningRecord = listening
-        .split("\n")
-        .filter((line) => line !== "")
-        .map(json)
-        .find((line) => line.event === "listening");
-      assertDefined(listeningRecord);
-      assert.equal(listeningRecord.host, "127.0.0.1");
-      const url = `https://127.0.0.1:${numberValue(listeningRecord.port)}`;
-      const tls = {
-        ca: readFileSync(credential.ca),
-        cert: readFileSync(credential.cert),
-        key: readFileSync(credential.key),
-        rejectUnauthorized: true,
-        agent: false as const,
-      };
-      const api = (action: string, body?: unknown, extra = {}) =>
-        new Promise<{ readonly status: number; readonly body: UnknownRecord }>(
-          (resolveApi, reject) => {
-            const payload = body === undefined ? undefined : JSON.stringify(body);
-            const req = https.request(
-              `${url}/v1/${action}`,
-              {
-                ...tls,
-                method: payload === undefined ? "GET" : "POST",
-                headers: payload === undefined ? {} : { "Content-Type": "application/json" },
-                signal: AbortSignal.timeout(15000),
-                ...extra,
-              },
-              (res) => {
-                let data = "";
-                res.on("data", (chunk: Buffer) => {
-                  data += chunk.toString("utf8");
-                });
-                res.on("error", reject);
-                res.on("end", () => {
-                  let parsed: UnknownRecord;
-                  try {
-                    parsed = json(data);
-                  } catch (error) {
-                    reject(error instanceof Error ? error : new Error(errorMessage(error)));
-                    return;
-                  }
-                  resolveApi({ status: res.statusCode ?? 0, body: parsed });
-                });
-              },
-            );
-            req.on("error", reject);
-            req.end(payload);
-          },
-        );
+      const { url, api, host } = await bridgeApi(activeBridge, credential);
+      assert.equal(host, "127.0.0.1");
 
       await t.test("mutual authentication, least privilege and real remote CLI", async () => {
         await assert.rejects(api("list", undefined, { cert: undefined, key: undefined }));
@@ -319,6 +290,10 @@ test(
           await receiving;
           await temporary.disconnect();
           assert.equal(record((await asking).body.error).code, "peer_offline");
+          const volatileNotice = await peer.send(text((await api("register", {})).body.sessionId), {
+            text: "legacy volatile lease loss",
+          });
+          await activeBridge.wait(new RegExp(`"messageId":"${volatileNotice.id}"`));
           const controller = new AbortController();
           const cancelMessage = nextMessage(peer);
           const cancelled = api(
@@ -340,6 +315,13 @@ test(
             afterCancel.body.sessionId,
             cancelledQuestion.from.id,
             "re-register preserves the certificate-bound broker identity",
+          );
+          const afterLoss = (await api("inbox")).body;
+          assert.equal(messages(afterLoss).length, 0);
+          assert.equal(
+            afterLoss.lostMessages,
+            2,
+            "legacy overflow plus cancellation loss remain visible",
           );
           await stop(activeBroker.child);
           const down = await api("list");
@@ -417,6 +399,454 @@ test(
   },
 );
 
+test(
+  "persistent mailbox survives restart, lease, broker outage and bounded paging",
+  { timeout: 60000 },
+  async (t) => {
+    const root = mkdtempSync("/tmp/pib-mailbox-");
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    const previousTmp = process.env.TMPDIR;
+    process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+    process.env.TMPDIR = root;
+    const env = { ...process.env, HOME: root, TMP: root, TEMP: root };
+    const peer = new IntercomClient();
+    peer.on("error", () => {
+      /* Broker outage is verified through mailbox reads below. */
+    });
+    let broker: ReturnType<typeof start> | undefined;
+    let bridge: ReturnType<typeof start> | undefined;
+    try {
+      const credential = parseCredential(
+        json(
+          (
+            await exec(
+              process.execPath,
+              [
+                join(repo, "scripts/intercom-bridge-credentials.mjs"),
+                "init",
+                join(root, "keys"),
+                "--cwd",
+                root,
+              ],
+              { env },
+            )
+          ).stdout,
+        ),
+      );
+      const configPath = join(root, "keys/config.json");
+      const config = record(readJson(configPath));
+      config.port = 0;
+      config.stateDir = join(root, "mailbox");
+      mkdirSync(text(config.stateDir), { mode: 0o700 });
+      writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+      broker = start("src/pi-intercom/broker/broker.ts", [], env);
+      await broker.wait(/Intercom broker started/);
+      await peer.connect({ name: "saved-sender", cwd: root, model: "fixture" });
+      bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
+      const first = await bridgeApi(bridge, credential);
+      const remoteId = text((await first.api("register", {})).body.sessionId);
+      const notice = await peer.send(remoteId, { text: "keep through cold restart" });
+      const question = await peer.send(remoteId, { text: "saved obligation", expectsReply: true });
+      await bridge.wait(new RegExp(`"messageId":"${question.id}"`));
+      const received = messages((await first.api("inbox")).body);
+      assert.deepEqual(
+        received.map((item) => item.message.id),
+        [notice.id, question.id],
+      );
+      const exited = once(bridge.child, "close");
+      bridge.child.kill("SIGKILL");
+      await exited;
+      bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
+      const restarted = await bridgeApi(bridge, credential);
+      assert.deepEqual(messages((await restarted.api("inbox")).body), received);
+      let api = restarted.api;
+      const mailboxPath = join(
+        text(config.stateDir),
+        `${credential.fingerprint256.replaceAll(":", "").toUpperCase()}.sqlite`,
+      );
+      assert.equal(statSync(mailboxPath).mode & 0o777, 0o600);
+      assert.equal(statSync(mailboxPath).uid, process.getuid?.());
+
+      await t.test(
+        "ordinary ack and exact saved sender survive departure and reconnection",
+        async () => {
+          const ack = await api("ack", { ids: [notice.id, question.id] });
+          assert.deepEqual(ack.body.acked, [notice.id]);
+          assert.deepEqual(ack.body.retained, [question.id]);
+          const senderId = text(peer.sessionId);
+          await peer.disconnect();
+          const offline = await api("reply", { replyTo: question.id, message: "keep obligation" });
+          assert.equal(offline.status, 409);
+          assert.equal(record(offline.body.error).code, "peer_offline");
+          assert.equal(record(offline.body.error).message, "Original ask sender is disconnected.");
+          assert.deepEqual(
+            messages((await api("inbox")).body).map((item) => item.message.id),
+            [question.id],
+          );
+          await peer.connect({ name: "saved-sender", cwd: root, model: "fixture" }, senderId);
+          const receiving = nextMessage(peer);
+          assert.equal(
+            (await api("reply", { replyTo: question.id, message: "saved sender answer" })).body
+              .accepted,
+            true,
+          );
+          const answer = await receiving;
+          assert.equal(answer.message.replyTo, question.id);
+          assert.equal(answer.from.id, remoteId);
+          assert.equal(messages((await api("inbox")).body).length, 0);
+          await peer.send(remoteId, {
+            text: "replay must not resurrect acked notice",
+            messageId: notice.id,
+          });
+          await bridge?.wait(new RegExp(`"messageId":"${notice.id}".*"result":"duplicate"`));
+          assert.equal(messages((await api("inbox")).body).length, 0);
+          const receivingAsk = nextMessage(peer);
+          const asking = api("ask", {
+            to: peer.sessionId,
+            message: "persist the correlated answer",
+            timeoutMs: 5000,
+          });
+          const outgoing = await receivingAsk;
+          const reply = await peer.send(remoteId, {
+            text: "durable outgoing answer",
+            replyTo: outgoing.message.id,
+          });
+          const result = await asking;
+          assert.equal(envelope(result.body.reply).message.id, reply.id);
+          assert.equal(messages((await api("inbox")).body)[0].message.id, reply.id);
+          await api("ack", { ids: [reply.id] });
+        },
+      );
+
+      await t.test(
+        "intake exceeds old count/byte caps with stable bounded pages and deduplication",
+        async () => {
+          const expected: string[] = [];
+          for (let index = 0; index < 300; index++) {
+            // Ordered broker publications exercise the actual bridge inbox.
+            // oxlint-disable-next-line no-await-in-loop
+            expected.push((await peer.send(remoteId, { text: `durable notice ${index}` })).id);
+          }
+          for (let index = 0; index < 6; index++) {
+            // Exceed the former 4 MiB total without exceeding a broker frame.
+            // oxlint-disable-next-line no-await-in-loop
+            const sent = await peer.send(remoteId, { text: `${index}:${"x".repeat(850000)}` });
+            expected.push(sent.id);
+          }
+          await bridge?.wait(new RegExp(`"messageId":"${text(expected.at(-1))}"`));
+          const firstPage = (await api("inbox")).body;
+          assert.equal(messages(firstPage).length, 256);
+          assert.equal(firstPage.hasMore, true);
+          assert.equal(firstPage.overflow, false);
+          assert.equal(firstPage.lostMessages, 0);
+          assert.deepEqual((await api("inbox")).body.messages, firstPage.messages);
+          await peer.send(remoteId, {
+            text: "duplicate must not replace original",
+            messageId: expected[0],
+          });
+          await bridge?.wait(new RegExp(`"messageId":"${expected[0]}".*"result":"duplicate"`));
+          assert.equal(
+            messages((await api("inbox?limit=1")).body)[0].message.content.text,
+            "durable notice 0",
+          );
+          const observed: string[] = [];
+          let after = "0";
+          let more = true;
+          while (more) {
+            // Cursor pages are the public interface; never hydrate the whole mailbox.
+            // oxlint-disable-next-line no-await-in-loop
+            const page = (await api(`inbox?after=${after}&limit=256`)).body;
+            const items = messages(page);
+            assert.ok(items.length <= 256);
+            assert.ok(Buffer.byteLength(JSON.stringify(page.messages)) <= 4 * 1024 * 1024 + 256);
+            observed.push(...items.map((item) => item.message.id));
+            after = text(page.nextCursor);
+            more = page.hasMore === true;
+          }
+          assert.deepEqual(observed, expected);
+          for (const query of [
+            "limit=0",
+            "limit=257",
+            "after=-1",
+            "after=9007199254740992",
+            "after=01",
+            "limit=1&limit=2",
+            "unknown=1",
+          ]) {
+            // Each invalid request must reach the public parser and be rejected.
+            // oxlint-disable-next-line no-await-in-loop
+            assert.equal((await api(`inbox?${query}`)).status, 400);
+          }
+          const result = json(
+            (
+              await exec(
+                process.execPath,
+                [
+                  join(repo, "scripts/intercom-remote.mjs"),
+                  "inbox",
+                  "--after",
+                  text(firstPage.nextCursor),
+                  "--limit",
+                  "1",
+                ],
+                {
+                  env: {
+                    ...env,
+                    INTERCOM_BRIDGE_URL: restarted.url,
+                    INTERCOM_BRIDGE_CA: credential.ca,
+                    INTERCOM_BRIDGE_CERT: credential.cert,
+                    INTERCOM_BRIDGE_KEY: credential.key,
+                  },
+                },
+              )
+            ).stdout,
+          );
+          assert.equal(messages(result)[0].message.id, expected[256]);
+          const ackFirst = expected.slice(0, 256);
+          assert.deepEqual((await api("ack", { ids: ackFirst })).body.acked, ackFirst);
+          assert.deepEqual(
+            (await api("ack", { ids: expected.slice(256) })).body.acked,
+            expected.slice(256),
+          );
+          assert.equal(messages((await api("inbox")).body).length, 0);
+          assert.equal(
+            (await peer.listSessions()).find((row) => row.id === remoteId)?.acceptsAsks,
+            true,
+          );
+        },
+      );
+
+      await t.test(
+        "lease retirement and broker outage retain obligations and allow offline reads/acks",
+        async () => {
+          assertDefined(bridge);
+          await stop(bridge.child);
+          bridge = start("test/fixtures/intercom-bridge-clock.ts", ["--config", configPath], env);
+          api = (await bridgeApi(bridge, credential)).api;
+          await api("register", {});
+          const ordinary = await peer.send(remoteId, { text: "across lease and outage" });
+          const obligation = await peer.send(remoteId, {
+            text: "reply after reconnect",
+            expectsReply: true,
+          });
+          await bridge.wait(new RegExp(`"messageId":"${obligation.id}"`));
+          const beforeLease = messages((await api("inbox")).body);
+          const offset = bridge.output().length;
+          bridge.child.kill("SIGUSR2");
+          await bridge.wait(/"result":"lease_expired"/, offset);
+          assert.deepEqual(messages((await api("inbox")).body), beforeLease);
+          await api("register", {});
+          assert.equal(
+            (await peer.listSessions()).find((row) => row.id === remoteId)?.pendingAsks,
+            1,
+          );
+          assertDefined(broker);
+          await stop(broker.child);
+          await bridge.wait(/"result":"broker_disconnected"/, offset);
+          assert.deepEqual(messages((await api("inbox")).body), beforeLease);
+          assert.deepEqual((await api("ack", { ids: [ordinary.id, obligation.id] })).body.acked, [
+            ordinary.id,
+          ]);
+          assert.deepEqual(
+            messages((await api("inbox")).body).map((item) => item.message.id),
+            [obligation.id],
+          );
+          broker = start("src/pi-intercom/broker/broker.ts", [], env);
+          await broker.wait(/Intercom broker started/);
+          await peer.connect(
+            { name: "saved-sender", cwd: root, model: "fixture" },
+            beforeLease[1].from.id,
+          );
+          await api("register", {});
+          const receiving = nextMessage(peer);
+          assert.equal(
+            (await api("reply", { replyTo: obligation.id, message: "obligation settled" })).body
+              .accepted,
+            true,
+          );
+          assert.equal((await receiving).message.replyTo, obligation.id);
+        },
+      );
+
+      await t.test(
+        "storage admission failure is recorded durably without a false receipt",
+        async () => {
+          const db = new DatabaseSync(mailboxPath);
+          try {
+            db.exec(
+              "CREATE TRIGGER reject_intake BEFORE INSERT ON mailbox BEGIN SELECT RAISE(FAIL, 'BODY_SENTINEL_NOT_FOR_LOGS'); END",
+            );
+            const rejected = await peer.send(remoteId, { text: "BODY_SENTINEL_NOT_FOR_LOGS" });
+            assertDefined(bridge);
+            await bridge.wait(
+              new RegExp(`"messageId":"${rejected.id}".*"result":"storage_failed"`),
+            );
+            const failed = (await api("inbox")).body;
+            assert.equal(failed.overflow, true);
+            assert.equal(failed.storageError, true);
+            assert.equal(failed.lostMessages, 1);
+            assert.equal(messages(failed).length, 0);
+            assert.equal(
+              (await peer.listSessions()).find((row) => row.id === remoteId)?.acceptsAsks,
+              false,
+            );
+            assert.ok(!bridge.output().includes("BODY_SENTINEL_NOT_FOR_LOGS"));
+            const exitedAgain = once(bridge.child, "close");
+            bridge.child.kill("SIGKILL");
+            await exitedAgain;
+            db.exec("DROP TRIGGER reject_intake");
+            bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
+            api = (await bridgeApi(bridge, credential)).api;
+            assert.equal((await api("inbox")).body.lostMessages, 1);
+          } finally {
+            db.close();
+          }
+        },
+      );
+
+      await t.test("unsafe directory/database permissions and symlinks fail closed", async () => {
+        assertDefined(bridge);
+        await stop(bridge.child);
+        const unsafe = async () => {
+          const process = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
+          try {
+            const client = await bridgeApi(process, credential);
+            const rejected = await client.api("inbox");
+            assert.equal(rejected.body.ok, false);
+            assert.equal(rejected.status, 507);
+            assert.equal(record(rejected.body.error).code, "mailbox_storage_failed");
+          } finally {
+            await stop(process.child);
+          }
+        };
+        chmodSync(mailboxPath, 0o644);
+        await unsafe();
+        chmodSync(mailboxPath, 0o600);
+        renameSync(mailboxPath, `${mailboxPath}.saved`);
+        symlinkSync(`${mailboxPath}.saved`, mailboxPath);
+        await unsafe();
+        unlinkSync(mailboxPath);
+        renameSync(`${mailboxPath}.saved`, mailboxPath);
+        const link = join(root, "state-link");
+        symlinkSync(text(config.stateDir), link);
+        const publicDir = join(root, "public");
+        mkdirSync(publicDir, { mode: 0o755 });
+        chmodSync(publicDir, 0o755);
+        for (const dir of [link, publicDir]) {
+          config.stateDir = dir;
+          writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+          // Neither a symlink nor a nonprivate directory may be accepted.
+          // oxlint-disable-next-line no-await-in-loop
+          await assert.rejects(
+            exec(
+              process.execPath,
+              [join(repo, "src/pi-intercom/bridge.ts"), "--config", configPath],
+              { env },
+            ),
+          );
+        }
+      });
+    } finally {
+      await peer.disconnect();
+      if (bridge) {
+        await stop(bridge.child);
+      }
+      if (broker) {
+        await stop(broker.child);
+      }
+      if (previous === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previous;
+      }
+      if (previousTmp === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = previousTmp;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("wake intents retain unconfirmed payloads and stop after durable ask intake", async () => {
+  const root = mkdtempSync("/tmp/pib-wake-");
+  const module = join(repo, "src/pi-intercom/bridge-mailbox.ts");
+  const run = async (script: string) =>
+    json(
+      (
+        await exec(process.execPath, [
+          "--input-type=module",
+          "-e",
+          `
+      import { Mailbox } from ${JSON.stringify(module)};
+      const mailbox = new Mailbox(${JSON.stringify(root)}, ${JSON.stringify("A".repeat(64))}, true);
+      ${script}
+      mailbox.close();
+    `,
+        ])
+      ).stdout,
+    );
+  try {
+    const before = Date.now();
+    const first = await run(`
+      const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
+      mailbox.add({from,message:{id:"notice",timestamp:1,content:{text:"notice payload"}}});
+      mailbox.add({from,message:{id:"ask",timestamp:2,expectsReply:true,content:{text:"ask payload"}}});
+      const ack = mailbox.ack(["notice","ask"]);
+      console.log(JSON.stringify({ack,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
+    `);
+    assert.deepEqual(record(first.ack).acked, ["notice"]);
+    assert.deepEqual(record(first.ack).retained, ["ask"]);
+    assert.deepEqual(
+      messages(record(first.inbox)).map((item) => item.message.id),
+      ["ask"],
+    );
+    const pending = records(record(first.wake).messages);
+    assert.deepEqual(
+      pending.map((item) => record(item.message).id),
+      ["notice"],
+    );
+    assert.deepEqual(
+      pending.map((item) => item.acknowledged),
+      [true],
+    );
+    assert.ok(
+      pending.every(
+        (item) =>
+          typeof item.receivedAt === "number" &&
+          item.receivedAt >= before &&
+          item.receivedAt <= Date.now(),
+      ),
+    );
+    const second = await run(`
+      const restored = mailbox.pendingNotifications();
+      mailbox.notificationAccepted("notice");
+      mailbox.notificationAccepted("ask");
+      const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
+      const replay = mailbox.add({from,message:{id:"notice",timestamp:3,content:{text:"do not resurrect"}}});
+      mailbox.add({from,message:{id:"notify-first",timestamp:4,content:{text:"reverse order"}}});
+      mailbox.notificationAccepted("notify-first");
+      const stillUnread = mailbox.page(0,256);
+      mailbox.ack(["notify-first"]);
+      console.log(JSON.stringify({restored,replay,stillUnread,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
+    `);
+    assert.deepEqual(record(second.restored), record(first.wake));
+    assert.equal(second.replay, "duplicate");
+    assert.deepEqual(
+      messages(record(second.stillUnread)).map((item) => item.message.id),
+      ["ask", "notify-first"],
+    );
+    assert.deepEqual(
+      messages(record(second.inbox)).map((item) => item.message.id),
+      ["ask"],
+    );
+    assert.deepEqual(record(second.wake).messages, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("credential issue cannot overwrite a concurrent revocation", { timeout: 30000 }, async () => {
   const root = mkdtempSync("/tmp/pib-lock-");
   const dir = join(root, "credentials");
@@ -484,6 +914,21 @@ if (process.argv[2] === "ecparam") {
     assert.equal(
       clients.find((client) => client.name === "grok-bot")?.fingerprint256,
       original.fingerprint256,
+    );
+    const rotationConfig = record(readJson(configPath));
+    const identity = records(rotationConfig.clients).find((client) => client.name === "grok-bot");
+    assertDefined(identity);
+    identity.wake = { envFile: join(root, "private-wake.env") };
+    writeFileSync(configPath, JSON.stringify(rotationConfig), { mode: 0o600 });
+    const rotated = parseCredential(
+      json((await exec(process.execPath, [tool, "issue", dir, "grok-bot"])).stdout),
+    );
+    assert.notEqual(rotated.fingerprint256, original.fingerprint256);
+    assert.deepEqual(
+      records(record(readJson(configPath)).clients).find((client) => client.name === "grok-bot")
+        ?.wake,
+      identity.wake,
+      "certificate rotation preserves the local wake policy",
     );
     await exec(process.execPath, [tool, "revoke", dir, "grok-bot"]);
     assert.ok(

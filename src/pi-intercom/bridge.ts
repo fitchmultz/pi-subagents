@@ -11,8 +11,20 @@ import { Session } from "./bridge-session.ts";
 import { operationFor, routeFor, type Operation } from "./bridge-routes.ts";
 import { reply } from "./bridge-http.ts";
 import { Launcher, sameIdentity } from "./bridge-launch.ts";
+import { PersistentPresence } from "./bridge-presence.ts";
+import { WakeDeliveries } from "./bridge-wake.ts";
+import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 
 const MAX_CONNECTIONS = 128;
+
+function validCertificateDates(starts: number, expires: number): boolean {
+  return (
+    Number.isFinite(starts) &&
+    Number.isFinite(expires) &&
+    starts <= Date.now() &&
+    expires > Date.now()
+  );
+}
 
 interface Connection {
   readonly fingerprint: string;
@@ -31,10 +43,32 @@ class Bridge {
   private readonly server: Server;
   private stopping = false;
   private readonly handlers = new Set<Promise<void>>();
+  private readonly presence?: PersistentPresence;
+  private readonly deliveries: WakeDeliveries;
 
   constructor(config: Config, configPath: string) {
     this.config = config;
     this.configPath = configPath;
+    this.deliveries = new WakeDeliveries(config.stateDir, (identity) => this.allowed(identity));
+    if (config.stateDir !== undefined) {
+      this.presence = new PersistentPresence({
+        stateDir: config.stateDir,
+        clients: () => this.config.clients,
+        connect: async (identity, expires) => {
+          await spawnBrokerIfNeeded(process.execPath, []);
+          if (!this.allowed(identity)) {
+            return;
+          }
+          const session = this.session(identity, expires);
+          const controller = session.begin();
+          try {
+            await session.connectedPeers(controller.signal);
+          } finally {
+            session.end(controller);
+          }
+        },
+      });
+    }
     this.server = createServer(
       {
         ...config.tls,
@@ -90,7 +124,11 @@ class Bridge {
   }
   private allowed(identity: Identity): boolean {
     const current = this.config.clients.get(identity.fingerprint256);
-    return !this.stopping && sameIdentity(identity, current);
+    return (
+      !this.stopping &&
+      sameIdentity(identity, current) &&
+      JSON.stringify(identity.wake) === JSON.stringify(current?.wake)
+    );
   }
   private lost(fp: string, count = 1): void {
     if (count > 0 && this.config.clients.has(fp)) {
@@ -98,10 +136,13 @@ class Bridge {
     }
   }
   private session(identity: Identity, expires: number): Session {
+    this.deliveries.session(identity, expires);
     let session = this.sessions.get(identity.fingerprint256);
     if (!session) {
       session = new Session(
         {
+          stateDir: this.config.stateDir,
+          notifications: identity.wake !== undefined,
           allowed: (candidate) => this.allowed(candidate),
           lost: (fp, count) => this.lost(fp, count),
           losses: (fp) => this.losses.get(fp) ?? 0,
@@ -134,12 +175,16 @@ class Bridge {
       !socket.authorized ||
       !identity ||
       this.stopping ||
-      !Number.isFinite(expires) ||
-      !Number.isFinite(starts) ||
-      starts > Date.now() ||
-      expires <= Date.now()
+      !validCertificateDates(starts, expires)
     ) {
       log("connection_rejected", { fingerprint: fp, result: "unauthorized" });
+      socket.destroy();
+      return;
+    }
+    try {
+      this.presence?.authenticated(identity, expires);
+    } catch {
+      log("connection_rejected", { fingerprint: fp, result: "presence_storage_failed" });
       socket.destroy();
       return;
     }
@@ -164,6 +209,7 @@ class Bridge {
     log("connected", { name: identity.name, fingerprint: fp, result: "authenticated" });
   }
   private drop(fp: string, error: Readonly<Fault>): void {
+    this.deliveries.drop(fp);
     this.sessions.get(fp)?.close(error);
     for (const [socket, connection] of this.connections) {
       if (connection.fingerprint === fp) {
@@ -181,6 +227,7 @@ class Bridge {
         port: typeof address === "object" && address ? address.port : this.config.port,
         brokerSocket: getBrokerSocketPath(),
       });
+      this.presence?.start();
     });
     process.on("SIGHUP", () => this.reload());
     // Retain listeners during dispatch: selected SDK dependencies use signal-exit's listener check.
@@ -202,6 +249,7 @@ class Bridge {
       log("allowlist_reloaded", { result: "accepted", clients: next.clients.size });
     } catch {
       this.config = { ...this.config, clients: new Map() };
+      this.deliveries.reload();
       this.launcher
         .revoke(this.config.clients)
         .catch(() => log("launch_cleanup", { result: "failed" }));
@@ -222,6 +270,7 @@ class Bridge {
     }
   }
   private revokeRemoved(): void {
+    this.deliveries.reload();
     for (const [fp, session] of this.sessions) {
       if (!this.allowed(session.identity)) {
         this.drop(
@@ -264,6 +313,8 @@ class Bridge {
       ...this.handlers,
       ...sessions.map((session) => session.settled()),
       this.launcher.shutdown(),
+      this.presence?.stop(),
+      this.deliveries.stop(),
     ]);
     log("shutdown", { result: "closed" });
   }
@@ -402,7 +453,7 @@ function main(): void {
   const args = process.argv.slice(2);
   if (args.length === 1 && (args[0] === "-h" || args[0] === "--help")) {
     process.stdout.write(
-      "Usage: node dist/pi-intercom/bridge.js --config PATH\n\nOptional loopback HTTPS/mTLS bridge for the local pi-intercom broker.\nConfig and TLS key must be owned by you with mode 0600. Never starts the broker.\nSIGHUP reloads the client allowlist (invalid reload denies all clients).\nRestart this helper for TLS/listener rotation. SIGINT/SIGTERM disconnect peers.\n\nExample: node dist/pi-intercom/bridge.js --config ~/.pi/agent/intercom/bridge.json\n",
+      "Usage: node dist/pi-intercom/bridge.js --config PATH\n\nOptional loopback HTTPS/mTLS bridge for the local pi-intercom broker.\nConfig and TLS key must be owned by you with mode 0600.\nWithout stateDir, messaging never starts the broker. Durable presence safely starts\none only when none is running; it never restarts or replaces a live broker.\nSIGHUP reloads the client allowlist (invalid reload denies all clients).\nRestart this helper for TLS/listener rotation. SIGINT/SIGTERM disconnect peers.\n\nExample: node dist/pi-intercom/bridge.js --config ~/.pi/agent/intercom/bridge.json\n",
     );
     return;
   }
@@ -416,7 +467,7 @@ function main(): void {
     new Bridge(loadConfig(path), path).start();
   } catch {
     process.stderr.write(
-      "Bridge startup failed: check config schema, file ownership/mode 0600, absolute TLS/cwd paths, TLS credentials, and launch policy (0700 sessionDir, Pi packageRoot, extension paths).\n",
+      "Bridge startup failed: check config schema, file ownership/mode 0600, absolute TLS/cwd paths, TLS credentials, stateDir (owned 0700 directory), and launch policy (0700 sessionDir, Pi packageRoot, extension paths).\n",
     );
     process.exitCode = 1;
   }

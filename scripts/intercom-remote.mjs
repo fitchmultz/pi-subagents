@@ -17,6 +17,8 @@ Options:
   --message TEXT       Message for send/ask/reply
   --reply-to ID        Inbound ask ID from inbox, for reply
   --timeout-ms MS      Ask timeout (100..120000, default: 120000)
+  --after CURSOR       Inbox cursor from nextCursor (default: 0)
+  --limit COUNT        Inbox page size (1..256, default: 256)
   --name NAME          Start/reuse a named idle Pi session under local policy
   --session-id ID      Stop only a Pi session launched by this identity/helper
   -h, --help           Show help
@@ -25,6 +27,7 @@ Examples:
   node intercom-remote.mjs list
   node intercom-remote.mjs ask --to planner --message 'What is the current status?'
   node intercom-remote.mjs inbox
+  node intercom-remote.mjs inbox --after NEXT_CURSOR --limit 64
   node intercom-remote.mjs reply --reply-to QUESTION_ID --message 'Proceed.'
   node intercom-remote.mjs ack MESSAGE_ID
   node intercom-remote.mjs start --name planner
@@ -36,6 +39,9 @@ No automatic retries: a lost response does not prove a message was unsent.`);
 }
 
 function allowedOptions(action) {
+  if (action === "inbox") {
+    return ["after", "limit"];
+  }
   if (action === "start") {
     return ["name"];
   }
@@ -119,7 +125,21 @@ function privateKey(path) {
   }
 }
 
-let body, action, origin, timeout;
+function inboxQuery(options) {
+  const after = options.after ?? "0";
+  const limit = options.limit ?? "256";
+  if (
+    !/^(0|[1-9]\d{0,15})$/.test(after) ||
+    !Number.isSafeInteger(Number(after)) ||
+    !/^[1-9]\d{0,2}$/.test(limit) ||
+    Number(limit) > 256
+  ) {
+    throw new Error("--after must be a nonnegative safe integer cursor; --limit must be 1..256.");
+  }
+  return new URLSearchParams({ after, limit }).toString();
+}
+
+let body, action, origin, timeout, query;
 try {
   const parsed = parseArgs({
     allowPositionals: true,
@@ -129,6 +149,8 @@ try {
       message: { type: "string" },
       "reply-to": { type: "string" },
       "timeout-ms": { type: "string" },
+      after: { type: "string" },
+      limit: { type: "string" },
       name: { type: "string" },
       "session-id": { type: "string" },
     },
@@ -167,6 +189,7 @@ try {
     throw new Error("--timeout-ms must be 100..120000.");
   }
   body = requestBody(action, options, parsed.positionals.slice(1), timeout);
+  query = action === "inbox" ? inboxQuery(options) : "";
   origin = new URL(process.env.INTERCOM_BRIDGE_URL || "https://127.0.0.1:9443");
   if (
     origin.protocol !== "https:" ||
@@ -194,6 +217,7 @@ try {
 try {
   const files = tlsFiles();
   origin.pathname = `/v1/${action}`;
+  origin.search = query;
   const payload = JSON.stringify(body);
   const get = ["list", "inbox", "sessions"].includes(action);
   const result = await new Promise((resolve, reject) => {

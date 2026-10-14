@@ -7,20 +7,17 @@ import {
 } from "./session-targets.ts";
 import type { Message, SendResult, SessionInfo } from "./types.ts";
 import type { Identity } from "./bridge-config.ts";
-import { Fault, INBOX_BYTES, INBOX_COUNT, cancelled, log, wait } from "./bridge-protocol.ts";
+import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
+import { Mailbox } from "./bridge-mailbox.ts";
 import type { UnknownRecord } from "../shared/unknown.ts";
 import type { MessagingOperation as Operation } from "./bridge-routes.ts";
 
-import { WaitingAsk, type Envelope } from "./bridge-ask.ts";
+import { WaitingAsk } from "./bridge-ask.ts";
 const MAX_REQUESTS = 8;
 const IDLE_TIMEOUT = 5 * 60 * 1000;
 const SEND_TIMEOUT = 8000;
 const LIST_TIMEOUT = 5000;
 
-interface InboxEntry extends Envelope {
-  readonly bytes: number;
-  replying: boolean;
-}
 interface RequestContext {
   readonly signal: AbortSignal;
   readonly requestId: string;
@@ -32,6 +29,8 @@ interface SendOptions {
   readonly expectsReply?: boolean;
 }
 export interface SessionOwner {
+  readonly stateDir?: string;
+  readonly notifications?: boolean;
   readonly allowed: (identity: Identity) => boolean;
   readonly lost: (fp: string, count?: number) => void;
   readonly retired: (fp: string, generation: string) => void;
@@ -48,8 +47,8 @@ export class Session {
     listTimeoutMs: LIST_TIMEOUT,
   });
   private readonly requests = new Set<AbortController>();
-  private readonly inbox = new Map<string, InboxEntry>();
-  private inboxBytes = 0;
+  private readonly inbox: Mailbox;
+  private readonly replying = new Set<string>();
   private pending?: WaitingAsk;
   private closed = false;
   private connecting?: Promise<void>;
@@ -62,6 +61,7 @@ export class Session {
     this.owner = owner;
     this.identity = identity;
     this.expires = expires;
+    this.inbox = new Mailbox(owner.stateDir, identity.fingerprint256, owner.notifications);
     this.client.on("error", () =>
       this.close(new Fault(503, "broker_unavailable", "Broker connection failed.")),
     );
@@ -153,6 +153,7 @@ export class Session {
       this.close(fault);
       throw fault;
     }
+    this.presence();
     log("registered", this.fields());
   }
   private async connect(signal: AbortSignal): Promise<void> {
@@ -192,6 +193,7 @@ export class Session {
       // The original request receives the connection failure; teardown must still close a late socket.
     }
     await this.disconnect();
+    this.owner.lost(this.identity.fingerprint256, this.inbox.close());
     this.owner.retired(this.identity.fingerprint256, this.generation);
     log("session_closed", { ...this.fields(), result: this.closeReason.code });
   }
@@ -206,9 +208,6 @@ export class Session {
     for (const controller of this.requests) {
       controller.abort(error);
     }
-    this.owner.lost(this.identity.fingerprint256, this.inbox.size);
-    this.inbox.clear();
-    this.inboxBytes = 0;
     // Retain the generation until acquisition/registration AND final disconnect settle.
     this.startRetirement();
   }
@@ -224,12 +223,6 @@ export class Session {
       this.pending.reject(
         new Fault(409, "peer_offline", "Ask recipient disconnected.", { id: this.pending.id }),
       );
-    }
-    for (const [messageId, entry] of this.inbox) {
-      if (entry.from.id === id && entry.message.expectsReply === true) {
-        this.remove(messageId);
-        this.owner.lost(this.identity.fingerprint256);
-      }
     }
     this.presence();
   }
@@ -247,50 +240,66 @@ export class Session {
       );
       return;
     }
-    log("received", { ...this.fields(), peer: from.id, messageId: message.id, result: "received" });
-    const pending = this.pending;
-    if (pending?.matches(from.id, message.replyTo) === true) {
-      pending.resolve({ from, message });
+    if (!this.inbox.persistent && this.resolveReply(from, message)) {
       return;
     }
-    if (this.inbox.has(message.id)) {
-      this.owner.lost(this.identity.fingerprint256);
-      return;
-    }
-    const bytes = Buffer.byteLength(JSON.stringify({ from, message }));
-    if (this.inbox.size >= INBOX_COUNT || this.inboxBytes + bytes > INBOX_BYTES) {
-      this.owner.lost(this.identity.fingerprint256);
+    this.storeReceive(from, message);
+  }
+  private storeReceive(from: SessionInfo, message: Message): void {
+    let result: "stored" | "duplicate" | "lost";
+    try {
+      result = this.inbox.add({ from, message });
+    } catch {
       log("inbox_overflow", {
         ...this.fields(),
         peer: from.id,
         messageId: message.id,
-        result: "lost",
+        result: "storage_failed",
+        lossRecorded: false,
       });
+      this.close(
+        new Fault(
+          507,
+          "mailbox_storage_failed",
+          "Mailbox storage failed; inspect the metadata audit for unrecorded losses.",
+        ),
+      );
       return;
     }
-    // ponytail: bounded volatile inbox; use a private durable journal if restart/lease-loss recovery is required.
-    this.inbox.set(message.id, { from, message, bytes, replying: false });
-    this.inboxBytes += bytes;
+    if (result === "lost" || (result === "duplicate" && !this.inbox.persistent)) {
+      this.owner.lost(this.identity.fingerprint256);
+    }
+    this.recordReceive(from.id, message.id, result);
+    if (result !== "lost") {
+      this.resolveReply(from, message);
+    }
     this.presence();
   }
-  private remove(id: string): void {
-    const entry = this.inbox.get(id);
-    if (entry) {
-      this.inboxBytes -= entry.bytes;
-      this.inbox.delete(id);
+  private resolveReply(from: SessionInfo, message: Message): boolean {
+    const pending = this.pending;
+    if (pending?.matches(from.id, message.replyTo) !== true) {
+      return false;
     }
+    pending.resolve({ from, message });
+    return true;
+  }
+  private recordReceive(
+    peer: string,
+    messageId: string,
+    result: "stored" | "duplicate" | "lost",
+  ): void {
+    log(result === "lost" ? "inbox_overflow" : "received", {
+      ...this.fields(),
+      peer,
+      messageId,
+      result: result === "lost" && this.inbox.persistent ? "storage_failed" : result,
+    });
   }
   private presence(): void {
     if (this.closed) {
       return;
     }
-    const pendingAsks = [...this.inbox.values()].filter(
-      (entry) => entry.message.expectsReply === true,
-    ).length;
-    this.client.updatePresence({
-      pendingAsks,
-      acceptsAsks: this.inbox.size < INBOX_COUNT && this.inboxBytes < INBOX_BYTES,
-    });
+    this.client.updatePresence(this.inbox.presence());
   }
   private async peers(signal: AbortSignal): Promise<SessionInfo[]> {
     this.guard(signal);
@@ -421,19 +430,9 @@ export class Session {
     }
   }
   private ack(ids: readonly string[]): UnknownRecord {
-    const acked: string[] = [];
-    const retained: string[] = [];
-    for (const id of ids) {
-      const entry = this.inbox.get(id);
-      if (entry?.message.expectsReply === true) {
-        retained.push(id);
-      } else if (entry) {
-        this.remove(id);
-        acked.push(id);
-      }
-    }
+    const result = this.inbox.ack(ids);
     this.presence();
-    return { acked, retained };
+    return result;
   }
   private async answer(
     replyTo: string,
@@ -444,10 +443,10 @@ export class Session {
     if (entry?.message.expectsReply !== true) {
       throw new Fault(404, "unknown_ask", "replyTo must identify an unanswered inbound ask.");
     }
-    if (entry.replying) {
+    if (this.replying.has(replyTo)) {
       throw new Fault(409, "reply_in_progress", "This ask already has a reply in flight.");
     }
-    entry.replying = true;
+    this.replying.add(replyTo);
     const peer = entry.from.id;
     context.onPeer(peer);
     try {
@@ -456,21 +455,34 @@ export class Session {
         throw new Fault(409, "peer_offline", "Original ask sender is disconnected.");
       }
       this.guard(context.signal);
-      if (this.inbox.get(replyTo) !== entry) {
+      if (!this.inbox.get(replyTo)) {
         throw new Fault(409, "ask_retired", "Inbound ask is no longer replyable.");
       }
       const data = { ...(await this.send(peer, message, context, { replyTo })) };
-      this.remove(replyTo);
+      this.inbox.remove(replyTo);
       this.presence();
       return data;
     } finally {
-      entry.replying = false;
+      this.replying.delete(replyTo);
     }
   }
   async execute(operation: Operation, context: RequestContext): Promise<UnknownRecord> {
     this.guard(context.signal);
     if (operation.route === "POST /v1/ask") {
       return this.ask(operation, context);
+    }
+    if (operation.route === "GET /v1/inbox" || operation.route === "POST /v1/ack") {
+      // Durable reads/acks remain available while the local broker is down.
+      if (!this.inbox.persistent) {
+        await this.connect(context.signal);
+      }
+      if (operation.route === "POST /v1/ack") {
+        return this.ack(operation.ids);
+      }
+      return {
+        ...this.inbox.page(operation.after, operation.limit),
+        ...this.inbox.status(this.owner.losses(this.identity.fingerprint256)),
+      };
     }
     await this.connect(context.signal);
     switch (operation.route) {
@@ -485,16 +497,6 @@ export class Session {
           }),
         };
       }
-      case "GET /v1/inbox": {
-        const lostMessages = this.owner.losses(this.identity.fingerprint256);
-        return {
-          messages: [...this.inbox.values()].map(({ from, message }) => ({ from, message })),
-          overflow: lostMessages > 0,
-          lostMessages,
-        };
-      }
-      case "POST /v1/ack":
-        return this.ack(operation.ids);
       case "POST /v1/send":
         return {
           ...(await this.send(

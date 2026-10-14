@@ -1,53 +1,57 @@
-import {
-  constants,
-  closeSync,
-  fstatSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createSecureContext } from "node:tls";
+import { parseEnv } from "node:util";
 import { isUnknownArray } from "../shared/unknown.ts";
 import { BODY_LIMIT, object, label, fingerprint } from "./bridge-protocol.ts";
 import { launchPolicy, type LaunchPolicy } from "./bridge-launch-policy.ts";
+import { stateDirectory } from "./bridge-mailbox.ts";
+import { readBridgeFile } from "./bridge-files.ts";
 
 const MAX_CLIENTS = 64;
+
+export interface WakePolicy {
+  readonly envFile: string;
+  readonly url: string;
+  readonly key: string;
+}
+
+function wakePolicy(value: unknown): WakePolicy | undefined {
+  if (value === undefined) {
+    return;
+  }
+  const input = object(value, ["envFile"]);
+  const envFile = label(input.envFile, "wake credential file", 4096);
+  if (!isAbsolute(envFile)) {
+    throw new Error("Wake credential file must be absolute.");
+  }
+  const env = parseEnv(readBridgeFile(envFile, true, 16384).toString("utf8"));
+  const url = new URL(label(env.GROK_WAKE_WEBHOOK_URL, "wake webhook URL", 8192));
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.hash !== "") {
+    throw new Error("Wake webhook requires HTTPS without URL credentials or a fragment.");
+  }
+  return {
+    envFile,
+    url: url.href,
+    key: label(env.GROK_WAKE_WEBHOOK_KEY, "wake webhook key", 4096),
+  };
+}
 
 export interface Identity {
   readonly fingerprint256: string;
   readonly name: string;
   readonly cwd: string;
   readonly launch?: LaunchPolicy;
+  readonly wake?: WakePolicy;
 }
 export interface Config {
+  readonly stateDir?: string;
   readonly port: number;
   readonly ca: string;
   readonly cert: string;
   readonly key: string;
   readonly clients: Readonly<ReadonlyMap<string, Identity>>;
   readonly tls: { readonly ca: Buffer; readonly cert: Buffer; readonly key: Buffer };
-}
-
-function readFile(path: string, privateFile: boolean, limit: number): Buffer {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > limit) {
-      throw new Error("Configuration/TLS file must be a bounded regular file.");
-    }
-    if (privateFile && (stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600)) {
-      throw new Error("Config and TLS key must be owned by the current user with mode 0600.");
-    }
-    const data = readFileSync(fd);
-    if (data.length > limit) {
-      throw new Error("Configuration/TLS file exceeds its size limit.");
-    }
-    return data;
-  } finally {
-    closeSync(fd);
-  }
 }
 
 function identities(value: unknown): Map<string, Identity> {
@@ -57,7 +61,7 @@ function identities(value: unknown): Map<string, Identity> {
   const clients = new Map<string, Identity>();
   const names = new Set<string>();
   for (const raw of value) {
-    const entry = object(raw, ["fingerprint256", "name", "cwd", "launch"]);
+    const entry = object(raw, ["fingerprint256", "name", "cwd", "launch", "wake"]);
     const fingerprint256 = fingerprint(entry.fingerprint256);
     const name = label(entry.name, "name", 128).trim();
     const cwd = label(entry.cwd, "cwd", 4096);
@@ -76,6 +80,7 @@ function identities(value: unknown): Map<string, Identity> {
       name,
       cwd: launch ? realpathSync(cwd) : cwd,
       launch,
+      wake: wakePolicy(entry.wake),
     });
     names.add(name.toLowerCase());
   }
@@ -84,9 +89,9 @@ function identities(value: unknown): Map<string, Identity> {
 
 export function loadConfig(path: string): Config {
   const raw: unknown = JSON.parse(
-    new TextDecoder("utf-8", { fatal: true }).decode(readFile(path, true, BODY_LIMIT)),
+    new TextDecoder("utf-8", { fatal: true }).decode(readBridgeFile(path, true, BODY_LIMIT)),
   );
-  const input = object(raw, ["port", "ca", "cert", "key", "clients"]);
+  const input = object(raw, ["port", "ca", "cert", "key", "clients", "stateDir"]);
   const port = input.port === undefined ? 9443 : input.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error("Invalid HTTPS port.");
@@ -99,16 +104,21 @@ export function loadConfig(path: string): Config {
   }
   const clients = identities(input.clients);
   const tls = {
-    ca: readFile(ca, false, 1024 * 1024),
-    cert: readFile(cert, false, 1024 * 1024),
-    key: readFile(key, true, 1024 * 1024),
+    ca: readBridgeFile(ca, false, 1024 * 1024),
+    cert: readBridgeFile(cert, false, 1024 * 1024),
+    key: readBridgeFile(key, true, 1024 * 1024),
   };
   createSecureContext({ ...tls, minVersion: "TLSv1.2" });
-  return { port, ca, cert, key, clients, tls };
+  const stateDir = stateDirectory(input.stateDir);
+  if (stateDir === undefined && [...clients.values()].some((identity) => identity.wake)) {
+    throw new Error("Wake delivery requires a durable stateDir.");
+  }
+  return { port, ca, cert, key, clients, tls, stateDir };
 }
 
 export function sameListener(next: Config, current: Config): boolean {
   return (
+    next.stateDir === current.stateDir &&
     next.port === current.port &&
     next.ca === current.ca &&
     next.cert === current.cert &&
