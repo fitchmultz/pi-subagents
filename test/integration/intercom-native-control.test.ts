@@ -608,12 +608,9 @@ test(
             assert.equal(result.ok, false);
             assert.equal(result.cliExitCode, 1);
             assert.equal(result.status, "partial");
-            assert.ok(
-              (mode === "stall"
-                ? ["send_unconfirmed"]
-                : ["broker_disconnected", "broker_unavailable"]
-              ).includes(text(record(result.error).code)),
-              "broker death may report a socket error before its close event",
+            assert.match(
+              text(record(result.error).code),
+              mode === "stall" ? /^send_unconfirmed$/ : /^broker_(disconnected|unavailable)$/,
             );
             const receipts = records(result.receipts);
             assert.deepEqual(
