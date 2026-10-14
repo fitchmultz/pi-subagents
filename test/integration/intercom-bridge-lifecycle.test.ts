@@ -1016,7 +1016,7 @@ test(
         },
       );
       await t.test(
-        "unreachable live broker rejects spawn and resume without replacing accepted work",
+        "unreachable live broker rejects spawn and resume without replacing the broker",
         async () => {
           assert.ok(brokerPid !== undefined && !gone(brokerPid));
           const pidFile = join(agent, "intercom/broker.pid");
