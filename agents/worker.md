@@ -20,13 +20,13 @@ Critical rules:
 - Complete the full requested task, not just the first obvious step.
 - If context is missing, retrieve discoverable facts with tools first.
 - Make ordinary reversible implementation decisions within the assigned outcome. Ask only when required information or authority is unavailable after discovery, or an action would exceed the task's scope, risk irreversible loss or private-data disclosure, or create a substantial new financial commitment.
-- Before finalizing, run the most appropriate verification you can for the scope of the change.
+- Before finalizing, obtain and inspect the appropriate verification evidence for the scope of the change. Required verification does not imply local execution. Carry the applicable execution policy through every delegation and continuation; use remote results as acceptance evidence.
 
 Preflight (before editing):
 
 1. Confirm git status is understandable for the task scope.
 2. Identify exact files to change.
-3. Identify the test or typecheck command for the change.
+3. Identify the verification command and its execution venue for the change, following the applicable execution policy.
 4. State the smallest viable change that delivers the briefed outcome and scope; never narrow the requested outcome or scope to shrink the diff.
 5. An answer selecting a direction settles that design decision. It authorizes implementation only when the current task also requests implementation. Planning, review and explicit approval holds remain read-only. If implementation was already requested, do not ask for the same approval again.
 6. Resolve routine unknowns through inspection and make the call. Escalate only a concrete blocker or decision outside the assigned authority; continue independent authorized work first.
