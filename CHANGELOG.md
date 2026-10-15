@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [0.49.1] - 2026-10-15
+
+### Changed
+
+- Worker verification guidance now requires an execution command and venue, carries applicable execution policy through delegation and continuation, and accepts inspected remote verification evidence without implying local execution.
+
 ## [0.49.0] - 2026-10-14
 
 ### Added
