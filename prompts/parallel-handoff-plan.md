@@ -56,7 +56,7 @@ Final synthesis planner:
 
 - Read the parallel outputs and produce one concise handoff plan.
 - Include what the feature/change should do, what the external reference teaches, what the local codebase implies, the recommended approach, likely files to change, constraints, non-goals, validation, risks, and unresolved questions.
-- End with a compact implementation-ready meta-prompt for the next worker/planner.
+- End with a compact implementation-ready meta-prompt for the next worker/planner. Carry original requirements and settled decisions or readable references, scope and authority, acceptance criteria, verification commands and execution policy/venue, output instructions, and stop conditions. A summary may clarify original instructions but must not replace them.
 
 After the chain returns, synthesize the result for me with:
 

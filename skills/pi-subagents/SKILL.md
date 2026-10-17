@@ -33,7 +33,7 @@ Use this skill to coordinate focused Pi sessions. The original agent owns integr
 
 Use effective agents from `agent_runs({ action: "profiles" })` or `subagent({ action: "list" })`; user/project profiles may replace builtin role behavior. Common roles:
 
-- `scout`: fast codebase recon and handoff context.
+- `scout`: codebase recon and handoff context.
 - `researcher`: evidence-driven technical research.
 - `watcher`: observation that needs ongoing interpretation; use ordinary tools for routine waiting and check collection. Define material transitions and a terminal condition.
 - `planner`: concrete implementation plans; should read and plan, not edit.

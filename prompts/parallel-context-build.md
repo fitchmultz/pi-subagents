@@ -47,7 +47,7 @@ Ask each builder to produce a compact handoff file with:
 - constraints and invariants;
 - risks and unknowns;
 - validation commands or next-best checks;
-- a `meta-prompt` section for the next planner or role subagent.
+- a `meta-prompt` section for the next planner or role subagent, carrying original requirements and settled decisions or readable references, scope and authority, acceptance criteria, verification commands and execution policy/venue, output instructions, and stop conditions. A summary may clarify original instructions but must not replace them.
 
 After the builders return, synthesize their outputs into:
 

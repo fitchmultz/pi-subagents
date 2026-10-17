@@ -259,7 +259,7 @@ The extension ships with builtin agents you can use immediately.
 
 | Agent               | Use it when you want...                                                              |
 | ------------------- | ------------------------------------------------------------------------------------ |
-| `scout`             | Fast codebase recon and a compressed handoff.                                        |
+| `scout`             | Codebase recon and a compressed handoff.                                             |
 | `researcher`        | Evidence-driven research for consequential technical decisions.                      |
 | `watcher`           | Read-only background monitoring with timely material-change updates to the parent.   |
 | `planner`           | A concrete implementation plan without edits.                                        |
@@ -294,7 +294,7 @@ There are no automatic aliases. A retired name is unknown unless a user, project
 Also check implicit selections in [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model). Its `delegate` defaults are not supplied by this package:
 
 - Replace `subagent: true` with `subagent: worker` (or another suitable profile). Use `--subagent=worker` instead of bare `--subagent`, including when using `--fork`.
-- Set `agent: worker` in every `bestOfN.workers` slot and any `bestOfN.finalApplier`. If workers were omitted entirely, add an explicit worker slot. Reviewer slots still default to `reviewer`.
+- In `bestOfN.workers` and any `bestOfN.finalApplier`, replace implicit `delegate` selections (missing `agent`/`subagent` or `subagent: true`) and explicit `delegate` selections with `agent: worker`; preserve other deliberately selected agents. If workers were omitted entirely, add an explicit worker slot. Reviewer slots still default to `reviewer`.
 - In runtime worker/final-applier JSON, use `"agent": "worker"` instead of `"subagent": true`.
 
 Alternatively, define your own `delegate` profile with the intended role and permissions. Unmigrated implicit selections fail with an unknown-agent error; this package does not rewrite third-party defaults.
