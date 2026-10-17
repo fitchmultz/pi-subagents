@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
+import { Duplex } from "node:stream";
 import { useFakeTimers } from "sinon";
 import { WakeState } from "../../src/pi-intercom/bridge-wake-state.ts";
 import { Mailbox } from "../../src/pi-intercom/bridge-mailbox.ts";
@@ -253,8 +254,15 @@ test("shared recovery cannot reap a listener between owner-file creation and nat
   const root = mkdtempSync("/tmp/pib-owner-publish-");
   const observer = new WakeState(root);
   const originalFiles = readdirSync(root);
-  const child = start("test/fixtures/intercom-wake-window.ts", ["publish", root], process.env);
+  const child = start(
+    "test/fixtures/intercom-wake-window.ts",
+    ["publish", root],
+    process.env,
+    true,
+  );
   try {
+    const gate = child.child.stdio[3];
+    assert.ok(gate instanceof Duplex);
     await child.wait(/owner_before_lock/);
     const created = readdirSync(root).filter((name) => !originalFiles.includes(name));
     assert.equal(created.length, 1, "the new listener has published exactly one owner file");
@@ -268,7 +276,7 @@ test("shared recovery cannot reap a listener between owner-file creation and nat
     t.diagnostic(
       JSON.stringify({ ownerRetained: retained, peerAdmitted: !(failure instanceof Error) }),
     );
-    child.child.kill("SIGCONT");
+    gate.end(Buffer.from([1]));
     await child.wait(/owner_admitted/);
     assert.ok(retained, "a concurrent listener must not reap the initializing owner");
     assert.ok(failure instanceof Error, "the ledger lock fails closed during owner publication");
@@ -278,7 +286,6 @@ test("shared recovery cannot reap a listener between owner-file creation and nat
       "actual SQLite BUSY, not a missing owner file or fabricated admission",
     );
   } finally {
-    child.child.kill("SIGCONT");
     await stop(child.child);
     observer.close();
     rmSync(root, { recursive: true, force: true });
@@ -289,14 +296,21 @@ test("failed owner-publication COMMIT closes its OS lock and removes only its un
   const root = mkdtempSync("/tmp/pib-owner-commit-");
   const observer = new WakeState(root);
   const originalOwners = readdirSync(root).filter((name) => name.endsWith(".lock"));
-  const child = start("test/fixtures/intercom-wake-window.ts", ["publish", root], process.env);
+  const child = start(
+    "test/fixtures/intercom-wake-window.ts",
+    ["publish", root],
+    process.env,
+    true,
+  );
   const reader = new DatabaseSync(join(root, "wake-quota.sqlite"), { readOnly: true });
   try {
+    const gate = child.child.stdio[3];
+    assert.ok(gate instanceof Duplex);
     await child.wait(/owner_before_lock/);
     reader.exec("BEGIN");
     reader.prepare("SELECT count(*) FROM wake_attempts").get();
     const exited = once(child.child, "close");
-    child.child.kill("SIGCONT");
+    gate.end(Buffer.from([1]));
     await exited;
     assert.equal(child.child.exitCode, 1, "the real blocked FULL COMMIT fails startup closed");
     assert.match(child.output(), /database is locked/);
@@ -309,7 +323,6 @@ test("failed owner-publication COMMIT closes its OS lock and removes only its un
     reader.exec("COMMIT");
     assert.equal(observer.reserve("existing-listener"), undefined, "retained listener still works");
   } finally {
-    child.child.kill("SIGCONT");
     await stop(child.child);
     reader.close();
     observer.close();
