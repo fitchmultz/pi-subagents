@@ -62,21 +62,16 @@ describe("builtin agent overrides", () => {
         ]),
       ),
       {
-        "context-builder": ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
         debugger: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
-        delegate: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5-5"],
-        fixer: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
-        oracle: ["openai-codex/gpt-6.1-sol", "xhigh", "zai/glm-5.3"],
+        oracle: ["openai-codex/gpt-6.1-sol", "xhigh", "zai/glm-5.3:high"],
         planner: ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
         researcher: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
         reviewer: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
         "reviewer-claude": ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
-        "reviewer-gpt": ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
-        "reviewer-ponytail": ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
-        "reviewer-security": ["openai-codex/gpt-6.1-sol", "xhigh", "zai/glm-5.3"],
-        scout: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5-5"],
+        "reviewer-security": ["openai-codex/gpt-6.1-sol", "xhigh", "zai/glm-5.3:high"],
+        scout: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
         "ui-designer": ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
-        watcher: ["openai-codex/gpt-6-luna", "high"],
+        watcher: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
         worker: ["openai-codex/gpt-6.1-sol", "xhigh", "anthropic/claude-opus-5-5"],
         writer: ["anthropic/claude-opus-5-5", "xhigh", "openai-codex/gpt-6.1-sol"],
       },
@@ -110,11 +105,7 @@ describe("builtin agent overrides", () => {
         `${agent.name} must preserve Pi's base prompt`,
       );
       assert.equal(agent.inheritProjectContext, true, `${agent.name} must inherit project context`);
-      assert.equal(
-        agent.inheritSkills,
-        agent.name !== "delegate",
-        `${agent.name} skill inheritance drift`,
-      );
+      assert.equal(agent.inheritSkills, true, `${agent.name} skill inheritance drift`);
       assert.equal(
         agent.allowSubagents,
         false,

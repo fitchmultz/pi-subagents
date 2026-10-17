@@ -34,22 +34,21 @@ Use this skill to coordinate focused Pi sessions. The original agent owns integr
 Use effective agents from `agent_runs({ action: "profiles" })` or `subagent({ action: "list" })`; user/project profiles may replace builtin role behavior. Common roles:
 
 - `scout`: fast codebase recon and handoff context.
-- `context-builder`: stronger context/meta-prompt handoff builder.
 - `researcher`: evidence-driven technical research.
 - `watcher`: observation that needs ongoing interpretation; use ordinary tools for routine waiting and check collection. Define material transitions and a terminal condition.
 - `planner`: concrete implementation plans; should read and plan, not edit.
 - `worker`: single-writer implementation for approved scope.
 - `debugger`: root-cause diagnosis and repair evidence.
-- `fixer`: bounded remediation after findings are already decided.
-- `reviewer`: general implementation review.
-- `reviewer-gpt`: strict maintainability and correctness gate.
+- `reviewer`: correctness, maintainability, validation, or a specifically briefed simplicity pass.
 - `reviewer-claude`: independent cross-model assumptions and product-risk review.
 - `reviewer-security`: security and data-safety review for trust boundaries.
-- `reviewer-ponytail`: over-engineering and slop review; uses the `ponytail` skill when installed and never trades away intended behavior.
 - `ui-designer`: rendered UI, layout, accessibility, and visual polish.
 - `writer`: human-facing documentation and polished copy.
 - `oracle`: forked advisory second opinion for direction, drift, and assumptions.
-- `delegate`: lightweight generic child; prefer a specialist or `worker` when the task has a real role.
+
+Profiles define stable roles, not project workflows. The dispatching agent must supply a self-contained brief: original requirements and settled decisions or readable references, the assigned outcome and scope, relevant files/evidence, authority and non-goals, acceptance criteria, verification commands and execution venue, expected output, and concrete stop conditions. Put project-specific rules, report templates, and review angles in that brief rather than expanding global profile prompts. Do not assume a fresh child can recover the parent's unstated context.
+
+Use `worker` for generic implementation and accepted fixes, `scout` for context gathering and handoffs, and `planner` for plan synthesis. For a simplicity review, brief `reviewer` to trace callers, name what replaces any proposed deletion, and preserve required behavior and safety; select the relevant installed review skill when useful. Separate reviewers with different briefs provide different review angles without needing another profile.
 
 Profiles are reliable defaults, not override prohibitions. When warranted by the task, use `model: "provider/model:high"`, subject to user instructions and provider authorization; there is no standalone execution `thinking` argument. Explicit overrides pin route and effort: transient transport retries stay on that choice, with no profile fallback. On unavailability, the parent must choose a replacement. Ordinary launches keep profile fallbacks. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call. Fork is rejected for actual `anthropic/` primary or fallback candidates. A pinned non-Anthropic override excludes profile fallbacks; an Anthropic override remains ineligible.
 

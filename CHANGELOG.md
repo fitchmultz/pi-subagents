@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Consolidate the bundled roster from 17 to 12 profiles: use `worker` instead of the `delegate` and `fixer` profiles, `scout`/`planner` instead of `context-builder`, and `reviewer` instead of `reviewer-gpt` or `reviewer-ponytail`. The `delegate` tool remains unchanged; retired profile names have no automatic aliases.
+- Shorten the remaining profile prompts to project-agnostic role and authority contracts. Dispatchers supply task context, acceptance criteria, verification policy and venue, output instructions, and review focus; read-only boundaries, inherited project rules, leaf guards, and monitoring lifecycle remain intact.
+- Use Sol xhigh for scout and watcher defaults, with an Opus fallback for watcher. Pin the existing non-Claude oracle/security fallback to GLM high rather than requesting unsupported xhigh.
+
 ## [0.49.1] - 2026-10-15
 
 ### Changed

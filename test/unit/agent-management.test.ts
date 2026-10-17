@@ -674,7 +674,7 @@ Inspect
     assert.match(readText(listed), /Invalid JSON chain/);
   });
 
-  it("creates delegate with its builtin prompt defaults", () => {
+  it("creates a custom delegate agent with native prompt defaults", () => {
     const result = handleCreate(
       { config: { name: "delegate", description: "Delegate helper", scope: "project" } },
       {

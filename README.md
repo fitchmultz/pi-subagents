@@ -44,17 +44,21 @@ The saved workflow example requires a [chain file](docs/reference.md#chain-files
 
 ## Choose a role and model
 
-| Task                         | Built-in agents                                                                         |
-| ---------------------------- | --------------------------------------------------------------------------------------- |
-| Read code or gather evidence | `scout`, `context-builder`, `researcher`                                                |
-| Plan or check a decision     | `planner`, `oracle`                                                                     |
-| Implement or repair a change | `worker`, `debugger`, `fixer`, `delegate`                                               |
-| Review a change              | `reviewer`, `reviewer-gpt`, `reviewer-claude`, `reviewer-security`, `reviewer-ponytail` |
-| Design, write or monitor     | `ui-designer`, `writer`, `watcher`                                                      |
+| Task                           | Built-in agents                                    |
+| ------------------------------ | -------------------------------------------------- |
+| Read code or gather evidence   | `scout`, `researcher`                              |
+| Plan or check a decision       | `planner`, `oracle`                                |
+| Implement or diagnose a change | `worker`, `debugger`                               |
+| Review a change                | `reviewer`, `reviewer-claude`, `reviewer-security` |
+| Design, write or monitor       | `ui-designer`, `writer`, `watcher`                 |
 
 Ask Pi to show the effective profiles. Select an available model if a profile default is unavailable.
 
+Profiles keep stable role, model, context, and authority defaults. The dispatching agent supplies the task's requirements, relevant evidence, scope, acceptance criteria, verification policy, and output instructions.
+
 [Model settings](docs/reference.md#changing-a-builtin-agents-model) let you change a role without a copy of its agent file. Custom agents use `~/.pi/agent/agents/` or your project's `.pi/agents/`.
+
+The bundled roster has 12 profiles. Use `worker` instead of the retired `delegate` and `fixer` profiles, `scout` for context collection, `planner` for handoff-plan synthesis, and `reviewer` for correctness or simplicity passes. The `delegate` tool remains available. See the [profile migration guide](docs/reference.md#retired-profile-names) for old workflows and overrides.
 
 ## Read results and continue work
 
