@@ -276,13 +276,20 @@ function summarizeAttempt(
     usage: { ...result.usage },
   };
 }
+const CHILD_STARTUP_FAILURE_PATTERN =
+  /^Subagent (?:MCP selection unavailable|directory initialization failed):/m;
+
 function retryDecision(
   result: ReadonlyInput<AttemptOutcome>,
   recovery: number,
   lastCandidate: boolean,
   signal?: AbortSignal,
 ): "stop" | "recover" | "fallback" {
-  if (terminalAttempt(result, signal) || successfulAttempt(result)) {
+  if (
+    terminalAttempt(result, signal) ||
+    successfulAttempt(result) ||
+    CHILD_STARTUP_FAILURE_PATTERN.test(result.error ?? "")
+  ) {
     return "stop";
   }
   const recoverable = isRecoverableSameModelFailure(result.error, result.exitCode);

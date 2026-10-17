@@ -9,6 +9,11 @@
 - Shorten the remaining profile prompts to project-agnostic role and authority contracts. Dispatchers supply task context, acceptance criteria, verification policy and venue, output instructions, and review focus; read-only boundaries, inherited project rules, leaf guards, and monitoring lifecycle remain intact.
 - Use Sol xhigh for scout and watcher defaults, with an Opus fallback for watcher. Pin the existing non-Claude oracle/security fallback to GLM high rather than requesting unsupported xhigh.
 
+### Fixed
+
+- Explicit adapter-only `mcp:` child selections now fail before model dispatch when any requested server or tool lacks active adapter-owned publication, including partially satisfied lists, instead of silently using an incomplete/default loadout. Launch admission uses current adapter namespaces rather than copied configuration/cache discovery, and does not discard later extension input after a loadout change. Native MCP names remain adapter-independent when the child excludes the adapter; mixed native allowlists retain their existing prelaunch name-hint limits.
+- Stop model retry/fallback for deterministic child MCP-selection and directory-initialization failures, even when selected names or paths contain provider-error keywords.
+
 ## [0.49.1] - 2026-10-15
 
 ### Changed

@@ -516,7 +516,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
     }
   });
 
-  it("falls back to explicit builtins when direct MCP cache or config is missing or invalid", () => {
+  it("keeps CLI hints conservative for missing/stale/mismatched metadata; child admission owns failure", () => {
     const missingFixture = createMcpFixture();
     writeJson(path.join(missingFixture.agentDir, "mcp.json"), {
       mcpServers: { "chrome-devtools": { command: "npx", args: ["chrome-devtools-mcp"] } },

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, readFileSync, writeSync } from "node:fs";
+import { mkdirSync, readFileSync, readSync, writeSync } from "node:fs";
 import { createServer } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Mailbox } from "../../src/pi-intercom/bridge-mailbox.ts";
 import { WakeDeliveries } from "../../src/pi-intercom/bridge-wake.ts";
 import { WakeState } from "../../src/pi-intercom/bridge-wake-state.ts";
+import { isRecord } from "../../src/shared/unknown.ts";
 import { numberValue, record } from "../support/assertions.ts";
 
 const [mode, root = "", cert = "", key = ""] = process.argv.slice(2);
@@ -169,7 +170,20 @@ if (mode === "reader") {
   DatabaseSync.prototype.exec = function (sql: string): void {
     if (sql === "BEGIN EXCLUSIVE") {
       writeSync(1, "owner_before_lock\n");
-      process.kill(process.pid, "SIGSTOP");
+      // A pipe queues an early release; SIGCONT can arrive before SIGSTOP and be lost.
+      const byte = Buffer.alloc(1);
+      for (;;) {
+        try {
+          assert.equal(readSync(3, byte, 0, 1, null), 1, "owner gate closed without release");
+          assert.equal(byte[0], 1);
+          break;
+        } catch (error) {
+          if (!isRecord(error) || error.code !== "EAGAIN") {
+            throw error;
+          }
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
     }
     nativeExec.call(this, sql);
   };
