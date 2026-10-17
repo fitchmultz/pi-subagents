@@ -291,6 +291,14 @@ For simplicity passes, require caller tracing, an explanation of what replaces p
 
 There are no automatic aliases. A retired name is unknown unless a user, project, or other package still defines it. Package updates do not delete those custom overrides; migrate or remove them separately. Existing saved continuations retain their captured profile and launch settings unless explicitly changed. The `delegate({ agent, task })` tool is unchanged.
 
+Also check implicit selections in [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model). Its `delegate` defaults are not supplied by this package:
+
+- Replace `subagent: true` with `subagent: worker` (or another suitable profile). Use `--subagent=worker` instead of bare `--subagent`, including when using `--fork`.
+- Set `agent: worker` in every `bestOfN.workers` slot and any `bestOfN.finalApplier`. If workers were omitted entirely, add an explicit worker slot. Reviewer slots still default to `reviewer`.
+- In runtime worker/final-applier JSON, use `"agent": "worker"` instead of `"subagent": true`.
+
+Alternatively, define your own `delegate` profile with the intended role and permissions. Unmigrated implicit selections fail with an unknown-agent error; this package does not rewrite third-party defaults.
+
 ## Changing a builtin agent's model
 
 The [bundled profiles](../agents/) define each role's model, thinking and fallback defaults. Use `agent_runs({ action: "profiles" })` to inspect effective defaults after user/project overrides rather than inferring installed routes from examples. Models must be present in Pi's catalog and available to an authorized provider account. Refresh the catalog with `pi update --models` or add custom entries in `~/.pi/agent/models.json`. Override a role when its routes are unavailable; you do not need to copy the bundled agent file. Full editable user profiles may also remain in place even when identical to packaged defaults; user/project profiles keep precedence.
@@ -1458,6 +1466,8 @@ Use url in the prompt to take screenshot: $@
 Then `/take-screenshot https://example.com` switches to Sonnet, delegates to `browser-screenshoter` with `/tmp/screenshots` as cwd, and restores your model when done. Runtime overrides like `--cwd=<path>` and `--subagent=<name>` work too.
 
 For more reusable workflows on top of subagents, including `/chain-prompts` and compare-style prompts such as `/best-of-n`, install `pi-prompt-template-model` separately and copy the examples you want into `~/.pi/agent/prompts/`.
+
+Choose profiles explicitly: that extension's `subagent: true` and implicit compare-worker/final-applier defaults select the retired `delegate` profile. Follow the [profile migration guide](#retired-profile-names) before using those defaults with this package.
 
 ## Runtime files
 
