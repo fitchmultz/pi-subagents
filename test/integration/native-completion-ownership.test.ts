@@ -458,6 +458,13 @@ for (const childSafe of [false, true]) {
                 record(entry.data).runId === runId &&
                 Boolean(record(entry.data).delivery),
             );
+        // While the parent turn is still active every watcher re-observation is absorbed:
+        // no wake-up send beyond the queued ones and no journaled notice may precede turn
+        // settlement, whichever timer happens to fire first.
+        const assertNoRedeliveryBeforeTurnEnd = () => {
+          assert.equal(sent.length, queuedCount);
+          assert.equal(notices().length, 0);
+        };
         // Until extension binding completes there is no active native parent turn to join.
         let prompt: Promise<void> = Promise.resolve();
         try {
@@ -587,13 +594,15 @@ for (const childSafe of [false, true]) {
             assert.equal(session.agent.hasQueuedMessages(), true);
             prompt = session.prompt("Resume the parent and consume its pending completion");
           }
+          assertNoRedeliveryBeforeTurnEnd();
           assertDefined(lifetime.release);
           lifetime.release();
           await prompt;
           await session.waitForIdle();
           assert.equal(context().isIdle(), true);
           if (drop) {
-            assert.equal(notices().length, 0);
+            // turn_end settles the dropped admission, so the fs.watch retry may already
+            // have delivered the one retry; the tick only guarantees the periodic scan.
             t.mock.timers.tick(3000);
             await until(
               () => sent.length === 2 && notices().length === 1,
