@@ -23,6 +23,7 @@ export const SUBAGENT_PARENT_DEPTH_ENV = "PI_SUBAGENT_PARENT_DEPTH";
 export const SUBAGENT_PARENT_PATH_ENV = "PI_SUBAGENT_PARENT_PATH";
 export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN";
 export const SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV = "PI_SUBAGENT_INHERITED_EXTENSIONS_JSON";
+export const SUBAGENT_MCP_SELECTION_ENV = "PI_SUBAGENT_MCP_SELECTION";
 type LaunchInput = ReadonlyInput<BuildPiArgsInput>;
 
 function inheritedRoute(): boolean {
@@ -113,6 +114,7 @@ function childIdentity(input: LaunchInput): Record<string, string | undefined> {
   if ((input.mcpDirectTools?.length ?? 0) > 0) {
     env.MCP_DIRECT_TOOLS = input.mcpDirectTools?.join(",");
   }
+  env[SUBAGENT_MCP_SELECTION_ENV] = JSON.stringify(input.mcpDirectTools ?? []);
   return env;
 }
 

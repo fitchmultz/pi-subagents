@@ -4,6 +4,7 @@ import { SUBAGENT_FANOUT_CHILD_ENV } from "./child-route-env.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { loadConfig } from "../../extension/config.ts";
 import { registerChildExecutionCwd } from "./child-execution-cwd.ts";
+import { registerChildMcpAdmission } from "./child-mcp-admission.ts";
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
   STRUCTURED_OUTPUT_SCHEMA_ENV,
@@ -48,6 +49,7 @@ function readBooleanEnv(name: string): boolean | undefined {
 
 export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
   registerChildExecutionCwd(pi);
+  registerChildMcpAdmission(pi);
   const observation = new ChildNativeObservation();
   pi.on("session_start", (_event, ctx) => observation.start(ctx));
   pi.on("message_end", (event) => observation.message(event.message.role));

@@ -10,7 +10,19 @@ import { Check, ServersSchema, type ServerSchema, CacheSchema } from "./mcp-conf
 import { stableStringify } from "./stable-value.ts";
 import { isRecord } from "../../shared/unknown.ts";
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
+const BUILTIN_TOOL_NAMES = new Set([
+  "read",
+  "bash",
+  "powershell",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+  "mcp",
+  "mcp_search",
+  "mcp_script",
+]);
 const GENERIC_GLOBAL_CONFIG_PATH = path.join(os.homedir(), ".config", "mcp", "mcp.json");
 const IMPORT_PATHS = {
   cursor: [path.join(os.homedir(), ".cursor", "mcp.json")],
@@ -33,7 +45,7 @@ const IMPORT_PATHS = {
   vscode: [".vscode/mcp.json"],
 } as const;
 
-type ToolPrefix = "server" | "none" | "short";
+type ToolPrefix = "server" | "none" | "short" | "mcp";
 type ImportKind = keyof typeof IMPORT_PATHS;
 
 type ServerEntry = ReadonlyInput<Static<typeof ServerSchema>>;
@@ -241,9 +253,13 @@ function serverDirectNames(input: {
   readonly cache: ServerCacheEntry;
   readonly prefix: ToolPrefix;
   readonly selection: ToolSelection;
+  readonly legacyResources: boolean;
 }): string[] {
   const names: string[] = [];
-  for (const name of cachedNames(input.cache, input.definition.exposeResources !== false)) {
+  for (const name of cachedNames(
+    input.cache,
+    input.legacyResources && input.definition.exposeResources !== false,
+  )) {
     if (input.selection !== true && !input.selection.has(name)) {
       continue;
     }
@@ -282,6 +298,7 @@ function resolveDirectToolNames(
         cache: serverCache,
         prefix: definition.toolPrefix ?? defaultPrefix,
         selection,
+        legacyResources: cache.version === 1,
       }),
     );
   }
@@ -358,7 +375,7 @@ function computeMcpServerHash(definition: ServerEntry): string {
 }
 
 function getToolPrefix(value: unknown): ToolPrefix {
-  return value === "none" || value === "short" || value === "server" ? value : "server";
+  return value === "none" || value === "short" || value === "mcp" ? value : "server";
 }
 
 function isImportKind(value: unknown): value is ImportKind {
@@ -373,12 +390,16 @@ function getServerPrefix(serverName: string, mode: ToolPrefix): string {
     const short = serverName.replace(/-?mcp$/i, "").replace(/-/g, "_");
     return short === "" ? "mcp" : short;
   }
+  if (mode === "mcp") {
+    return `mcp__${serverName.replace(/-/g, "_")}`;
+  }
   return serverName.replace(/-/g, "_");
 }
 
-function formatToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
+export function formatToolName(toolName: string, serverName: string, prefix: ToolPrefix): string {
   const serverPrefix = getServerPrefix(serverName, prefix);
-  return serverPrefix !== "" ? `${serverPrefix}_${toolName}` : toolName;
+  const sanitized = toolName.replace(/\./g, "_");
+  return serverPrefix !== "" ? `${serverPrefix}_${sanitized}` : sanitized;
 }
 
 function isToolExcluded(

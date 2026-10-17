@@ -6,6 +6,7 @@ export const ToolPrefixSchema = Type.Union([
   Type.Literal("server"),
   Type.Literal("none"),
   Type.Literal("short"),
+  Type.Literal("mcp"),
 ]);
 export const ServerSchema = Type.Object({
   command: Type.Optional(Type.String()),
@@ -28,7 +29,7 @@ export const ServerSchema = Type.Object({
 });
 export const ServersSchema = Type.Record(Type.String(), ServerSchema);
 export const CacheSchema = Type.Object({
-  version: Type.Literal(1),
+  version: Type.Union([Type.Literal(1), Type.Literal(2)]),
   servers: Type.Record(
     Type.String(),
     Type.Object({

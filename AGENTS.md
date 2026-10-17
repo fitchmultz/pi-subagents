@@ -19,3 +19,25 @@ and `npm run typecheck` evidence before delivery. `npm run ci` includes these ch
 package/install smokes and complete test suites. Keep the strict rules in
 `.oxlintrc.json` and formatting in `.oxfmtrc.json`; use the published tools directly.
 See [Code quality](docs/code-quality.md) for the rules and commands.
+
+# Dependency maintenance
+
+- Frequently review and proactively update maintained packages and all runtime,
+  development, build, test, and tooling dependencies. Routine in-scope updates are
+  authorized; do not wait for breakage. Prioritize the latest stable official Pi
+  release and intended `fitchmultz/pi` revision, qualifying them separately.
+- Review release, changelog, migration, and security notes across the upgrade
+  range; check actual supported APIs and behavior, not version numbers alone.
+  Preserve support floors, standalone use, optional integration boundaries, and
+  the committed npm lockfile policy; update compatible manifest/lockfile cohorts.
+- Adopt beneficial current APIs, conventions, patterns, and functionality instead
+  of extending deprecated or outdated approaches. Align callers, documentation,
+  generated schemas, fixtures, and packaged resources with the owning contracts.
+- Carry updates through the required local checks above, focused native and
+  package/install checks, required review, and hosted CI. Keep full `npm run ci`
+  hosted-only. Record exact target identities, failures, skips, and limits; never
+  weaken checkers, safety, or support floors to pass an update.
+- Roll out through existing approval, release, and installation gates with a
+  recoverable prior version and rollback plan; honor explicit holds. This
+  authorization does not itself permit publication, active-runtime
+  installation/restarts, private-data disclosure, or global model/auth changes.

@@ -6,6 +6,7 @@ import {
   isRecoverableSameModelFailure,
   isRetryableModelFailure,
   resolveModelCandidate,
+  runModelAttempts,
 } from "../../src/runs/shared/model-fallback.ts";
 
 describe("model fallback helpers", () => {
@@ -92,4 +93,79 @@ describe("model fallback helpers", () => {
     assert.equal(isRetryableModelFailure("read failed (exit 1): no such file or directory"), false);
     assert.equal(isRetryableModelFailure(undefined), false);
   });
+});
+
+describe("model attempts for child startup guards", () => {
+  for (const [prefix, selection] of [
+    ["Subagent MCP selection unavailable:", "mcp:auth0"],
+    ["Subagent MCP selection unavailable:", "mcp:network-tools/search"],
+    ["Subagent directory initialization failed:", "/tmp/auth0/work"],
+    ["Subagent directory initialization failed:", "/tmp/transport-stream-socket/work"],
+  ] as const) {
+    it(`stops with the original ${prefix} ${selection}`, async () => {
+      const error = `Child startup diagnostics.\n${prefix} ${selection}`;
+      const original = {
+        exitCode: 1,
+        error,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+      };
+      const calls: (string | undefined)[] = [];
+      const series = await runModelAttempts({
+        candidates: ["mock/primary", "mock/fallback"],
+        runAttempt: async (model) => {
+          calls.push(model);
+          return original;
+        },
+      });
+      assert.deepEqual(calls, ["mock/primary"]);
+      assert.deepEqual(series.attemptedModels, ["mock/primary"]);
+      assert.equal(series.result, original);
+      assert.equal(series.result.error, error);
+      assert.equal(series.modelAttempts.length, 1);
+      assert.equal(series.modelAttempts[0]?.error, error);
+      assert.equal(series.modelAttempts[0]?.success, false);
+      assert.deepEqual(series.notes, []);
+    });
+  }
+
+  for (const [label, error, models, note] of [
+    [
+      "transport failures quoting startup diagnostics midline",
+      'Provider transport failed while quoting "Subagent MCP selection unavailable: demo" ' +
+        'and "Subagent directory initialization failed: /tmp/demo".',
+      ["mock/primary", "mock/primary"],
+      /Retrying same model/,
+    ],
+    [
+      "genuine provider authentication failures",
+      "authentication failed",
+      ["mock/primary", "mock/fallback"],
+      /Retrying with mock\/fallback/,
+    ],
+  ] as const) {
+    it(`preserves recovery for ${label}`, async () => {
+      const failure = {
+        exitCode: 1,
+        error,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+      };
+      const recovered = { ...failure, exitCode: 0, error: undefined };
+      const calls: (string | undefined)[] = [];
+      const series = await runModelAttempts({
+        candidates: ["mock/primary", "mock/fallback"],
+        runAttempt: async (model) => {
+          calls.push(model);
+          return calls.length === 1 ? failure : recovered;
+        },
+      });
+      assert.deepEqual(calls, models);
+      assert.equal(series.result, recovered);
+      assert.deepEqual(
+        series.modelAttempts.map((attempt) => attempt.error),
+        [failure.error, undefined],
+      );
+      assert.equal(series.notes.length, 1);
+      assert.match(series.notes[0] ?? "", note);
+    });
+  }
 });
