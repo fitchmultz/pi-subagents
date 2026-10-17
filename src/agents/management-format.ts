@@ -192,26 +192,26 @@ const AGENT_ROLE_HINTS = {
   Planning: "Use when decomposition or an implementation handoff matters.",
   Implementation: "Use for bounded code/doc changes after scope is clear.",
   Review: "Use for independent validation, regressions, and drift checks.",
-  Coordination: "Use for generic delegation or high-context decision checks.",
+  Coordination: "Use for inherited-decision and high-context advice.",
   Specialized: "Use only when the task matches the skill description.",
   "Custom/other": "Project/user agents not classified by the builtins.",
 };
 type AgentListRole = keyof typeof AGENT_ROLE_HINTS;
 function agentListRole(agent: AgentConfig): AgentListRole {
   const name = agent.name.split(".").at(-1) ?? agent.name;
-  if (["scout", "context-builder", "researcher"].includes(name)) {
+  if (["scout", "researcher", "debugger"].includes(name)) {
     return "Recon";
   }
   if (name === "planner") {
     return "Planning";
   }
-  if (["worker", "fixer"].includes(name)) {
+  if (name === "worker") {
     return "Implementation";
   }
   if (name === "reviewer" || name.includes("review")) {
     return "Review";
   }
-  if (["delegate", "oracle"].includes(name)) {
+  if (name === "oracle") {
     return "Coordination";
   }
   return agent.source === "builtin" ? "Specialized" : "Custom/other";

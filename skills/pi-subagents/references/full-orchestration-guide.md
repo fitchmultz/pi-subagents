@@ -13,7 +13,7 @@ Use this skill when the parent orchestrator needs to launch a specialized subage
 
 - **Advisory review**: use fresh-context `reviewer` agents for adversarial code review, or fork to `oracle` when inherited decisions and drift matter
 - **Implementation handoff**: use `oracle` advice when helpful, then `worker` implements within existing authority
-- **Recon and planning**: use `scout` or `context-builder`, then `planner`
+- **Recon and planning**: use `scout`, then `planner`
 - **Parallel exploration**: run multiple non-conflicting tasks concurrently
 - **Long-running work**: launch async/background runs and inspect them later
 - **Long-running observation**: use ordinary tools for routine waiting and check collection; use `watcher` when ongoing interpretation adds value
@@ -57,8 +57,8 @@ The repository keeps example prompts for repeatable workflows. Treat them as reu
 - `prompts/parallel-review.md` — fresh-context reviewers with distinct review angles, then synthesis
 - `prompts/review-loop.md` — parent-orchestrated worker, fresh-reviewer, and fix-worker cycles until clean or capped
 - `prompts/parallel-research.md` — combine `researcher` and `scout` for external evidence plus local code context
-- `prompts/parallel-context-build.md` — parallel `context-builder` passes that produce planning handoff context and meta-prompts
-- `prompts/parallel-handoff-plan.md` — external-reference research plus local `context-builder` passes, followed by a synthesis handoff plan and implementation-ready meta-prompt
+- `prompts/parallel-context-build.md` — parallel `scout` passes that produce planning handoff context and meta-prompts
+- `prompts/parallel-handoff-plan.md` — external-reference research plus local `scout` passes, followed by a synthesis handoff plan and implementation-ready meta-prompt
 - `prompts/gather-context-and-clarify.md` — scout/research first, then ask the user clarifying questions with the available clarification tool (`ask_question` in pi)
 - `prompts/parallel-cleanup.md` — two fresh-context reviewers (deslop + verbosity passes) for an adversarial cleanup review of the current diff
 
@@ -80,7 +80,7 @@ Use this when the question needs both external evidence and local implications. 
 
 ### Parallel context-build technique
 
-Use this before planning or implementation when a stronger handoff is needed. Run a chain with one parallel step of `context-builder` agents rather than top-level parallel tasks, so relative output files live under the temporary chain directory. Give every task a distinct output path such as `context-build/request-and-scope.md`, `context-build/codebase-and-patterns.md`, and `context-build/validation-and-risks.md`. Choose two or three builders: request/scope, codebase/patterns, and validation/risks. Each builder must read every relevant file needed to understand its slice, follow imports/callers/tests/docs/config, conduct tool-available web research when needed, and include a compact `meta-prompt` section. The parent synthesizes the outputs into important context, recommended next meta-prompt, open questions, assumptions, and artifact paths.
+Use this before planning or implementation when a stronger handoff is needed. Run a chain with one parallel step of `scout` agents rather than top-level parallel tasks, so relative output files live under the temporary chain directory. Give every task a distinct output path such as `context-build/request-and-scope.md`, `context-build/codebase-and-patterns.md`, and `context-build/validation-and-risks.md`. Choose two or three builders: request/scope, codebase/patterns, and validation/risks. Each builder must read every relevant file needed to understand its slice, follow imports/callers/tests/docs/config, conduct tool-available web research when needed, and include a compact `meta-prompt` section. That section must carry original requirements and settled decisions or readable references, scope and authority, acceptance criteria, verification commands and execution policy/venue, output instructions, and stop conditions; summaries must not replace original instructions. The parent synthesizes the outputs into important context, recommended next meta-prompt, open questions, assumptions, and artifact paths.
 
 Example shape:
 
@@ -90,17 +90,17 @@ subagent({
     {
       parallel: [
         {
-          agent: "context-builder",
+          agent: "scout",
           task: "Build request/scope context for: ...",
           output: "context-build/request-and-scope.md",
         },
         {
-          agent: "context-builder",
+          agent: "scout",
           task: "Build codebase/pattern context for: ...",
           output: "context-build/codebase-and-patterns.md",
         },
         {
-          agent: "context-builder",
+          agent: "scout",
           task: "Build validation/risk context for: ...",
           output: "context-build/validation-and-risks.md",
         },
@@ -113,7 +113,7 @@ subagent({
 
 ### Parallel handoff-plan technique
 
-Use this when the user needs a solution brief or implementation-ready handoff from an external reference plus local code context, such as “study this library behavior, inspect our codebase, then produce a worker prompt.” Run a chain with a first parallel group and a second synthesis `context-builder` step. The first group usually includes `researcher` for external projects/docs/prompt guidance and `context-builder` for local code context; add a second `context-builder` for implementation strategy only when the scope is large enough to benefit. Use distinct output paths under `handoff/`, then have the synthesis `context-builder` read those outputs and write `handoff/final-handoff-plan.md` with the recommended approach, likely files, constraints, non-goals, validation, risks, unresolved questions, and final compact implementation-ready meta-prompt.
+Use this when the user needs a solution brief or implementation-ready handoff from an external reference plus local code context, such as “study this library behavior, inspect our codebase, then produce a worker prompt.” Run a chain with a first parallel group and a second synthesis `planner` step. The first group usually includes `researcher` for external projects/docs/prompt guidance and `scout` for local code context; add a `planner` for a separate implementation-strategy pass only when the scope benefits. Use distinct output paths under `handoff/`, then have the synthesis `planner` read those outputs and write `handoff/final-handoff-plan.md` with the recommended approach, likely files, constraints, non-goals, validation, risks, unresolved questions, and final compact implementation-ready meta-prompt. The meta-prompt must carry original requirements and settled decisions or readable references, scope and authority, acceptance criteria, verification commands and execution policy/venue, output instructions, and stop conditions; summaries must not replace original instructions.
 
 Example shape:
 
@@ -128,19 +128,19 @@ subagent({
           output: "handoff/external-reference.md",
         },
         {
-          agent: "context-builder",
+          agent: "scout",
           task: "Build local codebase context for: ...",
           output: "handoff/local-context.md",
         },
         {
-          agent: "context-builder",
+          agent: "planner",
           task: "Compare evidence and propose implementation strategy for: ...",
           output: "handoff/implementation-strategy.md",
         },
       ],
     },
     {
-      agent: "context-builder",
+      agent: "planner",
       task: "Read {previous} and synthesize the final handoff plan and implementation-ready meta-prompt.",
       output: "handoff/final-handoff-plan.md",
     },
@@ -812,8 +812,8 @@ Use the existing task authority to launch helpful subagents and write a role-spe
 - Parallel review: launch fresh-context `reviewer` agents with distinct review angles; synthesize the feedback before applying anything.
 - Review loop: keep the parent in charge of worker → fresh reviewers → synthesized fix worker cycles until no fixes worth doing now remain, a concrete decision outside the existing authority appears, or the review-round cap is reached.
 - Parallel research: combine local `scout` context with external `researcher` evidence when current docs, ecosystem behavior, or API details matter.
-- Parallel context build: run a chain-mode parallel group of `context-builder` agents with distinct temp output paths, then synthesize their context and meta-prompt sections.
-- Parallel handoff plan: run external `researcher` plus local/strategy `context-builder` passes, then a synthesis `context-builder` that writes an implementation handoff plan and implementation-ready meta-prompt.
+- Parallel context build: run a chain-mode parallel group of `scout` agents with distinct temp output paths, then synthesize their context and meta-prompt sections.
+- Parallel handoff plan: run external `researcher` and local `scout` passes, then a synthesis `planner` that writes an implementation handoff plan and implementation-ready meta-prompt.
 - Parallel cleanup: use review-only cleanup passes after implementation, especially for simplicity, verbosity, and redundant tests.
 
 For feature work, use this sequence as scaffolding for parent-agent behavior:
@@ -866,7 +866,7 @@ For very large work, split into serial milestones instead of launching a swarm o
 
 Keep final integration and delivery with the original agent. Bundled children remain leaf agents; launch routine fanout from the parent. Helpers may split their assigned work using the child-safe `subagent` tool only when the user explicitly authorized nesting and their profile/native depth budget already permits it. Parent-only management controls and inherited orchestration records remain filtered by the runtime. Do not infer permission to change `allowSubagents` or the depth budget. Implementation helpers must use real edit/write tools.
 
-1. Clarify only material uncertainty. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
+1. Clarify only material uncertainty. Gather code context with `scout`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. Use existing authorization and make routine implementation decisions directly. Ask only when required information or authority cannot be obtained, a decision would change the owner's settled outcome or scope, or it crosses a concrete irreversible-loss, private-data, or substantial new-cost boundary.
 4. Implement with one writer. Launch `worker` under the existing authorization with the requirements, relevant context, plan path or summary, validation expectations, and required output. Packaged `worker` defaults to fresh context. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.

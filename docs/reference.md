@@ -257,27 +257,47 @@ The extension ships with builtin agents you can use immediately.
 
 ## Builtin agents in plain English
 
-| Agent               | Use it when you want...                                                            |
-| ------------------- | ---------------------------------------------------------------------------------- |
-| `scout`             | Fast codebase recon and a compressed handoff.                                      |
-| `context-builder`   | Requirements and codebase analysis that produces implementation-ready context.     |
-| `researcher`        | Evidence-driven research for consequential technical decisions.                    |
-| `watcher`           | Read-only background monitoring with timely material-change updates to the parent. |
-| `planner`           | A concrete implementation plan without edits.                                      |
-| `worker`            | End-to-end implementation of an approved, bounded task.                            |
-| `debugger`          | Root-cause diagnosis with reproduction and repair evidence.                        |
-| `fixer`             | A bounded set of already-decided fixes without replanning.                         |
-| `reviewer`          | General implementation review against the task and evidence.                       |
-| `reviewer-gpt`      | Evidence-backed maintainability and correctness review.                            |
-| `reviewer-claude`   | An independent cross-model review of assumptions and product risk.                 |
-| `reviewer-security` | Security and data-safety review for trust-boundary changes.                        |
-| `reviewer-ponytail` | An over-engineering and slop review that never trades away intended behavior.      |
-| `ui-designer`       | Rendered UI, layout, accessibility, and visual polish.                             |
-| `writer`            | Human-facing documentation, announcements, and polished copy.                      |
-| `oracle`            | A forked second opinion that protects the current decision contract.               |
-| `delegate`          | Lightweight generic delegation that stays close to the parent session.             |
+| Agent               | Use it when you want...                                                              |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| `scout`             | Codebase recon and a compressed handoff.                                             |
+| `researcher`        | Evidence-driven research for consequential technical decisions.                      |
+| `watcher`           | Read-only background monitoring with timely material-change updates to the parent.   |
+| `planner`           | A concrete implementation plan without edits.                                        |
+| `worker`            | End-to-end implementation of an approved, bounded task.                              |
+| `debugger`          | Root-cause diagnosis with reproduction and repair evidence.                          |
+| `reviewer`          | Correctness, maintainability, validation, or a specifically briefed simplicity pass. |
+| `reviewer-claude`   | An independent cross-model review of assumptions and product risk.                   |
+| `reviewer-security` | Security and data-safety review for trust-boundary changes.                          |
+| `ui-designer`       | Rendered UI, layout, accessibility, and visual polish.                               |
+| `writer`            | Human-facing documentation, announcements, and polished copy.                        |
+| `oracle`            | A forked second opinion that protects the current decision contract.                 |
 
 Use the role that fits the task. Keep writers isolated and launch independent reviewers separately. Every bundled profile sets `allowSubagents: false` and `maxSubagentDepth: 0`, so routine fanout stays in the parent. Custom profiles may explicitly enable useful helpers within their assigned task, subject to the [depth limit](#recursion-guard) and role authority, including read-only constraints. The original parent owns integration and final delivery; do not enable nested delegation or raise its budget without user authorization.
+
+Profiles provide short, project-agnostic role contracts, not full workflow scripts. The parent supplies the original requirements or readable references, settled decisions, scoped assignment, relevant evidence, acceptance criteria, verification commands and execution venue, output instructions, and stop conditions. Project conventions and report templates belong in that brief or inherited project instructions.
+
+### Retired profile names
+
+The bundled roster has 12 profiles. Update saved workflows and task instructions that select these former profiles:
+
+| Retired profile     | Replacement                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `delegate`, `fixer` | `worker`, with the specific assignment or accepted fix list in its brief                 |
+| `context-builder`   | `scout` for context collection and handoffs; `planner` for implementation-plan synthesis |
+| `reviewer-gpt`      | `reviewer`                                                                               |
+| `reviewer-ponytail` | `reviewer`, with a simplicity focus and the relevant installed skill when useful         |
+
+For simplicity passes, require caller tracing, an explanation of what replaces proposed deletions, and preservation of intended behavior and safety. Those are review instructions, not a separate model or authority boundary.
+
+There are no automatic aliases. A retired name is unknown unless a user, project, or other package still defines it. Package updates do not delete those custom overrides; migrate or remove them separately. Existing saved continuations retain their captured profile and launch settings unless explicitly changed. The `delegate({ agent, task })` tool is unchanged.
+
+Also check implicit selections in [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model). Its `delegate` defaults are not supplied by this package:
+
+- Replace `subagent: true` with `subagent: worker` (or another suitable profile). Use `--subagent=worker` instead of bare `--subagent`, including when using `--fork`.
+- In `bestOfN.workers` and any `bestOfN.finalApplier`, replace implicit `delegate` selections (missing `agent`/`subagent` or `subagent: true`) and explicit `delegate` selections with `agent: worker`; preserve other deliberately selected agents. If workers were omitted entirely, add an explicit worker slot. Reviewer slots still default to `reviewer`.
+- In runtime worker/final-applier JSON, use `"agent": "worker"` instead of `"subagent": true`.
+
+Alternatively, define your own `delegate` profile with the intended role and permissions. Unmigrated implicit selections fail with an unknown-agent error; this package does not rewrite third-party defaults.
 
 ## Changing a builtin agent's model
 
@@ -363,15 +383,15 @@ Children do not receive delegation tools by default. When a profile enables dele
 
 The files in `prompts/` document common workflows without registering additional slash commands:
 
-| File                            | Use it for                                                                                                  |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `parallel-review.md`            | Launch fresh-context reviewers with distinct angles, then synthesize what to fix.                           |
-| `review-loop.md`                | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped.                        |
-| `parallel-research.md`          | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs.        |
-| `parallel-context-build.md`     | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts.              |
-| `parallel-handoff-plan.md`      | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
-| `gather-context-and-clarify.md` | Scout/research first, then ask the user the clarification questions that matter.                            |
-| `parallel-cleanup.md`           | Run review-only cleanup passes after implementation.                                                        |
+| File                            | Use it for                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `parallel-review.md`            | Launch fresh-context reviewers with distinct angles, then synthesize what to fix.                    |
+| `review-loop.md`                | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped.                 |
+| `parallel-research.md`          | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
+| `parallel-context-build.md`     | Run `scout` agents in parallel to produce planning handoff context and meta-prompts.                 |
+| `parallel-handoff-plan.md`      | Combine research and `scout` passes, then have `planner` synthesize the implementation handoff.      |
+| `gather-context-and-clarify.md` | Scout/research first, then ask the user the clarification questions that matter.                     |
+| `parallel-cleanup.md`           | Run review-only cleanup passes after implementation.                                                 |
 
 ## Bundled intercom
 
@@ -1446,6 +1466,8 @@ Use url in the prompt to take screenshot: $@
 Then `/take-screenshot https://example.com` switches to Sonnet, delegates to `browser-screenshoter` with `/tmp/screenshots` as cwd, and restores your model when done. Runtime overrides like `--cwd=<path>` and `--subagent=<name>` work too.
 
 For more reusable workflows on top of subagents, including `/chain-prompts` and compare-style prompts such as `/best-of-n`, install `pi-prompt-template-model` separately and copy the examples you want into `~/.pi/agent/prompts/`.
+
+Choose profiles explicitly: that extension's `subagent: true` and implicit compare-worker/final-applier defaults select the retired `delegate` profile. Follow the [profile migration guide](#retired-profile-names) before using those defaults with this package.
 
 ## Runtime files
 

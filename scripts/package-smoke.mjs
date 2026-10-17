@@ -116,7 +116,6 @@ for (const path of [
   "src/shared/types.ts",
   "src/runs/background/subagent-runner-launcher.ts",
   "agents/reviewer.md",
-  "agents/reviewer-gpt.md",
   "agents/watcher.md",
   "skills/pi-subagents/SKILL.md",
   "skills/pi-intercom/SKILL.md",

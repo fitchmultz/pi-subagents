@@ -184,7 +184,7 @@ describe("doctor action executor routing", () => {
     assert.ok(text.includes(`- async runs: ok (${ASYNC_DIR})`));
     assert.ok(text.includes(`- results: ok (${RESULTS_DIR})`));
     assert.ok(text.includes(`- chain runs: ok (${CHAIN_RUNS_DIR})`));
-    assert.match(text, /- agents: total 21 \(builtin 17, package 1, user 1, project 2\)/);
+    assert.match(text, /- agents: total 16 \(builtin 12, package 1, user 1, project 2\)/);
     assert.match(text, /- chains: total 2 \(builtin 0, package 0, user 1, project 1\)/);
     assert.match(text, /- skills: total 2 \(project 1, user-package 1\)/);
     assert.match(text, /- configured session dir: .*configured-sessions/);

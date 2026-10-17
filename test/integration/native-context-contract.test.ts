@@ -105,8 +105,8 @@ it("native child and intercom prompt sections preserve provider-visible content 
   assert.match(child.stdout, /# pass 5\b/);
 });
 
-it("native Pi preserves configured builtins and custom tools for the bundled delegate", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-delegate-tools-"));
+it("native Pi preserves configured builtins and custom tools for the bundled worker", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-worker-tools-"));
   try {
     const agentDir = path.join(root, "agent");
     fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
@@ -133,8 +133,8 @@ export default function(pi) {
 	pi.on("session_shutdown", () => writeFileSync(process.env.TOOL_PROBE_SHUTDOWN, JSON.stringify({ providerCalls: faux.state.callCount })));
 }`,
     );
-    const delegate = discoverAgentsAll(root).builtin.find((agent) => agent.name === "delegate");
-    assert.ok(delegate);
+    const worker = discoverAgentsAll(root).builtin.find((agent) => agent.name === "worker");
+    assert.ok(worker);
     const built = buildPiArgs({
       baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
       task: "Do not invoke a model",
@@ -142,10 +142,10 @@ export default function(pi) {
       model: "faux/faux-1",
       inheritProjectContext: false,
       inheritSkills: false,
-      tools: delegate.tools,
-      extensions: delegate.extensions,
-      mcpDirectTools: delegate.mcpDirectTools,
-      allowSubagents: delegate.allowSubagents,
+      tools: worker.tools,
+      extensions: worker.extensions,
+      mcpDirectTools: worker.mcpDirectTools,
+      allowSubagents: worker.allowSubagents,
       projectTrust: "no-approve",
     });
     const child = spawnSync(
