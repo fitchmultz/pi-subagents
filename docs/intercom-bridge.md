@@ -128,9 +128,9 @@ recipients ignore an already-admitted ID even if a retry changes its payload,
 while the broker can still report transport acceptance. Do not reuse a previous
 ID to send a different instruction.
 
-`passive:true` is mailbox-only and never wakes. Acceptance means transport/broker admission, not native journal
-persistence, model start, reply completion or task completion. A bare `ok:true`
-is not an acceptance receipt.
+`passive:true` is mailbox-only and never wakes. Acceptance means transport/broker
+admission, not native journal persistence, model start, reply completion or task
+completion. A bare `ok:true` is not an acceptance receipt.
 
 The maintained client is `scripts/intercom-remote.mjs`. Copy it unchanged with
 only the CA, client certificate and private key to a private remote directory.
