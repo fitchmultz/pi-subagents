@@ -79,7 +79,12 @@ models.registerNativeProvider(faux.provider);
 models.registerNativeProvider(
   fauxProvider({
     provider: "single-agent-fixture",
-    models: [{ id: "literal-model", reasoning: true }],
+    models: [
+      { id: "literal-model", reasoning: true },
+      { id: "literal-model:high", reasoning: true },
+      { id: "literal-model:exacto", reasoning: true },
+      { id: "nested/model", reasoning: true },
+    ],
   }).provider,
 );
 faux.setResponses([fauxAssistantMessage("PARENT_STARTUP_LITERAL")]);
@@ -582,6 +587,60 @@ try {
         ),
       );
     }
+  } else if (phase === "model-selection") {
+    const nativeSuffix = typeof sdk.resolveModelReference === "function";
+    const selections = [
+      ["literal-model", "literal-model", "high"],
+      ["literal-model:high", "literal-model:high", "high"],
+      ["literal-model:exacto", "literal-model:exacto", "high"],
+      ...(nativeSuffix
+        ? [
+            ["literal-model:low", "literal-model", "low"],
+            ["literal-model:off", "literal-model", "off"],
+            ["nested/model:medium", "nested/model", "medium"],
+          ]
+        : []),
+    ];
+    for (const [reference, model, thinking] of selections) {
+      const prompt = `MODEL_SELECTION:${reference}`;
+      // oxlint-disable-next-line no-await-in-loop
+      const receipt = await call(
+        "delegate",
+        { prompt, model: `single-agent-fixture/${reference}`, async: false },
+        prompt,
+      );
+      assert.equal(receipt.isError, false, JSON.stringify(receipt));
+      assert.equal(receipt.details.model, `single-agent-fixture/${model}`);
+      assert.equal(receipt.details.thinking, thinking);
+      const request = requests().find((entry) => entry.prompt === prompt);
+      assert.ok(request, "real child provider received the requested selection");
+      assert.equal(request.model, model);
+      assert.equal(request.thinking ?? "off", thinking);
+      const launch = readJSON(path.join(runDir(receipt.details.id), "launch.json"));
+      assert.equal(launch.model, model);
+      assert.equal(launch.thinking, thinking);
+    }
+    const base = path.join(agentDir, "sessions/agent-runs", manager.getSessionId());
+    const before = fs.readdirSync(base).sort();
+    const requestCount = requests().length;
+    for (const model of [
+      "single-agent-fixture/literal",
+      "missing-provider/literal-model",
+      "single-agent-fixture/literal-model:invalid",
+      ...(!nativeSuffix ? ["single-agent-fixture/literal-model:low"] : []),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop
+      const rejected = await call("delegate", { prompt: "REJECTED_MODEL", model }, model);
+      assert.equal(rejected.isError, true, JSON.stringify(rejected));
+      assert.match(JSON.stringify(rejected.content), /Model .*unavailable/);
+      if (!nativeSuffix && model.endsWith(":low")) {
+        assert.match(JSON.stringify(rejected.content), /update Pi.*thinking suffix/i);
+      }
+      assert.deepEqual(fs.readdirSync(base).sort(), before, "no failed launch is allocated");
+      assert.equal(requests().length, requestCount, "no alternate model receives a request");
+    }
+    assert.equal(session.model.id, "parent-model");
+    assert.equal(session.thinkingLevel, "high");
   } else if (phase === "seed" || phase === "receipt") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(
