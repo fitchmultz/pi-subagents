@@ -48,6 +48,7 @@ import { legacyNotifications } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
+import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
 
 class AgentRuntime {
   private ctx?: ExtensionContext;
@@ -446,6 +447,7 @@ class AgentRuntime {
   }
   register(): void {
     registerUsage(this.pi);
+    registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.
@@ -472,6 +474,7 @@ class AgentRuntime {
         "Launch one child with exactly the supplied prompt. Fresh context by default; fork preserves the full native conversation. Main sessions only. Returns an asynchronous launch receipt unless async:false.",
       parameters: delegateSchema,
       exposure: this.child ? "hidden" : "direct",
+      renderResult: renderCompactResult,
       execute,
     });
     const runs: ToolDefinition<typeof runsSchema>["execute"] = (...args) =>
@@ -483,6 +486,7 @@ class AgentRuntime {
         "List, inspect, continue, wait for, or stop this native main session's durable child runs. Inspect is paged with byte offsets; full outputs and native journals remain available. Wait cancellation does not stop existing work. Continue requires the complete new prompt and reuses the saved conversation.",
       parameters: runsSchema,
       exposure: this.child ? "hidden" : "direct",
+      renderResult: renderCompactResult,
       execute: runs,
     });
   }

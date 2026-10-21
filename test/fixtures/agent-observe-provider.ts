@@ -11,6 +11,37 @@ export default function fixture(pi: ExtensionAPI): void {
     throw new Error("OBSERVE_TEST_ROOT required");
   }
   const child = process.env.PI_INTERCOM_PARENT_SESSION_ID !== undefined;
+  if (!child) {
+    pi.on("tool_result", (event) => {
+      if (event.toolName === "delegate") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `DELEGATE_OUTPUT_START ${"wrapped 雪😀 output ".repeat(100)} DELEGATE_OUTPUT_END`,
+            },
+          ],
+        };
+      }
+      return;
+    });
+    pi.registerCommand("observer-cards", {
+      description: "Publish isolated renderer fixtures without waking the model",
+      handler: () => {
+        for (const customType of ["agent-completion", "subagent-notify", "intercom_message"]) {
+          pi.sendMessage(
+            {
+              customType,
+              content: `${customType} CARD_START ${"wrapped 雪😀 detail ".repeat(50)} CARD_END`,
+              display: true,
+            },
+            { triggerTurn: false },
+          );
+        }
+        return Promise.resolve();
+      },
+    });
+  }
   pi.on("session_start", (_event, ctx) => {
     fs.appendFileSync(
       path.join(root, "sessions.jsonl"),

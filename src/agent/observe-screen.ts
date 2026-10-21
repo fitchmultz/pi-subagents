@@ -1,6 +1,15 @@
 import { rawKeyHint, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
-import { sliceByColumn, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import {
+  Container,
+  TruncatedText,
+  sliceByColumn,
+  visibleWidth,
+  type Component,
+  type TUI,
+  type TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import { type JournalTail, plainText } from "./journal-tail.ts";
+import { actionText } from "../shared/tui-action.ts";
 
 export type ObserverRow = {
   id: string;
@@ -28,6 +37,7 @@ export class ObserverScreen {
   private readonly keys: KeybindingsManager;
   private readonly done: () => void;
   private readonly timer: NodeJS.Timeout;
+  private readonly content = new Container();
   constructor(options: {
     data: ObserverData;
     tui: TUI;
@@ -62,37 +72,49 @@ export class ObserverScreen {
     this.watching?.tail.poll();
     this.tui.requestRender();
   }
-  private move(data: string): void {
+  private select(direction: number): void {
     const rows = this.data.inventory();
     const index = Math.max(
       0,
       rows.findIndex((row) => row.id === this.selected),
     );
+    this.selected = rows[Math.max(0, Math.min(rows.length - 1, index + direction))]?.id ?? "";
+  }
+  private confirm(): void {
+    this.select(0);
+    if (this.selected.length > 0) {
+      this.open(this.selected);
+    }
+  }
+  private move(data: string): void {
     if (this.keys.matches(data, "tui.select.confirm")) {
-      const row = rows.at(index);
-      if (row) {
-        this.open(row.id);
-      }
+      this.confirm();
     } else if (this.keys.matches(data, "tui.select.down")) {
-      this.selected = rows[Math.min(rows.length - 1, index + 1)]?.id ?? "";
+      this.select(1);
     } else if (this.keys.matches(data, "tui.select.up")) {
-      this.selected = rows[Math.max(0, index - 1)]?.id ?? "";
+      this.select(-1);
     }
   }
   handleInput(data: string): void {
     if (this.keys.matches(data, "tui.select.cancel")) {
-      if (this.watching) {
-        this.watching = undefined;
-        this.failure = "";
-      } else {
-        this.done();
-      }
+      this.back();
     } else if (!this.watching) {
       this.move(data);
     }
     this.update();
   }
-  private listLines(height: number): string[] {
+  private back(): void {
+    if (this.watching) {
+      this.watching = undefined;
+      this.failure = "";
+    } else {
+      this.done();
+    }
+  }
+  handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+    return this.content.handleMouse(event);
+  }
+  private listLines(height: number): Component[] {
     const rows = this.data.inventory();
     const index = Math.max(
       0,
@@ -103,16 +125,29 @@ export class ObserverScreen {
     const page = rows.slice(start, start + size);
     if (rows.length === 0) {
       return [
-        this.data.checking()
-          ? "Checking saved child runs…"
-          : "No child runs to show. Completed runs are hidden.",
+        new TruncatedText(
+          this.data.checking()
+            ? "Checking saved child runs…"
+            : "No child runs to show. Completed runs are hidden.",
+          0,
+          0,
+        ),
       ];
     }
     return [
-      `Runs ${start + 1}–${start + page.length} of ${rows.length} · active first`,
-      ...page.map(
-        (row, i) =>
+      new TruncatedText(
+        `Runs ${start + 1}–${start + page.length} of ${rows.length} · active first`,
+        0,
+        0,
+      ),
+      ...page.map((row, i) =>
+        actionText(
           `${start + i === index ? ">" : " "} ${row.id.slice(0, 8)} ${row.status} · ${row.name}`,
+          () => {
+            this.open(row.id);
+            this.update();
+          },
+        ),
       ),
     ];
   }
@@ -135,34 +170,61 @@ export class ObserverScreen {
   render(width: number): string[] {
     const height = Math.max(1, Math.min(16, this.tui.terminal.rows - 9));
     const content = this.watching
-      ? this.watchLines(height, this.watching, width)
+      ? this.watchLines(height, this.watching, width).map((line) => new TruncatedText(line, 0, 0))
       : this.listLines(height);
-    const cancel = this.keys.getKeys("tui.select.cancel").join("/");
-    const hint = this.watching
-      ? `${rawKeyHint(cancel, "back")} · native published entries, not token deltas`
+    const hint = (
+      key: "tui.select.cancel" | "tui.select.up" | "tui.select.down" | "tui.select.confirm",
+      label: string,
+      action: () => void,
+    ): { text: string; action?: () => void } => ({
+      text: rawKeyHint(this.keys.getKeys(key)[0] ?? "", label),
+      action,
+    });
+    const hints = this.watching
+      ? [
+          hint("tui.select.cancel", "back", () => this.back()),
+          { text: "native published entries, not token deltas" },
+        ]
       : [
-          rawKeyHint(
-            [...this.keys.getKeys("tui.select.up"), ...this.keys.getKeys("tui.select.down")].join(
-              "/",
-            ),
-            "select",
-          ),
-          rawKeyHint(this.keys.getKeys("tui.select.confirm").join("/"), "watch"),
-          rawKeyHint(cancel, "close"),
-        ].join(" · ");
+          hint("tui.select.up", "up", () => this.select(-1)),
+          hint("tui.select.down", "down", () => this.select(1)),
+          hint("tui.select.confirm", "watch", () => this.confirm()),
+          hint("tui.select.cancel", "close", () => this.back()),
+        ];
     const error = this.failure.length > 0 ? this.failure : this.data.error();
-    return [
-      this.theme.fg(
-        "accent",
-        this.watching?.inherited === true
-          ? "Agents · read-only · fork context"
-          : "Agents · read-only",
+    this.content.clear();
+    this.content.addChild(
+      new TruncatedText(
+        this.theme.fg(
+          "accent",
+          this.watching?.inherited === true
+            ? "Agents · read-only · fork context"
+            : "Agents · read-only",
+        ),
+        0,
+        0,
       ),
-      this.theme.fg("muted", this.data.status()),
-      ...content,
-      this.theme.fg("error", error),
-      this.theme.fg("dim", hint),
-    ].map((line) => truncateToWidth(line, width));
+    );
+    this.content.addChild(new TruncatedText(this.theme.fg("muted", this.data.status()), 0, 0));
+    for (const component of content) {
+      this.content.addChild(component);
+    }
+    this.content.addChild(new TruncatedText(this.theme.fg("error", error), 0, 0));
+    this.content.addChild(
+      actionText(this.theme.fg("dim", hints.map((item) => item.text).join("  ")), (column) => {
+        let start = 0;
+        for (const item of hints) {
+          const end = start + visibleWidth(item.text);
+          if (column >= start && column < end) {
+            item.action?.();
+            this.update();
+            return;
+          }
+          start = end + 2;
+        }
+      }),
+    );
+    return this.content.render(width);
   }
   invalidate(): void {
     this.tui.requestRender();

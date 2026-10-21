@@ -6,7 +6,14 @@ import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { ProcessTerminal, stripTerminalSequences } from "@earendil-works/pi-tui";
+import {
+  Container,
+  ProcessTerminal,
+  stripTerminalSequences,
+  TuiAltScreen,
+  visibleWidth,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import * as sdk from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
@@ -68,6 +75,14 @@ class CaptureTerminal extends ProcessTerminal {
   }
   send(data: string): void {
     this.input?.(data);
+  }
+  click(screen: TuiAltScreen, text: string): void {
+    const rows = screen.getScreenLines().map(stripTerminalSequences);
+    const y = rows.findIndex((row) => row.includes(text));
+    assert.ok(y >= 0, `visible mouse target: ${text}\n${rows.join("\n")}`);
+    const x = visibleWidth(rows[y].slice(0, rows[y].indexOf(text)));
+    this.send(`\x1b[<0;${x + 1};${y + 1}M`);
+    this.send(`\x1b[<0;${x + 1};${y + 1}m`);
   }
   text(): string {
     return stripTerminalSequences(this.output);
@@ -161,6 +176,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         provider: "observe-fixture",
         models: [{ id: "native-observe", reasoning: false }],
       });
+      let view: TUI | undefined;
       const services = await sdk.createAgentSessionServices({
         cwd: root,
         agentDir,
@@ -173,6 +189,16 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
           noThemes: true,
           noPromptTemplates: true,
           additionalExtensionPaths: [path.resolve("src/index.ts"), providerFile],
+          extensionFactories: [
+            (pi) => {
+              pi.on("session_start", (_event, ctx) => {
+                ctx.ui.setWidget("test-observer-screen", (tui) => {
+                  view = tui;
+                  return new Container();
+                });
+              });
+            },
+          ],
         },
       });
       assert.deepEqual(services.resourceLoader.getExtensions().errors, []);
@@ -259,6 +285,72 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         .find((name) => fs.existsSync(path.join(base, name, "launch.json")));
       assert.ok(runId !== undefined);
       const runDir = path.join(base, runId);
+      if (tuiMode === "fullscreen") {
+        assert.ok(view instanceof TuiAltScreen);
+        const screen = view;
+        const screenLines = () => screen.getScreenLines().map(stripTerminalSequences);
+        const click = (text: string) => terminal.click(screen, text);
+        const before = requests(root);
+        assert.ok(screenLines().some((line) => line.includes("DELEGATE_OUTPUT_START")));
+        assert.ok(
+          !screenLines().some((line) => line.includes("DELEGATE_OUTPUT_END")),
+          "one long logical line stays visually collapsed",
+        );
+        click("DELEGATE_OUTPUT_START");
+        await until(
+          () => screenLines().some((line) => line.includes("DELEGATE_OUTPUT_END")),
+          "native card click expands the complete tool result",
+        );
+        click("DELEGATE_OUTPUT_END");
+        await until(
+          () =>
+            screenLines().some((line) => line.includes("DELEGATE_OUTPUT_START")) &&
+            !screenLines().some((line) => line.includes("DELEGATE_OUTPUT_END")),
+          "native card click collapses the tool result",
+        );
+        terminal.clear();
+        click("● watch-child");
+        await until(
+          () => screenLines().some((line) => line.includes("CHILD_TEXT_LIVE")),
+          "native mouse click opens the child directly while the parent streams",
+          () => screenLines().join("\n"),
+        );
+        assert.equal(requests(root), before, "click-to-watch does not wake either model");
+        assert.equal(runtime.session.isStreaming, true, "click-to-watch does not abort the parent");
+        click("escape back");
+        await until(
+          () => screenLines().some((line) => line.includes("enter watch")),
+          "mouse Back returns to inventory",
+          () => screenLines().join("\n"),
+        );
+        click(`${runId.slice(0, 8)} running`);
+        await until(
+          () => screenLines().some((line) => line.includes("CHILD_TEXT_LIVE")),
+          "clicking an inventory row opens it",
+        );
+        terminal.width = 46;
+        terminal.resize?.();
+        await until(() => visibleWidth(screenLines()[0] ?? "") === 46, "narrow frame is rendered");
+        click("escape back");
+        await until(
+          () => screenLines().some((line) => line.includes("enter watch")),
+          "narrow Back returns to inventory",
+        );
+        click("enter watch");
+        await until(
+          () => screenLines().some((line) => line.includes("CHILD_TEXT_LIVE")),
+          "narrow watch hint opens the child",
+        );
+        click("escape back");
+        await until(
+          () => screenLines().some((line) => line.includes("escape close")),
+          "close hint becomes visible",
+        );
+        click("escape close");
+        terminal.width = 100;
+        terminal.resize?.();
+        assert.equal(requests(root), before, "mouse controls do not send or wake a model");
+      }
       terminal.clear();
       terminal.send("/agents");
       terminal.send("\r");
@@ -354,6 +446,67 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.width = 120;
       terminal.height = 45;
       terminal.resize?.();
+      if (view instanceof TuiAltScreen) {
+        const screen = view;
+        const screenLines = () => screen.getScreenLines().map(stripTerminalSequences);
+        const before = requests(root);
+        const command = mode.getUserInput().then((text) => runtime.session.prompt(text));
+        terminal.send("/observer-cards");
+        terminal.send("\r");
+        await command;
+        await until(
+          () => screenLines().some((line) => line.includes("intercom_message")),
+          "native custom cards have rendered",
+        );
+        const collapsed = screenLines().join("\n");
+        assert.match(collapsed, /agent-completion/);
+        assert.match(collapsed, /subagent-notify/);
+        assert.match(collapsed, /CARD_START/);
+        assert.doesNotMatch(collapsed, /CARD_END/, "long custom cards start collapsed");
+        terminal.click(screen, "[intercom_message]");
+        await until(
+          () => screenLines().some((line) => line.includes("CARD_END")),
+          "clickable message hint uses native expansion state",
+        );
+        terminal.send("\x0f");
+        await until(
+          () =>
+            screenLines().some((line) => line.includes("CARD_START")) &&
+            !screenLines().some((line) => line.includes("CARD_END")),
+          "keyboard and mouse share native expansion state",
+        );
+        terminal.send("\x0f");
+        await until(
+          () => screenLines().some((line) => line.includes("CARD_END")),
+          "native Ctrl+O expands full card content",
+        );
+        terminal.send("\x0f");
+        await until(
+          () =>
+            screenLines().some((line) => line.includes("CARD_START")) &&
+            !screenLines().some((line) => line.includes("CARD_END")),
+          "native Ctrl+O collapses cards again",
+        );
+        assert.equal(requests(root), before, "card expansion does not wake the model");
+        const cards = runtime.session.sessionManager
+          .getBranch()
+          .filter(
+            (entry) =>
+              entry.type === "custom_message" &&
+              typeof entry.content === "string" &&
+              entry.content.includes("CARD_START"),
+          );
+        assert.equal(cards.length, 3);
+        assert.ok(
+          cards.every(
+            (entry) =>
+              entry.type === "custom_message" &&
+              typeof entry.content === "string" &&
+              entry.content.endsWith("CARD_END"),
+          ),
+          "preview truncation never changes the saved model-visible content",
+        );
+      }
       const manager = runtime.session.sessionManager;
       const legacyId = "legacy-observed";
       const legacy = sdk.SessionManager.create(root, path.join(root, "legacy-sessions"));
