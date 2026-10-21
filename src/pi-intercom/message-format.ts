@@ -39,39 +39,6 @@ export function previewText(value: unknown, maxLength = 72): string | undefined 
   }
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
-function metadataField(text: string, pattern: Readonly<RegExp>): string | undefined {
-  return text.match(pattern)?.[1]?.trim();
-}
-function namedPreview(label: string, value: string | undefined): string | undefined {
-  return value === undefined || value === "" ? undefined : `${label}=${value}`;
-}
 export function pendingAskPreview(message: Message): string {
-  const text = message.content.text;
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (
-    !text.startsWith("Subagent needs a supervisor decision.") &&
-    !text.startsWith("Subagent requests a structured supervisor interview.")
-  ) {
-    return previewText(normalized, 180) ?? normalized;
-  }
-  const run = metadataField(text, /^Run:\s*(.+)$/m);
-  const agent = metadataField(text, /^Agent:\s*(.+)$/m);
-  const target = metadataField(text, /^Child intercom target:\s*(.+)$/m);
-  const body = text
-    .split(/\n\s*\n/)
-    .slice(1)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return [
-    text.startsWith("Subagent requests")
-      ? "structured supervisor interview"
-      : "supervisor decision",
-    namedPreview("run", run),
-    namedPreview("agent", agent),
-    namedPreview("target", target),
-    namedPreview("question", previewText(body, 180)),
-  ]
-    .filter((part) => part !== undefined)
-    .join(" · ");
+  return previewText(message.content.text, 180) ?? message.content.text;
 }

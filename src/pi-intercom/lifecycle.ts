@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomConfig } from "./config.ts";
-import { buildPresenceIdentity } from "./identity.ts";
+import { buildPresenceIdentity, type IntercomLineage } from "./identity.ts";
 import { resolveSessionProjectId } from "./session-targets.ts";
 import type { SessionInfo } from "./types.ts";
 
@@ -10,16 +10,17 @@ export class IntercomLifecycle {
   private sessionId: string | null = null;
   private model = "unknown";
   private disposed = true;
-  private started = false;
   private epoch = 0;
   private running = false;
   private activity = 0;
   private readonly tools = new Map<string, string>();
   private readonly pi: ExtensionAPI;
   private readonly config: IntercomConfig;
-  constructor(pi: ExtensionAPI, config: IntercomConfig) {
+  private readonly lineage: IntercomLineage | undefined;
+  constructor(pi: ExtensionAPI, config: IntercomConfig, lineage?: IntercomLineage) {
     this.pi = pi;
     this.config = config;
+    this.lineage = lineage;
   }
   get generation(): number {
     return this.epoch;
@@ -27,15 +28,11 @@ export class IntercomLifecycle {
   get currentSessionId(): string | null {
     return this.sessionId;
   }
-  get runtimeStarted(): boolean {
-    return this.started;
-  }
   get toolCount(): number {
     return this.tools.size;
   }
   start(ctx: ExtensionContext): number {
     this.disposed = false;
-    this.started = true;
     this.epoch += 1;
     this.context = ctx;
     this.sessionId = ctx.sessionManager.getSessionId();
@@ -76,22 +73,6 @@ export class IntercomLifecycle {
       return null;
     }
   }
-  notify(
-    ctx: ExtensionContext,
-    message: string,
-    level: "info" | "warning" | "error",
-    generation = this.epoch,
-  ): void {
-    const live = this.live(ctx, generation);
-    if (live?.hasUI !== true) {
-      return;
-    }
-    try {
-      live.ui.notify(message, level);
-    } catch {
-      // The UI may disappear while an asynchronous overlay settles during shutdown.
-    }
-  }
   isIdle(ctx: ExtensionContext): boolean {
     // ponytail: Pi 1.0 has no busy signal during foreign prompt preparation.
     if (this.running || this.tools.size > 0) {
@@ -123,8 +104,16 @@ export class IntercomLifecycle {
   markActivity(): void {
     this.activity = Date.now();
   }
-  identity(sessionId: string): { readonly name: string } {
-    return buildPresenceIdentity(this.pi, sessionId);
+  identity(sessionId: string): {
+    readonly name: string;
+    readonly rootSessionId: string;
+    readonly parentSessionId?: string;
+  } {
+    return {
+      ...buildPresenceIdentity(this.pi, sessionId),
+      rootSessionId: this.lineage?.rootSessionId ?? sessionId,
+      parentSessionId: this.lineage?.parentSessionId,
+    };
   }
   status(): string {
     const tool = this.tools.values().next().value;
@@ -163,21 +152,5 @@ export class IntercomLifecycle {
       status: this.status(),
       ...this.health(pendingAsks),
     };
-  }
-  targetMatches(to: string, resolvedTo?: string | null, brokerId?: string | null): boolean {
-    const targets = [
-      this.sessionId,
-      brokerId,
-      this.pi.getSessionName(),
-      this.sessionId === null ? undefined : this.identity(this.sessionId).name,
-    ];
-    return (
-      (resolvedTo !== undefined &&
-        resolvedTo !== null &&
-        brokerId !== undefined &&
-        brokerId !== null &&
-        resolvedTo === brokerId) ||
-      targets.some((target) => target?.trim().toLowerCase() === to.trim().toLowerCase())
-    );
   }
 }

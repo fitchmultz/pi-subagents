@@ -1,11 +1,14 @@
 import net from "net";
-import { chmodSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { chmodSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { getPiAgentDir } from "../agent-dir.ts";
-import { writeMessage, createMessageReader, validateIntercomMessageSize } from "./framing.ts";
-import { prepareBrokerSocketPath } from "./paths.ts";
+import { writeMessage, validateIntercomMessageSize } from "./framing.ts";
+import { getBrokerRuntimeDir, prepareBrokerSocketPath } from "./paths.ts";
 import { brokerPidRecord } from "./pid.ts";
+import { assertBrokerCanStart } from "./spawn.ts";
+import { LastMessageRelay } from "./last.ts";
+import { assertMainParent, canSeeSession, findSessions } from "./targets.ts";
+import { acceptBrokerConnection } from "./server-connection.ts";
 import {
   compactTopicMessage,
   isSessionRegistration,
@@ -29,8 +32,7 @@ import {
   shouldReplaceDelivery,
 } from "./snapshots.ts";
 
-const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
-const PID_PATH = join(INTERCOM_DIR, "broker.pid");
+const PID_PATH = join(getBrokerRuntimeDir(), "broker.pid");
 const REPLACE_DELIVERY_DELAY_MS = 1500;
 
 interface ConnectedSession {
@@ -38,6 +40,7 @@ interface ConnectedSession {
   info: SessionInfo;
   topics: TopicSnapshot;
   readonly topicFrames: boolean;
+  readonly lastMessages: boolean;
 }
 
 interface PendingReplaceDelivery {
@@ -49,13 +52,13 @@ interface PendingReplaceDelivery {
 
 class IntercomBroker {
   private readonly sessions = new Map<string, ConnectedSession>();
+  private readonly lastMessages = new LastMessageRelay(this.sessions);
   private readonly pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
   private readonly server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private readonly socketPath: string;
 
   constructor() {
-    mkdirSync(INTERCOM_DIR, { recursive: true });
     this.socketPath = prepareBrokerSocketPath();
     try {
       unlinkSync(this.socketPath);
@@ -82,30 +85,7 @@ class IntercomBroker {
   }
 
   private handleConnection(socket: net.Socket): void {
-    let sessionId: string | null = null;
-
-    const reader = createMessageReader(
-      (msg) => {
-        this.handleMessage(socket, msg, sessionId, (id) => {
-          sessionId = id;
-        });
-      },
-      (error) => {
-        socket.destroy(error);
-      },
-    );
-
-    socket.on("data", reader);
-
-    socket.on("close", () => {
-      if (sessionId !== null) {
-        this.removeSession(sessionId);
-      }
-    });
-
-    socket.on("error", (error) => {
-      console.error("Socket error:", error);
-    });
+    acceptBrokerConnection(socket, this.handleMessage.bind(this), this.removeSession.bind(this));
   }
 
   private scheduleShutdownCheck(): void {
@@ -158,6 +138,12 @@ class IntercomBroker {
       case "send":
         this.send(socket, msg, currentId);
         break;
+      case "last_request":
+        this.lastMessages.request(currentId, msg);
+        break;
+      case "last_response":
+        this.lastMessages.respond(currentId, msg);
+        break;
       case "presence":
         this.presence(msg, currentId);
         break;
@@ -170,6 +156,7 @@ class IntercomBroker {
     if (!isSessionRegistration(msg.session)) {
       throw new Error("Invalid register message");
     }
+    assertMainParent(msg.session, this.sessions);
     const requestedId =
       typeof msg.requestedId === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(msg.requestedId)
         ? msg.requestedId
@@ -184,6 +171,7 @@ class IntercomBroker {
       info: messageSender(info),
       topics: new TopicSnapshot(info),
       topicFrames,
+      lastMessages: msg.lastMessages === true,
     });
     setId(id);
     if (this.shutdownTimer) {
@@ -193,14 +181,20 @@ class IntercomBroker {
     writeMessage(socket, {
       type: "registered",
       sessionId: id,
+      lastMessages: true,
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
     });
   }
 
   private removeSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
     this.sessions.delete(sessionId);
+    this.lastMessages.disconnected(sessionId);
     this.clearPendingReplaceDeliveries(sessionId);
-    this.broadcast({ type: "session_left", sessionId }, sessionId);
+    this.broadcast({ type: "session_left", sessionId }, session.info);
     this.scheduleShutdownCheck();
   }
 
@@ -215,7 +209,7 @@ class IntercomBroker {
     }
     for (const target of this.sessions.values()) {
       const subscription = target.topics.subscription(publication.topic);
-      if (target.info.id === fromId || !subscription) {
+      if (target.info.id === fromId || !subscription || !canSeeSession(from, target.info)) {
         continue;
       }
       const message = publicationMessage(publication, subscription.awaitRelease === true);
@@ -250,12 +244,14 @@ class IntercomBroker {
       }
       const infos = prepared.restore
         ? []
-        : [...this.sessions.values()].map((entry) => {
-            if (entry === session) {
-              return nextInfo;
-            }
-            return msg.stream === true ? entry.topics.snapshot(entry.info) : entry.info;
-          });
+        : [...this.sessions.values()]
+            .filter((entry) => canSeeSession(from, entry.info))
+            .map((entry) => {
+              if (entry === session) {
+                return nextInfo;
+              }
+              return msg.stream === true ? entry.topics.snapshot(entry.info) : entry.info;
+            });
       const frames = snapshotFrames(requestId, infos, msg.stream === true);
       const last = frames.pop();
       session.topics.commit(prepared);
@@ -297,7 +293,7 @@ class IntercomBroker {
       });
       return;
     }
-    const targets = this.findSessions(msg.to);
+    const targets = findSessions(this.sessions, msg.to, currentId);
     const target = targets[0];
     if (targets.length === 1) {
       const fromSession = this.sessions.get(currentId);
@@ -495,21 +491,9 @@ class IntercomBroker {
     }
   }
 
-  private findSessions(nameOrId: string): ConnectedSession[] {
-    const byId = this.sessions.get(nameOrId);
-    if (byId) {
-      return [byId];
-    }
-
-    const lowerName = nameOrId.toLowerCase();
-    return Array.from(this.sessions.values()).filter(
-      (session) => session.info.name?.toLowerCase() === lowerName,
-    );
-  }
-
-  private broadcast(msg: BrokerMessage, exclude?: string): void {
+  private broadcast(msg: BrokerMessage, from: SessionInfo): void {
     for (const [id, session] of this.sessions) {
-      if (id !== exclude) {
+      if (id !== from.id && canSeeSession(session.info, from)) {
         writeMessage(session.socket, msg);
       }
     }
@@ -537,4 +521,5 @@ class IntercomBroker {
   }
 }
 
+await assertBrokerCanStart();
 new IntercomBroker().start();

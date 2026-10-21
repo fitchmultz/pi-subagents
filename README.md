@@ -1,113 +1,87 @@
 # pi-subagents
 
-`pi-subagents` lets [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) delegate tasks to child sessions. Use it for code review, research, or implementation while you continue in the parent session.
-
-![A Pi parent session delegates independent tasks to scout and reviewer children, then receives their saved results.](.github/readme/delegation.png)
-
-## Install and start
-
-Requires **Pi 1.0.0+** and **Node 24.21.0+**. Use macOS or Linux. Windows is not supported.
+One Pi extension for delegation and local agent communication. Three tools, one
+agent type, no profile bodies.
 
 ```bash
 pi install npm:@fitchmultz/pi-subagents
-pi
 ```
 
-Enter a task in Pi:
+A main session supplies the child's complete assignment:
 
-```text
-Use scout to explain the authentication code in this project.
+```js
+delegate({
+  prompt:
+    "Inspect the authentication changes. Return concrete defects with file and line evidence. Do not edit files.",
+  name: "auth-review",
+});
 ```
 
-The built-in agents are ready to use. See the [installation reference](docs/reference.md#installation) for Git installs and local checkouts.
+Delegation is asynchronous by default. `async: false` waits for the result.
+`context: "fresh"` is the default; `context: "fork"` preserves the native
+conversation, including prior tool results. There is no hidden role prompt,
+report-writing suffix, profile selection, or model fallback catalog.
 
-## Run tasks
-
-Ask Pi for a child by role and task:
-
-```text
-Have worker implement this approved plan, then ask reviewer to check the changes.
+```js
+agent_runs({ action: "list" });
+agent_runs({ action: "inspect", id: "<run-id>" });
+agent_runs({
+  action: "continue",
+  id: "<run-id>",
+  prompt: "Now inspect the refresh-token path. Do not edit.",
+});
+agent_runs({ action: "wait", id: "<run-id>" });
+agent_runs({ action: "stop", id: "<run-id>" });
 ```
 
-Children run in the background by default. You can also use commands:
+## Talk to agents
 
-| Task                 | Command                                                         |
-| -------------------- | --------------------------------------------------------------- |
-| Review a diff        | `/run reviewer "Review this diff"`                              |
-| Run parallel tasks   | `/parallel scout "Inspect frontend" -> scout "Inspect backend"` |
-| Run a sequence       | `/chain scout "Map auth" -> planner "Plan a refactor"`          |
-| Run a saved workflow | `/run-chain scout-planner -- refactor authentication`           |
-
-Add `--fg` to wait for the result. The [`forceTopLevelAsync` setting](docs/reference.md#forcetoplevelasync) disables waits when enabled.
-
-The saved workflow example requires a [chain file](docs/reference.md#chain-files) named `scout-planner`. See the [command reference](docs/reference.md#direct-commands) for all options.
-
-## Choose a role and model
-
-| Task                           | Built-in agents                                    |
-| ------------------------------ | -------------------------------------------------- |
-| Read code or gather evidence   | `scout`, `researcher`                              |
-| Plan or check a decision       | `planner`, `oracle`                                |
-| Implement or diagnose a change | `worker`, `debugger`                               |
-| Review a change                | `reviewer`, `reviewer-claude`, `reviewer-security` |
-| Design, write or monitor       | `ui-designer`, `writer`, `watcher`                 |
-
-Ask Pi to show the effective profiles. Select an available model if a profile default is unavailable.
-
-Profiles keep stable role, model, context, and authority defaults. The dispatching agent supplies the task's requirements, relevant evidence, scope, acceptance criteria, verification policy, and output instructions.
-
-[Model settings](docs/reference.md#changing-a-builtin-agents-model) let you change a role without a copy of its agent file. Custom agents use `~/.pi/agent/agents/` or your project's `.pi/agents/`.
-
-The bundled roster has 12 profiles. Use `worker` instead of the retired `delegate` and `fixer` profiles, `scout` for context collection, `planner` for handoff-plan synthesis, and `reviewer` for correctness or simplicity passes. The `delegate` tool remains available. See the [profile migration guide](docs/reference.md#retired-profile-names) for old workflows and overrides.
-
-## Read results and continue work
-
-The **Agents** area shows active tasks and tasks that need attention. Open `/agents` to browse active and finished conversations.
-
-The shortcut is **Option+Shift+M** on macOS and **Alt+Shift+M** elsewhere.
-
-- Open a conversation to read the child's report or send a message.
-- Press F2 to inspect details or request cancellation with Stop.
-- Select Continue to start follow-up work from a saved child session.
-- Press Esc to return to the parent session.
-
-Resume the same saved parent session with `pi --session /path/to/parent.jsonl` to recover runs and questions.
-
-See the [conversation reference](docs/reference.md#try-this-first) for shortcuts, drafts and history search.
-
-## Limits and warnings
-
-Each child uses your provider account and can spend tokens. See [usage accounting](docs/reference.md#usage-accounting) for details.
-
-Children normally inherit Pi's tools, extensions, project instructions and skills. Restrict [tools](docs/reference.md#tool-and-extension-selection) and [project trust](docs/reference.md#projecttrust) when a child must have limited access.
-
-Intercom is included. It lets Pi sessions exchange messages and lets a child ask its parent for a decision.
-
-Read the [Intercom guide](docs/intercom.md) for setup and host limits. The [secure bridge](docs/intercom-bridge.md) adds unattended remote messaging, durable inboxes, groups, live/saved session discovery, spawn/resume and native controls for an authenticated remote agent.
-
-Indexed history requires SQLite 3.53.4 through Node's built-in `node:sqlite` binding. Other SQLite versions fail. See the [storage requirements](docs/performance.md#storage-budgets-and-recovery) and [host startup costs](docs/performance.md#necessary-costs-and-limits).
-
-## Update and troubleshoot
-
-An update can leave active sessions on old code. Close all Pi sessions that use this installation before an update.
-
-Run this command from a separate terminal:
-
-```bash
-pi update --extension npm:@fitchmultz/pi-subagents
+```js
+intercom({ action: "list" });
+intercom({ action: "send", to: "auth-review", message: "Focus on token rotation." });
+intercom({ action: "last", to: "auth-review" });
 ```
 
-Start new Pi processes after the update. `/reload` does not reliably activate changed JavaScript.
+`send` steers by default. `last` reads the peer's last completed assistant response
+without waking it; large responses are paged, not silently truncated. Discovery
+works across project directories and Pi agent directories under the same OS user.
 
-Run `/subagents-doctor` to check delegation and Intercom setup. See the [installation reference](docs/reference.md#installation) for Git updates, local rebuilds and broker restarts.
+A main and its children form one group:
 
-## Documentation
+- Every pair within that group can discover and communicate with each other.
+- Main sessions can discover, message, and read other mains.
+- Children cannot discover or address another group's agents—even by exact ID.
+- Only mains can delegate. There is one child level, not recursive spawning.
 
-- [Full reference](docs/reference.md): profiles, commands, configuration, workflows and saved run records.
-- [Development](docs/development.md): builds, CI, compatibility checks and optional model smoke tests.
-- [Example prompts](prompts/): saved examples for common tasks.
-- [Changelog](CHANGELOG.md): changes by version.
+These are coordination rules, not an OS sandbox against same-user code. A peer
+list contains connected, eligible sessions, not every Pi process on the machine.
 
-## License
+## What stays explicit
 
-[MIT](LICENSE).
+Launch acceptance is not completion. Broker acceptance is not recipient journal
+persistence or a reply. A stop request is not proof of process exit. Saved run
+inspection reports these states separately, and does not invent a successful
+result when a process disappears.
+
+Children use native Pi sessions and the selected host's SDK, resources, tools,
+project instructions, and model configuration. Optional `cwd` and `model`
+overrides belong to a launch; ordinary continuation reuses its saved conversation
+and launch configuration. No user agent Markdown files are edited or consulted
+as profiles.
+
+## Migration and documentation
+
+This rebuild deliberately removes the profile editor, workflow/chain/fanout DSL,
+Claude Code backend, custom agent overlays, supervisor-question revival protocol,
+and remote launch/control/catalog APIs. Existing installations should finish
+in-flight work before switching versions. Keep the prior package and saved state
+for rollback; this repository change does not deploy or restart anything.
+
+- [Tools and lifecycle](docs/reference.md)
+- [Local messaging and broker migration](docs/intercom.md)
+- [Authenticated remote messaging / Grok companion](docs/intercom-bridge.md)
+- [Development and qualification](docs/development.md)
+- [Diagnosis, baseline, and measurable rebuild gates](docs/single-agent-rebuild.md)
+
+Supports official Pi and the maintained `fitchmultz/pi` fork; the two hosts are
+qualified separately. Node.js 24.21 or newer is required. MIT licensed.

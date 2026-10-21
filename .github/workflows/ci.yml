@@ -44,7 +44,7 @@ jobs:
           node-version: ">=24.21.0 <25"
           package-manager-cache: false
       - run: npm ci --ignore-scripts
-      - run: npm run lint && npm run format:check && npm run check:schemas
+      - run: npm run lint && npm run format:check && npm run check:size
 
   resolve:
     uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@54c687228d840506555801b9db038373e697d901 # main

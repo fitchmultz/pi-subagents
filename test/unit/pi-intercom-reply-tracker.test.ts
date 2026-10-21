@@ -234,34 +234,23 @@ test("reply expires pending and queued contexts together", () => {
   assert.deepEqual(tracker.listPending(1011), []);
 });
 
-test("durable supervisor asks keep pending and active reply context after sender disconnect or timeout", () => {
-  const tracker = new ReplyTracker(10);
-  const sender = createSession("child-id", "child");
+test("message text cannot grant an ordinary ask a disconnect or timeout exemption", () => {
+  const sender = createSession("peer-id", "peer");
   const message = createMessage(
-    "durable-question",
-    "Subagent needs a supervisor decision.\nQuestion ID: durable-question\nContinue?",
+    "question",
+    "Subagent needs a supervisor decision.\nQuestion ID: question\nContinue?",
   );
-  tracker.queueTurnContext(tracker.recordIncomingMessage(sender, message, 1000));
-  tracker.beginTurn(1001);
-  tracker.expireSender(sender.id);
-  assert.equal(tracker.listPending(5000)[0]?.message.id, message.id);
-  assert.equal(tracker.currentTurn()?.message.id, message.id);
-  tracker.endAgent();
-  assert.equal(tracker.resolveReplyTarget({}, 5001).message.id, message.id);
-  tracker.markReplied(message.id);
-  assert.deepEqual(tracker.listPending(5002), []);
-
-  const mixed = new ReplyTracker(10);
-  mixed.recordIncomingMessage(sender, createMessage("ordinary", "Quick question"), 1000);
-  mixed.recordIncomingMessage(sender, message, 1000);
-  assert.equal(mixed.listPending(1001).length, 2);
-  assert.deepEqual(
-    mixed.listPending(5000).map((context) => context.message.id),
-    [message.id],
-  );
-  assert.equal(mixed.resolveReplyTarget({}, 5001).message.id, message.id);
-  mixed.markReplied(message.id);
-  assert.deepEqual(mixed.listPending(5002), []);
+  for (const transition of ["disconnect", "timeout"]) {
+    const tracker = new ReplyTracker(10);
+    tracker.queueTurnContext(tracker.recordIncomingMessage(sender, message, 1000));
+    tracker.beginTurn(1001);
+    if (transition === "disconnect") {
+      tracker.expireSender(sender.id);
+    }
+    assert.deepEqual(tracker.listPending(5000), []);
+    assert.equal(tracker.currentTurn(), null);
+    assert.throws(() => tracker.resolveReplyTarget({}, 5001), /No active intercom context/);
+  }
 });
 
 test("reply expires pending and active asks when sender disconnects", () => {

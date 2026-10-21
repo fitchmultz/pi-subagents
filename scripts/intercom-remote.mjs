@@ -4,93 +4,33 @@ import { lstatSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 function help() {
-  console.log(`Usage: node intercom-remote.mjs <register|list|inbox|send|ask|reply|ack|start|spawn|resume|sessions|stop|cancel|capabilities|transcript|groups|group-upsert|broadcast|group-send> [options] [IDs...]
+  console.log(`Usage: node intercom-remote.mjs <register|list|inbox|send|ack> [options] [IDs...]
 
-Environment (required):
-  INTERCOM_BRIDGE_CA    Path to trusted bridge CA certificate
-  INTERCOM_BRIDGE_CERT  Path to your client certificate
-  INTERCOM_BRIDGE_KEY   Path to your private client key (owned, mode 0600)
-  INTERCOM_BRIDGE_URL   HTTPS origin (default: https://127.0.0.1:9443)
+Environment: INTERCOM_BRIDGE_CA, INTERCOM_BRIDGE_CERT, INTERCOM_BRIDGE_KEY
+(owned private regular key, mode 0600), INTERCOM_BRIDGE_URL (HTTPS origin;
+default https://127.0.0.1:9443).
 
-Options:
-  --to PEER            Recipient name, peer ID or native ID for messages/controls
-  --message TEXT       Message for send/ask/reply
-  --id ID              Send only: exact message ID (default: random; no deduplication guarantee)
-  --passive            Send only: mailbox delivery without waking the recipient
-  --reply-to ID        Inbound ask ID from inbox, for reply
-  --timeout-ms MS      Ask: 100..120000 (default 120000); control: 100..10000 (default 3000)
-  --after CURSOR       Inbox cursor from nextCursor (default: 0)
-  --wait-ms MS         Inbox: wait for new mail, 0..10000 (default: 0)
-  --limit COUNT        Inbox: 1..256; sessions/transcript: 1..100
-  --name NAME          Start/reuse a named idle Pi session under local policy
-  --session-id ID      Native ID for resume, stop or cancel
-  --target ID_OR_NAME  Unique target for resume, stop, cancel or transcript
-  --cwd PATH           Spawn in an existing locally approved workspace
-  --task TEXT          Submit an Intercom task after spawn/resume readiness
-  --model PROVIDER/ID  Exact spawn model; or --provider NAME with --model ID
-  --mode cancel|kill   Stop mode: owned kill observes exit; foreign kill requests shutdown
-  --live --saved       Opt into live/saved session metadata
-  --q TEXT --offset N  Catalog filter and page cursor
-  --max-bytes N        Transcript UTF-8 text budget (256..131072)
-  --cursor CURSOR      Opaque cursor from an earlier transcript page
-  --group NAME         Named group for broadcast/group-send
-  --members JSON       Group members as a JSON array of IDs/names
-  --name-pattern GLOB  Dynamic group name selector
-  --cwd-pattern GLOB   Dynamic group cwd selector (combined with name pattern)
-  -h, --help           Show help
+send --to PEER --message TEXT [--id ID] [--passive] [--expects-reply] [--reply-to ID]
+  Exact peer IDs or existing unambiguous resolver names. --id is preserved unchanged.
+  --passive is mailbox-only, never a wake. Replies are ordinary correlated sends.
+inbox [--after CURSOR] [--limit 1..256] [--wait-ms 0..10000]
+ack ID [ID...] (at most 256)
+  ACK transfers durable intake ownership, including any reply obligation.
+  Persist the complete sender/message envelope before ACK.
 
-Examples:
-  node intercom-remote.mjs list
-  node intercom-remote.mjs ask --to planner --message 'What is the current status?'
-  node intercom-remote.mjs inbox
-  node intercom-remote.mjs inbox --after NEXT_CURSOR --limit 64
-  node intercom-remote.mjs reply --reply-to QUESTION_ID --message 'Proceed.'
-  node intercom-remote.mjs ack MESSAGE_ID
-  node intercom-remote.mjs start --name planner
-  node intercom-remote.mjs spawn --name planner --cwd /project --task 'Review this project.'
-  node intercom-remote.mjs sessions --live --saved
-  node intercom-remote.mjs resume --name saved-unique-name
-  node intercom-remote.mjs transcript --target NATIVE_SESSION_ID
-  node intercom-remote.mjs stop --session-id NATIVE_SESSION_ID
-
-Outputs JSON. Exit: 0 success, 1 API/TLS/transport failure, 2 invalid arguments.
-No automatic retries: a lost response does not prove a message was unsent.`);
+JSON output. Exit: 0 success, 1 API/TLS/transport failure, 2 invalid arguments.
+Acceptance is not native journal persistence, model start, or task completion.
+No automatic retries: a lost mutation response means UNKNOWN, not unsent.`);
 }
 
-function allowedOptions(action) {
-  const fields = {
-    inbox: ["after", "limit", "wait-ms"],
-    start: ["name"],
-    spawn: ["name", "cwd", "task", "provider", "model"],
-    resume: ["session-id", "name", "target", "task"],
-    stop: ["session-id", "target", "to", "mode", "timeout-ms"],
-    cancel: ["session-id", "target", "to", "timeout-ms"],
-    sessions: ["live", "saved", "q", "offset", "limit"],
-    capabilities: ["to", "target", "timeout-ms"],
-    transcript: ["to", "target", "timeout-ms", "limit", "max-bytes", "cursor"],
-    broadcast: ["message", "group"],
-    "group-send": ["message", "group"],
-    "group-upsert": ["name", "members", "name-pattern", "cwd-pattern"],
-    send: ["to", "message", "passive", "id"],
-    ask: ["to", "message", "timeout-ms"],
-    reply: ["reply-to", "message"],
-  };
-  return fields[action] ?? [];
-}
-
-function requireMessage(recipient, message) {
-  if (
-    typeof message !== "string" ||
-    message.trim() === "" ||
-    typeof recipient !== "string" ||
-    recipient.trim() === ""
-  ) {
-    throw new Error("Recipient/ask ID and message are required.");
-  }
-}
-
-function sendId(id) {
-  // Match the bridge's label bounds without changing the caller's ID.
+const actions = {
+  register: [],
+  list: [],
+  ack: [],
+  inbox: ["after", "limit", "wait-ms"],
+  send: ["to", "message", "id", "passive", "expects-reply", "reply-to"],
+};
+function messageId(id) {
   // oxlint-disable-next-line no-control-regex
   const controls = /[\u0000-\u001f\u007f-\u009f]/;
   if (id !== undefined && (id.trim() === "" || id.length > 512 || controls.test(id))) {
@@ -98,113 +38,25 @@ function sendId(id) {
   }
   return id;
 }
-
-function resumeBody(options) {
-  if (["name", "session-id", "target"].filter((key) => options[key] !== undefined).length !== 1) {
-    throw new Error("Resume requires exactly one --name, --session-id or --target.");
-  }
-  return {
-    name: options.name,
-    sessionId: options["session-id"],
-    target: options.target,
-    task: options.task,
-  };
-}
-function stopBody(action, options) {
-  if (["session-id", "target", "to"].filter((key) => options[key] !== undefined).length !== 1) {
-    throw new Error("Choose exactly one --session-id, --target or --to.");
-  }
-  return {
-    target: options["session-id"] ?? options.target ?? options.to,
-    mode: action === "stop" ? options.mode : undefined,
-    timeoutMs: controlTimeout(options),
-  };
-}
-function launchBody(action, options) {
-  if (action === "resume") {
-    return resumeBody(options);
-  }
-  if (action === "stop" || action === "cancel") {
-    return stopBody(action, options);
-  }
-  if (typeof options.name !== "string" || options.name.trim() === "") {
-    throw new Error("--name is required.");
-  }
-  return action === "start"
-    ? { name: options.name }
-    : {
-        name: options.name,
-        cwd: options.cwd,
-        task: options.task,
-        provider: options.provider,
-        model: options.model,
-      };
-}
-function controlTimeout(options) {
-  const timeoutMs = options["timeout-ms"] === undefined ? 3000 : Number(options["timeout-ms"]);
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10000) {
-    throw new Error("Control --timeout-ms must be 100..10000.");
-  }
-  return timeoutMs;
-}
-function extraBody(action, options) {
-  if (["capabilities", "transcript"].includes(action)) {
-    if (["to", "target"].filter((key) => options[key] !== undefined).length !== 1) {
-      throw new Error("Choose exactly one --to or --target.");
+function requestBody(action, options, ids) {
+  if (action === "send") {
+    if (!options.to?.trim() || !options.message?.trim()) {
+      throw new Error("--to and --message are required.");
     }
     return {
-      to: options.to ?? options.target,
-      timeoutMs: controlTimeout(options),
-      ...(action === "transcript" ? transcriptBody(options) : {}),
-    };
-  }
-  if (action === "group-upsert") {
-    return {
-      name: options.name,
-      members: options.members === undefined ? undefined : JSON.parse(options.members),
-      namePattern: options["name-pattern"],
-      cwdPattern: options["cwd-pattern"],
-    };
-  }
-  if (action === "broadcast" || action === "group-send") {
-    requireMessage(action === "group-send" ? options.group : "all", options.message);
-    return { message: options.message, group: options.group };
-  }
-}
-function transcriptBody(options) {
-  return {
-    limit: options.limit === undefined ? undefined : Number(options.limit),
-    maxBytes: options["max-bytes"] === undefined ? undefined : Number(options["max-bytes"]),
-    cursor: options.cursor,
-  };
-}
-function requestBody(action, options, ids, timeout) {
-  const extra = extraBody(action, options);
-  if (extra !== undefined) {
-    return extra;
-  }
-  if (["start", "spawn", "resume", "stop", "cancel"].includes(action)) {
-    return launchBody(action, options);
-  }
-  if (["send", "ask", "reply"].includes(action)) {
-    const recipient = action === "reply" ? options["reply-to"] : options.to;
-    requireMessage(recipient, options.message);
-    if (action === "reply") {
-      return { replyTo: recipient, message: options.message };
-    }
-    return {
-      to: recipient,
+      to: options.to,
       message: options.message,
-      messageId: sendId(options.id),
-      ...(action === "ask" ? { timeoutMs: timeout } : {}),
-      ...(options.passive === true ? { passive: true } : {}),
+      messageId: messageId(options.id),
+      passive: options.passive,
+      expectsReply: options["expects-reply"],
+      replyTo: messageId(options["reply-to"]),
     };
   }
   if (action === "ack") {
-    if (ids.length === 0) {
-      throw new Error("ack needs at least one message ID.");
+    if (ids.length < 1 || ids.length > 256) {
+      throw new Error("ack requires 1..256 message IDs.");
     }
-    return { ids };
+    return { ids: ids.map(messageId) };
   }
   return {};
 }
@@ -253,18 +105,7 @@ function inboxQuery(options) {
   return query.toString();
 }
 
-function requestQuery(action, options) {
-  if (action === "inbox") {
-    return inboxQuery(options);
-  }
-  return action === "sessions"
-    ? new URLSearchParams(
-        Object.entries(options).map(([key, value]) => [key, String(value)]),
-      ).toString()
-    : "";
-}
-
-let body, action, origin, timeout, query;
+let body, action, origin, query;
 try {
   const parsed = parseArgs({
     allowPositionals: true,
@@ -275,29 +116,11 @@ try {
       message: { type: "string" },
       id: { type: "string" },
       passive: { type: "boolean" },
+      "expects-reply": { type: "boolean" },
       "reply-to": { type: "string" },
-      "timeout-ms": { type: "string" },
       after: { type: "string" },
       "wait-ms": { type: "string" },
       limit: { type: "string" },
-      name: { type: "string" },
-      "session-id": { type: "string" },
-      cwd: { type: "string" },
-      target: { type: "string" },
-      mode: { type: "string" },
-      provider: { type: "string" },
-      model: { type: "string" },
-      task: { type: "string" },
-      live: { type: "boolean" },
-      saved: { type: "boolean" },
-      q: { type: "string" },
-      offset: { type: "string" },
-      group: { type: "string" },
-      members: { type: "string" },
-      "name-pattern": { type: "string" },
-      "cwd-pattern": { type: "string" },
-      "max-bytes": { type: "string" },
-      cursor: { type: "string" },
     },
   });
   if (parsed.values.help) {
@@ -305,52 +128,28 @@ try {
     process.exit(0);
   }
   const options = parsed.values;
-  for (const name of ["wait-ms", "id"]) {
-    if (
-      parsed.tokens.filter((token) => token.kind === "option" && token.name === name).length > 1
-    ) {
-      throw new Error(`--${name} must not be repeated.`);
+  const names = new Set();
+  for (const token of parsed.tokens) {
+    if (token.kind !== "option") {
+      continue;
     }
+    if (names.has(token.name)) {
+      throw new Error(`--${token.name} must not be repeated.`);
+    }
+    names.add(token.name);
   }
   [action] = parsed.positionals;
-  if (
-    ![
-      "register",
-      "list",
-      "inbox",
-      "send",
-      "ask",
-      "reply",
-      "ack",
-      "start",
-      "spawn",
-      "resume",
-      "sessions",
-      "stop",
-      "cancel",
-      "capabilities",
-      "transcript",
-      "groups",
-      "group-upsert",
-      "broadcast",
-      "group-send",
-    ].includes(action)
-  ) {
+  if (!Object.hasOwn(actions, action)) {
     throw new Error("Choose an action; use --help.");
   }
-  const allowed = allowedOptions(action);
   if (
-    Object.keys(options).some((key) => !allowed.includes(key)) ||
+    Object.keys(options).some((key) => !actions[action].includes(key)) ||
     (action !== "ack" && parsed.positionals.length !== 1)
   ) {
     throw new Error("Unexpected arguments for this action.");
   }
-  timeout = options["timeout-ms"] === undefined ? 120000 : Number(options["timeout-ms"]);
-  if (!Number.isInteger(timeout) || timeout < 100 || timeout > 120000) {
-    throw new Error("--timeout-ms must be 100..120000.");
-  }
-  body = requestBody(action, options, parsed.positionals.slice(1), timeout);
-  query = requestQuery(action, options);
+  body = requestBody(action, options, parsed.positionals.slice(1));
+  query = action === "inbox" ? inboxQuery(options) : "";
   origin = new URL(process.env.INTERCOM_BRIDGE_URL || "https://127.0.0.1:9443");
   if (
     origin.protocol !== "https:" ||
@@ -377,11 +176,10 @@ try {
 
 try {
   const files = tlsFiles();
-  const aliases = { "group-upsert": "groups", "group-send": "broadcast" };
-  origin.pathname = `/v1/${aliases[action] ?? action}`;
+  origin.pathname = `/v1/${action}`;
   origin.search = query;
   const payload = JSON.stringify(body);
-  const get = ["list", "inbox", "sessions", "groups"].includes(action);
+  const get = ["list", "inbox"].includes(action);
   const result = await new Promise((resolve, reject) => {
     const req = https.request(
       origin,
@@ -421,25 +219,15 @@ try {
         });
       },
     );
-    const timer = setTimeout(
-      () => {
-        req.destroy(new Error("Bridge request deadline exceeded; delivery may be unknown."));
-      },
-      ["start", "spawn", "resume", "transcript"].includes(action)
-        ? 90000
-        : (action === "ask" ? timeout : 0) + 15000,
-    );
+    const timer = setTimeout(() => {
+      req.destroy(new Error("Bridge request deadline exceeded; delivery may be unknown."));
+    }, 15000);
     req.once("close", () => clearTimeout(timer));
     req.once("error", reject);
     req.end(get ? undefined : payload);
   });
   console.log(JSON.stringify(result.value, null, 2));
-  if (
-    result.status < 200 ||
-    result.status >= 300 ||
-    result.value?.ok !== true ||
-    unsuccessful(result.value)
-  ) {
+  if (result.status < 200 || result.status >= 300 || result.value?.ok !== true) {
     process.exitCode = 1;
   }
 } catch (error) {
@@ -449,15 +237,10 @@ try {
       error: {
         code: "transport_error",
         message: error instanceof Error ? error.message : "Unexpected failure.",
+        deliveryUnknown: true,
         delivery: "unknown; do not blindly retry mutations",
       },
     }),
   );
   process.exitCode = 1;
-}
-function unsuccessful(value) {
-  return (
-    value?.status === "partial" ||
-    ["denied", "failed", "unsupported"].includes(value?.native?.status)
-  );
 }

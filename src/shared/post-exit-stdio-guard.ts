@@ -1,7 +1,13 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { readLinuxProcess } from "../pi-intercom/broker/pid.ts";
-import type { AgentProcessExit } from "./types.ts";
 import { hasErrorCode } from "./unknown.ts";
+
+interface AgentProcessExit {
+  readonly pid?: number;
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly at: number;
+}
 
 interface ChildWithPipedStdio {
   readonly stdout: ChildProcess["stdout"];

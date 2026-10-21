@@ -8,7 +8,7 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 function localForkStartCommand(): string {
-  return `pi --name worker --extension ${shellQuote(path.join(PACKAGE_ROOT, "src", "pi-intercom", "index.ts"))} --skill ${shellQuote(path.join(PACKAGE_ROOT, "skills", "pi-intercom"))}`;
+  return `pi --name worker --extension ${shellQuote(path.join(PACKAGE_ROOT, "src", "index.ts"))}`;
 }
 function duplicateNames(sessions: readonly SessionInfo[]): ReadonlySet<string> {
   const names = sessions
@@ -121,7 +121,7 @@ function noPeers(hidden: number): string {
 export function formatSessionListSections(
   allSessions: readonly SessionInfo[],
   id: string,
-  scope: IntercomSessionScope = "project",
+  scope: IntercomSessionScope = "all",
 ): string {
   const current = allSessions.find((session) => session.id === id);
   if (!current) {
@@ -140,7 +140,7 @@ export function formatSessionListSections(
   const otherSection = `**Other sessions:**\n${others.length === 0 ? noPeers(hidden) : others.map((session) => row(session, { ...options, self: false })).join("\n")}`;
   const hint =
     hidden > 0
-      ? `\n\n${hidden} session${hidden === 1 ? "" : "s"} in other projects hidden. Use \`intercom({ action: "list", scope: "all" })\` to show every connected session.`
+      ? `\n\n${hidden} session${hidden === 1 ? "" : "s"} in other projects hidden. Use \`intercom({ action: "list", scope: "all" })\` to show every reachable session.`
       : "";
   return `${currentSection}\n\n${otherSection}${hint}`;
 }

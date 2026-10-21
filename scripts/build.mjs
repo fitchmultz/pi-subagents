@@ -103,7 +103,7 @@ async function compileToStaging(cwd, stagingDir) {
 }
 
 async function stampBuild(cwd, stagingDir) {
-  const stamp = "extension/build-info.js";
+  const stamp = "build-info.js";
   const hash = createHash("sha256");
   const files = (await readdir(stagingDir, { recursive: true }))
     .filter((entry) => entry.endsWith(".js") && entry !== stamp)

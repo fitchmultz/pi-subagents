@@ -3,72 +3,14 @@ import type {
   InboundCheckpoint,
   InboundMessageEntry,
   PendingInboundMessage,
-  SubagentCompletion,
   RequestedDelivery,
 } from "./runtime-types.ts";
-import { finiteNumber, isRecord, isUnknownArray } from "./validation.ts";
+import { finiteNumber, isRecord } from "./validation.ts";
 export function requestedDelivery(message: Message): RequestedDelivery {
   if (message.passive === true || message.delivery === "passive") {
     return "passive";
   }
   return message.delivery ?? (message.expectsReply === true ? "auto" : "steer");
-}
-export function isReplaceableProgress(message: Message): boolean {
-  return (
-    message.delivery === "queue" &&
-    message.queueMode === "replace" &&
-    (message.threadId ?? "") !== "" &&
-    message.expectsReply !== true &&
-    message.replyTo === undefined
-  );
-}
-export function needsIntercom(entry: Pick<InboundMessageEntry, "from" | "message">): boolean {
-  return (
-    entry.message.human === undefined &&
-    requestedDelivery(entry.message) !== "passive" &&
-    entry.from.id !== "subagent-result" &&
-    entry.from.id !== "subagent-control"
-  );
-}
-export function isBlockingSupervisorMessage(entry: InboundMessageEntry): boolean {
-  if (entry.message.expectsReply !== true) {
-    return false;
-  }
-  const text = entry.bodyText.trimStart();
-  return (
-    text.startsWith("Subagent needs a supervisor decision.") ||
-    text.startsWith("Subagent requests a structured supervisor interview.")
-  );
-}
-export function isCompletedChild(value: unknown): value is SubagentCompletion["children"][number] {
-  if (!isRecord(value)) {
-    return false;
-  }
-  return (
-    typeof value.agent === "string" &&
-    typeof value.index === "number" &&
-    Number.isSafeInteger(value.index) &&
-    value.index >= 0 &&
-    typeof value.intercomTarget === "string" &&
-    value.intercomTarget.length > 0 &&
-    typeof value.status === "string" &&
-    ["completed", "failed", "blocked", "paused", "timed-out", "detached"].includes(value.status)
-  );
-}
-function isCompletion(
-  value: unknown,
-): value is SubagentCompletion & { readonly ownerSessionId: string } {
-  if (!isRecord(value)) {
-    return false;
-  }
-  return (
-    typeof value.runId === "string" &&
-    typeof value.status === "string" &&
-    typeof value.ownerSessionId === "string" &&
-    (value.completionId === undefined || typeof value.completionId === "string") &&
-    isUnknownArray(value.children) &&
-    value.children.every(isCompletedChild)
-  );
 }
 function isLocalJournalMessage(value: unknown): value is Message {
   if (!isRecord(value) || !isRecord(value.content)) {
@@ -107,8 +49,7 @@ export function isInboundEntry(value: unknown): value is InboundMessageEntry {
     isSessionRegistration(value.from) &&
     isJournalMessage(value.message, sender) &&
     typeof value.bodyText === "string" &&
-    (value.replyCommand === undefined || typeof value.replyCommand === "string") &&
-    (value.subagentCompletion === undefined || isCompletion(value.subagentCompletion))
+    (value.replyCommand === undefined || typeof value.replyCommand === "string")
   );
 }
 function isPendingInbound(value: unknown): value is PendingInboundMessage {

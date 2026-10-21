@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "node"],
-  "ignorePatterns": ["dist/**", "dist.staging*/**", "generated/RunValidators.js"],
+  "ignorePatterns": ["dist/**", "dist.staging*/**"],
   "env": {
     "node": true
   },
@@ -377,19 +377,7 @@
       }
     },
     {
-      "files": [
-        "test/unit/agent-scope.test.ts",
-        "test/unit/model-info.test.ts",
-        "test/unit/model-fallback.test.ts",
-        "test/unit/compact-child-tools.test.ts",
-        "test/unit/subagent-prompt-runtime.test.ts",
-        "test/unit/single-output.test.ts",
-        "test/unit/fork-context.test.ts",
-        "test/unit/recursion-guard.test.ts",
-        "test/integration/template-resolution.test.ts",
-        "test/integration/pi-intercom-runtime.test.ts",
-        "test/integration/pi-intercom-native.test.ts"
-      ],
+      "files": ["test/integration/pi-intercom-runtime.test.ts"],
       "rules": {
         "unicorn/no-useless-undefined": [
           "error",
@@ -400,13 +388,7 @@
       }
     },
     {
-      "files": [
-        "src/intercom/result-delivery.ts",
-        "src/extension/primary-tool.ts",
-        "src/extension/compact-tools.ts",
-        "src/extension/child-runtime.ts",
-        "src/pi-intercom/tool-registration.ts"
-      ],
+      "files": ["src/pi-intercom/tool-registration.ts"],
       "rules": {
         "max-params": [
           "error",
@@ -419,41 +401,7 @@
     {
       "files": [
         "test/integration/pi-intercom-runtime.test.ts",
-        "test/integration/pi-intercom-native-replay.test.ts",
-        "src/tui/view-session.ts",
-        "src/tui/agent-browser.ts",
-        "src/tui/agent-controls.ts",
-        "src/tui/conversation-viewport.ts",
-        "src/tui/conversation-selection.ts",
-        "src/tui/agent-picker.ts",
-        "src/tui/agent-conversation.ts",
-        "src/tui/conversation-history.ts",
-        "src/runs/shared/run-restoration.ts",
-        "src/runs/shared/run-persistence.ts",
-        "src/runs/shared/run-history-queries.ts",
-        "src/runs/shared/owned-run-list.ts",
-        "src/runs/foreground/question-control.ts",
-        "src/runs/foreground/wait-run.ts",
-        "src/runs/foreground/run-interrupt.ts",
-        "src/runs/background/runner-child-observer.ts",
-        "src/runs/background/runner-monitor.ts",
-        "src/runs/background/runner-lifecycle.ts",
-        "src/runs/background/runner-finalization.ts",
-        "src/runs/background/runner-parallel.ts",
-        "src/runs/background/runner-workflow.ts",
-        "src/runs/background/runner-completion.ts",
-        "src/extension/control-notices.ts",
-        "src/runs/shared/control-notification-owner.ts",
-        "test/integration/agent-interaction.test.ts",
-        "src/runs/background/completion-dedupe.ts",
-        "src/runs/foreground/foreground-control.ts",
-        "src/runs/foreground/question-continuation.ts",
-        "src/runs/foreground/saved-revival.ts",
-        "src/runs/foreground/invocation-execution.ts",
-        "src/runs/foreground/management-actions.ts",
-        "src/runs/foreground/subagent-executor.ts",
-        "src/tui/indexed-history.ts",
-        "src/tui/view-connections.ts"
+        "test/integration/pi-intercom-native-replay.test.ts"
       ],
       "rules": {
         "no-param-reassign": [
@@ -461,150 +409,6 @@
           {
             "props": true,
             "ignorePropertyModificationsFor": []
-          }
-        ]
-      }
-    },
-    {
-      "files": ["src/tui/task-store.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["task"]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
-        "src/tui/agent-view.ts",
-        "test/unit/execution-cwd.test.ts",
-        "test/fixtures/native-cwd-delegation.mjs",
-        "test/integration/doctor-executor.test.ts"
-      ],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["request"]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
-        "src/runs/shared/run-state-owner.ts",
-        "src/runs/shared/history-index.ts",
-        "src/runs/foreground/wait-registration.ts",
-        "src/runs/background/async-job-tracker.ts",
-        "src/runs/background/result-watcher.ts",
-        "src/runs/background/completion-delivery.ts"
-      ],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["state"]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
-        "src/runs/shared/nested-projection.ts",
-        "src/runs/background/async-job-projection.ts"
-      ],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["job"]
-          }
-        ]
-      }
-    },
-    {
-      "files": ["src/runs/shared/native-usage.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["usage"]
-          }
-        ]
-      }
-    },
-    {
-      "files": ["src/runs/background/runner-status.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["step", "statusPayload"]
-          }
-        ]
-      }
-    },
-    {
-      "files": ["src/runs/background/runner-dynamic.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["statusPayload"]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
-        "src/runs/background/runner-child-executor.ts",
-        "src/runs/background/runner-step-output.ts"
-      ],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": []
-          }
-        ],
-        "unicorn/no-useless-undefined": [
-          "error",
-          {
-            "checkArguments": false
-          }
-        ]
-      }
-    },
-    {
-      "files": ["src/runs/shared/worktree-preservation.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["setup"]
-          }
-        ]
-      }
-    },
-    {
-      "files": ["src/shared/prompt-sections.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["options"]
           }
         ]
       }
@@ -622,36 +426,11 @@
       }
     },
     {
-      "files": ["test/fixtures/native-legacy-completion.mjs"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["pi"]
-          }
-        ]
-      }
-    },
-    {
-      "files": ["test/fixtures/native-tool-results.mjs"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["receipt"]
-          }
-        ]
-      }
-    },
-    {
       "files": [
         ".github/scripts/ci-host.mjs",
         "scripts/build.mjs",
         "scripts/check-compat.mjs",
         "scripts/compat-host.mjs",
-        "scripts/generate-run-schemas.mjs",
         "scripts/intercom-bridge-credentials.mjs",
         "scripts/intercom-remote.mjs",
         "scripts/local-install-smoke.mjs",
@@ -663,29 +442,11 @@
         "scripts/run-tests.mjs",
         "test/fixtures/build-fs-fault-preload.mjs",
         "test/fixtures/build-tsc-stub.cjs",
-        "test/fixtures/history-watch-hint.mjs",
-        "test/fixtures/hold-runner-polls.mjs",
-        "test/fixtures/hold-runner-startup.mjs",
-        "test/fixtures/malformed-finalization-receipts.mjs",
-        "test/fixtures/native-acceptance-cli-extension.mjs",
-        "test/fixtures/native-acceptance-report.mjs",
-        "test/fixtures/native-async-child.mjs",
-        "test/fixtures/native-async-parent.mjs",
-        "test/fixtures/native-child-attempt.mjs",
-        "test/fixtures/native-cwd-delegation.mjs",
-        "test/fixtures/native-feedback-child.mjs",
-        "test/fixtures/native-legacy-completion.mjs",
-        "test/fixtures/native-ownership-cli.mjs",
-        "test/fixtures/native-prompt-sections.mjs",
-        "test/fixtures/native-result-routing.mjs",
-        "test/fixtures/native-run-ownership.mjs",
-        "test/fixtures/native-tool-results.mjs",
-        "test/fixtures/owned-run-wait-liveness.mjs",
+        "test/fixtures/single-agent-parent.mjs",
+        "test/fixtures/single-agent-provider.mjs",
+        "test/fixtures/single-agent-shutdown.mjs",
         "test/fixtures/pi-intercom-native-resume.mjs",
-        "test/fixtures/real-pi-smoke-cli.mjs",
-        "test/fixtures/runner-clock.mjs",
-        "test/support/mock-pi-script.mjs",
-        "test/fixtures/intercom-launch-provider.mjs"
+        "test/fixtures/real-pi-smoke-cli.mjs"
       ],
       "rules": {
         "typescript/await-thenable": "off",
@@ -749,18 +510,6 @@
         "typescript/use-unknown-in-catch-callback-variable": "off",
         "typescript/explicit-module-boundary-types": "off",
         "typescript/consistent-type-imports": "off"
-      }
-    },
-    {
-      "files": ["src/pi-intercom/bridge-launch.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["entry"]
-          }
-        ]
       }
     }
   ]

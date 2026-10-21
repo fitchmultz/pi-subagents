@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
@@ -12,417 +13,174 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
-import process from "node:process";
-import { hostCli, hostRoot } from "./compat-host.mjs";
-
-const require = createRequire(import.meta.url);
-const packageJson = require("../package.json");
-process.env.PI_PACKAGE_DIR = hostRoot;
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { hostRoot } from "./compat-host.mjs";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    `Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both compiled dist extension entrypoints load as native ES modules\n  - the installed credential CLI provides usage help from its node_modules path\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`,
+    "Usage: node scripts/package-smoke.mjs\n\nPack and install the single-entry package without development dependencies. Verify host SDK/TypeBox identity and execute a real native actor using a credential-free local provider. No publication or paid model calls.\nExit codes: 0 passed; 1 packaging, native execution or cleanup failed.",
   );
   process.exit(0);
 }
 
-function fail(message) {
-  console.error(`[package-smoke] ${message}`);
-  if (productionRoot) {
-    console.error(`[package-smoke] failure evidence: ${productionRoot}`);
-  }
-  process.exit(1);
-}
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const root = mkdtempSync(join(tmpdir(), "ps-package-"));
+const packDir = join(root, "pack");
+mkdirSync(packDir);
 
 function run(command, args, cwd = process.cwd(), env = process.env) {
   const result = spawnSync(command, args, {
     cwd,
     env,
-    encoding: "utf-8",
+    encoding: "utf8",
+    timeout: 120_000,
+    maxBuffer: 16 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (result.error) {
-    throw new Error(`failed to start ${command}: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    process.stderr.write(result.stderr);
-    process.stdout.write(result.stdout);
-    throw new Error(`${command} ${args.join(" ")} exited with ${result.status}`);
-  }
+  assert.equal(
+    result.status,
+    0,
+    `${command} ${args.join(" ")}\n${result.error ?? ""}\n${result.stdout}\n${result.stderr}`,
+  );
   return result.stdout;
 }
 
-function runOrFail(command, args, cwd = process.cwd()) {
-  try {
-    return run(command, args, cwd);
-  } catch (error) {
-    fail(error instanceof Error ? error.message : String(error));
-  }
+function verifyManifest(manifest) {
+  assert.equal(manifest.name, "@fitchmultz/pi-subagents");
+  assert.notEqual(manifest.private, true);
+  assert.deepEqual(manifest.publishConfig, { access: "public" });
+  assert.equal(manifest.bin, undefined, "no legacy installer");
+  assert.deepEqual(manifest.pi.extensions, ["./dist/index.js"]);
+  assert.deepEqual(manifest.pi.skills, ["./skills"]);
+  assert.equal(manifest.pi.agents, undefined);
+  assert.equal(manifest.pi.prompts, undefined);
 }
 
-function assertPackedFile(files, path) {
-  if (!files.some((file) => file.path === path)) {
-    fail(`npm pack output is missing ${path}`);
-  }
-}
-
-function assertNotPackedFile(files, path) {
-  if (files.some((file) => file.path === path)) {
-    fail(`npm pack output should not include ${path}`);
-  }
-}
-
-const productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
-const packDir = join(productionRoot, "pack");
-mkdirSync(packDir);
-if (packageJson.files !== undefined && !Array.isArray(packageJson.files)) {
-  fail("package.json files must be an array");
-}
-const packOutput = runOrFail("npm", ["pack", "--json", "--pack-destination", packDir]);
-let packs;
-try {
-  packs = JSON.parse(packOutput);
-} catch (error) {
-  fail(
-    `npm pack --json returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-  );
-}
-// npm 11 returns an array; npm 12 keys the same records by package name.
-const pack = Object.values(packs)[0];
-if (!pack || !Array.isArray(pack.files)) {
-  fail("npm pack --json did not report a file list");
-}
-
-for (const path of [
-  "package.json",
-  "LICENSE",
-  "README.md",
-  "dist/extension/index.js",
-  "dist/pi-intercom/index.js",
-  "dist/pi-intercom/broker/broker.js",
-  "dist/pi-intercom/bridge.js",
-  "scripts/intercom-bridge-credentials.mjs",
-  "scripts/intercom-remote.mjs",
-  "docs/intercom-bridge.md",
-  "dist/runs/background/subagent-runner-launcher.js",
-  "src/extension/index.ts",
-  "src/extension/schemas.ts",
-  "src/pi-intercom/index.ts",
-  "src/pi-intercom/broker/broker.ts",
-  "src/pi-intercom/ui/session-list.ts",
-  "src/shared/types.ts",
-  "src/runs/background/subagent-runner-launcher.ts",
-  "agents/reviewer.md",
-  "agents/watcher.md",
-  "skills/pi-subagents/SKILL.md",
-  "skills/pi-intercom/SKILL.md",
-  "docs/intercom.md",
-  "prompts/review-loop.md",
-  "scripts/real-pi-smoke.mjs",
-]) {
-  assertPackedFile(pack.files, path);
-}
-
-assertNotPackedFile(pack.files, "install.mjs");
-
-if (
-  packageJson.name !== "@fitchmultz/pi-subagents" ||
-  packageJson.private === true ||
-  !isDeepStrictEqual(packageJson.publishConfig, { access: "public" })
-) {
-  fail("package.json must expose the owned public scoped npm identity");
-}
-if ("bin" in packageJson) {
-  fail("package.json must not expose a legacy npx/bin installer");
-}
-if (packageJson.files?.includes("*.mjs")) {
-  fail("package.json files must not include the legacy root *.mjs wildcard");
-}
-for (const path of ["install.mjs", "scripts/intercom-smoke-package.mjs"]) {
-  if (existsSync(join(process.cwd(), path))) {
-    fail(`legacy distribution path must stay absent: ${path}`);
-  }
-}
-if (
-  !isDeepStrictEqual(packageJson.pi?.extensions, [
-    "./dist/extension/index.js",
-    "./dist/pi-intercom/index.js",
-  ])
-) {
-  fail("package.json pi.extensions must contain exactly the subagents and intercom entries");
-}
-if (!isDeepStrictEqual(packageJson.pi?.skills, ["./skills"])) {
-  fail("package.json pi.skills must contain exactly ./skills");
-}
-if (packageJson.pi?.prompts !== undefined) {
-  fail(
-    "package.json pi.prompts must stay unset so example prompts are not registered as slash commands",
-  );
-}
-
-for (const entrypoint of ["../dist/extension/index.js", "../dist/pi-intercom/index.js"]) {
-  // Load each entry against the selected native host before production install verification.
-  // oxlint-disable-next-line no-await-in-loop
-  const extensionModule = await import(new URL(entrypoint, import.meta.url));
-  if (typeof extensionModule.default !== "function") {
-    fail(`${entrypoint} did not load a default registration function`);
-  }
-}
-
-function installProduction(packed) {
-  const installDir = join(productionRoot, "install");
+function installProduction(pack) {
+  const installDir = join(root, "npm");
   mkdirSync(installDir);
   writeFileSync(
     join(installDir, "package.json"),
     JSON.stringify({ private: true, type: "module" }),
   );
-  const filename = packed.filename;
-  if (typeof filename !== "string") {
-    throw new Error("npm pack did not report a tarball filename");
-  }
   run(
     "npm",
-    ["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", join(packDir, filename)],
-    installDir,
-  );
-  const installedRoot = join(installDir, "node_modules", packageJson.name);
-  if (!existsSync(installedRoot)) {
-    throw new Error(`production install is missing ${packageJson.name}`);
-  }
-  const credentialHelp = run(
-    process.execPath,
-    [join(installedRoot, "scripts/intercom-bridge-credentials.mjs"), "--help"],
-    installDir,
-  );
-  if (
-    !credentialHelp.includes(
-      "Usage: node scripts/intercom-bridge-credentials.mjs <init|issue|revoke|renew-server>",
-    )
-  ) {
-    throw new Error("installed credential CLI did not provide usage help");
-  }
-  const gitPackageRoot = join(productionRoot, "git-package");
-  cpSync(installedRoot, gitPackageRoot, { recursive: true });
-  run("npm", ["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps"], gitPackageRoot);
-  for (const name of [
-    "typebox",
-    "@earendil-works/pi-agent-core",
-    "@earendil-works/pi-ai",
-    "@earendil-works/pi-coding-agent",
-    "@earendil-works/pi-tui",
-  ]) {
-    if (existsSync(join(gitPackageRoot, "node_modules", name))) {
-      throw new Error(`runtime-only package shadows host-provided ${name}`);
-    }
-  }
-  return gitPackageRoot;
-}
-
-async function verifyProductionRuntime(gitPackageRoot) {
-  const hostTypebox = await import(
-    pathToFileURL(createRequire(join(hostRoot, "dist/index.js")).resolve("typebox")).href
-  );
-  const nativeTypebox = await import(
-    pathToFileURL(join(gitPackageRoot, "dist/shared/native-typebox.js")).href
-  );
-  if (nativeTypebox.Type !== hostTypebox.Type) {
-    throw new Error("packed runtime did not use the selected host's TypeBox");
-  }
-  await import(
-    pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "acceptance-contract.js")).href
-  );
-  await import(
-    pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "supervisor-questions.js")).href
-  );
-  const brokerSpawn = await import(
-    pathToFileURL(join(gitPackageRoot, "dist", "pi-intercom", "broker", "spawn.js")).href
-  );
-  const brokerCwd = brokerSpawn.getBrokerSpawnOptions().cwd;
-  if (realpathSync(brokerCwd) !== realpathSync(gitPackageRoot)) {
-    throw new Error(`packed broker resolved ${brokerCwd} instead of ${gitPackageRoot}`);
-  }
-  run(
-    process.execPath,
-    ["--check", join(gitPackageRoot, "dist", "pi-intercom", "broker", "broker.js")],
-    gitPackageRoot,
-  );
-  const distPiArgs = await import(
-    pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "pi-args.js")).href
-  );
-  const childArgs =
-    distPiArgs.buildPiArgs({
-      baseArgs: [],
-      task: "package-smoke",
-      sessionEnabled: false,
-      inheritProjectContext: false,
-      inheritSkills: false,
-      allowSubagents: true,
-    }).args ?? [];
-  const childExtensionPaths = childArgs.flatMap((arg, index) =>
-    arg === "--extension" ? [childArgs[index + 1]] : [],
-  );
-  if (childExtensionPaths.length === 0) {
-    throw new Error("dist buildPiArgs emitted no --extension paths");
-  }
-  for (const extensionPath of childExtensionPaths) {
-    if (!existsSync(extensionPath)) {
-      throw new Error(`dist buildPiArgs emitted a missing --extension path: ${extensionPath}`);
-    }
-  }
-}
-
-async function verifyNativeChild(gitPackageRoot) {
-  const home = join(productionRoot, "native-home");
-  const asyncDir = join(home, "run");
-  mkdirSync(asyncDir, { recursive: true });
-  const sessionFile = join(home, "child.jsonl");
-  writeFileSync(
-    sessionFile,
-    `${JSON.stringify({ type: "session", version: 3, id: "packed-native-probe", cwd: home, timestamp: new Date().toISOString() })}\n`,
-  );
-  const marker = join(home, "native-started.json");
-  const observer = join(home, "observe.ts");
-  writeFileSync(
-    observer,
-    `import { writeFileSync, writeSync } from "node:fs";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-export default function (pi) {
-	const faux = fauxProvider();
-	pi.registerProvider("faux", { api: faux.api, baseUrl: faux.getModel().baseUrl, apiKey: "fixture-key", models: faux.models, streamSimple: faux.provider.streamSimple });
-	pi.on("session_start", (_event, ctx) => {
-		pi.appendEntry("package-probe", { nativeSession: true });
-		writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ sessionFile: ctx.sessionManager.getSessionFile(), model: { provider: ctx.model?.provider, id: ctx.model?.id }, modelCalls: faux.state.callCount }));
-		const message = fauxAssistantMessage("PACKED_NATIVE_COMPLETE");
-		// Pi redirects extension stdout to stderr; this fixture emits controlled wire records.
-		writeSync(1, JSON.stringify({ type: "message_end", message }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n");
-		process.exit(0);
-	});
-}`,
-  );
-  const nativeEnv = nativeEnvironment(home);
-  const configPath = join(home, "config.json");
-  const resultPath = join(home, "result.json");
-  writeNativeConfig({ home, asyncDir, resultPath, sessionFile, observer, configPath });
-  run(
-    process.execPath,
     [
-      join(gitPackageRoot, "dist/runs/background/subagent-runner-launcher.js"),
-      join(gitPackageRoot, "dist/runs/background/subagent-runner.js"),
-      configPath,
+      "install",
+      "--ignore-scripts",
+      "--omit=dev",
+      "--legacy-peer-deps",
+      join(packDir, pack.filename),
     ],
-    home,
-    nativeEnv,
+    installDir,
   );
-  verifyNativeResult(resultPath, marker, sessionFile);
-  console.log(
-    "[package-smoke] packed detached Node runner completed a controlled native Pi startup (no model call)",
+  const installed = join(installDir, "node_modules", packageJson.name);
+  const standalone = join(root, "standalone");
+  cpSync(installed, standalone, { recursive: true });
+  run("npm", ["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps"], standalone);
+  for (const directory of [join(installDir, "node_modules"), join(standalone, "node_modules")]) {
+    for (const name of [
+      "typescript",
+      "typebox",
+      "@earendil-works/pi-agent-core",
+      "@earendil-works/pi-ai",
+      "@earendil-works/pi-coding-agent",
+      "@earendil-works/pi-tui",
+    ]) {
+      assert.equal(
+        existsSync(join(directory, name)),
+        false,
+        `runtime-only installation shadows host dependency ${name}`,
+      );
+    }
+  }
+  return [installed, standalone];
+}
+
+async function verifyRuntime(packageRoot) {
+  verifyManifest(JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")));
+  const hostRequire = createRequire(join(hostRoot, "dist/index.js"));
+  const sdk = await import(pathToFileURL(join(hostRoot, "dist/index.js")).href);
+  const nativeHost = await import(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href);
+  assert.equal(
+    await nativeHost.loadSDK(hostRoot),
+    sdk,
+    "actor must use the exact selected host SDK",
   );
+  const hostTypebox = await import(pathToFileURL(hostRequire.resolve("typebox")).href);
+  const nativeTypebox = await import(
+    pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href
+  );
+  assert.equal(nativeTypebox.Type, hostTypebox.Type, "shared schemas use the selected host");
+  const broker = await import(
+    pathToFileURL(join(packageRoot, "dist/pi-intercom/broker/spawn.js")).href
+  );
+  assert.equal(realpathSync(broker.getBrokerSpawnOptions().cwd), realpathSync(packageRoot));
+  const help = run(
+    process.execPath,
+    [join(packageRoot, "scripts/intercom-bridge-credentials.mjs"), "--help"],
+    root,
+  );
+  assert.match(help, /Usage: node scripts\/intercom-bridge-credentials.mjs/);
   process.stdout.write(
     run(
       process.execPath,
-      [join(process.cwd(), "scripts/native-package-smoke.mjs"), gitPackageRoot],
-      home,
-      { ...nativeEnv, PI_PACKAGE_DIR: hostRoot },
+      [fileURLToPath(new URL("./native-package-smoke.mjs", import.meta.url)), packageRoot],
+      root,
+      { ...process.env, PI_PACKAGE_DIR: hostRoot, PATH: "/usr/bin:/bin" },
     ),
   );
 }
 
-function nativeEnvironment(home) {
-  const nativeEnv = {
-    ...process.env,
-    HOME: home,
-    PI_CODING_AGENT_DIR: join(home, "agent"),
-    PI_OFFLINE: "1",
-  };
-  for (const key of Object.keys(nativeEnv)) {
-    if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) {
-      delete nativeEnv[key];
-    }
-  }
-  nativeEnv.PI_SUBAGENT_TEMP_ROOT = join(home, "pi-subagents-runtime");
-  const bin = join(home, "bin");
-  mkdirSync(bin);
-  writeFileSync(join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${hostCli}" "$@"\n`, {
-    mode: 0o755,
-  });
-  // A wrapper-only PATH also covers managed installs whose shim is not a symlink.
-  nativeEnv.PATH = `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`;
-  delete nativeEnv.PI_PACKAGE_DIR;
-  return nativeEnv;
-}
-
-function writeNativeConfig({ home, asyncDir, resultPath, sessionFile, observer, configPath }) {
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      id: "packed-native",
-      cwd: home,
-      asyncDir,
-      resultPath,
-      piPackageRoot: hostRoot,
-      placeholder: "{previous}",
-      resultMode: "single",
-      sessionDir: home,
-      steps: [
-        {
-          agent: "probe",
-          task: "Controlled package startup check; no model call",
-          model: "faux/faux-1",
-          sessionFile,
-          extensions: [observer],
-          inheritProjectContext: false,
-          inheritSkills: false,
-        },
-      ],
-    }),
-  );
-}
-
-function verifyNativeResult(resultPath, marker, sessionFile) {
-  const result = JSON.parse(readFileSync(resultPath, "utf8"));
-  if (result.success !== true || result.results?.[0]?.output !== "PACKED_NATIVE_COMPLETE") {
-    throw new Error(
-      `Packed detached runner did not complete its controlled native Pi child: ${JSON.stringify({ nativeStarted: existsSync(marker), children: result.results?.map(({ exitCode, error, output }) => ({ exitCode, error, output })) })}`,
-    );
-  }
-  verifyNativeSession(marker, sessionFile);
-}
-
-function verifyNativeSession(marker, sessionFile) {
-  const observed = JSON.parse(readFileSync(marker, "utf8"));
-  if (observed.sessionFile !== sessionFile) {
-    throw new Error("Packed child did not bind the requested native Pi session");
-  }
-  if (
-    observed.model?.provider !== "faux" ||
-    observed.model?.id !== "faux-1" ||
-    observed.modelCalls !== 0
-  ) {
-    throw new Error("Packed child must select the native faux model without invoking it");
-  }
-}
-
-let productionImportError;
 try {
-  const gitPackageRoot = installProduction(pack);
-  await verifyProductionRuntime(gitPackageRoot);
-  await verifyNativeChild(gitPackageRoot);
-} catch (error) {
-  productionImportError = error;
-} finally {
-  if (!productionImportError) {
-    rmSync(productionRoot, { recursive: true, force: true });
+  verifyManifest(packageJson);
+  process.env.PI_PACKAGE_DIR = hostRoot;
+  const pack = Object.values(
+    JSON.parse(run("npm", ["pack", "--json", "--pack-destination", packDir])),
+  )[0];
+  assert.ok(pack && Array.isArray(pack.files), "npm pack must report files");
+  const paths = new Set(pack.files.map((file) => file.path));
+  for (const path of [
+    "package.json",
+    "LICENSE",
+    "README.md",
+    "dist/index.js",
+    "dist/build-info.js",
+    "dist/agent/runner.js",
+    "dist/pi-intercom/broker/broker.js",
+    "dist/pi-intercom/bridge.js",
+    "src/index.ts",
+    "src/agent/index.ts",
+    "scripts/prepare.mjs",
+    "scripts/build.mjs",
+    "scripts/real-pi-smoke.mjs",
+    "scripts/intercom-remote.mjs",
+    "skills/pi-subagents/SKILL.md",
+    "skills/pi-intercom/SKILL.md",
+  ]) {
+    assert.ok(paths.has(path), `npm pack is missing ${path}`);
   }
-}
-if (productionImportError) {
-  fail(
-    `packed production install could not load runtime paths: ${productionImportError instanceof Error ? productionImportError.message : String(productionImportError)}`,
+  for (const path of paths) {
+    assert.doesNotMatch(
+      path,
+      /^(?:agents|prompts|generated)\//,
+      "no profiles, prompt templates or old generated validators",
+    );
+    assert.notEqual(path, "dist/extension/index.js", "retired orchestration entry must not ship");
+    assert.notEqual(path, "install.mjs", "no legacy installer");
+  }
+  for (const packageRoot of installProduction(pack)) {
+    // Qualify both the npm node_modules location and standalone git-style production graph.
+    // oxlint-disable-next-line no-await-in-loop
+    await verifyRuntime(packageRoot);
+  }
+  console.log(
+    `[package-smoke] ${pack.name}@${pack.version}: ${pack.files.length} files; one entry, zero profiles/prompts; runtime-only npm and standalone native actors passed`,
   );
+} catch (error) {
+  console.error(`[package-smoke] ${error instanceof Error ? error.stack : String(error)}`);
+  process.exitCode = 1;
+} finally {
+  rmSync(root, { recursive: true, force: true });
 }
-
-console.log(
-  `[package-smoke] ${pack.name}@${pack.version}: ${pack.files.length} files packed; subagent, intercom, runner, and broker paths loaded`,
-);

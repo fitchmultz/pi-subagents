@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { objectAt } from "./config-workflow-fixtures.ts";
 import { record as objectValue, json as parseJsonObject } from "../support/assertions.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -76,7 +75,7 @@ test("Pi development dependencies use one exact baseline with optional wildcard 
     assert.match(version, /^\d+\.\d+\.\d+$/, name);
     assert.equal(devDependencies[name], devDependencies["@earendil-works/pi-coding-agent"], name);
     assert.equal(peerDependencies[name], "*", name);
-    assert.equal(objectAt(peerDependenciesMeta, name).optional, true, name);
+    assert.equal(objectValue(peerDependenciesMeta[name]).optional, true, name);
   }
 });
 

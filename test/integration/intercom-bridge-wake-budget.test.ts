@@ -427,15 +427,13 @@ test(
     } finally {
       closeSync(fd);
     }
-    assert.deepEqual((await f.apis[0].api("ack", { ids: [healthy.id] })).body.retained, [
-      healthy.id,
-    ]);
+    assert.deepEqual((await f.apis[0].api("ack", { ids: [healthy.id] })).body.acked, [healthy.id]);
     await f.clock("SIGWINCH");
     assert.equal(f.requests.length, 0);
     assert.equal(
       records((await f.apis[0].api("inbox")).body.messages).length,
-      8,
-      "suppression preserves payload and asks",
+      7,
+      "suppression preserves every unacknowledged payload",
     );
     const explicit = await f.peer.send(f.remoteIds[0], {
       text: "ACK: please answer this request",
@@ -461,8 +459,8 @@ test(
     await f.clock("SIGWINCH");
     assert.equal(f.requests.length, 1, "new pending flood does not bypass cold batch backoff");
     assert.deepEqual(
-      (await f.apis[0].api("ack", { ids: [explicit.id, passiveAsk.id] })).body.retained,
-      [explicit.id],
+      (await f.apis[0].api("ack", { ids: [explicit.id, passiveAsk.id] })).body.acked,
+      [explicit.id, passiveAsk.id],
     );
     const attemptTime = f.rows("SELECT attemptedAt FROM wake_attempts")[0].attemptedAt;
     assert.ok(typeof attemptTime === "number");
@@ -481,7 +479,7 @@ test(
     f.apis[2] = await bridgeApi(f.current(), f.credentials[2]);
     assert.deepEqual((await f.apis[2].api("ack", { ids: joined })).body.acked, joined);
     await f.clock("SIGUSR1");
-    assert.equal(f.requests.length, 1, "real ACKs retire notification, not reply obligation");
+    assert.equal(f.requests.length, 1, "real ACKs transfer durable intake and retire notification");
     const newMail = await f.peer.send(f.remoteIds[0], {
       text: "ACKNOWLEDGE is not an exact ACK prefix",
     });

@@ -1,10 +1,8 @@
-import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createSecureContext } from "node:tls";
 import { parseEnv } from "node:util";
 import { isUnknownArray } from "../shared/unknown.ts";
 import { BODY_LIMIT, object, label, fingerprint } from "./bridge-protocol.ts";
-import { launchPolicy, type LaunchPolicy } from "./bridge-launch-policy.ts";
 import { stateDirectory } from "./bridge-storage.ts";
 import { readBridgeFile } from "./bridge-files.ts";
 
@@ -41,7 +39,6 @@ export interface Identity {
   readonly fingerprint256: string;
   readonly name: string;
   readonly cwd: string;
-  readonly launch?: LaunchPolicy;
   readonly wake?: WakePolicy;
 }
 export interface Config {
@@ -61,25 +58,21 @@ function identities(value: unknown): Map<string, Identity> {
   const clients = new Map<string, Identity>();
   const names = new Set<string>();
   for (const raw of value) {
-    const entry = object(raw, ["fingerprint256", "name", "cwd", "launch", "wake"]);
+    const entry = object(raw, ["fingerprint256", "name", "cwd", "wake"]);
     const fingerprint256 = fingerprint(entry.fingerprint256);
     const name = label(entry.name, "name", 128).trim();
     const cwd = label(entry.cwd, "cwd", 4096);
     if (!isAbsolute(cwd)) {
       throw new Error("Client cwd must be absolute.");
     }
-    const launch = launchPolicy(entry.launch);
-    if (launch && !statSync(cwd).isDirectory()) {
-      throw new Error("Launch cwd must be an existing directory.");
-    }
+
     if (clients.has(fingerprint256) || names.has(name.toLowerCase())) {
       throw new Error("Client fingerprints and names must be unique.");
     }
     clients.set(fingerprint256, {
       fingerprint256,
       name,
-      cwd: launch ? realpathSync(cwd) : cwd,
-      launch,
+      cwd,
       wake: wakePolicy(entry.wake),
     });
     names.add(name.toLowerCase());
@@ -92,19 +85,6 @@ function configInput(path: string): Record<string, unknown> {
     new TextDecoder("utf-8", { fatal: true }).decode(readBridgeFile(path, true, BODY_LIMIT)),
   );
   return object(raw, ["port", "ca", "cert", "key", "clients", "stateDir"]);
-}
-
-/** Recipient admission reads private policy and the public CA, never the server key. */
-export function loadControlPolicy(path: string): {
-  readonly clients: ReadonlyMap<string, Identity>;
-  readonly ca: Buffer;
-} {
-  const input = configInput(path);
-  const ca = label(input.ca, "ca path", 4096);
-  if (!isAbsolute(ca)) {
-    throw new Error("CA path must be absolute.");
-  }
-  return { clients: identities(input.clients), ca: readBridgeFile(ca, false, 1024 * 1024) };
 }
 
 export function loadConfig(path: string): Config {

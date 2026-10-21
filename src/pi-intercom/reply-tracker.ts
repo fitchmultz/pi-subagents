@@ -49,10 +49,6 @@ function pendingSenderOptions(
     .join(", ");
 }
 
-export function isDurableSupervisorQuestion(message: Message): boolean {
-  return message.content.text.includes(`Question ID: ${message.id}`);
-}
-
 function matchingSender(
   contexts: readonly IntercomContext[],
   to: string,
@@ -155,8 +151,7 @@ export class ReplyTracker {
   }
 
   expireSender(sessionId: string): number {
-    const expires = (context: IntercomContext) =>
-      context.from.id === sessionId && !isDurableSupervisorQuestion(context.message);
+    const expires = (context: IntercomContext) => context.from.id === sessionId;
     let expired = 0;
     for (const [messageId, context] of this.pendingAsks) {
       if (expires(context)) {
@@ -223,15 +218,6 @@ export class ReplyTracker {
     this.removeContext(replyTo);
   }
 
-  get hasReplyContext(): boolean {
-    return (
-      this.pendingAsks.size > 0 ||
-      this.pendingTurnContexts.length > 0 ||
-      this.currentTurnContext !== null ||
-      this.activeAgentContext !== null
-    );
-  }
-
   listPending(now = Date.now()): IntercomContext[] {
     this.pruneExpired(now);
     return Array.from(this.pendingAsks.values()).sort((a, b) => a.receivedAt - b.receivedAt);
@@ -262,10 +248,7 @@ export class ReplyTracker {
 
   private pruneExpired(now: number): void {
     for (const [messageId, context] of this.pendingAsks) {
-      if (
-        !isDurableSupervisorQuestion(context.message) &&
-        now - context.receivedAt > this.askTimeoutMs
-      ) {
+      if (now - context.receivedAt > this.askTimeoutMs) {
         this.removeContext(messageId);
       }
     }

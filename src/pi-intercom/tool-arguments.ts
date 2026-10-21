@@ -96,6 +96,12 @@ function queueError(params: IntercomToolParams): ToolResultLike | undefined {
   return;
 }
 export function validateIntercomArguments(params: IntercomToolParams): ToolResultLike | undefined {
+  if (
+    (params.entryId !== undefined || params.offset !== undefined || params.limit !== undefined) &&
+    params.action !== "last"
+  ) {
+    return toolError("'entryId', 'offset', and 'limit' are only valid for action='last'");
+  }
   if (params.scope !== undefined && params.action !== "list" && params.action !== "status") {
     return toolError("'scope' is only valid for action='list' or action='status'");
   }

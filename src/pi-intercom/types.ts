@@ -8,7 +8,6 @@ import {
   safeLabel,
   safeText,
 } from "./validation.ts";
-import type { NativeControlEnvelope } from "./native-control-protocol.ts";
 
 export interface SessionInfo {
   readonly id: string;
@@ -17,6 +16,8 @@ export interface SessionInfo {
   readonly model: string;
   /** Opaque same-repository/worktree identity used for ambient peer awareness. */
   readonly projectId?: string;
+  readonly rootSessionId?: string;
+  readonly parentSessionId?: string;
   readonly status?: string;
   readonly lastSeen?: number;
   readonly lastIntercomActivity?: number;
@@ -107,7 +108,6 @@ export interface Message {
   readonly timestamp: number;
   readonly replyTo?: string;
   readonly expectsReply?: boolean;
-  readonly control?: NativeControlEnvelope;
   /** Recipients verify parent ownership before elevating human origin. */
   readonly human?: HumanMessageOrigin;
   readonly topic?: TopicUpdate;
@@ -252,17 +252,27 @@ function validSessionTopics(session: Readonly<Record<string, unknown>>): boolean
   );
 }
 
+function validSessionLineage(value: Readonly<Record<string, unknown>>): boolean {
+  return (
+    optionalLabel(value.rootSessionId) &&
+    optionalLabel(value.parentSessionId) &&
+    (value.parentSessionId === undefined || value.rootSessionId === value.parentSessionId)
+  );
+}
+
+function validSessionProject(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && /^[a-f0-9]{64}$/.test(value));
+}
+
 export function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
   if (!isRecord(value) || !safeLabel(value.cwd) || !safeLabel(value.model)) {
     return false;
   }
-  const validProject =
-    value.projectId === undefined ||
-    (typeof value.projectId === "string" && /^[a-f0-9]{64}$/.test(value.projectId));
   return (
     optionalLabel(value.name) &&
     optionalLabel(value.status) &&
-    validProject &&
+    validSessionLineage(value) &&
+    validSessionProject(value.projectId) &&
     validSessionHealth(value) &&
     validSessionTopics(value)
   );
@@ -345,12 +355,30 @@ export function normalizeMessage(value: unknown): Message | null {
   return isMessage(restored) ? restored : null;
 }
 
+export interface LastMessageQuery {
+  readonly entryId?: string;
+  readonly offset?: number;
+  readonly limit?: number;
+}
+
+export type LastMessageResult =
+  | {
+      readonly session: SessionInfo;
+      readonly entryId: string | null;
+      readonly text: string;
+      readonly offset: number;
+      readonly totalLength: number;
+      readonly nextOffset?: number;
+    }
+  | { readonly error: string };
+
 export type BrokerMessage =
   | {
       readonly type: "registered";
       readonly sessionId: string;
       readonly topicsSupported?: true;
       readonly topicFrames?: true;
+      readonly lastMessages?: true;
     }
   | {
       readonly type: "sessions";
@@ -364,6 +392,17 @@ export type BrokerMessage =
       readonly type: "message";
       readonly from: SessionInfo;
       readonly message: Message | CompactTopicMessage;
+    }
+  | {
+      readonly type: "last_request";
+      readonly requestId: string;
+      readonly from: SessionInfo;
+      readonly query: LastMessageQuery;
+    }
+  | {
+      readonly type: "last_response";
+      readonly requestId: string;
+      readonly result: LastMessageResult;
     }
   | { readonly type: "session_left"; readonly sessionId: string }
   | { readonly type: "delivered"; readonly messageId: string }

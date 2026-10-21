@@ -22,8 +22,8 @@ import {
 } from "../../src/pi-intercom/broker/spawn.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const { getPiAgentDir } = await import("../../src/pi-intercom/agent-dir.ts");
-const pidDir = path.join(getPiAgentDir(), "intercom");
+const pidDir = process.env.PI_INTERCOM_RUNTIME_DIR;
+assert.ok(pidDir !== undefined && pidDir !== "");
 
 test(
   "legacy PID alias to a real Linux thread cannot be a broker process",

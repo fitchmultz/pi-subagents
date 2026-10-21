@@ -1,10 +1,11 @@
 import { EventEmitter } from "events";
 import type net from "net";
 import { randomUUID } from "crypto";
-import type { NativeControlEnvelope } from "../native-control-protocol.ts";
 import { writeMessage } from "./framing.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
+import { LastMessageRequests } from "./client-last.ts";
+import { isLastMessageQuery, isLastMessageResult } from "./last.ts";
 import {
   errorMessage,
   isRecord,
@@ -25,6 +26,8 @@ import {
   type TopicChange,
   type SessionSnapshot,
   type SendResult,
+  type LastMessageQuery,
+  type LastMessageResult,
 } from "../types.ts";
 export type { SendResult } from "../types.ts";
 
@@ -52,7 +55,6 @@ interface SendOptions {
   readonly messageId?: string;
   readonly human?: HumanMessageOrigin;
   readonly topic?: TopicUpdate;
-  readonly control?: NativeControlEnvelope;
 }
 
 function toError(error: unknown): Error {
@@ -76,6 +78,8 @@ export class IntercomClient extends EventEmitter {
   private connection: BrokerConnection | null = null;
   private _sessionId: string | null = null;
   private _topicsSupported = false;
+  private lastMessagesSupported = false;
+  private readonly lastRequests = new LastMessageRequests();
   private readonly pendingSends = new Map<
     string,
     { readonly resolve: (r: SendResult) => void; readonly reject: (e: Readonly<Error>) => void }
@@ -100,6 +104,7 @@ export class IntercomClient extends EventEmitter {
   }
 
   private failPending(error: Readonly<Error>): void {
+    this.lastRequests.fail(error);
     for (const pending of this.pendingSends.values()) {
       pending.reject(error);
     }
@@ -159,6 +164,7 @@ export class IntercomClient extends EventEmitter {
           this.connection = null;
           this._sessionId = null;
           this._topicsSupported = false;
+          this.lastMessagesSupported = false;
           this.disconnecting = false;
           this.failPending(error);
           if (established && !expected) {
@@ -174,6 +180,7 @@ export class IntercomClient extends EventEmitter {
           session: identity,
           requestedId,
           topicFrames: true,
+          lastMessages: true,
         });
       } catch (error) {
         if (this.connection === connection) {
@@ -224,6 +231,12 @@ export class IntercomClient extends EventEmitter {
       case "sessions":
         this.receiveSessions(brokerMessage);
         break;
+      case "last_request":
+        this.receiveLastRequest(brokerMessage);
+        break;
+      case "last_response":
+        this.lastRequests.receive(brokerMessage);
+        break;
       case "message":
         this.receiveMessage(brokerMessage);
         break;
@@ -252,8 +265,19 @@ export class IntercomClient extends EventEmitter {
     }
     this._sessionId = msg.sessionId;
     this._topicsSupported = msg.topicsSupported === true && msg.topicFrames === true;
+    this.lastMessagesSupported = msg.lastMessages === true;
     this.connection?.confirmRegistration();
     this.emit("_registered", { type: "registered", sessionId: msg.sessionId });
+  }
+
+  private receiveLastRequest(msg: UnknownRecord): void {
+    const from = normalizeSessionInfo(msg.from);
+    if (typeof msg.requestId !== "string" || !from || !isLastMessageQuery(msg.query)) {
+      throw new Error("Invalid last-message request");
+    }
+    if (!this.emit("last_request", { requestId: msg.requestId, from, query: msg.query })) {
+      this.respondLast(msg.requestId, { error: "Recipient has no last-message reader." });
+    }
   }
 
   private receiveMessage(msg: UnknownRecord): void {
@@ -325,6 +349,25 @@ export class IntercomClient extends EventEmitter {
 
   listSessions(): Promise<SessionInfo[]> {
     return this.requestSessions().then((snapshot) => [...snapshot.sessions]);
+  }
+
+  last(to: string, query: LastMessageQuery = {}): Promise<LastMessageResult> {
+    try {
+      const socket = this.requireActiveSocket();
+      if (!this.lastMessagesSupported) {
+        throw new Error("This broker does not support last-message reads; reload after it exits.");
+      }
+      return this.lastRequests.request(socket, to, query, this.listTimeoutMs);
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+  }
+
+  respondLast(requestId: string, result: unknown): void {
+    if (!isLastMessageResult(result)) {
+      throw new Error("Invalid last-message result");
+    }
+    writeMessage(this.requireActiveSocket(), { type: "last_response", requestId, result });
   }
 
   updateTopics(
@@ -407,7 +450,6 @@ export class IntercomClient extends EventEmitter {
       expectsReply: options.expectsReply,
       ...(options.human ? { human: options.human } : {}),
       ...(options.topic ? { topic: options.topic } : {}),
-      ...(options.control ? { control: options.control } : {}),
       delivery: messageDelivery(options),
       queueMode: options.queueMode,
       threadId: options.threadId,

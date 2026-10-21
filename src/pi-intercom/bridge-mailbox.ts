@@ -1,14 +1,18 @@
 import type { DatabaseSync } from "node:sqlite";
 import { privateDatabase } from "./bridge-storage.ts";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
-import { normalizeMessage, normalizeSessionInfo } from "./types.ts";
-import type { Envelope } from "./bridge-ask.ts";
+import { normalizeMessage, normalizeSessionInfo, type Message, type SessionInfo } from "./types.ts";
 import {
   Fault,
   INBOX_BYTES,
   INBOX_COUNT,
   fingerprint as certificateFingerprint,
 } from "./bridge-protocol.ts";
+
+export interface Envelope {
+  readonly from: SessionInfo;
+  readonly message: Message;
+}
 
 interface Entry extends Envelope {
   readonly sequence: number;
@@ -192,19 +196,15 @@ export class Mailbox {
   }
   ack(ids: readonly string[]): UnknownRecord {
     const acked: string[] = [];
-    const retained: string[] = [];
     for (const id of ids) {
       const entry = this.get(id);
-      if (entry?.message.expectsReply === true) {
-        // Durable consumer intake owns the primary wake; keep only the reply obligation here.
+      if (entry) {
         this.notificationAccepted(id);
-        retained.push(id);
-      } else if (entry) {
         this.remove(id);
         acked.push(id);
       }
     }
-    return { acked, retained };
+    return { acked };
   }
   page(after: number, limit: number): InboxPage {
     return this.readPage(after, limit, false);

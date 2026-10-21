@@ -7,13 +7,9 @@ import type { Identity } from "./bridge-config.ts";
 import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
 import { Mailbox } from "./bridge-mailbox.ts";
 import type { UnknownRecord } from "../shared/unknown.ts";
-import type { MessagingOperation as Operation } from "./bridge-routes.ts";
+import type { Operation } from "./bridge-routes.ts";
 import type { RequestContext } from "./bridge-http.ts";
 import { resolveBridgeTarget, bridgeSessionList } from "./bridge-target.ts";
-import { ControlReplies } from "./bridge-control.ts";
-import type { NativeControlOperation } from "./native-control-protocol.ts";
-
-import { WaitingAsk } from "./bridge-ask.ts";
 const MAX_REQUESTS = 8;
 const IDLE_TIMEOUT = 5 * 60 * 1000;
 const SEND_TIMEOUT = 8000;
@@ -44,9 +40,6 @@ export class Session {
   private readonly requests = new Set<AbortController>();
   private readonly inbox: Mailbox;
   private inboxChanged = new AbortController();
-  private readonly replying = new Set<string>();
-  private pending?: WaitingAsk;
-  private readonly controls = new ControlReplies();
   private closed = false;
   private connecting?: Promise<void>;
   private disconnecting?: Promise<void>;
@@ -72,7 +65,6 @@ export class Session {
       }
     });
     this.client.on("message", (from: SessionInfo, message: Message) => this.receive(from, message));
-    this.client.on("session_left", (id: string) => this.peerLeft(id));
     this.touch();
   }
 
@@ -202,8 +194,6 @@ export class Session {
     this.closed = true;
     this.closeReason = fault;
     clearTimeout(this.lease);
-    this.pending?.reject(fault);
-    this.controls.close(fault);
     for (const controller of this.requests) {
       controller.abort(fault);
     }
@@ -214,15 +204,6 @@ export class Session {
     await this.retirement;
   }
 
-  private peerLeft(id: string): void {
-    this.controls.peerLeft(id);
-    if (this.pending?.peer === id && !this.pending.settled) {
-      this.pending.reject(
-        new Fault(409, "peer_offline", "Ask recipient disconnected.", { id: this.pending.id }),
-      );
-    }
-    this.presence();
-  }
   private receive(from: SessionInfo, message: Message): void {
     if (this.closed) {
       return;
@@ -235,12 +216,6 @@ export class Session {
           ? error
           : new Fault(403, "revoked", "Identity is no longer authorized."),
       );
-      return;
-    }
-    if (this.controls.receive(from.id, message)) {
-      return;
-    }
-    if (!this.inbox.persistent && this.resolveReply(from, message)) {
       return;
     }
     this.storeReceive(from, message);
@@ -280,18 +255,9 @@ export class Session {
       result: result === "lost" && this.inbox.persistent ? "storage_failed" : result,
     });
     if (result !== "lost") {
-      this.resolveReply(from, message);
       this.owner.mailboxChanged?.();
     }
     this.presence();
-  }
-  private resolveReply(from: SessionInfo, message: Message): boolean {
-    const pending = this.pending;
-    if (pending?.matches(from.id, message.replyTo) !== true) {
-      return false;
-    }
-    pending.resolve({ from, message });
-    return true;
   }
   private presence(): void {
     if (this.closed) {
@@ -317,19 +283,6 @@ export class Session {
   async connectedPeers(signal: AbortSignal): Promise<SessionInfo[]> {
     await this.connect(signal);
     return this.peers(signal);
-  }
-  async nativeControl(
-    operation: NativeControlOperation,
-    certificate: string,
-    context: RequestContext,
-  ): Promise<UnknownRecord> {
-    await this.connect(context.signal);
-    const peer = await this.target(operation.to, context.signal);
-    return this.controls.request(
-      this.client,
-      { ...operation, peer: peer.id, certificate },
-      { ...context, guard: () => this.guard(context.signal) },
-    );
   }
   private async target(to: string, signal: AbortSignal): Promise<SessionInfo> {
     return resolveBridgeTarget(await this.peers(signal), to, this.client.sessionId);
@@ -380,34 +333,6 @@ export class Session {
     }
     return result;
   }
-  private async ask(
-    operation: Extract<Operation, { readonly route: "POST /v1/ask" }>,
-    context: RequestContext,
-  ): Promise<UnknownRecord> {
-    if (this.pending) {
-      throw new Fault(409, "ask_in_progress", "Only one concurrent ask is allowed per identity.");
-    }
-    const waiting = new WaitingAsk();
-    this.pending = waiting;
-    const { signal } = context;
-    try {
-      await this.connect(signal);
-      const peer = await this.target(operation.to, signal);
-      this.guard(signal);
-      waiting.peer = peer.id;
-      waiting.deadline(operation.timeoutMs, (error) => this.close(error));
-      waiting.receipt = await this.send(peer.id, operation.message, context, {
-        messageId: waiting.id,
-        expectsReply: true,
-      });
-      const answer = await wait(waiting.reply, signal);
-      this.guard(signal);
-      return { ...waiting.receipt, replied: true, reply: answer };
-    } finally {
-      waiting.clear();
-      this.pending = undefined;
-    }
-  }
   private async readInbox(
     operation: Extract<Operation, { readonly route: "GET /v1/inbox" }>,
     context: RequestContext,
@@ -439,44 +364,8 @@ export class Session {
       this.guard(context.signal);
     }
   }
-  private async answer(
-    replyTo: string,
-    message: string,
-    context: RequestContext,
-  ): Promise<UnknownRecord> {
-    const entry = this.inbox.get(replyTo);
-    if (entry?.message.expectsReply !== true) {
-      throw new Fault(404, "unknown_ask", "replyTo must identify an unanswered inbound ask.");
-    }
-    if (this.replying.has(replyTo)) {
-      throw new Fault(409, "reply_in_progress", "This ask already has a reply in flight.");
-    }
-    this.replying.add(replyTo);
-    const peer = entry.from.id;
-    context.onPeer(peer);
-    try {
-      const peers = await this.peers(context.signal);
-      if (!peers.some((candidate) => candidate.id === peer)) {
-        throw new Fault(409, "peer_offline", "Original ask sender is disconnected.");
-      }
-      this.guard(context.signal);
-      if (!this.inbox.get(replyTo)) {
-        throw new Fault(409, "ask_retired", "Inbound ask is no longer replyable.");
-      }
-      const data = { ...(await this.send(peer, message, context, { replyTo })) };
-      this.inbox.remove(replyTo);
-      this.owner.mailboxChanged?.();
-      this.presence();
-      return data;
-    } finally {
-      this.replying.delete(replyTo);
-    }
-  }
   async execute(operation: Operation, context: RequestContext): Promise<UnknownRecord> {
     this.guard(context.signal);
-    if (operation.route === "POST /v1/ask") {
-      return this.ask(operation, context);
-    }
     if (operation.route === "GET /v1/inbox" || operation.route === "POST /v1/ack") {
       // Durable reads/acks remain available while the local broker is down.
       if (!this.inbox.persistent) {
@@ -503,12 +392,12 @@ export class Session {
         const peer = await this.target(operation.to, context.signal);
         const receipt = await this.send(peer.id, operation.message, context, {
           messageId: operation.messageId,
+          replyTo: operation.replyTo,
+          expectsReply: operation.expectsReply,
           delivery: operation.passive === true ? "passive" : "steer",
         });
         return { ...receipt };
       }
-      case "POST /v1/reply":
-        return this.answer(operation.replyTo, operation.message, context);
     }
   }
 }

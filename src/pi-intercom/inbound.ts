@@ -1,39 +1,30 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
-import type { InboundJournal } from "./inbound-journal.ts";
 import type { InboundDeliveryOwner } from "./inbound-delivery.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import type { ReplyWait } from "./reply-wait.ts";
 import type { IntercomConnection } from "./connection.ts";
-import type { IntercomTopics } from "./topics.ts";
-import type { ChildOrchestratorMetadata, InboundMessageEntry } from "./runtime-types.ts";
+import type { InboundMessageEntry } from "./runtime-types.ts";
 import type { Message, SessionInfo } from "./types.ts";
-import { requestedDelivery, isBlockingSupervisorMessage } from "./inbound-record.ts";
+import { requestedDelivery } from "./inbound-record.ts";
 import { formatAttachments } from "./message-format.ts";
-import { readQuestionOwner } from "../runs/shared/supervisor-questions.ts";
-import { nativePeerId } from "./session-targets.ts";
 
 type Lifecycle = Readonly<
   Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "markActivity">
 >;
-type Journal = Readonly<Pick<InboundJournal, "discardObsolete" | "get" | "remember">>;
 type InboundDeliveryHandle = Readonly<
   Pick<InboundDeliveryOwner, "batching" | "detach" | "queue" | "restoring" | "send">
 >;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "receive">>;
 type Connection = Readonly<Pick<IntercomConnection, "active" | "syncStatus">>;
-type TopicOwner = Readonly<Pick<IntercomTopics, "receive">>;
 type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "recordIncomingMessage">>;
 
 interface InboundOwners {
-  readonly journal: Journal;
   readonly delivery: InboundDeliveryHandle;
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
   readonly connection: Connection;
-  readonly topics: TopicOwner;
-  readonly child: ChildOrchestratorMetadata | null;
 }
 /** Validates origin and chooses admission; state/resources remain in their owners. */
 export class IntercomInbound {
@@ -44,31 +35,6 @@ export class IntercomInbound {
     this.lifecycle = lifecycle;
     this.config = config;
     this.owners = owners;
-  }
-  private ownedHuman(from: SessionInfo, message: Message): boolean {
-    const origin = message.human;
-    const child = this.owners.child;
-    if (!origin || !child || origin.runId !== child.runId || origin.index !== Number(child.index)) {
-      return false;
-    }
-    const owner = readQuestionOwner(origin.runId);
-    return (
-      owner?.sessionId === origin.ownerSessionId && from.id === nativePeerId(origin.ownerSessionId)
-    );
-  }
-  private normalize(from: SessionInfo, input: Message): Message {
-    const message = input.topic
-      ? {
-          ...input,
-          content: {
-            ...input.content,
-            text: `Topic ${input.topic.topic} · ${input.topic.event}\n${input.content.text}`,
-          },
-        }
-      : input;
-    return message.human && !this.ownedHuman(from, message)
-      ? { ...message, human: undefined }
-      : message;
   }
   private entry(from: SessionInfo, message: Message): InboundMessageEntry {
     const attachments = message.content.attachments;
@@ -132,30 +98,6 @@ export class IntercomInbound {
       /* Best-effort busy reply; the non-interactive task must continue either way. */
     }
   }
-  private async prepareBusy(
-    entry: InboundMessageEntry,
-    ctx: ExtensionContext,
-    generation: number,
-  ): Promise<boolean> {
-    if (!isBlockingSupervisorMessage(entry)) {
-      return true;
-    }
-    const willDeliver = ctx.hasUI || requestedDelivery(entry.message) !== "auto";
-    if (willDeliver) {
-      this.owners.journal.remember(entry, "queued", "auto");
-    }
-    await this.owners.delivery.detach(entry);
-    return (
-      this.lifecycle.live(ctx, generation) !== null &&
-      (!willDeliver || this.owners.journal.get(entry.message.id)?.stage === "queued")
-    );
-  }
-  private async steerBusy(entry: InboundMessageEntry, generation: number): Promise<void> {
-    this.owners.delivery.send(entry, "steer", generation);
-    if (!isBlockingSupervisorMessage(entry)) {
-      await this.owners.delivery.detach(entry, true);
-    }
-  }
   private async admit(
     entry: InboundMessageEntry,
     live: ExtensionContext,
@@ -183,11 +125,9 @@ export class IntercomInbound {
     generation: number,
   ): Promise<void> {
     const delivery = requestedDelivery(entry.message);
-    if (!(await this.prepareBusy(entry, ctx, generation))) {
-      return;
-    }
     if (delivery === "steer") {
-      await this.steerBusy(entry, generation);
+      this.owners.delivery.send(entry, "steer", generation);
+      await this.owners.delivery.detach(entry, entry.message.expectsReply !== true);
       return;
     }
     if (delivery === "queue" && entry.message.queueMode !== "replace") {
@@ -211,10 +151,11 @@ export class IntercomInbound {
       await restore;
     }
     const live = this.lifecycle.live(ctx, generation);
-    if (!live || this.owners.topics.receive(from, input)) {
+    if (!live) {
       return;
     }
-    const message = this.normalize(from, input);
+    // Peer metadata never grants user authority.
+    const message = input.human ? { ...input, human: undefined } : input;
     if (
       this.owners.wait.receive(from, message, () => {
         this.lifecycle.markActivity();
@@ -227,9 +168,6 @@ export class IntercomInbound {
     this.lifecycle.markActivity();
     this.owners.connection.syncStatus();
     const entry = this.entry(from, message);
-    if (this.owners.journal.discardObsolete(entry)) {
-      return;
-    }
     await this.admit(entry, live, generation);
   }
 }

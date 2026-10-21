@@ -19,4 +19,5 @@ if (suiteRoot === undefined) {
 const root = mkdtempSync(join(suiteRoot ?? tmpdir(), "pi-subagents-test-"));
 process.env.PI_SUBAGENT_TEMP_ROOT = root;
 process.env.HOME = root;
+process.env.PI_INTERCOM_RUNTIME_DIR = join(root, "ic");
 delete process.env.PI_CODING_AGENT_DIR;

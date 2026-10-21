@@ -1,7 +1,6 @@
 import { errorMessage, isRecord, type UnknownRecord } from "../shared/unknown.ts";
 
 export const BODY_LIMIT = 64 * 1024;
-export const ASK_TIMEOUT = 120000;
 export const INBOX_COUNT = 256;
 export const INBOX_BYTES = 4 * 1024 * 1024;
 
@@ -14,14 +13,6 @@ export class Fault extends Error {
     this.status = status;
     this.code = code;
     this.details = details;
-  }
-}
-
-export class BroadcastFault extends Fault {
-  readonly outcome: UnknownRecord;
-  constructor(fault: Fault, outcome: UnknownRecord) {
-    super(fault.status, fault.code, fault.message, fault.details);
-    this.outcome = { ...outcome, status: "partial" };
   }
 }
 

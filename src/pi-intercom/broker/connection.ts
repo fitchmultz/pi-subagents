@@ -1,6 +1,6 @@
 import net from "node:net";
 import { errorMessage } from "../../shared/unknown.ts";
-import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
+import { getBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
 import { createMessageReader, writeMessage } from "./framing.ts";
 
 function connectSocket(socketPath: string, timeoutMs = 500): Promise<net.Socket> {
@@ -30,23 +30,11 @@ function connectSocket(socketPath: string, timeoutMs = 500): Promise<net.Socket>
 }
 
 export async function connectBrokerSocket(): Promise<net.Socket> {
-  const preferred = getBrokerSocketPath();
-  const legacy = getLegacyBrokerSocketPath();
-  const candidates = [preferred, ...(legacy !== preferred ? [legacy] : [])];
-  let lastError: Error | undefined;
-  for (const candidate of candidates) {
-    if (!isOwnedBrokerSocket(candidate)) {
-      continue;
-    }
-    try {
-      // Preferred and legacy sockets must be tried in order, never connected concurrently.
-      // oxlint-disable-next-line no-await-in-loop
-      return await connectSocket(candidate);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(errorMessage(error));
-    }
+  const socketPath = getBrokerSocketPath();
+  if (!isOwnedBrokerSocket(socketPath)) {
+    throw new Error(`Intercom broker socket is unavailable: ${socketPath}`);
   }
-  throw lastError ?? new Error(`Intercom broker socket is unavailable: ${preferred}`);
+  return await connectSocket(socketPath);
 }
 
 interface ConnectionHandlers {

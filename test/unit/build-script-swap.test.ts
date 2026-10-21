@@ -78,10 +78,10 @@ async function withFixture(run: (dir: string) => Promise<void>): Promise<void> {
 test("build.mjs: loaded provenance fingerprints emitted code and stays fixed until a fresh import", () =>
   withFixture(async (dir) => {
     assert.equal((await runBuild(dir)).code, 0);
-    const stamp = pathToFileURL(join(dir, "dist", "extension", "build-info.js")).href;
+    const stamp = pathToFileURL(join(dir, "dist", "build-info.js")).href;
     assert.ok(
       existsSync(fileURLToPath(stamp)),
-      "a built runtime must carry its own provenance, not reread package.json at doctor time",
+      "a built runtime must carry its own provenance, not reread package.json after loading",
     );
     const initialModule: unknown = await import(stamp);
     const loaded = record(record(initialModule).EXTENSION_BUILD);

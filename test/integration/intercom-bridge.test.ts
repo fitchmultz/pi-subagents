@@ -246,7 +246,7 @@ test(
           exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), "ask", "--passive"], {
             env: cliEnv,
           }),
-          /Unexpected arguments for this action/,
+          /Choose an action/,
         );
         assert.equal((await api("send", { to: "offline-peer", message: "hello" })).status, 404);
       });
@@ -270,12 +270,7 @@ test(
             assert.equal(record(rejected.body.error).code, "invalid_input");
             assert.equal(record(rejected.body.error).message, "Invalid message ID.");
           }
-          for (const [action, body] of [
-            ["ask", { to: peer.sessionId, message: "invalid ask", timeoutMs: 100 }],
-            ["reply", { replyTo: "missing", message: "invalid reply" }],
-            ["broadcast", { message: "invalid broadcast" }],
-            ["register", {}],
-          ] as const) {
+          for (const [action, body] of [["register", {}]] as const) {
             // oxlint-disable-next-line no-await-in-loop
             const rejected = await api(action, { ...body, messageId: "send-only" });
             assert.equal(rejected.status, 400);
@@ -312,7 +307,9 @@ test(
             ...["ask", "reply", "broadcast", "group-send", "list", "ack", "spawn"].map(
               (action) => ({
                 args: [action, "--id=send-only"],
-                reason: "Unexpected arguments for this action.",
+                reason: ["list", "ack"].includes(action)
+                  ? "Unexpected arguments for this action."
+                  : "Choose an action",
               }),
             ),
           ]) {
@@ -344,65 +341,41 @@ test(
       });
 
       await t.test(
-        "asks correlate exact sender and replyTo; inbox is non-destructive and replies cannot spoof targets",
+        "ordinary messages preserve correlation and authenticated sender metadata",
         async () => {
-          let settled = false;
           const receiving = nextMessage(peer);
-          const asking = api("ask", { to: "known-peer", message: "ASK_SENTINEL", timeoutMs: 5000 });
-          const observedAsking = asking.then((answer) => {
-            settled = true;
-            return answer;
-          });
-          const question = await receiving;
-          assert.equal(question.message.expectsReply, true);
-          assert.equal(question.message.delivery, "steer");
-          const forged = await intruder.send(question.from.id, {
-            text: "forged answer",
-            replyTo: question.message.id,
-          });
-          await activeBridge.wait(new RegExp(`"messageId":"${forged.id}"`));
-          const inbox = await api("inbox");
-          assert.ok(
-            messages(inbox.body).some((item) => item.message.content.text === "forged answer"),
-          );
-          assert.equal(settled, false, "wrong sender must not satisfy the outgoing ask");
-          await peer.send(question.from.id, {
-            text: "bridge-smoke-ok",
-            replyTo: question.message.id,
-          });
-          const answer = await observedAsking;
-          assert.equal(envelope(answer.body.reply).from.id, peer.sessionId);
-          assert.equal(envelope(answer.body.reply).message.content.text, "bridge-smoke-ok");
-          assert.equal((await api("reply", { replyTo: "invented", message: "spoof" })).status, 404);
-          const inbound = await peer.send(question.from.id, {
-            text: "Local question",
+          const sent = await api("send", {
+            to: "known-peer",
+            message: "QUESTION_SENTINEL",
+            messageId: "correlated-question",
             expectsReply: true,
-            delivery: "steer",
           });
-          const first = await api("inbox");
-          assert.ok(messages(first.body).some((item) => item.message.id === inbound.id));
-          assert.deepEqual((await api("inbox")).body.messages, first.body.messages);
-          await api("ack", { ids: [inbound.id] });
-          assert.ok(
-            messages((await api("inbox")).body).some((item) => item.message.id === inbound.id),
+          assert.equal(sent.body.accepted, true);
+          const question = await receiving;
+          assert.equal(question.message.id, "correlated-question");
+          assert.equal(question.message.expectsReply, true);
+          const unrelated = await intruder.send(question.from.id, {
+            text: "another sender",
+            replyTo: question.message.id,
+          });
+          const reply = await peer.send(question.from.id, {
+            text: "correlated answer",
+            replyTo: question.message.id,
+          });
+          await activeBridge.wait(new RegExp(`"messageId":"${reply.id}"`));
+          const page = messages((await api("inbox")).body);
+          assert.deepEqual(
+            page.map((item) => [item.from.id, item.message.id, item.message.replyTo]),
+            [
+              [intruder.sessionId, unrelated.id, "correlated-question"],
+              [peer.sessionId, reply.id, "correlated-question"],
+            ],
           );
-          const replyReceipt = nextMessage(peer);
-          const reply = await api("reply", { replyTo: inbound.id, message: "Remote decision" });
-          assert.equal(reply.body.accepted, true);
-          const observed = await replyReceipt;
-          assert.equal(observed.message.replyTo, inbound.id);
-          assert.equal(observed.message.content.text, "Remote decision");
-          assert.ok(
-            !messages((await api("inbox")).body).some((item) => item.message.id === inbound.id),
-          );
-          const notice = await peer.send(question.from.id, { text: "ordinary message" });
-          assert.ok(
-            messages((await api("inbox")).body).some((item) => item.message.id === notice.id),
-          );
-          await api("ack", { ids: [notice.id] });
-          assert.ok(
-            !messages((await api("inbox")).body).some((item) => item.message.id === notice.id),
-          );
+          assert.deepEqual(messages((await api("inbox")).body), page);
+          assert.deepEqual((await api("ack", { ids: [unrelated.id, reply.id] })).body.acked, [
+            unrelated.id,
+            reply.id,
+          ]);
         },
       );
 
@@ -458,79 +431,86 @@ test(
       );
 
       await t.test(
-        "timeout, peer departure, client cancellation and broker outage do not hang",
+        "cancelling admitted sends retires the generation and accounts for volatile mail",
         async () => {
-          const timed = await api("ask", {
-            to: peer.sessionId,
-            message: "no answer",
-            timeoutMs: 100,
-          });
-          assert.equal(timed.status, 504);
-          assert.equal(record(timed.body.error).code, "ask_timeout");
-          const temporary = await agent("leaving-peer");
-          const receiving = nextMessage(temporary);
-          const asking = api("ask", {
-            to: temporary.sessionId,
-            message: "leave now",
-            timeoutMs: 10000,
-          });
-          await receiving;
-          await temporary.disconnect();
-          assert.equal(record((await asking).body.error).code, "peer_offline");
-          const volatileNotice = await peer.send(text((await api("register", {})).body.sessionId), {
-            text: "legacy volatile lease loss",
-          });
-          await activeBridge.wait(new RegExp(`"messageId":"${volatileNotice.id}"`));
-          const controller = new AbortController();
-          const cancelMessage = nextMessage(peer);
-          const cancelled = api(
-            "ask",
-            { to: peer.sessionId, message: "cancel now", timeoutMs: 10000 },
-            { signal: controller.signal },
+          const remoteId = text((await api("register", {})).body.sessionId);
+          const baseline = (await api("inbox")).body;
+          const notice = await peer.send(remoteId, { text: "volatile cancellation obligation" });
+          await activeBridge.wait(new RegExp(`"messageId":"${notice.id}"`));
+          assert.deepEqual(
+            messages((await api("inbox")).body).map((item) => item.message.id),
+            [notice.id],
           );
-          const cancelledQuestion = await cancelMessage;
+          const cancelled = new AbortController();
           const offset = activeBridge.output().length;
-          controller.abort();
-          await assert.rejects(cancelled);
-          await activeBridge.wait(
-            /"event":"session_closed".*"name":"grok-bot".*"result":"client_aborted"/,
-            offset,
-          );
-          const afterCancel = await api("register", {});
-          assert.equal(afterCancel.body.ok, true, JSON.stringify(afterCancel));
+          // Pause the real broker only after registration/intake. Sends now remain
+          // admitted at its transport boundary instead of completing before abort.
+          activeBroker.child.kill("SIGSTOP");
+          try {
+            const sending = Array.from({ length: 8 }, (_, index) =>
+              assert.rejects(
+                api(
+                  "send",
+                  {
+                    to: peer.sessionId,
+                    message: `cancel admitted send ${index}`,
+                  },
+                  { signal: cancelled.signal },
+                ),
+              ),
+            );
+            let capped = false;
+            for (let attempt = 0; attempt < 100; attempt++) {
+              // A read-only probe proves all eight mutation slots are admitted;
+              // it cannot retire the generation itself.
+              // oxlint-disable-next-line no-await-in-loop
+              const probe = await api("inbox");
+              if (probe.status === 429) {
+                assert.equal(record(probe.body.error).code, "too_many_requests");
+                capped = true;
+                break;
+              }
+              assert.equal(probe.status, 200);
+            }
+            assert.ok(capped, "observe admitted mutation slots before cancelling");
+            cancelled.abort();
+            await Promise.all(sending);
+          } finally {
+            cancelled.abort();
+            activeBroker.child.kill("SIGCONT");
+          }
+          await activeBridge.wait(/"event":"session_closed".*"result":"client_aborted"/, offset);
           assert.equal(
-            afterCancel.body.sessionId,
-            cancelledQuestion.from.id,
-            "re-register preserves the certificate-bound broker identity",
+            (await api("register", {})).body.sessionId,
+            remoteId,
+            "certificate-bound peer ID survives generation retirement",
           );
-          const afterLoss = (await api("inbox")).body;
-          assert.equal(messages(afterLoss).length, 0);
-          assert.equal(
-            afterLoss.lostMessages,
-            3,
-            "legacy overflow, duplicate replay and cancellation loss remain visible",
-          );
-          await stop(activeBroker.child);
-          const down = await api("list");
-          assert.equal(down.status, 503);
-          assert.equal(record(down.body.error).code, "broker_unavailable");
-          broker = start("src/pi-intercom/broker/broker.ts", [], env);
-          await broker.wait(/Intercom broker started/);
-          await peer.connect({ name: "known-peer", cwd: root, model: "fixture", status: "idle" });
-          assert.equal((await api("list")).body.ok, true);
+          const recovered = (await api("inbox")).body;
+          assert.deepEqual(messages(recovered), []);
+          assert.equal(recovered.lostMessages, Number(baseline.lostMessages) + 1);
+          assert.equal(recovered.overflow, true, "discarded volatile mail remains visible as loss");
         },
       );
 
+      await t.test("broker outage does not hang or replace the broker", async () => {
+        await stop(activeBroker.child);
+        const down = await api("list");
+        assert.equal(down.status, 503);
+        assert.equal(record(down.body.error).code, "broker_unavailable");
+        broker = start("src/pi-intercom/broker/broker.ts", [], env);
+        await broker.wait(/Intercom broker started/);
+        await peer.connect({ name: "known-peer", cwd: root, model: "fixture", status: "idle" });
+        assert.equal((await api("list")).body.ok, true);
+      });
+
       await t.test(
-        "credential rotation and revoke cancel in-flight asks and deny the old certificate",
+        "credential rotation and revoke cancel admitted inbox waits and deny the old certificate",
         async () => {
-          const receiving = nextMessage(peer);
-          const asking = api("ask", {
-            to: peer.sessionId,
-            message: "revoke during wait",
-            timeoutMs: 10000,
-          }).catch((error: unknown) => ({ transport: error }));
-          await receiving;
+          const waitingAt = activeBridge.output().length;
+          const asking = api("inbox?waitMs=10000").catch((error: unknown) => ({
+            transport: error,
+          }));
+          await activeBridge.wait(/"event":"inbox_wait"/, waitingAt);
           const rotated = parseCredential(await runTool("issue", credentials, "grok-bot"));
           activeBridge.child.kill("SIGHUP");
           await activeBridge.wait(/"event":"allowlist_reloaded"/);
@@ -557,7 +537,7 @@ test(
           await activeBridge.wait(/"result":"failed_closed"/, offset);
           await assert.rejects(api("list", undefined, renewedTls));
           assert.ok(!activeBridge.output().includes("BODY_SENTINEL_NOT_FOR_LOGS"));
-          assert.ok(!activeBridge.output().includes("ASK_SENTINEL"));
+          assert.ok(!activeBridge.output().includes("QUESTION_SENTINEL"));
           for (const line of activeBridge.output().trim().split("\n")) {
             assert.doesNotThrow(() => JSON.parse(line));
           }
@@ -662,26 +642,32 @@ test(
       };
 
       await t.test(
-        "ordinary ack and exact saved sender survive departure and reconnection",
+        "ACK transfers the complete envelope and tombstones it across sender reconnection",
         async () => {
-          const ack = await api("ack", { ids: [notice.id, question.id] });
-          assert.deepEqual(ack.body.acked, [notice.id]);
-          assert.deepEqual(ack.body.retained, [question.id]);
-          const senderId = text(peer.sessionId);
+          assert.deepEqual((await api("ack", { ids: [notice.id, question.id] })).body.acked, [
+            notice.id,
+            question.id,
+          ]);
+          const saved = received[1];
+          const senderId = saved.from.id;
           await peer.disconnect();
-          const offline = await api("reply", { replyTo: question.id, message: "keep obligation" });
-          assert.equal(offline.status, 409);
+          const offline = await api("send", {
+            to: senderId,
+            replyTo: saved.message.id,
+            message: "keep obligation",
+          });
+          assert.equal(offline.status, 404);
           assert.equal(record(offline.body.error).code, "peer_offline");
-          assert.equal(record(offline.body.error).message, "Original ask sender is disconnected.");
-          assert.deepEqual(
-            messages((await api("inbox")).body).map((item) => item.message.id),
-            [question.id],
-          );
           await peer.connect({ name: "saved-sender", cwd: root, model: "fixture" }, senderId);
           const receiving = nextMessage(peer);
           assert.equal(
-            (await api("reply", { replyTo: question.id, message: "saved sender answer" })).body
-              .accepted,
+            (
+              await api("send", {
+                to: senderId,
+                replyTo: saved.message.id,
+                message: "saved sender answer",
+              })
+            ).body.accepted,
             true,
           );
           const answer = await receiving;
@@ -689,24 +675,24 @@ test(
           assert.equal(answer.from.id, remoteId);
           assert.equal(messages((await api("inbox")).body).length, 0);
           await peer.send(remoteId, {
-            text: "replay must not resurrect acked notice",
+            text: "replay must not resurrect ACKed notice",
             messageId: notice.id,
           });
           await bridge?.wait(new RegExp(`"messageId":"${notice.id}".*"result":"duplicate"`));
           assert.equal(messages((await api("inbox")).body).length, 0);
-          const receivingAsk = nextMessage(peer);
-          const asking = api("ask", {
-            to: peer.sessionId,
+          const receivingQuestion = nextMessage(peer);
+          await api("send", {
+            to: senderId,
             message: "persist the correlated answer",
-            timeoutMs: 5000,
+            messageId: "durable-question",
+            expectsReply: true,
           });
-          const outgoing = await receivingAsk;
+          const outgoing = await receivingQuestion;
           const reply = await peer.send(remoteId, {
             text: "durable outgoing answer",
             replyTo: outgoing.message.id,
           });
-          const result = await asking;
-          assert.equal(envelope(result.body.reply).message.id, reply.id);
+          await bridge?.wait(new RegExp(`"messageId":"${reply.id}"`));
           assert.equal(messages((await api("inbox")).body)[0].message.id, reply.id);
           await api("ack", { ids: [reply.id] });
         },
@@ -769,7 +755,7 @@ test(
           const ask = await peer.send(remoteId, { text: "retained ask", expectsReply: true });
           await bridge.wait(new RegExp(`"messageId":"${ask.id}"`));
           const tail = text((await api("inbox")).body.nextCursor);
-          assert.deepEqual((await api("ack", { ids: [ask.id] })).body.retained, [ask.id]);
+          assert.deepEqual((await api("ack", { ids: [ask.id] })).body.acked, [ask.id]);
           offset = bridge.output().length;
           let settled = false;
           const next = api(`inbox?after=${tail}&waitMs=10000`, undefined, {
@@ -830,21 +816,26 @@ test(
             [activeNotice.id, cliNotice.id],
           );
           const receiving = nextMessage(peer);
-          await api("reply", { replyTo: ask.id, message: "retire retained obligation" });
+          await api("send", {
+            to: peer.sessionId,
+            replyTo: ask.id,
+            message: "answer stored obligation",
+          });
           assert.equal((await receiving).message.replyTo, ask.id);
         },
       );
 
       await t.test(
-        "cancelling inbox leaves a concurrent ask and native identity intact",
+        "cancelling inbox leaves correlated messages and native identity intact",
         async () => {
           assertDefined(bridge);
           const receiving = nextMessage(peer);
-          const asking = api("ask", {
+          const asking = await api("send", {
             to: peer.sessionId,
             message: "survive read cancellation",
-            timeoutMs: 5000,
+            expectsReply: true,
           });
+          assert.equal(asking.body.accepted, true);
           const outgoing = await receiving;
           const cancelled = new AbortController();
           const offset = bridge.output().length;
@@ -863,9 +854,8 @@ test(
             text: "ask remained live",
             replyTo: outgoing.message.id,
           });
-          const answer = await asking;
-          assert.equal(answer.status, 200);
-          assert.equal(envelope(answer.body.reply).message.id, reply.id);
+          await bridge.wait(new RegExp(`"messageId":"${reply.id}"`));
+          assert.equal(messages((await api("inbox")).body)[0].message.id, reply.id);
           assert.deepEqual((await api("ack", { ids: [reply.id] })).body.acked, [reply.id]);
         },
       );
@@ -1060,10 +1050,11 @@ test(
           assert.deepEqual(messages((await api("inbox")).body), beforeLease);
           assert.deepEqual((await api("ack", { ids: [ordinary.id, obligation.id] })).body.acked, [
             ordinary.id,
+            obligation.id,
           ]);
           assert.deepEqual(
             messages((await api("inbox")).body).map((item) => item.message.id),
-            [obligation.id],
+            [],
           );
           broker = start("src/pi-intercom/broker/broker.ts", [], env);
           await broker.wait(/Intercom broker started/);
@@ -1074,8 +1065,13 @@ test(
           await api("register", {});
           const receiving = nextMessage(peer);
           assert.equal(
-            (await api("reply", { replyTo: obligation.id, message: "obligation settled" })).body
-              .accepted,
+            (
+              await api("send", {
+                to: beforeLease[1].from.id,
+                replyTo: obligation.id,
+                message: "obligation settled",
+              })
+            ).body.accepted,
             true,
           );
           assert.equal((await receiving).message.replyTo, obligation.id);
@@ -1120,6 +1116,17 @@ test(
                 "shutdown must finish without the SIGKILL guard",
               );
               assert.match(bridge.output().slice(offset), /"event":"shutdown","result":"closed"/);
+              assert.equal(
+                broker.child.exitCode,
+                null,
+                "helper shutdown never stops the shared broker",
+              );
+              assert.ok(
+                // Observe the shared broker after helper shutdown before the next transition.
+                // oxlint-disable-next-line no-await-in-loop
+                (await peer.listSessions()).some((row) => row.id === peer.sessionId),
+                "the independent peer remains usable after helper shutdown",
+              );
             } else {
               config.clients = [];
               writeFileSync(
@@ -1344,7 +1351,7 @@ test(
   },
 );
 
-test("wake intents retain unconfirmed payloads and stop after durable ask intake", async () => {
+test("durable ACK retires wake intents and payloads but preserves replay tombstones", async () => {
   const root = mkdtempSync("/tmp/pib-wake-");
   const module = join(repo, "src/pi-intercom/bridge-mailbox.ts");
   const run = async (script: string) =>
@@ -1363,7 +1370,6 @@ test("wake intents retain unconfirmed payloads and stop after durable ask intake
       ).stdout,
     );
   try {
-    const before = Date.now();
     const first = await run(`
       const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
       mailbox.add({from,message:{id:"notice",timestamp:1,content:{text:"notice payload"}}});
@@ -1371,29 +1377,9 @@ test("wake intents retain unconfirmed payloads and stop after durable ask intake
       const ack = mailbox.ack(["notice","ask"]);
       console.log(JSON.stringify({ack,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
     `);
-    assert.deepEqual(record(first.ack).acked, ["notice"]);
-    assert.deepEqual(record(first.ack).retained, ["ask"]);
-    assert.deepEqual(
-      messages(record(first.inbox)).map((item) => item.message.id),
-      ["ask"],
-    );
-    const pending = records(record(first.wake).messages);
-    assert.deepEqual(
-      pending.map((item) => record(item.message).id),
-      ["notice"],
-    );
-    assert.deepEqual(
-      pending.map((item) => item.acknowledged),
-      [true],
-    );
-    assert.ok(
-      pending.every(
-        (item) =>
-          typeof item.receivedAt === "number" &&
-          item.receivedAt >= before &&
-          item.receivedAt <= Date.now(),
-      ),
-    );
+    assert.deepEqual(record(first.ack).acked, ["notice", "ask"]);
+    assert.deepEqual(messages(record(first.inbox)), []);
+    assert.deepEqual(record(first.wake).messages, []);
     const second = await run(`
       const restored = mailbox.pendingNotifications();
       mailbox.notificationAccepted("notice");
@@ -1410,12 +1396,9 @@ test("wake intents retain unconfirmed payloads and stop after durable ask intake
     assert.equal(second.replay, "duplicate");
     assert.deepEqual(
       messages(record(second.stillUnread)).map((item) => item.message.id),
-      ["ask", "notify-first"],
+      ["notify-first"],
     );
-    assert.deepEqual(
-      messages(record(second.inbox)).map((item) => item.message.id),
-      ["ask"],
-    );
+    assert.deepEqual(messages(record(second.inbox)), []);
     assert.deepEqual(record(second.wake).messages, []);
   } finally {
     rmSync(root, { recursive: true, force: true });

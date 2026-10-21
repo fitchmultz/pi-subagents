@@ -4,8 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { readNativeUsage, snapshotNativeUsage } from "../../src/runs/shared/native-usage.ts";
-import { sumAttemptUsage } from "../../src/runs/shared/model-fallback.ts";
+import { childUsage, sumUsage } from "../../src/agent/usage.ts";
+import { usageLaunch } from "../support/agent-launch.ts";
 
 const usage = {
   input: 10,
@@ -18,7 +18,7 @@ const usage = {
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
 };
 
-test("native accounting excludes actual fork baseline and checkpoints, includes tool/summary/usage entries once", (t) => {
+test("native accounting excludes inherited entries and checkpoints and includes tool/summary/usage entries", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-usage-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "session.jsonl");
@@ -36,14 +36,9 @@ test("native accounting excludes actual fork baseline and checkpoints, includes 
   });
   fs.writeFileSync(
     file,
-    [JSON.stringify({ type: "session", id: "child" }), JSON.stringify(assistant("inherited"))].join(
-      "\n",
-    ) + "\n",
-  );
-  const baseline = snapshotNativeUsage(file);
-  fs.appendFileSync(
-    file,
     [
+      { type: "session", id: "child" },
+      assistant("inherited"),
       assistant("first"),
       assistant("checkpoint-copy", true),
       { type: "message", id: "nested", message: { role: "toolResult", usage } },
@@ -55,23 +50,24 @@ test("native accounting excludes actual fork baseline and checkpoints, includes 
       .map((entry) => JSON.stringify(entry))
       .join("\n") + "\n",
   );
-  const segments = readNativeUsage(file, baseline, ["nested", "review"]);
-  assert.ok(segments);
+  const contributions = childUsage(usageLaunch(file), new Set(["inherited"]), "review");
+  const total = sumUsage(contributions);
   assert.deepEqual(
-    segments.map((part) => part.input),
-    [20, 40],
+    total,
+    {
+      input: 60,
+      output: 120,
+      cacheRead: 180,
+      cacheWrite: 240,
+      cacheWrite1h: 90,
+      reasoning: 30,
+      totalTokens: 600,
+      cost: { input: 6, output: 12, cacheRead: 18, cacheWrite: 24, total: 60 },
+    },
+    "reasoning and cacheWrite1h remain subsets, not additional output/cacheWrite",
   );
-  const total = sumAttemptUsage(
-    segments.map((part) => ({ model: "fixture", success: true, usage: part })),
-  );
-  assert.equal(total.input, 60);
-  assert.equal(total.output, 120, "reasoning is already included in output");
-  assert.equal(total.cacheWrite, 240, "cacheWrite1h is a subset");
-  assert.equal(total.cost, 60);
-  assert.equal(total.turns, 2);
-  assert.equal(total.contributions?.length, 6);
   assert.deepEqual(
-    total.contributions.map((part) => part.id),
+    contributions.map((part) => part.id),
     [
       "child:first",
       "child:nested",
@@ -81,59 +77,63 @@ test("native accounting excludes actual fork baseline and checkpoints, includes 
       "child:review",
     ],
   );
-  assert.equal(total.contributions[0].model, "actual");
-  assert.equal(
-    total.contributions[1].provider,
-    undefined,
-    "native tool attribution is unavailable, not guessed",
+  assert.equal(contributions[0].model, "actual");
+  assert.deepEqual(
+    [contributions[1].provider, contributions[1].model],
+    ["p", "selected"],
+    "tool usage has the frozen launch attribution",
   );
-  assert.deepEqual(total.contributions[4], {
+  assert.deepEqual(contributions[4], {
     id: "child:native-usage",
     provider: "other",
     model: "small",
     usage,
   });
-  assert.deepEqual(readNativeUsage(file, snapshotNativeUsage(file))?.[0]?.contributions, []);
+  assert.deepEqual(
+    childUsage(
+      usageLaunch(file),
+      new Set(["inherited", "first", "nested", "summary", "branch", "native-usage", "review"]),
+    ),
+    [],
+  );
 });
 
-test("missing/non-native journals allow stream fallback; malformed journals surface errors", (t) => {
+test("missing, foreign and malformed journals cannot authorize native accounting", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-usage-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "session.jsonl");
-  assert.equal(readNativeUsage(file, new Set()), undefined);
-  fs.writeFileSync(file, JSON.stringify({ type: "message_end" }) + "\n");
-  assert.equal(readNativeUsage(file, new Set()), undefined);
-  fs.writeFileSync(file, "not JSON");
-  assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
+  assert.throws(() => childUsage(usageLaunch(file), new Set()), /ENOENT/);
+  fs.writeFileSync(file, JSON.stringify({ type: "session", id: "foreign" }) + "\n");
+  assert.throws(() => childUsage(usageLaunch(file), new Set()), /Foreign native usage journal/);
+  fs.writeFileSync(file, "not JSON\n");
+  assert.throws(() => childUsage(usageLaunch(file), new Set()), SyntaxError);
 });
 
-test("new assistant/native usage entries require complete billing evidence; tool/summary usage remains optional and inherited work is excluded", (t) => {
+test("new assistant/native usage requires complete billing evidence; tool/summary usage is optional and inherited work is excluded", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-usage-required-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "session.jsonl");
   const write = (entries: readonly object[]) =>
     fs.writeFileSync(
       file,
-      [
-        JSON.stringify({ type: "session", id: "child" }),
-        ...entries.map((entry) => JSON.stringify(entry)),
-      ].join("\n") + "\n",
+      [{ type: "session", id: "child" }, ...entries]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n",
     );
   for (const entry of [
     { type: "message", id: "required", message: { role: "assistant" } },
     { type: "usage", id: "required" },
   ]) {
     write([entry]);
-    assert.throws(() => readNativeUsage(file, new Set()), /Required native usage is unavailable/);
-    const inherited = readNativeUsage(file, new Set(["required"]));
-    assert.ok(inherited);
-    assert.deepEqual(inherited[0].contributions, []);
+    assert.throws(
+      () => childUsage(usageLaunch(file), new Set()),
+      /Required native usage is unavailable/,
+    );
+    assert.deepEqual(childUsage(usageLaunch(file), new Set(["required"])), []);
   }
   write([
     { type: "message", id: "tool", message: { role: "toolResult" } },
     { type: "compaction", id: "summary" },
   ]);
-  const optional = readNativeUsage(file, new Set());
-  assert.ok(optional);
-  assert.deepEqual(optional[0].contributions, []);
+  assert.deepEqual(childUsage(usageLaunch(file), new Set()), []);
 });
