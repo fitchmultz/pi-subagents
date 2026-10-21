@@ -309,7 +309,7 @@ class AgentRuntime {
       command.action !== "run"
     ) {
       throw new Error(
-        `Run ${launch.id} is awaiting native admission. Retry the same saved prompt only after its actor exits, or wait for admission or a canonical result before sending another prompt; no new continuation was launched.`,
+        `Run ${launch.id} is awaiting native admission. Retry requires the exact saved prompt, its existing queued Run command, and no live actor. Missing commands or ambiguous process claims require inspection; wait for admission or a canonical result before sending another prompt. No new continuation was launched.`,
       );
     }
     // Only an unadmitted durable command is retryable; keep all process/shell claim guards.

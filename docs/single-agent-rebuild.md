@@ -258,7 +258,7 @@ write/repair assertions instead of stopping at the new unknown-ID guard.
 ### Deep-review follow-up
 
 The review follow-up prepares unpublished version **0.50.0**. Final measured
-size is **14,114 source lines, 16,810 production lines and 557,995 bytes**:
+size is **14,114 source lines, 16,810 production lines and 558,092 bytes**:
 reductions of **83.20%, 83.34% and 88.87%** from the original baseline. The
 read-only observer remains inside all three enforced ceilings.
 

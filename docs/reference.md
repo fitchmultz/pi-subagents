@@ -63,8 +63,12 @@ missing session state is an error, not permission to start a different chat.
 If a handoff saved a run but failed before admission, retry `continue` with the
 exact same prompt after its actor and owned shells have exited. This resumes the
 saved run and queued command, not another successor. A different prompt is refused
-until admission or a canonical result, and an ambiguous process claim still
-requires inspection rather than automatic replay.
+until admission or a canonical result. A missing queued command or ambiguous
+process claim requires inspection rather than automatic replay. If the prompt
+was lost from context, read its exact value from `launch.json` beside the run's
+reported `outputFile`; do not reconstruct or paraphrase it. For adopted legacy
+runs, retry using the canonical run ID returned by the existing-successor receipt,
+not the retired legacy handle.
 Guidance that arrives after its run settles is reported as stale rather than
 starting untracked work. Inspection text exposes the guidance command IDs and
 admission states, native receipt publication and separately known process exit.
