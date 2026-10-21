@@ -140,7 +140,9 @@ model settings, or the active conversation.
 Interactive main sessions expose an above-editor widget and `/agents` list/watch.
 The widget shows up to five named runs, active work first, with circle indicators,
 status and short ID. Completed runs are hidden from both the widget and the default
-picker; interrupted and failed runs remain visible. `/agents <run-id>` still opens
+picker; failed, stopped, interrupted, and unavailable runs remain visible.
+The header total counts all saved runs; the rows and overflow count exclude completed runs.
+`/agents <run-id>` still opens
 saved completed runs, and an already-open watch stays open through completion.
 An empty partial inventory says it is checking saved runs, not that no runs exist.
 An overflow count points to `/agents`; Ctrl+O expands model/cwd details. The widget

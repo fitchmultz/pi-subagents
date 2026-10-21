@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Restore circle indicators and hide completed runs from the above-editor widget and `/agents` picker. Saved run IDs and already-open read-only watches remain available; interrupted/failed runs stay visible.
+- Restore circle indicators and hide completed runs from the above-editor widget and `/agents` picker. Saved run IDs and already-open read-only watches remain available; failed, stopped, interrupted, and unavailable runs stay visible.
 - Restore steering delivery for new and legacy child completions. Publish an idle backlog before a single native wakeup, preventing separately deferred settlement turns from requeueing the same results.
 - Reconcile new-runtime completion backlogs in completion/launch order instead of UUID directory order; preserve published receipts and recovery of genuinely dropped queues.
 - Reuse a bounded physical-receipt index instead of repeatedly parsing unchanged parent journals. Validate changed prefixes and retain newline, replacement, truncation, corruption and owner checks.

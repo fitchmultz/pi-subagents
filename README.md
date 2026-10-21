@@ -60,7 +60,8 @@ list contains connected, eligible sessions, not every Pi process on the machine.
 
 In interactive Pi, an above-editor widget names individual children with circle
 indicators. Active work appears first; completed runs are hidden from the widget
-and `/agents` picker. Ctrl+O expands model/cwd details. Use `/agents <run-id>` to watch
+and `/agents` picker. Failed, stopped, interrupted, and unavailable runs remain visible.
+Ctrl+O expands model/cwd details. Use `/agents <run-id>` to watch
 any saved run, including a completed child's native published text, tool calls and results.
 This is read-only: it neither spends a model turn nor dispatches, steers or stops
 work. Unpublished provider token deltas are not a journal stream. Agents still
