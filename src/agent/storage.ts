@@ -96,7 +96,12 @@ export function list(base: string): string[] {
   try {
     return fs
       .readdirSync(base, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      .filter(
+        (e) =>
+          e.isDirectory() &&
+          fs.lstatSync(path.join(base, e.name, "launch.json"), { throwIfNoEntry: false }) !==
+            undefined,
+      )
       .map((e) => e.name);
   } catch (error) {
     if (missing(error)) {

@@ -190,9 +190,9 @@ waking recipients.
 
 ### Integrated local evidence
 
-- `npm run check:size`: 13,290 source lines; 15,986 total production lines;
-  529,900 production bytes. Relative to baseline, reductions are 84.18%, 84.16%,
-  and 89.43%, respectively. All three ceilings pass without a distribution
+- `npm run check:size`: 13,312 source lines; 16,008 total production lines;
+  530,813 production bytes. Relative to baseline, reductions are 84.16%, 84.13%,
+  and 89.42%, respectively. All three ceilings pass without a distribution
   allowlist concealing the retired engine.
 - `npm run lint`, `npm run format:check`, `npm run typecheck`, `npm run build`, and
   `git diff --check` pass. The committed lockfile's production audit reports zero
@@ -201,7 +201,7 @@ waking recipients.
   Pi 1.3.0 and the intended fork's actual module graphs. Packed runtime-only and
   standalone probes execute a real native child, tool result, and completion;
   they expose exactly the three package tools and no profile resources.
-- 109 focused tests pass with no skips on each host: native agent lifecycle,
+- The initial integrated candidate passed 109 focused tests with no skips on each host: native agent lifecycle,
   intercom replay, actual editor receipts, saved-input and receipt filesystem
   boundaries, bounded journal/accounting reads, atomic storage, and process
   ownership. The broader suite runs only in hosted CI.
@@ -224,6 +224,33 @@ waking recipients.
   deterministic probe asserts the exact faux model before prompting, denies
   network access, and verifies zero network attempts. Live inference is confined
   to the separately opted-in acceptance runs.
+
+### Hosted CI and review follow-up
+
+The initial hosted official Linux full qualification passed. Fork lanes exposed
+two additional native boundaries: the retained SQLite contention fixture yielded
+to an expired delivery timer while waiting for a slow reader, and cold Stop could
+see successful process liveness immediately before native abort reaped the shell
+and made its birth lookup unavailable. The fixture now observes actual SHARED-lock
+readiness and rollback-journal publication; Stop accepts disappearance only after
+a fresh ESRCH, retaining live identity/unverified/EPERM refusal. Native RED/GREEN
+proof covers the Stop race on both hosts; the SQLite fixture also passes with a
+2800 ms external reader-startup delay on macOS and Linux.
+
+Review found two concrete gaps, also repaired with native RED/GREEN evidence:
+
+- `last` now includes completed `length` responses rather than returning an older
+  `stop` response. The existing real-broker paging/no-wake keeper covers both
+  terminal reasons and checks the actual native completed entry ID.
+- Failed preparation removes only its own unadmitted directory. Scans require
+  canonical `launch.json` publication, so actual preparation SIGKILL cannot starve
+  healthy runs' listing or completion notifications. Invalid published records
+  remain visible errors; uncertain post-spawn claims are not removed. Abrupt death
+  may leave unadmitted partial files on disk; there is no destructive auto-recovery.
+
+The companion's cold-ledger/ENOSPC fixtures now supply real unambiguous mail
+before requesting terminal receipts, preserving the concurrent writer and partial
+write/repair assertions instead of stopping at the new unknown-ID guard.
 
 This document records evidence and acceptance gates; local success alone is not a
 claim that hosted qualification and delivery are complete. Ready-for-review PRs, green hosted

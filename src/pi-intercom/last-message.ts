@@ -24,7 +24,7 @@ function completedResponse(
     if (
       entry.type === "message" &&
       entry.message.role === "assistant" &&
-      entry.message.stopReason === "stop" &&
+      (entry.message.stopReason === "stop" || entry.message.stopReason === "length") &&
       (entryId === undefined || entry.id === entryId)
     ) {
       return {

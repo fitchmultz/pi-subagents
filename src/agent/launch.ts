@@ -68,43 +68,52 @@ export async function prepareLaunch(options: {
   const id = randomUUID();
   const directory = runDirectory(base, id);
   fs.mkdirSync(directory, { mode: 0o700 });
-  const manager = sdk.SessionManager.create(cwd, directory);
-  const sessionFile = manager.getSessionFile();
-  const header = manager.getHeader();
-  if (sessionFile === undefined || !header) {
-    throw new Error("Native session did not allocate a durable identity.");
+  const launchFile = path.join(directory, "launch.json");
+  try {
+    const manager = sdk.SessionManager.create(cwd, directory);
+    const sessionFile = manager.getSessionFile();
+    const header = manager.getHeader();
+    if (sessionFile === undefined || !header) {
+      throw new Error("Native session did not allocate a durable identity.");
+    }
+    const inherited = input.context === "fork" ? context.sessionManager.getBranch() : [];
+    const savedHeader =
+      input.context === "fork"
+        ? { ...header, parentSession: context.sessionManager.getSessionFile() }
+        : header;
+    // Preserve the full native branch: no semantic tool filter or canned body.
+    fs.writeFileSync(
+      sessionFile,
+      [savedHeader, ...inherited].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+      { flag: "wx", mode: 0o600 },
+    );
+    const launch: Launch = {
+      version: 1,
+      id,
+      rootId: id,
+      owner,
+      cwd,
+      agentDir,
+      sdk: sdkRoot,
+      entry: runtimeEntry(),
+      sessionFile,
+      sessionId: manager.getSessionId(),
+      prompt: input.prompt,
+      context: input.context ?? "fresh",
+      provider: model.provider,
+      model: model.id,
+      thinking,
+      trusted,
+      name: input.name,
+      createdAt: Date.now(),
+    };
+    write(launchFile, launch, true);
+    return launch;
+  } catch (error) {
+    // A published launch is admitted even if its final publication cleanup failed.
+    if (fs.lstatSync(launchFile, { throwIfNoEntry: false }) === undefined) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+    throw error;
   }
-  const inherited = input.context === "fork" ? context.sessionManager.getBranch() : [];
-  const savedHeader =
-    input.context === "fork"
-      ? { ...header, parentSession: context.sessionManager.getSessionFile() }
-      : header;
-  // Preserve the full native branch: no semantic tool filter or canned body.
-  fs.writeFileSync(
-    sessionFile,
-    [savedHeader, ...inherited].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
-    { flag: "wx", mode: 0o600 },
-  );
-  const launch: Launch = {
-    version: 1,
-    id,
-    rootId: id,
-    owner,
-    cwd,
-    agentDir,
-    sdk: sdkRoot,
-    entry: runtimeEntry(),
-    sessionFile,
-    sessionId: manager.getSessionId(),
-    prompt: input.prompt,
-    context: input.context ?? "fresh",
-    provider: model.provider,
-    model: model.id,
-    thinking,
-    trusted,
-    name: input.name,
-    createdAt: Date.now(),
-  };
-  write(path.join(directory, "launch.json"), launch, true);
-  return launch;
 }

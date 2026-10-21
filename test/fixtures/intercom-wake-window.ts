@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, readFileSync, readSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readSync, writeFileSync, writeSync } from "node:fs";
 import { createServer } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -25,14 +25,23 @@ async function until(predicate: () => boolean): Promise<void> {
   }
 }
 
+function untilSync(predicate: () => boolean): void {
+  const end = performance.now() + 15000;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  while (!predicate()) {
+    assert.ok(performance.now() < end, "native reader reached the next filesystem boundary");
+    Atomics.wait(signal, 0, 0, 5);
+  }
+}
+
 function reader(): void {
   const db = new DatabaseSync(root, { readOnly: true });
   db.exec("BEGIN");
   db.prepare("SELECT count(*) FROM wake_attempts").get();
-  writeSync(1, "reader_held\n");
-  while (Date.now() < Number(cert)) {
-    // Hold a real SQLite SHARED lock across the owner's FULL COMMIT deadline.
-  }
+  writeFileSync(cert, "", { mode: 0o600, flag: "wx" });
+  // Start contention at the reservation's real rollback-journal publication, not its due time.
+  untilSync(() => existsSync(`${root}-journal`));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
   db.exec("COMMIT");
   db.close();
 }
@@ -105,22 +114,23 @@ async function window(): Promise<void> {
       boxes.push(box);
       ids.push(send(box));
     }
-    const due = numberValue(rows("SELECT MIN(due) AS due FROM wake_batches")[0].due);
-    child = spawn(
-      process.execPath,
-      [import.meta.filename, "reader", join(stateDir, "wake-quota.sqlite"), String(due + 700)],
-      { stdio: ["ignore", "pipe", "inherit"] },
-    );
-    const exited = once(child, "close");
-    let output = "";
-    assert.ok(child.stdout);
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
+    const quota = join(stateDir, "wake-quota.sqlite");
+    const held = join(root, "reader-held");
+    assert.equal(existsSync(`${quota}-journal`), false, "all setup commits have finished");
+    child = spawn(process.execPath, [import.meta.filename, "reader", quota, held], {
+      stdio: ["ignore", "ignore", "inherit"],
     });
-    await until(() => output.includes("reader_held"));
-    assert.ok(realNow() < due, "reader acquired before the first reservation");
+    const exited = once(child, "close");
+    // Do not yield to already-due delivery timers until the native reader holds its SHARED lock.
+    // Acquiring earlier would block the synchronous batch-setup commits themselves.
+    untilSync(() => existsSync(held));
+    assert.equal(
+      rows("SELECT count(*) AS attempts FROM wake_attempts")[0].attempts,
+      0,
+      "reader acquired before the first reservation",
+    );
     await until(() => arrivals.length === 20);
-    await exited;
+    assert.deepEqual(await exited, [0, null], "native reader released the contended transaction");
     const first = numberValue(
       rows("SELECT attemptedAt FROM wake_attempts ORDER BY sequence LIMIT 1")[0].attemptedAt,
     );

@@ -2073,76 +2073,83 @@ test("native explicit lineage scopes discovery, send and last across unrelated d
   );
 });
 
-test("native last reads the original completed assistant response in full pages without waking a busy peer", async (t) => {
-  const release = gate(t);
-  const reader = await makeSession(t, "last-reader");
-  const target = await makeSession(t, "last-target");
-  const empty = record(
-    (await executeIntercom(reader, { action: "last", to: "last-target" })).details,
-  );
-  assert.equal(empty.entryId, null);
-  assert.equal(empty.text, "");
-  assert.equal(target.faux.state.callCount, 0);
-  const body = "Original assistant response 日本語 😀\n".repeat(2200);
-  target.faux.setResponses([
-    fauxAssistantMessage(body),
-    async () => {
-      await release.promise;
-      return fauxAssistantMessage("Newer response");
-    },
-  ]);
-  await target.session.prompt("Publish the original response");
-  const held = target.session.prompt("Hold another provider request");
-  await waitFor(() => target.faux.state.callCount === 2, "busy target provider");
-  let offset = 0,
-    entryId: string | undefined;
-  const pages: string[] = [];
-  do {
-    // Pages are independently fetched over the real broker and pinned to one native entry.
-    // oxlint-disable-next-line no-await-in-loop
-    const result = await executeIntercom(reader, {
-      action: "last",
-      to: "last-target",
-      offset,
-      entryId,
-      limit: 8192,
-    });
-    assert.notEqual(result.isError, true);
-    const page = record(result.details);
-    entryId ??= text(page.entryId);
-    assert.equal(page.entryId, entryId);
-    assert.equal(page.offset, offset);
-    assert.equal(page.totalLength, body.length);
-    assert.equal(text(record(page.session).status), "thinking");
-    assert.equal(text(record(page.session).name), "last-target");
-    pages.push(text(page.text));
-    assert.equal(text(result.content[0].text), page.text);
-    assert.match(text(result.content[1].text), /Session: last-target/);
-    assert.match(text(result.content[1].text), /Status: thinking/);
-    if (page.nextOffset !== undefined) {
-      assert.match(text(result.content[1].text), /Next page: intercom\(/);
-    }
-    if (page.nextOffset === undefined) {
-      break;
-    }
-    offset = numberValue(page.nextOffset);
-  } while (offset < body.length);
-  assert.equal(pages.join(""), body);
-  assert.ok(pages.length > 1);
-  assert.equal(target.faux.state.callCount, 2);
-  assert.equal(target.session.isStreaming, true);
-  assert.equal(reader.faux.state.callCount, 0);
-  assert.equal(
-    target.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message")
-      .length,
-    0,
-  );
-  const invalid = await reader.sender.last("last-target", { entryId: "foreign-entry" });
-  assert.ok("error" in invalid);
-  release.resolve();
-  await held;
-  assert.deepEqual([...reader.errors, ...target.errors], []);
-});
+for (const stopReason of ["stop", "length"] as const) {
+  test(`native last reads the latest ${stopReason} response in full pages without waking a busy peer`, async (t) => {
+    const release = gate(t);
+    const reader = await makeSession(t, `last-reader-${stopReason}`);
+    const targetName = `last-target-${stopReason}`;
+    const target = await makeSession(t, targetName);
+    const empty = record(
+      (await executeIntercom(reader, { action: "last", to: targetName })).details,
+    );
+    assert.equal(empty.entryId, null);
+    assert.equal(empty.text, "");
+    assert.equal(target.faux.state.callCount, 0);
+    const body = "Original assistant response 日本語 😀\n".repeat(2200);
+    target.faux.setResponses([
+      fauxAssistantMessage("Older completed response"),
+      fauxAssistantMessage(body, { stopReason }),
+      async () => {
+        await release.promise;
+        return fauxAssistantMessage("Newer response");
+      },
+    ]);
+    await target.session.prompt("Publish an older response");
+    await target.session.prompt("Publish the latest response");
+    const completedEntryId = target.session.sessionManager.getLeafId();
+    const held = target.session.prompt("Hold another provider request");
+    await waitFor(() => target.faux.state.callCount === 3, "busy target provider");
+    let offset = 0,
+      entryId: string | undefined;
+    const pages: string[] = [];
+    do {
+      // Pages are independently fetched over the real broker and pinned to one native entry.
+      // oxlint-disable-next-line no-await-in-loop
+      const result = await executeIntercom(reader, {
+        action: "last",
+        to: targetName,
+        offset,
+        entryId,
+        limit: 8192,
+      });
+      assert.notEqual(result.isError, true);
+      const page = record(result.details);
+      entryId ??= text(page.entryId);
+      assert.equal(page.entryId, completedEntryId);
+      assert.equal(page.entryId, entryId);
+      assert.equal(page.offset, offset);
+      assert.equal(page.totalLength, body.length);
+      assert.equal(text(record(page.session).status), "thinking");
+      assert.equal(text(record(page.session).name), targetName);
+      pages.push(text(page.text));
+      assert.equal(text(result.content[0].text), page.text);
+      assert.match(text(result.content[1].text), /Session: last-target/);
+      assert.match(text(result.content[1].text), /Status: thinking/);
+      if (page.nextOffset !== undefined) {
+        assert.match(text(result.content[1].text), /Next page: intercom\(/);
+      }
+      if (page.nextOffset === undefined) {
+        break;
+      }
+      offset = numberValue(page.nextOffset);
+    } while (offset < body.length);
+    assert.equal(pages.join(""), body);
+    assert.ok(pages.length > 1);
+    assert.equal(target.faux.state.callCount, 3);
+    assert.equal(target.session.isStreaming, true);
+    assert.equal(reader.faux.state.callCount, 0);
+    assert.equal(
+      target.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message")
+        .length,
+      0,
+    );
+    const invalid = await reader.sender.last(targetName, { entryId: "foreign-entry" });
+    assert.ok("error" in invalid);
+    release.resolve();
+    await held;
+    assert.deepEqual([...reader.errors, ...target.errors], []);
+  });
+}
 
 function restartFixture(t: TestContext, mode: string, directory: string, sessionFile?: string) {
   const child = spawn(

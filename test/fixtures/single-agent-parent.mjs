@@ -255,7 +255,141 @@ const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSes
 const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 let runId = seed?.runId;
 try {
-  if (phase === "seed" || phase === "receipt") {
+  if (phase.startsWith("launch-preparation-")) {
+    const faultFile = path.join(root, "preparation-fault.json");
+    if (phase !== "launch-preparation-reopen") {
+      const receipt = await call(
+        "delegate",
+        { prompt: "HOLD:first", model: "single-agent-fixture/literal-model" },
+        "preparation-valid-launch",
+      );
+      assert.equal(receipt.isError, false, JSON.stringify(receipt));
+      runId = receipt.details.id;
+      await until(
+        () => requests().some((request) => request.prompt === "HOLD:first"),
+        "valid child reaches the actual native provider before preparation fails",
+      );
+      fs.writeFileSync(
+        seedFile,
+        JSON.stringify({
+          runId,
+          sessionId: manager.getSessionId(),
+          sessionFile: manager.getSessionFile(),
+          childPid: requests().find((request) => request.prompt === "HOLD:first").pid,
+        }),
+      );
+      const writeFile = fs.writeFileSync;
+      const base = path.dirname(runDir(runId));
+      let faults = 0;
+      fs.writeFileSync = (file, body, options) => {
+        if (
+          typeof file === "string" &&
+          file.startsWith(base + path.sep) &&
+          file.endsWith(".jsonl") &&
+          options?.flag === "wx" &&
+          faults === 0
+        ) {
+          faults++;
+          const header = JSON.parse(body.split("\n")[0]);
+          assert.equal(header.type, "session");
+          assert.equal(header.cwd, cwd);
+          assert.notEqual(header.id, manager.getSessionId());
+          // Fail the real prepared native session write after partial filesystem progress.
+          writeFile(file, body.slice(0, 17), options);
+          writeFile(faultFile, JSON.stringify({ file }));
+          if (phase === "launch-preparation-crash") {
+            process.kill(process.pid, "SIGKILL");
+          }
+          throw Object.assign(new Error("CONTROLLED_NATIVE_PREPARATION_EIO"), { code: "EIO" });
+        }
+        return writeFile(file, body, options);
+      };
+      syncBuiltinESMExports();
+      try {
+        const failed = await call(
+          "delegate",
+          {
+            prompt: "PREPARATION_MUST_NOT_LAUNCH",
+            model: "single-agent-fixture/literal-model",
+          },
+          "preparation-failed-launch",
+        );
+        assert.equal(failed.isError, true, JSON.stringify(failed));
+        assert.match(JSON.stringify(failed.content), /CONTROLLED_NATIVE_PREPARATION_EIO/);
+        assert.equal(faults, 1, "fault reached the actual native session write");
+      } finally {
+        fs.writeFileSync = writeFile;
+        syncBuiltinESMExports();
+      }
+    }
+    const failedDirectory = path.dirname(readJSON(faultFile).file);
+    if (phase === "launch-preparation-reopen") {
+      assert.equal(fs.existsSync(failedDirectory), true, "SIGKILL bypassed preparation cleanup");
+      assert.equal(fs.existsSync(path.join(failedDirectory, "launch.json")), false);
+      assert.equal(fs.existsSync(path.join(failedDirectory, "commands")), false);
+      assert.equal(fs.existsSync(path.join(failedDirectory, "actor.lock")), false);
+    } else {
+      assert.equal(
+        fs.existsSync(failedDirectory),
+        false,
+        "synchronous preparation failure removes only its own unlaunched directory",
+      );
+    }
+    await session.waitForIdle();
+    const listed = await call("agent_runs", { action: "list" }, "preparation-list-valid");
+    assert.equal(listed.isError, false, JSON.stringify(listed));
+    assert.deepEqual(
+      listed.details.runs.map((run) => run.id),
+      [runId],
+    );
+    faux.setResponses([fauxAssistantMessage("PREPARATION_COMPLETION_PROCESSED")]);
+    fs.writeFileSync(path.join(root, "release-first"), "release");
+    await until(
+      () => notices().some((notice) => notice.details.id === runId),
+      "valid native completion still reaches the journal despite failed preparation",
+    );
+    await session.waitForIdle();
+    assert.equal(notices().length, 1);
+    assert.match(notices()[0].content, /CHILD_LITERAL_RESULT:HOLD:first/);
+    const completed = await call("agent_runs", { action: "list" }, "preparation-list-completed");
+    assert.equal(completed.isError, false, JSON.stringify(completed));
+    assert.equal(completed.details.runs[0].completed, true);
+    const sibling = await call(
+      "delegate",
+      {
+        prompt: "PREPARATION_RECOVERY_LITERAL",
+        model: "single-agent-fixture/literal-model",
+        async: false,
+      },
+      "preparation-recovery-launch",
+    );
+    assert.equal(sibling.isError, false, JSON.stringify(sibling));
+    assert.equal(sibling.details.output.text, "CHILD_LITERAL_RESULT:PREPARATION_RECOVERY_LITERAL");
+    assert.deepEqual(
+      requests().map((request) => request.prompt),
+      ["HOLD:first", "PREPARATION_RECOVERY_LITERAL"],
+      "actual provider completion establishes that the failed launch dispatched no child",
+    );
+    const starts = fs
+      .readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    assert.deepEqual(
+      starts.map((start) => start.sessionId).sort(),
+      [completed.details.runs[0].sessionId, sibling.details.sessionId].sort(),
+      "only the admitted valid run and recovery sibling initialized native actors",
+    );
+    const launchFile = path.join(runDir(runId), "launch.json");
+    const originalLaunch = fs.readFileSync(launchFile);
+    try {
+      fs.writeFileSync(launchFile, "{}");
+      const corrupted = await call("agent_runs", { action: "list" }, "preparation-invalid-launch");
+      assert.equal(corrupted.isError, true, "an existing invalid canonical launch is not hidden");
+    } finally {
+      fs.writeFileSync(launchFile, originalLaunch);
+    }
+  } else if (phase === "seed" || phase === "receipt") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(
       "delegate",
@@ -429,18 +563,29 @@ try {
     );
     try {
       await until(() => fs.existsSync(path.join(root, "bystander-heartbeat")), "bystander ready");
-      for (const mutation of [
+      const parentGroup = childProcess
+        .execFileSync("ps", ["-p", String(process.pid), "-o", "pgid="], { encoding: "utf8" })
+        .trim();
+      assert.match(parentGroup, /^[1-9]\d*$/);
+      assert.notEqual(
+        Number(parentGroup),
+        process.pid,
+        "live parent is not a detached group leader",
+      );
+      for (const [index, mutation] of [
         { ...shell, identity: "wrong process birth" },
+        { ...shell, identity: "unverified" },
         { ...shell, token: "foreign actor generation" },
         { ...shell, pid: bystander.pid },
-      ]) {
+        { ...shell, pid: process.pid },
+      ].entries()) {
         fs.writeFileSync(recordFile, JSON.stringify(mutation));
         // Every denial follows the actual controller processing the corrupted ledger.
         // oxlint-disable-next-line no-await-in-loop
         const denied = await call(
           "agent_runs",
           { action: "stop", id: runId },
-          `bad-shell-${mutation.pid}-${mutation.token}`,
+          `bad-shell-${index}`,
         );
         assert.equal(denied.isError, true, JSON.stringify(denied));
         process.kill(seed.family.pid, 0);
@@ -504,7 +649,61 @@ try {
     } finally {
       fs.writeFileSync(processFile, JSON.stringify(identity));
     }
-    const stop = await call("agent_runs", { action: "stop", id: runId }, "cold-stop");
+    const ledger = path.join(runDir(runId), "shells", identity.token);
+    const shell = readJSON(path.join(ledger, fs.readdirSync(ledger)[0]));
+    const kill = process.kill;
+    let stopping = false,
+      raced = false;
+    let stop;
+    try {
+      kill(identity.pid, "SIGSTOP");
+      await until(
+        () =>
+          spawnSync("ps", ["-p", String(identity.pid), "-o", "state="], {
+            encoding: "utf8",
+          }).stdout.includes("T"),
+        "actor is stopped before the controller sends SIGTERM",
+      );
+      process.kill = (pid, signal) => {
+        const sent = kill(pid, signal);
+        if (pid === -identity.pid && signal === "SIGTERM") {
+          stopping = true;
+        }
+        if (stopping && pid === shell.pid && signal === 0 && !raced) {
+          raced = true;
+          // The real liveness syscall succeeded. Let native abort reap the shell
+          // before the controller's following birth-identity lookup.
+          kill(identity.pid, "SIGCONT");
+          const gone = spawnSync(
+            process.execPath,
+            [
+              "--input-type=module",
+              "-e",
+              `import {setTimeout as delay} from 'node:timers/promises';
+             const deadline=Date.now()+10000;
+             for (;;) {
+               try { process.kill(${shell.pid},0); }
+               catch(error) { if(error.code==='ESRCH') break; throw error; }
+               if(Date.now()>deadline) throw new Error('native abort did not reap shell');
+               await delay(10);
+             }`,
+            ],
+            { encoding: "utf8", timeout: 15000 },
+          );
+          assert.equal(gone.status, 0, gone.stderr);
+        }
+        return sent;
+      };
+      stop = await call("agent_runs", { action: "stop", id: runId }, "cold-stop");
+    } finally {
+      process.kill = kill;
+      try {
+        kill(identity.pid, "SIGCONT");
+      } catch (error) {
+        assert.equal(error.code, "ESRCH");
+      }
+    }
+    assert.equal(raced, true, "native shell exits between successful liveness and birth lookup");
     assert.equal(stop.isError, false, JSON.stringify(stop));
     assert.equal(stop.details.stopAcknowledged, false);
     assert.equal(stop.details.process.exitKnown, false);

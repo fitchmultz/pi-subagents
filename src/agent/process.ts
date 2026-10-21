@@ -120,19 +120,27 @@ export async function ensureActor(base: string, launch: Launch): Promise<void> {
   write(path.join(lock, "claim.json"), { ...ownIdentity(), token });
   spawnActor(base, launch, token);
 }
-export function verifyProcess(identity: ProcessIdentity): boolean {
+function verifyLiveness(pid: number): boolean {
   try {
-    process.kill(identity.pid, 0);
+    process.kill(pid, 0);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ESRCH") {
       return false;
     }
     throw new Error("Actor liveness is ambiguous; no stop was sent.", { cause: error });
   }
-  if (
-    identity.identity === "unverified" ||
-    readChildProcessIdentity(identity.pid) !== identity.identity
-  ) {
+  return true;
+}
+export function verifyProcess(identity: ProcessIdentity): boolean {
+  if (!verifyLiveness(identity.pid)) {
+    return false;
+  }
+  const actual = readChildProcessIdentity(identity.pid);
+  if (identity.identity !== "unverified" && actual === undefined && !verifyLiveness(identity.pid)) {
+    // Native abort can reap a shell between the liveness probe and birth lookup.
+    return false;
+  }
+  if (identity.identity === "unverified" || actual !== identity.identity) {
     throw new Error("Cannot verify actor process identity; no signal sent.");
   }
   return true;

@@ -125,6 +125,7 @@ for (const phase of [
   "cwd-invalid-wrong-owner",
   "cwd-invalid-wrong-directory",
   "cwd-invalid-error",
+  "launch-preparation-failure",
 ]) {
   test(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));
@@ -135,6 +136,34 @@ for (const phase of [
     }
   });
 }
+test(
+  "single-agent native preparation SIGKILL leaves only an unadmitted directory and does not starve saved completion or subsequent launches",
+  { timeout: 60000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-preparation-"));
+    try {
+      run(root, "launch-preparation-crash", true);
+      const saved = seed(root);
+      fs.writeFileSync(path.join(root, "release-first"), "release");
+      await until(
+        () =>
+          fs.existsSync(
+            path.join(
+              root,
+              "agent/sessions/agent-runs",
+              saved.sessionId,
+              saved.runId,
+              "result.json",
+            ),
+          ) && dead(saved.childPid),
+        "valid sibling publishes its result and exits while the crashed parent is offline",
+      );
+      run(root, "launch-preparation-reopen");
+    } finally {
+      await cleanup(root);
+    }
+  },
+);
 test(
   "single-agent native cwd captures active parent B, initializes fork C once and restores child-selected D on cold continuation",
   { timeout: 60000 },

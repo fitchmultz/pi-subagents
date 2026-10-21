@@ -23,11 +23,11 @@ folder, a private intercom namespace, a minimal environment, discovery disabled,
 and `--list-models zzznomatch --offline -ne`. Only the named compiled entry/entries
 were added with `-e`; no credentials, model turns, or installed-runtime changes.
 
-| Explicit extensions                      | Individual wall-clock times (ms) | Minimum (ms) | Range (ms)    |
-| ---------------------------------------- | -------------------------------- | -----------: | ------------- |
-| None (host floor)                        | 220.30, 222.89, 225.32           |       220.30 | 220.30–225.32 |
-| Baseline `1646ab89`, two package entries | 980.63, 462.70, 464.58           |       462.70 | 462.70–980.63 |
-| Replacement, single package entry        | 440.30, 373.10, 374.75           |       373.10 | 373.10–440.30 |
+| Explicit extensions                          | Individual wall-clock times (ms) | Minimum (ms) | Range (ms)    |
+| -------------------------------------------- | -------------------------------- | -----------: | ------------- |
+| None (host floor)                            | 220.30, 222.89, 225.32           |       220.30 | 220.30–225.32 |
+| Baseline `1646ab89`, two package entries     | 980.63, 462.70, 464.58           |       462.70 | 462.70–980.63 |
+| Replacement `1d74a79e`, single package entry | 440.30, 373.10, 374.75           |       373.10 | 373.10–440.30 |
 
 These measure extension factory loading, not interactive startup, completion
 latency, or steady-state memory. The minimum decreased, but the delta is smaller
