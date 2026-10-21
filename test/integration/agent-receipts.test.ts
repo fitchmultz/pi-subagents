@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { test, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { spy } from "sinon";
+import { spy, stub } from "sinon";
 import { deliver, notifications, published, settle } from "../../src/agent/notifications.ts";
 import { write } from "../../src/agent/storage.ts";
 import { legacyNotifications } from "../../src/agent/legacy.ts";
@@ -224,6 +224,47 @@ for (const boundary of ["root", "results"] as const) {
     );
   });
 }
+
+test("a malformed legacy hint is logged and skipped without dropping valid legacy results", async (t) => {
+  const h = await fixture(t);
+  const directory = path.join(resolveTempRootDir(), "async-subagent-results");
+  fs.mkdirSync(directory, { recursive: true });
+  const corrupt = path.join(directory, "corrupt-legacy.json");
+  const valid = path.join(directory, "valid-legacy.json");
+  const raw = JSON.stringify({
+    runId: "valid-legacy",
+    sessionId: h.launch.owner,
+    mode: "single",
+    timestamp: 7,
+    output: "Valid literal legacy output",
+  });
+  fs.writeFileSync(corrupt, '{"incomplete":');
+  fs.writeFileSync(valid, raw);
+  const errors = stub(console, "error");
+  t.after(() => {
+    errors.restore();
+    fs.rmSync(corrupt, { force: true });
+    fs.rmSync(valid, { force: true });
+  });
+  deliver(h.pi, h.context, legacyNotifications(h.context));
+  await h.session.waitForIdle();
+  assert.deepEqual(
+    h.manager
+      .getEntries()
+      .flatMap((entry) =>
+        entry.type === "custom_message" && entry.customType === "subagent-notify"
+          ? [entry.content]
+          : [],
+      ),
+    [raw],
+    "the valid legacy result is published despite the malformed file",
+  );
+  deliver(h.pi, h.context, legacyNotifications(h.context));
+  assert.equal(fs.existsSync(valid), false, "the published valid hint still retires");
+  assert.equal(fs.readFileSync(corrupt, "utf8"), '{"incomplete":');
+  assert.equal(errors.callCount, 2);
+  assert.ok(errors.alwaysCalledWithMatch(corrupt), "each scan names the skipped file");
+});
 
 for (const scenario of legacyCases) {
   test(`sole legacy hint uses actual historical native receipt authority: ${scenario.name}`, async (t) => {
