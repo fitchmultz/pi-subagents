@@ -77,10 +77,13 @@ class AgentRuntime {
       return;
     }
     try {
-      deliver(this.pi, this.ctx, [
-        ...legacyNotifications(this.ctx),
-        ...notifications(this.ctx, this.base, this.owner),
-      ]);
+      const notices = notifications(this.ctx, this.base, this.owner);
+      try {
+        notices.unshift(...legacyNotifications(this.ctx));
+      } catch (error) {
+        console.error(`Legacy completion reconciliation: ${errorText(error)}`);
+      }
+      deliver(this.pi, this.ctx, notices);
     } catch (error) {
       console.error(`Agent completion reconciliation: ${errorText(error)}`);
     }

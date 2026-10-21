@@ -1260,6 +1260,13 @@ try {
             output: "LEGACY_SETTLED_RESULT",
           }),
         );
+      } else {
+        const legacy = path.join(
+          root,
+          "pi-subagents-runtime/async-subagent-results/corrupt-legacy.json",
+        );
+        fs.mkdirSync(path.dirname(legacy), { recursive: true });
+        fs.writeFileSync(legacy, '{"incomplete":');
       }
       fs.writeFileSync(path.join(root, "release-parent"), "release");
       await heldParent;
