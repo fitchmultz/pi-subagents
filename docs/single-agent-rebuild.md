@@ -258,19 +258,24 @@ write/repair assertions instead of stopping at the new unknown-ID guard.
 ### Deep-review follow-up
 
 The review follow-up prepares unpublished version **0.50.0**. Final measured
-size is **14,023 source lines, 16,719 production lines and 554,884 bytes**:
-reductions of **83.31%, 83.43% and 88.94%** from the original baseline. The
+size is **14,083 source lines, 16,779 production lines and 556,912 bytes**:
+reductions of **83.24%, 83.37% and 88.90%** from the original baseline. The
 read-only observer remains inside all three enforced ceilings.
 
 - Stop commands bind to the verified actor generation; replacement actors reject
   stale and unbound legacy Stops, and stopping actors do not admit new Run work.
 - Per-run tool text exposes guidance IDs/admission states, completion-receipt
   publication and known versus unknown process exit. Inventory is metadata-only,
-  without output pages, usage arrays or implicit accounting repair.
+  without output pages, usage arrays or implicit accounting repair. Linked runs
+  share one command-spool scan per inventory page; streaming projection validates
+  the JSON without assembling guidance prompts.
 - Named asks resolve a concrete broker identity before sending. Missing discovery
   fails before delivery; exact sender/correlation matching is not weakened.
 - Native preparation failures preserve partial journals and full fork branches.
   Canonical launch publication still controls inventory admission.
+- Adopted legacy-native journals remain watchable in their original location,
+  including subsequent continuations. The committed adoption claim, owned root,
+  exact path/session identity and no-symlink journal checks remain authoritative.
 - The human TUI adds a read-only status and `/agents` list/watch. It shows bounded,
   LF-published native activity, not unpublished token deltas; forked inherited
   history is labelled. Completed history does not consume active refresh slots.

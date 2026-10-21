@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readJsonProjection } from "../shared/journal-frames.ts";
+import type { Projection } from "../shared/json-projection.ts";
 import { Assert } from "./typebox.ts";
 import type { Static, TSchema } from "typebox";
 import { launchSchema, successorSchema, type Launch, type Command } from "./contracts.ts";
@@ -9,10 +10,14 @@ import { launchSchema, successorSchema, type Launch, type Command } from "./cont
 export function missing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
-export function read<T extends TSchema>(file: string, schema: T): Static<T> | undefined {
+export function read<T extends TSchema>(
+  file: string,
+  schema: T,
+  select: Projection = () => true,
+): Static<T> | undefined {
   let value: unknown;
   try {
-    value = readJsonProjection(file, () => true);
+    value = readJsonProjection(file, select);
   } catch (error) {
     if (missing(error)) {
       return;

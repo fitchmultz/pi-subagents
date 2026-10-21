@@ -7,6 +7,7 @@ import { successorSchema, type Launch } from "./contracts.ts";
 import { readCanonicalResult } from "./usage.ts";
 import { actor, alive } from "./process.ts";
 import { JournalTail, plainText } from "./journal-tail.ts";
+import { adoptedJournal } from "./saved.ts";
 import type { ObserverRow, Watch } from "./observe-screen.ts";
 
 const STATUS_KEY = "agent-observer";
@@ -132,9 +133,9 @@ class Observer {
   }
   private status(): string {
     const active = [...this.rows.values()].filter((row) => row.live).length;
-    const checking = this.rows.size < this.total ? "+ (checking)" : "";
+    const checking = this.rows.size < this.total;
     const error = this.error.length > 0 ? " · inventory error" : "";
-    return `Agents: ${active}${checking} active · ${this.total} runs${error} · /agents`;
+    return `Agents: ${active}${checking ? "+" : ""} active${checking ? " (checking…)" : ""} · ${this.total} runs${error} · /agents`;
   }
   private inventory(): ObserverRow[] {
     return [...this.rows.values()].sort((a, b) => {
@@ -169,7 +170,10 @@ class Observer {
       throw new Error("Saved child metadata is unavailable or belongs to another parent.");
     }
     const directory = runDirectory(this.base, launch.rootId);
-    if (path.dirname(path.resolve(launch.sessionFile)) !== path.resolve(directory)) {
+    if (
+      path.dirname(path.resolve(launch.sessionFile)) !== path.resolve(directory) &&
+      !adoptedJournal(this.base, launch)
+    ) {
       throw new Error("Child journal path is outside its saved conversation.");
     }
     return {

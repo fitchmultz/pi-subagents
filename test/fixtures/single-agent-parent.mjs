@@ -405,14 +405,15 @@ try {
       const launch = {
         version: 1,
         id,
-        rootId: id,
+        rootId: index < 50 ? "inventory-0" : id,
+        ...(index > 0 && index < 50 ? { predecessor: `inventory-${index - 1}` } : {}),
         owner: manager.getSessionId(),
         cwd,
         agentDir,
         sdk: sdkRoot,
         entry: path.join(repo, "dist/index.js"),
-        sessionFile: path.join(runDir(id), "native.jsonl"),
-        sessionId: `native-${id}`,
+        sessionFile: path.join(runDir(index < 50 ? "inventory-0" : id), "native.jsonl"),
+        sessionId: index < 50 ? "native-inventory-0" : `native-${id}`,
         prompt: "SAVED_INVENTORY",
         context: "fresh",
         provider: "single-agent-fixture",
@@ -423,6 +424,12 @@ try {
       };
       saved.push(launch);
       fs.writeFileSync(path.join(runDir(id), "launch.json"), JSON.stringify(launch));
+      if (index > 0 && index < 50) {
+        fs.writeFileSync(
+          path.join(runDir(`inventory-${index - 1}`), "successor.json"),
+          JSON.stringify({ id }),
+        );
+      }
       fs.writeFileSync(
         path.join(runDir(id), "result.json"),
         JSON.stringify({
@@ -443,7 +450,91 @@ try {
         completed: true,
       });
     }
-    const inventory = await call("agent_runs", { action: "list" }, "bounded-inventory");
+    const commands = path.join(runDir("inventory-0"), "commands");
+    const admissions = path.join(runDir("inventory-0"), "admissions");
+    fs.mkdirSync(commands);
+    fs.mkdirSync(admissions);
+    const expectedGuidance = new Map();
+    for (let index = 0; index < 100; index++) {
+      const id = `guidance-${index}`,
+        guidanceRunId = `inventory-${Math.floor(index / 2)}`;
+      const state = ["pending", "accepted", "stale"][index % 3];
+      fs.writeFileSync(
+        path.join(commands, `${id}.json`),
+        JSON.stringify({
+          // Metadata must still be found after a large, discarded prompt.
+          prompt: "GUIDANCE_PROMPT_MUST_NOT_APPEAR:" + "x".repeat(256 * 1024),
+          id,
+          runId: guidanceRunId,
+          action: "steer",
+          createdAt: index,
+        }),
+      );
+      if (state !== "pending") {
+        fs.writeFileSync(
+          path.join(admissions, `${id}.json`),
+          JSON.stringify({ id, runId: guidanceRunId, action: "steer", state, at: index }),
+        );
+      }
+      const guidance = expectedGuidance.get(guidanceRunId) ?? [];
+      guidance.unshift({ id, runId: guidanceRunId, action: "steer", state, at: index });
+      expectedGuidance.set(guidanceRunId, guidance);
+    }
+    const original = {
+      open: fs.openSync,
+      read: fs.readSync,
+      close: fs.closeSync,
+      readdir: fs.readdirSync,
+    };
+    const commandDescriptors = new Set();
+    const io = { scans: 0, opens: 0, reads: 0, bytes: 0, maxReadBytes: 0 };
+    fs.readdirSync = (directory, ...args) => {
+      if (directory === commands) {
+        io.scans++;
+      }
+      return original.readdir(directory, ...args);
+    };
+    fs.openSync = (file, ...args) => {
+      const fd = original.open(file, ...args);
+      if (typeof file === "string" && path.dirname(file) === commands) {
+        commandDescriptors.add(fd);
+        io.opens++;
+      }
+      return fd;
+    };
+    fs.readSync = (fd, ...args) => {
+      const bytes = original.read(fd, ...args);
+      if (commandDescriptors.has(fd)) {
+        io.reads++;
+        io.bytes += bytes;
+        io.maxReadBytes = Math.max(io.maxReadBytes, bytes);
+      }
+      return bytes;
+    };
+    fs.closeSync = (fd) => {
+      commandDescriptors.delete(fd);
+      return original.close(fd);
+    };
+    syncBuiltinESMExports();
+    let inventory;
+    try {
+      inventory = await call("agent_runs", { action: "list" }, "bounded-inventory");
+    } finally {
+      Object.assign(fs, {
+        openSync: original.open,
+        readSync: original.read,
+        closeSync: original.close,
+        readdirSync: original.readdir,
+      });
+      syncBuiltinESMExports();
+    }
+    console.log("inventory command I/O:", JSON.stringify(io));
+    assert.equal(io.scans, 1, "one shared conversation scan, not one per continuation");
+    assert.equal(io.opens, 100, "each guidance record is opened once for the entire page");
+    assert.ok(io.reads <= 600, `bounded command read calls: ${io.reads}`);
+    assert.ok(io.maxReadBytes <= 64 * 1024, `bounded individual reads: ${io.maxReadBytes}`);
+    assert.ok(io.bytes >= 100 * 256 * 1024, "the actual large command spool was read");
+    assert.ok(io.bytes < 100 * (256 * 1024 + 1024), `command bytes read: ${io.bytes}`);
     const text = inventory.content.map((block) => block.text ?? "").join("\n");
     assert.ok(
       Buffer.byteLength(text) < 100 * 1024,
@@ -463,6 +554,12 @@ try {
       "list never embeds output pages",
     );
     assert.equal(text.includes("INVENTORY_OUTPUT_"), false);
+    assert.equal(text.includes("GUIDANCE_PROMPT_MUST_NOT_APPEAR:"), false);
+    assert.deepEqual(
+      page.runs.map((run) => run.guidance),
+      Array.from({ length: 50 }, (_, index) => expectedGuidance.get(`inventory-${index}`)),
+      "model-visible metadata preserves pending, accepted and stale guidance for each run",
+    );
     const last = await call("agent_runs", { action: "list", offset: 50 }, "inventory-next-page");
     assert.deepEqual(
       last.details.runs.map((run) => run.id),
@@ -476,6 +573,13 @@ try {
     );
     assert.equal(inspected.details.output.text, "INVENTORY_OUTPUT_0:" + "x".repeat(13));
     assert.equal(inspected.details.output.nextOffset, 32);
+    for (const guidance of expectedGuidance.get("inventory-0")) {
+      assert.ok(
+        inspected.content.some((block) =>
+          block.text?.includes(`${guidance.id}: ${guidance.state}`),
+        ),
+      );
+    }
   } else if (phase === "seed" || phase === "receipt") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(
@@ -1621,8 +1725,6 @@ try {
     assert.equal(session.getSessionStats().cost, 0);
     const source = readJSON(path.join(root, "delayed-lf.json")).file;
     assert.notEqual(fs.readFileSync(source).at(-1), 10);
-    const { summary } = await import(pathToFileURL(path.join(repo, "dist/agent/view.js")).href);
-    const launch = readJSON(path.join(runDir(runId), "launch.json"));
     const resultFile = path.join(runDir(runId), "result.json");
     const pendingBytes = fs.readFileSync(resultFile);
     const open = fs.openSync;
@@ -1638,9 +1740,6 @@ try {
       fs.appendFileSync(source, "\n");
       // Stay in this turn's microtasks: the periodic completion owner must not
       // repair billing between metadata observation and its byte/read assertions.
-      const metadata = summary(path.dirname(runDir(runId)), launch);
-      assert.equal(metadata.status, "completed");
-      assert.equal("output" in metadata, false);
       const raw = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
       const listed = await raw.execute(
         "pending-accounting-list",
@@ -1648,11 +1747,13 @@ try {
         new AbortController().signal,
       );
       assert.notEqual(listed.isError, true);
-      assert.equal(listed.details.runs.find((run) => run.id === runId).status, "completed");
+      const metadata = listed.details.runs.find((run) => run.id === runId);
+      assert.equal(metadata.status, "completed");
+      assert.equal("output" in metadata, false);
       assert.deepEqual(
         fs.readFileSync(resultFile),
         pendingBytes,
-        "metadata-only summary and native list cannot repair pending accounting",
+        "native metadata inventory cannot repair pending accounting",
       );
       assert.equal(usageReads, 0, "metadata-only reads never open the child usage journal");
       const inspected = await raw.execute(
@@ -2327,16 +2428,38 @@ try {
     );
     const id = first.details.id;
     await until(() => requests().some((r) => r.prompt === "HOLD:boundary"), "old turn starts");
+    let stopped;
     if (phase === "generation") {
       const oldPid = requests()[0].pid;
       const oldActor = readJSON(path.join(runDir(id), "actor.lock/process.json"));
-      process.kill(oldPid, "SIGSTOP");
-      let stopped;
+      const link = fs.linkSync;
+      let heldStop;
+      fs.linkSync = (source, destination) => {
+        if (
+          path.dirname(destination) === path.join(runDir(id), "commands") &&
+          readJSON(source).action === "stop"
+        ) {
+          assert.equal(heldStop, undefined, "one actual Stop publication is held");
+          heldStop = { file: path.join(runDir(id), "unpublished-stop.json"), destination };
+          return link(source, heldStop.file);
+        }
+        return link(source, destination);
+      };
+      syncBuiltinESMExports();
       try {
         stopped = await call("agent_runs", { action: "stop", id }, "stop-old-generation");
       } finally {
-        process.kill(oldPid, "SIGCONT");
+        fs.linkSync = link;
+        syncBuiltinESMExports();
       }
+      assert.ok(heldStop, "the registered tool produced a real durable Stop record");
+      assert.equal(fs.existsSync(heldStop.file), true, "original Stop bytes remain on disk");
+      assert.equal(
+        fs.existsSync(heldStop.destination),
+        false,
+        "Stop is not yet visible to the command reader",
+      );
+      const heldBytes = fs.readFileSync(heldStop.file);
       await until(() => fs.existsSync(path.join(runDir(id), "result.json")), "old stop settles");
       await until(() => {
         try {
@@ -2349,8 +2472,16 @@ try {
       assert.equal(
         fs.existsSync(path.join(runDir(id), "admissions", `${stopped.details.stopRequest}.json`)),
         false,
-        "old actor exited without admitting the durable Stop",
+        "observed old actor exit establishes that it cannot admit the held Stop",
       );
+      assert.equal(
+        heldStop.destination,
+        path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`),
+      );
+      // Publish the exact tool-produced record only after the predecessor cannot read it.
+      fs.linkSync(heldStop.file, heldStop.destination);
+      fs.unlinkSync(heldStop.file);
+      assert.deepEqual(fs.readFileSync(heldStop.destination), heldBytes);
       assert.equal(
         readJSON(path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`))
           .actorToken,
@@ -2478,12 +2609,8 @@ try {
       );
       assert.equal(live.details.process.live, true, "old timer cannot kill new actor generation");
       assert.equal(live.details.completed, false);
-      const stopCommand = fs
-        .readdirSync(path.join(runDir(id), "commands"))
-        .map((file) => readJSON(path.join(runDir(id), "commands", file)))
-        .find((command) => command.action === "stop");
       assert.equal(
-        readJSON(path.join(runDir(id), "admissions", `${stopCommand.id}.json`)).state,
+        readJSON(path.join(runDir(id), "admissions", `${stopped.details.stopRequest}.json`)).state,
         "stale",
       );
       assert.equal(

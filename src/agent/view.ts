@@ -15,6 +15,16 @@ import {
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { readCanonicalResult, readResult } from "./usage.ts";
+import { Type } from "./typebox.ts";
+
+const commandMetadataSchema = Type.Pick(commandSchema, ["id", "runId", "action", "createdAt"]);
+interface Guidance {
+  id: string;
+  runId: string;
+  action: "steer";
+  state: "pending" | "accepted" | "stale";
+  at: number;
+}
 
 interface ToolReply {
   content: { type: "text"; text: string }[];
@@ -40,7 +50,7 @@ interface RunSummary {
   sessionId: string;
   sessionFile: string;
   outputFile: string;
-  guidance: ReturnType<typeof guidanceView>;
+  guidance: Guidance[];
 }
 interface RunView extends Omit<RunSummary, "result"> {
   result?: Result;
@@ -65,41 +75,52 @@ function outputView(file: string, input: Pick<RunsInput, "offset" | "length">) {
     ? readOutputPage(file, { offset: input.offset ?? 0, length: input.length ?? 32768 })
     : undefined;
 }
-function guidanceView(base: string, launch: Launch) {
-  const dir = path.join(conversation(base, launch), "commands");
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-  return fs
-    .readdirSync(dir)
-    .filter((file) => file.endsWith(".json"))
-    .flatMap((file) => {
-      const command = read(path.join(dir, file), commandSchema);
-      if (command?.action !== "steer" || command.runId !== launch.id) {
-        return [];
-      }
-      const admission = read(
-        path.join(conversation(base, launch), "admissions", `${command.id}.json`),
-        admissionSchema,
-      );
-      return [
-        {
+function guidanceView(base: string, launches: readonly Launch[]): Map<string, Guidance[]> {
+  const runs = new Map<string, Guidance[]>(launches.map((launch) => [launch.id, []]));
+  for (const rootId of new Set(launches.map((launch) => launch.rootId))) {
+    const runIds = new Set(
+      launches.filter((launch) => launch.rootId === rootId).map((launch) => launch.id),
+    );
+    const directory = runDirectory(base, rootId);
+    const dir = path.join(directory, "commands");
+    if (!fs.existsSync(dir)) {
+      continue;
+    }
+    fs.readdirSync(dir)
+      .filter((file) => file.endsWith(".json"))
+      .forEach((file) => {
+        const command = read(
+          path.join(dir, file),
+          commandMetadataSchema,
+          (keys) =>
+            keys.length === 0 ||
+            (keys.length === 1 && Object.hasOwn(commandMetadataSchema.properties, String(keys[0]))),
+        );
+        const guidance = command && runIds.has(command.runId) ? runs.get(command.runId) : undefined;
+        if (command?.action !== "steer" || !guidance) {
+          return;
+        }
+        const admission = read(
+          path.join(directory, "admissions", `${command.id}.json`),
+          admissionSchema,
+        );
+        guidance.push({
           id: command.id,
-          runId: launch.id,
+          runId: command.runId,
           action: command.action,
           state: admission ? (admission.state ?? "accepted") : "pending",
           at: admission?.at ?? command.createdAt,
-        },
-      ];
-    })
-    .sort((a, b) => b.at - a.at)
-    .slice(0, 20);
+        });
+        guidance.sort((a, b) => b.at - a.at).splice(20);
+      });
+  }
+  return runs;
 }
 function metadata(
   base: string,
   launch: Launch,
   result: Result | undefined,
-  ctx?: ExtensionContext,
+  options: { ctx?: ExtensionContext; guidance: Guidance[] },
 ): Omit<RunView, "output"> {
   const directory = runDirectory(base, launch.id);
   const process = processView(base, launch);
@@ -127,27 +148,37 @@ function metadata(
     status,
     completed: result !== undefined,
     result,
-    nativeReceipt: ctx ? (published(ctx, launch) ?? null) : null,
+    nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     sessionId: launch.sessionId,
     sessionFile: launch.sessionFile,
     outputFile,
-    guidance: guidanceView(base, launch),
+    guidance: options.guidance,
   };
 }
-export function summary(base: string, launch: Launch, ctx?: ExtensionContext): RunSummary {
-  const view = metadata(base, launch, readCanonicalResult(base, launch), ctx);
-  return {
-    ...view,
-    name: view.name?.slice(0, 256),
-    result: view.result
-      ? {
-          status: view.result.status,
-          endedAt: view.result.endedAt,
-          error: view.result.error?.slice(0, 2048),
-        }
-      : undefined,
-  };
+export function summaries(
+  base: string,
+  launches: readonly Launch[],
+  ctx?: ExtensionContext,
+): RunSummary[] {
+  const guidance = guidanceView(base, launches);
+  return launches.map((launch) => {
+    const view = metadata(base, launch, readCanonicalResult(base, launch), {
+      ctx,
+      guidance: guidance.get(launch.id) ?? [],
+    });
+    return {
+      ...view,
+      name: view.name?.slice(0, 256),
+      result: view.result
+        ? {
+            status: view.result.status,
+            endedAt: view.result.endedAt,
+            error: view.result.error?.slice(0, 2048),
+          }
+        : undefined,
+    };
+  });
 }
 export function projection(
   base: string,
@@ -155,7 +186,10 @@ export function projection(
   ctx?: ExtensionContext,
   input: Pick<RunsInput, "offset" | "length"> = {},
 ): RunView {
-  const view = metadata(base, launch, readResult(base, launch), ctx);
+  const view = metadata(base, launch, readResult(base, launch), {
+    ctx,
+    guidance: guidanceView(base, [launch]).get(launch.id) ?? [],
+  });
   return {
     ...view,
     output: outputView(view.outputFile, input),

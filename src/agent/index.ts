@@ -40,7 +40,7 @@ import {
 } from "./storage.ts";
 import { hold, notify, settle, release } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
-import { toolResult, projection, render, summary } from "./view.ts";
+import { toolResult, projection, render, summaries } from "./view.ts";
 import { registerUsage } from "./usage.ts";
 import { notifyLegacy } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
@@ -251,9 +251,7 @@ class AgentRuntime {
       .map((id) => launchAt(this.base, id, this.owner))
       .sort((a, b) => a.createdAt - b.createdAt);
     const offset = input.offset ?? 0;
-    const page = all
-      .slice(offset, offset + 50)
-      .map((launch) => summary(this.base, launch, this.ctx));
+    const page = summaries(this.base, all.slice(offset, offset + 50), this.ctx);
     return toolResult({
       runs: page,
       offset,

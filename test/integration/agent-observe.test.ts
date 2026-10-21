@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { ProcessTerminal, stripTerminalSequences } from "@earendil-works/pi-tui";
 import * as sdk from "@earendil-works/pi-coding-agent";
-import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
 import { record } from "../support/assertions.ts";
 import { spy } from "sinon";
@@ -337,6 +337,144 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       fs.writeFileSync(path.join(root, "release-parent"), "release");
       await work.prompt;
       await runtime.session.waitForIdle();
+      terminal.send("\x1b");
+      terminal.send("\x1b");
+      terminal.width = 120;
+      terminal.height = 45;
+      terminal.resize?.();
+      const manager = runtime.session.sessionManager;
+      const legacyId = "legacy-observed";
+      const legacy = sdk.SessionManager.create(root, path.join(root, "legacy-sessions"));
+      legacy.appendMessage(fauxAssistantMessage("LEGACY_PUBLISHED_ACTIVITY"));
+      const originalFile = legacy.getSessionFile();
+      assert.ok(originalFile !== undefined);
+      const original = fs.readFileSync(originalFile, "utf8");
+      const inode = fs.statSync(originalFile).ino;
+      manager.appendCustomEntry("subagent-run", {
+        runId: legacyId,
+        ownerSessionId: manager.getSessionId(),
+        mode: "single",
+        children: [{ index: 0, sessionFile: originalFile }],
+      });
+      const source = path.join(agentDir, "sessions/subagent-runs", legacyId);
+      write(path.join(source, "question-owner.json"), { sessionId: manager.getSessionId() });
+      write(path.join(source, "contracts/0.json"), {
+        sessionFile: originalFile,
+        nativeSessionId: legacy.getSessionId(),
+        launch: {
+          cwd: root,
+          context: "fresh",
+          model: "observe-fixture/native-observe",
+          thinking: "off",
+        },
+      });
+      const runs = runtime.session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+      assert.ok(runs !== undefined);
+      const adopted = record(
+        (
+          await runs.execute("adopt-observed", {
+            action: "continue",
+            id: legacyId,
+            prompt: "Continue the original native child",
+            async: false,
+          })
+        ).details,
+      );
+      assert.equal(adopted.sessionFile, originalFile);
+      assert.equal(adopted.sessionId, legacy.getSessionId());
+      assert.ok(typeof adopted.id === "string");
+      const commands = path.join(base, adopted.id, "commands");
+      const watch = async (id: string, expected: string, opensJournal = true) => {
+        const before = requests(root);
+        const published = fs.readFileSync(originalFile);
+        const queued = fs.readdirSync(commands);
+        terminal.clear();
+        const command = mode.getUserInput().then((text) => runtime.session.prompt(text));
+        terminal.send(`/agents ${id}`);
+        terminal.send("\r");
+        terminal.width = terminal.width === 120 ? 119 : 120;
+        terminal.resize?.();
+        await until(
+          () => terminal.text().includes(expected),
+          `native observer processes ${id}: ${expected}`,
+          () => terminal.text(),
+        );
+        assert.equal(requests(root), before, "observing adopted evidence never wakes a model");
+        assert.deepEqual(fs.readFileSync(originalFile), published, "watching is read-only");
+        assert.deepEqual(fs.readdirSync(commands), queued, "watching sends no control commands");
+        assert.equal(runtime.session.isStreaming, false);
+        terminal.send("\x1b");
+        if (opensJournal) {
+          terminal.send("\x1b");
+        }
+        await command;
+      };
+      await watch(adopted.id, "LEGACY_PUBLISHED_ACTIVITY");
+      const continued = record(
+        (
+          await runs.execute("continue-observed", {
+            action: "continue",
+            id: adopted.id,
+            prompt: "Continue the adopted conversation again",
+            async: false,
+          })
+        ).details,
+      );
+      assert.ok(typeof continued.id === "string");
+      assert.notEqual(continued.id, adopted.id);
+      assert.equal(continued.rootId, adopted.id);
+      assert.equal(continued.sessionFile, originalFile);
+      assert.equal(continued.sessionId, legacy.getSessionId());
+      await watch(continued.id, "LEGACY_PUBLISHED_ACTIVITY");
+      assert.ok(fs.readFileSync(originalFile, "utf8").startsWith(original));
+      assert.equal(
+        fs.statSync(originalFile).ino,
+        inode,
+        "adoption/continuation retain the journal",
+      );
+      for (const id of [adopted.id, continued.id]) {
+        assert.deepEqual(
+          fs.readdirSync(path.join(base, id)).filter((file) => file.endsWith(".jsonl")),
+          [],
+          "neither adoption nor later continuation copies the native evidence",
+        );
+      }
+      const savedLaunch = record(
+        JSON.parse(fs.readFileSync(path.join(base, adopted.id, "launch.json"), "utf8")),
+      );
+      write(path.join(base, "foreign-owner/launch.json"), {
+        ...savedLaunch,
+        id: "foreign-owner",
+        owner: "another-native-parent",
+      });
+      await watch("foreign-owner", "Saved child metadata is unavailable", false);
+      fs.rmSync(path.join(base, "foreign-owner"), { recursive: true });
+      write(path.join(base, "unadopted-path/launch.json"), {
+        ...savedLaunch,
+        id: "unadopted-path",
+        rootId: "unadopted-path",
+      });
+      await watch("unadopted-path", "Child journal path is outside", false);
+      const foreign = sdk.SessionManager.create(root, path.join(root, "foreign-sessions"));
+      foreign.appendMessage(fauxAssistantMessage("FOREIGN_NATIVE_ACTIVITY"));
+      const foreignFile = foreign.getSessionFile();
+      assert.ok(foreignFile !== undefined);
+      write(path.join(base, "changed-adopted-path/launch.json"), {
+        ...savedLaunch,
+        id: "changed-adopted-path",
+        sessionFile: foreignFile,
+      });
+      await watch("changed-adopted-path", "Child journal path is outside", false);
+      fs.renameSync(originalFile, originalFile + ".held");
+      fs.symlinkSync(originalFile + ".held", originalFile);
+      await watch(continued.id, "ELOOP");
+      assert.doesNotMatch(terminal.text(), /LEGACY_PUBLISHED_ACTIVITY|FOREIGN_NATIVE_ACTIVITY/);
+      fs.unlinkSync(originalFile);
+      fs.copyFileSync(foreignFile, originalFile);
+      await watch(continued.id, "Native journal identity does not match this child");
+      assert.doesNotMatch(terminal.text(), /LEGACY_PUBLISHED_ACTIVITY|FOREIGN_NATIVE_ACTIVITY/);
+      fs.unlinkSync(originalFile);
+      fs.renameSync(originalFile + ".held", originalFile);
       terminal.clear();
       const replacement = await runtime.newSession();
       assert.equal(replacement.cancelled, false);
@@ -496,14 +634,17 @@ test(
     });
     await mode.init();
     await until(
+      () => /Agents: [0-2]\+ active \(checking…\) · 82 runs/.test(terminal.text()),
+      "incomplete native inventory qualifies the active count naturally",
+    );
+    await until(
       () => terminal.text().includes("Agents: 2 active · 82 runs"),
       "initial owner metadata scan has completed",
     );
     assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 82);
-    assert.equal(
-      identityProbes(),
-      1,
-      "completed live idle actors incur no process probes; active siblings share one root probe",
+    assert.ok(
+      identityProbes() >= 1 && identityProbes() <= 2,
+      "cold inventory spans two ticks; only the active root is probed in either batch",
     );
     opens.resetHistory();
     probes.resetHistory();

@@ -144,6 +144,25 @@ function frozenSnapshot(
   };
 }
 
+/** The committed adoption claim authorizes only its original owned journal. */
+export function adoptedJournal(base: string, launch: Launch): boolean {
+  const root = launchAt(base, launch.rootId, launch.owner);
+  if (
+    root.id !== root.rootId ||
+    root.predecessor === undefined ||
+    !path.isAbsolute(root.sessionFile) ||
+    path.extname(root.sessionFile) !== ".jsonl" ||
+    root.sessionFile !== launch.sessionFile ||
+    root.sessionId !== launch.sessionId
+  ) {
+    return false;
+  }
+  return (
+    read(path.join(base, `legacy-${safeId(root.predecessor)}.json`), successorSchema)?.id ===
+    root.id
+  );
+}
+
 /** Only frozen single-native-child snapshots cross the retired runtime boundary. */
 export function savedContinuation(options: {
   id: string;
