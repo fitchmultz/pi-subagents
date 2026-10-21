@@ -56,7 +56,9 @@ intercom({
 });
 ```
 
-- Default **steer** wakes an idle recipient or reaches busy work at a tool boundary.
+- Default **steer**, for both sends and incoming asks, wakes an idle recipient or
+  reaches busy work at a tool boundary. Print-mode recipients use the same rule;
+  they do not replace an ordinary ask with a canned busy reply.
 - Explicit **queue** defers delivery. Optional `queueMode:"replace"` with a nonempty
   `threadId` coalesces still-staged updates for that thread; messages already handed
   to Pi's native queue cannot be keyed-replaced.
@@ -67,8 +69,10 @@ recipient journal persistence, model consumption, reply, or task completion. A
 lost transport response can be uncertain; do not blindly replay side effects.
 
 `ask` waits for a correlated reply and has a bounded timeout. Prefer `send` unless
-the sender genuinely must remain alive waiting for a decision. A busy peer may
-report that it cannot answer immediately. `reply` uses the active or sole pending
+the sender genuinely must remain alive waiting for a decision. If an ordinary ask
+finds a peer advertising `acceptsAsks:false`, the sender still reports `peer_busy`
+without waiting; recipient steering does not claim that a reply has arrived.
+Explicit steer/queue asks retain their bounded correlated wait. `reply` uses the active or sole pending
 ask when unambiguous; otherwise specify `replyTo` and the intended sender. Inspect
 `pending` for the exact correlation rather than guessing from text.
 
@@ -106,6 +110,18 @@ publication/consumption receipts govern replay; broker writes alone do not.
 Queued, admitted, consumed, and replied are distinct states. Reload, compaction,
 branch changes, shutdown, and fresh-process recovery must not fabricate receipts
 or adopt another native session's pending messages.
+
+An already-admitted message ID cannot publish a second copy or revive an answered
+ask. The same applies to replies received by a blocking ask and to deliberately
+replaced/discarded queued messages, including native journal restoration. A new ID
+is a new input even if its text is identical. This recipient-side deduplication is
+not an end-to-end exactly-once guarantee for arbitrary tool side effects.
+
+Idle recovery preserves admission order within the non-passive backlog and wakes
+once on its last item; passive breadcrumbs are appended before that waking work.
+The first eligible ask remains the implicit reply target, independently of which
+message triggers the turn. Bursts of correlated asks share one bounded handoff
+probe rather than retaining one event listener per message.
 
 Shutdown joins admitted inbound work before detaching its native owner. Stale
 runtime generations must not checkpoint or deliver into a replacement session.

@@ -40,6 +40,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
   });
   const inbound = new IntercomInbound(lifecycle, config, {
     delivery,
+    journal,
     replies,
     wait,
     connection,

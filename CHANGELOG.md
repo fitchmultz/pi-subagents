@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Restore default steering for incoming Intercom asks in interactive and print modes; keep explicit queue/passive behavior and sender-side busy capability reporting.
+- Preserve non-passive recovery order, suppress repeated message/reply IDs without reviving answered or superseded work, and coalesce concurrent ask handoff probes.
 - Restore steering delivery for new and legacy child completions. Publish an idle backlog before a single native wakeup, preventing separately deferred settlement turns from requeueing the same results.
 - Reconcile new-runtime completion backlogs in completion/launch order instead of UUID directory order; preserve published receipts and recovery of genuinely dropped queues.
 - Reuse a bounded physical-receipt index instead of repeatedly parsing unchanged parent journals. Validate changed prefixes and retain newline, replacement, truncation, corruption and owner checks.
