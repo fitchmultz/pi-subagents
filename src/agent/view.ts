@@ -5,21 +5,23 @@ import { readOutputPage } from "../shared/output-page.ts";
 import { actor, alive } from "./process.ts";
 import {
   admissionSchema,
+  commandSchema,
   exitSchema,
+  successorSchema,
   type Launch,
   type RunsInput,
   type Result,
 } from "./contracts.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
-import { readResult } from "./usage.ts";
+import { readCanonicalResult, readResult } from "./usage.ts";
 
 interface ToolReply {
   content: { type: "text"; text: string }[];
   details: unknown;
   isError?: boolean;
 }
-interface RunView {
+interface RunSummary {
   id: string;
   owner: string;
   rootId: string;
@@ -32,14 +34,17 @@ interface RunView {
   admission: string;
   status: string;
   completed: boolean;
-  result?: Result;
+  result?: Pick<Result, "status" | "endedAt" | "error">;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
   sessionId: string;
   sessionFile: string;
   outputFile: string;
-  output: ReturnType<typeof outputView>;
   guidance: ReturnType<typeof guidanceView>;
+}
+interface RunView extends Omit<RunSummary, "result"> {
+  result?: Result;
+  output: ReturnType<typeof outputView>;
 }
 export function toolResult(value: unknown, text = JSON.stringify(value, null, 2)): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
@@ -61,32 +66,53 @@ function outputView(file: string, input: Pick<RunsInput, "offset" | "length">) {
     : undefined;
 }
 function guidanceView(base: string, launch: Launch) {
-  const dir = path.join(conversation(base, launch), "admissions");
+  const dir = path.join(conversation(base, launch), "commands");
   if (!fs.existsSync(dir)) {
     return [];
   }
   return fs
     .readdirSync(dir)
-    .map((file) => read(path.join(dir, file), admissionSchema))
-    .filter((entry) => entry?.action === "steer" && entry.runId === launch.id)
-    .sort((a, b) => (b?.at ?? 0) - (a?.at ?? 0))
+    .filter((file) => file.endsWith(".json"))
+    .flatMap((file) => {
+      const command = read(path.join(dir, file), commandSchema);
+      if (command?.action !== "steer" || command.runId !== launch.id) {
+        return [];
+      }
+      const admission = read(
+        path.join(conversation(base, launch), "admissions", `${command.id}.json`),
+        admissionSchema,
+      );
+      return [
+        {
+          id: command.id,
+          runId: launch.id,
+          action: command.action,
+          state: admission ? (admission.state ?? "accepted") : "pending",
+          at: admission?.at ?? command.createdAt,
+        },
+      ];
+    })
+    .sort((a, b) => b.at - a.at)
     .slice(0, 20);
 }
-export function projection(
+function metadata(
   base: string,
   launch: Launch,
+  result: Result | undefined,
   ctx?: ExtensionContext,
-  input: Pick<RunsInput, "offset" | "length"> = {},
-): RunView {
+): Omit<RunView, "output"> {
   const directory = runDirectory(base, launch.id);
-  const result = readResult(base, launch);
   const process = processView(base, launch);
   const outputFile = path.join(directory, "output.txt");
   const admission = read(
     path.join(conversation(base, launch), "admissions", `${launch.id}.json`),
     admissionSchema,
   );
-  const status = process.live ? "running" : "interrupted";
+  const status =
+    result?.status ??
+    (process.live && read(path.join(directory, "successor.json"), successorSchema) === undefined
+      ? "running"
+      : "interrupted");
   return {
     id: launch.id,
     owner: launch.owner,
@@ -98,7 +124,7 @@ export function projection(
     thinking: launch.thinking,
     context: launch.context,
     admission: admission ? "admitted" : "pending",
-    status: result?.status ?? status,
+    status,
     completed: result !== undefined,
     result,
     nativeReceipt: ctx ? (published(ctx, launch) ?? null) : null,
@@ -106,9 +132,44 @@ export function projection(
     sessionId: launch.sessionId,
     sessionFile: launch.sessionFile,
     outputFile,
-    output: outputView(outputFile, input),
     guidance: guidanceView(base, launch),
   };
+}
+export function summary(base: string, launch: Launch, ctx?: ExtensionContext): RunSummary {
+  const view = metadata(base, launch, readCanonicalResult(base, launch), ctx);
+  return {
+    ...view,
+    name: view.name?.slice(0, 256),
+    result: view.result
+      ? {
+          status: view.result.status,
+          endedAt: view.result.endedAt,
+          error: view.result.error?.slice(0, 2048),
+        }
+      : undefined,
+  };
+}
+export function projection(
+  base: string,
+  launch: Launch,
+  ctx?: ExtensionContext,
+  input: Pick<RunsInput, "offset" | "length"> = {},
+): RunView {
+  const view = metadata(base, launch, readResult(base, launch), ctx);
+  return {
+    ...view,
+    output: outputView(view.outputFile, input),
+  };
+}
+function receiptText(details: RunView): string {
+  return details.nativeReceipt !== null
+    ? `Native completion receipt: published (${details.nativeReceipt}); publication does not prove model consumption.`
+    : "Native completion receipt: not observed published; queue admission is not publication or model consumption.";
+}
+function exitText(details: RunView): string {
+  return details.process.exit
+    ? `Process exit observed: code ${details.process.exit.code ?? "unknown"}, signal ${details.process.exit.signal ?? "none"}.`
+    : "Process exit: unknown; run completion does not imply process exit.";
 }
 function resultText(details: RunView): string {
   const page = details.output;
@@ -116,7 +177,19 @@ function resultText(details: RunView): string {
     page?.nextOffset !== undefined
       ? `\n[Output continues: agent_runs inspect id=${details.id} offset=${page.nextOffset}; ${page.size} bytes total.]`
       : "";
-  return `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.\n${details.result?.error ?? ""}\n${page?.text ?? ""}${suffix}\nNative journal: ${details.sessionFile}`;
+  const guidance = details.guidance
+    .map((command) => `  ${command.id}: ${command.state}`)
+    .join("\n");
+  return [
+    `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
+    receiptText(details),
+    exitText(details),
+    `Guidance (latest 20):\n${guidance.length > 0 ? guidance : "  none"}`,
+    "Guidance states: pending = not yet admitted; accepted = native queue admission, not journal publication or model consumption; stale = rejected, no new work was started (retry the entire prompt as a continuation).",
+    details.result?.error ?? "",
+    `${page?.text ?? ""}${suffix}`,
+    `Native journal: ${details.sessionFile}`,
+  ].join("\n");
 }
 export function render(
   base: string,

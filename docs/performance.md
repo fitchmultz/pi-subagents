@@ -39,6 +39,38 @@ while attached; observed owner detachment ends their lifetime. Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
 from a timer or package size.
 
+### Review-follow-up startup
+
+After adding the read-only observer, the same kind of isolated factory probe
+compared baseline `224e8460` with the follow-up source in this change. Each host
+used three sequential repetitions, rotating floor/baseline/candidate order,
+physical Node 24.22.0, private empty HOME/agent/runtime directories, offline model
+listing, and disabled extension/resource discovery. No inference or credentials
+were used. The hosts were official Pi 1.3.0 and fork revision `997a2575`, build
+`c6a6d3874c660860`, on macOS arm64.
+
+| Host     | Case                | Individual wall-clock times (ms) |
+| -------- | ------------------- | -------------------------------- |
+| Official | No extension        | 158.51, 181.78, 171.12           |
+| Official | Baseline `224e8460` | 403.98, 446.65, 395.78           |
+| Official | Follow-up           | 430.85, 448.78, 398.68           |
+| Fork     | No extension        | 263.24, 272.81, 256.50           |
+| Fork     | Baseline `224e8460` | 517.76, 496.81, 434.64           |
+| Fork     | Follow-up           | 470.32, 483.65, 446.55           |
+
+An initial probe exposed extra eager SDK/TUI loading from the screen module.
+The final version loads that module only when a human opens `/agents`, then
+revalidates the current session owner. These small samples overlap the baseline
+ranges and do not establish a generalized speedup or latency guarantee.
+
+Interactive mains scan at most 50 unfinished or newly discovered metadata rows
+per second. Immutable launches and finished rows are cached; finished history
+does not consume the active refresh budget. Liveness is checked once per active
+conversation per scan, not for completed idle actors. The open watch polls at
+250 ms, reading at most 64 KiB plus a 4 KiB identity header and retaining 80 bounded
+display lines. Those are display limits, not truncation of the native journal.
+Children and print/RPC sessions do not install the watcher.
+
 ## Necessary costs
 
 - Native Pi owns context loading and model execution. The extension cannot remove

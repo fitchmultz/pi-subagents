@@ -20,8 +20,13 @@ export function object(value: unknown, fields: readonly string[]): UnknownRecord
   if (!isRecord(value)) {
     throw new Fault(400, "invalid_input", "Expected a JSON object.");
   }
-  if (Object.keys(value).some((key) => !fields.includes(key))) {
-    throw new Fault(400, "invalid_input", "Unknown field.");
+  const unknown = Object.keys(value).find((key) => !fields.includes(key));
+  if (unknown !== undefined) {
+    throw new Fault(
+      400,
+      "invalid_input",
+      `Unknown field ${JSON.stringify(label(unknown, "field name", 128))}.`,
+    );
   }
   return value;
 }

@@ -252,11 +252,14 @@ class Actor {
     if (!launch) {
       return;
     }
-    if (command.action === "run" && (this.active !== undefined || !session.isIdle)) {
+    if (
+      command.action === "run" &&
+      (this.stopping || this.active !== undefined || !session.isIdle)
+    ) {
       return;
     }
     this.started.add(command.id);
-    const stale = command.action === "steer" && this.staleGuidance(launch, session);
+    const stale = this.staleCommand(command, launch, session);
     // This is queue admission, never a claim of native journal publication.
     write(
       receipt,
@@ -274,8 +277,15 @@ class Actor {
     }
     this.applyCommand(command, launch, session);
   }
-  private staleGuidance(launch: Launch, session: AgentSession): boolean {
-    return this.active === undefined || session.isIdle || this.current?.id !== launch.id;
+  private staleCommand(command: Command, launch: Launch, session: AgentSession): boolean {
+    // Unbound legacy Stops cannot safely target this generation either.
+    if (command.action === "stop") {
+      return command.actorToken !== this.token;
+    }
+    return (
+      command.action === "steer" &&
+      (this.active === undefined || session.isIdle || this.current?.id !== launch.id)
+    );
   }
   private applyCommand(command: Command, launch: Launch, session: AgentSession): void {
     if (command.action === "stop") {

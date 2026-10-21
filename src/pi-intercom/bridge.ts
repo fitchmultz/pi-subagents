@@ -431,7 +431,10 @@ function main(): void {
   try {
     const path = resolve(args[1]);
     new Bridge(loadConfig(path), path).start();
-  } catch {
+  } catch (error) {
+    if (error instanceof Fault) {
+      process.stderr.write(`${error.message}\n`);
+    }
     process.stderr.write(
       "Bridge startup failed: check config schema, file ownership/mode 0600, absolute TLS/cwd paths, TLS credentials, and stateDir (owned 0700 directory).\n",
     );

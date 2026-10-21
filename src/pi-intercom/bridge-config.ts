@@ -2,7 +2,7 @@ import { isAbsolute } from "node:path";
 import { createSecureContext } from "node:tls";
 import { parseEnv } from "node:util";
 import { isUnknownArray } from "../shared/unknown.ts";
-import { BODY_LIMIT, object, label, fingerprint } from "./bridge-protocol.ts";
+import { BODY_LIMIT, object, label, fingerprint, log } from "./bridge-protocol.ts";
 import { stateDirectory } from "./bridge-storage.ts";
 import { readBridgeFile } from "./bridge-files.ts";
 
@@ -57,8 +57,10 @@ function identities(value: unknown): Map<string, Identity> {
   }
   const clients = new Map<string, Identity>();
   const names = new Set<string>();
+  let retiredLaunch = false;
   for (const raw of value) {
-    const entry = object(raw, ["fingerprint256", "name", "cwd", "wake"]);
+    const entry = object(raw, ["fingerprint256", "name", "cwd", "wake", "launch"]);
+    retiredLaunch ||= Object.hasOwn(entry, "launch");
     const fingerprint256 = fingerprint(entry.fingerprint256);
     const name = label(entry.name, "name", 128).trim();
     const cwd = label(entry.cwd, "cwd", 4096);
@@ -76,6 +78,13 @@ function identities(value: unknown): Map<string, Identity> {
       wake: wakePolicy(entry.wake),
     });
     names.add(name.toLowerCase());
+  }
+  if (retiredLaunch) {
+    log("deprecated_config_field", {
+      field: "clients[].launch",
+      action: "ignored",
+      note: "Remote launch is retired. Remove this field when convenient; no launch permission is granted.",
+    });
   }
   return clients;
 }

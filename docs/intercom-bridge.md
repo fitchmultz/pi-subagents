@@ -10,6 +10,9 @@ Starting Pi never starts this helper. The broker remains a same-user Unix socket
 remote callers cannot send raw frames. Peer IDs and ambiguity handling belong to
 the existing Intercom resolver. Discovery/target visibility follows the upstream
 lineage owner; the helper does not infer agent roles or groups from names/cwd.
+Remote Box identities register as standalone mains: they can reach local mains,
+not delegated children. Children cannot address the Box, even by exact ID; their
+main coordinates any remote exchange.
 
 ## Transport and authority
 
@@ -78,7 +81,11 @@ The optional owned 0600 `wake.envFile` contains `GROK_WAKE_WEBHOOK_URL` (HTTPS,
 no URL credentials/fragment) and `GROK_WAKE_WEBHOOK_KEY`. Wake requires durable
 `stateDir`. Omit wake for a polling-only client. Omit `stateDir` only for legacy
 volatile messaging: 256 messages / 4 MiB, no cold presence or wake recovery.
-Unknown config fields, including retired `launch`, fail closed.
+The retired client `launch` key is accepted but ignored, with one metadata warning
+per configuration load. Its paths and policies are not read or executed and it
+grants no capability; remove it when convenient. Other unknown fields still fail
+closed, with a bounded, control-free field name in the diagnostic. No credentials
+or configuration files are automatically rewritten.
 
 Run with the same per-user broker environment as local Pi:
 
@@ -86,7 +93,8 @@ Run with the same per-user broker environment as local Pi:
 PI_CODING_AGENT_DIR=/home/you/.pi/agent node dist/pi-intercom/bridge.js --config /absolute/private/bridge/config.json
 ```
 
-On macOS preserve the user's native `TMPDIR` (see `getconf DARWIN_USER_TEMP_DIR`).
+On macOS preserve the user's native `TMPDIR` for old-namespace detection (see
+`getconf DARWIN_USER_TEMP_DIR`); it does not select the new shared broker.
 Observe `listening` before requests. A per-user LaunchAgent can supervise this
 command with private logs, RunAtLoad and KeepAlive. SIGTERM/SIGINT drain helper
 requests and disconnect its own peers; they never stop the shared broker.
@@ -170,9 +178,44 @@ mailbox/filesystem checks. Never pin a nonexistent future SHA. Select the actual
 reviewed immutable upstream commit only after publication; an older pin/client
 is not evidence for the new reply/ACK protocol.
 
-Before authorized rollout, checkpoint/drain old synchronous asks and remotely
-owned work, preserve native journals, SQLite/presence/quota state and Box STORE
-ledgers, remove retired launch config fields, and retain the prior paired
-helper/client release. No source check installs/restarts a runtime or proves
-provider execution. Rollback must reconcile transferred Box reply duties before
-restoring old server-owned reply tooling; never reset history or resurrect mail.
+The cutover is a coordinated boundary, not a rolling mixed-protocol upgrade:
+
+1. Obtain deployment GO; inventory the participating Pi sessions/agent directories,
+   helper services and both Box workers, including external wake/health routines.
+   Stop admission of new remote work and pause every worker starter. Checkpoint or
+   finish old synchronous asks and remotely owned work before changing versions.
+2. Preserve native journals, SQLite/presence/quota state and Box STORE ledgers, plus
+   the prior compiled helper, extension and client/worker pair. On each Box, run
+   the companion's offline `mail reconcile` dry run, review the exact obligations,
+   explicitly apply safe unambiguous scoped receipts, and verify the pending set.
+   Ambiguous IDs remain pending. Follow its RUNBOOK for old open wake reservations;
+   they are not completion evidence and must not be reset to obtain fresh budget.
+3. Load the approved extension in **every participating Pi session on each Mac**
+   before restarting helper traffic. Old and new namespaces cannot see or forward
+   to each other. The startup warning covers the current agent directory only;
+   neither `list` nor the warning inventories every OS process. Verify the expected
+   exact peer IDs from the new main sessions and the helper before proceeding.
+4. Swap the reviewed helper and Box client/worker pair while starters remain
+   paused. Update saved bot prompts/routines: remote `spawn`, `resume`, `sessions`,
+   `transcript`, groups and broadcast are retired; replace `ask`/`reply` with
+   correlated `send`. An existing client `launch` config is ignored, not a startup
+   blocker. Verify per-Box pending duties and authenticated discovery/delivery,
+   then resume starters. Do not leave an old worker reading new-client receipts.
+
+The companion must pin the **final immutable upstream revision selected for
+rollout**, with green paired CI; a merge/squash that changes the selected revision
+requires refreshing that pin and qualification before deployment. A doc-only
+change does not itself change the protocol, but it is still a different reviewed
+source identity. Neither PR is permission to merge or activate the pair.
+
+For rollback, pause starters/traffic again and enumerate transferred Box reply
+duties from its durable mailbox. Complete and verify those replies before restoring
+old server-owned reply tooling; receipt reconciliation is not proof that a reply
+was sent. If duties cannot be resolved, retain the new pair rather than pretending
+the old helper can recover already-ACKed payloads. The Box's newer-code guard
+intentionally rejects ordinary downgrade copies. Reinstating prior behavior needs
+a separately reviewed, version-aware paired recovery (for example, a qualified
+forward-versioned recovery release), not falsifying version stamps or using normal
+bootstrap to force old code. Preserve mail/quota/history throughout. Never reset
+history, fabricate consumption or resurrect mail. No source check installs/restarts
+a runtime or proves provider execution.

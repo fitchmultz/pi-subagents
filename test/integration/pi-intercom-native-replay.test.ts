@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import type { ReadonlyDeep as ReadonlyInput } from "type-fest";
+import { createMessageReader } from "../../src/pi-intercom/broker/framing.ts";
 import { importSelectedNative } from "../support/native-import.ts";
 import {
   assertDefined,
@@ -2522,6 +2523,8 @@ test("native public tools resolve displayed targets safely through duplicate nam
   );
   const peer = duplicates.find((client) => client.sessionId === target.id);
   assertDefined(peer);
+  const impostor = duplicates.find((client) => client !== peer);
+  assertDefined(impostor);
   const short = target.id.slice(0, 8);
   assert.match(
     JSON.stringify(await executeIntercom(receiver, { action: "list" })),
@@ -2529,16 +2532,57 @@ test("native public tools resolve displayed targets safely through duplicate nam
   );
   for (const action of ["send", "ask"] as const) {
     const received: Promise<unknown> = once(peer, "message");
-    const sending = executeIntercom(receiver, { action, to: short, message: `safe ${action}` });
+    let settled = false;
+    const sending = executeIntercom(receiver, {
+      action,
+      to: short,
+      message: `safe ${action}`,
+    }).finally(() => {
+      settled = true;
+    });
     // Finish this delivered request before admitting the next action.
     // oxlint-disable-next-line no-await-in-loop
     const [from, input] = array(await received).map(record);
     assert.equal(at(input, "content", "text"), `safe ${action}`);
     if (action === "ask") {
       assert.equal(input.expectsReply, true);
+      peer.updatePresence({ name: "renamed-duplicate" });
+      // The mutable name must not replace the broker identity pinned by the ask.
+      // oxlint-disable-next-line no-await-in-loop
+      await waitFor(
+        async () =>
+          (await peer.listSessions()).some(
+            (session) => session.id === peer.sessionId && session.name === "renamed-duplicate",
+          ),
+        "renamed ask recipient",
+      );
+      // oxlint-disable-next-line no-await-in-loop
+      await impostor.send(text(from.id), {
+        messageId: "wrong-ask-sender",
+        text: "Same display name is not the pinned sender",
+        replyTo: text(input.id),
+        passive: true,
+      });
+      // oxlint-disable-next-line no-await-in-loop
+      await peer.send(text(from.id), {
+        messageId: "wrong-ask-correlation",
+        text: "Pinned sender but a different question",
+        replyTo: "another-question",
+        passive: true,
+      });
+      // Real native publication proves both guards processed their input before this negative.
+      // oxlint-disable-next-line no-await-in-loop
+      await waitFor(
+        () =>
+          receiver.visible("wrong-ask-sender").length === 1 &&
+          receiver.visible("wrong-ask-correlation").length === 1,
+        "unmatched reply publication",
+      );
+      assert.equal(settled, false);
       // The observed correlation is required before replying.
       // oxlint-disable-next-line no-await-in-loop
       await peer.send(text(from.id), { text: "Exact correlated reply", replyTo: text(input.id) });
+      peer.updatePresence({ name: "duplicate" });
     } else {
       assert.equal(input.delivery, "steer");
     }
@@ -2546,19 +2590,31 @@ test("native public tools resolve displayed targets safely through duplicate nam
     // oxlint-disable-next-line no-await-in-loop
     assert.notEqual((await sending).isError, true);
   }
-  await assert.rejects(
-    executeIntercom(receiver, { action: "send", to: short.slice(0, 7), message: "unsafe" }),
-    /too short/,
+  await waitFor(
+    async () =>
+      (await peer.listSessions()).filter((session) => session.name === "duplicate").length === 2,
+    "restored duplicate names",
   );
-  await assert.rejects(
-    executeIntercom(receiver, { action: "send", to: "duplicate", message: "ambiguous" }),
-    /matches multiple sessions/,
-  );
+  for (const action of ["send", "ask"] as const) {
+    // oxlint-disable-next-line no-await-in-loop
+    await assert.rejects(
+      executeIntercom(receiver, { action, to: short.slice(0, 7), message: "unsafe" }),
+      /too short/,
+    );
+    // oxlint-disable-next-line no-await-in-loop
+    await assert.rejects(
+      executeIntercom(receiver, { action, to: "duplicate", message: "ambiguous" }),
+      /matches multiple sessions/,
+    );
+  }
   await collision.connect({ name: short, cwd: root, model: "fixture" });
-  await assert.rejects(
-    executeIntercom(receiver, { action: "send", to: short, message: "collision" }),
-    /matches multiple sessions/,
-  );
+  for (const action of ["send", "ask"] as const) {
+    // oxlint-disable-next-line no-await-in-loop
+    await assert.rejects(
+      executeIntercom(receiver, { action, to: short, message: "collision" }),
+      /matches multiple sessions/,
+    );
+  }
   const safe = target.id.slice(0, 9);
   assert.match(
     JSON.stringify(await executeIntercom(receiver, { action: "list" })),
@@ -2568,6 +2624,138 @@ test("native public tools resolve displayed targets safely through duplicate nam
   await executeIntercom(receiver, { action: "send", to: safe, message: "Longer safe target" });
   assert.equal(at(array(await received)[1], "content", "text"), "Longer safe target");
   assert.deepEqual(receiver.errors, []);
+});
+
+test("native named ask refuses a peer absent from discovery even when it registers before send", async (t) => {
+  const asker = await makeSession(t, "late-registration-asker", {
+    config: { askTimeoutMs: 1000 },
+  });
+  const peer = new IntercomClient();
+  t.after(() => peer.disconnect());
+  let snapshotReady = false;
+  const originalWrite: unknown = Reflect.get(net.Socket.prototype, "write");
+  assert.ok(typeof originalWrite === "function");
+  let heldConnection: { readonly socket: net.Socket } | undefined;
+  let release: (() => void) | undefined;
+  const sends: unknown[] = [];
+  t.after(() => release?.());
+  t.mock.method(
+    net.Socket.prototype,
+    "write",
+    function (this: net.Socket, ...args: Parameters<net.Socket["write"]>) {
+      const chunk = args[0];
+      if (
+        Buffer.isBuffer(chunk) &&
+        chunk.subarray(4).toString().includes('"type":"list"') &&
+        heldConnection === undefined
+      ) {
+        heldConnection = { socket: this };
+        const request = record(JSON.parse(chunk.subarray(4).toString()));
+        const originalEmit = this.emit.bind(this);
+        const held: Buffer[] = [];
+        let released = false;
+        const read = createMessageReader(
+          (value) => {
+            const frame = record(value);
+            if (
+              frame.type === "sessions" &&
+              frame.requestId === request.requestId &&
+              frame.more !== true
+            ) {
+              assert.ok(
+                !records(frame.sessions).some((session) => session.name === "late-named-peer"),
+              );
+              snapshotReady = true;
+            }
+          },
+          (error) => {
+            throw new Error(error.message, { cause: error });
+          },
+        );
+        t.mock.method(this, "emit", (event: string | symbol, ...values: unknown[]) => {
+          if (!released && event === "data" && Buffer.isBuffer(values[0])) {
+            held.push(values[0]);
+            read(values[0]);
+            return true;
+          }
+          return Reflect.apply(originalEmit, this, [event, ...values]) === true;
+        });
+        release = () => {
+          released = true;
+          for (const data of held.splice(0)) {
+            originalEmit("data", data);
+          }
+        };
+      }
+      if (
+        this === heldConnection?.socket &&
+        Buffer.isBuffer(chunk) &&
+        chunk.subarray(4).toString().includes('"type":"send"')
+      ) {
+        sends.push(JSON.parse(chunk.subarray(4).toString()));
+      }
+      return Reflect.apply(originalWrite, this, args) === true;
+    },
+  );
+  const received: Message[] = [];
+  const replies: Promise<unknown>[] = [];
+  peer.on("message", (from: SessionInfo, message: Message) => {
+    received.push(message);
+    if (message.expectsReply === true) {
+      const reply = peer.send(from.id, {
+        messageId: "late-registration-answer",
+        text: "Answer from the registered broker ID",
+        replyTo: message.id,
+        passive: true,
+      });
+      reply.catch(() => {
+        // Join delivery failures below, after the ask settles.
+      });
+      replies.push(reply);
+    }
+  });
+  const asking = executeIntercom(asker, {
+    action: "ask",
+    to: "late-named-peer",
+    message: "Must not send an unresolved ask",
+  }).then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  await waitFor(() => snapshotReady, "discovery snapshot before peer registration");
+  await peer.connect({ name: "late-named-peer", cwd: root, model: "fixture" });
+  assert.ok((await peer.listSessions()).some((session) => session.id === peer.sessionId));
+  assertDefined(release);
+  release();
+  const result = await asking;
+  const replyReceipts = await Promise.all(replies);
+  assert.ok("error" in result);
+  const failure = record(result.error);
+  t.diagnostic(
+    JSON.stringify({
+      reasonCode: record(failure.details).reasonCode,
+      sends,
+      received,
+      replyReceipts,
+      publishedAnswers: asker.visible("late-registration-answer").length,
+    }),
+  );
+  assert.equal(record(failure.details).reasonCode, "delivery_failed");
+  assert.equal(record(failure.details).accepted, false);
+  assert.equal(record(failure.details).delivered, false);
+  assert.match(text(failure.message), /not sent.*not found/i);
+  assert.equal(sends.length, 0, "no unresolved target may reach the sender socket");
+  assert.deepEqual(received, []);
+  const retry = await executeIntercom(asker, {
+    action: "ask",
+    to: "late-named-peer",
+    message: "Retry after registration",
+  });
+  assert.match(JSON.stringify(retry.content), /Answer from the registered broker ID/);
+  assert.equal(record(sends[0]).to, peer.sessionId);
+  assert.equal(received.length, 1);
+  assert.equal(asker.faux.state.callCount, 0);
+  assert.deepEqual(asker.errors, []);
 });
 
 test("native ordinary asks honor busy capability and explicit steer/queue without claiming consumption", async (t) => {

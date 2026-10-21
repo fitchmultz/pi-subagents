@@ -40,16 +40,18 @@ tool or programmatic invocation of `delegate` or `agent_runs`.
 Saved runs belong to the native main session that launched them, not its cwd,
 project, display name, or a different session forked from its history.
 
-| Action     | Purpose                                                                        |
-| ---------- | ------------------------------------------------------------------------------ |
-| `list`     | Page through the current native owner's saved runs.                            |
-| `inspect`  | Read one run's immutable result and process/publication facts.                 |
-| `continue` | Supply a complete follow-up prompt using the saved child conversation.         |
-| `wait`     | Wait for an existing run; cancelling this observer does not stop its producer. |
-| `stop`     | Request termination; inspect the actual process outcome afterward.             |
+| Action     | Purpose                                                                              |
+| ---------- | ------------------------------------------------------------------------------------ |
+| `list`     | Page through the current native owner's saved-run metadata, without output previews. |
+| `inspect`  | Read one run's immutable result and process/publication facts.                       |
+| `continue` | Supply a complete follow-up prompt using the saved child conversation.               |
+| `wait`     | Wait for an existing run; cancelling this observer does not stop its producer.       |
+| `stop`     | Request termination; inspect the actual process outcome afterward.                   |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
-infer them from display names. Inspection of large output returns a continuation
+infer them from display names. `list` returns at most 50 metadata summaries per
+page; follow `nextOffset` to continue. Output is retrieved only by explicit
+inspection, not embedded in every inventory row. Inspection of large output returns a continuation
 offset; follow that offset until complete. The saved native session and full
 output remain available independently of the preview.
 
@@ -59,7 +61,10 @@ find the latest successor for controls, while inspection preserves predecessor
 results. A retained ambiguous launch claim prevents accidental duplicate launch;
 missing session state is an error, not permission to start a different chat.
 Guidance that arrives after its run settles is reported as stale rather than
-starting untracked work. Inspect the result and send a new continuation if needed.
+starting untracked work. Inspection text exposes the guidance command IDs and
+admission states, native receipt publication and separately known process exit.
+Pending admission is not consumption. Inspect the result and send a new continuation
+if guidance became stale; do not infer acceptance from the old completed output.
 
 A completed child can remain alive and messageable while its main remains
 attached. Once the main detaches or is proven absent, idle actors exit and active
@@ -93,6 +98,30 @@ of those external processes.
 Use `list`, `send`, and `last` for normal coordination. `ask`, `reply`, `pending`,
 and `status` support request/reply and diagnosis. See [local messaging](intercom.md)
 for topology, target resolution, native replay, and delivery distinctions.
+
+### Usage accounting
+
+The parent's token/cost totals are not automatically the entire workflow's spend.
+An asynchronous completion notice does not charge child usage to the parent.
+Finalized foreground or `wait` collection owns that accounting; repeated collection
+does not double-charge the same native contribution. Child journals retain their
+own usage. Metadata inventory and the human observer do not repair or collect
+accounting; explicit inspection can reconcile pending accounting without itself
+charging the parent.
+
+## Read-only human observation
+
+Interactive main sessions expose an agent status line and `/agents` list/watch.
+Use Up/Down to select, Enter to watch, and Escape to return/close (the displayed
+hints follow Pi's configured selection keys). `/agents <exact-run-id>` opens that
+run directly. Children and print/RPC modes do not install a watcher.
+
+These views read this native owner's metadata and bounded published journal entries;
+they never dispatch, continue, stop, send messages or trigger a model turn.
+Published assistant text/tool calls may precede a running tool's result. Partial
+journal records and unpublished provider token deltas are not presented as completed
+entries. Agent tools remain the orchestration surface; this does not restore the
+retired workflow UI or remote transcript APIs.
 
 ## Installation and upgrade
 

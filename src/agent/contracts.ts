@@ -92,6 +92,7 @@ export const commandSchema = Type.Object({
   runId: Type.String(),
   action: Type.Union([Type.Literal("run"), Type.Literal("steer"), Type.Literal("stop")]),
   prompt: Type.Optional(Type.String()),
+  actorToken: Type.Optional(Type.String()),
   createdAt: Type.Number(),
 });
 export type Command = Static<typeof commandSchema>;

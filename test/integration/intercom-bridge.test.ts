@@ -96,6 +96,11 @@ test(
       const configPath = join(credentials, "config.json");
       const config = record(readJson(configPath));
       config.clients = records(config.clients).filter((client) => client.name === "grok-bot");
+      records(config.clients)[0].launch = {
+        packageRoot: "/retired/pi",
+        workspaceRoots: ["/retired/project"],
+        context: "LEGACY_LAUNCH_SENTINEL_NOT_FOR_LOGS",
+      };
       assert.equal(config.port, 0, "each bridge can choose its own loopback port");
       assert.ok(
         Date.parse(new X509Certificate(readFileSync(credential.cert)).validTo) - Date.now() >
@@ -112,8 +117,33 @@ test(
       const activeBroker = broker;
       const { url, api, host } = await bridgeApi(activeBridge, credential);
       assert.equal(host, "127.0.0.1");
+      assert.equal(
+        activeBridge
+          .output()
+          .trim()
+          .split("\n")
+          .map(json)
+          .filter((row) => row.event === "deprecated_config_field").length,
+        1,
+        "legacy launch policy produces one metadata warning, not a startup failure",
+      );
+      assert.ok(!activeBridge.output().includes("LEGACY_LAUNCH_SENTINEL_NOT_FOR_LOGS"));
 
       await t.test("mutual authentication, least privilege and real remote CLI", async () => {
+        const invalidConfig = join(root, "invalid-config.json");
+        writeFileSync(invalidConfig, JSON.stringify({ ...config, unknownPolicy: true }), {
+          mode: 0o600,
+        });
+        await assert.rejects(
+          exec(
+            process.execPath,
+            [join(repo, "src/pi-intercom/bridge.ts"), "--config", invalidConfig],
+            {
+              env,
+            },
+          ),
+          /Unknown field "unknownPolicy"/,
+        );
         await assert.rejects(api("list", undefined, { cert: undefined, key: undefined }));
         await assert.rejects(
           api("list", undefined, {
@@ -128,6 +158,18 @@ test(
         assert.equal(remotePeer?.name, "grok-bot");
         assert.equal(remotePeer.cwd, project);
         assert.equal(statSync(getBrokerSocketPath()).mode & 0o777, 0o600);
+        for (const retired of [
+          "spawn",
+          "resume",
+          "control",
+          "sessions",
+          "transcript",
+          "broadcast",
+        ]) {
+          // An ignored legacy policy must not re-enable any retired route.
+          // oxlint-disable-next-line no-await-in-loop
+          assert.equal((await api(retired, {})).status, 404);
+        }
         for (const [action, body] of [
           ["register", { name: "spoofed" }],
           ["send", { to: peer.sessionId, message: "unsafe", type: "unregister" }],
@@ -275,7 +317,7 @@ test(
             const rejected = await api(action, { ...body, messageId: "send-only" });
             assert.equal(rejected.status, 400);
             assert.equal(record(rejected.body.error).code, "invalid_input");
-            assert.equal(record(rejected.body.error).message, "Unknown field.");
+            assert.equal(record(rejected.body.error).message, 'Unknown field "messageId".');
           }
           for (const { args, reason } of [
             // NUL cannot occur in an OS argv; its public HTTP boundary is covered above.

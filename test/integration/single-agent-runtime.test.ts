@@ -126,6 +126,8 @@ for (const phase of [
   "cwd-invalid-wrong-directory",
   "cwd-invalid-error",
   "launch-preparation-failure",
+  "launch-preparation-fork-failure",
+  "inventory",
 ]) {
   test(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));

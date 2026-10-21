@@ -295,8 +295,9 @@ try {
           assert.equal(header.cwd, cwd);
           assert.notEqual(header.id, manager.getSessionId());
           // Fail the real prepared native session write after partial filesystem progress.
-          writeFile(file, body.slice(0, 17), options);
-          writeFile(faultFile, JSON.stringify({ file }));
+          const retained = phase === "launch-preparation-fork-failure" ? body : body.slice(0, 17);
+          writeFile(file, retained, options);
+          writeFile(faultFile, JSON.stringify({ file, retained }));
           if (phase === "launch-preparation-crash") {
             process.kill(process.pid, "SIGKILL");
           }
@@ -311,6 +312,7 @@ try {
           {
             prompt: "PREPARATION_MUST_NOT_LAUNCH",
             model: "single-agent-fixture/literal-model",
+            context: phase === "launch-preparation-fork-failure" ? "fork" : "fresh",
           },
           "preparation-failed-launch",
         );
@@ -323,16 +325,22 @@ try {
       }
     }
     const failedDirectory = path.dirname(readJSON(faultFile).file);
-    if (phase === "launch-preparation-reopen") {
-      assert.equal(fs.existsSync(failedDirectory), true, "SIGKILL bypassed preparation cleanup");
-      assert.equal(fs.existsSync(path.join(failedDirectory, "launch.json")), false);
-      assert.equal(fs.existsSync(path.join(failedDirectory, "commands")), false);
-      assert.equal(fs.existsSync(path.join(failedDirectory, "actor.lock")), false);
-    } else {
-      assert.equal(
-        fs.existsSync(failedDirectory),
-        false,
-        "synchronous preparation failure removes only its own unlaunched directory",
+    assert.equal(fs.existsSync(failedDirectory), true, "unpublished native journals are retained");
+    assert.equal(fs.existsSync(path.join(failedDirectory, "launch.json")), false);
+    assert.equal(fs.existsSync(path.join(failedDirectory, "commands")), false);
+    assert.equal(fs.existsSync(path.join(failedDirectory, "actor.lock")), false);
+    assert.equal(
+      fs.readFileSync(readJSON(faultFile).file, "utf8"),
+      readJSON(faultFile).retained,
+      "preparation errors retain exact native filesystem evidence, including torn writes",
+    );
+    if (phase === "launch-preparation-fork-failure") {
+      const journal = readJSON(faultFile).retained.trim().split("\n").map(JSON.parse);
+      assert.equal(journal[0].parentSession, manager.getSessionFile());
+      assert.ok(journal.length > 1, "the unpublished fork includes inherited native entries");
+      assert.ok(
+        journal.some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+        "the retained native branch includes prior tool evidence",
       );
     }
     await session.waitForIdle();
@@ -389,6 +397,85 @@ try {
     } finally {
       fs.writeFileSync(launchFile, originalLaunch);
     }
+  } else if (phase === "inventory") {
+    const saved = [];
+    for (let index = 0; index < 51; index++) {
+      const id = `inventory-${index}`;
+      fs.mkdirSync(runDir(id), { recursive: true });
+      const launch = {
+        version: 1,
+        id,
+        rootId: id,
+        owner: manager.getSessionId(),
+        cwd,
+        agentDir,
+        sdk: sdkRoot,
+        entry: path.join(repo, "dist/index.js"),
+        sessionFile: path.join(runDir(id), "native.jsonl"),
+        sessionId: `native-${id}`,
+        prompt: "SAVED_INVENTORY",
+        context: "fresh",
+        provider: "single-agent-fixture",
+        model: "literal-model",
+        thinking: "high",
+        trusted: true,
+        createdAt: index,
+      };
+      saved.push(launch);
+      fs.writeFileSync(path.join(runDir(id), "launch.json"), JSON.stringify(launch));
+      fs.writeFileSync(
+        path.join(runDir(id), "result.json"),
+        JSON.stringify({
+          id,
+          owner: manager.getSessionId(),
+          status: "completed",
+          endedAt: index,
+          contributions: [],
+        }),
+      );
+      fs.writeFileSync(
+        path.join(runDir(id), "output.txt"),
+        `INVENTORY_OUTPUT_${index}:` + "x".repeat(32768),
+      );
+      manager.appendCustomMessageEntry("agent-completion", "already collected", false, {
+        id,
+        owner: manager.getSessionId(),
+        completed: true,
+      });
+    }
+    const inventory = await call("agent_runs", { action: "list" }, "bounded-inventory");
+    const text = inventory.content.map((block) => block.text ?? "").join("\n");
+    assert.ok(
+      Buffer.byteLength(text) < 100 * 1024,
+      `metadata inventory was ${Buffer.byteLength(text)} bytes`,
+    );
+    const page = JSON.parse(text);
+    assert.equal(page.total, 51);
+    assert.equal(page.runs.length, 50);
+    assert.equal(page.nextOffset, 50);
+    assert.deepEqual(
+      page.runs.map((run) => run.id),
+      saved.slice(0, 50).map((run) => run.id),
+    );
+    assert.equal(
+      page.runs.every((run) => !("output" in run)),
+      true,
+      "list never embeds output pages",
+    );
+    assert.equal(text.includes("INVENTORY_OUTPUT_"), false);
+    const last = await call("agent_runs", { action: "list", offset: 50 }, "inventory-next-page");
+    assert.deepEqual(
+      last.details.runs.map((run) => run.id),
+      ["inventory-50"],
+    );
+    assert.equal(last.details.nextOffset, undefined);
+    const inspected = await call(
+      "agent_runs",
+      { action: "inspect", id: "inventory-0", length: 32 },
+      "inventory-explicit-inspect",
+    );
+    assert.equal(inspected.details.output.text, "INVENTORY_OUTPUT_0:" + "x".repeat(13));
+    assert.equal(inspected.details.output.nextOffset, 32);
   } else if (phase === "seed" || phase === "receipt") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(
@@ -509,6 +596,29 @@ try {
         process.kill(-pid, "SIGKILL");
       }
     }
+    const continued = await call(
+      "agent_runs",
+      { action: "continue", id, prompt: "AFTER_NATIVE_ACTOR_CRASH", async: false },
+      "continue-crashed-actor",
+    );
+    assert.equal(continued.isError, false, JSON.stringify(continued));
+    assert.equal(continued.details.status, "completed");
+    assert.notEqual(continued.details.id, id);
+    const interrupted = await call(
+      "agent_runs",
+      { action: "inspect", id },
+      "inspect-superseded-interrupted-run",
+    );
+    assert.equal(interrupted.details.process.live, true, "replacement remains messageable");
+    assert.equal(
+      interrupted.details.status,
+      "interrupted",
+      "replacement actor liveness must not resurrect an unfinished predecessor",
+    );
+    assert.equal(interrupted.details.completed, false, "no predecessor result was fabricated");
+    const inventory = await call("agent_runs", { action: "list" }, "list-after-actor-crash");
+    assert.equal(inventory.details.runs.find((run) => run.id === id).status, "interrupted");
+    assert.equal(fs.existsSync(path.join(runDir(id), "result.json")), false);
   } else if (phase === "bash-seed") {
     fs.writeFileSync(
       path.join(root, "ticker.mjs"),
@@ -1511,7 +1621,53 @@ try {
     assert.equal(session.getSessionStats().cost, 0);
     const source = readJSON(path.join(root, "delayed-lf.json")).file;
     assert.notEqual(fs.readFileSync(source).at(-1), 10);
-    fs.appendFileSync(source, "\n");
+    const { summary } = await import(pathToFileURL(path.join(repo, "dist/agent/view.js")).href);
+    const launch = readJSON(path.join(runDir(runId), "launch.json"));
+    const resultFile = path.join(runDir(runId), "result.json");
+    const pendingBytes = fs.readFileSync(resultFile);
+    const open = fs.openSync;
+    let usageReads = 0;
+    fs.openSync = (file, flags, ...args) => {
+      if (file === source && flags === "r") {
+        usageReads++;
+      }
+      return open(file, flags, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      fs.appendFileSync(source, "\n");
+      // Stay in this turn's microtasks: the periodic completion owner must not
+      // repair billing between metadata observation and its byte/read assertions.
+      const metadata = summary(path.dirname(runDir(runId)), launch);
+      assert.equal(metadata.status, "completed");
+      assert.equal("output" in metadata, false);
+      const raw = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+      const listed = await raw.execute(
+        "pending-accounting-list",
+        { action: "list" },
+        new AbortController().signal,
+      );
+      assert.notEqual(listed.isError, true);
+      assert.equal(listed.details.runs.find((run) => run.id === runId).status, "completed");
+      assert.deepEqual(
+        fs.readFileSync(resultFile),
+        pendingBytes,
+        "metadata-only summary and native list cannot repair pending accounting",
+      );
+      assert.equal(usageReads, 0, "metadata-only reads never open the child usage journal");
+      const inspected = await raw.execute(
+        "pending-accounting-inspect",
+        { action: "inspect", id: runId },
+        new AbortController().signal,
+      );
+      assert.equal(inspected.details.result.accountingPending, undefined);
+      assert.ok(usageReads > 0, "explicit native inspection still reads and repairs accounting");
+      assert.notDeepEqual(fs.readFileSync(resultFile), pendingBytes);
+      assert.equal(session.getSessionStats().cost, 0, "inspection is not finalized collection");
+    } finally {
+      fs.openSync = open;
+      syncBuiltinESMExports();
+    }
     const repaired = await call(
       "agent_runs",
       { action: "wait", id: runId },
@@ -2172,8 +2328,58 @@ try {
     const id = first.details.id;
     await until(() => requests().some((r) => r.prompt === "HOLD:boundary"), "old turn starts");
     if (phase === "generation") {
-      await call("agent_runs", { action: "stop", id }, "stop-old-generation");
+      const oldPid = requests()[0].pid;
+      const oldActor = readJSON(path.join(runDir(id), "actor.lock/process.json"));
+      process.kill(oldPid, "SIGSTOP");
+      let stopped;
+      try {
+        stopped = await call("agent_runs", { action: "stop", id }, "stop-old-generation");
+      } finally {
+        process.kill(oldPid, "SIGCONT");
+      }
       await until(() => fs.existsSync(path.join(runDir(id), "result.json")), "old stop settles");
+      await until(() => {
+        try {
+          process.kill(oldPid, 0);
+          return false;
+        } catch (error) {
+          return error.code === "ESRCH";
+        }
+      }, "old actor actually exits before replacement");
+      assert.equal(
+        fs.existsSync(path.join(runDir(id), "admissions", `${stopped.details.stopRequest}.json`)),
+        false,
+        "old actor exited without admitting the durable Stop",
+      );
+      assert.equal(
+        readJSON(path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`))
+          .actorToken,
+        oldActor.token,
+        "Stop is bound to the verified actor generation",
+      );
+      await until(
+        () => fs.existsSync(path.join(runDir(id), `exit-${oldActor.token}.json`)),
+        "launcher publishes the old actor's actual exit event",
+      );
+      const exited = await call("agent_runs", { action: "inspect", id }, "old-exit-inspect");
+      assert.equal(exited.details.process.live, false);
+      assert.equal(exited.details.process.exitKnown, true);
+      assert.equal(exited.details.process.exit.code, 0);
+      assert.ok(
+        exited.content.some((block) =>
+          block.text?.includes("Process exit observed: code 0, signal none."),
+        ),
+        "model sees the observed process exit rather than inferring it from completion",
+      );
+      fs.writeFileSync(
+        path.join(runDir(id), "commands/legacy-unbound-stop.json"),
+        JSON.stringify({
+          id: "legacy-unbound-stop",
+          runId: id,
+          action: "stop",
+          createdAt: Date.now(),
+        }),
+      );
     } else {
       const link = fs.linkSync;
       fs.linkSync = (source, destination) => {
@@ -2222,6 +2428,26 @@ try {
       );
       const inspected = await call("agent_runs", { action: "inspect", id }, "stale-admission");
       assert.equal(inspected.details.guidance.at(-1).state, "stale");
+      const text = inspected.content.map((block) => block.text ?? "").join("\n");
+      assert.ok(
+        text.includes(`${stale.details.command}: stale`),
+        "model sees the guidance command ID and its actual rejection state",
+      );
+      assert.match(text, /stale.*no new work was started/i);
+      assert.match(text, /accepted.*not.*(publication|consumption)/i);
+      assert.match(text, /pending.*not.*admitted/i);
+      assert.match(text, /receipt.*(published|not observed)/i);
+      assert.match(text, /exit.*(unknown|code)/i);
+      if (inspected.details.nativeReceipt === null) {
+        assert.match(text, /Native completion receipt: not observed published/);
+      } else {
+        assert.ok(
+          text.includes(
+            `Native completion receipt: published (${inspected.details.nativeReceipt})`,
+          ),
+        );
+      }
+      assert.match(text, /Process exit: unknown; run completion does not imply process exit/);
     }
     const frozen = ["launch.json", "result.json", "output.txt"].map((name) =>
       fs.readFileSync(path.join(runDir(id), name)),
@@ -2252,6 +2478,19 @@ try {
       );
       assert.equal(live.details.process.live, true, "old timer cannot kill new actor generation");
       assert.equal(live.details.completed, false);
+      const stopCommand = fs
+        .readdirSync(path.join(runDir(id), "commands"))
+        .map((file) => readJSON(path.join(runDir(id), "commands", file)))
+        .find((command) => command.action === "stop");
+      assert.equal(
+        readJSON(path.join(runDir(id), "admissions", `${stopCommand.id}.json`)).state,
+        "stale",
+      );
+      assert.equal(
+        readJSON(path.join(runDir(id), "admissions/legacy-unbound-stop.json")).state,
+        "stale",
+        "pre-upgrade unbound Stops cannot stop a replacement either",
+      );
     }
     fs.writeFileSync(path.join(root, "release-replacement"), "release");
     const outcome = await call(
@@ -2260,6 +2499,7 @@ try {
       "replacement-result",
     );
     assert.equal(outcome.details.output.text, "CHILD_LITERAL_RESULT:HOLD:replacement");
+    assert.equal(outcome.details.status, "completed", "old Stop must not mark successor stopped");
     ["launch.json", "result.json", "output.txt"].forEach((name, index) =>
       assert.deepEqual(fs.readFileSync(path.join(runDir(id), name)), frozen[index]),
     );
@@ -2327,11 +2567,26 @@ try {
       () => requests().some((request) => request.prompt === "HOLD:second"),
       "continuation is in native provider",
     );
-    const guidance = await call(
-      "agent_runs",
-      { action: "continue", id: first.details.id, prompt: "GUIDANCE_LITERAL" },
-      "continue-original",
-    );
+    const childPid = requests().find((request) => request.prompt === "HOLD:second").pid;
+    process.kill(childPid, "SIGSTOP");
+    let guidance;
+    try {
+      guidance = await call(
+        "agent_runs",
+        { action: "continue", id: first.details.id, prompt: "GUIDANCE_LITERAL" },
+        "continue-original",
+      );
+      const pending = await call(
+        "agent_runs",
+        { action: "inspect", id: second.details.id },
+        "guidance-pending-inspect",
+      );
+      const pendingText = pending.content.map((block) => block.text ?? "").join("\n");
+      assert.ok(pendingText.includes(`${guidance.details.command}: pending`));
+      assert.match(pendingText, /pending.*not yet admitted/);
+    } finally {
+      process.kill(childPid, "SIGCONT");
+    }
     assert.equal(guidance.details.id, second.details.id);
     assert.equal(guidance.details.receipt, "guidance");
     assert.equal(guidance.details.sessionId, saved.sessionId);
@@ -2346,6 +2601,17 @@ try {
       "actual actor admits live guidance before releasing held turn",
     );
     assert.equal(readJSON(guidanceAdmission).state, "accepted");
+    const accepted = await call(
+      "agent_runs",
+      { action: "inspect", id: second.details.id },
+      "guidance-accepted-inspect",
+    );
+    const acceptedText = accepted.content.map((block) => block.text ?? "").join("\n");
+    assert.ok(acceptedText.includes(`${guidance.details.command}: accepted`));
+    assert.match(
+      acceptedText,
+      /accepted.*queue admission, not journal publication or model consumption/,
+    );
     const nextSaved = readJSON(path.join(runDir(second.details.id), "launch.json"));
     for (const field of [
       "sessionId",

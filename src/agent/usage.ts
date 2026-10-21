@@ -232,14 +232,18 @@ export function childUsage(
   Assert(contributionsSchema, values);
   return values;
 }
-export function readResult(base: string, launch: Launch): Result | undefined {
+export function readCanonicalResult(base: string, launch: Launch): Result | undefined {
   const file = path.join(runDirectory(base, launch.id), "result.json");
   const result = read(file, resultSchema);
+  if (result && (result.id !== launch.id || result.owner !== launch.owner)) {
+    throw new Error("Foreign canonical result identity.");
+  }
+  return result;
+}
+export function readResult(base: string, launch: Launch): Result | undefined {
+  const result = readCanonicalResult(base, launch);
   if (!result) {
     return;
-  }
-  if (result.id !== launch.id || result.owner !== launch.owner) {
-    throw new Error("Foreign canonical result identity.");
   }
   const pending = result.accountingPending;
   if (pending === undefined) {
@@ -254,6 +258,6 @@ export function readResult(base: string, launch: Launch): Result | undefined {
   }
   const { accountingPending: _pending, accountingError: _error, ...execution } = result;
   const repaired = { ...execution, terminalEntryId: pending.terminalCandidate, contributions };
-  write(file, repaired);
+  write(path.join(runDirectory(base, launch.id), "result.json"), repaired);
   return repaired;
 }

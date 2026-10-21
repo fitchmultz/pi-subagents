@@ -56,6 +56,14 @@ A main and its children form one group:
 These are coordination rules, not an OS sandbox against same-user code. A peer
 list contains connected, eligible sessions, not every Pi process on the machine.
 
+## Watch agents without prompting them
+
+In interactive Pi, the agent status line reports active children. Open `/agents`
+to list runs and watch a child's native published text, tool calls and results.
+This is read-only: it neither spends a model turn nor dispatches, steers or stops
+work. Unpublished provider token deltas are not a journal stream. Agents still
+own delegation and communication; human observation is not a second workflow UI.
+
 ## What stays explicit
 
 Launch acceptance is not completion. Broker acceptance is not recipient journal
@@ -73,9 +81,17 @@ as profiles.
 
 This rebuild deliberately removes the profile editor, workflow/chain/fanout DSL,
 Claude Code backend, custom agent overlays, supervisor-question revival protocol,
-and remote launch/control/catalog APIs. Existing installations should finish
-in-flight work before switching versions. Keep the prior package and saved state
-for rollback; this repository change does not deploy or restart anything.
+and remote launch/control/catalog APIs. Grok bots retain messaging but lose remote
+spawn/resume/session/transcript/group/broadcast access; those retired commands are
+not bridge-outage symptoms. Update saved bot prompts/routines to correlated
+`send` before cutover.
+
+Existing installations must finish in-flight work and reload **every participating
+Pi session** onto the same approved version before resuming remote traffic. Old
+and new brokers do not forward across namespaces. Keep the prior package and saved
+state for rollback; qualify the helper and Box client/worker as an immutable pair,
+with the companion's offline receipt-reconciliation gate. This repository change
+does not deploy or restart anything.
 
 - [Tools and lifecycle](docs/reference.md)
 - [Local messaging and broker migration](docs/intercom.md)

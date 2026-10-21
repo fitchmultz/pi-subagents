@@ -40,7 +40,7 @@ import {
 } from "./storage.ts";
 import { hold, notify, settle, release } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
-import { toolResult, projection, render } from "./view.ts";
+import { toolResult, projection, render, summary } from "./view.ts";
 import { registerUsage } from "./usage.ts";
 import { notifyLegacy } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
@@ -133,7 +133,10 @@ class AgentRuntime {
         note: "No matching live actor or owned shell; process exit code remains unknown.",
       };
     }
-    const id = identity && verifyProcess(identity) ? enqueue(base, launch, "stop") : undefined;
+    const id =
+      identity && verifyProcess(identity)
+        ? enqueue(base, launch, "stop", { actorToken: identity.token })
+        : undefined;
     if (identity) {
       write(path.join(conversation(base, launch), `stopping-${identity.token}.json`), {
         at: Date.now(),
@@ -250,7 +253,7 @@ class AgentRuntime {
     const offset = input.offset ?? 0;
     const page = all
       .slice(offset, offset + 50)
-      .map((launch) => projection(this.base, launch, this.ctx));
+      .map((launch) => summary(this.base, launch, this.ctx));
     return toolResult({
       runs: page,
       offset,
@@ -300,7 +303,7 @@ class AgentRuntime {
     const completed = this.continuationResult(launch);
     const identity = actor(this.base, launch);
     if (!completed && identity && alive(identity)) {
-      const command = enqueue(this.base, launch, "steer", input.prompt);
+      const command = enqueue(this.base, launch, "steer", { prompt: input.prompt });
       if (input.async === false) {
         return this.guidance(launch, command, signal);
       }
@@ -381,10 +384,10 @@ class AgentRuntime {
   private async runs(input: RunsInput, signal: AbortSignal | undefined, context: ExtensionContext) {
     this.checkMain();
     await this.reset;
-    this.scan();
     if (input.action === "list") {
       return this.list(input);
     }
+    this.scan();
     if (input.id === undefined) {
       throw new Error("id is required.");
     }

@@ -177,9 +177,10 @@ No production exports or injection points may be added solely to make tests easy
 Selected official target: published Pi 1.3.0. The development four-package cohort
 is updated together in the committed npm lockfile. The installed/intended fork is
 Pi 1.3.0 at `997a2575e0dde7c6690024184feec970d395f9b4`, using Node 24.22.0.
-Initial lane qualification used build `882876dae4dc6e33`; final integrated local
-qualification used build `127d6b7a5b2492a2`. Equal version strings do not qualify both
-hosts. The existing support floor must not be raised or bypassed to pass checks.
+Initial lane qualification used build `882876dae4dc6e33`; the first integrated
+delivery used build `127d6b7a5b2492a2`. Review-follow-up qualification uses build
+`c6a6d3874c660860` of the same fork revision. Equal version strings do not qualify
+both hosts. The existing support floor must not be raised or bypassed to pass checks.
 
 Local checks are narrow native/process tests plus `npm run lint`,
 `npm run format:check`, and `npm run typecheck`. Full `npm run ci` runs in hosted
@@ -188,7 +189,7 @@ single-profile surface, including different agent directories, to discover and
 exchange messages with the confirmed hierarchy and read last responses without
 waking recipients.
 
-### Integrated local evidence
+### Initial integrated local evidence
 
 - `npm run check:size`: 13,312 source lines; 16,008 total production lines;
   530,813 production bytes. Relative to baseline, reductions are 84.16%, 84.13%,
@@ -242,15 +243,62 @@ Review found two concrete gaps, also repaired with native RED/GREEN evidence:
 - `last` now includes completed `length` responses rather than returning an older
   `stop` response. The existing real-broker paging/no-wake keeper covers both
   terminal reasons and checks the actual native completed entry ID.
-- Failed preparation removes only its own unadmitted directory. Scans require
-  canonical `launch.json` publication, so actual preparation SIGKILL cannot starve
-  healthy runs' listing or completion notifications. Invalid published records
-  remain visible errors; uncertain post-spawn claims are not removed. Abrupt death
-  may leave unadmitted partial files on disk; there is no destructive auto-recovery.
+- Scans require canonical `launch.json` publication, so actual preparation SIGKILL
+  cannot starve healthy runs' listing or completion notifications. The first repair
+  removed its own unadmitted directory on caught failure; subsequent review
+  corrected that cleanup to preserve native JSONL, including partially written
+  sessions and copied fork history. Unadmitted files remain excluded from scans.
+  Invalid published records remain visible errors; uncertain post-spawn claims
+  are not removed. There is no destructive auto-recovery.
 
 The companion's cold-ledger/ENOSPC fixtures now supply real unambiguous mail
 before requesting terminal receipts, preserving the concurrent writer and partial
 write/repair assertions instead of stopping at the new unknown-ID guard.
+
+### Deep-review follow-up
+
+The review follow-up prepares unpublished version **0.50.0**. Final measured
+size is **14,023 source lines, 16,719 production lines and 554,884 bytes**:
+reductions of **83.31%, 83.43% and 88.94%** from the original baseline. The
+read-only observer remains inside all three enforced ceilings.
+
+- Stop commands bind to the verified actor generation; replacement actors reject
+  stale and unbound legacy Stops, and stopping actors do not admit new Run work.
+- Per-run tool text exposes guidance IDs/admission states, completion-receipt
+  publication and known versus unknown process exit. Inventory is metadata-only,
+  without output pages, usage arrays or implicit accounting repair.
+- Named asks resolve a concrete broker identity before sending. Missing discovery
+  fails before delivery; exact sender/correlation matching is not weakened.
+- Native preparation failures preserve partial journals and full fork branches.
+  Canonical launch publication still controls inventory admission.
+- The human TUI adds a read-only status and `/agents` list/watch. It shows bounded,
+  LF-published native activity, not unpublished token deltas; forked inherited
+  history is labelled. Completed history does not consume active refresh slots.
+  Superseded unfinished runs remain interrupted even while a successor's shared
+  actor stays alive. Viewing neither requests model work nor controls children.
+- Existing client `launch` policy is ignored with one metadata warning per config
+  load, without restoring remote launch. Other unknown fields fail closed with
+  bounded field diagnostics. Rollout requires draining and reloading all
+  participating Pi sessions before resuming traffic. Rollback preserves transferred
+  reply duties and the companion's newer-code guard.
+
+Integrated local qualification passed **113/113 focused cases on each actual
+official/fork dependency graph**, with no skips, plus package/install smokes and
+required static checks. A subsequent lazy-import-only optimization defers the
+observer screen until the human opens it, with session-owner validation after the
+await. Both hosts then passed the seven UI/journal keepers, required static checks
+and package/install smokes again. Four actual CLI/PTY flows loaded the final
+compiled entry on official/fork × fullscreen/regular, proving narrow resize,
+selection, published tools/text/errors, no observing-triggered model calls,
+canonical completion with a live idle actor, owner replacement and actual exit.
+Startup samples and their limits are in [performance](performance.md).
+
+Native RED/GREEN proof covers the four reported runtime/tool defects and the
+additional interrupted-predecessor projection defect. Independent scoped reviews
+accepted the repaired runtime/bridge and observer paths. The 101-message stress
+case emitted Node's listener-count warning; its assertions and the separate
+steady-handoff listener-retirement keeper passed. This follow-up used deterministic
+native providers, not another paid/live-model acceptance run.
 
 This document records evidence and acceptance gates; local success alone is not a
 claim that hosted qualification and delivery are complete. Ready-for-review PRs, green hosted

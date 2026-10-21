@@ -136,7 +136,20 @@ updated extension. Startup warns when it detects an old broker for the current
 agent directory. It does not kill, modify, take over, or silently route back to
 that broker. During migration, old and new peers may therefore be invisible to
 each other. Finish accepted work before upgrading; do not force broker shutdown
-to make discovery appear complete.
+to make discovery appear complete. During an authorized cutover, inventory and
+reload every participating Pi session on that Mac before resuming bridge traffic,
+then verify the expected exact peers from both mains and the helper. The warning
+only detects old brokers for the current agent directory; it cannot certify that
+all old sessions elsewhere have migrated.
+
+The predictable `/tmp` namespace is independent of caller HOME/TMPDIR, which is
+needed for same-user discovery across differently configured sessions. A foreign
+user who pre-creates that path can deny availability, but cannot be adopted as the
+broker owner: startup refuses foreign or symlink directories. It must not delete
+or take over the path to recover. On shared hosts, an operator can pre-provision
+a short private directory under an owned non-writable parent and consistently set
+`PI_INTERCOM_RUNTIME_DIR` for every participating Pi session and helper. This is
+an explicit deployment choice, not an automatic fallback to a split namespace.
 
 An unresponsive or missing socket is not permission to kill a possibly live
 owner. PID checks are conservative, including permission-denied cases. Linux

@@ -85,10 +85,16 @@ export function enqueue(
   base: string,
   launch: Launch,
   action: Command["action"],
-  prompt?: string,
+  options: Pick<Command, "prompt" | "actorToken"> = {},
 ): string {
   const id = action === "run" ? launch.id : randomUUID();
-  const command: Command = { id, runId: launch.id, action, prompt, createdAt: Date.now() };
+  const command: Command = {
+    id,
+    runId: launch.id,
+    action,
+    ...options,
+    createdAt: Date.now(),
+  };
   write(path.join(conversation(base, launch), "commands", `${id}.json`), command, true);
   return id;
 }
