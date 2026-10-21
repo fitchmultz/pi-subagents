@@ -27,10 +27,11 @@ On hosts exporting Pi's native `resolveModelReference`, `model` also accepts
 The explicit suffix overrides inherited thinking for that child only. Literal
 model IDs take precedence, including IDs containing colons or additional slashes;
 unknown IDs and invalid suffixes fail without fuzzy matching or another provider.
-Pi still applies the selected model's native thinking capabilities.
+Native resolution follows Pi's case-insensitive ID matching. Pi still applies the
+selected model's native thinking capabilities.
 
 Official Pi 1.3.0 and older fork runtimes do not export that resolver. They retain
-literal-ID overrides and inherited thinking; suffix requests fail with an upgrade
+case-sensitive literal-ID overrides and inherited thinking; suffix requests fail with an upgrade
 message rather than being parsed by an extension-side replacement. This requires
 a host with the public resolver export, not merely a matching version number.
 

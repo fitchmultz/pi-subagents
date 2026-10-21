@@ -119,7 +119,7 @@ export const delegateSchema = Type.Object(
       Type.String({
         minLength: 1,
         description:
-          "Exact provider/model ID, optionally :thinking on hosts with native model-reference support. No fuzzy matching or fallback.",
+          "Provider/model ID; optional :thinking requires native model-reference support (case-insensitive, never fuzzy). No fallback.",
       }),
     ),
     context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")])),
