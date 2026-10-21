@@ -25,6 +25,10 @@ Fresh context is default; `context:"fork"` preserves the native conversation,
 including prior tool results. A forked child still cannot delegate. Optional
 `cwd` and `model` are explicit launch overrides; do not change global auth/model
 settings to implement an override.
+`model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
+exports it; a literal model ID wins before suffix parsing. Without that host API,
+use a literal ID with inherited thinking or upgrade Pi. Never retry another model
+silently.
 
 Runs are asynchronous unless `async:false`. Continue useful independent work;
 when child evidence gates the next step, end the turn and await completion rather

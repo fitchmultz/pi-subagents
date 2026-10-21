@@ -7,12 +7,17 @@ import type { Launch, DelegateInput } from "./contracts.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
 import { runDirectory, write } from "./storage.ts";
 
-function selectedModel(input: DelegateInput, context: ExtensionContext) {
+function selectedModel(
+  input: DelegateInput,
+  context: ExtensionContext,
+  thinking: ThinkingLevel,
+  sdk: Awaited<ReturnType<typeof loadSDK>>,
+) {
   if (input.model === undefined) {
     if (!context.model) {
       throw new Error("No selected model; no fallback was used.");
     }
-    return context.model;
+    return { model: context.model, thinking };
   }
   const slash = input.model.indexOf("/");
   if (slash < 1) {
@@ -22,10 +27,28 @@ function selectedModel(input: DelegateInput, context: ExtensionContext) {
     input.model.slice(0, slash),
     input.model.slice(slash + 1),
   );
-  if (!model) {
+  if (model) {
+    return { model, thinking };
+  }
+  if (typeof sdk.resolveModelReference !== "function") {
+    throw new Error(
+      `Model ${input.model} is unavailable; no fallback was used. Check the provider/model ID. This host supports literal IDs only. If you intended a thinking suffix, update Pi for native thinking-suffix support.`,
+    );
+  }
+  const resolved = sdk.resolveModelReference(
+    {
+      text: input.model,
+      provider: input.model.slice(0, slash),
+      thinkingSuffix: "strict",
+      fuzzy: false,
+    },
+    context.modelRegistry.getAll(),
+    () => true,
+  );
+  if (resolved.status !== "resolved") {
     throw new Error(`Model ${input.model} is unavailable; no fallback was used.`);
   }
-  return model;
+  return { model: resolved.model, thinking: resolved.thinkingLevel ?? thinking };
 }
 function targetTrust(
   sdk: Awaited<ReturnType<typeof loadSDK>>,
@@ -63,7 +86,7 @@ export async function prepareLaunch(options: {
   if (!fs.statSync(cwd).isDirectory()) {
     throw new Error("Delegation cwd is not a directory.");
   }
-  const model = selectedModel(input, context);
+  const selection = selectedModel(input, context, thinking, sdk);
   const trusted = targetTrust(sdk, cwd, context, agentDir);
   const id = randomUUID();
   const directory = runDirectory(base, id);
@@ -98,9 +121,9 @@ export async function prepareLaunch(options: {
     sessionId: manager.getSessionId(),
     prompt: input.prompt,
     context: input.context ?? "fresh",
-    provider: model.provider,
-    model: model.id,
-    thinking,
+    provider: selection.model.provider,
+    model: selection.model.id,
+    thinking: selection.thinking,
     trusted,
     name: input.name,
     createdAt: Date.now(),

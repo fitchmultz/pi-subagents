@@ -116,7 +116,11 @@ export const delegateSchema = Type.Object(
     name: Type.Optional(Type.String({ minLength: 1 })),
     cwd: Type.Optional(Type.String({ minLength: 1 })),
     model: Type.Optional(
-      Type.String({ minLength: 1, description: "Exact provider/model ID; no fallback." }),
+      Type.String({
+        minLength: 1,
+        description:
+          "Provider/model ID; optional :thinking requires native model-reference support (case-insensitive, never fuzzy). No fallback.",
+      }),
     ),
     context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")])),
     async: Type.Optional(Type.Boolean({ default: true })),
