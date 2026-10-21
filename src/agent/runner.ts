@@ -16,7 +16,7 @@ import {
   type Result,
 } from "./contracts.ts";
 import { launchAt, read, runDirectory, write } from "./storage.ts";
-import { alive, ownIdentity, shellCommand } from "./process.ts";
+import { alive, ownIdentity, shellCommand, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
@@ -56,6 +56,7 @@ function guard(pi: ExtensionAPI, directory: string, token: string): void {
 class Actor {
   private active?: Promise<void>;
   private stopping = false;
+  private stopDeadline?: NodeJS.Timeout;
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -191,12 +192,32 @@ class Actor {
     };
   }
   private readonly stop = (): void => {
-    write(path.join(this.dir, "stop-acknowledged.json"), { at: Date.now(), id: this.current?.id });
+    if (this.stopping) {
+      return;
+    }
     this.stopping = true;
+    write(path.join(this.dir, `stopping-${this.token}.json`), { at: Date.now() });
+    write(path.join(this.dir, "stop-acknowledged.json"), { at: Date.now(), id: this.current?.id });
     this.session?.abort().catch((error: unknown) => {
       this.errors.push(errorText(error));
     });
+    this.stopShells("SIGTERM");
+    // Parent death leaves no parent-side escalation timer to stop an uncooperative tool.
+    this.stopDeadline = setTimeout(() => {
+      this.stopShells("SIGKILL");
+      process.exit(1);
+    }, 3000);
+    this.stopDeadline.unref();
   };
+  private stopShells(signal: NodeJS.Signals): void {
+    try {
+      for (const identity of shells(this.base, this.initial, this.token)) {
+        signalProcess(identity, signal);
+      }
+    } catch (error) {
+      this.errors.push(errorText(error));
+    }
+  }
   private run(launch: Launch): void {
     const session = this.session;
     if (!session) {
@@ -319,17 +340,13 @@ class Actor {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
   private shouldExit(): boolean {
-    if (this.active !== undefined) {
-      return false;
+    if (!this.stopping) {
+      const attachment = read(path.join(this.base, "attachment.json"), attachmentSchema);
+      if (attachment === undefined || !attachment.attached || !alive(attachment)) {
+        this.stop();
+      }
     }
-    if (this.stopping) {
-      return true;
-    }
-    if (this.session && (!this.session.isIdle || this.session.pendingMessageCount > 0)) {
-      return false;
-    }
-    const attachment = read(path.join(this.base, "attachment.json"), attachmentSchema);
-    return attachment === undefined || !attachment.attached || !alive(attachment);
+    return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
   }
   private failure(error: unknown): void {
     const launch = this.current ?? this.initial;
@@ -386,12 +403,14 @@ class Actor {
       });
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
-      do {
-        this.pending().forEach((command) => this.accept(command));
+      while (!this.shouldExit()) {
+        if (!this.stopping) {
+          this.pending().forEach((command) => this.accept(command));
+        }
         // Durable command readiness, not elapsed time, defines admission.
         // oxlint-disable-next-line no-await-in-loop
         await delay(100);
-      } while (!this.shouldExit());
+      }
       await this.active;
     } catch (error) {
       this.failure(error);
@@ -399,6 +418,10 @@ class Actor {
       process.off("SIGTERM", this.stop);
       process.off("SIGINT", this.stop);
       await runtime?.dispose();
+      if (this.stopping) {
+        this.stopShells("SIGKILL");
+      }
+      clearTimeout(this.stopDeadline);
       write(path.join(this.dir, `shutdown-${this.token}.json`), {
         at: Date.now(),
         errors: this.errors,

@@ -149,7 +149,6 @@ test(
     try {
       run(root, "launch-preparation-crash", true);
       const saved = seed(root);
-      fs.writeFileSync(path.join(root, "release-first"), "release");
       await until(
         () =>
           fs.existsSync(
@@ -161,7 +160,7 @@ test(
               "result.json",
             ),
           ) && dead(saved.childPid),
-        "valid sibling publishes its result and exits while the crashed parent is offline",
+        "valid sibling publishes its interrupted result and exits after parent death",
       );
       run(root, "launch-preparation-reopen");
     } finally {
@@ -243,14 +242,13 @@ test(
 );
 for (const crash of [undefined, "before", "after"]) {
   test(
-    `single-agent cold completion ${crash === undefined ? "after orderly parent exit" : `after SIGKILL ${crash} native append`}`,
+    `single-agent cold stopped-result recovery ${crash === undefined ? "after orderly parent exit" : `after SIGKILL ${crash} native append`}`,
     { timeout: 90000 },
     async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-cold-"));
       try {
         run(root, "seed");
         const saved = seed(root);
-        fs.writeFileSync(path.join(root, "release-first"), "release");
         const result = path.join(
           root,
           "agent/sessions/agent-runs",
@@ -260,7 +258,7 @@ for (const crash of [undefined, "before", "after"]) {
         );
         await until(
           () => fs.existsSync(result) && dead(saved.childPid),
-          "canonical result publishes and actor exits while native main is offline",
+          "parent exit stops the child and retains its canonical result",
         );
         if (crash !== undefined) {
           run(root, `crash-${crash}`, true);
@@ -301,7 +299,7 @@ test(
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-orphan-"));
     try {
-      run(root, "bash-seed", true);
+      run(root, "bash-seed-paused", true);
       const saved = seed(root);
       process.kill(saved.childPid, "SIGKILL");
       await until(() => dead(saved.childPid), "actual actor SIGKILL completes");
@@ -312,13 +310,35 @@ test(
   },
 );
 test(
-  "single-agent main SIGKILL preserves actual native shell work; cold same-owner Stop verifies birth and stops actor/descendants without fabricated exit",
+  "single-agent cold Stop verifies birth and stops an OS-suspended actor and descendants without fabricated exit",
   { timeout: 60000 },
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-stop-"));
     try {
-      run(root, "bash-seed", true);
+      run(root, "bash-seed-paused", true);
       run(root, "cold-stop");
+    } finally {
+      await cleanup(root);
+    }
+  },
+);
+test(
+  "single-agent parent SIGKILL stops native shell work and cold continuation reuses the interrupted child conversation",
+  { timeout: 60000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-parent-exit-"));
+    try {
+      run(root, "bash-seed", true);
+      const saved = seed(root);
+      const family: unknown = JSON.parse(
+        fs.readFileSync(path.join(root, "shell-family.json"), "utf8"),
+      );
+      Assert(Type.Object({ pid: Type.Integer(), descendant: Type.Integer() }), family);
+      await until(
+        () => [saved.childPid, family.pid, family.descendant].every(dead),
+        "actor and native shell descendants terminate without any request to the dead parent",
+      );
+      run(root, "resume-stopped-bash");
     } finally {
       await cleanup(root);
     }

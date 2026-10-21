@@ -45,6 +45,10 @@ Use IDs returned by the tools. Runs belong to their native main session, not a
 cwd, project, name, or forked copy of its transcript. Resume the same main for
 ownership. Do not delete ambiguous launch state to force another attempt.
 
+Children terminate when their parent exits. Resume the same parent and explicitly
+continue a saved child conversation; the child inspects the interrupted work
+rather than automatically replaying tool calls. Ordinary `/reload` is not exit.
+
 ## Coordination and delivery
 
 All pairs inside a main/children group can use `intercom` list/send/last. Across

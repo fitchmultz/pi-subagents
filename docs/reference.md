@@ -29,8 +29,8 @@ resources still apply. Forking does not authorize nested delegation.
 
 The default response acknowledges launch. It does not claim a model response or
 completion. `async:false` waits for this new work. Cancelling that owned foreground
-invocation requests stop; disposing the parent runtime detaches the observer
-without implicitly stopping accepted background work.
+invocation requests stop. Exiting or replacing the parent session stops its
+children, including active work, and preserves their saved conversations.
 
 Only a main may delegate. Children cannot bypass the restriction through a hidden
 tool or programmatic invocation of `delegate` or `agent_runs`.
@@ -76,9 +76,15 @@ Pending admission is not consumption. Inspect the result and send a new continua
 if guidance became stale; do not infer acceptance from the old completed output.
 
 A completed child can remain alive and messageable while its main remains
-attached. Once the main detaches or is proven absent, idle actors exit and active
-accepted work can finish before exit. Reload/resume uses saved state. There is no
-arbitrary idle lease that silently expires a child while the main is still live.
+attached. Parent exit or session replacement stops its actors and verified owned
+native shells, allowing native abort a short grace period before escalation.
+Actors also watch for parent death, including a hard kill. Ordinary extension
+reload keeps children alive because the parent has not exited.
+
+Resume the same parent and use `continue` with a new prompt to resume a saved
+child conversation. This does not replay interrupted tool calls or reconstruct
+an execution checkpoint: the child inspects the current work state. Saved
+journals and results are retained whether the child was active, stopped or done.
 
 ### Evidence levels
 

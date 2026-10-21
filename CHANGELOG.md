@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Stop child actors and verified owned native shells when their parent exits, including active work. Keep saved conversations for explicit continuation after parent resume; do not replay interrupted tools. Ordinary extension reload keeps children alive.
+
 ### Fixed
 
 - Restore default steering for incoming Intercom asks in interactive and print modes; keep explicit queue/passive behavior and sender-side busy capability reporting.

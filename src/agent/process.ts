@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { readChildProcessIdentity, trySignalChildTree } from "../shared/post-exit-stdio-guard.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
-import { conversation, read, write } from "./storage.ts";
+import { conversation, enqueue, read, write } from "./storage.ts";
 
 export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): boolean {
   try {
@@ -17,8 +17,11 @@ export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): bool
     }
     return true;
   }
+  if (identity.identity === "unverified") {
+    return true;
+  }
   const actual = readChildProcessIdentity(identity.pid);
-  return identity.identity === "unverified" || actual === undefined || actual === identity.identity;
+  return actual === undefined || actual === identity.identity;
 }
 export function ownIdentity(): { pid: number; identity: string } {
   // An ordinary main need not be a group leader. Ambiguous live PIDs fail closed.
@@ -78,10 +81,15 @@ function spawnActor(base: string, launch: Launch, token: string): void {
     token,
   });
 }
-async function awaitStopping(dir: string, existing: ProcessIdentity | undefined): Promise<void> {
+async function awaitStopping(
+  dir: string,
+  existing: ProcessIdentity | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
   if (existing && fs.existsSync(path.join(dir, `stopping-${existing.token}.json`))) {
     const deadline = Date.now() + 5000;
     while (alive(existing)) {
+      signal?.throwIfAborted();
       if (Date.now() > deadline) {
         throw new Error("Previous actor is still stopping; no replacement was launched.");
       }
@@ -91,10 +99,15 @@ async function awaitStopping(dir: string, existing: ProcessIdentity | undefined)
     }
   }
 }
-export async function ensureActor(base: string, launch: Launch): Promise<void> {
+export async function ensureActor(
+  base: string,
+  launch: Launch,
+  signal?: AbortSignal,
+): Promise<void> {
   const dir = conversation(base, launch);
   const lock = path.join(dir, "actor.lock");
-  await awaitStopping(dir, actor(base, launch));
+  await awaitStopping(dir, actor(base, launch), signal);
+  signal?.throwIfAborted();
   // Another parallel tool may replace the claim while this invocation yields.
   const existing = actor(base, launch);
   if (existing && alive(existing)) {
@@ -153,6 +166,28 @@ export function signalProcess(identity: ProcessIdentity, signal: NodeJS.Signals)
     { pid: identity.pid, kill: (s) => process.kill(identity.pid, s) },
     signal,
   );
+}
+export function requestStop(
+  base: string,
+  launch: Launch,
+): { targets: ProcessIdentity[]; command: string | undefined } {
+  const identity = actor(base, launch);
+  const targets = identity ? [identity, ...shells(base, launch, identity.token)] : [];
+  // Validate the whole owned set before admitting Stop or signaling any member.
+  const live = targets.filter(verifyProcess);
+  const command =
+    identity && live.includes(identity)
+      ? enqueue(base, launch, "stop", { actorToken: identity.token })
+      : undefined;
+  if (identity && live.length > 0) {
+    write(path.join(conversation(base, launch), `stopping-${identity.token}.json`), {
+      at: Date.now(),
+    });
+  }
+  live.forEach((target) => {
+    signalProcess(target, "SIGTERM");
+  });
+  return { targets: live, command };
 }
 export function shells(base: string, launch: Launch, token: string): ProcessIdentity[] {
   const dir = path.join(conversation(base, launch), "shells", token);
