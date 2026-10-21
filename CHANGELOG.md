@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- Stop child actors and verified owned native shells when their parent exits, including active work and asynchronous delegation from one-shot callers. Keep saved conversations for explicit continuation after parent resume; do not replay interrupted tools. Ordinary extension reload keeps children alive.
+
 ### Fixed
 
 - Restore fullscreen click-to-watch on named child rows and clickable `/agents` navigation. Keep regular-mode keyboard controls and read-only observation.

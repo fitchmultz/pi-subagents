@@ -14,6 +14,8 @@
 
 # Code quality
 
+- Use native APIs and behavior when they meet the requirements; don't reimplement them.
+
 Use the committed npm lockfile. Obtain passing `npm run lint`, `npm run format:check`
 and `npm run typecheck` evidence before delivery. `npm run ci` includes these checks and the
 package/install smokes and complete test suites. Keep the strict rules in

@@ -360,7 +360,10 @@ try {
     );
     await session.waitForIdle();
     assert.equal(notices().length, 1);
-    assert.match(notices()[0].content, /CHILD_LITERAL_RESULT:HOLD:first/);
+    assert.match(
+      notices()[0].content,
+      phase === "launch-preparation-reopen" ? /: stopped\./ : /CHILD_LITERAL_RESULT:HOLD:first/,
+    );
     const completed = await call("agent_runs", { action: "list" }, "preparation-list-completed");
     assert.equal(completed.isError, false, JSON.stringify(completed));
     assert.equal(completed.details.runs[0].completed, true);
@@ -642,7 +645,7 @@ try {
     await until(() => notices().length === 1, "fresh native parent receives canonical completion");
     await session.waitForIdle();
     assert.equal(resultEntries("launch-original").length, 1);
-    assert.match(notices()[0].content, /CHILD_LITERAL_RESULT:HOLD:first/);
+    assert.match(notices()[0].content, /: stopped\./);
     const inspection = await call(
       "agent_runs",
       { action: "inspect", id: runId },
@@ -725,7 +728,11 @@ try {
     const inventory = await call("agent_runs", { action: "list" }, "list-after-actor-crash");
     assert.equal(inventory.details.runs.find((run) => run.id === id).status, "interrupted");
     assert.equal(fs.existsSync(path.join(runDir(id), "result.json")), false);
-  } else if (phase === "bash-seed") {
+  } else if (
+    phase === "bash-seed" ||
+    phase === "bash-seed-paused" ||
+    phase === "bash-shutdown-stale"
+  ) {
     fs.writeFileSync(
       path.join(root, "ticker.mjs"),
       `import fs from 'node:fs'; import {spawn} from 'node:child_process';\nconst root=${JSON.stringify(root)}; if(!process.argv.includes('--descendant')) { const child=spawn(process.execPath,[process.argv[1],'--descendant'],{stdio:'ignore'}); fs.writeFileSync(root+'/shell-family.json',JSON.stringify({pid:process.pid,descendant:child.pid})); }\nfs.writeFileSync(root+'/heartbeat-'+process.pid,'ready'); setInterval(()=>fs.appendFileSync(root+'/heartbeat-'+process.pid,'tick\\n'),20);`,
@@ -760,7 +767,66 @@ try {
         family,
       }),
     );
-    process.kill(process.pid, "SIGKILL");
+    if (phase === "bash-seed-paused" || phase === "bash-shutdown-stale") {
+      process.kill(requests()[0].pid, "SIGSTOP");
+      await until(
+        () =>
+          spawnSync("ps", ["-p", String(requests()[0].pid), "-o", "state="], {
+            encoding: "utf8",
+          }).stdout.includes("T"),
+        "suspend the actor's parent watcher to exercise cold process/shell recovery",
+      );
+    }
+    if (phase === "bash-shutdown-stale") {
+      const actor = readJSON(path.join(runDir(runId), "actor.lock/process.json"));
+      const ledger = path.join(runDir(runId), "shells", actor.token);
+      const original = path.join(ledger, fs.readdirSync(ledger)[0]);
+      const shell = readJSON(original);
+      const extra = path.join(ledger, "shutdown-extra.json");
+      const bystander = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      assert.ok(bystander.pid);
+      const dead = (pid) => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          assert.equal(error.code, "ESRCH");
+          return true;
+        }
+      };
+      const signalIfLive = (pid, signal) => {
+        if (!dead(pid)) {
+          process.kill(pid, signal);
+        }
+      };
+      try {
+        fs.writeFileSync(extra, JSON.stringify(shell));
+        const [first, second] = fs.readdirSync(ledger);
+        // Model a stale persisted claim, not actual OS PID reuse. The controller
+        // must skip this live unrelated PID while still stopping the verified shell.
+        fs.writeFileSync(
+          path.join(ledger, first),
+          JSON.stringify({ ...shell, pid: bystander.pid }),
+        );
+        fs.writeFileSync(path.join(ledger, second), JSON.stringify(shell));
+        await runtime.dispose();
+        await until(
+          () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
+          "parent shutdown stops every verified target despite an earlier stale shell claim",
+        );
+        assert.equal(dead(bystander.pid), false, "the ambiguous unrelated process is untouched");
+      } finally {
+        fs.rmSync(extra, { force: true });
+        fs.writeFileSync(original, JSON.stringify(shell));
+        signalIfLive(actor.pid, "SIGCONT");
+        signalIfLive(-bystander.pid, "SIGKILL");
+      }
+    } else {
+      process.kill(process.pid, "SIGKILL");
+    }
   } else if (phase === "cold-actor-stop") {
     const directory = runDir(runId);
     const identity = readJSON(path.join(directory, "actor.lock/process.json"));
@@ -1042,6 +1108,30 @@ try {
       false,
       "a cold liveness proof cannot invent the unavailable process exit code",
     );
+  } else if (phase === "resume-stopped-bash") {
+    await until(
+      () => notices().some((notice) => notice.details.id === runId),
+      "resumed parent observes the child's stopped result",
+    );
+    await session.waitForIdle();
+    const original = readJSON(path.join(runDir(runId), "launch.json"));
+    const continued = await call(
+      "agent_runs",
+      { action: "continue", id: runId, prompt: "INSPECT_INTERRUPTED_WORK", async: false },
+      "resume-stopped-child",
+    );
+    assert.equal(continued.isError, false, JSON.stringify(continued));
+    assert.equal(continued.details.sessionId, original.sessionId);
+    assert.equal(continued.details.sessionFile, original.sessionFile);
+    assert.equal(continued.details.output.text, "CHILD_LITERAL_RESULT:INSPECT_INTERRUPTED_WORK");
+    const resumed = requests().find((request) => request.prompt === "INSPECT_INTERRUPTED_WORK");
+    assert.notEqual(resumed.pid, seed.childPid);
+    assert.match(JSON.stringify(resumed.context), /owned-native-shell/);
+    assert.equal(
+      requests().filter((request) => request.prompt === "BASH_HOLD_LITERAL").length,
+      1,
+      "continuation retains the old conversation without replaying its interrupted command",
+    );
   } else if (phase === "foreign" || phase === "fork-owner") {
     assert.notEqual(manager.getSessionId(), seed.sessionId);
     const listed = await call("agent_runs", { action: "list" }, "foreign-list");
@@ -1066,7 +1156,7 @@ try {
     assert.equal(receipt.details.model, "single-agent-fixture/literal-model");
     const observed = requests().find((request) => request.prompt === "COLD_FROZEN_LITERAL");
     assert.notEqual(observed.pid, seed.childPid);
-    assert.match(JSON.stringify(observed.context), /CHILD_LITERAL_RESULT:HOLD:first/);
+    assert.match(JSON.stringify(observed.context), /EXACT untouched prompt Ω/);
     const startsBefore = new Set(requests().map((request) => request.pid)).size;
     fs.renameSync(saved.sessionFile, saved.sessionFile + ".held");
     try {
@@ -2391,20 +2481,35 @@ try {
       () => requests().some((r) => r.prompt === "HOLD:foreground"),
       "held child actual readiness",
     );
+    await session.reload();
+    const reloaded = await call(
+      "agent_runs",
+      { action: "inspect", id },
+      "reload-keeps-live-parent-child",
+    );
+    assert.equal(reloaded.details.process.live, true);
+    assert.equal(reloaded.details.completed, false, "reload is not parent termination");
     const waiting = session.agent.state.tools
       .find((t) => t.name === "agent_runs")
       .execute("admitted-detach-wait", { action: "wait", id }, new AbortController().signal);
     await runtime.dispose();
     const detached = await waiting;
-    assert.equal(detached.details.wait, "detached");
-    process.kill(requests()[0].pid, 0);
-    assert.equal(fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")), false);
-    fs.writeFileSync(path.join(root, "release-foreground"), "release");
+    assert.ok(
+      detached.details.wait === "detached" || detached.details.result?.status === "stopped",
+      "the observer detaches or collects the native stopped result racing shutdown",
+    );
     await until(
       () => fs.existsSync(path.join(runDir(id), "result.json")),
-      "detached producer actually finishes",
+      "parent shutdown stops the held child without releasing its work",
     );
-    assert.equal(readJSON(path.join(runDir(id), "result.json")).status, "completed");
+    assert.equal(readJSON(path.join(runDir(id), "result.json")).status, "stopped");
+    assert.equal(fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")), true);
+    const child = requests().find((request) => request.prompt === "HOLD:foreground");
+    assert.throws(
+      () => process.kill(child.pid, 0),
+      { code: "ESRCH" },
+      "parent shutdown joins actual child process exit",
+    );
   } else if (phase === "parallel-cold-continue") {
     const initial = await call(
       "delegate",

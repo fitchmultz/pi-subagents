@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { readChildProcessIdentity, trySignalChildTree } from "../shared/post-exit-stdio-guard.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
-import { conversation, read, write } from "./storage.ts";
+import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
+import { errorText } from "./host.ts";
 
 export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): boolean {
   try {
@@ -17,8 +18,11 @@ export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): bool
     }
     return true;
   }
+  if (identity.identity === "unverified") {
+    return true;
+  }
   const actual = readChildProcessIdentity(identity.pid);
-  return identity.identity === "unverified" || actual === undefined || actual === identity.identity;
+  return actual === undefined || actual === identity.identity;
 }
 export function ownIdentity(): { pid: number; identity: string } {
   // An ordinary main need not be a group leader. Ambiguous live PIDs fail closed.
@@ -78,10 +82,15 @@ function spawnActor(base: string, launch: Launch, token: string): void {
     token,
   });
 }
-async function awaitStopping(dir: string, existing: ProcessIdentity | undefined): Promise<void> {
+async function awaitStopping(
+  dir: string,
+  existing: ProcessIdentity | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
   if (existing && fs.existsSync(path.join(dir, `stopping-${existing.token}.json`))) {
     const deadline = Date.now() + 5000;
     while (alive(existing)) {
+      signal?.throwIfAborted();
       if (Date.now() > deadline) {
         throw new Error("Previous actor is still stopping; no replacement was launched.");
       }
@@ -91,10 +100,15 @@ async function awaitStopping(dir: string, existing: ProcessIdentity | undefined)
     }
   }
 }
-export async function ensureActor(base: string, launch: Launch): Promise<void> {
+export async function ensureActor(
+  base: string,
+  launch: Launch,
+  signal?: AbortSignal,
+): Promise<void> {
   const dir = conversation(base, launch);
   const lock = path.join(dir, "actor.lock");
-  await awaitStopping(dir, actor(base, launch));
+  await awaitStopping(dir, actor(base, launch), signal);
+  signal?.throwIfAborted();
   // Another parallel tool may replace the claim while this invocation yields.
   const existing = actor(base, launch);
   if (existing && alive(existing)) {
@@ -153,6 +167,79 @@ export function signalProcess(identity: ProcessIdentity, signal: NodeJS.Signals)
     { pid: identity.pid, kill: (s) => process.kill(identity.pid, s) },
     signal,
   );
+}
+export function requestStop(
+  base: string,
+  launch: Launch,
+  onError?: (error: unknown) => void,
+): { targets: ProcessIdentity[]; command: string | undefined } {
+  const attempt = (operation: () => boolean): boolean => {
+    try {
+      return operation();
+    } catch (error) {
+      if (onError === undefined) {
+        throw error;
+      }
+      onError(error);
+      return false;
+    }
+  };
+  const identity = actor(base, launch);
+  const targets = identity ? [identity, ...shells(base, launch, identity.token)] : [];
+  // Interactive Stop validates the whole set; shutdown reports and skips only ambiguous targets.
+  const live = targets.filter((target) => attempt(() => verifyProcess(target)));
+  const command =
+    identity && live.includes(identity)
+      ? enqueue(base, launch, "stop", { actorToken: identity.token })
+      : undefined;
+  if (identity && live.length > 0) {
+    write(path.join(conversation(base, launch), `stopping-${identity.token}.json`), {
+      at: Date.now(),
+    });
+  }
+  live.forEach((target) => {
+    attempt(() => signalProcess(target, "SIGTERM"));
+  });
+  return { targets: live, command };
+}
+export async function stopChildren(base: string, owner: string): Promise<void> {
+  const roots = new Set<string>();
+  const targets: ProcessIdentity[] = [];
+  for (const id of list(base)) {
+    try {
+      const launch = launchAt(base, id, owner);
+      if (!roots.has(launch.rootId)) {
+        roots.add(launch.rootId);
+        targets.push(
+          ...requestStop(base, launch, (error) => {
+            console.error(`Child shutdown ${id}: ${errorText(error)}`);
+          }).targets,
+        );
+      }
+    } catch (error) {
+      console.error(`Child shutdown ${id}: ${errorText(error)}`);
+    }
+  }
+  await waitForExit(targets, 3000);
+  for (const target of targets) {
+    try {
+      signalProcess(target, "SIGKILL");
+    } catch (error) {
+      console.error(`Child shutdown ${target.pid}: ${errorText(error)}`);
+    }
+  }
+  await waitForExit(targets, 1000);
+  if (targets.some(alive)) {
+    console.error("Child shutdown could not confirm every owned process exit.");
+  }
+}
+async function waitForExit(targets: readonly ProcessIdentity[], timeout: number): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline && targets.some(alive)) {
+    // Join actual process exit while native abort persists the interrupted turn.
+    // oxlint-disable-next-line no-await-in-loop
+    await delay(25);
+  }
 }
 export function shells(base: string, launch: Launch, token: string): ProcessIdentity[] {
   const dir = path.join(conversation(base, launch), "shells", token);
