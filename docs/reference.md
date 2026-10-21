@@ -142,6 +142,7 @@ The widget shows up to five named runs, active work first, with circle indicator
 status and short ID. Completed runs are hidden from both the widget and the default
 picker; interrupted and failed runs remain visible. `/agents <run-id>` still opens
 saved completed runs, and an already-open watch stays open through completion.
+An empty partial inventory says it is checking saved runs, not that no runs exist.
 An overflow count points to `/agents`; Ctrl+O expands model/cwd details. The widget
 clears when no visible runs remain or when the native parent is replaced. It is not
 a footer-only count.

@@ -250,6 +250,7 @@ class Observer {
       const screen = new ObserverScreen({
         data: {
           inventory: () => this.inventory(),
+          checking: () => this.rows.size < this.total,
           row: (id) => this.rows.get(id),
           status: () => this.status(),
           error: () => this.error,

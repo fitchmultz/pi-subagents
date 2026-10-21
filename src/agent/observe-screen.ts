@@ -12,6 +12,7 @@ export type ObserverRow = {
 export type Watch = { tail: JournalTail; file: string; id: string; inherited: boolean };
 export interface ObserverData {
   inventory: () => ObserverRow[];
+  checking: () => boolean;
   row: (id: string) => ObserverRow | undefined;
   status: () => string;
   error: () => string;
@@ -100,15 +101,20 @@ export class ObserverScreen {
     const size = Math.max(1, height - 1);
     const start = Math.max(0, index - size + 1);
     const page = rows.slice(start, start + size);
-    return rows.length === 0
-      ? ["No child runs to show. Completed runs are hidden."]
-      : [
-          `Runs ${start + 1}–${start + page.length} of ${rows.length} · active first`,
-          ...page.map(
-            (row, i) =>
-              `${start + i === index ? ">" : " "} ${row.id.slice(0, 8)} ${row.status} · ${row.name}`,
-          ),
-        ];
+    if (rows.length === 0) {
+      return [
+        this.data.checking()
+          ? "Checking saved child runs…"
+          : "No child runs to show. Completed runs are hidden.",
+      ];
+    }
+    return [
+      `Runs ${start + 1}–${start + page.length} of ${rows.length} · active first`,
+      ...page.map(
+        (row, i) =>
+          `${start + i === index ? ">" : " "} ${row.id.slice(0, 8)} ${row.status} · ${row.name}`,
+      ),
+    ];
   }
   private journalPath(width: number, file: string): string {
     const text = plainText(file.slice(-2048), 2048);
