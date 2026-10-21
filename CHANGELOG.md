@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Preserve native Markdown formatting in collapsed message cards, including legacy human relays, and show clickable expansion hints only when content is hidden.
 - Restore fullscreen click-to-watch on named child rows and clickable `/agents` navigation. Keep regular-mode keyboard controls and read-only observation.
 - Collapse lengthy agent/Intercom result and notification cards by visual lines, reusing Pi's native expansion state and keybindings without truncating saved or model-visible content.
 - Restore default steering for incoming Intercom asks in interactive and print modes; keep explicit queue/passive behavior and sender-side busy capability reporting.
