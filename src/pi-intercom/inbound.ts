@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { InboundDeliveryOwner } from "./inbound-delivery.ts";
+import type { InboundJournal } from "./inbound-journal.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import type { ReplyWait } from "./reply-wait.ts";
 import type { IntercomConnection } from "./connection.ts";
@@ -17,11 +18,12 @@ type InboundDeliveryHandle = Readonly<
   Pick<InboundDeliveryOwner, "batching" | "detach" | "queue" | "restoring" | "send">
 >;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "receive">>;
-type Connection = Readonly<Pick<IntercomConnection, "active" | "syncStatus">>;
-type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "recordIncomingMessage">>;
+type Connection = Readonly<Pick<IntercomConnection, "syncStatus">>;
+type Replies = Readonly<Pick<ReplyTracker, "recordIncomingMessage">>;
 
 interface InboundOwners {
   readonly delivery: InboundDeliveryHandle;
+  readonly journal: Readonly<Pick<InboundJournal, "consume" | "owns">>;
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
   readonly connection: Connection;
@@ -71,33 +73,6 @@ export class IntercomInbound {
     }
     return true;
   }
-  private async busyNonInteractive(
-    entry: InboundMessageEntry,
-    ctx: ExtensionContext,
-    generation: number,
-  ): Promise<void> {
-    if (entry.message.expectsReply !== true) {
-      this.owners.delivery.send(entry, "steer", generation);
-      return;
-    }
-    const active = this.owners.connection.active;
-    if (entry.message.replyTo !== undefined || active?.isConnected() !== true) {
-      return;
-    }
-    try {
-      const result = await active.send(entry.from.id, {
-        text: "This agent is running in non-interactive mode and cannot respond to intercom messages while it is working. It will continue its current task and exit when done.",
-        replyTo: entry.message.id,
-      });
-      if (result.delivered && this.lifecycle.live(ctx, generation)) {
-        this.owners.replies.markReplied(entry.message.id);
-        this.lifecycle.markActivity();
-        this.owners.connection.syncStatus();
-      }
-    } catch {
-      /* Best-effort busy reply; the non-interactive task must continue either way. */
-    }
-  }
   private async admit(
     entry: InboundMessageEntry,
     live: ExtensionContext,
@@ -108,7 +83,7 @@ export class IntercomInbound {
       return;
     }
     if (!this.lifecycle.isIdle(active)) {
-      await this.busy(entry, active, generation);
+      await this.busy(entry, generation);
       return;
     }
     if (this.lifecycle.live(live, generation)) {
@@ -119,30 +94,18 @@ export class IntercomInbound {
       );
     }
   }
-  private async busy(
-    entry: InboundMessageEntry,
-    ctx: ExtensionContext,
-    generation: number,
-  ): Promise<void> {
+  private async busy(entry: InboundMessageEntry, generation: number): Promise<void> {
     const delivery = requestedDelivery(entry.message);
     if (delivery === "steer") {
       this.owners.delivery.send(entry, "steer", generation);
       await this.owners.delivery.detach(entry, entry.message.expectsReply !== true);
       return;
     }
-    if (delivery === "queue" && entry.message.queueMode !== "replace") {
+    if (delivery === "queue") {
       this.owners.delivery.send(entry, "followUp", generation);
       return;
     }
-    if (delivery === "passive") {
-      this.owners.delivery.queue(entry, "passive");
-      return;
-    }
-    if (!ctx.hasUI) {
-      await this.busyNonInteractive(entry, ctx, generation);
-      return;
-    }
-    this.owners.delivery.queue(entry, "auto");
+    this.owners.delivery.queue(entry, "passive");
   }
   async receive(ctx: ExtensionContext, from: SessionInfo, input: Message): Promise<void> {
     const generation = this.lifecycle.generation;
@@ -156,8 +119,13 @@ export class IntercomInbound {
     }
     // Peer metadata never grants user authority.
     const message = input.human ? { ...input, human: undefined } : input;
+    const entry = this.entry(from, message);
+    if (!this.owners.journal.owns(entry)) {
+      return;
+    }
     if (
       this.owners.wait.receive(from, message, () => {
+        this.owners.journal.consume(message.id);
         this.lifecycle.markActivity();
         this.owners.connection.syncStatus();
       })
@@ -167,7 +135,6 @@ export class IntercomInbound {
     this.owners.replies.recordIncomingMessage(from, message);
     this.lifecycle.markActivity();
     this.owners.connection.syncStatus();
-    const entry = this.entry(from, message);
     await this.admit(entry, live, generation);
   }
 }

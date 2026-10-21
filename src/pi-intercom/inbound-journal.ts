@@ -39,7 +39,7 @@ export class InboundJournal {
     this.replies.expireSender(id);
     for (const pending of this.queued()) {
       if (pending.from.id === id && pending.message.expectsReply === true) {
-        this.pending.delete(pending.message.id);
+        this.consume(pending.message.id);
         this.checkpoint({ messageId: pending.message.id, stage: "discarded" });
       }
     }
@@ -57,7 +57,10 @@ export class InboundJournal {
     return this.pending.get(id);
   }
   owns(entry: InboundMessageEntry): boolean {
-    return !("stage" in entry) || this.pending.get(entry.message.id) === entry;
+    const id = entry.message.id;
+    return "stage" in entry
+      ? this.pending.get(id) === entry
+      : !this.pending.has(id) && !this.consumed.has(id);
   }
   checkpoint(update: InboundCheckpoint): void {
     const sessionId = this.lifecycle.currentSessionId;
@@ -96,7 +99,7 @@ export class InboundJournal {
           pending.from.id === entry.from.id &&
           pending.message.threadId === entry.message.threadId
         ) {
-          this.pending.delete(pending.message.id);
+          this.consume(pending.message.id);
           this.replies.markReplied(pending.message.id);
         }
       }
@@ -164,7 +167,7 @@ export class InboundJournal {
       return;
     }
     if (data.stage === "discarded") {
-      this.pending.delete(data.messageId);
+      this.consume(data.messageId);
       this.replies.markReplied(data.messageId);
       return;
     }
@@ -191,6 +194,13 @@ export class InboundJournal {
     }
     if (item.customType === "intercom_sent") {
       this.restoreSent(item.data);
+    }
+    if (
+      item.customType === "intercom_received" &&
+      isRecord(item.data) &&
+      typeof item.data.messageId === "string"
+    ) {
+      this.consume(item.data.messageId);
     }
   }
   private restoreSent(data: unknown): void {
@@ -226,7 +236,7 @@ export class InboundJournal {
       (entry.type === "custom_message" &&
         ["intercom_message", "subagent-human-message"].includes(entry.customType)) ||
       (entry.type === "custom" &&
-        [INBOUND_CHECKPOINT_TYPE, "intercom_sent"].includes(entry.customType))
+        [INBOUND_CHECKPOINT_TYPE, "intercom_sent", "intercom_received"].includes(entry.customType))
     );
   }
   private recentEntries(ctx: ExtensionContext, fullScan: boolean): readonly SessionEntry[] {

@@ -592,15 +592,14 @@ test("native steady passive receipts do not rescan old history and still survive
   for (const id of receiver.sends) {
     assert.equal(receiver.visible(id).length, 1, id);
   }
-  // This is receipt indexing, not a new explicit-message-ID deduplication policy.
+  // Retrying an admitted ID must not duplicate its native receipt, including after reload.
   await receiver.send("after-branch", {
-    text: "explicit same-ID send remains a second send",
+    text: "duplicate same-ID payload must not be delivered again",
     delivery: "passive",
   });
-  await waitFor(
-    () => receiver.visible("after-branch").length === 2,
-    "unchanged explicit same-ID behavior",
-  );
+  await receiver.send("dedup-barrier", { text: "ordered receive barrier", delivery: "passive" });
+  await waitFor(() => receiver.visible("dedup-barrier").length === 1, "later receive processed");
+  assert.equal(receiver.visible("after-branch").length, 1);
   assert.equal(receiver.faux.state.callCount, 0);
   assert.deepEqual(receiver.errors, []);
 });
@@ -622,6 +621,7 @@ test("native idle send is visible once and passive delivery does not start a tur
 test("native steer reaches the next tool boundary, queue waits, and busy passive stays passive", async (t) => {
   const toolGate = gate(t);
   let toolStarted = false;
+  let initialContext: unknown;
   const seen: string[] = [];
   const receiver = await makeSession(t, "delivery-modes", {
     hasUI: true,
@@ -642,7 +642,10 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   // One-at-a-time steering would let a wrongly steered queue masquerade as a follow-up.
   receiver.session.setSteeringMode("all");
   receiver.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+    (context: unknown) => {
+      initialContext = structuredClone(context);
+      return fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" });
+    },
     (context: unknown) => {
       seen.push(JSON.stringify(context));
       return fauxAssistantMessage("Current work done");
@@ -655,6 +658,7 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   const running = receiver.session.prompt("Start work");
   await waitFor(() => toolStarted, "native tool execution");
   assert.equal((await receiver.send("steer")).delivered, true);
+  await receiver.send("steer", { text: "duplicate steer must not appear" });
   assert.equal(
     (await receiver.send("queued", { text: "message:queued", delivery: "queue" })).delivered,
     true,
@@ -671,9 +675,19 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   await running;
   await waitFor(() => receiver.visible("passive").length === 1, "idle passive flush");
   assert.match(seen[0], /message:steer/);
+  assert.doesNotMatch(seen[0], /duplicate steer must not appear/);
   assert.doesNotMatch(seen[0], /message:queued|message:passive/);
   assert.match(seen[1], /message:queued/);
   assert.doesNotMatch(seen[1], /message:passive/);
+  const prefix = array(at(initialContext, "messages"));
+  assert.ok(prefix.length > 0);
+  for (const context of seen) {
+    assert.deepEqual(
+      array(at(JSON.parse(context), "messages")).slice(0, prefix.length),
+      prefix,
+      "delivery appends without rewriting the provider's existing prompt prefix",
+    );
+  }
   for (const id of receiver.sends) {
     assert.equal(receiver.visible(id).length, 1, id);
     assert.equal(receiver.visible(id)[0].customType, "intercom_message");
@@ -1083,65 +1097,68 @@ for (const hasUI of [true, false]) {
   });
 }
 
-test("native ordinary steer bursts do not retain unanswered attention handshakes", async (t) => {
-  const responseGate = gate(t);
-  let active = 0,
-    peak = 0;
-  const eventBus = createEventBus();
-  const original = eventBus.on.bind(eventBus);
-  eventBus.on = (channel, handler) => {
-    if (channel !== "pi-intercom:detach-response") {
-      return original(channel, handler);
-    }
-    active++;
-    peak = Math.max(peak, active);
-    const unsubscribe = original(channel, handler);
-    let subscribed = true;
-    return () => {
-      if (subscribed) {
-        active--;
-        subscribed = false;
+for (const expectsReply of [false, true]) {
+  test(`native ${expectsReply ? "ask" : "ordinary"} steer bursts bound unanswered handshakes`, async (t) => {
+    const responseGate = gate(t);
+    let active = 0,
+      peak = 0;
+    const eventBus = createEventBus();
+    const original = eventBus.on.bind(eventBus);
+    eventBus.on = (channel, handler) => {
+      if (channel !== "pi-intercom:detach-response") {
+        return original(channel, handler);
       }
-      unsubscribe();
+      active++;
+      peak = Math.max(peak, active);
+      const unsubscribe = original(channel, handler);
+      let subscribed = true;
+      return () => {
+        if (subscribed) {
+          active--;
+          subscribed = false;
+        }
+        unsubscribe();
+      };
     };
-  };
-  const receiver = await makeSession(t, "attention-burst", { eventBus });
-  receiver.faux.setResponses([
-    async () => {
-      await responseGate.promise;
-      return fauxAssistantMessage("First response");
-    },
-    fauxAssistantMessage("Directions handled"),
-  ]);
-  const running = receiver.session.prompt("Hold while ordinary steers arrive");
-  try {
-    await waitFor(() => receiver.faux.state.callCount === 1, "held provider");
-    for (let index = 0; index < 12; index++) {
-      // Exercise the ordered native burst rather than concurrent broker races.
-      // oxlint-disable-next-line no-await-in-loop
-      await receiver.send(`burst-${index}`);
+    const receiver = await makeSession(t, `attention-burst-${expectsReply}`, { eventBus });
+    receiver.faux.setResponses([
+      async () => {
+        await responseGate.promise;
+        return fauxAssistantMessage("First response");
+      },
+      fauxAssistantMessage("Directions handled"),
+    ]);
+    const running = receiver.session.prompt("Hold while ordinary steers arrive");
+    try {
+      await waitFor(() => receiver.faux.state.callCount === 1, "held provider");
+      for (let index = 0; index < 12; index++) {
+        // Exercise the ordered native burst rather than concurrent broker races.
+        // oxlint-disable-next-line no-await-in-loop
+        await receiver.send(`burst-${index}`, { text: `message:burst-${index}`, expectsReply });
+      }
+      await waitFor(
+        async () => (await receiver.status()).includes("Pending inbound messages: 12"),
+        "all native handoffs",
+      );
+      const retained = active;
+      receiver.events.push({ type: "fixture.attention-handshakes", peak, retained });
+      t.diagnostic(`Attention response listeners: peak=${peak}, after handoff=${retained}.`);
+      assert.equal(peak, 1, "a burst never accumulates concurrent response listeners");
+      if (!expectsReply) {
+        assert.equal(retained, 0, "ordinary attention retains no response listener");
+      }
+    } finally {
+      responseGate.resolve();
+      await running;
     }
-    await waitFor(
-      async () => (await receiver.status()).includes("Pending inbound messages: 12"),
-      "all native handoffs",
-    );
-    const retained = active;
-    receiver.events.push({ type: "fixture.attention-handshakes", peak, retained });
-    t.diagnostic(`Attention response listeners: peak=${peak}, after handoff=${retained}.`);
-    assert.equal(
-      retained,
-      0,
-      "without an owned wait, ordinary attention needs no outstanding response listener",
-    );
-  } finally {
-    responseGate.resolve();
-    await running;
-  }
-  for (const id of receiver.sends) {
-    assert.equal(receiver.visible(id).length, 1);
-  }
-  assert.deepEqual(receiver.errors, []);
-});
+    for (const id of receiver.sends) {
+      assert.equal(receiver.visible(id).length, 1);
+    }
+    await receiver.session.reload();
+    assert.equal(active, 0, "native reload drains pending handshakes");
+    assert.deepEqual(receiver.errors, []);
+  });
+}
 
 test("native abort retaining custom queues does not enqueue a second copy", async (t) => {
   const responseGate = gate(t);
@@ -1185,7 +1202,7 @@ test("native abort retaining custom queues does not enqueue a second copy", asyn
 });
 
 for (const recovery of [false, true]) {
-  test(`native ${recovery ? "recovered plain/ask" : "idle passive/plain/multi-ask"} batch keeps the selected ask as the default reply target`, async (t) => {
+  test(`native ${recovery ? "recovered plain/ask" : "explicit queued passive/plain/multi-ask"} batch keeps the selected ask as the default reply target`, async (t) => {
     const hold = gate(t);
     let started = false,
       replyContext = "";
@@ -1245,7 +1262,9 @@ for (const recovery of [false, true]) {
       await receiver.send(id, {
         text: `Question ${id}`,
         expectsReply: true,
-        ...(recovery ? { delivery: "steer" } : {}),
+        ...(recovery
+          ? { delivery: "steer" }
+          : { delivery: "queue", queueMode: "replace", threadId: id }),
       });
       // Broker acknowledgement alone does not prove native staging.
       // oxlint-disable-next-line no-await-in-loop
@@ -1344,6 +1363,7 @@ test("native concurrent asks reserve one reply waiter after a completed ask", as
     const receipt = await asker.sender.send("concurrent-asks", {
       text: `answer:${question.content.text}`,
       replyTo: question.id,
+      messageId: `reply-${question.content.text}`,
     });
     assert.equal(receipt.accepted, true);
   };
@@ -1396,6 +1416,32 @@ test("native concurrent asks reserve one reply waiter after a completed ask", as
     received.map((message) => message.content.text),
     ["before", winner.content.text, "after"],
   );
+  const calls = asker.faux.state.callCount;
+  for (const reload of [false, true]) {
+    if (reload) {
+      // oxlint-disable-next-line no-await-in-loop
+      await asker.session.reload();
+      // oxlint-disable-next-line no-await-in-loop
+      await waitFor(
+        async () =>
+          (await asker.sender.listSessions()).some((peer) => peer.name === "concurrent-asks"),
+        "reloaded asker registration",
+      );
+    }
+    // oxlint-disable-next-line no-await-in-loop
+    await asker.send("reply-before", {
+      text: "Duplicate answered reply",
+      replyTo: received[0].id,
+      delivery: "passive",
+    });
+    const barrier = `reply-dedup-${reload}`;
+    // oxlint-disable-next-line no-await-in-loop
+    await asker.send(barrier, { text: "Ordered receive barrier", delivery: "passive" });
+    // oxlint-disable-next-line no-await-in-loop
+    await waitFor(() => asker.visible(barrier).length === 1, "reply replay processed");
+    assert.equal(asker.visible("reply-before").length, 0);
+    assert.equal(asker.faux.state.callCount, calls);
+  }
   assert.deepEqual(asker.errors, []);
 });
 
@@ -1691,9 +1737,18 @@ test("native recovery, compaction, and reload preserve receipts without replayin
     );
   }
   assert.equal(receiver.visible("appended-follower").length, 1);
+  assert.deepEqual(
+    receiver.session.sessionManager
+      .getEntries()
+      .filter((entry) => entry.type === "custom_message")
+      .map((entry) => inboundId(entry))
+      .filter((id) => id === "trigger" || id === "appended-follower"),
+    ["trigger", "appended-follower"],
+    "recovery keeps admission order",
+  );
   assert.equal(
     receiver.events.filter(
-      (event) => event.type === "extension.message_end" && event.id === "appended-follower",
+      (event) => event.type === "extension.message_end" && event.id === "trigger",
     ).length,
     0,
   );
@@ -1765,6 +1820,24 @@ test("native unresolved ordinary ask restores through recipient reload and repli
     (peer) => peer.name === "reload-recipient",
   );
   assert.equal(presence?.pendingAsks, 0);
+  await recipient.send("reload-question", {
+    text: "Retry of the answered ask",
+    expectsReply: true,
+  });
+  await recipient.send("answered-ask-barrier", {
+    text: "Ordered receive barrier",
+    delivery: "passive",
+  });
+  await waitFor(
+    () => recipient.visible("answered-ask-barrier").length === 1,
+    "answered ask retry processed",
+  );
+  assert.match(
+    JSON.stringify(await executeIntercom(recipient, { action: "pending" })),
+    /No unresolved inbound asks/,
+  );
+  assert.equal(recipient.visible("reload-question").length, 1);
+  assert.equal(recipient.faux.state.callCount, 1);
   assert.deepEqual(recipient.errors, []);
 });
 
@@ -2471,6 +2544,21 @@ test("native latest material milestone survives two minutes busy and reload with
   assert.doesNotMatch(staged, /Old finding/);
   assert.equal(supervisor.visible("old-milestone").length, 0);
   assert.equal(supervisor.visible("latest-milestone").length, 0);
+  await supervisor.send("old-milestone", {
+    text: "Replayed superseded finding",
+    delivery: "queue",
+    queueMode: "replace",
+    threadId: "material-progress",
+  });
+  await supervisor.send("replacement-barrier", {
+    text: "Ordered receive barrier",
+    delivery: "passive",
+  });
+  await waitFor(
+    async () => (await supervisor.status()).includes("replacement-barrier"),
+    "superseded retry processed",
+  );
+  assert.doesNotMatch(await supervisor.status(), /Replayed superseded finding/);
   await supervisor.sender.disconnect();
   assert.match(await supervisor.status(), /Root cause confirmed/);
   const aborting = supervisor.session.abort();
@@ -3168,7 +3256,7 @@ test("native public tool rejects invalid delivery combinations and preserves rec
   assert.deepEqual(receiver.errors, []);
 });
 
-test("native busy print work auto-replies to ordinary asks without aborting and admits only the latest replacement at its tool boundary", async (t) => {
+test("native busy print work steers ordinary asks without aborting and admits only the latest replacement at its tool boundary", async (t) => {
   const release = gate(t);
   let started = false,
     seen = "";
@@ -3210,18 +3298,16 @@ test("native busy print work auto-replies to ordinary asks without aborting and 
     queueMode: "replace",
     threadId: "print-work",
   });
-  const reply = once(receiver.sender, "message");
   await receiver.send("busy-print-ask", { text: "Can you answer while busy?", expectsReply: true });
-  const response = record(array(await reply)[1]);
-  assert.equal(response.replyTo, "busy-print-ask");
-  assert.match(text(at(response, "content", "text")), /non-interactive.*cannot respond/);
+  await waitFor(async () => (await receiver.status()).includes("busy-print-ask"), "ask admitted");
   assert.equal(receiver.session.isIdle, false);
   assert.equal(receiver.faux.state.callCount, 1);
   release.resolve();
   await running;
   assert.match(seen, /Plain print direction/);
   assert.match(seen, /Latest print replacement/);
-  assert.doesNotMatch(seen, /Old print replacement|Can you answer while busy/);
+  assert.doesNotMatch(seen, /Old print replacement/);
+  assert.match(seen, /Can you answer while busy/);
   assert.equal(receiver.faux.state.callCount, 2);
   assert.deepEqual(receiver.errors, []);
 });

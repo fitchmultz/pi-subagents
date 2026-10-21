@@ -41,6 +41,7 @@ export class InboundDeliveryOwner {
   private timer: NodeJS.Timeout | null = null;
   private restoreTask: Promise<void> | undefined;
   private batchTask: Promise<void> | undefined;
+  private detachTask: Promise<boolean> | undefined;
   private readonly pi: ExtensionAPI;
   private readonly lifecycle: Lifecycle;
   private readonly journal: Journal;
@@ -65,7 +66,7 @@ export class InboundDeliveryOwner {
   }
   async drain(): Promise<void> {
     this.clearTimer();
-    await Promise.allSettled([this.restoreTask, this.batchTask]);
+    await Promise.allSettled([this.restoreTask, this.batchTask, this.detachTask]);
     this.clearTimer();
   }
   reset(): void {
@@ -121,6 +122,9 @@ export class InboundDeliveryOwner {
     flushDelivery: PendingInboundMessage["flushDelivery"] = "auto",
     delayMs = 200,
   ): void {
+    if (!this.journal.owns(entry)) {
+      return;
+    }
     this.journal.remember(entry, "queued", flushDelivery);
     this.hooks.syncStatus();
     this.schedule(delayMs);
@@ -153,10 +157,7 @@ export class InboundDeliveryOwner {
   private triggerIndex(entries: readonly PendingInboundMessage[]): number {
     const canTrigger = (entry: PendingInboundMessage) =>
       entry.flushDelivery !== "passive" && requestedDelivery(entry.message) !== "passive";
-    const ask = entries.findIndex(
-      (entry) => canTrigger(entry) && entry.message.expectsReply === true,
-    );
-    return ask === -1 ? entries.findIndex(canTrigger) : ask;
+    return entries.findLastIndex(canTrigger);
   }
   private *sendTriggerLast(
     entries: readonly PendingInboundMessage[],
@@ -170,14 +171,19 @@ export class InboundDeliveryOwner {
     }
     const index = this.triggerIndex(rest);
     const trigger = index === -1 ? undefined : rest.splice(index, 1)[0];
-    if (trigger && this.journal.get(trigger.message.id) === trigger) {
-      this.hooks.replies.queueTurnContext({ ...trigger, receivedAt: Date.now() });
+    const replyTarget = entries.find((entry) => entry.message.expectsReply === true) ?? trigger;
+    if (replyTarget && this.journal.get(replyTarget.message.id) === replyTarget) {
+      this.hooks.replies.queueTurnContext({ ...replyTarget, receivedAt: Date.now() });
     }
     for (const entry of rest) {
       if (!this.live(generation)) {
         return;
       }
-      this.send(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
+      this.send(
+        entry,
+        requestedDelivery(entry.message) === "queue" ? "followUp" : "steer",
+        generation,
+      );
       yield;
     }
     if (trigger) {
@@ -314,6 +320,15 @@ export class InboundDeliveryOwner {
     if (!attention && entry.message.expectsReply !== true) {
       return false;
     }
+    if (!attention) {
+      this.detachTask ??= this.requestDetach(false).finally(() => {
+        this.detachTask = undefined;
+      });
+      return this.detachTask;
+    }
+    return this.requestDetach(true);
+  }
+  private async requestDetach(attention: boolean): Promise<boolean> {
     const requestId = randomUUID();
     return await new Promise((resolve) => {
       let settled = false;

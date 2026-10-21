@@ -1,16 +1,15 @@
-import { isMessage, isSessionRegistration, type Message } from "./types.ts";
+import { isMessage, isSessionRegistration, type Message, type MessageDelivery } from "./types.ts";
 import type {
   InboundCheckpoint,
   InboundMessageEntry,
   PendingInboundMessage,
-  RequestedDelivery,
 } from "./runtime-types.ts";
 import { finiteNumber, isRecord } from "./validation.ts";
-export function requestedDelivery(message: Message): RequestedDelivery {
+export function requestedDelivery(message: Message): MessageDelivery {
   if (message.passive === true || message.delivery === "passive") {
     return "passive";
   }
-  return message.delivery ?? (message.expectsReply === true ? "auto" : "steer");
+  return message.delivery ?? "steer";
 }
 function isLocalJournalMessage(value: unknown): value is Message {
   if (!isRecord(value) || !isRecord(value.content)) {

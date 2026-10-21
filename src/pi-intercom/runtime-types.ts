@@ -17,7 +17,6 @@ export type InboundCheckpoint =
       readonly messageId: string;
       readonly stage: PendingInboundMessage["stage"] | "discarded" | "reply-retired";
     };
-export type RequestedDelivery = MessageDelivery | "auto";
 export type InboundDelivery = "trigger" | "followUp" | "steer" | "passive";
 export type IntercomSessionScope = "project" | "all";
 export interface ToolResultLike {
