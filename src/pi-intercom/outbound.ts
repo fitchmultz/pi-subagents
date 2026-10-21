@@ -284,9 +284,24 @@ export class IntercomOutbound {
     | { readonly target: string; readonly health: SessionInfo | null }
     | { readonly error: ToolResultLike }
   > {
-    const target = (await resolveConnectedTarget(active, to)) ?? to;
+    const target = await resolveConnectedTarget(active, to);
     if (this.isCancelled(signal)) {
       return { error: toolError("Cancelled") };
+    }
+    if (target === null) {
+      return {
+        error: toolError(
+          `Ask to "${to}" was not sent: connected session not found.`,
+          failureDetails(
+            "delivery_failed",
+            [
+              { action: "list" },
+              { action: "send", guidance: "Retry with an exact active recipient target." },
+            ],
+            { accepted: false, delivered: false },
+          ),
+        ),
+      };
     }
     if (target === active.sessionId) {
       return { error: toolError("Cannot message the current session") };

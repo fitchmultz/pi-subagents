@@ -318,7 +318,7 @@ test(
         expectsReply: true,
       });
       await bridge.wait(new RegExp(`"messageId":"${ask.id}"`));
-      assert.deepEqual((await first.api("ack", { ids: [ask.id] })).body.retained, [ask.id]);
+      assert.deepEqual((await first.api("ack", { ids: [ask.id] })).body.acked, [ask.id]);
       const db = new DatabaseSync(mailboxPath);
       let receivedAt: number;
       try {
@@ -388,7 +388,7 @@ test(
       try {
         assert.equal(
           stored.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE acked=0").get()?.count,
-          8,
+          7,
           "webhook acceptance is not consumer acknowledgement or model consumption",
         );
       } finally {

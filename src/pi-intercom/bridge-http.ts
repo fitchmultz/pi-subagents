@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { BODY_LIMIT, Fault, BroadcastFault } from "./bridge-protocol.ts";
+import { BODY_LIMIT, Fault } from "./bridge-protocol.ts";
 import { errorMessage, type UnknownRecord } from "../shared/unknown.ts";
 
 export interface RequestContext {
@@ -105,7 +105,6 @@ export function reply(
 export function replyFault(res: ServerResponse, requestId: string, fault: Fault): void {
   reply(res, requestId, fault.status, {
     ok: false,
-    ...(fault instanceof BroadcastFault ? fault.outcome : {}),
     error: { code: fault.code, message: fault.message, ...fault.details },
   });
 }

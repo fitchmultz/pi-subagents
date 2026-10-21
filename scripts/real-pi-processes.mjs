@@ -128,48 +128,16 @@ export class SmokeProcesses {
   }
 
   #readRunPids() {
-    const { root, env } = this.#options;
-    for (const dir of [
-      env.PI_SUBAGENT_TEMP_ROOT,
-      join(env.PI_CODING_AGENT_DIR, "sessions", "subagent-runs"),
-    ]) {
-      for (const file of filesIn(dir)) {
-        if (
-          basename(file) === "status.json" ||
-          (basename(dirname(file)) === "contracts" && file.endsWith(".json"))
-        ) {
-          this.#remember(JSON.parse(readFileSync(file, "utf8")).pid);
-        }
+    const { env } = this.#options;
+    const runs = join(env.PI_CODING_AGENT_DIR, "sessions", "agent-runs");
+    for (const file of filesIn(runs)) {
+      if (basename(file) === "process.json" && basename(dirname(file)) === "actor.lock") {
+        this.#remember(JSON.parse(readFileSync(file, "utf8")).pid);
       }
     }
-    // The parent records the detached launcher; status.json records its runner instead.
-    for (const file of filesIn(join(root, "sessions"))) {
-      if (file.endsWith(".jsonl")) {
-        this.#readSessionPids(file);
-      }
-    }
-    const brokerPid = join(env.PI_CODING_AGENT_DIR, "intercom", "broker.pid");
+    const brokerPid = join(env.PI_INTERCOM_RUNTIME_DIR, "broker.pid");
     if (existsSync(brokerPid)) {
       this.#remember(Number(readFileSync(brokerPid, "utf8").split("\n")[0]), true);
-    }
-  }
-
-  #readSessionPids(file) {
-    // An active append may have a partial final line; only complete records count.
-    const lines = readFileSync(file, "utf8").split("\n").slice(0, -1);
-    const header = lines[0] ? JSON.parse(lines[0]) : undefined;
-    for (const line of lines) {
-      if (!line.trim()) {
-        continue;
-      }
-      const entry = JSON.parse(line);
-      if (
-        entry.type === "custom" &&
-        entry.customType === "subagent-run" &&
-        entry.data?.ownerSessionId === header?.id
-      ) {
-        this.#remember(entry.data.pid);
-      }
     }
   }
 

@@ -143,7 +143,7 @@ function assertSmokeResult(
       eventsAt(root)
         .filter((item) => item.event === "prompt")
         .map((item) => item.kind),
-      ["intercom", "list", "foreground", "async", "parallel", "chain", "output", "acceptance"],
+      ["intercom", "list", "foreground", "async", "fork"],
     );
   } else {
     assert.notEqual(code, 0, "failure/cancellation must not report success");

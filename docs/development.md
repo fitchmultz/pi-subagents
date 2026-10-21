@@ -1,99 +1,61 @@
-# Development and validation
+# Development
 
-[Getting started](../README.md) · [Subagents reference](reference.md)
-
-## Local validation
-
-See [Code quality](code-quality.md) for the strict Oxlint/Oxfmt rules and commands. `npm run ci` runs lint and formatting before TypeScript, package checks and tests.
-
-`npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It runs full CI with actual native editor receipts: a supplied clean `PI_EDITOR_RECEIPT_TEST_ROOT` stays read-only, otherwise the owning runner snapshots public `pi-apply-edits` main once in a temporary checkout, records its exact Git SHA, installs only its third-party runtime dependencies, and cleans its owned copy. Repository CI resolves that editor SHA once for all host/platform lanes. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
-
-Repository CI resolves latest stable official Pi and maintained fork main once, then freezes that version/SHA across the Linux/macOS lanes and release qualification. Full `npm run ci`, selected-host native contracts, Git production builds and packed-install smokes remain required.
-
-Fork jobs supply `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the resolved latest stable cohort with `PI_COMPAT_HOST=official`. Both targets use ordinary 1.0 lifecycle and finalized tool-result accounting, without checkpoint, immediate-usage or pending-call APIs. Unsupported hosts fail qualification rather than skip native checks. See [host capabilities](reference.md#host-capabilities-and-result-delivery) and [limitations](intercom.md#limitations).
-
-For a fresh development worktree, run `npm ci` before launching Pi there: project-local `.pi/extensions` can autoload before dependencies exist. Alternatively launch from a neutral directory and use `change_dir` to enter the owned worktree after startup. Do not disable all extensions or remove project extensions to hide missing dependencies.
-
-Use an empty HOME outside your real home ancestry and a short temporary directory whose ancestors have no project/package or agent markers. Set HOME, TMPDIR, TMP, TEMP, cache and fixture cwd consistently; never create mutable fixtures beneath the real home or retained evidence directory. Child tests use local fixtures and their own broker/profile. CI runs the latest Node 24 release on Linux and macOS without claiming a full platform-by-host matrix.
-
-The completion guard recognizes verified `modifiedFiles` receipts from pi-apply-edits v1's `apply_patch`, `replace_text`, and `write_files`, including partial publication errors. Previews and unchanged results do not count as mutations. To exercise the real editor through native SDK events, use an installed v1 editor checkout:
-
-```bash
-PI_EDITOR_RECEIPT_TEST_ROOT=/absolute/path/to/pi-apply-edits \
-  node --test test/integration/native-editor-receipts.test.ts
-```
-
-`PI_EDITOR_RECEIPT_TEST_SDK` selects another installed host package root; `PI_EDITOR_RECEIPT_EVIDENCE_DIR` retains receipts and fixture files. Without an editor checkout, this optional integration test skips.
-
-### SDK embeddings of runtime-only installations
-
-Before loading a pruned package with `DefaultResourceLoader`, set `process.env.PI_PACKAGE_DIR = getPackageDir()` from the **selected SDK**. This is the existing host-location contract for native session APIs and detached runners. Alternatively the host must be discoverable through the extension's dependency graph or an actual Pi executable on PATH. CLI consumers resolve their own host normally.
-
-Detached history workers need one of those host-location sources to resolve the selected host's terminal-stripping implementation. The parent uses Pi's normal extension-loader imports without loading another runtime. Qualification covers both the explicit-host SDK path and the real bundled CLI with a production-only package.
-
-To diagnose the full suite against the locked published Pi dependencies:
+Use a dedicated worktree, the committed npm lockfile, and a ready-for-review PR.
+Never edit source or tests while checks run in that checkout. Do not modify an
+active installed copy or reload the user's sessions to test a candidate.
 
 ```bash
 npm ci
-npm run ci
+npm run lint
+npm run format:check
+npm run typecheck
+node scripts/measure-size.mjs
 ```
 
-The [host limitations](intercom.md#limitations) include historical official 0.87.1 results. Retain distinct queue and prompt-preparation checks and report their actual results for the selected host; portable qualification does not establish a full-suite pass.
+Run narrow owner-boundary tests locally through `scripts/run-tests.mjs`. Full
+`npm run ci` belongs in hosted CI and includes package/install smokes and the
+complete suites. Keep the strict Oxlint/Oxfmt rules; see [code quality](code-quality.md).
 
-That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
+## Runtime qualification
 
-For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: a Pi 1.0 source checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+Qualify the latest stable official Pi and the intended fork revision separately.
+Record the exact package root, revision/build, Node binary, and executed test
+commands. Matching versions do not establish matching runtime behavior.
 
-Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
+Production-only installs must resolve the selected host's SDK and TypeBox, not
+shadow them with this package's development graph. Exercise the packed single
+entry through the real Pi loader and an actual native child session. Native faux
+providers can test tools, receipts, journals, process lifecycle and output without
+paid model calls; they are not live-model evidence.
 
-```bash
-tar -czf /absolute/path/native-pi-linux-node24.tar.gz -C /clean/linux-build pi
-```
+Real-model acceptance additionally checks that full forked history preserves an
+actual earlier delegation result, and that ordinary main/child sessions discover,
+message, and read last responses across agent directories under the confirmed
+two-level topology. Never publish credentials or private transcripts as evidence.
 
-Run with an archive matching the image:
+## Isolation and safety
 
-```bash
-PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node24.tar.gz \
-  bash scripts/linux-smoke.sh
-```
+Every test/smoke broker uses a short, explicit `PI_INTERCOM_RUNTIME_DIR` owned by
+the fixture. Do not touch `/tmp/pi-intercom-<uid>` to test namespace behavior on a
+workstation with active sessions. Tests for the default path inspect it without
+starting or deleting the user's broker. Stop owned processes and remove temporary
+resources even on failure or signal cancellation.
 
-The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and all SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
+Preserve native receipt, cold-crash, shutdown, continuation and broker contracts
+at their actual SDK, journal, filesystem or process boundary. Carry distinct
+assertions into the keeper before deleting an old test. Feature retirement is not
+proof that an unrelated safety assertion can disappear. Expected values must be
+independent of production helpers; observe actual readiness/publication before
+negative assertions. A sleep does not prove an owner processed its input.
 
-## Real Pi smoke
+## Size gate
 
-The default local gate includes real SDK reload/reopen and native child-session ownership checks with a controlled CLI and no model calls. Other execution tests stay mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
+`scripts/measure-size.mjs` counts source, production scripts, generated code and
+schemas, including new untracked files. `--report` prints without enforcing.
+The ceilings are 16,000 source TypeScript lines, 20,000 total production lines,
+and 1 MiB total production bytes. Tests have no deletion quota. Moving machinery
+into generated/minified output does not evade the gate.
 
-```bash
-export PATH="$PWD/node_modules/.bin:$PATH"
-node scripts/real-pi-smoke.mjs
-```
-
-Use direct `node` invocation with the intended `pi` first on `PATH`. npm scripts prepend `node_modules/.bin`.
-
-It installs this checkout into an isolated temporary Pi home, runs `pi list`, and loads the bundled subagent and intercom extensions. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
-
-Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
-
-```bash
-PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm
-```
-
-That mode copies local `auth.json` and `models.json` into the isolated Pi agent dir, then asks a real Pi session to exercise intercom status plus subagent list, waiting execution, background launch, and background completion. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
-
-For a broader live gate, add `--llm-full`:
-
-```bash
-PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm-full
-```
-
-That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. The smoke stops its own processes before removing copied credentials or artifacts, including on timeout or handled cancellation. Use `--keep-temp` to preserve noncredential evidence.
-
-## Local test watchdog
-
-`npm test`, `npm run test:unit`, `npm run test:integration`, and `npm run test:all` run through `scripts/run-tests.mjs`, which applies a per-suite local watchdog so hung child-process or worktree tests fail with the command context instead of hanging forever. The default is 300000ms for units and 1200000ms for integration. Override it when debugging slow local runs:
-
-```bash
-PI_TEST_TIMEOUT_MS=1800000 npm run test:integration
-# or
-node scripts/run-tests.mjs integration --timeout-ms 1800000
-```
+[The rebuild evidence](single-agent-rebuild.md) records the baseline, confirmed
+design, test-transfer obligations, and exact selected host identities. Update it
+with measured final evidence; do not confuse planned gates with passed checks.

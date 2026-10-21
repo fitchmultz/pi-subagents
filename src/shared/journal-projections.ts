@@ -1,41 +1,6 @@
 import type { Projection } from "./json-projection.ts";
 import { isUnknownArray, recordAt, type UnknownRecord } from "./unknown.ts";
 
-function resultField(path: readonly (string | number)[]): boolean {
-  if (path.length === 2) {
-    return path[0] === "result";
-  }
-  if (path.length === 3) {
-    return path[0] === "results" && typeof path[1] === "number";
-  }
-  return (
-    path.length === 4 &&
-    path[0] === "children" &&
-    typeof path[1] === "number" &&
-    path[2] === "result"
-  );
-}
-function summaryField(path: readonly (string | number)[]): boolean {
-  return (
-    (path.length === 1 && path[0] === "summary") ||
-    (path.length === 3 &&
-      path[0] === "children" &&
-      typeof path[1] === "number" &&
-      path[2] === "summary")
-  );
-}
-export const ownerProjection: Projection = (path) => {
-  const field = path.at(-1);
-  if (resultField(path)) {
-    if (field === "messages") {
-      return false;
-    }
-    if (["output", "finalOutput", "initialOutput", "rawOutput"].includes(String(field))) {
-      return 8192;
-    }
-  }
-  return summaryField(path) ? 8192 : true;
-};
 const entryFields = new Set([
   "type",
   "id",

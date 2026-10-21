@@ -42,7 +42,7 @@ Examples:
 
 After issue/revoke, send SIGHUP to the helper PID to activate the allowlist.
 After renew-server, restart only the helper; existing client credentials remain valid.
-Rotation/revocation stops that identity's helper-launched Pi children; journals remain.
+Rotation/revocation disconnects that identity and denies restored presence and future wakes.
 Concurrent credential commands fail rather than overwrite each other's authorization.
 After a crashed command, inspect DIR/.credentials.lock/owner and remove that lock
 only after confirming its process has stopped.

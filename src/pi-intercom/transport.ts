@@ -4,6 +4,7 @@ export type IntercomTransport = Readonly<
   Pick<
     IntercomClient,
     | "send"
+    | "last"
     | "isConnected"
     | "sessionId"
     | "supportsTopics"

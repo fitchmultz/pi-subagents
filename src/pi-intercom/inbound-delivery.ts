@@ -7,44 +7,30 @@ import type {
   InboundDelivery,
   InboundMessageEntry,
   PendingInboundMessage,
-  SubagentCompletion,
 } from "./runtime-types.ts";
-import { needsIntercom, requestedDelivery, isBlockingSupervisorMessage } from "./inbound-record.ts";
+import { requestedDelivery } from "./inbound-record.ts";
 import { isRecord } from "./validation.ts";
-import { activateTools } from "../shared/lazy-tools.ts";
 import { runCooperatively } from "../shared/cooperative.ts";
-import { listSupervisorQuestionsAsync } from "../runs/shared/supervisor-questions.ts";
 
-type Lifecycle = Readonly<
-  Pick<
-    IntercomLifecycle,
-    "currentSessionId" | "generation" | "isIdle" | "live" | "runtimeStarted" | "toolCount"
-  >
->;
+type Lifecycle = Readonly<Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "toolCount">>;
 type Journal = Readonly<
   Pick<
     InboundJournal,
-    | "discardObsolete"
     | "freshRuntime"
     | "get"
-    | "hasSeen"
     | "markNative"
     | "owns"
     | "queued"
     | "reconcileConsumed"
-    | "reconcileTools"
     | "reload"
     | "remember"
-    | "rememberCompletion"
     | "reset"
     | "restore"
     | "size"
     | "unconsumed"
   >
 >;
-type Replies = Readonly<
-  Pick<ReplyTracker, "hasReplyContext" | "markReplied" | "queueTurnContext" | "reset">
->;
+type Replies = Readonly<Pick<ReplyTracker, "queueTurnContext" | "reset">>;
 
 interface DeliveryHooks {
   readonly replies: Replies;
@@ -114,19 +100,7 @@ export class InboundDeliveryOwner {
     if (!this.lifecycle.live(ctx, generation)) {
       return;
     }
-    if (this.hooks.replies.hasReplyContext) {
-      const questions = await listSupervisorQuestionsAsync(ctx.sessionManager.getSessionId());
-      if (!this.lifecycle.live(ctx, generation)) {
-        return;
-      }
-      for (const question of questions) {
-        if (question.answer || question.state === "cancelled") {
-          this.hooks.replies.markReplied(question.questionId);
-        }
-      }
-    }
     this.journal.reconcileConsumed(ctx);
-    this.journal.reconcileTools();
   }
   schedule(delayMs = 200): void {
     if (!this.lifecycle.live()) {
@@ -238,12 +212,8 @@ export class InboundDeliveryOwner {
         continue;
       }
       this.send(entry, "steer", generation);
-      if (
-        requestedDelivery(entry.message) === "steer" &&
-        entry.from.id !== "subagent-result" &&
-        entry.from.id !== "subagent-control"
-      ) {
-        onDetach(this.detach(entry, !isBlockingSupervisorMessage(entry)));
+      if (requestedDelivery(entry.message) === "steer") {
+        onDetach(this.detach(entry, entry.message.expectsReply !== true));
       }
       yield;
     }
@@ -300,10 +270,10 @@ export class InboundDeliveryOwner {
     delivery: InboundDelivery,
     generation = this.lifecycle.generation,
   ): void {
-    if (this.lifecycle.runtimeStarted && !this.live(generation)) {
+    if (!this.live(generation)) {
       return;
     }
-    if (!this.journal.owns(entry) || this.journal.discardObsolete(entry)) {
+    if (!this.journal.owns(entry)) {
       return;
     }
     this.trackNative(entry, delivery);
@@ -324,9 +294,6 @@ export class InboundDeliveryOwner {
         message: entry.message,
         receivedAt: Date.now(),
       });
-      if (needsIntercom(entry)) {
-        activateTools(this.pi, ["intercom"]);
-      }
     }
   }
   private nativeMessage(entry: InboundMessageEntry): Parameters<ExtensionAPI["sendMessage"]>[0] {
@@ -336,18 +303,15 @@ export class InboundDeliveryOwner {
         : entry.from.name;
     const command = entry.replyCommand ?? "";
     const reply = command === "" ? "" : `\n\nTo reply, use the intercom tool: ${command}`;
-    const human = entry.message.human !== undefined;
     return {
-      customType: human ? "subagent-human-message" : "intercom_message",
-      content: human
-        ? `Direct user message to this agent (human origin, not peer advice). Respond in this conversation; the user sees it directly. Do not ask the parent to relay or approve it.\n\n${entry.bodyText}`
-        : `**📨 From ${sender}** (Native session cwd: ${entry.from.cwd})${reply}\n\n${entry.bodyText}`,
+      customType: "intercom_message",
+      content: `**📨 From ${sender}** (Native session cwd: ${entry.from.cwd})${reply}\n\n${entry.bodyText}`,
       display: true,
       details: { ...entry, bodyText: entry.bodyText },
     };
   }
   async detach(entry: InboundMessageEntry, attention = false): Promise<boolean> {
-    if (!attention && !isBlockingSupervisorMessage(entry)) {
+    if (!attention && entry.message.expectsReply !== true) {
       return false;
     }
     const requestId = randomUUID();
@@ -399,52 +363,5 @@ export class InboundDeliveryOwner {
       () => runCooperatively(this.sendTriggerLast(this.journal.unconsumed(), generation)),
       generation,
     );
-  }
-  private localEntry(
-    sender: "subagent-control" | "subagent-result",
-    status: string,
-    data: { readonly text: string; readonly completion?: SubagentCompletion },
-  ): InboundMessageEntry {
-    const { text, completion } = data;
-    const sessionId = this.lifecycle.currentSessionId;
-    const completionId = completion?.completionId;
-    const entry: InboundMessageEntry = {
-      from: {
-        id: sender,
-        name: sender,
-        cwd: this.lifecycle.live()?.cwd ?? process.cwd(),
-        model: sender,
-        status,
-      },
-      message: {
-        id:
-          completionId !== undefined && completionId !== ""
-            ? `subagent-completion:${completionId}`
-            : randomUUID(),
-        timestamp: Date.now(),
-        content: { text },
-      },
-      bodyText: text,
-      ...(sender === "subagent-result" && completion && sessionId !== null
-        ? { subagentCompletion: { ...completion, ownerSessionId: sessionId } }
-        : {}),
-    };
-    return entry;
-  }
-  local(
-    sender: "subagent-control" | "subagent-result",
-    status: string,
-    data: { readonly text: string; readonly completion?: SubagentCompletion },
-  ): void {
-    const entry = this.localEntry(sender, status, data);
-    if (this.journal.hasSeen(entry.message.id)) {
-      return;
-    }
-    this.journal.rememberCompletion(entry);
-    if (this.batching) {
-      this.queue(entry, "steer");
-    } else {
-      this.send(entry, "trigger");
-    }
   }
 }

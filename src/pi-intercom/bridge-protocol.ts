@@ -1,7 +1,6 @@
 import { errorMessage, isRecord, type UnknownRecord } from "../shared/unknown.ts";
 
 export const BODY_LIMIT = 64 * 1024;
-export const ASK_TIMEOUT = 120000;
 export const INBOX_COUNT = 256;
 export const INBOX_BYTES = 4 * 1024 * 1024;
 
@@ -17,20 +16,17 @@ export class Fault extends Error {
   }
 }
 
-export class BroadcastFault extends Fault {
-  readonly outcome: UnknownRecord;
-  constructor(fault: Fault, outcome: UnknownRecord) {
-    super(fault.status, fault.code, fault.message, fault.details);
-    this.outcome = { ...outcome, status: "partial" };
-  }
-}
-
 export function object(value: unknown, fields: readonly string[]): UnknownRecord {
   if (!isRecord(value)) {
     throw new Fault(400, "invalid_input", "Expected a JSON object.");
   }
-  if (Object.keys(value).some((key) => !fields.includes(key))) {
-    throw new Fault(400, "invalid_input", "Unknown field.");
+  const unknown = Object.keys(value).find((key) => !fields.includes(key));
+  if (unknown !== undefined) {
+    throw new Fault(
+      400,
+      "invalid_input",
+      `Unknown field ${JSON.stringify(label(unknown, "field name", 128))}.`,
+    );
   }
   return value;
 }

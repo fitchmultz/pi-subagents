@@ -1,18 +1,22 @@
 import { spawn } from "child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import net from "net";
 import { getPiAgentDir } from "../agent-dir.ts";
-import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
+import {
+  getBrokerRuntimeDir,
+  getBrokerSocketPath,
+  getPreviousBrokerSocketPaths,
+  isOwnedBrokerSocket,
+  prepareBrokerSocketPath,
+} from "./paths.ts";
 import { isBrokerPidReused } from "./pid.ts";
 import { errorMessage, hasErrorCode } from "../../shared/unknown.ts";
 
-const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
-const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
+const BROKER_PID = join(getBrokerRuntimeDir(), "broker.pid");
+const BROKER_SPAWN_LOCK = join(getBrokerRuntimeDir(), "broker.spawn.lock");
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -69,7 +73,8 @@ export async function spawnBrokerIfNeeded(
   brokerCommand: string,
   brokerArgs: readonly string[],
 ): Promise<void> {
-  await mkdir(INTERCOM_DIR, { recursive: true });
+  prepareBrokerSocketPath();
+  await warnPreviousBroker();
 
   if (await isBrokerRunning()) {
     return;
@@ -136,13 +141,20 @@ export async function isBrokerRunning(): Promise<boolean> {
   return checkSocketConnectable();
 }
 
-function readLivePid(): number | null {
-  if (!existsSync(BROKER_PID)) {
+export async function assertBrokerCanStart(): Promise<void> {
+  if (await isBrokerRunning()) {
+    throw new Error("Intercom broker is already running; refusing to replace its socket.");
+  }
+  await stopUnhealthyBrokerBeforeSpawn();
+}
+
+function readLivePid(pidPath: string): number | null {
+  if (!existsSync(pidPath)) {
     return null;
   }
   let raw: string;
   try {
-    raw = readFileSync(BROKER_PID, "utf-8");
+    raw = readFileSync(pidPath, "utf-8");
   } catch {
     return null;
   }
@@ -158,11 +170,31 @@ function readLivePid(): number | null {
   return isBrokerPidReused(pid, raw) ? null : pid;
 }
 
+async function warnPreviousBroker(): Promise<void> {
+  const previousSockets = getPreviousBrokerSocketPaths();
+  for (const socketPath of previousSockets) {
+    // Migration probes are sequential and never register or send to old peers.
+    // oxlint-disable-next-line no-await-in-loop
+    if (isOwnedBrokerSocket(socketPath) && (await checkOneSocket(socketPath))) {
+      console.warn(
+        "An older agent-directory Intercom broker is still running. Its peers are not part of shared same-user discovery until they reload with the updated extension. Existing sessions and accepted work are untouched; no legacy fallback is used.",
+      );
+      return;
+    }
+  }
+  const previousPid = readLivePid(join(getPiAgentDir(), "intercom", "broker.pid"));
+  if (previousPid !== null) {
+    console.warn(
+      `Older Intercom broker PID ${previousPid} may still own accepted work. Its peers need to reload with the updated extension to join shared same-user discovery. Nothing was stopped or replaced; no legacy fallback is used.`,
+    );
+  }
+}
+
 export async function stopUnhealthyBrokerBeforeSpawn(): Promise<void> {
   if (await checkSocketConnectable()) {
     return;
   }
-  const pid = readLivePid();
+  const pid = readLivePid(BROKER_PID);
   if (pid === null) {
     return;
   }
@@ -172,12 +204,8 @@ export async function stopUnhealthyBrokerBeforeSpawn(): Promise<void> {
 }
 
 async function checkSocketConnectable(): Promise<boolean> {
-  const preferred = getBrokerSocketPath();
-  if (isOwnedBrokerSocket(preferred) && (await checkOneSocket(preferred))) {
-    return true;
-  }
-  const legacy = getLegacyBrokerSocketPath();
-  return legacy !== preferred && isOwnedBrokerSocket(legacy) && (await checkOneSocket(legacy));
+  const socketPath = getBrokerSocketPath();
+  return isOwnedBrokerSocket(socketPath) && (await checkOneSocket(socketPath));
 }
 
 function checkOneSocket(brokerSocket: string): Promise<boolean> {

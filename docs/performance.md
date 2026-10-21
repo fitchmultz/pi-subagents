@@ -1,192 +1,109 @@
-# Performance
+# Performance and usage
 
-## 0.46.2 measurements
+## Rebuild measurements
 
-The baseline is `e00b241` (0.46.1). These synthetic workloads exercise the real storage, SQLite, discovery, native-card and broker owners. Counts describe work removed, not a guaranteed reduction in end-to-end latency, retained memory or provider cost.
+The baseline and enforced size ceilings are in
+[the rebuild evidence](single-agent-rebuild.md). `node scripts/measure-size.mjs`
+measures production source, schemas, generated code and scripts; tests are separate.
+Line/byte reductions are not measurements of latency, resident memory, provider
+cost, or throughput.
 
-| Workload                                                               | Counted operation                                                   |                0.46.1 |                0.46.2 |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------: | --------------------: |
-| 10,000 text deltas                                                     | Empty text-spool truncations                                        |                10,000 |                     0 |
-| Same deltas                                                            | 64 KiB scratch allocations / allocated bytes                        |  10,000 / 655,360,000 |                 0 / 0 |
-| 1,000 one-window native records, cold index                            | SQL prepares                                                        |                14,015 |                    19 |
-| Same records                                                           | Explicit main-database commits / changed-main autocommit statements |         2,002 / 1,002 |             1,002 / 2 |
-| 1,000 narrowed prune calls beside 1,000 linked sources                 | Child rows visited                                                  |             1,000,000 |                 1,000 |
-| 1,000 pending human-message IDs with no later reply                    | Assistant-tail candidates / statements                              |       499,500 / 1,000 |               999 / 1 |
-| 200 attempts sharing 1,000 common matching records, relevance search   | Final entry-predicate evaluations                                   |               200,000 |                 1,000 |
-| 217 profiles, completion after task text or inside an unfinished quote | Profile-file reads                                                  |                   217 |                     0 |
-| Same profiles, management list                                         | Profile-file reads                                                  |                   434 |                   217 |
-| Same profiles and 10 saved chains, saved-chain completion              | Profile-file / chain-file reads                                     |              217 / 10 |                0 / 10 |
-| Three identical 100-record history pages                               | Native cards constructed, including assignment                      |                   303 |                   101 |
-| One 1 MiB Intercom frame, 4 KiB fragments                              | Bytes copied by frame assembly                                      |           135,790,596 |             1,048,576 |
-| Same frame, 1 KiB fragments                                            | Bytes copied by frame assembly                                      |           538,443,780 |             1,048,576 |
-| 1,000 streamed topic rows                                              | Topic text validations                                              |               500,500 |                 1,000 |
-| Real broker restoring 1,000 topics                                     | JSON encodings / serialized bytes                                   | 505,504 / 112,612,468 |       7,003 / 873,268 |
-| One socket message write                                               | JSON encodings                                                      |                     2 |                     1 |
-| 10,000 thinking deltas, 1,000 retained workflow steps                  | Step-status reads in event projection                               |            10,000,000 |                 1,000 |
-| Inert root extension, emitted static local import graph                | Modules / JavaScript source bytes / TUI modules                     |  287 / 3,248,709 / 47 |       11 / 20,587 / 0 |
-| 1,000 foreign async owners, 23-byte supplemental records               | Allocated owner-read scratch bytes                                  |            65,536,000 |                23,000 |
-| Same owner census                                                      | Opens / reads / closes                                              | 1,000 / 1,000 / 1,000 | 1,000 / 1,000 / 1,000 |
-| 128 foreign questions beside one selected answered question            | Foreign question-state opens                                        |                   512 |                     0 |
+Earlier release performance tables described the retired profile/workflow/SQLite
+browse/UI engine. They remain in Git history, not current runtime claims. Final
+startup A/B evidence must identify both extension snapshots, exact host, Node,
+isolation settings, repetitions, and observed range. Do not infer a speedup from
+smaller source or a single warm launch.
 
-### Method and retained contracts
+### Observed isolated factory startup
 
-Measurements used Node **24.21.0**, SQLite **3.53.4** and synthetic private files on macOS/APFS. Discovery used 100 user, 100 trusted-project and 17 builtin profiles. Repeated count probes produced identical results. The history counts begin at cold `SourceIngest` construction after database/source setup; they are SQL transaction and statement boundaries, **not measured fsync counts**. A 100-record control also falls from 1,415 prepares to 19 and from 202 explicit commits plus 102 changed-main autocommit statements to 102 plus 2.
+Three sequential runs per case used the physical Node 24.22.0 executable and the
+fork's pinned Pi 1.3.0 CLI (`997a2575e0dde7c6690024184feec970d395f9b4`, build
+`127d6b7a5b2492a2`) on macOS arm64. Each case had an empty private HOME/agent
+folder, a private intercom namespace, a minimal environment, discovery disabled,
+and `--list-models zzznomatch --offline -ne`. Only the named compiled entry/entries
+were added with `-e`; no credentials, model turns, or installed-runtime changes.
 
-Every streaming delta still reaches the observer and schedules status publication; exact wire bytes, malformed-record diagnostics, member ordering, surrogate handling and completed-text output remain covered. Tool aggregation still scans steps on actual tool transitions and coalesced status writes. The event-projection probe has no intervening status publication; its 10,000 scheduling requests are retained, rather than suppressed to obtain the count.
+| Explicit extensions                          | Individual wall-clock times (ms) | Minimum (ms) | Range (ms)    |
+| -------------------------------------------- | -------------------------------- | -----------: | ------------- |
+| None (host floor)                            | 220.30, 222.89, 225.32           |       220.30 | 220.30–225.32 |
+| Baseline `1646ab89`, two package entries     | 980.63, 462.70, 464.58           |       462.70 | 462.70–980.63 |
+| Replacement `1d74a79e`, single package entry | 440.30, 373.10, 374.75           |       373.10 | 373.10–440.30 |
 
-Reply lookup reads the latest matching human copy for each requested ID, then answers all IDs from one bounded assistant-tail lookup; physical order and terminal/time boundaries remain authoritative. Empty, missing and latest-singleton requests retain zero assistant-candidate scans.
+These measure extension factory loading, not interactive startup, completion
+latency, or steady-state memory. The minimum decreased, but the delta is smaller
+than the baseline's observed first-run spread: this small sample is not a general
+speedup claim. The long-lived costs remain explicit: a main reconciles receipts
+on a 200 ms timer, native actors poll their durable command/attachment state, and
+the broker maintains connections/presence. Completed actors stay messageable
+while attached; observed owner detachment ends their lifetime. Native lifecycle
+and live acceptance checks verify disposal/exit, rather than inferring cleanup
+from a timer or package size.
 
-Recovery right-sizes the existing fixed-snapshot streaming JSON buffer to the file's size, up to the unchanged **64 KiB** ceiling. It retains fatal UTF-8 decoding, complete JSON/object validation, positional reads on one opened descriptor and large discarded-field handling. The 1,000-owner probe still reads all 1,000 records and performs the same 3,000 streaming-parser writes; it removes oversized scratch allocation, not filesystem discovery or parsing. A separate native-startup keeper beside 2,048 35-byte foreign owners reduces observed read-buffer bytes from 134,217,728 to 71,680.
+### Review-follow-up startup
 
-Owner-scoped question access still reads and validates all 129 question records in the probe, using each question's embedded owner before opening answer, delivery, revival or cancellation state. The selected question retains all four state opens; missing, corrupt or disagreeing supplemental owner files do not hide its question. Unfiltered readers retain full state validation, selected corruption still fails, and later publications are read afresh. There is no archive cap, persistent negative-owner cache or question-state cache.
+After adding the read-only observer, the same kind of isolated factory probe
+compared baseline `224e8460` with the follow-up source in this change. Each host
+used three sequential repetitions, rotating floor/baseline/candidate order,
+physical Node 24.22.0, private empty HOME/agent/runtime directories, offline model
+listing, and disabled extension/resource discovery. No inference or credentials
+were used. The hosts were official Pi 1.3.0 and fork revision `997a2575`, build
+`c6a6d3874c660860`, on macOS arm64.
 
-Search qualification used 100,000 documents across 100 owned sources, including 99,000 out-of-scope documents and 200 attempts sharing the selected source. All 12 rare/common × child/shared-agent/global × relevance/newest cases retained independent native-`bm25` ordering and exact first/second-page output. Relevance uses hit-driven attribution; newest retains its previous fixed join order. Scoped eligible-ID materialization remains intentional: replacing it with a correlated entry lookup made common scoped queries about three times slower and was rejected. Contended medians for shared-source relevance were 62.00→29.25 ms (common) and 6.23→3.12 ms (rare); small timing differences in other cases are treated as variation, not gains. Common FTS postings still require scanning, and a bounded page does not bound all search work.
+| Host     | Case                | Individual wall-clock times (ms) |
+| -------- | ------------------- | -------------------------------- |
+| Official | No extension        | 158.51, 181.78, 171.12           |
+| Official | Baseline `224e8460` | 403.98, 446.65, 395.78           |
+| Official | Follow-up           | 430.85, 448.78, 398.68           |
+| Fork     | No extension        | 263.24, 272.81, 256.50           |
+| Fork     | Baseline `224e8460` | 517.76, 496.81, 434.64           |
+| Fork     | Follow-up           | 470.32, 483.65, 446.55           |
 
-SQLite statement reuse is bounded to 128 SQL shapes. Records with at most 32 text windows stage and publish their entry, documents and cursor in one transaction; longer records keep bounded staging transactions. No browse transaction spans a pump yield. Native cold-kill coverage brackets both sides of publication at the 32/33-window boundary. WAL, `synchronous=FULL`, generation checks, the separate writer lock, strict source validation and detail budgets remain intact.
+An initial probe exposed extra eager SDK/TUI loading from the screen module.
+The final version loads that module only when a human opens `/agents`, then
+revalidates the current session owner. These small samples overlap the baseline
+ranges and do not establish a generalized speedup or latency guarantee.
 
-Settled pages reuse only their native display components. Equal refreshes advance the comparison item so subsequent frames retain the identity fast path. Selected detail loaders remain fresh; source generation/reference changes and theme invalidation rebuild cards, while unchanged refreshes retain expanded thinking and reading position. Completion and list work still observes current profile edits, overrides, disabled profiles and project trust rather than keeping a persistent discovery cache.
+Interactive mains scan at most 50 unfinished or newly discovered metadata rows
+per second. Immutable launches and finished rows are cached; finished history
+does not consume the active refresh budget. Liveness is checked once per active
+conversation per scan, not for completed idle actors. The open watch polls at
+250 ms, reading at most 64 KiB plus a 4 KiB identity header and retaining 80 bounded
+display lines. Those are display limits, not truncation of the native journal.
+Children and print/RPC sessions do not install the watcher.
 
-Intercom retains the 1 MiB encoded-frame limit, request-ID and escaped-envelope checks, unknown fields, duplicate ordering, first-match subscriptions, stale-revision behavior and validation before state commit or publication. Legacy identity-only lists do not reconstruct discarded peer topic arrays. Replacing or removing the largest cached topic record still scans cached numeric sizes; a requested full snapshot necessarily remains linear in its returned rows.
+## Necessary costs
 
-Dynamic output schemas deliberately retain native compilation. Object identity or JSON content alone cannot safely cache nested mutations, recursive references and host format-registry changes. Authoritative receipt/accounting checks, native publication/fsync boundaries, fallback polling, child isolation, fork/fresh choices and acceptance verification are not removed for a better benchmark.
+- Native Pi owns context loading and model execution. The extension cannot remove
+  host or provider cost by changing a status renderer.
+- Fresh context is default. Applicable project resources and native tool/system
+  instructions still contribute input.
+- Explicit fork copies a native conversation, not a summary. Prior tool results
+  remain available. Copying them preserves evidence but does not make subsequent
+  provider input free or guarantee cache reuse.
+- Each child runs an independent native SDK conversation. Async work can overlap
+  with the parent's inference; there is no implicit daily spend limit.
+- Completed answers and inbound messages can enlarge later prompts. Passive
+  messages and out-of-band `last` reads do not request model inference.
+- Owner recovery must verify journal publication and process identity. Stat-only
+  caches, elapsed time, and mere queue admission cannot replace those checks.
+- Paged output bounds each response, not all storage or history work. Keep the
+  returned cursor/offset when reading large responses rather than assuming a
+  preview is the full result.
 
-The regression owners include `test/integration/{storage-owner-boundaries,session-resume-cost,async-job-tracker,history-index,agent-interaction,slash-commands,pi-intercom-broker,async-execution,process-lifecycle,parent-usage}.test.ts` and `test/unit/{supervisor-questions,compact-child-tools,agent-disabled,pi-intercom-framing}.test.ts`. These protect observable contracts and meaningful operation counts; there are no timing thresholds in CI.
+## Accounting
 
-### Startup qualification
+Native child journals are the underlying execution record. Parent attribution
+must use finalized native tool-result usage receipts, excluding inherited launch
+baseline entries and already attributed child contributions. Read-only inspection
+and custom completion notifications are not finalized nested-model charges.
+Preparing or discarding a result must not reserve usage as if it were published.
 
-Both production-only packages were loaded through the real official **Pi 1.1.0** and maintained fork **c329e624e73ba2086bd3ce15e091d667879dca9c** SDKs and bundled CLIs, using physical Node 24.21.0 and private HOME/agent/temp directories. SDK preflights asserted error-free registration and expected tools for both package entries, the inert root child, and the actual leaf route (prompt runtime plus both package entries and supervisor metadata). The compiled root deliberately imports the host SDK before deferred imports so production installs retain Pi's host-peer mapping; it does not install another SDK.
+Do not sum a parent's attributed child usage and the same child's journal as two
+independent provider requests. An incomplete accounting record does not erase a
+real completed answer or authorize fabricated usage. Preserve optional reasoning
+and cache fields according to native Pi semantics rather than adding them twice.
 
-Fresh-process offline `--list-models zzznomatch` samples below used the same pruned artifacts, one warmup and nine rotated/interleaved runs per case on an Apple M5 Pro. Values are **minimum / median / maximum milliseconds**. Parent loads both entries; root-child loads only the inert global root; leaf loads the real non-delegating child route. No-op/native controls had minima 154.6/143.6 ms on official and 306.5/284.0 ms on the fork.
-
-| Host           | Route      | 0.46.1                 | 0.46.2                 |
-| -------------- | ---------- | ---------------------- | ---------------------- |
-| Official 1.1.0 | parent     | 421.1 / 479.4 / 652.1  | 408.4 / 527.5 / 1138.0 |
-| Official 1.1.0 | root-child | 382.4 / 497.8 / 1105.7 | 252.7 / 301.9 / 498.8  |
-| Official 1.1.0 | leaf       | 414.4 / 509.0 / 687.9  | 283.2 / 406.7 / 715.7  |
-| Fork c329e624e | parent     | 615.2 / 717.2 / 1416.8 | 629.9 / 676.2 / 796.5  |
-| Fork c329e624e | root-child | 592.5 / 635.8 / 732.1  | 379.3 / 417.5 / 688.3  |
-| Fork c329e624e | leaf       | 610.4 / 666.0 / 1160.6 | 464.1 / 481.0 / 607.8  |
-
-The machine was contended and observed ranges overlap. These samples do **not** establish an isolated startup-latency gain or regression; operation counts and the smaller local import graph are the repeatable evidence. This measures extension-factory loading, not TUI readiness, model/provider requests or full-session latency. An additional production SDK/CLI/broker/history smoke passed on each host, and the previous fork revision `9007fefef` was qualified separately. No timing threshold is added to CI.
-
-## Current behavior
-
-Native journals and canonical run/control/receipt files remain the sources of truth. SQLite supplies private browse observations, not a new execution owner, completion receipt, billing authority or transcript format. Installing the extension does not adopt unrelated archives or remove provider and queue waits.
-
-Persisted run contracts use AJV standalone validators generated from their canonical TypeScript declarations. Pi sessions and detached runners validate disk reads without loading AJV's compiler or compiling guards at startup. `npm run generate:schemas` regenerates the JSON schema, executable guards and type declarations together; `npm run check:schemas` checks all three for drift. Both source and compiled package paths include the guards. Nested-field checks, finite-number rules, forward-compatible fields and validation diagnostics are unchanged.
-
-Startup recovers saved ownership, unanswered questions and Intercom receipts in small batches, allowing input between batches. Queued Intercom delivery also yields between batches, preserving followers before the final wake-up and staging new arrivals durably until the batch finishes. Retention cleanup uses asynchronous filesystem operations. Tools capture their invocation directory before awaiting restoration, and coordination publishes the current session name even if it changes during recovery. Checkpoint reconciliation remains synchronous and strict. Recovery still checks the complete eligible history and legacy records, without increasing or suppressing the host's performance-warning budget. A single recovery record, native append/projection or integrity scan remains atomic.
-
-### Indexed browsing and lazy Agents work
-
-- A separate Node process incrementally indexes only the current saved parent's admitted runs and linked native sources. A fresh session with no owned work starts no history process or database until it browses. No directory-wide transcript backfill runs at startup.
-- List filters and attention/newest/oldest ordering apply globally before a bounded page. Ordinary tool lists return 20 runs by default, at most 100; the Agents picker loads 50 runs and searches full assignments, not just shortened labels. Latest-assignment queries retain unsuperseded siblings while hiding older continuation attempts. Native branch configuration reuses at most 128 compact results across rows and queries, keyed by physical source generation, committed cursor, observed stamp and exact terminal/time/leaf boundary. Publication (including backdated records), replacement and reset invalidate reuse; null leaves and strict missing/cyclic-boundary errors retain their original meaning.
-- The parent UI does not scan child journals on startup, ticks, filtering or pagination. Only an opened conversation loads a 100-physical-record page; components are retained for that page. Full details and contextual Reply validate selected native byte references off-thread, including paired tool results outside the current page. Explicit navigation supersedes older requests; background refreshes are coalesced and retain the settled display rather than briefly adding loading rows. Reopening the picker restores its visible filter and page.
-- Catch-up, degraded sources, loading, no matches and unavailable history are distinct states. F5 explicitly retries. Drafts, reading anchors, unread boundaries and pins survive same-parent reopen; a changed owner or abandoned overlay cannot accept late results.
-- Search indexes saved visible text, not thinking, tool arguments, image payloads, hidden custom data or provider fields. Terminal sequences are removed incrementally before tokenization, including sequences split across read/parser chunks. Its grammar is lexical words or one quoted phrase. Unquoted words must all occur in the same native record, across any of its visible fields/windows; quoted phrases must remain contiguous in one field. Each record contributes one excerpt per matching child attempt. Filters and attempt terminal/time boundaries apply before ranking/paging. Run/child/agent scopes restrict linked physical sources before match aggregation without changing global relevance scores. Each scoped source is scanned once, even when many continuation attempts share it; terminal/time boundaries and attempt attribution still apply before ranking/paging in the final join. Common terms still scan global FTS postings, and global searches may require broad matching and sorting: a small result page is not a constant-work guarantee. Deadlines and cancellation stop the owned history process, which can reopen and replay committed index progress.
-- Browse freshness is never authoritative. Selected controls recheck canonical owner facts before acting. Human-message delivery and a later nonempty assistant reply are separate observations. Receipt integrity and native accounting safeguards remain unchanged.
-
-### Storage, budgets and recovery
-
-History projections use the built-in `node:sqlite` binding, qualified at SQLite **3.53.4** with Node **24.21.0**, WAL and `synchronous=FULL`. Other binding versions fail explicitly rather than fall back to synchronous journal queries. Databases live in a private local-filesystem `history-index` directory; symlinked databases/directories are rejected. Each owner selects a disposable generation through its manifest. Corrupt browse generations are replaced without renaming/unlinking an open SQLite database or rewriting native sources; old generations remain private for diagnosis.
-
-Incremental ingestion has one writer per database generation, coordinated by a SQLite transaction in a separate private `.ingest.sqlite` database. The lock spans staging and publication but never locks the browse database between pump steps. Competing workers keep serving queries and retry without busy-spinning. Process exit releases the lock through SQLite; the next writer discards unpublished staging and resumes at the committed cursor, without PID leases, time-based lock stealing or unlinking open databases. Schema upgrades rebuild older derived indexes, including apparently current indexes affected by lost staging in schema 4.
-
-A published source cursor and its indexed entries commit together, and publication must actually update the staged entry before advancing the cursor. LF framing controls publication independently of malformed-record tolerance. Replacement, truncation, deletion and prefix changes invalidate observations. Ingestion scans bytes in bounded chunks and limits assembled previews to 64 levels, 16,384 nodes, 4,096 array positions and 512-character keys. Over-budget records are explicitly degraded, not silently converted into trustworthy evidence; later complete records still index. Selected full native records and canonical saved output have a **16 MiB** detail budget. Concurrent output growth cannot expand a selected read beyond its validated snapshot.
-
-Best-effort timeout samples use a separate `run-timing.sqlite` metadata database. Writer transactions serialize import, insertion and per-agent retention of the latest **1,000** samples. Read-only indexed queries never rotate storage. The old `run-history.jsonl` remains untouched; reads and the first actual writer's import use at most the latest **1 MiB** of complete LF records. This replaces the unlocked reader-side rotation that could erase concurrent writes or another agent's samples. It is a metadata migration, not a canonical run-state migration; older legacy samples remain on disk outside the estimation window.
-
-### Regression proof
-
-The changed boundaries are exercised through real extension functions and registered SDK tools with synthetic isolated data, not personal transcripts or provider inference:
-
-- 20 and 227 genuinely owned runs beside 8,000 unrelated records: Agents startup does no parent-thread child transcript reads or global question listing; only the selected conversation is formatted.
-- Native extension startup beside 2,048 foreign owner directories and questions services input during discovery, uses snapshot-sized owner scratch, never opens foreign question state and restores only the current parent's saved runs and unanswered questions.
-- Native Intercom reload restores all 1,024 historical receipts while servicing input. Cleared-queue recovery also services input before its 100 followers finish appending, retaining each message once and one final wake-up across an in-flight reload or a cleared busy handoff. New results and explicit steers are staged before acknowledgement and handed to native steering for the next tool boundary; ordinary queued and passive arrivals wait.
-- 125 owned assignments: global filtering finds an item beyond the first two picker pages; all later pages remain reachable without UI-thread source access.
-- 65 retained runs: off-page reads/stats and migration scans are zero while displayed controls, questions, review and continuation identities remain fresh.
-- Warm indexed list/search queries perform no source checks, opens or canonical projections. Cold ingestion and explicit refresh still do necessary verification off-thread. Fifty genuinely admitted live rows sharing an 80,004-entry native journal retain correct state, model, thinking and bounded history through the real worker's unchanged three-second deadline under a 96 MiB JavaScript heap; completed terminal branches remain correct. An unchanged 1,000-run native census keeps projecting all handles but emits only settled freshness, while canonical changes and source failure/recovery still notify. This removes redundant notifications, not the census or UI polling.
-- A 512 MiB discarded native field preserves exact eligible usage/IDs/configuration/history, with unchanged source bytes, under a **96 MiB** heap limit. Structural over-budget image/deep/key records degrade explicitly while later visible text remains searchable.
-- Completed-attempt search cannot return a successor's later text from a shared physical source. Full selected details reject missing/replaced/truncated sources; canonical output reads reject concurrent growth beyond their snapshot.
-- Competing history processes preserve staged configuration/text on normal completion and recover after a writer is killed. Schema-4 indexes with intact cursors but missing entries rebuild from unchanged journals.
-- Search covers ANSI-colored words, multi-chunk control sequences, distant terms in a single record, separate visible fields, phrase boundaries and record-level pagination. Picker reopen/clear retains a visible filter; delayed idle refreshes leave dock height unchanged.
-- Four independent timing writers preserve each completed sample, another agent's samples, per-agent retained row counts and database integrity. A legacy snapshot read cannot erase an acknowledged write.
-- Native tool loading covers list/history/search validation, owned paging and same-parent reload on both compact and advanced routes. UI regressions cover narrow/wide native layouts, full reports/Reply, loading navigation, saved anchors and disposal.
-
-Primary owners are `test/integration/{history-index,owned-run-list,agent-interaction,tool-activation,lazy-coordination,session-resume-cost}.test.ts` and `test/unit/{run-history,journal-reader,temp-root-cleanup}.test.ts`. Run the [local validation](development.md#local-validation) against an explicitly selected coherent host graph. Operation counts are more repeatable than timing thresholds.
-
-## Receipt and loadout work
-
-A completion-recovery batch shares one SHA-verified parent receipt snapshot only within its synchronous stack. Parent append/count/leaf changes refresh that snapshot, and it is discarded before any awaited delivery resumes. Receipt identities are indexed once per snapshot; unchanged hits do not each hash the whole journal. The eight-hit regression beside a 1,051,980-byte parent reads at most three journal lengths (initial parse/hash, then verification per yielded batch), instead of verification per hit. Awaited delivery rechecks external journal changes even when the in-memory count and leaf are unchanged. SHA, LF publication, replacement/truncation and same-stamp-edit guards remain mandatory.
-
-Native default-active declarations keep advanced orchestration and Intercom lazy without startup deactivation. A small initial-SDK-resume fallback restores this package's declared tools because official 1.0 does not restore its saved loadout during creation. Native tree/reload selection remains authoritative, and activation only adds available owned tools, never excluded ones.
-
-The Agents dock polls while live work, questions, selected/pinned conversations or delivery outboxes need observation. Visited terminal rows reuse their observed metadata until their run changes; full completed history loads on selection. With 50 visited rows (49 terminal), two unchanged refreshes query only the live row; pinned, selected, question, outbox and changed terminal metadata remain observable. The 20/227-terminal-row fixtures also prove three idle ticks request no parent redraw. These are bounded-work optimizations, not archive-size or provider-latency guarantees.
-
-## Historical 0.43.1 baseline
-
-The earlier 0.43.1 fixes removed repeated completed-history projections, continuation recursion, native observation matching, nested polling, and result/receipt polling. Their same-host recheck on fork `76dfe3d1` (Node 24.21.0) remains useful historical evidence; it is not a measurement of the new SQLite browse implementation:
-
-| Synthetic operation                                 | Before 0.43.1                              | 0.43.1                           |
-| --------------------------------------------------- | ------------------------------------------ | -------------------------------- |
-| 100 completed 2,000-entry histories, five refreshes | 1,000,000 timestamp parses; 1,005 ms       | 0 timestamp parses; 1.6 ms       |
-| 1,000 continuations, one visible task               | 500,500 identity resolutions               | 1,000                            |
-| 10,000 delivered/billed runs, three polls           | 30,003 existence checks                    | 3 directory checks               |
-| 40 unchanged foreign files, three polls             | 120 decodes                                | 40 initial decodes               |
-| 20,000 parent entries, ten owner checks             | 400,020 visits, 20 scans                   | 40,002 visits, two startup scans |
-| 1,500 retained nested events, unchanged poll        | 500 event rereads and one registry rewrite | Neither                          |
-| Nested projection in one job poll                   | Three registry reads                       | One                              |
-| Ten 100-card history windows                        | 1,001 cached components                    | 101, including the assignment    |
-
-Cold factory startup did not measurably change in that comparison: five isolated offline CLI launches ranged from 410–605 ms before and 411–437 ms after. The minimum difference was below run-to-run variation.
-
-## Necessary costs and limits
-
-Cold recovery still enumerates genuine owner handles and verifies relevant published bytes. Mutable native prefixes require integrity validation before appended suffix reuse; stat-only caches or unchecked SQL negative receipt lookups cannot replace that safeguard. Selected controls and canonical receipt/accounting reconciliation remain separate from browsing.
-
-Pi 1.0 still eagerly loads native session bodies at its own startup; extension installation alone cannot remove that host cost. Explicit fork context still copies and publishes each sibling, with required fsync. An explicit full individual record must fit its detail budget and the consumer's heap.
-
-Full-archive backfill/capacity, sustained contention, power-loss durability and cross-platform performance are not qualified by these macOS/APFS synthetic regressions. The measurement workloads do not delete or migrate native journals, inspect personal transcripts or make inference requests. Installed extension updates are separate from these workloads. Intentional tool/queue boundaries, provider response time, host rendering and other extensions remain separate possible costs.
-
-## Cached-input traffic and delegation
-
-This section supersedes the investigation in [PR #112](https://github.com/fitchmultz/pi-subagents/pull/112), which inspected `29903ad` before Pi 1.0 modernization. The architecture below was checked against released `4f288484` (0.44.0). No private session journals, invoices or provider requests were inspected. It explains possible traffic, not the cause of a particular account's usage or its dollar cost.
-
-### What grows the provider input
-
-- **Fresh is the default.** A fresh child starts without the parent's conversation. Project context, skills and the child's system prompt can still add substantial input. Explicit `context` overrides the profile; the bundled oracle alone defaults to `fork`. Inspect effective profiles and user/project overrides rather than assuming installed defaults.
-- **Fork is a branch, not a summary.** `src/shared/fork-context.ts` creates a separate native branched session per child index. The child uses inherited conversation context plus its new task, subject to Pi's native context/compaction rules and child filtering. Fork failure is explicit, not a fallback to the parent's file.
-- **Each child is a separate CLI tool loop.** Pi-backed children use `pi --mode json -p`; Claude-backed children use `claude -p`. Later model turns can send a large stable input prefix again. The extension does not implement provider prompt caching.
-- **Async work can overlap.** The root defaults to async, so the parent can continue making requests while children run. A fork is a launch-time snapshot; later parent turns do not update an already-running child.
-- **Filtering can change cache sharing.** Child context filtering removes parent-only orchestration messages and tool history where applicable. Native prompt fixtures prove unchanged-history prefix preservation and a changed prefix after filtering; neither is a guarantee that a provider will reuse a cache. A changed prefix does not establish that the entire context must be cache-written.
-- **Results can enlarge later input.** Inline results, chain substitutions, completion messages and supervisor notices add parent/next-child text. Some notices or deliveries can trigger a parent turn. Parallel completion is grouped; terminal async completion-guard notices leave the automatic wakeup to their matching result.
-- **Fanout is not a daily budget.** Top-level `tasks` uses `parallel.maxTasks` (default 8) after repeat expansion, with default concurrency 4. Static chain `parallel`/`count` is not covered by that top-level size limit. Dynamic fanout requires `expand.maxItems` or `config.chain.dynamicFanout.maxItems`; the per-step limit takes precedence. Bundled profiles disallow nested delegation; explicit opt-in remains depth-bounded. Successful sequential launches are not subject to a daily launch quota.
-
-Sources: `src/runs/{foreground/run-async-path,foreground/execution-input,shared/child-attempt,shared/subagent-prompt-runtime}.ts`, `src/shared/agent-context-policy.ts`, `agents/oracle.md`, and `test/fixtures/native-prompt-sections.mjs`.
-
-### Arithmetic, not attribution
-
-For a hypothetical constant **500,000 cached tokens per request**:
-
-```text
-4.26 billion cache-read tokens / 500,000 = 8,520 requests
-11.2 million output tokens / 8,520       = 1,314.55 output tokens/request
-```
-
-If "97% hit" means cached tokens divided by cached plus uncached input tokens, the corresponding uncached input is `4.26 billion × 0.03 / 0.97 = 131.75 million`, or about `15,463.92` per request. A request-based hit percentage would not support that calculation.
-
-| Hypothetical steady workload                                                    | Cache-read tokens |
-| ------------------------------------------------------------------------------- | ----------------: |
-| One 500k-prefix session, one request/10 seconds for 24 hours                    |      4.32 billion |
-| Parent plus eight 500k-prefix children, one request/30 seconds each for 8 hours |      4.32 billion |
-| Eight 50k-prefix fresh children, one request/30 seconds each for 8 hours        |       384 million |
-
-These assumptions include sustained activity and a full cache hit on that prefix; they are not measured workloads, throughput guarantees or pricing estimates. Token counts alone cannot establish dollars, double billing, a spawn loop, or which sessions made the requests.
-
-### Accounting and useful checks
-
-`src/runs/shared/native-usage.ts` excludes inherited launch-baseline entries and nonbillable checkpoints, then validates and deduplicates new native contributions. Excluding old journal usage does **not** make newly sending inherited context free. Pi 1.0 attribution uses finalized execution/wait tool results, not the removed `recordUsage` hook. Background notifications alone do not enter parent totals. Claude totals may remain explicitly accounting-incomplete when per-category evidence is unavailable. See [usage accounting](reference.md#usage-accounting); local attribution is not an additional provider request.
-
-To investigate an actual spike, compare provider usage for the relevant time/model/account with parent and child native usage, launch counts, effective `fresh`/`fork` settings and context sizes. Do not sum attributed parent totals and the same child totals as independent traffic. Keep private prompts, journals and credentials out of public issues.
-
-Use existing controls deliberately: prefer fresh context when a bounded handoff suffices, use file-only output when the parent needs references rather than full text, and set suitable concurrency and child runtime/token limits. `maxTokens` is best-effort and is not an invoice or whole-account spending cap. This investigation changes no profile defaults, fork capability, notice routing or quotas.
+For an actual usage spike, compare provider records for the relevant time/model
+with native parent/child execution, launch counts and fresh/fork choices. Token
+counts alone do not establish dollar cost, duplicate billing, or a spawn loop.
+Keep credentials and private journals out of public issues and PR evidence.

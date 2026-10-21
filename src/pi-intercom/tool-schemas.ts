@@ -1,60 +1,14 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "../shared/native-typebox.ts";
-export const contactSupervisorSchema = Type.Object({
-  reason: StringEnum(["need_decision", "progress_update", "interview_request"] as const, {
-    description:
-      "Contact reason: 'need_decision' and 'interview_request' steer the supervisor and wait for a reply; 'progress_update' steers a material discovery without waiting for a reply",
-  }),
-  message: Type.Optional(
-    Type.String({
-      description:
-        "Decision request, optional interview note, or meaningful progress update for the supervisor",
-    }),
-  ),
-  interview: Type.Optional(
-    Type.Object(
-      {
-        title: Type.Optional(Type.String()),
-        description: Type.Optional(Type.String()),
-        questions: Type.Array(
-          Type.Object({
-            id: Type.String(),
-            type: StringEnum(["single", "multi", "text", "image", "info"] as const, {
-              description: "Question type: single, multi, text, image, or info",
-            }),
-            question: Type.String(),
-            options: Type.Optional(Type.Array(Type.Unknown())),
-            context: Type.Optional(Type.String()),
-          }),
-        ),
-      },
-      { description: "Structured interview request for reason='interview_request'" },
-    ),
-  ),
-});
+import { Type } from "../agent/typebox.ts";
 export const intercomSchema = Type.Object({
-  action: StringEnum(
-    [
-      "list",
-      "send",
-      "ask",
-      "reply",
-      "pending",
-      "status",
-      "subscribe",
-      "unsubscribe",
-      "publish",
-      "topics",
-    ] as const,
-    {
-      description:
-        "Direct messages: list/send/ask/reply/pending/status. Quiet state: subscribe/unsubscribe/publish/topics.",
-    },
-  ),
+  action: StringEnum(["list", "send", "ask", "reply", "pending", "status", "last"] as const, {
+    description:
+      "List, send, ask, reply, pending asks, connection status, or last completed assistant response.",
+  }),
   scope: Type.Optional(
     StringEnum(["project", "all"] as const, {
       description:
-        "For list/status: 'project' (default) shows this Git repository and its worktrees; 'all' includes sessions in other projects.",
+        "For list/status: 'all' (default) includes every reachable session; 'project' further filters this repository and its worktrees.",
     }),
   ),
   to: Type.Optional(
@@ -62,37 +16,9 @@ export const intercomSchema = Type.Object({
       description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')",
     }),
   ),
-  topic: Type.Optional(
-    Type.String({
-      description:
-        "Exact opt-in topic for subscribe/unsubscribe/publish/topics; no automatic subscriptions.",
-    }),
-  ),
-  event: Type.Optional(
-    StringEnum(["update", "blocker", "decision", "release"] as const, {
-      description:
-        "Publish: update is quiet current state. Blockers/decisions interrupt subscribers; release interrupts only those awaiting release.",
-    }),
-  ),
-  resource: Type.Optional(
-    Type.String({
-      description: "Publish: resource this session is using (advisory ownership, not a lock).",
-    }),
-  ),
-  ownership: Type.Optional(
-    StringEnum(["held", "released"] as const, {
-      description:
-        "Publish: this session's declared resource state. Disconnect never implies released.",
-    }),
-  ),
-  awaitRelease: Type.Optional(
-    Type.Boolean({
-      description: "Subscribe: interrupt when this topic explicitly releases ownership.",
-    }),
-  ),
   message: Type.Optional(
     Type.String({
-      description: "Message for send/ask/reply, or self-contained latest state for publish",
+      description: "Message for send/ask/reply",
     }),
   ),
   attachments: Type.Optional(
@@ -124,6 +50,17 @@ export const intercomSchema = Type.Object({
   ),
   threadId: Type.Optional(
     Type.String({ description: "Stable topic key for queueMode='replace'." }),
+  ),
+  entryId: Type.Optional(Type.String({ description: "Last response entry ID for stable paging." })),
+  offset: Type.Optional(
+    Type.Integer({ minimum: 0, description: "Last response character offset (UTF-16)." }),
+  ),
+  limit: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 16384,
+      description: "Last response page size; default/max 16384 characters.",
+    }),
   ),
   passive: Type.Optional(
     Type.Boolean({

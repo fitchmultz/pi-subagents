@@ -5,51 +5,43 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../../src/pi-intercom/config.ts";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { readIntercomLineage } from "../../src/pi-intercom/identity.ts";
 
-test("Agents shortcut defaults to Option/Alt+Shift+M and accepts native key identifiers", (t) => {
-  const previous = process.env.PI_CODING_AGENT_DIR;
-  const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-shortcut-"));
-  process.env.PI_CODING_AGENT_DIR = agentDir;
+test("partial or nested child launch metadata cannot silently become a main session", () => {
+  const previousRoot = process.env.PI_INTERCOM_ROOT_SESSION_ID;
+  const previousParent = process.env.PI_INTERCOM_PARENT_SESSION_ID;
   try {
-    const defaultKey = loadConfig().shortcut;
-    assert.equal(defaultKey, "alt+shift+m");
-    assert.equal(matchesKey("\x1b[109;4u", defaultKey), true);
-    assert.equal(matchesKey("\x1b[27;4;109~", defaultKey), true);
-    assert.equal(
-      matchesKey("\x1bM", defaultKey),
-      false,
-      "native Pi requires a terminal protocol that reports both modifiers",
-    );
-    assert.equal(matchesKey("\r", defaultKey), false, "Enter must not open Agents");
-    mkdirSync(path.join(agentDir, "intercom"), { recursive: true });
-    const file = path.join(agentDir, "intercom", "config.json");
-    for (const shortcut of ["ctrl+shift+k", "super+f2", "shift+pageDown", "ctrl+/"]) {
-      writeFileSync(file, JSON.stringify({ shortcut }));
-      assert.equal(loadConfig().shortcut, shortcut);
-    }
-    t.mock.method(console, "error", () => {
-      /* Invalid shortcut cases intentionally log their fallback. */
+    delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
+    delete process.env.PI_INTERCOM_PARENT_SESSION_ID;
+    assert.equal(readIntercomLineage(), undefined);
+    process.env.PI_INTERCOM_ROOT_SESSION_ID = "main-native-id";
+    assert.throws(readIntercomLineage, /requires matching root and parent/);
+    delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
+    process.env.PI_INTERCOM_PARENT_SESSION_ID = "main-native-id";
+    assert.throws(readIntercomLineage, /requires matching root and parent/);
+    process.env.PI_INTERCOM_ROOT_SESSION_ID = "other-native-id";
+    assert.throws(readIntercomLineage, /requires matching root and parent/);
+    process.env.PI_INTERCOM_ROOT_SESSION_ID = "";
+    assert.throws(readIntercomLineage, /requires matching root and parent/);
+    process.env.PI_INTERCOM_ROOT_SESSION_ID = "main-native-id";
+    assert.deepEqual(readIntercomLineage(), {
+      rootSessionId: "main-native-id",
+      parentSessionId: "main-native-id",
     });
-    for (const shortcut of [false, 7, "", "hyper+m", "ctrl+ctrl+m", "alt+"]) {
-      writeFileSync(file, JSON.stringify({ shortcut }));
-      assert.equal(
-        loadConfig().shortcut,
-        defaultKey,
-        "invalid configuration uses the existing default fallback",
-      );
-    }
   } finally {
-    rmSync(agentDir, { recursive: true, force: true });
-    if (previous === undefined) {
-      delete process.env.PI_CODING_AGENT_DIR;
+    if (previousRoot === undefined) {
+      delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
     } else {
-      process.env.PI_CODING_AGENT_DIR = previous;
+      process.env.PI_INTERCOM_ROOT_SESSION_ID = previousRoot;
+    }
+    if (previousParent === undefined) {
+      delete process.env.PI_INTERCOM_PARENT_SESSION_ID;
+    } else {
+      process.env.PI_INTERCOM_PARENT_SESSION_ID = previousParent;
     }
   }
 });
-
-test("legacy enabled config is ignored in favor of pi config", () => {
+test("retired UI and enabled settings do not disable ordinary messaging", () => {
   const previous = process.env.PI_CODING_AGENT_DIR;
   const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-config-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -57,13 +49,14 @@ test("legacy enabled config is ignored in favor of pi config", () => {
     mkdirSync(path.join(agentDir, "intercom"), { recursive: true });
     writeFileSync(
       path.join(agentDir, "intercom", "config.json"),
-      JSON.stringify({ enabled: false, confirmSend: true }),
+      JSON.stringify({ enabled: false, shortcut: "ctrl+shift+k", confirmSend: true }),
     );
     const config = loadConfig();
     assert.equal(config.brokerCommand, process.execPath);
     assert.deepEqual(config.brokerArgs, []);
     assert.equal(config.confirmSend, true);
     assert.equal("enabled" in config, false);
+    assert.equal("shortcut" in config, false);
   } finally {
     rmSync(agentDir, { recursive: true, force: true });
     if (previous === undefined) {

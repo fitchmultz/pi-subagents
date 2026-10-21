@@ -8,7 +8,6 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -18,11 +17,9 @@ const evidence = process.env.SMOKE_CLEANUP_EVIDENCE;
 const scenario = process.env.SMOKE_CLEANUP_SCENARIO;
 const agentDir = process.env.PI_CODING_AGENT_DIR;
 const root = dirname(agentDir);
-const runtime =
-  process.env.PI_SUBAGENT_TEMP_ROOT ?? join(tmpdir(), `pi-subagents-uid-${process.getuid()}`);
 const runId = "00000000-0000-4000-8000-000000000001";
 const sessionId = "00000000-0000-4000-8000-000000000002";
-const asyncDir = join(runtime, "async-subagent-runs", runId);
+const asyncDir = join(agentDir, "sessions", "agent-runs", sessionId, runId);
 const sessions = join(root, "sessions");
 const sessionFile = join(sessions, "parent.jsonl");
 const args = process.argv.slice(2);
@@ -49,19 +46,16 @@ const save = (path, value) => {
 
 function scenarioState() {
   if (scenario === "success") {
-    return "complete";
+    return "completed";
   }
   return scenario === "async-failure" ? "failed" : "running";
 }
 function promptKind(prompt) {
   const markers = [
     ["intercom tool", "intercom"],
-    ["action profiles", "list"],
-    ["Set async true", "async"],
-    ["parallel mode", "parallel"],
-    ["chain mode", "chain"],
-    ["outputMode", "output"],
-    ["acceptance criteria", "acceptance"],
+    ["action list", "list"],
+    ["async true", "async"],
+    ["CALIBRATION_FACT", "fork"],
   ];
   return markers.find(([marker]) => prompt.includes(marker))?.[1] ?? "foreground";
 }
@@ -72,7 +66,7 @@ function promptTool(kind) {
   if (kind === "list") {
     return "agent_runs";
   }
-  return ["foreground", "async"].includes(kind) ? "delegate" : "subagent";
+  return "delegate";
 }
 
 if (["launcher", "runner", "child", "broker"].includes(role)) {
@@ -89,27 +83,18 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     runner.on("exit", () => process.exit(0));
   } else if (role === "runner") {
     mkdirSync(asyncDir, { recursive: true });
-    const child = launch("child");
-    save(join(agentDir, "sessions", "subagent-runs", runId, "contracts", "0.json"), {
-      pid: child.pid,
-      sessionFile: join(sessions, "child.jsonl"),
-      updatedAt: Date.now(),
-    });
+    launch("child");
+    save(join(asyncDir, "actor.lock", "process.json"), { pid: process.pid });
     while (!existsSync(join(evidence, "child-ready"))) {
       // Child/broker readiness is published before the parent may emit its wire result.
       // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     const state = scenarioState();
-    writeFileSync(join(asyncDir, "output-0.log"), "real-pi-smoke async ok\n");
-    save(join(asyncDir, "status.json"), {
-      runId,
-      sessionId,
-      pid: process.pid,
-      state,
-      startedAt: Date.now(),
-      mode: "single",
-    });
+    writeFileSync(join(asyncDir, "output.txt"), "real-pi-smoke async ok\n");
+    if (state !== "running") {
+      save(join(asyncDir, "result.json"), { id: runId, status: state });
+    }
     writeFileSync(join(evidence, "runner-ready"), "ready");
     if (scenario === "success") {
       await delay(1200); // Terminal status is published before the runner's final artifact write.
@@ -137,8 +122,8 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     if (scenario.startsWith("startup-")) {
       await delay(10000);
     } // Detached before publishing broker.pid, like slow module startup.
-    mkdirSync(join(agentDir, "intercom"), { recursive: true });
-    writeFileSync(join(agentDir, "intercom", "broker.pid"), brokerPidRecord());
+    mkdirSync(process.env.PI_INTERCOM_RUNTIME_DIR, { recursive: true });
+    writeFileSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid"), brokerPidRecord());
   }
   setInterval(() => {
     // Keep the controlled process alive so smoke cleanup must signal and reap it.
@@ -150,15 +135,17 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
 } else if (role === "--version") {
   console.log("credential-free-fixture");
 } else if (args.includes("rpc")) {
+  writeFileSync(
+    join(root, "resources.json"),
+    JSON.stringify(["delegate", "agent_runs", "intercom"]),
+  );
   console.log(
     JSON.stringify({
       type: "response",
       id: "commands",
       success: true,
       data: {
-        commands: ["intercom", "subagents-doctor", "skill:pi-intercom", "skill:pi-subagents"].map(
-          (name) => ({ name }),
-        ),
+        commands: ["skill:pi-intercom", "skill:pi-subagents"].map((name) => ({ name })),
       },
     }),
   );
@@ -184,10 +171,6 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   ) {
     const launcher = launch("launcher");
     launcher.unref();
-    appendFileSync(
-      sessionFile,
-      `${JSON.stringify({ type: "custom", customType: "subagent-run", data: { runId, ownerSessionId: sessionId, source: "async", pid: launcher.pid, asyncDir } })}\n`,
-    );
     while (!existsSync(join(evidence, "runner-ready"))) {
       // Child/broker readiness is published before the parent may emit its wire result.
       // oxlint-disable-next-line no-await-in-loop
@@ -209,11 +192,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       });
     }
   }
-  if (kind === "output") {
-    const outputPath = JSON.parse(prompt.match(/output to ("[^"]+")/)[1]);
-    writeFileSync(outputPath, "real-pi-smoke output ok\n");
-  }
-  const text = `real-pi-smoke ${kind === "async" ? `async launched ok Async: real-smoke [${runId}]` : `${kind} ok`}`;
+  const text = `real-pi-smoke ${kind === "async" ? "async launched ok" : `${kind} ok`}`;
   const message = {
     role: "assistant",
     provider: "fixture",
@@ -222,9 +201,48 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   };
   appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message })}\n`);
   const toolName = promptTool(kind);
+  const details =
+    kind === "fork"
+      ? {
+          id: runId,
+          status: "completed",
+          context: "fresh",
+          sessionFile,
+          output: { text: "CALIBRATION_FACT=packed-otter-7319" },
+        }
+      : {
+          id: runId,
+          sessionFile: join(asyncDir, "child.jsonl"),
+          receipt: "launch",
+          status: "completed",
+          output: { text: "real-pi-smoke foreground ok" },
+        };
   for (const event of [
     { type: "tool_execution_start", toolName },
-    { type: "tool_execution_end", toolName, isError: false },
+    {
+      type: "tool_execution_end",
+      toolName,
+      isError: false,
+      result: {
+        details,
+      },
+    },
+    ...(kind === "fork"
+      ? [
+          {
+            type: "tool_execution_end",
+            toolName: "delegate",
+            isError: false,
+            result: { details: { ...details, context: "fork" } },
+          },
+          {
+            type: "tool_execution_end",
+            toolName: "agent_runs",
+            isError: false,
+            result: { details: { ...details, predecessor: runId } },
+          },
+        ]
+      : []),
     { type: "message_end", message },
     { type: "agent_settled" },
   ]) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { availableParallelism, tmpdir } from "node:os";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 
 // ponytail: integration is sized for the 3-vCPU macOS hosted runner, where the suite takes
@@ -81,7 +81,7 @@ function testFiles(dir) {
 function sanitizedEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PI_SUBAGENT_")) {
+    if (key.startsWith("PI_SUBAGENT_") || key.startsWith("PI_INTERCOM_")) {
       delete env[key];
     }
   }
@@ -91,9 +91,10 @@ function sanitizedEnv() {
 function runNodeTest(label, files, timeoutMs, concurrency) {
   const args = [...(concurrency ? [`--test-concurrency=${concurrency}`] : []), "--test", ...files];
   const startedAt = Date.now();
-  const tempRoot = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
+  const tempRoot = mkdtempSync(join("/tmp", "pi-subagents-test-"));
   const env = sanitizedEnv();
   env.PI_SUBAGENT_TEMP_ROOT = tempRoot;
+  env.PI_INTERCOM_RUNTIME_DIR = join(tempRoot, "ic");
   env.HOME = tempRoot;
   delete env.PI_CODING_AGENT_DIR;
   let result;

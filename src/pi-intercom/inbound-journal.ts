@@ -1,22 +1,15 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { IntercomLifecycle } from "./lifecycle.ts";
-import { isDurableSupervisorQuestion, type ReplyTracker } from "./reply-tracker.ts";
+import type { ReplyTracker } from "./reply-tracker.ts";
 import {
   INBOUND_CHECKPOINT_TYPE,
   type InboundCheckpoint,
   type InboundMessageEntry,
   type PendingInboundMessage,
-  type SubagentCompletion,
 } from "./runtime-types.ts";
-import {
-  isInboundCheckpoint,
-  isInboundEntry,
-  needsIntercom,
-  isReplaceableProgress,
-} from "./inbound-record.ts";
+import { isInboundCheckpoint } from "./inbound-record.ts";
 import { inboundIdFromCustomMessage } from "./message-format.ts";
 import { isRecord } from "./validation.ts";
-import { activateTools } from "../shared/lazy-tools.ts";
 
 /** Owns durable delivery stages, receipts and completion tombstones. */
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "currentSessionId" | "live">>;
@@ -28,7 +21,6 @@ export class InboundJournal {
   private readonly pending = new Map<string, PendingInboundMessage>();
   private readonly native = new Set<string>();
   private readonly consumed = new Set<string>();
-  private readonly completed = new Map<string, SubagentCompletion["children"][number]>();
   private reconciledLeaf: string | null = null;
   private readonly pi: ExtensionAPI;
   private readonly lifecycle: Lifecycle;
@@ -40,21 +32,13 @@ export class InboundJournal {
   }
   peerLeft(id: string): void {
     for (const pending of this.replies.listPending()) {
-      if (
-        pending.from.id === id &&
-        !isDurableSupervisorQuestion(pending.message) &&
-        this.pending.get(pending.message.id)?.stage !== "queued"
-      ) {
+      if (pending.from.id === id && this.pending.get(pending.message.id)?.stage !== "queued") {
         this.retire(pending.message.id);
       }
     }
     this.replies.expireSender(id);
     for (const pending of this.queued()) {
-      if (
-        pending.from.id === id &&
-        pending.message.expectsReply === true &&
-        !isDurableSupervisorQuestion(pending.message)
-      ) {
+      if (pending.from.id === id && pending.message.expectsReply === true) {
         this.pending.delete(pending.message.id);
         this.checkpoint({ messageId: pending.message.id, stage: "discarded" });
       }
@@ -72,9 +56,6 @@ export class InboundJournal {
   get(id: string): PendingInboundMessage | undefined {
     return this.pending.get(id);
   }
-  hasSeen(id: string): boolean {
-    return this.consumed.has(id) || this.pending.has(id);
-  }
   owns(entry: InboundMessageEntry): boolean {
     return !("stage" in entry) || this.pending.get(entry.message.id) === entry;
   }
@@ -88,9 +69,6 @@ export class InboundJournal {
     this.replies.markReplied(id);
     this.checkpoint({ messageId: id, stage });
   }
-  remove(id: string): boolean {
-    return this.pending.delete(id);
-  }
   consume(id: string): void {
     this.consumed.add(id);
     this.pending.delete(id);
@@ -103,7 +81,6 @@ export class InboundJournal {
     this.pending.clear();
     this.native.clear();
     this.consumed.clear();
-    this.completed.clear();
     this.reconciledLeaf = null;
   }
   keep(entry: PendingInboundMessage): void {
@@ -167,58 +144,11 @@ export class InboundJournal {
       (entry) => entry.stage === "native" && !this.native.has(entry.message.id),
     );
   }
-  rememberCompletion(entry: InboundMessageEntry): void {
-    const completion = entry.subagentCompletion;
-    if (
-      entry.from.id !== "subagent-result" ||
-      !completion ||
-      completion.ownerSessionId !== this.lifecycle.currentSessionId
-    ) {
-      return;
-    }
-    for (const child of completion.children) {
-      const thread = `subagent-progress:${completion.runId}:${child.agent}:${child.index}`;
-      if (child.status === "detached") {
-        this.completed.delete(thread);
-      } else {
-        this.completed.set(thread, child);
-      }
-    }
-    for (const pending of this.queued()) {
-      this.discardObsolete(pending);
-    }
-  }
-  discardObsolete(entry: InboundMessageEntry): boolean {
-    const message = entry.message;
-    if (!isReplaceableProgress(message)) {
-      return false;
-    }
-    const child = this.completed.get(message.threadId ?? "");
-    if (
-      !child ||
-      (entry.from.id !== child.intercomTarget && entry.from.name !== child.intercomTarget)
-    ) {
-      return false;
-    }
-    if (!this.pending.has(message.id)) {
-      this.remember(entry, "queued", "auto");
-    }
-    this.pending.delete(message.id);
-    this.replies.markReplied(message.id);
-    this.checkpoint({ messageId: message.id, stage: "discarded" });
-    return true;
-  }
-  reconcileTools(): void {
-    if (this.entries().some(needsIntercom) || this.replies.listPending().some(needsIntercom)) {
-      activateTools(this.pi, ["intercom"]);
-    }
-  }
   private restoreCheckpoint(data: unknown): void {
     if (!isInboundCheckpoint(data) || data.sessionId !== this.lifecycle.currentSessionId) {
       return;
     }
     if ("entry" in data) {
-      this.rememberCompletion(data.entry);
       this.replies.recordIncomingMessage(
         data.entry.from,
         data.entry.message,
@@ -245,9 +175,6 @@ export class InboundJournal {
   }
   private restoreEntry(item: SessionEntry): void {
     if (item.type === "custom_message") {
-      if (isInboundEntry(item.details)) {
-        this.rememberCompletion(item.details);
-      }
       const id = inboundIdFromCustomMessage(item);
       if (id !== undefined) {
         this.consumed.add(id);
@@ -278,7 +205,6 @@ export class InboundJournal {
   }
   *restore(ctx: ExtensionContext, generation: number): Generator<void, void> {
     this.consumed.clear();
-    this.completed.clear();
     const leaf = ctx.sessionManager.getLeafId();
     for (const metadata of ctx.sessionManager.getEntries()) {
       yield;
@@ -294,9 +220,6 @@ export class InboundJournal {
       return;
     }
     this.reconciledLeaf = leaf;
-    for (const entry of this.pending.values()) {
-      this.discardObsolete(entry);
-    }
   }
   private isRelevant(entry: SessionEntry): boolean {
     return (

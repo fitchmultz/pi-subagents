@@ -3,15 +3,10 @@ import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { IntercomConnection } from "./connection.ts";
 import type { InboundDeliveryOwner } from "./inbound-delivery.ts";
 import type { InboundJournal } from "./inbound-journal.ts";
-import { isDurableSupervisorQuestion, type ReplyTracker } from "./reply-tracker.ts";
+import type { ReplyTracker } from "./reply-tracker.ts";
 import type { ReplyWait } from "./reply-wait.ts";
-import type { IntercomTopics } from "./topics.ts";
-import type { SubagentEventBridges } from "./subagent-events.ts";
-import type { IntercomSupervisor } from "./supervisor.ts";
-import type { PeerAwareness } from "./peer-awareness.ts";
 import { RECIPIENT_TURN_FAILED_ATTACHMENT } from "./runtime-types.ts";
 import { getAssistantErrorMessage, inboundIdFromCustomMessage } from "./message-format.ts";
-import { restoreLazyTools } from "../shared/lazy-tools.ts";
 // The native lifecycle orchestrator explicitly owns these transitions, not other owner operations.
 type Lifecycle = Readonly<
   Pick<
@@ -38,10 +33,7 @@ type Connection = Readonly<
   >
 >;
 type Journal = Readonly<
-  Pick<
-    InboundJournal,
-    "clearNative" | "consume" | "reconcileConsumed" | "reconcileTools" | "reset" | "retire"
-  >
+  Pick<InboundJournal, "clearNative" | "consume" | "reconcileConsumed" | "reset" | "retire">
 >;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "reject">>;
 type InboundDeliveryHandle = Readonly<
@@ -50,7 +42,6 @@ type InboundDeliveryHandle = Readonly<
     "clearTimer" | "drain" | "flush" | "redeliver" | "reset" | "schedule" | "start"
   >
 >;
-type TopicOwner = Readonly<Pick<IntercomTopics, "start">>;
 type Replies = Readonly<
   Pick<ReplyTracker, "beginTurn" | "currentTurn" | "endAgent" | "endTurn" | "reset">
 >;
@@ -62,10 +53,6 @@ interface SessionOwners {
   readonly journal: Journal;
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
-  readonly topics: TopicOwner;
-  readonly bridges: Readonly<Pick<SubagentEventBridges, "start" | "stop" | "drain">>;
-  readonly supervisor: Readonly<Pick<IntercomSupervisor, "drain">> | null;
-  readonly awareness: Readonly<Pick<PeerAwareness, "reset" | "beforeStart">> | null;
 }
 /** Native phase ordering is centralized here; each resource is cleaned by its owner. */
 export class IntercomSessionEvents {
@@ -76,31 +63,23 @@ export class IntercomSessionEvents {
     this.owners = owners;
   }
   private async start(reason: string, ctx: ExtensionContext): Promise<void> {
-    const { lifecycle, bridges, awareness, connection, topics, delivery } = this.owners;
-    bridges.start();
+    const { lifecycle, connection, delivery } = this.owners;
     const generation = lifecycle.start(ctx);
-    awareness?.reset();
     connection.clearTimers();
-    topics.start(ctx);
-    if (reason !== "reload") {
-      restoreLazyTools(this.pi, ctx, "load_intercom", ["intercom"]);
-    }
     await delivery.start(ctx, reason, generation);
     if (lifecycle.live(ctx, generation)) {
       connection.start(ctx, generation);
     }
   }
   private async shutdown(): Promise<void> {
-    const { bridges, connection, delivery, wait, lifecycle, replies, journal, supervisor } =
-      this.owners;
-    bridges.stop();
+    const { connection, delivery, wait, lifecycle, replies, journal } = this.owners;
     connection.clearTimers();
     delivery.clearTimer();
     wait.reject(new Error("Session shutting down"));
     // Reload keeps the outgoing runner valid until native handoff completes.
     await delivery.drain();
     lifecycle.invalidate();
-    await Promise.allSettled([connection.shutdown(), bridges.drain(), supervisor?.drain()]);
+    await connection.shutdown();
     delivery.reset();
     replies.reset();
     journal.reset();
@@ -133,7 +112,7 @@ export class IntercomSessionEvents {
         replyTo: context.message.id,
         attachments: [{ type: "context", name: RECIPIENT_TURN_FAILED_ATTACHMENT, content: error }],
       });
-      if (result.delivered && !isDurableSupervisorQuestion(context.message)) {
+      if (result.delivered) {
         journal.retire(context.message.id);
       }
     } catch {
@@ -141,7 +120,7 @@ export class IntercomSessionEvents {
     }
   }
   private registerSessionBoundaries(): void {
-    const { lifecycle, connection, journal, awareness } = this.owners;
+    const { lifecycle, connection, journal } = this.owners;
     this.pi.on("session_start", async (event, ctx) => {
       await this.start(event.reason, ctx);
     });
@@ -158,13 +137,6 @@ export class IntercomSessionEvents {
       if (lifecycle.live(ctx)) {
         journal.reconcileConsumed(ctx, true);
       }
-      journal.reconcileTools();
-    });
-    this.pi.on("session_compact", () => {
-      journal.reconcileTools();
-    });
-    this.pi.on("before_agent_start", async (event, ctx) => {
-      await awareness?.beforeStart(event, ctx);
     });
     this.pi.on("model_select", (event, ctx) => {
       if (!lifecycle.live(ctx)) {

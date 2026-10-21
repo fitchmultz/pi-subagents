@@ -1,113 +1,59 @@
 ---
 name: pi-intercom
-description: "Coordinate local Pi sessions with pi-intercom: list peers, send updates, ask blocking questions, reply to inbound asks, use contact_supervisor, or handle pi-subagents escalations. Do not use for generic chat, remote/cross-machine messaging, unrelated repos, routine subagent completion, or work this session can finish."
+description: "Discover eligible local Pi sessions, send guidance, ask/reply, or read a peer's last completed response without waking it. Use for same-machine Pi coordination, not generic chat or unrelated remote messaging."
 ---
 
 # Pi Intercom
 
-## Goal
+The `intercom` tool is eager. There is no loader, separate child supervisor tool,
+workflow UI, or topic registry.
 
-Coordinate named Pi sessions on the same machine with the least context loss and the fewest interruptions.
+1. Use `intercom({action:"list"})` before choosing a peer. Default discovery spans
+   projects and agent directories under the same OS user; optional
+   `scope:"project"` filters to this repository and its worktrees.
+2. Pick the exact displayed target. Names are not unique; resolve ambiguity rather
+   than guessing. The current session is not a peer target.
+3. Choose the lightest operation:
+   - `send`: non-blocking guidance/corrections/blockers; default delivery steers.
+   - `last`: original last completed assistant text, without waking the peer.
+   - `ask`: bounded correlated wait only when the sender must stay alive waiting.
+   - `reply`: answer the active/sole pending ask, or specify `replyTo` when ambiguous.
+   - `pending`: unresolved inbound asks and their correlation.
+   - `status`: connection, peer health and inbound queue state.
+4. Handle the actual outcome. Broker acceptance is not recipient persistence,
+   model consumption, a reply, completion, or process exit. Do not replay an
+   uncertain side effect merely because its response was lost.
 
-## Source of truth
+## Topology
 
-- Fresh sessions keep the peer schema behind `load_intercom({})`; presence and delivery remain active. Actionable inbound/recovered reply needs load it automatically. Presence alone, passive or routine child notices, and human chat messages do not.
-- A bounded ambient hint may report that same-project peers are connected. It is a constant count-free string and never sends a message; use `intercom({ action: "list" })` before choosing a target.
-- `intercom({ action: "list" })` is the source of truth for targetable sessions in the current Git repository and its worktrees. Use `intercom({ action: "list", scope: "all" })` only when intentionally discovering connected sessions in other projects. Both scopes show only intercom-connected sessions, not every Pi process, with live ask capability, busy/idle/unknown state, recent intercom activity, and delivery guidance. The current-session row is not targetable; choose a peer from Other sessions.
-- Tool call shapes and options live in the live `intercom` / `contact_supervisor` schemas, `docs/intercom.md`, and `src/pi-intercom/index.ts`. Read those when a parameter detail is needed; do not invent fields.
-- Pi CLI flags for local peer sessions are `--name`, `--extension`, and `--skill`.
+A main and its children form one group. Every pair inside it can communicate.
+Mains can also communicate with other mains. Children cannot discover, send to,
+or read a foreign group's agents—even with an exact ID. Only mains delegate;
+there is one level. Cwd and agentDir do not define groups. These are coordination
+rules, not a sandbox against other code running as the same OS user.
 
-## Use when
+## Delivery and paging
 
-- Delegating a bounded task to another already-running Pi session.
-- Sending findings, code snippets, file context, progress, or blockers to a specific session.
-- Asking a peer for a decision or clarification you need before continuing.
-- Replying to an inbound intercom ask.
-- Handling a formatted `pi-subagents` supervisor escalation.
+Default `send` steers at the next tool boundary or wakes an idle peer. Explicit
+`delivery:"queue"` intentionally defers. Explicit `delivery:"passive"` never wakes
+and is for breadcrumbs, not actionable work. Ordinary live agent guidance should
+not be passive.
 
-## Do not use when
+`last` returns a stable entry ID and offsets. Follow its exact next-page call to
+retrieve all text; offsets are UTF-16 code units, not bytes. A read never sends a
+model prompt. It does not substitute a fabricated status summary for the answer.
 
-- The current session can finish the work directly.
-- The target is remote or on another machine; pi-intercom is local IPC only.
-- The task is unrelated to the recipient's repo or role.
-- A normal `subagent` run is enough and no visible peer conversation is needed.
-- The message would expose secrets, tokens, passwords, private data, or unrelated user context without explicit approval.
-- Routine subagent completion or final handoff; return that through `pi-subagents`, not intercom/`contact_supervisor`.
+Keep messages compact and self-contained: objective, scope, files, authority,
+stop boundary, and expected reply. Never attach secrets or unrelated private
+context. Use ordinary run completion for delegated handoff, not duplicate sends.
 
-## Default workflow
+## Recovery
 
-1. Decide whether a peer is actually needed. If not, keep working locally.
-2. Call `load_intercom({})` if `intercom` is inactive, then discover targets with `intercom({ action: "list" })` before sending. This defaults to the current repository and its worktrees; use `scope: "all"` only for intentional cross-project coordination.
-3. Pick the displayed name or target ID exactly. If names collide, use the target shown by `list`. Never message the current session.
-4. Choose the lightest action:
+If a target disappears, list again. A timeout is not a reply. Multiple pending
+asks require explicit correlation. Ordinary asks do not recreate the retired
+persistent supervisor question/approval workflow.
 
-| Action    | Use for                                                                               | Effect                                                                                                                                                                                                                                            |
-| --------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`    | Guidance, answers, corrections, blockers, context, or other non-blocking coordination | Defaults to steer: it wakes idle recipients or reaches busy recipients at the next tool boundary, then returns after broker acceptance. Use explicit queue only when delay is intentional and passive only for human-visible breadcrumbs.         |
-| `ask`     | A required answer when this process must remain alive waiting for it                  | Use `delivery:"steer"`; waits up to `askTimeoutMs` (default 2 minutes). Default asks to peers reporting `accepts_asks:false` return `delivered:true`, `replied:false`, `reason:"peer_busy"`, while explicit steer asks keep waiting; not passive. |
-| `reply`   | Answering an inbound ask                                                              | Uses the active ask, or the single pending ask                                                                                                                                                                                                    |
-| `pending` | Multiple or delayed inbound asks                                                      | Lists unresolved asks so you can disambiguate                                                                                                                                                                                                     |
-| `status`  | Troubleshooting connection state                                                      | Shows connection, active session count, and the same live recipient capability/guidance rows as `list`                                                                                                                                            |
-
-5. Write compact messages with objective, scope, relevant files, stop boundary, and expected reply. Attachments only when the recipient needs the extra context.
-6. For live agent-to-agent coordination, use non-blocking `send`; omitted delivery steers by default. Then end the turn or continue independent work. Use explicit queue only when delay is intentional; optional `delivery:"queue", queueMode:"replace", threadId:"<non-empty>"` keeps only the latest undelivered update for that thread.
-7. Treat inbound steers as coordination within the active task: incorporate relevant context and continue. Replace the task only when the message explicitly says so. Reply to an active ask with `reply`; otherwise respond with default-steered `send`.
-8. Use blocking `ask` only when this process must stay alive and cannot safely continue without the answer. After any tool result, handle the reply or error; do not assume delivery after failure.
-
-## Quiet current state
-
-Use explicit `subscribe` / `unsubscribe` with an exact `topic`, and `publish` with a self-contained `message`. Routine `event: "update"` replaces one inspectable record per sender/topic without entering model context or waking a turn; inspect with `topics` or `/intercom topics`. Use resource-specific names for browser/tab ownership. `resource` + `ownership: "held" | "released"` is advisory state, not a lock; disconnection means unavailable, not released. Blocker/decision events steer subscribers; release events steer only subscriptions using `awaitRelease: true`. Direct messages always bypass subscriptions. Skip redundant status prose and keep material findings in the final task result.
-
-## Supervisor escalations from pi-subagents
-
-When present, child sessions get a child-only `contact_supervisor` tool; normal sessions use `intercom`. Do not assume `contact_supervisor` exists unless the tool is listed.
-
-Child-side reasons only: blocking `need_decision` or `interview_request` when the ephemeral child cannot safely continue and must remain alive for the reply, or a non-blocking `progress_update` for a discovery or change the supervisor needs while working. Progress steers at the next tool boundary; skip starts, redundant status, and routine completion, and retain material findings in the final result.
-
-Supervisor-side: while connected, `intercom` `reply` answers formatted child escalations. After reload/reconnect, resume the same saved supervisor session, list `agent_runs({ action: "questions" })`, and use `agent_runs({ action: "answer", id, questionId, message })`. These questions do not use the ordinary ask timeout. A nudge is not an answer. Saved answers reach a live waiter or revive an exited child's saved session; a receipt does not mean the work completed. Use `agent_runs({ action: "stop", id })` to cancel a pending question and its live waiter.
-
-| Type                | Meaning                                                          | Supervisor response                     |
-| ------------------- | ---------------------------------------------------------------- | --------------------------------------- |
-| `need_decision`     | Child cannot safely continue without one decision or approval    | Reply promptly with a clear decision    |
-| `interview_request` | Child cannot safely continue without multiple structured answers | Reply with JSON using the requested ids |
-| `progress_update`   | Child steers a material discovery needed during active work      | Read it; reply only if redirecting      |
-
-Interview replies use plain JSON or a fenced JSON block. `info` questions are context only and need no response entries:
-
-```json
-{
-  "responses": [
-    { "id": "api", "value": "Stable API" },
-    { "id": "constraints", "value": "Keep the public error shape unchanged." }
-  ]
-}
-```
-
-If a subagent status line advertises an intercom target, trust it only when that target appears in `intercom({ action: "list" })`. If absent, use `agent_runs` inspection, continuation, nudging, or result artifacts; the child may be Claude Code-backed or already exited and have no child-side `contact_supervisor`. From a parent session, prefer `agent_runs({ action: "nudge", id, message })` for non-blocking live child coordination; it supplements the active child task unless it explicitly replaces it. Use direct `intercom({ action: "ask", to, delivery: "steer", message })` only when the parent process must remain alive and cannot safely continue without a listed child reply.
-
-## Optional visible peer sessions
-
-Read `references/peer-sessions.md` before starting a new visible peer session. Spawn one only when all are true:
-
-- No connected peer from `intercom({ action: "list" })` already fits.
-- The user benefits from watching or resuming a long-lived peer conversation.
-- The peer works in the same repo or an intentional reference repo.
-- You can run a smoke ask before delegating real work.
-
-## Failure handling
-
-- No other project sessions: do not invent a target. Use `scope: "all"` only when cross-project coordination is intentional; otherwise start a peer only if the optional visible-peer rule holds.
-- `Session not found`: run `list`, choose the exact displayed target, then retry if still useful.
-- `Already waiting for a reply`: wait for the current ask, use `send` for non-blocking context, or continue local work.
-- Multiple pending asks: run `pending`, then use its copy-ready `reply` call or disambiguate with the displayed `to` or `replyTo` value.
-- Ask timeout: summarize the blocked decision and continue only with safe local work.
-- Busy non-interactive recipient auto-reply: it cannot respond while running; use subagent controls or wait.
-
-## Completion evidence
-
-A good intercom-assisted turn ends with:
-
-- Target came from `list` or from the active inbound ask.
-- Action matched intent: default-steered `send` for live coordination, `ask` only for a required blocking reply, `reply` for an inbound ask, explicit queue only for intentional delay, and passive only when deliberately not waking the model.
-- Delivery result or failure was handled.
-- Any spawned peer was smoke-tested and either still needed or cleaned up.
+Old agent-directory brokers may coexist during migration; updated sessions use
+the same-user broker. Do not kill another broker or change runtime configuration
+to force discovery. Only intercom-connected eligible sessions appear, not all
+open Pi processes. See `docs/intercom.md` for broker and persistence contracts.

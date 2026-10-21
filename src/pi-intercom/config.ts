@@ -1,12 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Key, type KeyId } from "@earendil-works/pi-tui";
 import { getPiAgentDir } from "./agent-dir.ts";
 import { isRecord, isUnknownArray } from "./validation.ts";
 
 export interface IntercomConfig {
-  /** Toggle owned agents, or open peer messaging when the agent view is unavailable. */
-  readonly shortcut: KeyId;
   /** Broker command used to spawn the broker process (for example, Node or Bun). */
   readonly brokerCommand: string;
   /** Arguments passed to the broker command before the broker script path. */
@@ -25,7 +22,6 @@ export interface IntercomConfig {
   readonly listTimeoutMs: number;
 }
 const defaults: IntercomConfig = {
-  shortcut: Key.altShift("m"),
   brokerCommand: process.execPath,
   brokerArgs: [],
   confirmSend: false,
@@ -34,15 +30,6 @@ const defaults: IntercomConfig = {
   sendTimeoutMs: 8000,
   listTimeoutMs: 5000,
 };
-const namedKeys = new Set<string>(Object.values(Key).filter((key) => typeof key === "string"));
-function isShortcut(value: string): value is KeyId {
-  const prefix = value.match(/^(?:(?:ctrl|shift|alt|super)\+)+/)?.[0] ?? "";
-  const modifiers = prefix.split("+").filter(Boolean);
-  const key = value.slice(prefix.length);
-  return (
-    new Set(modifiers).size === modifiers.length && (namedKeys.has(key) || /^[a-z0-9]$/.test(key))
-  );
-}
 function configuredString(
   parsed: Readonly<Record<string, unknown>>,
   key: "brokerCommand" | "status",
@@ -64,19 +51,6 @@ function configuredString(
 }
 function brokerCommand(parsed: Readonly<Record<string, unknown>>): string {
   return configuredString(parsed, "brokerCommand") ?? defaults.brokerCommand;
-}
-function configuredShortcut(parsed: Readonly<Record<string, unknown>>): KeyId {
-  if (!Object.hasOwn(parsed, "shortcut")) {
-    return defaults.shortcut;
-  }
-  if (typeof parsed.shortcut !== "string") {
-    throw new Error('"shortcut" must be a native key identifier');
-  }
-  const shortcut = parsed.shortcut.trim();
-  if (!isShortcut(shortcut)) {
-    throw new Error('"shortcut" must be a native key identifier, for example alt+shift+m');
-  }
-  return shortcut;
 }
 function configuredArgs(parsed: Readonly<Record<string, unknown>>): readonly string[] {
   if (!Object.hasOwn(parsed, "brokerArgs")) {
@@ -130,7 +104,6 @@ export function loadConfig(): IntercomConfig {
       throw new Error("Config must be a JSON object");
     }
     return {
-      shortcut: configuredShortcut(parsed),
       brokerCommand: brokerCommand(parsed),
       brokerArgs: configuredArgs(parsed),
       confirmSend: configuredBoolean(parsed, "confirmSend"),

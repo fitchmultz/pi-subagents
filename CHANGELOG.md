@@ -1,18 +1,28 @@
 # Changelog
 
-## Unreleased
+## [0.50.0] - Unreleased
 
-### Changed
+### Breaking
 
-- Consolidate the bundled roster from 17 to 12 profiles: use `worker` instead of the `delegate` and `fixer` profiles, `scout`/`planner` instead of `context-builder`, and `reviewer` instead of `reviewer-gpt` or `reviewer-ponytail`. The `delegate` tool remains unchanged; retired profile names have no automatic aliases.
-- Document migration of `pi-prompt-template-model`'s implicit `delegate` selections: choose `subagent: worker` and explicit worker/final-applier agents, or supply your own `delegate` profile.
-- Shorten the remaining profile prompts to project-agnostic role and authority contracts. Dispatchers supply task context, acceptance criteria, verification policy and venue, output instructions, and review focus; read-only boundaries, inherited project rules, leaf guards, and monitoring lifecycle remain intact.
-- Use Sol xhigh for scout and watcher defaults, with an Opus fallback for watcher. Pin the existing non-Claude oracle/security fallback to GLM high rather than requesting unsupported xhigh.
+- Replace the multi-profile workflow engine with one implicit native agent type and three tools: `delegate`, `agent_runs`, and `intercom`. The invoking agent supplies the entire assignment; user agent Markdown and profile/model catalogs no longer configure delegation. Remove `load_subagent`, `subagent`, `load_intercom`, `contact_supervisor`, conditional `structured_output`, chains/fanout DSL, profile administration, Claude Code backend, and durable supervisor-question revival.
+- Use one same-OS-user broker namespace, independent of project and agent directory. Main agents communicate across groups; children communicate only with their main and siblings and cannot spawn. During cutover, drain work and reload every participating Pi session onto the same approved version before resuming bridge traffic; old namespaces are not transparently joined.
+- Retire remote launch/resume/control, saved-session/transcript/catalog/group/broadcast and synchronous ask/reply routes. Grok bots retain authenticated peer discovery and durable messaging, not remote agent orchestration or observation. Replies use correlated `send`; ACK transfers complete reply duties to the consumer mailbox. Upgrade the helper and Box client/worker as a reviewed pair, including offline receipt reconciliation and saved prompt/routine migration. Preserve journals, mail, quota and reservation history for rollback.
+- Ignore the deprecated client `launch` configuration key with a metadata warning; it grants no capability. Other unknown configuration fields still fail closed and report the offending field safely. Existing credentials and settings are not automatically rewritten.
+
+### Added
+
+- Read-only TUI agent status and `/agents` list/watch, without a model turn or human dispatch controls. Watches show native published text, tool calls and results, not unpublished provider token deltas.
+- Stable paged `intercom last` reads without waking the recipient, metadata-only run inventory, and explicit per-run guidance admission, receipt-publication and process-exit facts.
 
 ### Fixed
 
-- Explicit adapter-only `mcp:` child selections now fail before model dispatch when any requested server or tool lacks active adapter-owned publication, including partially satisfied lists, instead of silently using an incomplete/default loadout. Launch admission uses current adapter namespaces rather than copied configuration/cache discovery, and does not discard later extension input after a loadout change. Native MCP names remain adapter-independent when the child excludes the adapter; mixed native allowlists retain their existing prelaunch name-hint limits.
-- Stop model retry/fallback for deterministic child MCP-selection and directory-initialization failures, even when selected names or paths contain provider-error keywords.
+- Preserve orchestration tool results in forked child context instead of filtering the coordinating agent's evidence.
+- Keep Stop commands scoped to their target actor generation; an unadmitted predecessor Stop cannot mark a successor stopped.
+- Disclose stale guidance to model-visible inspection callers; never hide rejected follow-ups only in extension details.
+- Require a concrete resolved recipient for asks before sending; retain exact reply-sender identity checks across peer registration races.
+- Include length-ended completed responses in `last`; ignore unpublished launch directories during listing/reconciliation while retaining their native session evidence. Preserve published uncertain launch claims, visible corruption errors and conservative cold-Stop process identity checks.
+
+This is an unpublished breaking-release candidate. Merge, publication, installation and paired bridge cutover remain separate approval gates; no live runtime is changed by this PR.
 
 ## [0.49.1] - 2026-10-15
 

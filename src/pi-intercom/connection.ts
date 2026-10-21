@@ -4,19 +4,17 @@ import type { IntercomTransport } from "./transport.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
-import type { IntercomTopics } from "./topics.ts";
-import type { Message, SessionInfo, TopicChange } from "./types.ts";
-import { asError, errorMessage } from "./validation.ts";
+import type { LastMessageQuery, Message, SessionInfo } from "./types.ts";
+import { readLastMessage } from "./last-message.ts";
+import { asError } from "./validation.ts";
 import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
 
-export type ConnectionReason = "startup" | "background" | "tool" | "overlay" | "peer-awareness";
 type Lifecycle = Readonly<
   Pick<
     IntercomLifecycle,
     "currentSessionId" | "generation" | "health" | "identity" | "live" | "registration" | "status"
   >
 >;
-type TopicOwner = Readonly<Pick<IntercomTopics, "disconnected" | "presence" | "refresh">>;
 
 interface ConnectionHooks {
   readonly restoring: () => Promise<void> | undefined;
@@ -33,41 +31,23 @@ export class IntercomConnection {
   private connecting: Promise<IntercomTransport> | null = null;
   private connectingGeneration: number | null = null;
   private attempt = 0;
-  private syncError: string | undefined;
   private readonly lifecycle: Lifecycle;
   private readonly config: IntercomConfig;
-  private readonly topics: TopicOwner;
   private readonly hooks: ConnectionHooks;
-  constructor(
-    lifecycle: Lifecycle,
-    config: IntercomConfig,
-    topics: TopicOwner,
-    hooks: ConnectionHooks,
-  ) {
+  constructor(lifecycle: Lifecycle, config: IntercomConfig, hooks: ConnectionHooks) {
     this.lifecycle = lifecycle;
     this.config = config;
-    this.topics = topics;
     this.hooks = hooks;
   }
   get active(): IntercomTransport | null {
     return this.client;
   }
-  get topicSyncError(): string | undefined {
-    return this.syncError;
-  }
-  get isConnecting(): boolean {
-    return this.startupTimer !== null || this.connecting !== null;
-  }
-  clearTopicSyncError(): void {
-    this.syncError = undefined;
-  }
   start(ctx: ExtensionContext, generation: number): void {
     this.attempt = 0;
-    this.syncError = undefined;
     this.clearTimers();
     this.scheduleStartup(ctx, generation);
   }
-  clearStartup(): void {
+  private clearStartup(): void {
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
@@ -83,14 +63,14 @@ export class IntercomConnection {
     this.clearStartup();
     this.clearReconnect();
   }
-  scheduleStartup(ctx: ExtensionContext, generation: number): void {
+  private scheduleStartup(ctx: ExtensionContext, generation: number): void {
     this.clearStartup();
     this.startupTimer = setTimeout(() => {
       this.startupTimer = null;
       if (!this.lifecycle.live(ctx, generation)) {
         return;
       }
-      this.ensure("startup").catch(() => {
+      this.ensure().catch(() => {
         if (!this.lifecycle.live(ctx, generation)) {
           return;
         }
@@ -113,7 +93,7 @@ export class IntercomConnection {
         return;
       }
       this.attempt += 1;
-      this.ensure("background").catch(() => {
+      this.ensure().catch(() => {
         /* ensure owns the next retry after settlement. */
       });
     }, delay);
@@ -142,6 +122,35 @@ export class IntercomConnection {
       listTimeoutMs: this.config.listTimeoutMs,
     });
     this.client = next;
+    next.on(
+      "last_request",
+      (request: { readonly requestId: string; readonly query: LastMessageQuery }) => {
+        const ctx = this.lifecycle.live();
+        const id = next.sessionId;
+        if (this.client !== next || !ctx || id === null) {
+          next.respondLast(request.requestId, { error: "Intercom runtime no longer active" });
+          return;
+        }
+        try {
+          next.respondLast(
+            request.requestId,
+            readLastMessage(
+              ctx.sessionManager,
+              {
+                id,
+                ...this.lifecycle.identity(ctx.sessionManager.getSessionId()),
+                cwd: ctx.cwd,
+                model: ctx.model?.id ?? "unknown",
+                status: this.lifecycle.status(),
+              },
+              request.query,
+            ),
+          );
+        } catch (error) {
+          next.respondLast(request.requestId, { error: asError(error).message });
+        }
+      },
+    );
     next.on("message", (from: SessionInfo, message: Message) => {
       const ctx = this.lifecycle.live();
       if (this.client !== next || !ctx) {
@@ -155,7 +164,6 @@ export class IntercomConnection {
       if (this.client !== next) {
         return;
       }
-      this.topics.disconnected(id);
       this.hooks.peerLeft(id);
     });
     next.on("disconnected", (error: Readonly<Error>) => {
@@ -164,7 +172,6 @@ export class IntercomConnection {
       }
       this.hooks.disconnected(error);
       this.client = null;
-      this.topics.disconnected();
       this.clearReconnect();
       this.scheduleReconnect();
     });
@@ -173,63 +180,14 @@ export class IntercomConnection {
     });
     return next;
   }
-  private async restoreTopics(active: IntercomTransport): Promise<string | undefined> {
-    const changes: TopicChange[] = [
-      ...[...this.topics.presence().topics].map((topic): TopicChange => ({
-        action: "restore",
-        topic,
-      })),
-      ...[...this.topics.presence().subscriptions].map((subscription): TopicChange => ({
-        action: "restore",
-        subscription,
-      })),
-    ];
-    let failure: string | undefined;
-    for (const change of changes) {
-      try {
-        // Restore order preserves publication/subscription admission and bounded transport pressure.
-        // oxlint-disable-next-line no-await-in-loop
-        await active.updateTopics(change);
-      } catch (error) {
-        if (!active.isConnected()) {
-          throw error;
-        }
-        failure ??= errorMessage(error);
-      }
-    }
-    return failure;
-  }
-  private async synchronizeTopics(
-    next: IntercomTransport,
-    ctx: ExtensionContext,
-    generation: number,
-  ): Promise<void> {
-    if (!next.supportsTopics) {
-      this.topics.disconnected();
-      return;
-    }
-    const failure = await this.restoreTopics(next);
-    const sessions = await next.listSessions();
-    if (!this.lifecycle.live(ctx, generation)) {
-      return;
-    }
-    this.syncError = failure;
-    this.topics.refresh(sessions);
-    if (failure !== undefined && failure !== "" && next.sessionId !== null) {
-      this.topics.disconnected(next.sessionId);
-    }
-  }
   private async connect(
-    reason: ConnectionReason,
     ctx: ExtensionContext,
     generation: number,
     sessionId: string,
   ): Promise<IntercomTransport> {
     const next = this.createClient();
     try {
-      if (reason !== "peer-awareness") {
-        await spawnBrokerIfNeeded(this.config.brokerCommand, this.config.brokerArgs);
-      }
+      await spawnBrokerIfNeeded(this.config.brokerCommand, this.config.brokerArgs);
       await next.connect(
         await this.lifecycle.registration(this.hooks.pendingAsks()),
         nativePeerId(sessionId),
@@ -241,20 +199,19 @@ export class IntercomConnection {
       this.client = next;
       this.syncIdentity(ctx.sessionManager.getSessionId());
       this.attempt = 0;
-      await this.synchronizeTopics(next, ctx, generation);
       return next;
     } catch (error) {
       if (this.client === next) {
         this.client = null;
       }
-      // A failed topic snapshot can leave a registered socket alive; the attempt still owns it.
+      // A failed registration still owns its socket.
       await next.disconnect().catch((cleanupError: unknown) => {
         console.error("Intercom failed connection cleanup:", cleanupError);
       });
       throw asError(error);
     }
   }
-  async ensure(reason: ConnectionReason): Promise<IntercomTransport> {
+  async ensure(): Promise<IntercomTransport> {
     const generation = this.lifecycle.generation;
     const restoring = this.hooks.restoring();
     if (restoring) {
@@ -276,7 +233,7 @@ export class IntercomConnection {
     }
     this.clearReconnect();
     // Publish ownership before registration, which can synchronously invoke subscribers.
-    const attempt = Promise.resolve().then(() => this.connect(reason, ctx, generation, sessionId));
+    const attempt = Promise.resolve().then(() => this.connect(ctx, generation, sessionId));
     this.connecting = attempt;
     this.connectingGeneration = generation;
     return await this.finishAttempt(attempt, ctx, generation);

@@ -13,11 +13,10 @@ import type {
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { createMutationCompletionTracker } from "../../src/runs/shared/mutating-tool-guard.ts";
 
 const editor = process.env.PI_EDITOR_RECEIPT_TEST_ROOT;
 test(
-  "actual editor receipts reach the mutation guard through native tool events",
+  "actual editor receipts survive the single extension through native publication",
   { skip: editor === undefined || editor === "", timeout: 30_000 },
   async (t) => {
     assert.ok(editor !== undefined && editor !== "", "actual native editor checkout is configured");
@@ -46,74 +45,83 @@ test(
       compaction: { enabled: false },
       retry: { enabled: false },
     });
-    const loader = new sdk.DefaultResourceLoader({
-      cwd,
-      agentDir: cwd,
-      settingsManager,
-      noExtensions: true,
-      noSkills: true,
-      noContextFiles: true,
-      noThemes: true,
-      noPromptTemplates: true,
-      additionalExtensionPaths: [path.join(editor, "extensions/apply-edits.ts")],
-      extensionsOverride(base) {
-        for (const extension of base.extensions) {
-          for (const { definition } of extension.tools.values()) {
-            if (definition.name !== "write_files") {
-              continue;
-            }
-            const execute = definition.execute.bind(definition);
-            definition.execute = async (
-              id: string,
-              params: unknown,
-              signal: AbortSignal | undefined,
-              update: AgentToolUpdateCallback<unknown> | undefined,
-              ctx: ExtensionToolContext,
-            ) => {
-              if (array(record(params).files).length !== 3) {
-                return execute(id, params, signal, update, ctx);
-              }
-              const cancellation = new AbortController();
-              return execute(
-                id,
-                params,
-                cancellation.signal,
-                (progress) => {
-                  update?.(progress);
-                  if (
-                    progress.content.some(
-                      (part) => part.type === "text" && part.text.startsWith("Completed 1/"),
-                    )
-                  ) {
-                    cancellation.abort();
-                  }
-                },
-                ctx,
-              );
-            };
-          }
-        }
-        return base;
-      },
-    });
-    await loader.reload();
-    assert.deepEqual(loader.getExtensions().errors, []);
-    const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
-    const { session } = await sdk.createAgentSession({
+    const services = await sdk.createAgentSessionServices({
       cwd,
       agentDir: cwd,
       modelRuntime,
-      model: faux.getModel(),
       settingsManager,
-      resourceLoader: loader,
-      sessionManager: manager,
+      resourceLoaderOptions: {
+        noExtensions: true,
+        noSkills: true,
+        noContextFiles: true,
+        noThemes: true,
+        noPromptTemplates: true,
+        additionalExtensionPaths: [
+          path.resolve("src/index.ts"),
+          path.join(editor, "extensions/apply-edits.ts"),
+        ],
+        extensionsOverride(base) {
+          for (const extension of base.extensions) {
+            for (const { definition } of extension.tools.values()) {
+              if (definition.name !== "write_files") {
+                continue;
+              }
+              const execute = definition.execute.bind(definition);
+              definition.execute = async (
+                id: string,
+                params: unknown,
+                signal: AbortSignal | undefined,
+                update: AgentToolUpdateCallback<unknown> | undefined,
+                ctx: ExtensionToolContext,
+              ) => {
+                if (array(record(params).files).length !== 3) {
+                  return execute(id, params, signal, update, ctx);
+                }
+                const cancellation = new AbortController();
+                return execute(
+                  id,
+                  params,
+                  cancellation.signal,
+                  (progress) => {
+                    update?.(progress);
+                    if (
+                      progress.content.some(
+                        (part) => part.type === "text" && part.text.startsWith("Completed 1/"),
+                      )
+                    ) {
+                      cancellation.abort();
+                    }
+                  },
+                  ctx,
+                );
+              };
+            }
+          }
+          return base;
+        },
+      },
     });
+    assert.deepEqual(services.resourceLoader.getExtensions().errors, []);
+    const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
+    const runtime = await sdk.createAgentSessionRuntime(
+      async ({ sessionManager }) => ({
+        ...(await sdk.createAgentSessionFromServices({
+          services,
+          sessionManager,
+          model: faux.getModel(),
+        })),
+        services,
+        diagnostics: services.diagnostics,
+      }),
+      {
+        cwd,
+        agentDir: cwd,
+        sessionManager: manager,
+      },
+    );
+    const { session } = runtime;
     const errors: unknown[] = [];
-    const receipts: Array<{
-      message: ToolResultMessage;
-      tracked: ReturnType<typeof tracker.recordToolResult>;
-    }> = [];
-    const tracker = createMutationCompletionTracker();
+    const receipts: ToolResultMessage[] = [];
     await session.bindExtensions({
       mode: "json",
       onError: (error) => {
@@ -121,20 +129,13 @@ test(
       },
     });
     session.subscribe((event) => {
-      if (event.type === "tool_execution_start") {
-        tracker.recordToolStart({
-          id: event.toolCallId,
-          toolName: event.toolName,
-          args: record(event.args),
-        });
-      }
       if (event.type === "message_end" && event.message.role === "toolResult") {
-        receipts.push({ message: event.message, tracked: tracker.recordToolResult(event.message) });
+        receipts.push(event.message);
       }
     });
     t.after(async () => {
       await session.abort();
-      session.dispose();
+      await runtime.dispose();
       if (evidenceRoot === undefined || evidenceRoot === "") {
         fs.rmSync(cwd, { recursive: true, force: true });
       }
@@ -172,24 +173,28 @@ test(
     assert.deepEqual(errors, []);
     assert.equal(receipts.length, 6);
     assert.deepEqual(
-      receipts.map((receipt) => receipt.tracked?.completedMutation),
-      [false, false, true, false, true, true],
+      receipts.map((receipt) => receipt.isError),
+      [false, false, true, false, false, false],
     );
     assert.equal(
-      receipts[2].message.isError,
+      receipts[2].isError,
       true,
       "native error hook preserves the real partial-publication error",
     );
-    assert.deepEqual(record(receipts[2].message.details).modifiedFiles, [path.join(cwd, "a")]);
+    assert.deepEqual(record(receipts[2].details).modifiedFiles, [path.join(cwd, "a")]);
     assert.deepEqual(
-      records(record(receipts[2].message.details).files).map((file) => file.status),
+      records(record(receipts[2].details).files).map((file) => file.status),
       ["applied", "failed", "unattempted"],
     );
-    assert.equal(records(record(receipts[3].message.details).files)[0].status, "unchanged");
+    assert.equal(records(record(receipts[3].details).files)[0].status, "unchanged");
+    const published = sdk.SessionManager.open(manager.getSessionFile() ?? "")
+      .getEntries()
+      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult");
+    assert.equal(published.length, 6, "actual native tool results are published, not just emitted");
     assert.equal(fs.existsSync(path.join(cwd, "planned")), false);
     assert.equal(fs.readFileSync(path.join(cwd, "b"), "utf8"), "before\n");
     assert.equal(fs.readFileSync(path.join(cwd, "added"), "utf8"), "verified\n");
-    const consumer = new URL("../../src/runs/shared/mutating-tool-guard.ts", import.meta.url);
+    const consumer = new URL("../../src/index.ts", import.meta.url);
     fs.writeFileSync(
       path.join(cwd, "evidence.json"),
       JSON.stringify(
