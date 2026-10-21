@@ -7,7 +7,15 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { actor, alive, ensureActor, ownIdentity, requestStop, signalProcess } from "./process.ts";
+import {
+  actor,
+  alive,
+  ensureActor,
+  ownIdentity,
+  requestStop,
+  signalProcess,
+  stopChildren,
+} from "./process.ts";
 import { isChild, errorText } from "./host.ts";
 import {
   delegateSchema,
@@ -20,7 +28,6 @@ import {
   type Result,
   type DelegateInput,
   type RunsInput,
-  type ProcessIdentity,
 } from "./contracts.ts";
 import {
   enqueue,
@@ -41,6 +48,7 @@ import { legacyNotifications } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
+import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
 
 class AgentRuntime {
   private ctx?: ExtensionContext;
@@ -116,49 +124,10 @@ class AgentRuntime {
       const file = path.join(this.base, "attachment.json");
       if (read(file, attachmentSchema)?.generation === this.generation) {
         write(file, { ...ownIdentity(), generation: this.generation, attached: false });
-        await this.stopChildren();
+        await stopChildren(this.base, this.owner);
       }
     }
     this.ctx = undefined;
-  }
-  private async stopChildren(): Promise<void> {
-    const roots = new Set<string>();
-    const targets: ProcessIdentity[] = [];
-    for (const id of list(this.base)) {
-      try {
-        const launch = launchAt(this.base, id, this.owner);
-        if (!roots.has(launch.rootId)) {
-          roots.add(launch.rootId);
-          targets.push(
-            ...requestStop(this.base, launch, (error) => {
-              console.error(`Child shutdown ${id}: ${errorText(error)}`);
-            }).targets,
-          );
-        }
-      } catch (error) {
-        console.error(`Child shutdown ${id}: ${errorText(error)}`);
-      }
-    }
-    await this.waitForExit(targets, 3000);
-    for (const target of targets) {
-      try {
-        signalProcess(target, "SIGKILL");
-      } catch (error) {
-        console.error(`Child shutdown ${target.pid}: ${errorText(error)}`);
-      }
-    }
-    await this.waitForExit(targets, 1000);
-    if (targets.some(alive)) {
-      console.error("Child shutdown could not confirm every owned process exit.");
-    }
-  }
-  private async waitForExit(targets: readonly ProcessIdentity[], timeout: number): Promise<void> {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline && targets.some(alive)) {
-      // Join actual process exit while native abort persists the interrupted turn.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(25);
-    }
   }
   private stop(launch: Launch) {
     const base = this.base;
@@ -464,6 +433,7 @@ class AgentRuntime {
   }
   register(): void {
     registerUsage(this.pi);
+    registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.
@@ -490,6 +460,7 @@ class AgentRuntime {
         "Launch one child with exactly the supplied prompt. Fresh context by default; fork preserves the full native conversation. Main sessions only. Returns an asynchronous launch receipt unless async:false.",
       parameters: delegateSchema,
       exposure: this.child ? "hidden" : "direct",
+      renderResult: renderCompactResult,
       execute,
     });
     const runs: ToolDefinition<typeof runsSchema>["execute"] = (...args) =>
@@ -501,6 +472,7 @@ class AgentRuntime {
         "List, inspect, continue, wait for, or stop this native main session's durable child runs. Inspect is paged with byte offsets; full outputs and native journals remain available. Wait cancellation does not stop existing work. Continue requires the complete new prompt and reuses the saved conversation.",
       parameters: runsSchema,
       exposure: this.child ? "hidden" : "direct",
+      renderResult: renderCompactResult,
       execute: runs,
     });
   }

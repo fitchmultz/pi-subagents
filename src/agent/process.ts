@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { readChildProcessIdentity, trySignalChildTree } from "../shared/post-exit-stdio-guard.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
-import { conversation, enqueue, read, write } from "./storage.ts";
+import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
+import { errorText } from "./host.ts";
 
 export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): boolean {
   try {
@@ -200,6 +201,45 @@ export function requestStop(
     attempt(() => signalProcess(target, "SIGTERM"));
   });
   return { targets: live, command };
+}
+export async function stopChildren(base: string, owner: string): Promise<void> {
+  const roots = new Set<string>();
+  const targets: ProcessIdentity[] = [];
+  for (const id of list(base)) {
+    try {
+      const launch = launchAt(base, id, owner);
+      if (!roots.has(launch.rootId)) {
+        roots.add(launch.rootId);
+        targets.push(
+          ...requestStop(base, launch, (error) => {
+            console.error(`Child shutdown ${id}: ${errorText(error)}`);
+          }).targets,
+        );
+      }
+    } catch (error) {
+      console.error(`Child shutdown ${id}: ${errorText(error)}`);
+    }
+  }
+  await waitForExit(targets, 3000);
+  for (const target of targets) {
+    try {
+      signalProcess(target, "SIGKILL");
+    } catch (error) {
+      console.error(`Child shutdown ${target.pid}: ${errorText(error)}`);
+    }
+  }
+  await waitForExit(targets, 1000);
+  if (targets.some(alive)) {
+    console.error("Child shutdown could not confirm every owned process exit.");
+  }
+}
+async function waitForExit(targets: readonly ProcessIdentity[], timeout: number): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline && targets.some(alive)) {
+    // Join actual process exit while native abort persists the interrupted turn.
+    // oxlint-disable-next-line no-await-in-loop
+    await delay(25);
+  }
 }
 export function shells(base: string, launch: Launch, token: string): ProcessIdentity[] {
   const dir = path.join(conversation(base, launch), "shells", token);
