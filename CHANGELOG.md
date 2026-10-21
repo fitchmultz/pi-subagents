@@ -6,6 +6,7 @@
 
 - Restore default steering for incoming Intercom asks in interactive and print modes; keep explicit queue/passive behavior and sender-side busy capability reporting.
 - Preserve non-passive recovery order, suppress repeated message/reply IDs without reviving answered or superseded work, and coalesce concurrent ask handoff probes.
+- Restore circle indicators and hide completed runs from the above-editor widget and `/agents` picker. Saved run IDs and already-open read-only watches remain available; failed, stopped, interrupted, and unavailable runs stay visible.
 - Restore steering delivery for new and legacy child completions. Publish an idle backlog before a single native wakeup, preventing separately deferred settlement turns from requeueing the same results.
 - Log and skip a malformed legacy result file instead of dropping every other legacy completion on each scan.
 - Reconcile new-runtime completion backlogs in completion/launch order instead of UUID directory order; preserve published receipts and recovery of genuinely dropped queues.
