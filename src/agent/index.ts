@@ -40,11 +40,11 @@ import {
   conversation,
   write,
 } from "./storage.ts";
-import { hold, notify, settle, release } from "./notifications.ts";
+import { hold, notifications, deliver, settle, release } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { toolResult, projection, render, summaries } from "./view.ts";
 import { registerUsage } from "./usage.ts";
-import { notifyLegacy } from "./legacy.ts";
+import { legacyNotifications } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
@@ -77,8 +77,10 @@ class AgentRuntime {
       return;
     }
     try {
-      notify(this.pi, this.ctx, this.base, this.owner);
-      notifyLegacy(this.pi, this.ctx);
+      deliver(this.pi, this.ctx, [
+        ...legacyNotifications(this.ctx),
+        ...notifications(this.ctx, this.base, this.owner),
+      ]);
     } catch (error) {
       console.error(`Agent completion reconciliation: ${errorText(error)}`);
     }
@@ -442,8 +444,9 @@ class AgentRuntime {
   register(): void {
     registerUsage(this.pi);
     this.pi.on("session_start", (_event, context) => this.start(context));
-    this.pi.on("turn_end", (event) => {
-      settle(this.owner, event.context.pendingMessages.length > 0);
+    this.pi.on("turn_end", (event, context) => {
+      // The public pending flag covers user input; the preview also includes custom messages.
+      settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0);
     });
     this.pi.on("agent_settled", () => {
       this.scan();

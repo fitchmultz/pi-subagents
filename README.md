@@ -58,13 +58,18 @@ list contains connected, eligible sessions, not every Pi process on the machine.
 
 ## Watch agents without prompting them
 
-In interactive Pi, the agent status line reports active children. Open `/agents`
-to list runs and watch a child's native published text, tool calls and results.
+In interactive Pi, an above-editor widget names individual children and shows their
+running or terminal state. Active work appears first; Ctrl+O expands model/cwd details.
+Open `/agents` to list all runs and watch a child's native published text, tool calls
+and results.
 This is read-only: it neither spends a model turn nor dispatches, steers or stops
 work. Unpublished provider token deltas are not a journal stream. Agents still
 own delegation and communication; human observation is not a second workflow UI.
 
 ## What stays explicit
+
+Completions steer an active parent at the next tool boundary. An idle completion
+backlog is published in order and starts one parent turn, not one turn per result.
 
 Launch acceptance is not completion. Broker acceptance is not recipient journal
 persistence or a reply. A stop request is not proof of process exit. Saved run

@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Restore steering delivery for new and legacy child completions. Publish an idle backlog before a single native wakeup, preventing separately deferred settlement turns from requeueing the same results.
+- Reconcile new-runtime completion backlogs in completion/launch order instead of UUID directory order; preserve published receipts and recovery of genuinely dropped queues.
+- Reuse a bounded physical-receipt index instead of repeatedly parsing unchanged parent journals. Validate changed prefixes and retain newline, replacement, truncation, corruption and owner checks.
+- Restore the above-editor named running-agent widget, active-first status rows and expansion, while retaining read-only `/agents` watching. No live runtime, broker, bridge, model or auth changes.
+
 ## [0.50.0] - Unreleased
 
 ### Breaking

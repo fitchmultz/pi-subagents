@@ -1,15 +1,19 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { test, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { published } from "../../src/agent/notifications.ts";
-import { notifyLegacy } from "../../src/agent/legacy.ts";
+import { spy } from "sinon";
+import { deliver, notifications, published, settle } from "../../src/agent/notifications.ts";
+import { write } from "../../src/agent/storage.ts";
+import { legacyNotifications } from "../../src/agent/legacy.ts";
 import { resolveTempRootDir } from "../../src/shared/types.ts";
 import { createNativeSessionFixture } from "../support/native-session.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
+import { record } from "../support/assertions.ts";
 
 async function fixture(t: TestContext) {
   const root = fs.mkdtempSync(path.join(tmpdir(), "pi-agent-receipts-"));
@@ -66,6 +70,17 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
   const complete = fs.readFileSync(h.file, "utf8");
   const entryCount = h.manager.getEntries().length;
   assert.equal(published(h.context, h.launch), receiptId);
+  const reads = spy(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    for (let i = 0; i < 10; i++) {
+      assert.equal(published(h.context, h.launch), receiptId);
+    }
+    assert.equal(reads.callCount, 0, "unchanged journals are not reread by completion polling");
+  } finally {
+    reads.restore();
+    syncBuiltinESMExports();
+  }
   const stat = fs.statSync(h.file);
   const wrong = complete.replace(
     `"owner":"${h.launch.owner}"`,
@@ -103,6 +118,38 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
     entryCount,
     "all external transitions occurred with stale native memory",
   );
+});
+
+test("native recovery publishes a completion backlog chronologically once, not in UUID order", async (t) => {
+  const h = await fixture(t);
+  const base = path.join(path.dirname(h.file), "runs");
+  for (const [id, endedAt] of [
+    ["z-original", 10],
+    ["a-continuation", 20],
+  ] as const) {
+    const launch = { ...h.launch, id, rootId: "z-original", createdAt: endedAt - 1 };
+    write(path.join(base, id, "launch.json"), launch);
+    write(path.join(base, id, "result.json"), {
+      id,
+      owner: launch.owner,
+      status: "completed",
+      endedAt,
+    });
+    fs.writeFileSync(path.join(base, id, "output.txt"), `Result ${id}`);
+  }
+  deliver(h.pi, h.context, notifications(h.context, base, h.launch.owner));
+  await h.session.waitForIdle();
+  settle(h.launch.owner, h.context.hasPendingMessages());
+  deliver(h.pi, h.context, notifications(h.context, base, h.launch.owner));
+  await h.session.waitForIdle();
+  const ids = h.manager
+    .getEntries()
+    .flatMap((entry) =>
+      entry.type === "custom_message" && entry.customType === "agent-completion"
+        ? [record(entry.details).id]
+        : [],
+    );
+  assert.deepEqual(ids, ["z-original", "a-continuation"]);
 });
 
 const legacyCases = [
@@ -166,7 +213,10 @@ for (const boundary of ["root", "results"] as const) {
       }
       fs.rmSync(scratch, { recursive: true, force: true });
     });
-    assert.throws(() => notifyLegacy(h.pi, h.context), /Unsafe legacy recovery directory/);
+    assert.throws(
+      () => deliver(h.pi, h.context, legacyNotifications(h.context)),
+      /Unsafe legacy recovery directory/,
+    );
     assert.equal(
       fs.readFileSync(target, "utf8"),
       raw,
@@ -226,7 +276,7 @@ for (const scenario of legacyCases) {
       });
     }
     const before = h.manager.getEntries().length;
-    notifyLegacy(h.pi, h.context);
+    deliver(h.pi, h.context, legacyNotifications(h.context));
     if (scenario.received) {
       assert.equal(fs.existsSync(hint), false);
       assert.equal(
@@ -252,7 +302,7 @@ for (const scenario of legacyCases) {
         1,
         "actual SDK publishes the unsuppressed completion exactly once",
       );
-      notifyLegacy(h.pi, h.context);
+      deliver(h.pi, h.context, legacyNotifications(h.context));
       assert.equal(fs.existsSync(hint), false);
     }
     assert.equal(

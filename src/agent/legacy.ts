@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { journalStamp } from "../shared/native-journal.ts";
 import { receiptId } from "./receipts.ts";
 import { resolveTempRootDir } from "../shared/types.ts";
 import { isRecord } from "../shared/unknown.ts";
-import { hold, release, isHeld } from "./notifications.ts";
+import { release, isHeld, type Completion } from "./notifications.ts";
 import { missing } from "./storage.ts";
 
 interface LegacyInput {
@@ -104,7 +104,7 @@ function published(ctx: ExtensionContext, input: LegacyInput): boolean {
     undefined
   );
 }
-function deliver(pi: ExtensionAPI, ctx: ExtensionContext, input: LegacyInput): void {
+function notification(ctx: ExtensionContext, input: LegacyInput): Completion | undefined {
   const identity = `legacy:${input.id}:${input.key}`;
   if (published(ctx, input)) {
     release(input.owner, identity);
@@ -120,24 +120,20 @@ function deliver(pi: ExtensionAPI, ctx: ExtensionContext, input: LegacyInput): v
   if (isHeld(input.owner, identity)) {
     return;
   }
-  hold(input.owner, identity);
-  try {
-    pi.sendMessage(
-      {
-        customType: "subagent-notify",
-        display: true,
-        // Full saved bytes, not a replacement summary. No owner/run record is invented.
-        content: input.raw,
-        details: { completion: { runId: input.id, key: input.key, ownerSessionId: input.owner } },
-      },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
-  } catch (error) {
-    release(input.owner, identity);
-    throw error;
-  }
+  return {
+    owner: input.owner,
+    id: identity,
+    message: {
+      customType: "subagent-notify",
+      display: true,
+      // Full saved bytes, not a replacement summary. No owner/run record is invented.
+      content: input.raw,
+      details: { completion: { runId: input.id, key: input.key, ownerSessionId: input.owner } },
+    },
+  };
 }
-export function notifyLegacy(pi: ExtensionAPI, ctx: ExtensionContext): void {
+export function legacyNotifications(ctx: ExtensionContext): Completion[] {
+  const notices: Completion[] = [];
   const root = resolveTempRootDir();
   const directory = path.join(root, "async-subagent-results");
   let names: string[];
@@ -151,7 +147,7 @@ export function notifyLegacy(pi: ExtensionAPI, ctx: ExtensionContext): void {
     names = fs.readdirSync(directory);
   } catch (error) {
     if (missing(error)) {
-      return;
+      return notices;
     }
     throw error;
   }
@@ -160,8 +156,10 @@ export function notifyLegacy(pi: ExtensionAPI, ctx: ExtensionContext): void {
       continue;
     }
     const input = legacyInput(path.join(directory, name), ctx.sessionManager.getSessionId());
-    if (input) {
-      deliver(pi, ctx, input);
+    const notice = input ? notification(ctx, input) : undefined;
+    if (notice) {
+      notices.push(notice);
     }
   }
+  return notices;
 }

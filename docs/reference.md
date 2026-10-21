@@ -118,9 +118,30 @@ own usage. Metadata inventory and the human observer do not repair or collect
 accounting; explicit inspection can reconcile pending accounting without itself
 charging the parent.
 
+## Completion delivery
+
+Completion notices use steering, not follow-up delivery. A busy parent receives
+results at the next native tool boundary; it need not finish its task first.
+An idle backlog, including retained legacy results, is published before one wakeup.
+This avoids separately deferred settlement wakeups replaying the same result.
+New-runtime backlogs are sorted by completion time, then launch time and ID—not
+directory order. A later scan cannot reorder messages already admitted to Pi.
+
+Admission is still not publication or model consumption. Native physical receipts
+suppress redelivery across reload/resume, and dropped queues can recover. Receipt
+polling reuses unchanged verified journal metadata; changed files validate the
+committed prefix before parsing appended records. Replacement, truncation, changed
+prefixes, malformed records, and missing final newlines do not fabricate receipts.
+Completion delivery appends context; it does not replace prior prompts, tools,
+model settings, or the active conversation.
+
 ## Read-only human observation
 
-Interactive main sessions expose an agent status line and `/agents` list/watch.
+Interactive main sessions expose an above-editor widget and `/agents` list/watch.
+The widget shows up to five named runs, active work first, with status and short ID.
+An overflow count points to `/agents`; Ctrl+O expands model/cwd details. It clears
+when there are no runs or when the native parent is replaced. It is not a footer-only
+count.
 Use Up/Down to select, Enter to watch, and Escape to return/close (the displayed
 hints follow Pi's configured selection keys). `/agents <exact-run-id>` opens that
 run directly. Children and print/RPC modes do not install a watcher.
