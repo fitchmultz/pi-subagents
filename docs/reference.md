@@ -138,10 +138,13 @@ model settings, or the active conversation.
 ## Read-only human observation
 
 Interactive main sessions expose an above-editor widget and `/agents` list/watch.
-The widget shows up to five named runs, active work first, with status and short ID.
-An overflow count points to `/agents`; Ctrl+O expands model/cwd details. It clears
-when there are no runs or when the native parent is replaced. It is not a footer-only
-count.
+The widget shows up to five named runs, active work first, with circle indicators,
+status and short ID. Completed runs are hidden from both the widget and the default
+picker; interrupted and failed runs remain visible. `/agents <run-id>` still opens
+saved completed runs, and an already-open watch stays open through completion.
+An overflow count points to `/agents`; Ctrl+O expands model/cwd details. The widget
+clears when no visible runs remain or when the native parent is replaced. It is not
+a footer-only count.
 Use Up/Down to select, Enter to watch, and Escape to return/close (the displayed
 hints follow Pi's configured selection keys). `/agents <exact-run-id>` opens that
 run directly. Children and print/RPC modes do not install a watcher.

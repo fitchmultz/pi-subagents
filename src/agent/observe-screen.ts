@@ -101,7 +101,7 @@ export class ObserverScreen {
     const start = Math.max(0, index - size + 1);
     const page = rows.slice(start, start + size);
     return rows.length === 0
-      ? ["No child runs in this native parent session."]
+      ? ["No child runs to show. Completed runs are hidden."]
       : [
           `Runs ${start + 1}–${start + page.length} of ${rows.length} · active first`,
           ...page.map(

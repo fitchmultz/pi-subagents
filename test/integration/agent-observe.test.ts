@@ -234,7 +234,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         "actual provider and child tool are both live",
       );
       await until(
-        () => terminal.text().includes("watch-child 雪 · running"),
+        () => terminal.text().includes("● watch-child 雪 · running"),
         "above-editor widget names the running child without opening /agents",
       );
       const childStart = fs
@@ -319,7 +319,16 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         true,
         "watch input never aborted the active parent",
       );
+      terminal.clear();
       terminal.send("\x1b");
+      terminal.width = 100;
+      terminal.resize?.();
+      await until(
+        () => terminal.text().includes("No child runs to show"),
+        "completed child disappears from the picker",
+      );
+      assert.doesNotMatch(terminal.text(), /watch-child 雪 · completed/);
+      assert.equal(requests(root), calls + 1, "hiding completed work never wakes a model");
       terminal.send("\x1b");
       terminal.clear();
       terminal.send(`/agents ${runId.slice(0, 8)}`);
@@ -640,6 +649,7 @@ test(
       () => terminal.text().includes("Agents: 2 active · 82 runs"),
       "initial owner metadata scan has completed",
     );
+    assert.doesNotMatch(terminal.text(), /completed-\d/, "completed rows stay out of the widget");
     assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 82);
     assert.ok(
       identityProbes() >= 1 && identityProbes() <= 2,
@@ -685,6 +695,7 @@ test(
       () => terminal.text().includes("Agents: 1 active · 82 runs"),
       "missing-result predecessor no longer inherits the successor's liveness",
     );
+    assert.match(terminal.text(), /○ active-first · interrupted/);
     write(path.join(base, "active-second/result.json"), {
       id: "active-second",
       owner,
@@ -718,11 +729,10 @@ test(
     terminal.send("/agents");
     terminal.send("\r");
     await until(
-      () =>
-        terminal.text().includes("interrupted · active-first") &&
-        terminal.text().includes("completed · active-second"),
-      "native inventory exposes distinct predecessor and successor outcomes",
+      () => terminal.text().includes("interrupted · active-first"),
+      "native inventory keeps the interrupted predecessor visible",
     );
+    assert.doesNotMatch(terminal.text(), /completed · active-second/);
     terminal.send("\x1b");
     await retired;
     for (let i = 0; i < 101; i++) {

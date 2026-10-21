@@ -58,10 +58,10 @@ list contains connected, eligible sessions, not every Pi process on the machine.
 
 ## Watch agents without prompting them
 
-In interactive Pi, an above-editor widget names individual children and shows their
-running or terminal state. Active work appears first; Ctrl+O expands model/cwd details.
-Open `/agents` to list all runs and watch a child's native published text, tool calls
-and results.
+In interactive Pi, an above-editor widget names individual children with circle
+indicators. Active work appears first; completed runs are hidden from the widget
+and `/agents` picker. Ctrl+O expands model/cwd details. Use `/agents <run-id>` to watch
+any saved run, including a completed child's native published text, tool calls and results.
 This is read-only: it neither spends a model turn nor dispatches, steers or stops
 work. Unpublished provider token deltas are not a journal stream. Agents still
 own delegation and communication; human observation is not a second workflow UI.

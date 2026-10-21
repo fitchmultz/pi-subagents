@@ -137,7 +137,7 @@ class Observer {
     if (!ctx) {
       return;
     }
-    if (this.total === 0 && this.error.length === 0) {
+    if (this.inventory().length === 0 && this.rows.size === this.total && this.error.length === 0) {
       ctx.ui.setWidget(STATUS_KEY, undefined);
       return;
     }
@@ -149,12 +149,8 @@ class Observer {
           const visible = rows.slice(0, 5);
           const lines = [theme.fg("accent", this.status())];
           for (const row of visible) {
-            const terminal =
-              row.status === "completed"
-                ? { glyph: "✓", color: "success" as const }
-                : { glyph: "■", color: "warning" as const };
-            const glyph = row.live ? "●" : terminal.glyph;
-            const color = row.live ? "accent" : terminal.color;
+            const glyph = row.live ? "●" : "○";
+            const color = row.live ? "accent" : "warning";
             lines.push(
               `${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${row.status} · ${row.id.slice(0, 8)}`,
             );
@@ -192,14 +188,16 @@ class Observer {
     return `Agents: ${active}${checking ? "+" : ""} active${checking ? " (checking…)" : ""} · ${this.total} runs${error} · /agents`;
   }
   private inventory(): ObserverRow[] {
-    return [...this.rows.values()].sort((a, b) => {
-      const order = Number(b.live) - Number(a.live);
-      if (order !== 0) {
-        return order;
-      }
-      const created = b.createdAt - a.createdAt;
-      return created !== 0 ? created : a.id.localeCompare(b.id);
-    });
+    return [...this.rows.values()]
+      .filter((row) => row.status !== "completed")
+      .sort((a, b) => {
+        const order = Number(b.live) - Number(a.live);
+        if (order !== 0) {
+          return order;
+        }
+        const created = b.createdAt - a.createdAt;
+        return created !== 0 ? created : a.id.localeCompare(b.id);
+      });
   }
   private watch(id: string): Watch {
     const matches = list(this.base).filter((candidate) => candidate.startsWith(id));
