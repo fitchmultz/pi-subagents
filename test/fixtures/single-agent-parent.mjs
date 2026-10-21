@@ -109,7 +109,7 @@ const settings = sdk.SettingsManager.inMemory({
   compaction: { enabled: false },
   retry: { enabled: false },
   // Native peekQueuedMessages previews only the next turn's selected messages.
-  ...(phase === "queue-retain" ? { followUpMode: "all" } : {}),
+  ...(phase === "queue-retain" ? { steeringMode: "all" } : {}),
 });
 settings.setProjectTrusted(true);
 let cwdOwner;
@@ -1091,7 +1091,11 @@ try {
     } finally {
       fs.renameSync(savedLaunch + ".held", savedLaunch);
     }
-  } else if (phase === "queue-drop" || phase === "queue-retain") {
+  } else if (
+    ["queue-drop", "queue-drop-two", "queue-retain", "queue-retain-one", "queue-steer"].includes(
+      phase,
+    )
+  ) {
     const receipt = await call(
       "delegate",
       { prompt: "HOLD:queue", model: "single-agent-fixture/literal-model" },
@@ -1104,7 +1108,7 @@ try {
       () => requests().some((request) => request.prompt === "HOLD:queue"),
       "native child provider starts",
     );
-    if (phase === "queue-retain") {
+    if (phase !== "queue-drop") {
       const second = await call(
         "delegate",
         {
@@ -1125,19 +1129,41 @@ try {
       );
     }
     const expectedIds = queuedRuns.map((run) => run.id).sort();
-    const queuedIds = () =>
-      session.agent
-        .peekQueuedMessages()
-        .filter((message) => message.role === "custom" && message.customType === "agent-completion")
-        .map((message) => message.details.id)
-        .sort();
+    const queuedIds = () => {
+      const steering = session.agent.steeringMode;
+      const followUp = session.agent.followUpMode;
+      try {
+        session.agent.steeringMode = "all";
+        session.agent.followUpMode = "all";
+        return session.agent
+          .peekQueuedMessages()
+          .filter(
+            (message) => message.role === "custom" && message.customType === "agent-completion",
+          )
+          .map((message) => message.details.id)
+          .sort();
+      } finally {
+        session.agent.steeringMode = steering;
+        session.agent.followUpMode = followUp;
+      }
+    };
+    const scanCall = (id) =>
+      fauxAssistantMessage(
+        [{ type: "toolCall", id, name: "agent_runs", arguments: { action: "inspect", id: runId } }],
+        { stopReason: "toolUse" },
+      );
     const entered = Promise.withResolvers();
+    let cachePrefix;
+    const deliverySteps = [];
     faux.setResponses([
-      async (_context, options) => {
+      async (context, options) => {
+        cachePrefix = structuredClone(context.messages);
         entered.resolve();
         while (!options?.signal?.aborted) {
           if (fs.existsSync(path.join(root, "release-parent"))) {
-            return fauxAssistantMessage("PARENT_HELD_COMPLETE");
+            return phase === "queue-steer"
+              ? scanCall("steer-boundary-one")
+              : fauxAssistantMessage("PARENT_HELD_COMPLETE");
           }
           // The explicit provider release or abort settles the actual native run.
           // oxlint-disable-next-line no-await-in-loop
@@ -1145,9 +1171,29 @@ try {
         }
         return fauxAssistantMessage("PARENT_ABORTED", { stopReason: "aborted" });
       },
-      fauxAssistantMessage("NOTIFICATION_CONSUMED"),
-      fauxAssistantMessage("BARRIER_COMPLETE"),
+      async (context) => {
+        if (phase === "queue-steer") {
+          deliverySteps.push({
+            receipts: notices().length,
+            prefix: structuredClone(context.messages.slice(0, cachePrefix.length)),
+          });
+          return scanCall("steer-boundary-two");
+        }
+        return fauxAssistantMessage("NOTIFICATION_CONSUMED");
+      },
+      async (context) => {
+        if (phase === "queue-steer") {
+          deliverySteps.push({
+            receipts: notices().length,
+            prefix: structuredClone(context.messages.slice(0, cachePrefix.length)),
+          });
+          return scanCall("steer-boundary-three");
+        }
+        return fauxAssistantMessage("BARRIER_COMPLETE");
+      },
+      fauxAssistantMessage("PARENT_FINAL_AFTER_STEERING"),
     ]);
+    const callsBeforeHeld = faux.state.callCount;
     const heldParent = session.prompt("HOLD_PARENT_LITERAL");
     await entered.promise;
     queuedRuns.forEach((run) => {
@@ -1173,7 +1219,22 @@ try {
       null,
       "queue admission is not native publication",
     );
-    if (phase === "queue-drop") {
+    if (phase === "queue-steer") {
+      fs.writeFileSync(path.join(root, "release-parent"), "release");
+      await heldParent;
+      assert.deepEqual(
+        deliverySteps.map((step) => step.receipts),
+        [1, 2],
+        "one-at-a-time completions steer during the active tool loop, not after it",
+      );
+      for (const step of deliverySteps) {
+        assert.deepEqual(
+          step.prefix,
+          cachePrefix,
+          "completions append without rewriting the provider prompt prefix",
+        );
+      }
+    } else if (phase.startsWith("queue-drop")) {
       session.clearQueue();
       assert.equal(session.agent.hasQueuedMessages(), false);
       inspected = await observe();
@@ -1183,8 +1244,48 @@ try {
         false,
         "owner processed a scan while parent held: dropped admission stays absorbed until settlement",
       );
+      if (phase === "queue-drop-two") {
+        const legacy = path.join(
+          root,
+          "pi-subagents-runtime/async-subagent-results/settled-legacy.json",
+        );
+        fs.mkdirSync(path.dirname(legacy), { recursive: true });
+        fs.writeFileSync(
+          legacy,
+          JSON.stringify({
+            runId: "settled-legacy",
+            sessionId: manager.getSessionId(),
+            mode: "single",
+            timestamp: 1,
+            output: "LEGACY_SETTLED_RESULT",
+          }),
+        );
+      } else {
+        const legacy = path.join(
+          root,
+          "pi-subagents-runtime/async-subagent-results/corrupt-legacy.json",
+        );
+        fs.mkdirSync(path.dirname(legacy), { recursive: true });
+        fs.writeFileSync(legacy, '{"incomplete":');
+      }
       fs.writeFileSync(path.join(root, "release-parent"), "release");
       await heldParent;
+      if (phase === "queue-drop-two") {
+        assert.equal(
+          faux.state.callCount,
+          callsBeforeHeld + 2,
+          "mixed legacy/native idle backlog starts exactly one recovery request",
+        );
+        assert.equal(notices().length, 2, "settled backlog never requeues another deferred wakeup");
+        assert.equal(
+          manager
+            .getEntries()
+            .filter(
+              (entry) => entry.type === "custom_message" && entry.customType === "subagent-notify",
+            ).length,
+          1,
+        );
+      }
     } else {
       const otherFaux = fauxProvider({
         provider: "independent-owner",

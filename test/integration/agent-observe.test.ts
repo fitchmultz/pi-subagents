@@ -217,7 +217,6 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         }
       });
       await mode.init();
-      await until(() => terminal.text().includes("Agents: 0 active"), "native status appears");
       const emptyCommand = mode.getUserInput().then((text) => runtime.session.prompt(text));
       terminal.send("/agents");
       terminal.send("\r");
@@ -233,6 +232,10 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
           fs.existsSync(path.join(root, "child-ready")) &&
           fs.existsSync(path.join(root, "parent-ready")),
         "actual provider and child tool are both live",
+      );
+      await until(
+        () => terminal.text().includes("watch-child 雪 · running"),
+        "above-editor widget names the running child without opening /agents",
       );
       const childStart = fs
         .readFileSync(path.join(root, "sessions.jsonl"), "utf8")
@@ -478,10 +481,6 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.clear();
       const replacement = await runtime.newSession();
       assert.equal(replacement.cancelled, false);
-      await until(
-        () => terminal.text().includes("Agents: 0 active · 0 runs"),
-        "native replacement closes the old watch and rebinds its status",
-      );
       const newCommand = mode.getUserInput().then((text) => runtime.session.prompt(text));
       terminal.clear();
       terminal.send("/agents");

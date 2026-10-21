@@ -82,50 +82,83 @@ export function published(ctx: ExtensionContext, launch: Launch): string | undef
     receipt(body, launch),
   );
 }
-function send(pi: ExtensionAPI, base: string, launch: Launch, result: Result): void {
+export interface Completion {
+  readonly owner: string;
+  readonly id: string;
+  readonly message: Parameters<ExtensionAPI["sendMessage"]>[0];
+}
+export function deliver(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  notices: readonly Completion[],
+): void {
+  const idle = ctx.isIdle();
+  for (const [index, notice] of notices.entries()) {
+    hold(notice.owner, notice.id);
+    try {
+      // Pi defers settlement-triggered runs separately. Publish the idle batch first,
+      // then trigger once so no unstarted wakeup can outlive its admission hold.
+      pi.sendMessage(notice.message, {
+        triggerTurn: !idle || index === notices.length - 1,
+        deliverAs: "steer",
+      });
+    } catch (error) {
+      release(notice.owner, notice.id);
+      throw error;
+    }
+  }
+}
+function notification(base: string, launch: Launch, result: Result): Completion {
   const file = path.join(runDirectory(base, launch.id), "output.txt");
   const page = fs.existsSync(file) ? readOutputPage(file, { offset: 0, length: 32768 }) : undefined;
   const more =
     page?.nextOffset !== undefined
       ? `\n[More output: agent_runs inspect id=${launch.id} offset=${page.nextOffset}; ${page.size} bytes total.]`
       : "";
-  hold(launch.owner, launch.id);
-  try {
-    pi.sendMessage(
-      {
-        customType: "agent-completion",
-        display: true,
-        content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}\nNative journal: ${launch.sessionFile}`,
-        details: {
-          owner: launch.owner,
-          id: launch.id,
-          completed: true,
-          result,
-          outputFile: file,
-          page,
-        },
+  return {
+    owner: launch.owner,
+    id: launch.id,
+    message: {
+      customType: "agent-completion",
+      display: true,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}\nNative journal: ${launch.sessionFile}`,
+      details: {
+        owner: launch.owner,
+        id: launch.id,
+        completed: true,
+        result,
+        outputFile: file,
+        page,
       },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
-  } catch (error) {
-    admissions.delete(`${launch.owner}/${launch.id}`);
-    throw error;
-  }
+    },
+  };
 }
-export function notify(pi: ExtensionAPI, ctx: ExtensionContext, base: string, owner: string): void {
-  for (const id of list(base)) {
-    const launch = launchAt(base, id, owner);
-    const result = readResult(base, launch);
-    if (!result) {
-      continue;
-    }
+export function notifications(ctx: ExtensionContext, base: string, owner: string): Completion[] {
+  const notices: Completion[] = [];
+  const completed = list(base)
+    .map((id) => {
+      const launch = launchAt(base, id, owner);
+      return { launch, result: readResult(base, launch) };
+    })
+    .filter((item): item is { launch: Launch; result: Result } => item.result !== undefined)
+    .sort((a, b) => {
+      const ended = a.result.endedAt - b.result.endedAt;
+      const created = a.launch.createdAt - b.launch.createdAt;
+      if (ended !== 0) {
+        return ended;
+      }
+      return created !== 0 ? created : a.launch.id.localeCompare(b.launch.id);
+    });
+  for (const { launch, result } of completed) {
+    const id = launch.id;
     const key = `${owner}/${id}`;
     if (published(ctx, launch) !== undefined) {
       admissions.delete(key);
       continue;
     }
     if (!admissions.has(key)) {
-      send(pi, base, launch, result);
+      notices.push(notification(base, launch, result));
     }
   }
+  return notices;
 }
