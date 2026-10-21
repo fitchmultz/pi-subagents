@@ -57,6 +57,7 @@ class Actor {
   private active?: Promise<void>;
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
+  private nextParentCheck = 0;
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -340,7 +341,9 @@ class Actor {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
   private shouldExit(): boolean {
-    if (!this.stopping) {
+    const now = performance.now();
+    if (!this.stopping && now >= this.nextParentCheck) {
+      this.nextParentCheck = now + 1000;
       const attachment = read(path.join(this.base, "attachment.json"), attachmentSchema);
       if (attachment === undefined || !attachment.attached || !alive(attachment)) {
         this.stop();

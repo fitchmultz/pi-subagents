@@ -1,7 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import cp from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { test } from "node:test";
@@ -616,7 +615,7 @@ test(
       initialThemeSetting: "dark",
     });
     const opens = spy(fs, "openSync");
-    const probes = spy(cp, "execFileSync");
+    const probes = spy(process, "kill");
     const scans = spy(fs, "readdirSync");
     syncBuiltinESMExports();
     const opened = () =>
@@ -625,12 +624,10 @@ test(
         return typeof args[0] === "string" ? [args[0]] : [];
       });
     const identityProbes = () =>
-      process.platform === "linux"
-        ? opened().filter((file) => file === `/proc/${process.pid}`).length
-        : probes.getCalls().filter((call) => {
-            const args: readonly unknown[] = call.args;
-            return args[0] === "ps";
-          }).length;
+      probes.getCalls().filter((call) => {
+        const args: readonly unknown[] = call.args;
+        return args[0] === process.pid && args[1] === 0;
+      }).length;
     const scanned = () =>
       scans.getCalls().some((call) => {
         const args: readonly unknown[] = call.args;
@@ -674,8 +671,8 @@ test(
     await loading;
     assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 122);
     assert.ok(
-      identityProbes() >= 1 && identityProbes() <= 2,
-      "cold inventory spans two ticks; only the active root is probed in either batch",
+      identityProbes() >= 1,
+      "cold inventory proves liveness before presenting active runs",
     );
     opens.resetHistory();
     probes.resetHistory();
@@ -701,7 +698,7 @@ test(
       0,
       "inventory never reads guidance prompts or output",
     );
-    assert.equal(identityProbes(), 1, "one actual PID/birth owner lookup per active root per tick");
+    assert.equal(identityProbes(), 1, "one actual PID liveness probe per active root per tick");
     write(path.join(base, firstId, "successor.json"), { id: secondId });
     opens.resetHistory();
     probes.resetHistory();

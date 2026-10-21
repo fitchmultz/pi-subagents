@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-### Changed
+### Breaking
 
-- Stop child actors and verified owned native shells when their parent exits, including active work. Keep saved conversations for explicit continuation after parent resume; do not replay interrupted tools. Ordinary extension reload keeps children alive.
+- Stop child actors and verified owned native shells when their parent exits, including active work and asynchronous delegation from one-shot callers. Keep saved conversations for explicit continuation after parent resume; do not replay interrupted tools. Ordinary extension reload keeps children alive.
 
 ### Fixed
 
