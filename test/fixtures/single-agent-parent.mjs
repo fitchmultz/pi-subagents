@@ -164,6 +164,7 @@ if (phase === "cwd" || phase === "cwd-reopen" || phase.startsWith("cwd-invalid-"
   );
 }
 let agentAPI;
+let publishLegacyAtSettlement;
 const toolEnds = [];
 const services = await sdk.createAgentSessionServices({
   cwd,
@@ -178,6 +179,7 @@ const services = await sdk.createAgentSessionServices({
     extensionFactories: [
       (pi) => {
         agentAPI = pi;
+        pi.on("agent_settled", () => publishLegacyAtSettlement?.());
         agents(pi);
         pi.on("tool_execution_end", (event) => {
           toolEnds.push(structuredClone(event));
@@ -1237,29 +1239,27 @@ try {
     } else if (phase.startsWith("queue-drop")) {
       session.clearQueue();
       assert.equal(session.agent.hasQueuedMessages(), false);
-      inspected = await observe();
-      assert.equal(inspected.details.nativeReceipt, null);
-      assert.equal(
-        session.agent.hasQueuedMessages(),
-        false,
-        "owner processed a scan while parent held: dropped admission stays absorbed until settlement",
-      );
       if (phase === "queue-drop-two") {
-        const legacy = path.join(
-          root,
-          "pi-subagents-runtime/async-subagent-results/settled-legacy.json",
-        );
-        fs.mkdirSync(path.dirname(legacy), { recursive: true });
-        fs.writeFileSync(
-          legacy,
-          JSON.stringify({
-            runId: "settled-legacy",
-            sessionId: manager.getSessionId(),
-            mode: "single",
-            timestamp: 1,
-            output: "LEGACY_SETTLED_RESULT",
-          }),
-        );
+        // Publish before the completion owner's settled scan, never into the busy queue.
+        publishLegacyAtSettlement = () => {
+          publishLegacyAtSettlement = undefined;
+          assert.equal(session.isIdle, true);
+          const legacy = path.join(
+            root,
+            "pi-subagents-runtime/async-subagent-results/settled-legacy.json",
+          );
+          fs.mkdirSync(path.dirname(legacy), { recursive: true });
+          fs.writeFileSync(
+            legacy,
+            JSON.stringify({
+              runId: "settled-legacy",
+              sessionId: manager.getSessionId(),
+              mode: "single",
+              timestamp: 1,
+              output: "LEGACY_SETTLED_RESULT",
+            }),
+          );
+        };
       } else {
         const legacy = path.join(
           root,
@@ -1268,6 +1268,13 @@ try {
         fs.mkdirSync(path.dirname(legacy), { recursive: true });
         fs.writeFileSync(legacy, '{"incomplete":');
       }
+      inspected = await observe();
+      assert.equal(inspected.details.nativeReceipt, null);
+      assert.equal(
+        session.agent.hasQueuedMessages(),
+        false,
+        "owner processed a scan while parent held: dropped admission stays absorbed until settlement",
+      );
       fs.writeFileSync(path.join(root, "release-parent"), "release");
       await heldParent;
       if (phase === "queue-drop-two") {
