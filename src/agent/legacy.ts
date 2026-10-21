@@ -7,6 +7,7 @@ import { resolveTempRootDir } from "../shared/types.ts";
 import { isRecord } from "../shared/unknown.ts";
 import { release, isHeld, type Completion } from "./notifications.ts";
 import { missing } from "./storage.ts";
+import { errorText } from "./host.ts";
 
 interface LegacyInput {
   file: string;
@@ -132,6 +133,15 @@ function notification(ctx: ExtensionContext, input: LegacyInput): Completion | u
     },
   };
 }
+function legacyNotice(ctx: ExtensionContext, file: string): Completion | undefined {
+  try {
+    const input = legacyInput(file, ctx.sessionManager.getSessionId());
+    return input ? notification(ctx, input) : undefined;
+  } catch (error) {
+    console.error(`Skipped legacy completion ${file}: ${errorText(error)}`);
+    return;
+  }
+}
 export function legacyNotifications(ctx: ExtensionContext): Completion[] {
   const notices: Completion[] = [];
   const root = resolveTempRootDir();
@@ -155,8 +165,7 @@ export function legacyNotifications(ctx: ExtensionContext): Completion[] {
     if (!name.endsWith(".json")) {
       continue;
     }
-    const input = legacyInput(path.join(directory, name), ctx.sessionManager.getSessionId());
-    const notice = input ? notification(ctx, input) : undefined;
+    const notice = legacyNotice(ctx, path.join(directory, name));
     if (notice) {
       notices.push(notice);
     }
