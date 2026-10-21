@@ -234,7 +234,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         "actual provider and child tool are both live",
       );
       await until(
-        () => terminal.text().includes("watch-child 雪 · running"),
+        () => terminal.text().includes("● watch-child 雪 · running"),
         "above-editor widget names the running child without opening /agents",
       );
       const childStart = fs
@@ -319,7 +319,16 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         true,
         "watch input never aborted the active parent",
       );
+      terminal.clear();
       terminal.send("\x1b");
+      terminal.width = 100;
+      terminal.resize?.();
+      await until(
+        () => terminal.text().includes("No child runs to show"),
+        "completed child disappears from the picker",
+      );
+      assert.doesNotMatch(terminal.text(), /watch-child 雪 · completed/);
+      assert.equal(requests(root), calls + 1, "hiding completed work never wakes a model");
       terminal.send("\x1b");
       terminal.clear();
       terminal.send(`/agents ${runId.slice(0, 8)}`);
@@ -547,16 +556,25 @@ test(
       }
       return launch;
     };
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 122; i++) {
       publish(`completed-${i}`, true);
     }
-    const active = publish("active-first", false);
-    fs.mkdirSync(path.join(base, "active-second"));
-    write(path.join(base, "active-second/launch.json"), {
+    // Use the observed filesystem order, not an assumption about sorted readdir.
+    const ids = fs.readdirSync(base);
+    const firstId = ids.at(-2);
+    const secondId = ids.at(-1);
+    assert.ok(firstId !== undefined && secondId !== undefined);
+    const completedIds = new Set(ids.slice(0, -2));
+    const active = { ...publish(firstId, false), name: "active-first" };
+    fs.rmSync(path.join(base, firstId, "result.json"));
+    fs.rmSync(path.join(base, secondId, "result.json"));
+    write(path.join(base, firstId, "launch.json"), active);
+    write(path.join(base, secondId, "launch.json"), {
       ...active,
-      id: "active-second",
-      rootId: "active-first",
-      predecessor: "active-first",
+      id: secondId,
+      name: "active-second",
+      rootId: firstId,
+      predecessor: firstId,
     });
     const models = await sdk.ModelRuntime.create({
       credentials: new InMemoryCredentialStore(),
@@ -633,14 +651,28 @@ test(
     });
     await mode.init();
     await until(
-      () => /Agents: [0-2]\+ active \(checking…\) · 82 runs/.test(terminal.text()),
+      () => terminal.text().includes("Agents: 0+ active (checking…) · 122 runs"),
       "incomplete native inventory qualifies the active count naturally",
     );
+    terminal.clear();
+    const loading = mode.getUserInput().then((text) => runtime.session.prompt(text));
+    terminal.send("/agents");
+    terminal.send("\r");
     await until(
-      () => terminal.text().includes("Agents: 2 active · 82 runs"),
+      () =>
+        terminal.text().includes("Agents · read-only") && terminal.text().includes("(checking…)"),
+      "picker is rendered before the final metadata batch",
+    );
+    assert.match(terminal.text(), /Checking saved child runs…/);
+    assert.doesNotMatch(terminal.text(), /No child runs to show/);
+    await until(
+      () => terminal.text().includes("Agents: 2 active · 122 runs"),
       "initial owner metadata scan has completed",
     );
-    assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 82);
+    assert.doesNotMatch(terminal.text(), /completed-\d/, "completed rows stay out of the widget");
+    terminal.send("\x1b");
+    await loading;
+    assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 122);
     assert.ok(
       identityProbes() >= 1 && identityProbes() <= 2,
       "cold inventory spans two ticks; only the active root is probed in either batch",
@@ -651,7 +683,7 @@ test(
     await until(scanned, "next actual metadata scan processed the owner inventory");
     const reads = opened();
     assert.ok(
-      reads.includes(path.join(base, "active-second/result.json")),
+      reads.includes(path.join(base, secondId, "result.json")),
       "completed history never consumes the warm active refresh budget",
     );
     assert.equal(
@@ -660,7 +692,7 @@ test(
       "immutable launch prompts are not re-read",
     );
     assert.equal(
-      reads.filter((file) => file.includes("/completed-")).length,
+      reads.filter((file) => completedIds.has(path.relative(base, file).split(path.sep)[0])).length,
       0,
       "completed metadata and idle actors are cached",
     );
@@ -670,23 +702,24 @@ test(
       "inventory never reads guidance prompts or output",
     );
     assert.equal(identityProbes(), 1, "one actual PID/birth owner lookup per active root per tick");
-    write(path.join(base, "active-first/successor.json"), { id: "active-second" });
+    write(path.join(base, firstId, "successor.json"), { id: secondId });
     opens.resetHistory();
     probes.resetHistory();
     scans.resetHistory();
     await until(scanned, "owner processes the published A-to-B successor on the next scan");
-    assert.ok(opened().includes(path.join(base, "active-first/successor.json")));
+    assert.ok(opened().includes(path.join(base, firstId, "successor.json")));
     assert.equal(
       identityProbes(),
       1,
       "only successor B probes its shared live actor; superseded A does not",
     );
     await until(
-      () => terminal.text().includes("Agents: 1 active · 82 runs"),
+      () => terminal.text().includes("Agents: 1 active · 122 runs"),
       "missing-result predecessor no longer inherits the successor's liveness",
     );
-    write(path.join(base, "active-second/result.json"), {
-      id: "active-second",
+    assert.match(terminal.text(), /○ active-first · interrupted/);
+    write(path.join(base, secondId, "result.json"), {
+      id: secondId,
       owner,
       status: "completed",
       endedAt: 1,
@@ -696,11 +729,11 @@ test(
     scans.resetHistory();
     await until(scanned, "owner processes B's canonical completion on the next scan");
     assert.ok(
-      opened().includes(path.join(base, "active-second/result.json")),
-      "warm B refresh is not delayed behind 80 completed histories",
+      opened().includes(path.join(base, secondId, "result.json")),
+      "warm B refresh is not delayed behind 120 completed histories",
     );
     assert.equal(
-      opened().filter((file) => file.includes("/active-first/")).length,
+      opened().filter((file) => file.startsWith(path.join(base, firstId) + path.sep)).length,
       0,
       "immutable superseded A remains cached even without a result",
     );
@@ -710,7 +743,7 @@ test(
       "B's live idle actor is not probed after canonical completion",
     );
     await until(
-      () => terminal.text().includes("Agents: 0 active · 82 runs"),
+      () => terminal.text().includes("Agents: 0 active · 122 runs"),
       "completed successor cannot make interrupted predecessor look active",
     );
     terminal.clear();
@@ -718,11 +751,10 @@ test(
     terminal.send("/agents");
     terminal.send("\r");
     await until(
-      () =>
-        terminal.text().includes("interrupted · active-first") &&
-        terminal.text().includes("completed · active-second"),
-      "native inventory exposes distinct predecessor and successor outcomes",
+      () => terminal.text().includes("interrupted · active-first"),
+      "native inventory keeps the interrupted predecessor visible",
     );
+    assert.doesNotMatch(terminal.text(), /completed · active-second/);
     terminal.send("\x1b");
     await retired;
     for (let i = 0; i < 101; i++) {
