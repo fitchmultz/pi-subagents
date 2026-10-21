@@ -129,7 +129,11 @@ class AgentRuntime {
         const launch = launchAt(this.base, id, this.owner);
         if (!roots.has(launch.rootId)) {
           roots.add(launch.rootId);
-          targets.push(...requestStop(this.base, launch).targets);
+          targets.push(
+            ...requestStop(this.base, launch, (error) => {
+              console.error(`Child shutdown ${id}: ${errorText(error)}`);
+            }).targets,
+          );
         }
       } catch (error) {
         console.error(`Child shutdown ${id}: ${errorText(error)}`);

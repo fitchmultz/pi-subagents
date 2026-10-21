@@ -116,6 +116,7 @@ for (const phase of [
   "cancellation",
   "dispose-wait",
   "custom-bash",
+  "bash-shutdown-stale",
   "bash-before-registration",
   "trust",
   "accounting-lf",

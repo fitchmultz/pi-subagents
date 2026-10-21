@@ -728,7 +728,11 @@ try {
     const inventory = await call("agent_runs", { action: "list" }, "list-after-actor-crash");
     assert.equal(inventory.details.runs.find((run) => run.id === id).status, "interrupted");
     assert.equal(fs.existsSync(path.join(runDir(id), "result.json")), false);
-  } else if (phase === "bash-seed" || phase === "bash-seed-paused") {
+  } else if (
+    phase === "bash-seed" ||
+    phase === "bash-seed-paused" ||
+    phase === "bash-shutdown-stale"
+  ) {
     fs.writeFileSync(
       path.join(root, "ticker.mjs"),
       `import fs from 'node:fs'; import {spawn} from 'node:child_process';\nconst root=${JSON.stringify(root)}; if(!process.argv.includes('--descendant')) { const child=spawn(process.execPath,[process.argv[1],'--descendant'],{stdio:'ignore'}); fs.writeFileSync(root+'/shell-family.json',JSON.stringify({pid:process.pid,descendant:child.pid})); }\nfs.writeFileSync(root+'/heartbeat-'+process.pid,'ready'); setInterval(()=>fs.appendFileSync(root+'/heartbeat-'+process.pid,'tick\\n'),20);`,
@@ -763,7 +767,7 @@ try {
         family,
       }),
     );
-    if (phase === "bash-seed-paused") {
+    if (phase === "bash-seed-paused" || phase === "bash-shutdown-stale") {
       process.kill(requests()[0].pid, "SIGSTOP");
       await until(
         () =>
@@ -773,7 +777,56 @@ try {
         "suspend the actor's parent watcher to exercise cold process/shell recovery",
       );
     }
-    process.kill(process.pid, "SIGKILL");
+    if (phase === "bash-shutdown-stale") {
+      const actor = readJSON(path.join(runDir(runId), "actor.lock/process.json"));
+      const ledger = path.join(runDir(runId), "shells", actor.token);
+      const original = path.join(ledger, fs.readdirSync(ledger)[0]);
+      const shell = readJSON(original);
+      const extra = path.join(ledger, "shutdown-extra.json");
+      const bystander = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      assert.ok(bystander.pid);
+      const dead = (pid) => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          assert.equal(error.code, "ESRCH");
+          return true;
+        }
+      };
+      const signalIfLive = (pid, signal) => {
+        if (!dead(pid)) {
+          process.kill(pid, signal);
+        }
+      };
+      try {
+        fs.writeFileSync(extra, JSON.stringify(shell));
+        const [first, second] = fs.readdirSync(ledger);
+        // Model a stale persisted claim, not actual OS PID reuse. The controller
+        // must skip this live unrelated PID while still stopping the verified shell.
+        fs.writeFileSync(
+          path.join(ledger, first),
+          JSON.stringify({ ...shell, pid: bystander.pid }),
+        );
+        fs.writeFileSync(path.join(ledger, second), JSON.stringify(shell));
+        await runtime.dispose();
+        await until(
+          () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
+          "parent shutdown stops every verified target despite an earlier stale shell claim",
+        );
+        assert.equal(dead(bystander.pid), false, "the ambiguous unrelated process is untouched");
+      } finally {
+        fs.rmSync(extra, { force: true });
+        fs.writeFileSync(original, JSON.stringify(shell));
+        signalIfLive(actor.pid, "SIGCONT");
+        signalIfLive(-bystander.pid, "SIGKILL");
+      }
+    } else {
+      process.kill(process.pid, "SIGKILL");
+    }
   } else if (phase === "cold-actor-stop") {
     const directory = runDir(runId);
     const identity = readJSON(path.join(directory, "actor.lock/process.json"));

@@ -170,11 +170,23 @@ export function signalProcess(identity: ProcessIdentity, signal: NodeJS.Signals)
 export function requestStop(
   base: string,
   launch: Launch,
+  onError?: (error: unknown) => void,
 ): { targets: ProcessIdentity[]; command: string | undefined } {
+  const attempt = (operation: () => boolean): boolean => {
+    try {
+      return operation();
+    } catch (error) {
+      if (onError === undefined) {
+        throw error;
+      }
+      onError(error);
+      return false;
+    }
+  };
   const identity = actor(base, launch);
   const targets = identity ? [identity, ...shells(base, launch, identity.token)] : [];
-  // Validate the whole owned set before admitting Stop or signaling any member.
-  const live = targets.filter(verifyProcess);
+  // Interactive Stop validates the whole set; shutdown reports and skips only ambiguous targets.
+  const live = targets.filter((target) => attempt(() => verifyProcess(target)));
   const command =
     identity && live.includes(identity)
       ? enqueue(base, launch, "stop", { actorToken: identity.token })
@@ -185,7 +197,7 @@ export function requestStop(
     });
   }
   live.forEach((target) => {
-    signalProcess(target, "SIGTERM");
+    attempt(() => signalProcess(target, "SIGTERM"));
   });
   return { targets: live, command };
 }

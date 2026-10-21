@@ -213,7 +213,11 @@ class Actor {
   private stopShells(signal: NodeJS.Signals): void {
     try {
       for (const identity of shells(this.base, this.initial, this.token)) {
-        signalProcess(identity, signal);
+        try {
+          signalProcess(identity, signal);
+        } catch (error) {
+          this.errors.push(errorText(error));
+        }
       }
     } catch (error) {
       this.errors.push(errorText(error));
