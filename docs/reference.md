@@ -157,7 +157,10 @@ The header total counts all saved runs; the rows and overflow count exclude comp
 `/agents <run-id>` still opens
 saved completed runs, and an already-open watch stays open through completion.
 An empty partial inventory says it is checking saved runs, not that no runs exist.
-An overflow count points to `/agents`; Ctrl+O expands model/cwd details. The widget
+In fullscreen mode, click a named row to watch that child; click the header or
+overflow count to open `/agents`. Picker rows and selection/Back/Close hints are
+clickable too. Regular mode retains the keyboard path because Pi leaves mouse
+input to the terminal there. Ctrl+O expands model/cwd details. The widget
 clears when no visible runs remain or when the native parent is replaced. It is not
 a footer-only count.
 Use Up/Down to select, Enter to watch, and Escape to return/close (the displayed
@@ -170,6 +173,13 @@ Published assistant text/tool calls may precede a running tool's result. Partial
 journal records and unpublished provider token deltas are not presented as completed
 entries. Agent tools remain the orchestration surface; this does not restore the
 retired workflow UI or remote transcript APIs.
+
+Long `delegate`, `agent_runs`, and `intercom` result cards start with a four-visual-line
+preview, including output that wraps from one long logical line. Pi's native card
+click and configured expand-tools key (Ctrl+O by default) reveal the full output.
+Child completion and Intercom message cards use the same native expansion state;
+their clickable header hints toggle the global tools-expanded view, just like
+Ctrl+O. Full saved and model-visible content is unchanged.
 
 ## Installation and upgrade
 

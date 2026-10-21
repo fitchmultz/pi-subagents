@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, TruncatedText } from "@earendil-works/pi-tui";
+import { actionText } from "../shared/tui-action.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { isChild, errorText } from "./host.ts";
 import { launchAt, list, ownerDirectory, runDirectory, read } from "./storage.ts";
@@ -143,41 +144,64 @@ class Observer {
     }
     ctx.ui.setWidget(
       STATUS_KEY,
-      (_tui, theme) => ({
-        render: (width) => {
-          const rows = this.inventory();
-          const visible = rows.slice(0, 5);
-          const lines = [theme.fg("accent", this.status())];
-          for (const row of visible) {
-            const glyph = row.live ? "●" : "○";
-            const color = row.live ? "accent" : "warning";
-            lines.push(
-              `${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${row.status} · ${row.id.slice(0, 8)}`,
-            );
-            if (ctx.ui.getToolsExpanded()) {
-              const launch = this.launches.get(row.id);
-              if (launch) {
-                lines.push(
-                  theme.fg(
-                    "dim",
-                    `  ${plainText(`${launch.provider}/${launch.model}`)} · ${plainText(launch.cwd)}`,
-                  ),
-                );
+      (_tui, theme) => {
+        const content = new Container();
+        const open = (id: string) => {
+          if (ctx !== this.ctx) {
+            return;
+          }
+          void this.show(id, ctx).catch((error: unknown) => {
+            ctx.ui.notify(errorText(error), "error");
+          });
+        };
+        return {
+          render: (width) => {
+            const rows = this.inventory();
+            const visible = rows.slice(0, 5);
+            content.clear();
+            content.addChild(actionText(theme.fg("accent", this.status()), () => open("")));
+            for (const row of visible) {
+              const glyph = row.live ? "●" : "○";
+              const color = row.live ? "accent" : "warning";
+              content.addChild(
+                actionText(
+                  `${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${row.status} · ${row.id.slice(0, 8)}`,
+                  () => open(row.id),
+                ),
+              );
+              if (ctx.ui.getToolsExpanded()) {
+                const launch = this.launches.get(row.id);
+                if (launch) {
+                  content.addChild(
+                    actionText(
+                      theme.fg(
+                        "dim",
+                        `  ${plainText(`${launch.provider}/${launch.model}`)} · ${plainText(launch.cwd)}`,
+                      ),
+                      () => open(row.id),
+                    ),
+                  );
+                }
               }
             }
-          }
-          if (rows.length > visible.length) {
-            lines.push(theme.fg("dim", `+${rows.length - visible.length} more · /agents`));
-          }
-          if (this.error.length > 0) {
-            lines.push(theme.fg("warning", this.error));
-          }
-          return lines.map((line) => truncateToWidth(line, width));
-        },
-        invalidate: () => {
-          // Render reads current rows, expansion and theme on every frame.
-        },
-      }),
+            if (rows.length > visible.length) {
+              content.addChild(
+                actionText(theme.fg("dim", `+${rows.length - visible.length} more · /agents`), () =>
+                  open(""),
+                ),
+              );
+            }
+            if (this.error.length > 0) {
+              content.addChild(new TruncatedText(theme.fg("warning", this.error), 0, 0));
+            }
+            return content.render(width);
+          },
+          handleMouse: (event) => content.handleMouse(event),
+          invalidate: () => {
+            // Render reads current rows, expansion and theme on every frame.
+          },
+        };
+      },
       { placement: "aboveEditor" },
     );
   }
@@ -267,6 +291,7 @@ class Observer {
       return {
         render: (width) => screen.render(width),
         handleInput: (data) => screen.handleInput(data),
+        handleMouse: (event) => screen.handleMouse(event),
         invalidate: () => screen.invalidate(),
         dispose: () => {
           screen.dispose();

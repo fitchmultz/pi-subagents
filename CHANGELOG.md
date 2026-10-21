@@ -5,6 +5,8 @@
 ### Fixed
 
 - Resolve explicit child `provider/model:thinking` overrides with Pi's native model-reference API when available. Preserve literal colon IDs and inherited thinking, reject fuzzy/fallback selection, and explain the host API requirement on older runtimes.
+- Restore fullscreen click-to-watch on named child rows and clickable `/agents` navigation. Keep regular-mode keyboard controls and read-only observation.
+- Collapse lengthy agent/Intercom result and notification cards by visual lines, reusing Pi's native expansion state and keybindings without truncating saved or model-visible content.
 - Restore default steering for incoming Intercom asks in interactive and print modes; keep explicit queue/passive behavior and sender-side busy capability reporting.
 - Preserve non-passive recovery order, suppress repeated message/reply IDs without reviving answered or superseded work, and coalesce concurrent ask handoff probes.
 - Restore circle indicators and hide completed runs from the above-editor widget and `/agents` picker. Saved run IDs and already-open read-only watches remain available; failed, stopped, interrupted, and unavailable runs stay visible.
