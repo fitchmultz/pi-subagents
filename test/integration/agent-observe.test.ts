@@ -469,11 +469,13 @@ test(
         const args: readonly unknown[] = call.args;
         return typeof args[0] === "string" ? [args[0]] : [];
       });
-    const psCalls = () =>
-      probes.getCalls().filter((call) => {
-        const args: readonly unknown[] = call.args;
-        return args[0] === "ps";
-      }).length;
+    const identityProbes = () =>
+      process.platform === "linux"
+        ? opened().filter((file) => file === `/proc/${process.pid}`).length
+        : probes.getCalls().filter((call) => {
+            const args: readonly unknown[] = call.args;
+            return args[0] === "ps";
+          }).length;
     const scanned = () =>
       scans.getCalls().some((call) => {
         const args: readonly unknown[] = call.args;
@@ -499,7 +501,7 @@ test(
     );
     assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 82);
     assert.equal(
-      psCalls(),
+      identityProbes(),
       1,
       "completed live idle actors incur no process probes; active siblings share one root probe",
     );
@@ -527,7 +529,7 @@ test(
       0,
       "inventory never reads guidance prompts or output",
     );
-    assert.equal(psCalls(), 1, "one actual PID/birth owner lookup per active root per tick");
+    assert.equal(identityProbes(), 1, "one actual PID/birth owner lookup per active root per tick");
     write(path.join(base, "active-first/successor.json"), { id: "active-second" });
     opens.resetHistory();
     probes.resetHistory();
@@ -535,7 +537,7 @@ test(
     await until(scanned, "owner processes the published A-to-B successor on the next scan");
     assert.ok(opened().includes(path.join(base, "active-first/successor.json")));
     assert.equal(
-      psCalls(),
+      identityProbes(),
       1,
       "only successor B probes its shared live actor; superseded A does not",
     );
@@ -562,7 +564,11 @@ test(
       0,
       "immutable superseded A remains cached even without a result",
     );
-    assert.equal(psCalls(), 0, "B's live idle actor is not probed after canonical completion");
+    assert.equal(
+      identityProbes(),
+      0,
+      "B's live idle actor is not probed after canonical completion",
+    );
     await until(
       () => terminal.text().includes("Agents: 0 active · 82 runs"),
       "completed successor cannot make interrupted predecessor look active",
