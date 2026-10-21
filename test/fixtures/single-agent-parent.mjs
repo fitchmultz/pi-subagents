@@ -633,8 +633,11 @@ try {
       const rejected = await call("delegate", { prompt: "REJECTED_MODEL", model }, model);
       assert.equal(rejected.isError, true, JSON.stringify(rejected));
       assert.match(JSON.stringify(rejected.content), /Model .*unavailable/);
-      if (!nativeSuffix && model.endsWith(":low")) {
-        assert.match(JSON.stringify(rejected.content), /update Pi.*thinking suffix/i);
+      if (!nativeSuffix) {
+        assert.match(
+          JSON.stringify(rejected.content),
+          /If you intended a thinking suffix, update Pi/,
+        );
       }
       assert.deepEqual(fs.readdirSync(base).sort(), before, "no failed launch is allocated");
       assert.equal(requests().length, requestCount, "no alternate model receives a request");

@@ -32,7 +32,7 @@ function selectedModel(
   }
   if (typeof sdk.resolveModelReference !== "function") {
     throw new Error(
-      `Model ${input.model} is unavailable; no fallback was used. This host supports literal IDs only; update Pi to use native thinking suffixes.`,
+      `Model ${input.model} is unavailable; no fallback was used. Check the provider/model ID. This host supports literal IDs only. If you intended a thinking suffix, update Pi for native thinking-suffix support.`,
     );
   }
   const resolved = sdk.resolveModelReference(
