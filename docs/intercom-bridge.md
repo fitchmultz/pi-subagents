@@ -122,8 +122,13 @@ retries. A lost response is **UNKNOWN**, not proof that a message was unsent.
 | `POST /v1/ack`      | `{ids}` (at most 256)                                     | `acked`; durable intake ownership transferred              |
 
 `to` uses the existing exact-ID/name resolver; ambiguity never selects a peer.
-Explicit message IDs survive byte-for-byte. `passive:true` is mailbox-only and
-never wakes. Acceptance means transport/broker admission, not native journal
+Explicit message IDs survive byte-for-byte. Use a fresh `--id` / `messageId` for
+each new logical message; reuse it only to retry that same message. Updated native
+recipients ignore an already-admitted ID even if a retry changes its payload,
+while the broker can still report transport acceptance. Do not reuse a previous
+ID to send a different instruction.
+
+`passive:true` is mailbox-only and never wakes. Acceptance means transport/broker admission, not native journal
 persistence, model start, reply completion or task completion. A bare `ok:true`
 is not an acceptance receipt.
 

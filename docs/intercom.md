@@ -72,8 +72,9 @@ lost transport response can be uncertain; do not blindly replay side effects.
 the sender genuinely must remain alive waiting for a decision. If an ordinary ask
 finds a peer advertising `acceptsAsks:false`, the sender still reports `peer_busy`
 without waiting; recipient steering does not claim that a reply has arrived.
-Explicit steer/queue asks retain their bounded correlated wait. `reply` uses the active or sole pending
-ask when unambiguous; otherwise specify `replyTo` and the intended sender. Inspect
+Explicit steer/queue asks retain their bounded correlated wait. `reply` uses the
+active or sole pending ask when unambiguous; otherwise specify `replyTo` and the
+intended sender. Inspect
 `pending` for the exact correlation rather than guessing from text.
 
 This ordinary request/reply mechanism does not recreate the retired durable
