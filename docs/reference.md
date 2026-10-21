@@ -60,6 +60,11 @@ creates an immutable successor in the same conversation. Original handles can
 find the latest successor for controls, while inspection preserves predecessor
 results. A retained ambiguous launch claim prevents accidental duplicate launch;
 missing session state is an error, not permission to start a different chat.
+If a handoff saved a run but failed before admission, retry `continue` with the
+exact same prompt after its actor and owned shells have exited. This resumes the
+saved run and queued command, not another successor. A different prompt is refused
+until admission or a canonical result, and an ambiguous process claim still
+requires inspection rather than automatic replay.
 Guidance that arrives after its run settles is reported as stale rather than
 starting untracked work. Inspection text exposes the guidance command IDs and
 admission states, native receipt publication and separately known process exit.

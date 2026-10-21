@@ -23,7 +23,9 @@ import {
   resultSchema,
   attachmentSchema,
   admissionSchema,
+  commandSchema,
   type Launch,
+  type Result,
   type DelegateInput,
   type RunsInput,
 } from "./contracts.ts";
@@ -275,7 +277,7 @@ class AgentRuntime {
     }
     return next;
   }
-  private continuationResult(launch: Launch) {
+  private continuationResult(launch: Launch): Result | "pending" | undefined {
     const result = read(path.join(runDirectory(this.base, launch.id), "result.json"), resultSchema);
     if (result) {
       return result;
@@ -285,11 +287,37 @@ class AgentRuntime {
       admissionSchema,
     );
     if (!admission || admission.id !== launch.id || admission.action !== "run") {
-      throw new Error(
-        `Run ${launch.id} is awaiting native admission. Inspect this run and retry after admission or a canonical result; no new continuation was launched.`,
-      );
+      return "pending";
     }
     return;
+  }
+  private async retryContinuation(
+    launch: Launch,
+    input: RunsInput,
+    signal: AbortSignal | undefined,
+  ) {
+    const identity = actor(this.base, launch);
+    const command = read(
+      path.join(conversation(this.base, launch), "commands", `${launch.id}.json`),
+      commandSchema,
+    );
+    if (
+      input.prompt !== launch.prompt ||
+      (identity && alive(identity)) ||
+      command?.id !== launch.id ||
+      command.runId !== launch.id ||
+      command.action !== "run"
+    ) {
+      throw new Error(
+        `Run ${launch.id} is awaiting native admission. Retry the same saved prompt only after its actor exits, or wait for admission or a canonical result before sending another prompt; no new continuation was launched.`,
+      );
+    }
+    // Only an unadmitted durable command is retryable; keep all process/shell claim guards.
+    await ensureActor(this.base, launch);
+    if (input.async === false) {
+      return this.wait(launch, signal, true);
+    }
+    return toolResult({ ...projection(this.base, launch, this.ctx), receipt: "continuation" });
   }
   private async continue(launch: Launch, input: RunsInput, signal: AbortSignal | undefined) {
     if (input.prompt === undefined) {
@@ -299,6 +327,9 @@ class AgentRuntime {
       throw new Error("Missing saved native session; no process was launched.");
     }
     const completed = this.continuationResult(launch);
+    if (completed === "pending") {
+      return this.retryContinuation(launch, input, signal);
+    }
     const identity = actor(this.base, launch);
     if (!completed && identity && alive(identity)) {
       const command = enqueue(this.base, launch, "steer", { prompt: input.prompt });

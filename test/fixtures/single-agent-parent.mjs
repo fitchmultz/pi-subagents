@@ -765,6 +765,29 @@ try {
     const ledger = path.join(directory, "shells", identity.token);
     const recordFile = path.join(ledger, fs.readdirSync(ledger)[0]);
     const shell = readJSON(recordFile);
+    const prompt = "RECOVER_QUEUED_SHELL_CONTINUATION";
+    const blocked = await call(
+      "agent_runs",
+      { action: "continue", id: runId, prompt },
+      "continue-before-orphan-stop",
+    );
+    assert.equal(blocked.isError, true, JSON.stringify(blocked));
+    assert.match(JSON.stringify(blocked.content), /Owned native shell work remains live/);
+    const pending = readJSON(path.join(directory, "successor.json")).id;
+    const pendingFiles = [
+      path.join(runDir(pending), "launch.json"),
+      path.join(directory, "commands", `${pending}.json`),
+    ];
+    const queued = pendingFiles.map((file) => fs.readFileSync(file));
+    assert.equal(readJSON(pendingFiles[0]).prompt, prompt);
+    assert.equal(fs.existsSync(path.join(directory, "admissions", `${pending}.json`)), false);
+    const stillBlocked = await call(
+      "agent_runs",
+      { action: "continue", id: runId, prompt },
+      "retry-while-orphan-shell-is-live",
+    );
+    assert.equal(stillBlocked.isError, true, JSON.stringify(stillBlocked));
+    assert.match(JSON.stringify(stillBlocked.content), /Owned native shell work remains live/);
     const commands = () => fs.readdirSync(path.join(directory, "commands")).length;
     const beforeCommands = commands();
     const bystander = spawn(
@@ -834,6 +857,78 @@ try {
       await until(
         () => fs.statSync(beat).size > size,
         "unrelated process survives completed cold Stop",
+      );
+      const distinct = await call(
+        "agent_runs",
+        { action: "continue", id: runId, prompt: "DO_NOT_REPLACE_QUEUED_PROMPT" },
+        "refuse-distinct-prompt-after-orphan-stop",
+      );
+      assert.equal(distinct.isError, true, JSON.stringify(distinct));
+      assert.match(JSON.stringify(distinct.content), /awaiting native admission.*retry/i);
+      const processFile = path.join(directory, "actor.lock/process.json");
+      const retryWithout = async (file, expected) => {
+        const held = `${file}.held`;
+        fs.renameSync(file, held);
+        try {
+          // Remove actual published ownership/command evidence, never invent a receipt.
+          const refused = await call(
+            "agent_runs",
+            { action: "continue", id: pending, prompt },
+            `retry-without-${path.basename(file)}`,
+          );
+          assert.equal(refused.isError, true, JSON.stringify(refused));
+          assert.match(JSON.stringify(refused.content), expected);
+          assert.equal(fs.existsSync(path.join(directory, "admissions", `${pending}.json`)), false);
+        } finally {
+          fs.renameSync(held, file);
+        }
+      };
+      for (const [file, expected] of [
+        [pendingFiles[1], /awaiting native admission.*retry/i],
+        [processFile, /Actor launch is ambiguous/],
+      ]) {
+        // oxlint-disable-next-line no-await-in-loop
+        await retryWithout(file, expected);
+      }
+      const recovered = await call(
+        "agent_runs",
+        { action: "continue", id: runId, prompt, async: false },
+        "retry-queued-prompt-after-orphan-stop",
+      );
+      assert.equal(recovered.isError, false, JSON.stringify(recovered));
+      assert.equal(recovered.details.id, pending, "retry resumes the same durable run");
+      assert.equal(recovered.details.result.status, "completed");
+      assert.equal(recovered.details.output.text, `CHILD_LITERAL_RESULT:${prompt}`);
+      assert.equal(recovered.details.sessionFile, readJSON(pendingFiles[0]).sessionFile);
+      assert.deepEqual(
+        pendingFiles.map((file) => fs.readFileSync(file)),
+        queued,
+      );
+      assert.equal(commands(), beforeCommands, "retry does not enqueue another execution");
+      assert.equal(fs.existsSync(path.join(runDir(pending), "successor.json")), false);
+      assert.equal(fs.existsSync(path.join(directory, "result.json")), false);
+      assert.equal(
+        readJSON(path.join(directory, "admissions", `${pending}.json`)).runId,
+        pending,
+        "the actual replacement actor admits the saved command",
+      );
+      assert.deepEqual(
+        requests().map((request) => request.prompt),
+        ["BASH_HOLD_LITERAL", prompt],
+        "the first prompt is neither lost nor replayed and distinct retries never execute",
+      );
+      const journal = sdk.SessionManager.open(recovered.details.sessionFile);
+      assert.equal(
+        journal
+          .getEntries()
+          .filter(
+            (entry) =>
+              entry.type === "message" &&
+              entry.message.role === "user" &&
+              JSON.stringify(entry.message.content).includes(prompt),
+          ).length,
+        1,
+        "exactly one recovered prompt reaches the real native journal",
       );
     } finally {
       fs.writeFileSync(recordFile, JSON.stringify(shell));

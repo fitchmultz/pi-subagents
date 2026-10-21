@@ -258,8 +258,8 @@ write/repair assertions instead of stopping at the new unknown-ID guard.
 ### Deep-review follow-up
 
 The review follow-up prepares unpublished version **0.50.0**. Final measured
-size is **14,083 source lines, 16,779 production lines and 556,912 bytes**:
-reductions of **83.24%, 83.37% and 88.90%** from the original baseline. The
+size is **14,114 source lines, 16,810 production lines and 557,995 bytes**:
+reductions of **83.20%, 83.34% and 88.87%** from the original baseline. The
 read-only observer remains inside all three enforced ceilings.
 
 - Stop commands bind to the verified actor generation; replacement actors reject

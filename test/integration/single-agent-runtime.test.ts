@@ -293,7 +293,7 @@ for (const crash of [undefined, "before", "after"]) {
   );
 }
 test(
-  "single-agent actor SIGKILL retains native shell ownership for cold Stop without unread commands, fabricated result or bystander signals",
+  "single-agent actor SIGKILL retains native shell ownership for cold Stop and same-run continuation retry without replay or bystander signals",
   { timeout: 60000 },
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-orphan-"));
