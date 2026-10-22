@@ -138,7 +138,7 @@ class Observer {
     if (!ctx) {
       return;
     }
-    if (this.inventory().length === 0 && this.rows.size === this.total && this.error.length === 0) {
+    if (this.strip().length === 0 && this.rows.size === this.total && this.error.length === 0) {
       ctx.ui.setWidget(STATUS_KEY, undefined);
       return;
     }
@@ -156,7 +156,7 @@ class Observer {
         };
         return {
           render: (width) => {
-            const rows = this.inventory();
+            const rows = this.strip();
             const visible = rows.slice(0, 5);
             content.clear();
             content.addChild(actionText(theme.fg("accent", this.status()), () => open("")));
@@ -222,6 +222,10 @@ class Observer {
         const created = b.createdAt - a.createdAt;
         return created !== 0 ? created : a.id.localeCompare(b.id);
       });
+  }
+  /** The always-visible strip shows active work and unreadable runs; /agents keeps history. */
+  private strip(): ObserverRow[] {
+    return this.inventory().filter((row) => row.live || row.status === "unavailable");
   }
   private watch(id: string): Watch {
     const matches = list(this.base).filter((candidate) => candidate.startsWith(id));
