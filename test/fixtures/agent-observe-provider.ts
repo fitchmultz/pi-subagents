@@ -27,12 +27,24 @@ export default function fixture(pi: ExtensionAPI): void {
     });
     pi.registerCommand("observer-cards", {
       description: "Publish isolated renderer fixtures without waking the model",
-      handler: () => {
-        for (const customType of ["agent-completion", "subagent-notify", "intercom_message"]) {
+      handler: (args) => {
+        if (args === "short") {
+          pi.sendMessage(
+            { customType: "intercom_message", content: "**SHORT_CARD**", display: true },
+            { triggerTurn: false },
+          );
+          return Promise.resolve();
+        }
+        for (const customType of [
+          "agent-completion",
+          "subagent-notify",
+          "intercom_message",
+          "subagent-human-message",
+        ]) {
           pi.sendMessage(
             {
               customType,
-              content: `${customType} CARD_START ${"wrapped 雪😀 detail ".repeat(50)} CARD_END`,
+              content: `${customType} **CARD_START** ${"wrapped 雪😀 detail ".repeat(50)} CARD_END`,
               display: true,
             },
             { triggerTurn: false },

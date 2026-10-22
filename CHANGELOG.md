@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Preserve native Markdown formatting in collapsed message cards, including legacy human relays, and show clickable expansion hints only when content is hidden.
 - Skip provably reused child and native-shell PIDs during Stop, continuation and parent shutdown, including unrelated non-group-leaders. Keep genuine identity uncertainty visible and verified orphan cleanup intact; timezone differences alone never prove replacement.
 - List only active (and unreadable) child runs in the above-editor widget and remove it once a complete scan finds no active work. Stopped, failed and interrupted history stays in `/agents`, direct watch and saved run records.
 - Resolve explicit child `provider/model:thinking` overrides with Pi's native model-reference API when available. Preserve literal colon IDs and inherited thinking, reject fuzzy/fallback selection, and explain the host API requirement on older runtimes.

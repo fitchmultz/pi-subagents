@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   Box,
+  Container,
   Markdown,
   Spacer,
   Text,
@@ -17,15 +18,21 @@ import {
 } from "@earendil-works/pi-tui";
 import { actionText } from "./tui-action.ts";
 
-function preview(text: string, expanded: boolean, theme: Theme, showHint = true): Component {
+function preview(content: Component, expanded: boolean, theme: Theme, showHint = true): Component {
   if (expanded) {
-    return new Text(text, 0, 0);
+    return content;
   }
   let cache: { width: number; lines: string[] } | undefined;
   return {
     render(width) {
       if (cache?.width !== width) {
-        const { visualLines, skippedCount } = truncateToVisualLines(text, 4, width, 0, "start");
+        const { visualLines, skippedCount } = truncateToVisualLines(
+          content.render(width).join("\n"),
+          4,
+          width,
+          0,
+          "start",
+        );
         const hint = theme.fg(
           "dim",
           `… ${skippedCount} more lines${showHint ? ` · ${keyHint("app.tools.expand", "to expand")}` : ""}`,
@@ -39,6 +46,7 @@ function preview(text: string, expanded: boolean, theme: Theme, showHint = true)
     },
     invalidate() {
       cache = undefined;
+      content.invalidate();
     },
   };
 }
@@ -49,12 +57,16 @@ export const renderCompactResult: NonNullable<ToolDefinition["renderResult"]> = 
   theme,
 ) =>
   preview(
-    theme.fg(
-      "toolOutput",
-      result.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("\n"),
+    new Text(
+      theme.fg(
+        "toolOutput",
+        result.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("\n"),
+      ),
+      0,
+      0,
     ),
     expanded,
     theme,
@@ -78,20 +90,28 @@ export function registerCompactMessages(pi: ExtensionAPI, types: readonly string
               .map((block) => block.text)
               .join("\n");
       const box = new Box(outputPad, 1, (line) => theme.bg("customMessageBg", line));
+      const markdown = new Markdown(text, 0, 0, getMarkdownTheme(), {
+        color: (line) => theme.fg("customMessageText", line),
+      });
       box.addChild(
-        actionText(
-          `${theme.fg("customMessageLabel", theme.bold(`[${type}]`))} · ${keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")}`,
-          () => ui?.setToolsExpanded(!expanded),
-        ),
+        new (class extends Container {
+          override render(width: number): string[] {
+            this.clear();
+            const label = theme.fg("customMessageLabel", theme.bold(`[${type}]`));
+            this.addChild(
+              markdown.render(width).length > 4
+                ? actionText(
+                    `${label} · ${keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")}`,
+                    () => ui?.setToolsExpanded(!expanded),
+                  )
+                : new Text(label, 0, 0),
+            );
+            return super.render(width);
+          }
+        })(),
       );
       box.addChild(new Spacer(1));
-      box.addChild(
-        expanded
-          ? new Markdown(text, 0, 0, getMarkdownTheme(), {
-              color: (line) => theme.fg("customMessageText", line),
-            })
-          : preview(theme.fg("customMessageText", text), false, theme, false),
-      );
+      box.addChild(preview(markdown, expanded, theme, false));
       return box;
     });
   }

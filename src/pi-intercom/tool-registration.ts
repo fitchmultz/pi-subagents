@@ -8,7 +8,7 @@ export function registerIntercomTools(
   pi: ExtensionAPI,
   tools: Readonly<Pick<IntercomTools, "execute">>,
 ): void {
-  registerCompactMessages(pi, ["intercom_message"]);
+  registerCompactMessages(pi, ["intercom_message", "subagent-human-message"]);
   pi.registerTool({
     name: "intercom",
     label: "Intercom",

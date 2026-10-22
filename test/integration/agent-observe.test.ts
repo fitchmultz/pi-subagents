@@ -443,7 +443,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.send("\x1b");
       terminal.send("\x1b");
       terminal.width = 120;
-      terminal.height = 45;
+      terminal.height = 60;
       terminal.resize?.();
       if (view instanceof TuiAltScreen) {
         const screen = view;
@@ -460,7 +460,9 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         const collapsed = screenLines().join("\n");
         assert.match(collapsed, /agent-completion/);
         assert.match(collapsed, /subagent-notify/);
+        assert.match(collapsed, /subagent-human-message/);
         assert.match(collapsed, /CARD_START/);
+        assert.doesNotMatch(collapsed, /\*\*CARD_START\*\*/, "collapsed Markdown stays rendered");
         assert.doesNotMatch(collapsed, /CARD_END/, "long custom cards start collapsed");
         terminal.click(screen, "[intercom_message]");
         await until(
@@ -495,7 +497,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
               typeof entry.content === "string" &&
               entry.content.includes("CARD_START"),
           );
-        assert.equal(cards.length, 3);
+        assert.equal(cards.length, 4);
         assert.ok(
           cards.every(
             (entry) =>
@@ -505,6 +507,19 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
           ),
           "preview truncation never changes the saved model-visible content",
         );
+        const shortCommand = mode.getUserInput().then((text) => runtime.session.prompt(text));
+        terminal.send("/observer-cards short");
+        terminal.send("\r");
+        await shortCommand;
+        await until(
+          () => screenLines().some((line) => line.includes("SHORT_CARD")),
+          "short native message has rendered",
+        );
+        const shortLines = screenLines();
+        assert.doesNotMatch(shortLines.join("\n"), /\*\*SHORT_CARD\*\*/);
+        const shortHeader = shortLines.findLast((line) => line.includes("[intercom_message]"));
+        assert.ok(shortHeader !== undefined);
+        assert.doesNotMatch(shortHeader, /to expand|to collapse/, "short cards have no false hint");
       }
       const manager = runtime.session.sessionManager;
       const legacyId = "legacy-observed";
