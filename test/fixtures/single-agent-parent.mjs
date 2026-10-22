@@ -1032,10 +1032,13 @@ try {
       const view = processView(bystander.pid);
       assert.notEqual(view.group, bystander.pid, "bystander is not a group leader");
       assert.notEqual(view.birth, processView(shell.pid).birth, "bystander has a different birth");
+      assert.notEqual(processView(process.pid).group, process.pid, "parent is not a group leader");
       for (const [index, mutation] of [
         { ...shell, identity: "wrong process birth" },
         { ...shell, identity: "unverified" },
         { ...shell, token: "foreign actor generation" },
+        // This live nonleader predates the rewritten claim, so macOS cannot disprove it.
+        ...(process.platform === "darwin" ? [{ ...shell, pid: process.pid }] : []),
       ].entries()) {
         fs.writeFileSync(recordFile, JSON.stringify(mutation));
         // Every denial follows the actual controller processing the corrupted ledger.
@@ -1046,6 +1049,12 @@ try {
           `bad-shell-${index}`,
         );
         assert.equal(denied.isError, true, JSON.stringify(denied));
+        assert.match(
+          JSON.stringify(denied.content),
+          mutation.token === shell.token
+            ? /Cannot verify actor process identity/
+            : /Foreign or missing native shell identity/,
+        );
         process.kill(seed.family.pid, 0);
         process.kill(seed.family.descendant, 0);
         process.kill(bystander.pid, 0);
