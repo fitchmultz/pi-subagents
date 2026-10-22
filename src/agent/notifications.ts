@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { receiptId } from "./receipts.ts";
+import { completionReceipts } from "./receipts.ts";
 import { readOutputPage } from "../shared/output-page.ts";
-import { isRecord } from "../shared/unknown.ts";
+import { journalStamp } from "../shared/native-journal.ts";
 import type { Launch, Result } from "./contracts.ts";
 import { launchAt, list, runDirectory } from "./storage.ts";
 import { readResult } from "./usage.ts";
@@ -49,38 +49,8 @@ export function settle(owner: string, pending: boolean): void {
     }
   }
 }
-function matches(value: unknown, launch: Launch): boolean {
-  return (
-    isRecord(value) &&
-    value.owner === launch.owner &&
-    value.id === launch.id &&
-    value.completed === true
-  );
-}
-function toolReceipt(message: unknown, launch: Launch): boolean {
-  if (!isRecord(message) || message.role !== "toolResult") {
-    return false;
-  }
-  return (
-    (message.toolName === "delegate" || message.toolName === "agent_runs") &&
-    isRecord(message.details) &&
-    message.details.receivedResult === true &&
-    matches(message.details, launch)
-  );
-}
-function receipt(body: unknown, launch: Launch): boolean {
-  if (!isRecord(body)) {
-    return false;
-  }
-  if (body.type === "custom_message" && body.customType === "agent-completion") {
-    return matches(body.details, launch);
-  }
-  return body.type === "message" && toolReceipt(body.message, launch);
-}
 export function published(ctx: ExtensionContext, launch: Launch): string | undefined {
-  return receiptId(ctx.sessionManager.getSessionFile(), launch.owner, (body) =>
-    receipt(body, launch),
-  );
+  return completionReceipts(ctx.sessionManager.getSessionFile(), launch.owner).get(launch.id);
 }
 export interface Completion {
   readonly owner: string;
@@ -133,31 +103,92 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     },
   };
 }
+interface Loaded {
+  readonly launch: Launch;
+  readonly result: Result | undefined;
+}
+interface Settled {
+  readonly launch: string;
+  readonly result: string;
+  readonly endedAt: number;
+  readonly createdAt: number;
+}
+interface Completed {
+  readonly id: string;
+  readonly endedAt: number;
+  readonly createdAt: number;
+  readonly loaded?: Loaded;
+}
+// Validated settled runs by file stamp, so polling does not reparse unchanged history.
+const settledRuns = new Map<string, Map<string, Settled>>();
+function stamp(file: string): string | undefined {
+  const stat = fs.statSync(file, { bigint: true, throwIfNoEntry: false });
+  return stat === undefined ? undefined : journalStamp(stat);
+}
+function load(base: string, id: string, owner: string): Loaded {
+  const launch = launchAt(base, id, owner);
+  return { launch, result: readResult(base, launch) };
+}
+interface Scan {
+  readonly base: string;
+  readonly owner: string;
+  readonly known: ReadonlyMap<string, Settled> | undefined;
+  readonly settled: Map<string, Settled>;
+}
+function completedRun({ base, owner, known, settled }: Scan, id: string): Completed | undefined {
+  const directory = runDirectory(base, id);
+  const launch = stamp(path.join(directory, "launch.json"));
+  const result = stamp(path.join(directory, "result.json"));
+  const prior = known?.get(id);
+  if (prior !== undefined && prior.launch === launch && prior.result === result) {
+    settled.set(id, prior);
+    return { id, ...prior };
+  }
+  const loaded = load(base, id, owner);
+  if (loaded.result === undefined) {
+    return;
+  }
+  const order = { endedAt: loaded.result.endedAt, createdAt: loaded.launch.createdAt };
+  // Pending accounting is retried every scan, even after the completion receipt.
+  if (
+    loaded.result.accountingPending === undefined &&
+    launch !== undefined &&
+    result !== undefined
+  ) {
+    settled.set(id, { launch, result, ...order });
+  }
+  return { id, ...order, loaded };
+}
+function completed(base: string, owner: string): Completed[] {
+  const key = JSON.stringify([base, owner]);
+  const scan = { base, owner, known: settledRuns.get(key), settled: new Map<string, Settled>() };
+  const runs = list(base).flatMap((id) => completedRun(scan, id) ?? []);
+  settledRuns.delete(key);
+  settledRuns.set(key, scan.settled);
+  if (settledRuns.size > 8) {
+    settledRuns.delete(settledRuns.keys().next().value ?? key);
+  }
+  return runs.sort((a, b) => {
+    if (a.endedAt !== b.endedAt) {
+      return a.endedAt - b.endedAt;
+    }
+    return a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : a.id.localeCompare(b.id);
+  });
+}
 export function notifications(ctx: ExtensionContext, base: string, owner: string): Completion[] {
   const notices: Completion[] = [];
-  const completed = list(base)
-    .map((id) => {
-      const launch = launchAt(base, id, owner);
-      return { launch, result: readResult(base, launch) };
-    })
-    .filter((item): item is { launch: Launch; result: Result } => item.result !== undefined)
-    .sort((a, b) => {
-      const ended = a.result.endedAt - b.result.endedAt;
-      const created = a.launch.createdAt - b.launch.createdAt;
-      if (ended !== 0) {
-        return ended;
-      }
-      return created !== 0 ? created : a.launch.id.localeCompare(b.launch.id);
-    });
-  for (const { launch, result } of completed) {
-    const id = launch.id;
-    const key = `${owner}/${id}`;
-    if (published(ctx, launch) !== undefined) {
+  const runs = completed(base, owner);
+  const receipts =
+    runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager.getSessionFile(), owner);
+  for (const run of runs) {
+    const key = `${owner}/${run.id}`;
+    if (receipts?.get(run.id) !== undefined) {
       admissions.delete(key);
       continue;
     }
-    if (!admissions.has(key)) {
-      notices.push(notification(base, launch, result));
+    const loaded = admissions.has(key) ? undefined : (run.loaded ?? load(base, run.id, owner));
+    if (loaded?.result !== undefined) {
+      notices.push(notification(base, loaded.launch, loaded.result));
     }
   }
   return notices;
