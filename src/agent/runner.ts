@@ -16,7 +16,7 @@ import {
   type Result,
 } from "./contracts.ts";
 import { launchAt, read, runDirectory, write } from "./storage.ts";
-import { alive, ownIdentity, shellCommand, shells, signalProcess } from "./process.ts";
+import { alive, ownIdentity, published, shellCommand, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
@@ -348,7 +348,8 @@ class Actor {
     const now = performance.now();
     if (!this.stopping && now >= this.nextParentCheck) {
       this.nextParentCheck = now + 1000;
-      const attachment = read(path.join(this.base, "attachment.json"), attachmentSchema);
+      const file = path.join(this.base, "attachment.json");
+      const attachment = published(file, read(file, attachmentSchema));
       if (attachment === undefined || !attachment.attached || !alive(attachment)) {
         this.stop();
       }

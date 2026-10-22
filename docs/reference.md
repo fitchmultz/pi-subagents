@@ -122,6 +122,15 @@ replacing its cwd/environment behavior. Arbitrary custom or remote bash tools
 remain owned by their extensions; the package does not claim cold-crash cleanup
 of those external processes.
 
+Stop and shutdown skip a saved PID only when it has exited or replacement is
+proven; uncertain ownership still reports a diagnostic without signaling it.
+On macOS, a UTC-observed process birth strictly after its record's write time
+disproves ownership even when the reused PID is no longer a group leader. This
+assumes native record timestamps have not been backdated and the clock did not
+move backward between process birth and publication. Missing timestamps,
+same-second uncertainty and timezone differences alone do not prove replacement.
+Linux uses its native process-clock and namespace identity instead.
+
 ## `intercom`
 
 Use `list`, `send`, and `last` for normal coordination. `ask`, `reply`, `pending`,
@@ -158,10 +167,11 @@ model settings, or the active conversation.
 ## Read-only human observation
 
 Interactive main sessions expose an above-editor widget and `/agents` list/watch.
-The widget shows up to five named runs, active work first, with circle indicators,
-status and short ID. Completed runs are hidden from both the widget and the default
-picker; failed, stopped, interrupted, and unavailable runs remain visible.
-The header total counts all saved runs; the rows and overflow count exclude completed runs.
+The widget shows up to five active runs with circle indicators, status and short ID;
+unreadable (unavailable) runs also stay listed. The default picker hides completed
+runs; failed, stopped, interrupted, and unavailable runs remain visible there.
+The header total counts all saved runs; the widget rows and overflow count include
+only active work and unreadable runs.
 `/agents <run-id>` still opens
 saved completed runs, and an already-open watch stays open through completion.
 An empty partial inventory says it is checking saved runs, not that no runs exist.
@@ -169,7 +179,8 @@ In fullscreen mode, click a named row to watch that child; click the header or
 overflow count to open `/agents`. Picker rows and selection/Back/Close hints are
 clickable too. Regular mode retains the keyboard path because Pi leaves mouse
 input to the terminal there. Ctrl+O expands model/cwd details. The widget
-clears when no visible runs remain or when the native parent is replaced. It is not
+clears once a complete error-free scan finds no active or unreadable runs, or when
+the native parent is replaced; it stays while saved runs are still being checked. It is not
 a footer-only count.
 Use Up/Down to select, Enter to watch, and Escape to return/close (the displayed
 hints follow Pi's configured selection keys). `/agents <exact-run-id>` opens that

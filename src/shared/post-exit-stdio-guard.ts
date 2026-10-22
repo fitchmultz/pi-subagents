@@ -1,5 +1,5 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { readLinuxProcess } from "../pi-intercom/broker/pid.ts";
+import { isLinuxProcessReplaced, readLinuxProcess } from "../pi-intercom/broker/pid.ts";
 import { hasErrorCode } from "./unknown.ts";
 
 interface AgentProcessExit {
@@ -28,19 +28,59 @@ export function readChildProcessIdentity(pid: number): string | undefined {
   if (process.platform === "linux") {
     return readLinuxProcess(pid)?.identity;
   }
+  const identity = readPsBirthAndGroup(pid);
+  return Number(identity?.split(" ").at(-1)) === pid ? identity : undefined;
+}
+
+function readPsBirthAndGroup(pid: number, zone?: string): string | undefined {
   try {
-    const identity = execFileSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
+    return execFileSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
       encoding: "utf8",
       timeout: 1000,
       stdio: ["ignore", "pipe", "ignore"],
-      env: { ...process.env, LC_ALL: "C" },
+      env: { ...process.env, LC_ALL: "C", ...(zone === undefined ? {} : { TZ: zone }) },
     })
       .trim()
       .replace(/\s+/g, " ");
-    return Number(identity.split(" ").at(-1)) === pid ? identity : undefined;
   } catch {
     return undefined;
   }
+}
+
+// C-locale ps lstart (whole-second birth, in the reader's zone), then the process group.
+const PS_IDENTITY = /^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4}) \d+$/;
+const MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+function readUtcBirth(pid: number): number {
+  const [, month = "", day, hours, minutes, seconds, year] =
+    PS_IDENTITY.exec(readPsBirthAndGroup(pid, "UTC0") ?? "") ?? [];
+  const index = MONTHS.indexOf(month);
+  // Unreadable or malformed observations yield NaN, which never proves a later birth.
+  return month.length === 3 && index % 3 === 0
+    ? Date.UTC(
+        Number(year),
+        index / 3,
+        Number(day),
+        Number(hours),
+        Number(minutes),
+        Number(seconds),
+      )
+    : Number.NaN;
+}
+
+/**
+ * True only when a live PID provably names a different process than an owner-published record.
+ * Darwin identities are unzoned local times, so they are never compared across zones; only a
+ * UTC-observed birth strictly after the record's publication proves replacement.
+ */
+export function isChildProcessReplaced(pid: number, recorded: string, published?: number): boolean {
+  if (process.platform === "linux") {
+    return isLinuxProcessReplaced(pid, recorded);
+  }
+  if (published === undefined || !PS_IDENTITY.test(recorded)) {
+    return false;
+  }
+  return readUtcBirth(pid) > published;
 }
 
 function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {

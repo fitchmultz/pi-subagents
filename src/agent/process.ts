@@ -4,12 +4,28 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { readChildProcessIdentity, trySignalChildTree } from "../shared/post-exit-stdio-guard.ts";
+import {
+  isChildProcessReplaced,
+  readChildProcessIdentity,
+  trySignalChildTree,
+} from "../shared/post-exit-stdio-guard.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 
-export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): boolean {
+/** In-memory publication time of an owner record; never persisted. */
+interface Published {
+  readonly published?: number | undefined;
+}
+type OwnedProcess = ProcessIdentity & Published;
+/** Owner records follow their process's birth; stat after read only moves the bound later. */
+export function published<T extends object>(
+  file: string,
+  record: T | undefined,
+): (T & Published) | undefined {
+  return record && { ...record, published: fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs };
+}
+export function alive(identity: Pick<ProcessIdentity, "pid" | "identity"> & Published): boolean {
   try {
     process.kill(identity.pid, 0);
   } catch (error) {
@@ -21,15 +37,19 @@ export function alive(identity: Pick<ProcessIdentity, "pid" | "identity">): bool
   if (identity.identity === "unverified") {
     return true;
   }
-  const actual = readChildProcessIdentity(identity.pid);
-  return actual === undefined || actual === identity.identity;
+  // Only a proven different birth disproves a live PID; ambiguous identities stay possibly owned.
+  return (
+    readChildProcessIdentity(identity.pid) === identity.identity ||
+    !isChildProcessReplaced(identity.pid, identity.identity, identity.published)
+  );
 }
 export function ownIdentity(): { pid: number; identity: string } {
   // An ordinary main need not be a group leader. Ambiguous live PIDs fail closed.
   return { pid: process.pid, identity: readChildProcessIdentity(process.pid) ?? "unverified" };
 }
-export function actor(base: string, launch: Launch): ProcessIdentity | undefined {
-  return read(path.join(conversation(base, launch), "actor.lock", "process.json"), processSchema);
+export function actor(base: string, launch: Launch): OwnedProcess | undefined {
+  const file = path.join(conversation(base, launch), "actor.lock", "process.json");
+  return published(file, read(file, processSchema));
 }
 function childEnvironment(launch: Launch): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -84,7 +104,7 @@ function spawnActor(base: string, launch: Launch, token: string): void {
 }
 async function awaitStopping(
   dir: string,
-  existing: ProcessIdentity | undefined,
+  existing: OwnedProcess | undefined,
   signal?: AbortSignal,
 ): Promise<void> {
   if (existing && fs.existsSync(path.join(dir, `stopping-${existing.token}.json`))) {
@@ -145,21 +165,27 @@ function verifyLiveness(pid: number): boolean {
   }
   return true;
 }
-export function verifyProcess(identity: ProcessIdentity): boolean {
+export function verifyProcess(identity: OwnedProcess): boolean {
   if (!verifyLiveness(identity.pid)) {
     return false;
   }
   const actual = readChildProcessIdentity(identity.pid);
-  if (identity.identity !== "unverified" && actual === undefined && !verifyLiveness(identity.pid)) {
-    // Native abort can reap a shell between the liveness probe and birth lookup.
-    return false;
+  if (identity.identity !== "unverified" && actual !== identity.identity) {
+    if (actual === undefined && !verifyLiveness(identity.pid)) {
+      // Native abort can reap a shell between the liveness probe and birth lookup.
+      return false;
+    }
+    // A different-birth process at the PID proves the recorded process is gone.
+    if (isChildProcessReplaced(identity.pid, identity.identity, identity.published)) {
+      return false;
+    }
   }
   if (identity.identity === "unverified" || actual !== identity.identity) {
     throw new Error("Cannot verify actor process identity; no signal sent.");
   }
   return true;
 }
-export function signalProcess(identity: ProcessIdentity, signal: NodeJS.Signals): boolean {
+export function signalProcess(identity: OwnedProcess, signal: NodeJS.Signals): boolean {
   if (!verifyProcess(identity)) {
     return false;
   }
@@ -172,7 +198,7 @@ export function requestStop(
   base: string,
   launch: Launch,
   onError?: (error: unknown) => void,
-): { targets: ProcessIdentity[]; command: string | undefined } {
+): { targets: OwnedProcess[]; command: string | undefined } {
   const attempt = (operation: () => boolean): boolean => {
     try {
       return operation();
@@ -204,7 +230,7 @@ export function requestStop(
 }
 export async function stopChildren(base: string, owner: string): Promise<void> {
   const roots = new Set<string>();
-  const targets: ProcessIdentity[] = [];
+  const targets: OwnedProcess[] = [];
   for (const id of list(base)) {
     try {
       const launch = launchAt(base, id, owner);
@@ -233,7 +259,7 @@ export async function stopChildren(base: string, owner: string): Promise<void> {
     console.error("Child shutdown could not confirm every owned process exit.");
   }
 }
-async function waitForExit(targets: readonly ProcessIdentity[], timeout: number): Promise<void> {
+async function waitForExit(targets: readonly OwnedProcess[], timeout: number): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline && targets.some(alive)) {
     // Join actual process exit while native abort persists the interrupted turn.
@@ -241,13 +267,14 @@ async function waitForExit(targets: readonly ProcessIdentity[], timeout: number)
     await delay(25);
   }
 }
-export function shells(base: string, launch: Launch, token: string): ProcessIdentity[] {
+export function shells(base: string, launch: Launch, token: string): OwnedProcess[] {
   const dir = path.join(conversation(base, launch), "shells", token);
   if (!fs.existsSync(dir)) {
     return [];
   }
   return fs.readdirSync(dir).map((name) => {
-    const identity = read(path.join(dir, name), processSchema);
+    const file = path.join(dir, name);
+    const identity = published(file, read(file, processSchema));
     if (!identity || identity.token !== token) {
       throw new Error("Foreign or missing native shell identity.");
     }

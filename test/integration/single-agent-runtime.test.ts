@@ -25,7 +25,7 @@ function seed(root: string) {
   Assert(seedSchema, value);
   return value;
 }
-function run(root: string, phase: string, killed = false): void {
+function run(root: string, phase: string, killed = false): string {
   const result = spawnSync(
     process.execPath,
     [path.join(repo, "test/fixtures/single-agent-parent.mjs"), root, repo, sdk, phase],
@@ -38,6 +38,7 @@ function run(root: string, phase: string, killed = false): void {
     `${phase}: ${result.stderr}\n${result.stdout}`,
   );
   assert.equal(result.status, killed ? null : 0, `${phase}: ${result.stderr}\n${result.stdout}`);
+  return result.stderr;
 }
 async function until(check: () => boolean, reason: string): Promise<void> {
   const deadline = Date.now() + 15000;
@@ -117,7 +118,6 @@ for (const phase of [
   "cancellation",
   "dispose-wait",
   "custom-bash",
-  "bash-shutdown-stale",
   "bash-before-registration",
   "trust",
   "accounting-lf",
@@ -142,6 +142,34 @@ for (const phase of [
       await cleanup(root);
     }
   });
+}
+for (const [phase, diagnostics] of [
+  ["bash-shutdown-stale", 1],
+  ["bash-shutdown-stale-exited", 1],
+  // Darwin's unzoned legacy births cannot be compared across zones; Linux identities are zone-free.
+  ["bash-shutdown-timezone", process.platform === "linux" ? 0 : 2],
+] as const) {
+  test(
+    `single-agent ${phase} parent shutdown stops verified owners, spares reused PIDs and reports only true ambiguity`,
+    { timeout: 60000 },
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-shutdown-stale-"));
+      try {
+        const stderr = run(root, phase);
+        assert.deepEqual(
+          stderr.split("\n").filter((line) => line.startsWith("Child shutdown")),
+          Array.from(
+            { length: diagnostics },
+            () =>
+              `Child shutdown ${seed(root).runId}: Cannot verify actor process identity; no signal sent.`,
+          ),
+          stderr,
+        );
+      } finally {
+        await cleanup(root);
+      }
+    },
+  );
 }
 test(
   "single-agent native preparation SIGKILL leaves only an unadmitted directory and does not starve saved completion or subsequent launches",

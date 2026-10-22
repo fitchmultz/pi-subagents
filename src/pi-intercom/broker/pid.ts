@@ -80,6 +80,11 @@ export function brokerPidRecord(): string {
 }
 
 export function isBrokerPidReused(pid: number, record: string): boolean {
+  return isLinuxProcessReplaced(pid, record.slice(record.indexOf("\n") + 1));
+}
+
+/** True only when a live Linux PID provably names a different process than the identity. */
+export function isLinuxProcessReplaced(pid: number, identity: string): boolean {
   const current = readLinuxProcess(pid);
   if (!current) {
     return false;
@@ -87,7 +92,7 @@ export function isBrokerPidReused(pid: number, record: string): boolean {
   if (current.tgid !== pid) {
     return true;
   }
-  const saved = IDENTITY.exec(record.slice(record.indexOf("\n") + 1).trim());
+  const saved = IDENTITY.exec(identity.trim());
   const actual = IDENTITY.exec(current.identity ?? "");
   if (!saved || !actual) {
     return false;

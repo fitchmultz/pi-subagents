@@ -59,8 +59,9 @@ list contains connected, eligible sessions, not every Pi process on the machine.
 ## Watch agents without prompting them
 
 In interactive Pi, an above-editor widget names individual children with circle
-indicators. Active work appears first; completed runs are hidden from the widget
-and `/agents` picker. Failed, stopped, interrupted, and unavailable runs remain visible.
+indicators. The widget lists active work (and unreadable runs) only and disappears
+once a full scan finds none. The `/agents` picker hides completed runs; failed,
+stopped, interrupted, and unavailable runs remain visible there.
 Click a named row in fullscreen mode to watch it; `/agents` remains the keyboard
 path. Long result/message cards are collapsed and use Pi's native expansion
 (Ctrl+O by default). Ctrl+O also expands model/cwd details. Use `/agents <run-id>` to watch

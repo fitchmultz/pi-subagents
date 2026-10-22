@@ -676,7 +676,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
 }
 
 test(
-  "native observer caches completed metadata, probes each active root once per tick and resolves ambiguity beyond its row cache",
+  "native observer caches completed metadata, probes each active root once per tick, strips only active work and resolves ambiguity beyond its row cache",
   { timeout: 30000 },
   async (t) => {
     const sdkRoot = nativeSdkRoot(process.env.PI_SINGLE_AGENT_TEST_SDK);
@@ -730,8 +730,20 @@ test(
     const ids = fs.readdirSync(base);
     const firstId = ids.at(-2);
     const secondId = ids.at(-1);
-    assert.ok(firstId !== undefined && secondId !== undefined);
+    // Keep stopped history in the final metadata batch with the active runs.
+    const stoppedId = ids.at(-3);
+    assert.ok(firstId !== undefined && secondId !== undefined && stoppedId !== undefined);
     const completedIds = new Set(ids.slice(0, -2));
+    const stoppedLaunch = record(
+      JSON.parse(fs.readFileSync(path.join(base, stoppedId, "launch.json"), "utf8")),
+    );
+    write(path.join(base, stoppedId, "launch.json"), { ...stoppedLaunch, name: "stopped-history" });
+    write(path.join(base, stoppedId, "result.json"), {
+      id: stoppedId,
+      owner,
+      status: "stopped",
+      endedAt: 1,
+    });
     const active = { ...publish(firstId, false), name: "active-first" };
     fs.rmSync(path.join(base, firstId, "result.json"));
     fs.rmSync(path.join(base, secondId, "result.json"));
@@ -750,6 +762,7 @@ test(
     });
     const faux = fauxProvider({ provider: "observe-fixture", models: [{ id: "native-observe" }] });
     models.registerNativeProvider(faux.provider);
+    let view: TUI | undefined;
     const services = await sdk.createAgentSessionServices({
       cwd: root,
       agentDir,
@@ -762,6 +775,16 @@ test(
         noThemes: true,
         noPromptTemplates: true,
         additionalExtensionPaths: [path.resolve("src/agent/observe.ts")],
+        extensionFactories: [
+          (pi) => {
+            pi.on("session_start", (_event, ctx) => {
+              ctx.ui.setWidget("test-observer-screen", (tui) => {
+                view = tui;
+                return new Container();
+              });
+            });
+          },
+        ],
       },
     });
     const runtime = await sdk.createAgentSessionRuntime(
@@ -815,6 +838,9 @@ test(
       }
     });
     await mode.init();
+    assert.ok(view instanceof TuiAltScreen);
+    const screen = view;
+    const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
     await until(
       () => terminal.text().includes("Agents: 0+ active (checking…) · 122 runs"),
       "incomplete native inventory qualifies the active count naturally",
@@ -835,8 +861,21 @@ test(
       "initial owner metadata scan has completed",
     );
     assert.doesNotMatch(terminal.text(), /completed-\d/, "completed rows stay out of the widget");
+    await until(
+      () => terminal.text().includes("stopped · stopped-history"),
+      "explicit inventory keeps stopped history",
+    );
     terminal.send("\x1b");
     await loading;
+    await until(
+      () =>
+        !shown().includes("Agents · read-only") &&
+        shown().includes("● active-first · running") &&
+        shown().includes("● active-second · running"),
+      "strip renders the completed inventory scan after the picker closes",
+      shown,
+    );
+    assert.doesNotMatch(shown(), /stopped-history/, "stopped history stays out of the strip");
     assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 122);
     assert.ok(
       identityProbes() >= 1,
@@ -879,10 +918,29 @@ test(
       "only successor B probes its shared live actor; superseded A does not",
     );
     await until(
-      () => terminal.text().includes("Agents: 1 active · 122 runs"),
+      () =>
+        shown().includes("Agents: 1 active · 122 runs") &&
+        shown().includes("● active-second · running"),
       "missing-result predecessor no longer inherits the successor's liveness",
+      shown,
     );
-    assert.match(terminal.text(), /○ active-first · interrupted/);
+    assert.doesNotMatch(shown(), /active-first|stopped-history/, "strip lists active work only");
+    terminal.click(screen, "● active-second");
+    await until(
+      () => shown().includes("running · active-second") && shown().includes("escape back"),
+      "clicking the active strip row watches it",
+      shown,
+    );
+    terminal.send("\x1b");
+    await until(
+      () =>
+        shown().includes("interrupted · active-first") &&
+        shown().includes("stopped · stopped-history"),
+      "watch returns to the explicit inventory with saved history",
+      shown,
+    );
+    terminal.send("\x1b");
+    await until(() => !shown().includes("Agents · read-only"), "inventory closes", shown);
     write(path.join(base, secondId, "result.json"), {
       id: secondId,
       owner,
@@ -908,20 +966,39 @@ test(
       "B's live idle actor is not probed after canonical completion",
     );
     await until(
-      () => terminal.text().includes("Agents: 0 active · 122 runs"),
-      "completed successor cannot make interrupted predecessor look active",
+      () => !shown().includes("Agents:"),
+      "fully scanned zero-active work removes the strip despite interrupted and stopped history",
+      shown,
     );
     terminal.clear();
     const retired = mode.getUserInput().then((text) => runtime.session.prompt(text));
     terminal.send("/agents");
     terminal.send("\r");
     await until(
-      () => terminal.text().includes("interrupted · active-first"),
-      "native inventory keeps the interrupted predecessor visible",
+      () =>
+        terminal.text().includes("Agents: 0 active · 122 runs") &&
+        terminal.text().includes("interrupted · active-first") &&
+        terminal.text().includes("stopped · stopped-history"),
+      "completed successor cannot make the interrupted predecessor look active in the inventory",
     );
     assert.doesNotMatch(terminal.text(), /completed · active-second/);
     terminal.send("\x1b");
     await retired;
+    const unreadable = path.join(base, "foreign-owner");
+    write(path.join(unreadable, "launch.json"), {
+      ...active,
+      id: "foreign-owner",
+      rootId: "foreign-owner",
+      owner: "another-native-parent",
+    });
+    await until(
+      () =>
+        shown().includes("○ foreign-owner · unavailable") && shown().includes("inventory error"),
+      "an unreadable run keeps uncertainty in the zero-active strip",
+      shown,
+    );
+    fs.rmSync(unreadable, { recursive: true });
+    await until(() => !shown().includes("Agents:"), "resolved uncertainty clears the strip", shown);
     for (let i = 0; i < 101; i++) {
       publish(`padding-${String(i).padStart(3, "0")}`, true);
     }
