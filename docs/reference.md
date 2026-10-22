@@ -121,6 +121,15 @@ replacing its cwd/environment behavior. Arbitrary custom or remote bash tools
 remain owned by their extensions; the package does not claim cold-crash cleanup
 of those external processes.
 
+Stop and shutdown skip a saved PID only when it has exited or replacement is
+proven; uncertain ownership still reports a diagnostic without signaling it.
+On macOS, a UTC-observed process birth strictly after its record's write time
+disproves ownership even when the reused PID is no longer a group leader. This
+assumes native record timestamps have not been backdated and the clock did not
+move backward between process birth and publication. Missing timestamps,
+same-second uncertainty and timezone differences alone do not prove replacement.
+Linux uses its native process-clock and namespace identity instead.
+
 ## `intercom`
 
 Use `list`, `send`, and `last` for normal coordination. `ask`, `reply`, `pending`,
