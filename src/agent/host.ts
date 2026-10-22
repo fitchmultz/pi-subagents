@@ -3,6 +3,19 @@ import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type * as SDK from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+
+// The native resolver is optional until official Pi exports it at the package root.
+type HostSDK = typeof SDK & {
+  resolveModelReference?: (
+    request: { text: string; provider: string; thinkingSuffix: "strict"; fuzzy: false },
+    models: readonly Model<Api>[],
+    usable: (provider: string) => boolean,
+  ) =>
+    | { status: "resolved"; model: Model<Api>; thinkingLevel?: ThinkingLevel }
+    | { status: "ambiguous" | "not-found" };
+};
 
 function isPackage(root: string): boolean {
   const file = path.join(root, "package.json");
@@ -49,10 +62,10 @@ export function packageRoot(): string {
   }
   return path.dirname(manifest);
 }
-export async function loadSDK(root: string): Promise<typeof SDK> {
+export async function loadSDK(root: string): Promise<HostSDK> {
   // Selected host SDK, not a second package-local runtime hidden behind Jiti aliases.
   // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const sdk: typeof SDK = await import(pathToFileURL(path.join(root, "dist/index.js")).href);
+  const sdk: HostSDK = await import(pathToFileURL(path.join(root, "dist/index.js")).href);
   return sdk;
 }
 export function runtimeEntry(): string {

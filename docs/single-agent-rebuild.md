@@ -174,8 +174,8 @@ No production exports or injection points may be added solely to make tests easy
 
 ## Qualification and delivery
 
-Selected official target: published Pi 1.3.0. The development four-package cohort
-is updated together in the committed npm lockfile. The installed/intended fork is
+Initial rebuild qualification used published Pi 1.3.0. Its four-package development
+cohort was updated together in the committed npm lockfile. The fork target was
 Pi 1.3.0 at `997a2575e0dde7c6690024184feec970d395f9b4`, using Node 24.22.0.
 Initial lane qualification used build `882876dae4dc6e33`; the first integrated
 delivery used build `127d6b7a5b2492a2`. Review-follow-up qualification uses build

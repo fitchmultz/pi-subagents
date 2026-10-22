@@ -22,7 +22,12 @@ export default async function fixture(pi) {
   });
   const provider = fauxProvider({
     provider: "single-agent-fixture",
-    models: [{ id: "literal-model", reasoning: true }],
+    models: [
+      { id: "literal-model", reasoning: true },
+      { id: "literal-model:high", reasoning: true },
+      { id: "literal-model:exacto", reasoning: true },
+      { id: "nested/model", reasoning: true },
+    ],
   });
   const respond = async (context, options, state, model) => {
     const user = context.messages.findLast((message) => message.role === "user");

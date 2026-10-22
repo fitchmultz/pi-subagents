@@ -22,6 +22,20 @@ canned profile. `name` is an optional display name, not a unique identity or rol
 Omitted cwd/model inherit the invoking session's effective selection. A supplied
 model must be available; there is no hidden alternate-model retry catalog.
 
+On hosts exporting Pi's native `resolveModelReference`, `model` also accepts
+`provider/model:thinking` (for example `provider/model:low` or `provider/model:off`).
+The explicit suffix overrides inherited thinking for that child only. Literal
+model IDs take precedence, including IDs containing colons or additional slashes;
+unknown IDs and invalid suffixes fail without fuzzy matching or another provider.
+Native resolution follows Pi's case-insensitive ID matching. Pi still applies the
+selected model's native thinking capabilities.
+
+Official Pi 1.3.0 and 1.4.0 do not export that resolver. Older fork runtimes also
+lack the export. Those hosts retain
+case-sensitive literal-ID overrides and inherited thinking; suffix requests fail with an upgrade
+message rather than being parsed by an extension-side replacement. This requires
+a host with the public resolver export, not merely a matching version number.
+
 Fresh context is the default. Fork uses the native conversation, including
 historical tool calls and results; restricting a child's authority does not erase
 the parent's evidence. Native Pi system/tool instructions and applicable project
@@ -29,8 +43,8 @@ resources still apply. Forking does not authorize nested delegation.
 
 The default response acknowledges launch. It does not claim a model response or
 completion. `async:false` waits for this new work. Cancelling that owned foreground
-invocation requests stop; disposing the parent runtime detaches the observer
-without implicitly stopping accepted background work.
+invocation requests stop. Exiting or replacing the parent session stops its
+children, including active work, and preserves their saved conversations.
 
 Only a main may delegate. Children cannot bypass the restriction through a hidden
 tool or programmatic invocation of `delegate` or `agent_runs`.
@@ -76,9 +90,15 @@ Pending admission is not consumption. Inspect the result and send a new continua
 if guidance became stale; do not infer acceptance from the old completed output.
 
 A completed child can remain alive and messageable while its main remains
-attached. Once the main detaches or is proven absent, idle actors exit and active
-accepted work can finish before exit. Reload/resume uses saved state. There is no
-arbitrary idle lease that silently expires a child while the main is still live.
+attached. Parent exit or session replacement stops its actors and verified owned
+native shells, allowing native abort a short grace period before escalation.
+Actors also watch for parent death, including a hard kill. Ordinary extension
+reload keeps children alive because the parent has not exited.
+
+Resume the same parent and use `continue` with a new prompt to resume a saved
+child conversation. This does not replay interrupted tool calls or reconstruct
+an execution checkpoint: the child inspects the current work state. Saved
+journals and results are retained whether the child was active, stopped or done.
 
 ### Evidence levels
 

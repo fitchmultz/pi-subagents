@@ -12,9 +12,9 @@ import {
   alive,
   ensureActor,
   ownIdentity,
+  requestStop,
   signalProcess,
-  verifyProcess,
-  shells,
+  stopChildren,
 } from "./process.ts";
 import { isChild, errorText } from "./host.ts";
 import {
@@ -115,25 +115,23 @@ class AgentRuntime {
     this.timer.unref();
     this.scan();
   }
-  private async dispose(): Promise<void> {
+  private async dispose(reload: boolean): Promise<void> {
     this.closing = true;
     clearInterval(this.timer);
     this.shutdown.abort();
     await this.reset;
-    if (this.base.length > 0) {
+    if (!reload && this.base.length > 0) {
       const file = path.join(this.base, "attachment.json");
       if (read(file, attachmentSchema)?.generation === this.generation) {
         write(file, { ...ownIdentity(), generation: this.generation, attached: false });
+        await stopChildren(this.base, this.owner);
       }
     }
     this.ctx = undefined;
   }
   private stop(launch: Launch) {
     const base = this.base;
-    const identity = actor(base, launch);
-    const targets = identity ? [identity, ...shells(base, launch, identity.token)] : [];
-    // Verify all targets before admitting a request or signaling any process.
-    const live = targets.filter(verifyProcess);
+    const { targets: live, command: id } = requestStop(base, launch);
     if (live.length === 0) {
       return {
         ...projection(base, launch, this.ctx),
@@ -141,18 +139,6 @@ class AgentRuntime {
         note: "No matching live actor or owned shell; process exit code remains unknown.",
       };
     }
-    const id =
-      identity && verifyProcess(identity)
-        ? enqueue(base, launch, "stop", { actorToken: identity.token })
-        : undefined;
-    if (identity) {
-      write(path.join(conversation(base, launch), `stopping-${identity.token}.json`), {
-        at: Date.now(),
-      });
-    }
-    live.forEach((target) => {
-      signalProcess(target, "SIGTERM");
-    });
     const escalation = setTimeout(() => {
       try {
         live.forEach((target) => {
@@ -175,7 +161,7 @@ class AgentRuntime {
       return toolResult({
         ...projection(this.base, launch, this.ctx),
         wait: "detached",
-        note: "Parent runtime disposed; producer was not stopped.",
+        note: "Parent runtime disposed; saved child state is retained for explicit continuation.",
       });
     }
     if (signal?.aborted === true) {
@@ -244,7 +230,7 @@ class AgentRuntime {
     });
     this.checkMain();
     enqueue(this.base, launch, "run");
-    await ensureActor(this.base, launch);
+    await ensureActor(this.base, launch, this.shutdown.signal);
     if (input.async === false) {
       return this.wait(launch, signal, true);
     }
@@ -319,7 +305,7 @@ class AgentRuntime {
       );
     }
     // Only an unadmitted durable command is retryable; keep all process/shell claim guards.
-    await ensureActor(this.base, launch);
+    await ensureActor(this.base, launch, this.shutdown.signal);
     if (input.async === false) {
       return this.wait(launch, signal, true);
     }
@@ -358,7 +344,7 @@ class AgentRuntime {
     }
     // Retain successor claims on ambiguous after-launch failures: no replay.
     enqueue(this.base, next, "run");
-    await ensureActor(this.base, next);
+    await ensureActor(this.base, next, this.shutdown.signal);
     if (input.async === false) {
       return this.wait(next, signal, true);
     }
@@ -406,7 +392,7 @@ class AgentRuntime {
     if (created) {
       // The durable adoption claim survives ambiguous after-launch failures.
       enqueue(this.base, launch, "run");
-      await ensureActor(this.base, launch);
+      await ensureActor(this.base, launch, this.shutdown.signal);
     }
     if (input.async === false) {
       return this.wait(launch, signal, created);
@@ -456,7 +442,7 @@ class AgentRuntime {
     this.pi.on("agent_settled", () => {
       this.scan();
     });
-    this.pi.on("session_shutdown", () => this.dispose());
+    this.pi.on("session_shutdown", (event) => this.dispose(event.reason === "reload"));
     if (this.child) {
       this.pi.on("tool_call", (event) => {
         if (event.toolName === "delegate" || event.toolName === "agent_runs") {
