@@ -95,6 +95,9 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
     undefined,
     "same-size/stamp edit invalidates physical authority",
   );
+  fs.writeFileSync(h.file, complete);
+  assert.equal(published(h.context, h.launch), receiptId, "restore the valid cached prefix");
+  fs.writeFileSync(h.file, wrong);
   fs.appendFileSync(
     h.file,
     JSON.stringify({ type: "custom", id: "later", customType: "unrelated", data: {} }) + "\n",
@@ -120,14 +123,26 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
   );
 });
 
-test("native recovery publishes a completion backlog chronologically once, not in UUID order", async (t) => {
+test("native recovery publishes a completion backlog chronologically once, then polls history without rereads", async (t) => {
   const h = await fixture(t);
   const base = path.join(path.dirname(h.file), "runs");
+  const child = path.join(base, "child.jsonl");
+  fs.mkdirSync(base, { recursive: true });
+  fs.writeFileSync(
+    child,
+    `${JSON.stringify({ type: "session", id: "child" })}\n${JSON.stringify({ type: "custom", id: "terminal", customType: "fixture", data: {} })}`,
+  );
   for (const [id, endedAt] of [
     ["z-original", 10],
     ["a-continuation", 20],
   ] as const) {
-    const launch = { ...h.launch, id, rootId: "z-original", createdAt: endedAt - 1 };
+    const launch = {
+      ...h.launch,
+      id,
+      rootId: "z-original",
+      createdAt: endedAt - 1,
+      sessionFile: child,
+    };
     write(path.join(base, id, "launch.json"), launch);
     write(path.join(base, id, "result.json"), {
       id,
@@ -150,6 +165,64 @@ test("native recovery publishes a completion backlog chronologically once, not i
         : [],
     );
   assert.deepEqual(ids, ["z-original", "a-continuation"]);
+
+  const scan = () => notifications(h.context, base, h.launch.owner);
+  assert.deepEqual(scan(), [], "settled history is observed after native publication");
+  const opened = spy(fs, "openSync");
+  const reads = spy(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    for (let i = 0; i < 10; i++) {
+      assert.deepEqual(scan(), []);
+    }
+    assert.equal(opened.callCount, 0, "unchanged delivered history opens no run or journal file");
+    assert.equal(reads.callCount, 0, "unchanged delivered history reads no bytes");
+  } finally {
+    opened.restore();
+    reads.restore();
+    syncBuiltinESMExports();
+  }
+
+  const launchFile = path.join(base, "a-continuation", "launch.json");
+  const savedLaunch = fs.readFileSync(launchFile, "utf8");
+  write(launchFile, { ...record(JSON.parse(savedLaunch)), owner: "foreign" });
+  assert.throws(scan, /Missing saved launch or foreign run owner/);
+  fs.writeFileSync(launchFile, savedLaunch);
+  assert.deepEqual(scan(), [], "restoring the warmed launch recovers without a second notice");
+
+  const resultFile = path.join(base, "a-continuation", "result.json");
+  const settled = fs.readFileSync(resultFile, "utf8");
+  const stat = fs.statSync(resultFile);
+  fs.writeFileSync(resultFile, settled.replace('"completed"', '"completed!'));
+  fs.utimesSync(resultFile, stat.atime, stat.mtime);
+  assert.throws(scan, SyntaxError, "a same-size in-place edit is revalidated");
+  write(resultFile, { id: "a-continuation", owner: "foreign", status: "completed", endedAt: 20 });
+  assert.throws(scan, /Foreign canonical result identity/);
+  write(resultFile, {
+    id: "a-continuation",
+    owner: h.launch.owner,
+    status: "completed",
+    endedAt: 20,
+    accountingPending: { terminalCandidate: "terminal", baseline: [] },
+  });
+  assert.deepEqual(scan(), [], "the completion receipt still suppresses a second notice");
+  assert.deepEqual(scan(), []);
+  assert.ok("accountingPending" in record(JSON.parse(fs.readFileSync(resultFile, "utf8"))));
+  fs.appendFileSync(child, "\n");
+  assert.deepEqual(scan(), []);
+  const repaired = record(JSON.parse(fs.readFileSync(resultFile, "utf8")));
+  assert.equal("accountingPending" in repaired, false, "repair retries after the receipt");
+  assert.equal(repaired.terminalEntryId, "terminal");
+  assert.deepEqual(repaired.contributions, []);
+
+  const journal = fs.readFileSync(h.file, "utf8");
+  const firstReceipt = journal.indexOf('"customType":"agent-completion"');
+  fs.writeFileSync(h.file, journal.slice(0, journal.lastIndexOf("\n", firstReceipt) + 1));
+  assert.deepEqual(
+    scan().map((notice) => notice.id),
+    ["z-original", "a-continuation"],
+    "removed receipts renotify unchanged history chronologically",
+  );
 });
 
 const legacyCases = [
