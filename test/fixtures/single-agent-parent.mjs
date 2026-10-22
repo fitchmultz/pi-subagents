@@ -224,6 +224,25 @@ const until = async (predicate, why) => {
     await delay(20);
   }
 };
+// Raw OS observation, independent of the controller's process identity reader.
+const processView = (pid) => {
+  if (process.platform === "linux") {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    // Fields after comm start at state; pgrp and starttime are stat fields 5 and 22.
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return { birth: fields[19], group: Number(fields[2]) };
+  }
+  const fields = spawnSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+  })
+    .stdout.trim()
+    .split(/\s+/);
+  return { birth: fields.slice(0, -1).join(" "), group: Number(fields.at(-1)) };
+};
+// Darwin ps reports whole-second births; stand-ins spawned in a later second are provably
+// born after earlier record publication.
+const nextBirthSecond = () => delay(1020 - (Date.now() % 1000));
 const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? fs
@@ -793,8 +812,13 @@ try {
   } else if (
     phase === "bash-seed" ||
     phase === "bash-seed-paused" ||
-    phase === "bash-shutdown-stale"
+    phase.startsWith("bash-shutdown-")
   ) {
+    const zone = process.env.TZ;
+    if (phase === "bash-shutdown-timezone") {
+      // Only this fixture process and its children record identities in another zone.
+      process.env.TZ = "UTC0";
+    }
     fs.writeFileSync(
       path.join(root, "ticker.mjs"),
       `import fs from 'node:fs'; import {spawn} from 'node:child_process';\nconst root=${JSON.stringify(root)}; if(!process.argv.includes('--descendant')) { const child=spawn(process.execPath,[process.argv[1],'--descendant'],{stdio:'ignore'}); fs.writeFileSync(root+'/shell-family.json',JSON.stringify({pid:process.pid,descendant:child.pid})); }\nfs.writeFileSync(root+'/heartbeat-'+process.pid,'ready'); setInterval(()=>fs.appendFileSync(root+'/heartbeat-'+process.pid,'tick\\n'),20);`,
@@ -829,7 +853,7 @@ try {
         family,
       }),
     );
-    if (phase === "bash-seed-paused" || phase === "bash-shutdown-stale") {
+    if (["bash-seed-paused", "bash-shutdown-stale", "bash-shutdown-timezone"].includes(phase)) {
       process.kill(requests()[0].pid, "SIGSTOP");
       await until(
         () =>
@@ -839,17 +863,12 @@ try {
         "suspend the actor's parent watcher to exercise cold process/shell recovery",
       );
     }
-    if (phase === "bash-shutdown-stale") {
+    if (phase.startsWith("bash-shutdown-")) {
       const actor = readJSON(path.join(runDir(runId), "actor.lock/process.json"));
       const ledger = path.join(runDir(runId), "shells", actor.token);
       const original = path.join(ledger, fs.readdirSync(ledger)[0]);
       const shell = readJSON(original);
-      const extra = path.join(ledger, "shutdown-extra.json");
-      const bystander = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
-        detached: true,
-        stdio: "ignore",
-      });
-      assert.ok(bystander.pid);
+      const publishedAt = fs.statSync(original).mtime;
       const dead = (pid) => {
         try {
           process.kill(pid, 0);
@@ -864,28 +883,100 @@ try {
           process.kill(pid, signal);
         }
       };
-      try {
-        fs.writeFileSync(extra, JSON.stringify(shell));
-        const [first, second] = fs.readdirSync(ledger);
-        // Model a stale persisted claim, not actual OS PID reuse. The controller
-        // must skip this live unrelated PID while still stopping the verified shell.
-        fs.writeFileSync(
-          path.join(ledger, first),
-          JSON.stringify({ ...shell, pid: bystander.pid }),
+      const stopAcrossZones = async () => {
+        process.env.TZ = "America/Los_Angeles";
+        try {
+          await runtime.dispose();
+          const owned = [actor.pid, shell.pid, family.pid, family.descendant];
+          if (process.platform === "linux") {
+            await until(() => owned.every(dead), "zone-free Linux identities are stopped");
+          } else {
+            // Unzoned Darwin births from another zone stay ambiguous: refuse, never skip.
+            const beat = path.join(root, `heartbeat-${family.pid}`),
+              size = fs.statSync(beat).size;
+            await until(() => fs.statSync(beat).size > size, "owned shell is not signalled");
+            assert.equal(owned.some(dead), false, "no owned process was signalled");
+          }
+        } finally {
+          if (zone === undefined) {
+            delete process.env.TZ;
+          } else {
+            process.env.TZ = zone;
+          }
+          signalIfLive(-actor.pid, "SIGKILL");
+          signalIfLive(-shell.pid, "SIGKILL");
+          await until(
+            () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
+            "fixture cleanup stops the owned processes it left running",
+          );
+        }
+      };
+      const stopWithStaleClaims = async () => {
+        if (phase === "bash-shutdown-stale-exited") {
+          process.kill(actor.pid, "SIGKILL");
+          await until(
+            () =>
+              fs.existsSync(path.join(runDir(runId), `exit-${actor.token}.json`)) &&
+              dead(actor.pid),
+            "native exit receipt proves the actor is gone",
+          );
+          const beat = path.join(root, `heartbeat-${family.pid}`),
+            size = fs.statSync(beat).size;
+          await until(() => fs.statSync(beat).size > size, "owned shell outlives its actor");
+        }
+        await nextBirthSecond();
+        const idle = ["-e", "setInterval(()=>{},1000)"];
+        const leader = spawn(process.execPath, idle, { detached: true, stdio: "ignore" });
+        const member = spawn(process.execPath, idle, { stdio: "ignore" });
+        assert.ok(leader.pid && member.pid);
+        const extras = ["stale-leader", "stale-member", "ambiguous"].map((name) =>
+          path.join(ledger, `${name}.json`),
         );
-        fs.writeFileSync(path.join(ledger, second), JSON.stringify(shell));
-        await runtime.dispose();
-        await until(
-          () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
-          "parent shutdown stops every verified target despite an earlier stale shell claim",
-        );
-        assert.equal(dead(bystander.pid), false, "the ambiguous unrelated process is untouched");
-      } finally {
-        fs.rmSync(extra, { force: true });
-        fs.writeFileSync(original, JSON.stringify(shell));
-        signalIfLive(actor.pid, "SIGCONT");
-        signalIfLive(-bystander.pid, "SIGKILL");
-      }
+        try {
+          const [leaderView, memberView, shellView] = [leader.pid, member.pid, shell.pid].map(
+            processView,
+          );
+          assert.equal(leaderView.group, leader.pid, "detached stand-in leads its group");
+          assert.notEqual(memberView.group, member.pid, "inherited-group stand-in is no leader");
+          [leaderView, memberView].forEach((view) => {
+            assert.notEqual(view.birth, "");
+            assert.notEqual(view.birth, shellView.birth, "stand-in has a different birth");
+          });
+          extras.forEach((file) => {
+            fs.writeFileSync(file, JSON.stringify(shell));
+          });
+          const names = fs.readdirSync(ledger);
+          assert.equal(names.length, 4);
+          // Stale PID reuse (group leader and not) and true ambiguity precede the verified shell.
+          [
+            { ...shell, pid: leader.pid },
+            { ...shell, pid: member.pid },
+            { ...shell, pid: member.pid, identity: "unverified" },
+            shell,
+          ].forEach((record, index) => {
+            const file = path.join(ledger, names[index]);
+            fs.writeFileSync(file, JSON.stringify(record));
+            // Keep the shell's real publication time, as records published before PID reuse have.
+            fs.utimesSync(file, publishedAt, publishedAt);
+          });
+          await runtime.dispose();
+          await until(
+            () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
+            "parent shutdown stops every verified target despite earlier stale shell claims",
+          );
+          assert.equal(dead(leader.pid), false, "the reused group leader is untouched");
+          assert.equal(dead(member.pid), false, "the reused group member is untouched");
+        } finally {
+          extras.forEach((file) => {
+            fs.rmSync(file, { force: true });
+          });
+          fs.writeFileSync(original, JSON.stringify(shell));
+          signalIfLive(actor.pid, "SIGCONT");
+          signalIfLive(-leader.pid, "SIGKILL");
+          signalIfLive(member.pid, "SIGKILL");
+        }
+      };
+      await (phase === "bash-shutdown-timezone" ? stopAcrossZones() : stopWithStaleClaims());
     } else {
       process.kill(process.pid, "SIGKILL");
     }
@@ -895,6 +986,7 @@ try {
     const ledger = path.join(directory, "shells", identity.token);
     const recordFile = path.join(ledger, fs.readdirSync(ledger)[0]);
     const shell = readJSON(recordFile);
+    const publishedAt = fs.statSync(recordFile).mtime;
     const prompt = "RECOVER_QUEUED_SHELL_CONTINUATION";
     const blocked = await call(
       "agent_runs",
@@ -920,31 +1012,33 @@ try {
     assert.match(JSON.stringify(stillBlocked.content), /Owned native shell work remains live/);
     const commands = () => fs.readdirSync(path.join(directory, "commands")).length;
     const beforeCommands = commands();
+    await nextBirthSecond();
     const bystander = spawn(
       process.execPath,
       [
         "-e",
         `const fs=require('node:fs');setInterval(()=>fs.appendFileSync(${JSON.stringify(path.join(root, "bystander-heartbeat"))},'tick'),10);`,
       ],
-      { detached: true, stdio: "ignore" },
+      { stdio: "ignore" },
     );
+    const stale = path.join(ledger, "reused-pid.json");
     try {
       await until(() => fs.existsSync(path.join(root, "bystander-heartbeat")), "bystander ready");
-      const parentGroup = childProcess
-        .execFileSync("ps", ["-p", String(process.pid), "-o", "pgid="], { encoding: "utf8" })
-        .trim();
-      assert.match(parentGroup, /^[1-9]\d*$/);
-      assert.notEqual(
-        Number(parentGroup),
-        process.pid,
-        "live parent is not a detached group leader",
-      );
+      const beat = path.join(root, "bystander-heartbeat");
+      const survives = async (why) => {
+        const size = fs.statSync(beat).size;
+        await until(() => fs.statSync(beat).size > size, why);
+      };
+      const view = processView(bystander.pid);
+      assert.notEqual(view.group, bystander.pid, "bystander is not a group leader");
+      assert.notEqual(view.birth, processView(shell.pid).birth, "bystander has a different birth");
+      assert.notEqual(processView(process.pid).group, process.pid, "parent is not a group leader");
       for (const [index, mutation] of [
         { ...shell, identity: "wrong process birth" },
         { ...shell, identity: "unverified" },
         { ...shell, token: "foreign actor generation" },
-        { ...shell, pid: bystander.pid },
-        { ...shell, pid: process.pid },
+        // This live nonleader predates the rewritten claim, so macOS cannot disprove it.
+        ...(process.platform === "darwin" ? [{ ...shell, pid: process.pid }] : []),
       ].entries()) {
         fs.writeFileSync(recordFile, JSON.stringify(mutation));
         // Every denial follows the actual controller processing the corrupted ledger.
@@ -955,11 +1049,22 @@ try {
           `bad-shell-${index}`,
         );
         assert.equal(denied.isError, true, JSON.stringify(denied));
+        assert.match(
+          JSON.stringify(denied.content),
+          mutation.token === shell.token
+            ? /Cannot verify actor process identity/
+            : /Foreign or missing native shell identity/,
+        );
         process.kill(seed.family.pid, 0);
         process.kill(seed.family.descendant, 0);
         process.kill(bystander.pid, 0);
         assert.equal(commands(), beforeCommands);
       }
+      // A shell PID now held by a different-birth non-leader proves that claim's shell is gone.
+      fs.writeFileSync(stale, JSON.stringify({ ...shell, pid: bystander.pid }));
+      // The stale claim keeps the shell's publication time, which precedes the bystander's birth.
+      fs.utimesSync(stale, publishedAt, publishedAt);
+      const staleBytes = fs.readFileSync(stale);
       fs.writeFileSync(recordFile, JSON.stringify(shell));
       const stopped = await call("agent_runs", { action: "stop", id: runId }, "orphan-stop");
       assert.equal(stopped.isError, false, JSON.stringify(stopped));
@@ -982,12 +1087,12 @@ try {
       assert.equal(commands(), beforeCommands);
       assert.equal(fs.existsSync(path.join(directory, "stop-acknowledged.json")), false);
       assert.equal(fs.existsSync(path.join(directory, "result.json")), false);
-      const beat = path.join(root, "bystander-heartbeat"),
-        size = fs.statSync(beat).size;
-      await until(
-        () => fs.statSync(beat).size > size,
-        "unrelated process survives completed cold Stop",
-      );
+      await survives("unrelated process survives completed cold Stop");
+      const reused = await call("agent_runs", { action: "stop", id: runId }, "stale-only-stop");
+      assert.equal(reused.isError, false, JSON.stringify(reused));
+      assert.equal(reused.details.stopRequest, undefined);
+      assert.match(reused.details.note, /No matching live actor or owned shell/);
+      await survives("reused PID survives Stop of its stale claim");
       const distinct = await call(
         "agent_runs",
         { action: "continue", id: runId, prompt: "DO_NOT_REPLACE_QUEUED_PROMPT" },
@@ -1060,9 +1165,16 @@ try {
         1,
         "exactly one recovered prompt reaches the real native journal",
       );
+      assert.deepEqual(
+        fs.readFileSync(stale),
+        staleBytes,
+        "stale claim did not block continuation",
+      );
+      await survives("reused PID survives the continuation");
     } finally {
+      fs.rmSync(stale, { force: true });
       fs.writeFileSync(recordFile, JSON.stringify(shell));
-      process.kill(-bystander.pid, "SIGKILL");
+      process.kill(bystander.pid, "SIGKILL");
     }
   } else if (phase === "cold-stop") {
     const family = seed.family;
