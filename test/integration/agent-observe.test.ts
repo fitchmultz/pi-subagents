@@ -826,7 +826,6 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
             action: "continue",
             id: legacyId,
             prompt: "Continue the original native child",
-            async: false,
           })
         ).details,
       );
@@ -834,6 +833,26 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       assert.equal(adopted.sessionId, legacy.getSessionId());
       assert.ok(typeof adopted.id === "string");
       const commands = path.join(base, adopted.id, "commands");
+      // The parent's completion notice turn must settle before observation counts requests.
+      const finished = async (id: string) => {
+        await until(
+          () =>
+            manager
+              .getEntries()
+              .some(
+                (entry) =>
+                  entry.type === "custom_message" &&
+                  entry.customType === "agent-completion" &&
+                  typeof entry.details === "object" &&
+                  entry.details !== null &&
+                  "id" in entry.details &&
+                  entry.details.id === id,
+              ),
+          `asynchronous child ${id} completion reaches the parent`,
+        );
+        await runtime.session.waitForIdle();
+      };
+      await finished(adopted.id);
       const watch = async (id: string, expected: string, opensJournal = true) => {
         const before = requests(root);
         const published = fs.readFileSync(originalFile);
@@ -866,12 +885,12 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
             action: "continue",
             id: adopted.id,
             prompt: "Continue the adopted conversation again",
-            async: false,
           })
         ).details,
       );
       assert.ok(typeof continued.id === "string");
       assert.notEqual(continued.id, adopted.id);
+      await finished(continued.id);
       assert.equal(continued.rootId, adopted.id);
       assert.equal(continued.sessionFile, originalFile);
       assert.equal(continued.sessionId, legacy.getSessionId());

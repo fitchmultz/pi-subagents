@@ -229,16 +229,9 @@ export function render(
   base: string,
   launch: Launch,
   ctx?: ExtensionContext,
-  input: Pick<RunsInput, "offset" | "length"> & { receivedResult?: boolean } = {},
+  input: Pick<RunsInput, "offset" | "length"> = {},
 ): ToolReply {
-  const view = projection(base, launch, ctx, input);
-  const details = {
-    ...view,
-    receivedResult: input.receivedResult === true,
-    ...(input.receivedResult === true && view.result?.contributions !== undefined
-      ? { agentUsage: view.result.contributions }
-      : {}),
-  };
+  const details = projection(base, launch, ctx, input);
   return {
     ...toolResult(details, resultText(details)),
     isError: details.result?.status === "failed",

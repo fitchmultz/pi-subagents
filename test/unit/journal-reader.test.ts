@@ -12,7 +12,7 @@ import { JournalFrames, readJsonProjection, scanJournal } from "../../src/shared
 import { JsonProjection } from "../../src/shared/json-projection.ts";
 import { NativeJournal } from "../../src/shared/native-journal.ts";
 import { readOutputPage } from "../../src/shared/output-page.ts";
-import { childUsage, sumUsage } from "../../src/agent/usage.ts";
+import { childUsage } from "../../src/agent/usage.ts";
 import { usageLaunch as launch } from "../support/agent-launch.ts";
 
 function baseline(file: string): Set<string> {
@@ -169,7 +169,10 @@ test("sealed inspection and LF-published native bodies never weaken strict accou
   fs.appendFileSync(file, "\n");
   assert.deepEqual([...baseline(file)], ["child", "terminal"]);
   const terminalUsage = childUsage(launch(file), new Set(), "terminal");
-  assert.equal(sumUsage(terminalUsage).input, 3);
+  assert.deepEqual(
+    terminalUsage.map((part) => part.usage.input),
+    [3],
+  );
 });
 
 test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors", () => {
@@ -306,7 +309,7 @@ test(
         "-e",
         `
 		import assert from 'node:assert/strict'; import {createHash} from 'node:crypto'; import {createReadStream} from 'node:fs';
-		import {childUsage,sumUsage} from ${JSON.stringify(nativeModule)};
+		import {childUsage} from ${JSON.stringify(nativeModule)};
 		import {receiptId} from ${JSON.stringify(receiptModule)};
 		import {NativeJournal} from ${JSON.stringify(journalModule)};
 		import {scanJournal} from ${JSON.stringify(framesModule)};
@@ -315,8 +318,8 @@ test(
 		scanJournal(file, keys=>keys.length===0||keys[0]==='id', ({value})=>ids.push(value.id), {policy:'strict',requireNewline:true});
 		assert.deepEqual(ids,['child','inherited','noise','paid','abandoned','terminal','completion']);
 		const contributions=childUsage(launch,new Set(['child','inherited']),'terminal');
-		const total=sumUsage(contributions);
-		assert.deepEqual([total.input,total.output,total.cost.total],[9,15,39]);
+		const sum=key=>contributions.reduce((total,c)=>total+key(c.usage),0);
+		assert.deepEqual([sum(u=>u.input),sum(u=>u.output),sum(u=>u.cost.total)],[9,15,39]);
 		assert.deepEqual(contributions.map(c=>c.id),['child:paid','child:abandoned','child:terminal']);
 		assert.deepEqual(contributions.map(c=>[c.provider,c.model]),[['p','actual'],['p','selected'],['p','actual']]);
 		const journal=new NativeJournal(file);
@@ -353,7 +356,10 @@ test(
       }) + "\nnot JSON\n",
     );
     const predecessor = childUsage(launch(file), new Set(["child", "inherited"]), "terminal");
-    assert.equal(sumUsage(predecessor).input, 9);
+    assert.equal(
+      predecessor.reduce((total, part) => total + part.usage.input, 0),
+      9,
+    );
     assert.throws(() => childUsage(launch(file), new Set()), SyntaxError);
   },
 );

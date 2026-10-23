@@ -105,16 +105,24 @@ export default function(pi) {
         assert.deepEqual([...tools].sort(), ${JSON.stringify(expectedTools)});
       }
       observe({ tools, requested: true });
-      return fauxAssistantMessage(fauxToolCall(child ? "packed_probe" : "delegate", child ? { value: "native-tool-input" } : { prompt: ${JSON.stringify(prompt)}, name: "packed-native", async: false }), { stopReason: "toolUse" });
+      return fauxAssistantMessage(fauxToolCall(child ? "packed_probe" : "delegate", child ? { value: "native-tool-input" } : { prompt: ${JSON.stringify(prompt)}, name: "packed-native" }), { stopReason: "toolUse" });
     },
     (context) => {
       const result = context.messages.findLast(message => message.role === "toolResult");
       assert.equal(result?.isError ?? false, false);
       assert.equal(result?.toolName, child ? "packed_probe" : "delegate");
-      assert.ok(result.content.some(part => part.type === "text" && part.text.includes(child ? "PACKED_TOOL_RESULT" : "PACKED_NATIVE_COMPLETE")));
+      // The parent gets only an honest launch receipt; the child's outcome arrives later.
+      assert.ok(result.content.some(part => part.type === "text" && (child ? part.text.includes("PACKED_TOOL_RESULT") : part.text.includes("Launch accepted") && !part.text.includes("PACKED_NATIVE_COMPLETE"))));
       observe({ consumedResult: true, calls: faux.state.callCount });
-      return fauxAssistantMessage(child ? "PACKED_NATIVE_COMPLETE" : "PACKED_PARENT_COMPLETE");
-    }
+      return fauxAssistantMessage(child ? "PACKED_NATIVE_COMPLETE" : "PACKED_LAUNCH_RECEIPT_SEEN");
+    },
+    ...(child ? [] : [(context) => {
+      const notice = context.messages.at(-1);
+      const text = typeof notice.content === "string" ? notice.content : notice.content.map(part => part.text ?? "").join("");
+      assert.ok(text.includes(": completed. \\nPACKED_NATIVE_COMPLETE\\n"), text);
+      observe({ consumedCompletion: true, calls: faux.state.callCount });
+      return fauxAssistantMessage("PACKED_PARENT_COMPLETE");
+    }])
   ]);
   pi.registerProvider(faux.provider);
 }
@@ -218,6 +226,18 @@ try {
   }, 30_000);
   await session.prompt("Exercise the packed native delegate.", { expandPromptTemplates: false });
   await session.waitForIdle();
+  assert.equal(session.getLastAssistantText(), "PACKED_LAUNCH_RECEIPT_SEEN");
+  const completionDeadline = Date.now() + 30_000;
+  while (session.getLastAssistantText() !== "PACKED_PARENT_COMPLETE") {
+    // Observe the native completion notification turn, not a fixed delay.
+    assert.ok(
+      Date.now() < completionDeadline,
+      `native completion notification resumes the parent: ${JSON.stringify(session.messages.slice(-3))}`,
+    );
+    // oxlint-disable-next-line no-await-in-loop
+    await delay(25);
+  }
+  await session.waitForIdle();
   clearTimeout(watchdog);
   assert.equal(
     session.getLastAssistantText(),
@@ -235,11 +255,13 @@ try {
     (event) => event.type === "tool_execution_start" && event.toolName === "delegate",
   );
   assert.equal(starts.length, 1, "one real native delegate call, no fabricated wire events");
-  const completion = events.find(
+  const receipt = events.find(
     (event) => event.type === "tool_execution_end" && event.toolName === "delegate",
   );
-  assert.ok(completion && !completion.isError, JSON.stringify(completion));
-  const run = completion.result.details;
+  assert.ok(receipt && !receipt.isError, JSON.stringify(receipt));
+  assert.equal(receipt.result.details.receipt, "launch");
+  const run = (await execute("agent_runs", { action: "inspect", id: receipt.result.details.id }))
+    .details;
   assert.equal(run.status, "completed");
   assert.equal(run.output.text, "PACKED_NATIVE_COMPLETE");
   const childEntries = readFileSync(run.sessionFile, "utf8")
@@ -279,6 +301,11 @@ try {
   assert.equal(
     observed.filter((item) => !item.child && item.consumedResult && item.calls === 2).length,
     1,
+  );
+  assert.equal(
+    observed.filter((item) => !item.child && item.consumedCompletion && item.calls === 3).length,
+    1,
+    "the parent is resumed exactly once by the native completion notification",
   );
   assert.equal(networkAttempts, 0);
   assert.equal(

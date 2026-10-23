@@ -13,7 +13,6 @@ delegate({
   cwd: "/optional/working/directory",
   model: "provider/model",
   context: "fresh",
-  async: true,
 });
 ```
 
@@ -41,10 +40,15 @@ historical tool calls and results; restricting a child's authority does not eras
 the parent's evidence. Native Pi system/tool instructions and applicable project
 resources still apply. Forking does not authorize nested delegation.
 
-The default response acknowledges launch. It does not claim a model response or
-completion. `async:false` waits for this new work. Cancelling that owned foreground
-invocation requests stop. Exiting or replacing the parent session stops its
-children, including active work, and preserves their saved conversations.
+The response acknowledges launch only. It does not claim a model response or
+completion, and no tool waits for child completion: the parent continues other
+work or ends its turn, and the completion notice resumes it. Aborting a parent turn
+does not stop its children; use `stop`. Exiting or replacing the parent session
+stops its children, including active work, and preserves their saved conversations.
+
+Completion notifications need a running main session. Ending a turn in a persistent
+TUI, RPC or SDK session is not parent exit. A one-shot print invocation exits after
+its final turn and stops any remaining children; it does not wait for their results.
 
 Only a main may delegate. Children cannot bypass the restriction through a hidden
 tool or programmatic invocation of `delegate` or `agent_runs`.
@@ -57,9 +61,8 @@ project, display name, or a different session forked from its history.
 | Action     | Purpose                                                                              |
 | ---------- | ------------------------------------------------------------------------------------ |
 | `list`     | Page through the current native owner's saved-run metadata, without output previews. |
-| `inspect`  | Read one run's immutable result and process/publication facts.                       |
+| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting. |
 | `continue` | Supply a complete follow-up prompt using the saved child conversation.               |
-| `wait`     | Wait for an existing run; cancelling this observer does not stop its producer.       |
 | `stop`     | Request termination; inspect the actual process outcome afterward.                   |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
@@ -77,7 +80,8 @@ missing session state is an error, not permission to start a different chat.
 If a handoff saved a run but failed before admission, retry `continue` with the
 exact same prompt after its actor and owned shells have exited. This resumes the
 saved run and queued command, not another successor. A different prompt is refused
-until admission or a canonical result. A missing queued command or ambiguous
+until admission or a canonical result; end the turn or do other work until the
+completion notice rather than polling. A missing queued command or ambiguous
 process claim requires inspection rather than automatic replay. If the prompt
 was lost from context, read its exact value from `launch.json` beside the run's
 reported `outputFile`; do not reconstruct or paraphrase it. For adopted legacy
@@ -86,7 +90,8 @@ not the retired legacy handle.
 Guidance that arrives after its run settles is reported as stale rather than
 starting untracked work. Inspection text exposes the guidance command IDs and
 admission states, native receipt publication and separately known process exit.
-Pending admission is not consumption. Inspect the result and send a new continuation
+Continuing active work returns a guidance receipt with the command ID; queue
+acceptance is not admission, and admission is not model consumption. Inspect the result and send a new continuation
 if guidance became stale; do not infer acceptance from the old completed output.
 
 A completed child can remain alive and messageable while its main remains
@@ -139,13 +144,16 @@ for topology, target resolution, native replay, and delivery distinctions.
 
 ### Usage accounting
 
-The parent's token/cost totals are not automatically the entire workflow's spend.
-An asynchronous completion notice does not charge child usage to the parent.
-Finalized foreground or `wait` collection owns that accounting; repeated collection
-does not double-charge the same native contribution. Child journals retain their
-own usage. Metadata inventory and the human observer do not repair or collect
-accounting; explicit inspection can reconcile pending accounting without itself
-charging the parent.
+New calls do not attribute child usage to the parent's token/cost totals. Each
+child result records its own native contributions exactly once, and continuations
+add only newly published entries. Completion notices, inspection, reload and
+metadata inventory do not charge the parent. Explicit inspection can reconcile
+pending child accounting.
+
+Historical foreground and `wait` charges already recorded in a parent's journal
+remain in its native totals. For workflow totals, count shared continuation
+journals once and do not count child contributions again when an older parent
+tool result already includes them.
 
 ## Completion delivery
 

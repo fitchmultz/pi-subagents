@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -40,10 +39,9 @@ import {
   conversation,
   write,
 } from "./storage.ts";
-import { hold, notifications, deliver, settle, release } from "./notifications.ts";
+import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { toolResult, projection, render, summaries } from "./view.ts";
-import { registerUsage } from "./usage.ts";
 import { legacyNotifications } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
@@ -156,59 +154,6 @@ class AgentRuntime {
       note: "Stop requested; neither native admission nor process exit is implied.",
     };
   }
-  private interrupted(launch: Launch, signal: AbortSignal | undefined, owned: boolean) {
-    if (this.shutdown.signal.aborted) {
-      return toolResult({
-        ...projection(this.base, launch, this.ctx),
-        wait: "detached",
-        note: "Parent runtime disposed; saved child state is retained for explicit continuation.",
-      });
-    }
-    if (signal?.aborted === true) {
-      if (owned) {
-        this.stop(launch);
-      }
-      return toolResult({
-        ...projection(this.base, launch, this.ctx),
-        wait: "cancelled",
-        note: owned
-          ? "Owned foreground work was asked to stop; exit is unconfirmed."
-          : "Only the wait was cancelled; producer was not stopped.",
-      });
-    }
-    const identity = actor(this.base, launch);
-    if (identity && !alive(identity)) {
-      return toolResult({
-        ...projection(this.base, launch, this.ctx),
-        wait: "interrupted",
-        note: "Actor is not live; no completion or exit code was invented.",
-      });
-    }
-    return;
-  }
-  private async wait(launch: Launch, signal: AbortSignal | undefined, owned: boolean) {
-    const held = hold(this.owner, launch.id);
-    for (;;) {
-      const result = read(
-        path.join(runDirectory(this.base, launch.id), "result.json"),
-        resultSchema,
-      );
-      if (result) {
-        hold(this.owner, launch.id);
-        return render(this.base, launch, this.ctx, { receivedResult: true });
-      }
-      const interruption = this.interrupted(launch, signal, owned);
-      if (interruption) {
-        if (held) {
-          release(this.owner, launch.id);
-        }
-        return interruption;
-      }
-      // Cancellation of an observer never removes canonical producer state.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(50);
-    }
-  }
   private async delegate(
     input: DelegateInput,
     signal: AbortSignal | undefined,
@@ -231,13 +176,10 @@ class AgentRuntime {
     this.checkMain();
     enqueue(this.base, launch, "run");
     await ensureActor(this.base, launch, this.shutdown.signal);
-    if (input.async === false) {
-      return this.wait(launch, signal, true);
-    }
     return toolResult({
       ...projection(this.base, launch, this.ctx),
       receipt: "launch",
-      note: "Launch accepted, not actual completion or native receipt publication.",
+      note: "Launch accepted, not completion or native receipt publication. Completion arrives as a notification; do other work or end the turn instead of polling.",
     });
   }
   private list(input: RunsInput) {
@@ -283,11 +225,7 @@ class AgentRuntime {
     }
     return;
   }
-  private async retryContinuation(
-    launch: Launch,
-    input: RunsInput,
-    signal: AbortSignal | undefined,
-  ) {
+  private async retryContinuation(launch: Launch, input: RunsInput) {
     const identity = actor(this.base, launch);
     const command = read(
       path.join(conversation(this.base, launch), "commands", `${launch.id}.json`),
@@ -301,17 +239,14 @@ class AgentRuntime {
       command.action !== "run"
     ) {
       throw new Error(
-        `Run ${launch.id} is awaiting native admission. Retry requires the exact saved prompt, its existing queued Run command, and no live actor. Missing commands or ambiguous process claims require inspection; wait for admission or a canonical result before sending another prompt. No new continuation was launched.`,
+        `Run ${launch.id} is awaiting native admission. Retry requires the exact saved prompt, its existing queued Run command, and no live actor. Missing commands or ambiguous process claims require inspection. Admission or a canonical result arrives without polling: end the turn or do other work until the completion notification, then inspect once before sending another prompt. No new continuation was launched.`,
       );
     }
     // Only an unadmitted durable command is retryable; keep all process/shell claim guards.
     await ensureActor(this.base, launch, this.shutdown.signal);
-    if (input.async === false) {
-      return this.wait(launch, signal, true);
-    }
     return toolResult({ ...projection(this.base, launch, this.ctx), receipt: "continuation" });
   }
-  private async continue(launch: Launch, input: RunsInput, signal: AbortSignal | undefined) {
+  private async continue(launch: Launch, input: RunsInput) {
     if (input.prompt === undefined) {
       throw new Error("continue requires the entire new prompt.");
     }
@@ -320,14 +255,11 @@ class AgentRuntime {
     }
     const completed = this.continuationResult(launch);
     if (completed === "pending") {
-      return this.retryContinuation(launch, input, signal);
+      return this.retryContinuation(launch, input);
     }
     const identity = actor(this.base, launch);
     if (!completed && identity && alive(identity)) {
       const command = enqueue(this.base, launch, "steer", { prompt: input.prompt });
-      if (input.async === false) {
-        return this.guidance(launch, command, signal);
-      }
       return toolResult({
         ...projection(this.base, launch, this.ctx),
         receipt: "guidance",
@@ -345,40 +277,9 @@ class AgentRuntime {
     // Retain successor claims on ambiguous after-launch failures: no replay.
     enqueue(this.base, next, "run");
     await ensureActor(this.base, next, this.shutdown.signal);
-    if (input.async === false) {
-      return this.wait(next, signal, true);
-    }
     return toolResult({ ...projection(this.base, next, this.ctx), receipt: "continuation" });
   }
-  private async guidance(launch: Launch, command: string, signal: AbortSignal | undefined) {
-    const file = path.join(conversation(this.base, launch), "admissions", `${command}.json`);
-    for (;;) {
-      const admission = read(file, admissionSchema);
-      if (admission) {
-        if (admission.state === "stale") {
-          return toolResult({
-            ...projection(this.base, launch, this.ctx),
-            command,
-            guidance: "stale",
-            note: "The native turn settled before guidance admission. Retry the entire prompt as a continuation; no new work was started.",
-          });
-        }
-        return this.wait(launch, signal, false);
-      }
-      const interruption = this.interrupted(launch, signal, false);
-      if (interruption) {
-        return interruption;
-      }
-      // Observe the actor's actual admission, not a timer-based model-consumption claim.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(50);
-    }
-  }
-  private async continueSaved(
-    input: RunsInput & { id: string },
-    signal: AbortSignal | undefined,
-    context: ExtensionContext,
-  ) {
+  private async continueSaved(input: RunsInput & { id: string }, context: ExtensionContext) {
     if (input.prompt === undefined) {
       throw new Error("continue requires the entire new prompt.");
     }
@@ -394,15 +295,12 @@ class AgentRuntime {
       enqueue(this.base, launch, "run");
       await ensureActor(this.base, launch, this.shutdown.signal);
     }
-    if (input.async === false) {
-      return this.wait(launch, signal, created);
-    }
     return toolResult({
       ...projection(this.base, launch, this.ctx),
       receipt: created ? "continuation" : "existing-successor",
     });
   }
-  private async runs(input: RunsInput, signal: AbortSignal | undefined, context: ExtensionContext) {
+  private async runs(input: RunsInput, context: ExtensionContext) {
     this.checkMain();
     await this.reset;
     if (input.action === "list") {
@@ -416,7 +314,7 @@ class AgentRuntime {
       input.action === "continue" &&
       !fs.existsSync(path.join(runDirectory(this.base, input.id), "launch.json"))
     ) {
-      return this.continueSaved({ ...input, id: input.id }, signal, context);
+      return this.continueSaved({ ...input, id: input.id }, context);
     }
     const original = launchAt(this.base, input.id, this.owner);
     if (input.action === "inspect") {
@@ -426,13 +324,9 @@ class AgentRuntime {
     if (input.action === "stop") {
       return toolResult(this.stop(launch));
     }
-    if (input.action === "wait") {
-      return this.wait(launch, signal, false);
-    }
-    return this.continue(launch, input, signal);
+    return this.continue(launch, input);
   }
   register(): void {
-    registerUsage(this.pi);
     registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
@@ -457,19 +351,19 @@ class AgentRuntime {
       name: "delegate",
       label: "Delegate",
       description:
-        "Launch one child with exactly the supplied prompt. Fresh context by default; fork preserves the full native conversation. Main sessions only. Returns an asynchronous launch receipt unless async:false.",
+        "Launch one child with exactly the supplied prompt. Fresh context by default; fork preserves the full native conversation. Main sessions only. Returns an asynchronous launch receipt; completion arrives later as a notification, so do other work or end the turn instead of polling.",
       parameters: delegateSchema,
       exposure: this.child ? "hidden" : "direct",
       renderResult: renderCompactResult,
       execute,
     });
     const runs: ToolDefinition<typeof runsSchema>["execute"] = (...args) =>
-      this.runs(args[1], args[2], args[4]);
+      this.runs(args[1], args[4]);
     this.pi.registerTool({
       name: "agent_runs",
       label: "Agent runs",
       description:
-        "List, inspect, continue, wait for, or stop this native main session's durable child runs. Inspect is paged with byte offsets; full outputs and native journals remain available. Wait cancellation does not stop existing work. Continue requires the complete new prompt and reuses the saved conversation.",
+        "List, inspect, continue, or stop this native main session's durable child runs. No action waits for child completion; completions arrive as notifications. Inspect is paged with byte offsets and never interrupts a child. Continue requires the complete new prompt, reuses the saved conversation and returns a guidance or continuation receipt.",
       parameters: runsSchema,
       exposure: this.child ? "hidden" : "direct",
       renderResult: renderCompactResult,

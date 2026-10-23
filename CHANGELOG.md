@@ -4,6 +4,7 @@
 
 ### Breaking
 
+- Make child execution asynchronous-only. `delegate` and `agent_runs` no longer accept `async`, and `agent_runs` no longer has `wait`; launches, continuations and guidance return honest receipts, and existing completion notifications resume the parent. A blocking wait held the parent's tool batch open, so admitted Intercom steering could not reach it until the child finished. Aborting a parent turn no longer stops children; use `stop`. New calls no longer attribute child usage to the parent; child results keep exactly-once native contributions, and historical parent charges remain unchanged. The opt-in `smoke:real-pi -- --llm`/`--llm-full` prompts now keep a persistent RPC main open until each launch or continuation receipt's completion notification resumes it, then close it and confirm the delegated actor exits.
 - Stop child actors and verified owned native shells when their parent exits, including active work and asynchronous delegation from one-shot callers. Keep saved conversations for explicit continuation after parent resume; do not replay interrupted tools. Ordinary extension reload keeps children alive.
 
 ### Fixed

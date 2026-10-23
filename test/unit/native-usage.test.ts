@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { childUsage, sumUsage } from "../../src/agent/usage.ts";
+import { childUsage } from "../../src/agent/usage.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 
 const usage = {
@@ -51,20 +51,10 @@ test("native accounting excludes inherited entries and checkpoints and includes 
       .join("\n") + "\n",
   );
   const contributions = childUsage(usageLaunch(file), new Set(["inherited"]), "review");
-  const total = sumUsage(contributions);
   assert.deepEqual(
-    total,
-    {
-      input: 60,
-      output: 120,
-      cacheRead: 180,
-      cacheWrite: 240,
-      cacheWrite1h: 90,
-      reasoning: 30,
-      totalTokens: 600,
-      cost: { input: 6, output: 12, cacheRead: 18, cacheWrite: 24, total: 60 },
-    },
-    "reasoning and cacheWrite1h remain subsets, not additional output/cacheWrite",
+    contributions.map((part) => part.usage),
+    Array.from({ length: 6 }, () => usage),
+    "each native entry keeps its exact usage, including optional subset counters",
   );
   assert.deepEqual(
     contributions.map((part) => part.id),

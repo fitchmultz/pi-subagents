@@ -437,6 +437,7 @@
         "scripts/native-package-smoke.mjs",
         "scripts/package-smoke.mjs",
         "scripts/prepare.mjs",
+        "scripts/real-pi-live.mjs",
         "scripts/real-pi-processes.mjs",
         "scripts/real-pi-smoke.mjs",
         "scripts/run-tests.mjs",

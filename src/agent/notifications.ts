@@ -25,7 +25,7 @@ function queuedAdmissions(): Set<string> {
   return queued;
 }
 const admissions = queuedAdmissions();
-export function hold(owner: string, id: string): boolean {
+function hold(owner: string, id: string): boolean {
   const key = `${owner}/${id}`;
   if (admissions.has(key)) {
     return false;
