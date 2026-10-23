@@ -1,6 +1,6 @@
 ---
 name: pi-subagents
-description: "Delegate one complete assignment to a native Pi child; inspect, continue, wait for, or stop saved child runs. Use for Pi delegation, not profile administration or non-Pi agents."
+description: "Delegate one complete assignment to a native Pi child; inspect, continue, or stop saved child runs. Use for Pi delegation, not profile administration or non-Pi agents."
 ---
 
 # Pi delegation
@@ -30,10 +30,14 @@ exports it; a literal model ID wins before suffix parsing. Without that host API
 use a literal ID with inherited thinking or upgrade Pi. Never retry another model
 silently.
 
-Runs are asynchronous unless `async:false`. Continue useful independent work;
-when child evidence gates the next step, end the turn and await completion rather
-than polling. A launch receipt is not completion. Review actual outputs and
+Every launch, continuation and guidance call returns a receipt; no tool waits for
+child completion. Continue useful independent work; when child evidence gates the
+next step, end the turn and let the completion notice resume you rather than
+polling `inspect`. A launch receipt is not completion. Review actual outputs and
 validation evidence before accepting the result.
+
+Keep the main session running for completion delivery. A one-shot print
+invocation exits after its final turn and stops any remaining children.
 
 ## Controls
 
@@ -41,7 +45,6 @@ validation evidence before accepting the result.
 - `inspect` reads a run by ID; follow returned offsets for complete output.
 - `continue` takes a complete follow-up `prompt` and keeps the saved child chat.
   Active work receives guidance; completed work gets an immutable successor.
-- `wait` observes existing work; cancelling that wait does not stop the producer.
 - `stop` requests termination. Inspect actual process evidence; request acceptance
   does not prove actor or command exit.
 

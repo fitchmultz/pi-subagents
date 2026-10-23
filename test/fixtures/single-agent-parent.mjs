@@ -280,6 +280,29 @@ const call = async (name, args, id) => {
   assert.equal(resultEntries(id).length, 1);
   return resultEntries(id)[0].message;
 };
+// Exact usage the child provider fixture stamps on every native assistant turn.
+const childTurnUsage = {
+  input: 3,
+  output: 5,
+  cacheRead: 13,
+  cacheWrite: 1,
+  totalTokens: 22,
+  reasoning: 2,
+  cacheWrite1h: 1,
+  cost: { input: 0.25, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
+};
+const runsTool = () => session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+// Observe the canonical completion the parent actually receives, then inspect without a model turn.
+const settled = async (receipt, why = "canonical native completion reaches the parent") => {
+  if (typeof receipt !== "string" && receipt.isError) {
+    return receipt; // a rejected launch has no completion to observe
+  }
+  const id = typeof receipt === "string" ? receipt : receipt.details.id;
+  await until(() => notices().some((notice) => notice.details.id === id), why);
+  await session.waitForIdle();
+  const signal = new AbortController().signal;
+  return await runsTool().execute(`settled-${id}`, { action: "inspect", id }, signal);
+};
 const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSessionId(), id);
 const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 let runId = seed?.runId;
@@ -394,14 +417,15 @@ try {
     const completed = await call("agent_runs", { action: "list" }, "preparation-list-completed");
     assert.equal(completed.isError, false, JSON.stringify(completed));
     assert.equal(completed.details.runs[0].completed, true);
-    const sibling = await call(
-      "delegate",
-      {
-        prompt: "PREPARATION_RECOVERY_LITERAL",
-        model: "single-agent-fixture/literal-model",
-        async: false,
-      },
-      "preparation-recovery-launch",
+    const sibling = await settled(
+      await call(
+        "delegate",
+        {
+          prompt: "PREPARATION_RECOVERY_LITERAL",
+          model: "single-agent-fixture/literal-model",
+        },
+        "preparation-recovery-launch",
+      ),
     );
     assert.equal(sibling.isError, false, JSON.stringify(sibling));
     assert.equal(sibling.details.output.text, "CHILD_LITERAL_RESULT:PREPARATION_RECOVERY_LITERAL");
@@ -430,10 +454,12 @@ try {
       fs.writeFileSync(launchFile, originalLaunch);
     }
   } else if (phase === "command-polling") {
-    const first = await call(
-      "delegate",
-      { prompt: "POLL_LITERAL", model: "single-agent-fixture/literal-model", async: false },
-      "polling-launch",
+    const first = await settled(
+      await call(
+        "delegate",
+        { prompt: "POLL_LITERAL", model: "single-agent-fixture/literal-model" },
+        "polling-launch",
+      ),
     );
     const id = first.details.id;
     assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:POLL_LITERAL");
@@ -565,10 +591,12 @@ try {
     fs.unlinkSync(receipts[1]);
     fs.unlinkSync(path.join(directory, "admissions", `${id}.json`));
     from = polls().length;
-    const cold = await call(
-      "agent_runs",
-      { action: "continue", id, prompt: "POLL_COLD_LITERAL", async: false },
-      "polling-cold",
+    const cold = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id, prompt: "POLL_COLD_LITERAL" },
+        "polling-cold",
+      ),
     );
     assert.equal(cold.details.output.text, "CHILD_LITERAL_RESULT:POLL_COLD_LITERAL");
     const coldPid = requests().at(-1).pid;
@@ -803,12 +831,11 @@ try {
     ];
     for (const [reference, model, thinking] of selections) {
       const prompt = `MODEL_SELECTION:${reference}`;
+      const selected = `single-agent-fixture/${reference}`;
       // oxlint-disable-next-line no-await-in-loop
-      const receipt = await call(
-        "delegate",
-        { prompt, model: `single-agent-fixture/${reference}`, async: false },
-        prompt,
-      );
+      const launched = await call("delegate", { prompt, model: selected }, prompt);
+      // oxlint-disable-next-line no-await-in-loop
+      const receipt = await settled(launched);
       assert.equal(receipt.isError, false, JSON.stringify(receipt));
       assert.equal(receipt.details.model, `single-agent-fixture/${model}`);
       assert.equal(receipt.details.thinking, thinking);
@@ -877,13 +904,22 @@ try {
       }),
     );
     if (phase === "receipt") {
+      // Inspection observes held work without waiting for, waking or interrupting it.
+      const held = await call("agent_runs", { action: "inspect", id: runId }, "inspect-held");
+      assert.equal(held.isError, false, JSON.stringify(held));
+      assert.equal(held.details.status, "running");
+      assert.equal(held.details.completed, false);
+      assert.equal(held.details.process.live, true);
+      assert.equal(fs.existsSync(path.join(runDir(runId), "stop-acknowledged.json")), false);
+      assert.equal(requests().filter((request) => request.prompt === prompt).length, 1);
       faux.setResponses([fauxAssistantMessage("NOTIFICATION_PROCESSED")]);
       fs.writeFileSync(path.join(root, "release-first"), "release");
       await until(() => notices().length === 1, "actual native completion publishes");
       await session.waitForIdle();
-      assert.match(notices()[0].content, /CHILD_LITERAL_RESULT:HOLD:first/);
+      assert.match(notices()[0].content, /: completed\. \nCHILD_LITERAL_RESULT:HOLD:first/);
       assert.equal(resultEntries("launch-original").length, 1);
       assert.equal(session.getSessionStats().cost, 0);
+      // Inspection scans completions before rendering; a duplicate would steer this turn.
       const inspection = await call(
         "agent_runs",
         { action: "inspect", id: runId },
@@ -894,6 +930,30 @@ try {
         true,
         "idle actor stays messageable while main attached",
       );
+      assert.equal(inspection.details.nativeReceipt, notices()[0].id);
+      assert.equal(notices().length, 1, "a later completion scan publishes no duplicate");
+      const owned = path.dirname(runDir(runId));
+      const effects = () =>
+        JSON.stringify({
+          runs: fs.readdirSync(owned).sort(),
+          commands: fs.readdirSync(path.join(runDir(runId), "commands")).sort(),
+          requests: requests().length,
+          notices: notices().length,
+        });
+      const before = effects();
+      const model = "single-agent-fixture/literal-model";
+      for (const [index, [tool, args]] of [
+        ["delegate", { prompt: "RETIRED_BLOCKING_LAUNCH", model, async: false }],
+        ["delegate", { prompt: "RETIRED_ASYNC_FLAG", model, async: true }],
+        ["agent_runs", { action: "wait", id: runId }],
+        ["agent_runs", { action: "continue", id: runId, prompt: "RETIRED_WAIT", async: false }],
+      ].entries()) {
+        // oxlint-disable-next-line no-await-in-loop
+        const rejected = await call(tool, args, `retired-blocking-${index}`);
+        assert.equal(rejected.isError, true, JSON.stringify(rejected));
+        assert.match(rejected.content[0].text, new RegExp(`^Validation failed for tool "${tool}"`));
+        assert.equal(effects(), before, "native validation rejects retired input before effects");
+      }
     }
   } else if (phase.startsWith("crash-")) {
     faux.setResponses([fauxAssistantMessage("RECOVERY_NOTIFICATION")]);
@@ -964,10 +1024,12 @@ try {
         process.kill(-pid, "SIGKILL");
       }
     }
-    const continued = await call(
-      "agent_runs",
-      { action: "continue", id, prompt: "AFTER_NATIVE_ACTOR_CRASH", async: false },
-      "continue-crashed-actor",
+    const continued = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id, prompt: "AFTER_NATIVE_ACTOR_CRASH" },
+        "continue-crashed-actor",
+      ),
     );
     assert.equal(continued.isError, false, JSON.stringify(continued));
     assert.equal(continued.details.status, "completed");
@@ -1303,10 +1365,12 @@ try {
         // oxlint-disable-next-line no-await-in-loop
         await retryWithout(file, expected);
       }
-      const recovered = await call(
-        "agent_runs",
-        { action: "continue", id: runId, prompt, async: false },
-        "retry-queued-prompt-after-orphan-stop",
+      const recovered = await settled(
+        await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt },
+          "retry-queued-prompt-after-orphan-stop",
+        ),
       );
       assert.equal(recovered.isError, false, JSON.stringify(recovered));
       assert.equal(recovered.details.id, pending, "retry resumes the same durable run");
@@ -1467,10 +1531,12 @@ try {
     );
     await session.waitForIdle();
     const original = readJSON(path.join(runDir(runId), "launch.json"));
-    const continued = await call(
-      "agent_runs",
-      { action: "continue", id: runId, prompt: "INSPECT_INTERRUPTED_WORK", async: false },
-      "resume-stopped-child",
+    const continued = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: runId, prompt: "INSPECT_INTERRUPTED_WORK" },
+        "resume-stopped-child",
+      ),
     );
     assert.equal(continued.isError, false, JSON.stringify(continued));
     assert.equal(continued.details.sessionId, original.sessionId);
@@ -1496,10 +1562,12 @@ try {
     assert.equal(denied.isError, true);
     assert.equal(notices().length, phase === "fork-owner" ? 1 : 0);
   } else if (phase === "cold-continue") {
-    const receipt = await call(
-      "agent_runs",
-      { action: "continue", id: seed.runId, prompt: "COLD_FROZEN_LITERAL", async: false },
-      "cold-continue",
+    const receipt = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: seed.runId, prompt: "COLD_FROZEN_LITERAL" },
+        "cold-continue",
+      ),
     );
     assert.equal(receipt.isError, false, JSON.stringify(receipt));
     const saved = readJSON(path.join(runDir(seed.runId), "launch.json"));
@@ -1969,15 +2037,16 @@ try {
   } else if (phase.startsWith("cwd-invalid-")) {
     const target = path.join(root, "different-child-cwd");
     fs.mkdirSync(target);
-    const result = await call(
-      "delegate",
-      {
-        prompt: "CWD_MUST_NOT_DISPATCH",
-        cwd: target,
-        model: "single-agent-fixture/literal-model",
-        async: false,
-      },
-      "invalid-cwd-owner",
+    const result = await settled(
+      await call(
+        "delegate",
+        {
+          prompt: "CWD_MUST_NOT_DISPATCH",
+          cwd: target,
+          model: "single-agent-fixture/literal-model",
+        },
+        "invalid-cwd-owner",
+      ),
     );
     assert.equal(result.isError, true, JSON.stringify(result));
     assert.equal(requests().length, 0, "incompatible cwd owner fails before provider dispatch");
@@ -2004,15 +2073,16 @@ try {
           extensions: configured.extensions.filter((entry) => entry !== cwdOwner),
         }),
       );
-      const continued = await call(
-        "agent_runs",
-        {
-          action: "continue",
-          id,
-          prompt: "REPAIRED_CWD_LITERAL",
-          async: false,
-        },
-        "repaired-startup-continuation",
+      const continued = await settled(
+        await call(
+          "agent_runs",
+          {
+            action: "continue",
+            id,
+            prompt: "REPAIRED_CWD_LITERAL",
+          },
+          "repaired-startup-continuation",
+        ),
       );
       assert.equal(continued.isError, false, JSON.stringify(continued));
       assert.deepEqual(
@@ -2036,11 +2106,7 @@ try {
       try {
         const failedPublication = await call(
           "delegate",
-          {
-            prompt: "HOLD:publication",
-            model: "single-agent-fixture/literal-model",
-            async: false,
-          },
+          { prompt: "HOLD:publication", model: "single-agent-fixture/literal-model" },
           "post-spawn-publication-fault",
         );
         assert.equal(failedPublication.isError, true);
@@ -2071,24 +2137,21 @@ try {
         "the originally claimed actor publishes its own identity",
       );
       fs.writeFileSync(path.join(root, "release-publication"), "release");
-      const original = await call(
-        "agent_runs",
-        { action: "wait", id: orphan.id },
-        "publication-original-result",
-      );
+      const original = await settled(orphan.id);
       assert.equal(original.details.output.text, "CHILD_LITERAL_RESULT:HOLD:publication");
       const originalBytes = names.map((name) =>
         fs.readFileSync(path.join(runDir(orphan.id), name)),
       );
-      const retry = await call(
-        "agent_runs",
-        {
-          action: "continue",
-          id: orphan.id,
-          prompt: "PUBLICATION_RETRY_LITERAL",
-          async: false,
-        },
-        "publication-continue",
+      const retry = await settled(
+        await call(
+          "agent_runs",
+          {
+            action: "continue",
+            id: orphan.id,
+            prompt: "PUBLICATION_RETRY_LITERAL",
+          },
+          "publication-continue",
+        ),
       );
       assert.equal(retry.isError, false, JSON.stringify(retry));
       assert.equal(retry.details.sessionFile, original.details.sessionFile);
@@ -2117,16 +2180,17 @@ try {
       await call("change_dir", { path: active }, "select-parent-active-b");
       assert.equal(manager.getCwd(), cwd);
       const before = fs.readFileSync(manager.getSessionFile());
-      const first = await call(
-        "delegate",
-        {
-          prompt: "CWD_READ_FIRST",
-          cwd: "child",
-          context: "fork",
-          model: "single-agent-fixture/literal-model",
-          async: false,
-        },
-        "fork-child-c",
+      const first = await settled(
+        await call(
+          "delegate",
+          {
+            prompt: "CWD_READ_FIRST",
+            cwd: "child",
+            context: "fork",
+            model: "single-agent-fixture/literal-model",
+          },
+          "fork-child-c",
+        ),
       );
       assert.equal(first.isError, false, JSON.stringify(first));
       assert.equal(fs.realpathSync(first.details.cwd), fs.realpathSync(child));
@@ -2136,15 +2200,16 @@ try {
         fs.readFileSync(manager.getSessionFile()).subarray(0, before.length),
         before,
       );
-      const moved = await call(
-        "agent_runs",
-        {
-          action: "continue",
-          id: first.details.id,
-          prompt: "CWD_CHANGE_AND_READ",
-          async: false,
-        },
-        "child-change-d",
+      const moved = await settled(
+        await call(
+          "agent_runs",
+          {
+            action: "continue",
+            id: first.details.id,
+            prompt: "CWD_CHANGE_AND_READ",
+          },
+          "child-change-d",
+        ),
       );
       assert.equal(moved.isError, false, JSON.stringify(moved));
       assert.match(moved.details.output.text, /CHANGED_D/);
@@ -2164,15 +2229,16 @@ try {
         }),
       );
     } else {
-      const continued = await call(
-        "agent_runs",
-        {
-          action: "continue",
-          id: runId,
-          prompt: "CWD_READ_AFTER_REOPEN",
-          async: false,
-        },
-        "reopen-child-d",
+      const continued = await settled(
+        await call(
+          "agent_runs",
+          {
+            action: "continue",
+            id: runId,
+            prompt: "CWD_READ_AFTER_REOPEN",
+          },
+          "reopen-child-d",
+        ),
       );
       assert.equal(continued.isError, false, JSON.stringify(continued));
       assert.match(continued.details.output.text, /CHANGED_D/);
@@ -2219,14 +2285,15 @@ try {
       file,
       JSON.stringify({ ...configured, extensions: [...configured.extensions, extension] }),
     );
-    const outcome = await call(
-      "delegate",
-      {
-        prompt: "CUSTOM_BASH_LITERAL",
-        model: "single-agent-fixture/literal-model",
-        async: false,
-      },
-      "custom-bash-owner",
+    const outcome = await settled(
+      await call(
+        "delegate",
+        {
+          prompt: "CUSTOM_BASH_LITERAL",
+          model: "single-agent-fixture/literal-model",
+        },
+        "custom-bash-owner",
+      ),
     );
     assert.equal(outcome.isError, false, JSON.stringify(outcome));
     assert.match(outcome.details.output.text, /CUSTOM_REMOTE_OWNER_OUTPUT/);
@@ -2263,16 +2330,17 @@ try {
       }
       // Every assertion follows the actual target loader and provider completing.
       // oxlint-disable-next-line no-await-in-loop
-      const result = await call(
+      const launched = await call(
         "delegate",
         {
           prompt: `TRUST_LITERAL_${decision}`,
           cwd: target,
           model: "single-agent-fixture/literal-model",
-          async: false,
         },
         `trust-${decision}`,
       );
+      // oxlint-disable-next-line no-await-in-loop
+      const result = await settled(launched);
       assert.equal(result.isError, false, JSON.stringify(result));
       assert.equal(
         readJSON(path.join(runDir(result.details.id), "launch.json")).trusted,
@@ -2286,30 +2354,28 @@ try {
       );
     }
   } else if (phase === "receipt-mutation") {
-    const completed = await call(
-      "delegate",
-      {
-        prompt: "RECEIPT_MUTATION_LITERAL",
-        model: "single-agent-fixture/literal-model",
-        async: false,
-      },
-      "mutation-owned-wait",
+    const completed = await settled(
+      await call(
+        "delegate",
+        {
+          prompt: "RECEIPT_MUTATION_LITERAL",
+          model: "single-agent-fixture/literal-model",
+        },
+        "mutation-owned-wait",
+      ),
     );
     assert.equal(completed.isError, false, JSON.stringify(completed));
     runId = completed.details.id;
-    assert.equal(notices().length, 0, "actual finalized native wait is the receipt");
+    assert.equal(notices().length, 1, "the canonical completion notice is the receipt");
     const file = manager.getSessionFile();
     const stat = fs.statSync(file);
     const before = fs.readFileSync(file, "utf8");
     const lines = before.trimEnd().split("\n").map(JSON.parse);
-    const physicalWait = lines.find(
-      (entry) =>
-        entry.type === "message" &&
-        entry.message.role === "toolResult" &&
-        entry.message.toolCallId === "mutation-owned-wait",
+    const physicalNotice = lines.find(
+      (entry) => entry.type === "custom_message" && entry.details?.id === runId,
     );
-    assert.equal(physicalWait.message.details.receivedResult, true);
-    physicalWait.message.details.owner = "0".repeat(manager.getSessionId().length);
+    assert.equal(physicalNotice.details.completed, true);
+    physicalNotice.details.owner = "0".repeat(manager.getSessionId().length);
     const changed = lines.map(JSON.stringify).join("\n") + "\n";
     assert.equal(Buffer.byteLength(changed), Buffer.byteLength(before));
     fs.writeFileSync(file, changed);
@@ -2327,7 +2393,7 @@ try {
       "same-size edited foreign physical receipt overrides stale manager entries",
     );
     await until(
-      () => notices().length === 1,
+      () => notices().length === 2,
       "processed scan publishes exactly one genuine fallback",
     );
     await session.waitForIdle();
@@ -2336,7 +2402,7 @@ try {
       { action: "inspect", id: runId },
       new AbortController().signal,
     );
-    assert.equal(reconciled.details.nativeReceipt, notices()[0].id);
+    assert.equal(reconciled.details.nativeReceipt, notices()[1].id);
     assert.equal(
       requests().filter((request) => request.prompt === "RECEIPT_MUTATION_LITERAL").length,
       1,
@@ -2360,11 +2426,7 @@ try {
     assert.equal(pending.terminalEntryId, undefined);
     assert.equal(pending.contributions, undefined);
     assert.match(pending.accountingError, /LF-published/);
-    const incomplete = await call(
-      "agent_runs",
-      { action: "wait", id: runId },
-      "incomplete-native-usage",
-    );
+    const incomplete = await settled(runId);
     assert.equal(incomplete.isError, false);
     assert.equal(incomplete.details.output.text, "CHILD_LITERAL_RESULT:DELAYED_LF_LITERAL");
     assert.equal(session.getSessionStats().cost, 0);
@@ -2414,11 +2476,7 @@ try {
       fs.openSync = open;
       syncBuiltinESMExports();
     }
-    const repaired = await call(
-      "agent_runs",
-      { action: "wait", id: runId },
-      "repaired-native-usage",
-    );
+    const repaired = await call("agent_runs", { action: "inspect", id: runId }, "repaired-usage");
     assert.equal(repaired.isError, false);
     assert.equal(repaired.details.result.accountingError, undefined);
     assert.equal(repaired.details.result.accountingPending, undefined);
@@ -2426,26 +2484,24 @@ try {
       repaired.details.result.terminalEntryId,
       pending.accountingPending.terminalCandidate,
     );
-    assert.deepEqual(repaired.usage, {
-      input: 3,
-      output: 5,
-      cacheRead: 13,
-      cacheWrite: 1,
-      totalTokens: 22,
-      reasoning: 2,
-      cacheWrite1h: 1,
-      cost: { input: 0.25, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
-    });
-    assert.equal(session.getSessionStats().cost, 0.25);
+    assert.deepEqual(
+      repaired.details.result.contributions.map((part) => part.usage),
+      [childTurnUsage],
+      "repaired accounting records the one terminal native turn exactly once",
+    );
+    assert.equal(repaired.usage, undefined, "child usage is never charged to the parent");
+    assert.equal(session.getSessionStats().cost, 0);
     assert.equal(requests().filter((request) => request.prompt === "DELAYED_LF_LITERAL").length, 1);
   } else if (phase === "saved-single" || phase === "saved-reopen") {
     const legacyId = seed?.legacyId ?? "legacy-saved-7391";
     if (phase === "saved-reopen") {
       const before = requests().length;
-      const repeated = await call(
-        "agent_runs",
-        { action: "continue", id: legacyId, prompt: "MUST_NOT_REPLAY", async: false },
-        "saved-cold-repeat",
+      const repeated = await settled(
+        await call(
+          "agent_runs",
+          { action: "continue", id: legacyId, prompt: "MUST_NOT_REPLAY" },
+          "saved-cold-repeat",
+        ),
       );
       assert.equal(repeated.isError, false, JSON.stringify(repeated));
       assert.equal(repeated.details.id, seed.runId);
@@ -2565,15 +2621,16 @@ try {
       fs.renameSync(contract.sessionFile, contract.sessionFile + ".held");
       await rejected("missing-session");
       fs.renameSync(contract.sessionFile + ".held", contract.sessionFile);
-      const continued = await call(
-        "agent_runs",
-        {
-          action: "continue",
-          id: legacyId,
-          prompt: "SAVED_NATIVE_CONTINUATION_7391",
-          async: false,
-        },
-        "saved-native-continue",
+      const continued = await settled(
+        await call(
+          "agent_runs",
+          {
+            action: "continue",
+            id: legacyId,
+            prompt: "SAVED_NATIVE_CONTINUATION_7391",
+          },
+          "saved-native-continue",
+        ),
       );
       assert.equal(continued.isError, false, JSON.stringify(continued));
       assert.equal(continued.details.sessionFile, contract.sessionFile);
@@ -2609,19 +2666,16 @@ try {
       );
     }
   } else if (phase === "usage-reopen") {
-    assert.equal(session.getSessionStats().cost, 0.5);
-    const repeated = await call("agent_runs", { action: "wait", id: seed.runId }, "reopened-wait");
+    assert.equal(session.getSessionStats().cost, 0, "reload does not charge child usage");
+    const repeated = await call("agent_runs", { action: "inspect", id: seed.runId }, "reopened");
     assert.equal(repeated.usage, undefined);
-    assert.equal(session.getSessionStats().cost, 0.5);
-    const physical = sdk.SessionManager.open(manager.getSessionFile())
+    assert.deepEqual(repeated.details.result.contributions, seed.contributions);
+    assert.equal(session.getSessionStats().cost, 0);
+    const charged = sdk.SessionManager.open(manager.getSessionFile())
       .getEntries()
-      .filter(
-        (entry) =>
-          entry.type === "message" &&
-          entry.message.role === "toolResult" &&
-          entry.message.usage !== undefined,
-      );
-    assert.equal(physical.length, 2);
+      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult")
+      .filter((entry) => entry.message.usage !== undefined);
+    assert.deepEqual(charged, [], "no physical parent tool result carries child usage");
   } else if (phase === "usage") {
     const receipt = await call(
       "delegate",
@@ -2629,88 +2683,59 @@ try {
       "usage-launch",
     );
     runId = receipt.details.id;
-    await until(
-      () => fs.existsSync(path.join(runDir(runId), "result.json")),
-      "native child usage result publishes",
+    const first = await settled(receipt, "background child completion is physically published");
+    assert.equal(notices().length, 1);
+    assert.equal(session.getSessionStats().cost, 0, "a completion notice is not a parent charge");
+    const contributions = first.details.result.contributions;
+    assert.deepEqual(
+      contributions.map((part) => [part.id.startsWith(`${first.details.sessionId}:`), part.usage]),
+      [[true, childTurnUsage]],
+      "the child's one native turn is recorded with exact optional counters",
     );
-    await until(
-      () => notices().length === 1,
-      "background custom notice is physically published before accounting checks",
-    );
-    await session.waitForIdle();
-    assert.equal(session.getSessionStats().cost, 0);
-    const rawTool = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
-    const discarded = await rawTool.execute(
-      "discarded-wait",
-      { action: "wait", id: runId },
-      new AbortController().signal,
-    );
-    assert.equal(discarded.usage, undefined, "result preparation only carries intent");
-    assert.equal(session.getSessionStats().cost, 0, "discarded result never reserves a charge");
-    const inspection = await call("agent_runs", { action: "inspect", id: runId }, "usage-inspect");
-    assert.equal(inspection.usage, undefined);
     faux.setResponses([
       fauxAssistantMessage(
-        [
-          {
-            type: "toolCall",
-            id: "concurrent-one",
-            name: "agent_runs",
-            arguments: { action: "wait", id: runId },
-          },
-          {
-            type: "toolCall",
-            id: "concurrent-two",
-            name: "agent_runs",
-            arguments: { action: "wait", id: runId },
-          },
-        ],
+        ["concurrent-one", "concurrent-two"].map((id) => ({
+          type: "toolCall",
+          id,
+          name: "agent_runs",
+          arguments: { action: "inspect", id: runId },
+        })),
         { stopReason: "toolUse" },
       ),
-      fauxAssistantMessage("CONCURRENT_WAITS_FINISHED"),
+      fauxAssistantMessage("CONCURRENT_INSPECTIONS_FINISHED"),
     ]);
-    await session.prompt("Collect the same child through concurrent native calls");
-    const receipts = [
-      resultEntries("concurrent-one")[0].message,
-      resultEntries("concurrent-two")[0].message,
-    ];
-    const charged = receipts.filter((message) => message.usage !== undefined);
-    assert.equal(charged.length, 1);
-    assert.deepEqual(charged[0].usage, {
-      input: 3,
-      output: 5,
-      cacheRead: 13,
-      cacheWrite: 1,
-      totalTokens: 22,
-      reasoning: 2,
-      cacheWrite1h: 1,
-      cost: { input: 0.25, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
-    });
-    assert.equal(session.getSessionStats().cost, 0.25);
-    const next = await call(
-      "agent_runs",
-      { action: "continue", id: runId, prompt: "USAGE_CONTINUATION_LITERAL", async: false },
-      "usage-continuation",
+    await session.prompt("Observe the same child through concurrent native calls");
+    for (const id of ["concurrent-one", "concurrent-two"]) {
+      const observed = resultEntries(id)[0].message;
+      assert.equal(observed.usage, undefined);
+      assert.deepEqual(observed.details.result.contributions, contributions);
+    }
+    assert.equal(notices().length, 1, "duplicate observation publishes no second completion");
+    assert.equal(session.getSessionStats().cost, 0);
+    const next = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: runId, prompt: "USAGE_CONTINUATION_LITERAL" },
+        "usage-continuation",
+      ),
     );
-    assert.deepEqual(next.usage, {
-      input: 3,
-      output: 5,
-      cacheRead: 13,
-      cacheWrite: 1,
-      totalTokens: 22,
-      reasoning: 2,
-      cacheWrite1h: 1,
-      cost: { input: 0.25, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
-    });
+    assert.equal(next.details.sessionFile, first.details.sessionFile);
+    const later = next.details.result.contributions;
+    assert.deepEqual(
+      later.map((part) => part.usage),
+      [childTurnUsage],
+      "continuation records only newly published direct-child native entries",
+    );
     assert.equal(
-      session.getSessionStats().cost,
-      0.5,
-      "continuation charges only newly published direct-child native entries",
+      later.some((part) => contributions.some((prior) => prior.id === part.id)),
+      false,
     );
+    assert.equal(session.getSessionStats().cost, 0);
     fs.writeFileSync(
       seedFile,
       JSON.stringify({
         runId: next.details.id,
+        contributions: later,
         sessionFile: manager.getSessionFile(),
         sessionId: manager.getSessionId(),
         childPid: requests()[0].pid,
@@ -2718,108 +2743,77 @@ try {
       }),
     );
   } else if (phase === "cancellation") {
-    const launched = await call(
-      "delegate",
-      { prompt: "HOLD:existing", model: "single-agent-fixture/literal-model" },
-      "existing-launch",
-    );
+    const model = "single-agent-fixture/literal-model";
+    const launched = await call("delegate", { prompt: "HOLD:existing", model }, "existing-launch");
     const id = launched.details.id;
     await until(
       () => requests().some((request) => request.prompt === "HOLD:existing"),
       "existing native producer is really running",
     );
-    const cancel = new AbortController();
-    const wait = session.agent.state.tools
-      .find((tool) => tool.name === "agent_runs")
-      .execute("existing-wait", { action: "wait", id }, cancel.signal);
-    cancel.abort();
-    const cancelled = await wait;
-    assert.equal(cancelled.details.wait, "cancelled");
-    const barrier = await call("agent_runs", { action: "inspect", id }, "existing-still-live");
-    assert.equal(barrier.details.process.live, true);
-    assert.equal(fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")), false);
-    fs.writeFileSync(path.join(root, "release-existing"), "release");
-    const completed = await call(
-      "agent_runs",
-      { action: "wait", id, async: false },
-      "existing-complete",
+    const abortable = async (_context, options) => {
+      await until(() => options?.signal?.aborted === true, "parent abort reaches its provider");
+      return fauxAssistantMessage("PARENT_ABORTED", { stopReason: "aborted" });
+    };
+    faux.setResponses([abortable]);
+    const callsBefore = faux.state.callCount;
+    const parentTurn = session.prompt("Parent works while the child is held");
+    await until(() => faux.state.callCount > callsBefore, "parent provider request is active");
+    await session.abort();
+    await parentTurn;
+    const signal = new AbortController().signal;
+    const live = await runsTool().execute("existing-still-live", { action: "inspect", id }, signal);
+    assert.equal(live.details.process.live, true);
+    assert.equal(live.details.completed, false);
+    assert.equal(
+      fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")),
+      false,
+      "aborting a parent turn never stops asynchronous child work",
     );
+    fs.writeFileSync(path.join(root, "release-existing"), "release");
+    const completed = await settled(id);
     assert.equal(completed.details.output.text, "CHILD_LITERAL_RESULT:HOLD:existing");
     faux.setResponses([
       fauxAssistantMessage(
         [
           {
             type: "toolCall",
-            id: "continuation-foreground",
+            id: "continuation-before-abort",
             name: "agent_runs",
-            arguments: { action: "continue", id, prompt: "HOLD:foreground", async: false },
+            arguments: { action: "continue", id, prompt: "HOLD:foreground" },
           },
         ],
         { stopReason: "toolUse" },
       ),
-      fauxAssistantMessage("CONTINUATION_ABORT_FOLLOWUP"),
+      abortable,
     ]);
-    const continued = session.prompt("Launch new cancellation-owned foreground continuation");
+    const continued = session.prompt("Continue the child, then get interrupted");
     await until(
       () => requests().some((r) => r.prompt === "HOLD:foreground"),
       "new continuation really starts",
     );
+    await until(() => resultEntries("continuation-before-abort").length === 1, "receipt published");
     await session.abort();
     await continued;
     const successor = readJSON(path.join(runDir(id), "successor.json")).id;
-    await until(
-      () => fs.existsSync(path.join(runDir(successor), "result.json")),
-      "owned foreground continuation publishes aborted native result",
+    assert.equal(resultEntries("continuation-before-abort")[0].message.details.id, successor);
+    const running = await runsTool().execute(
+      "successor-live",
+      { action: "inspect", id: successor },
+      signal,
     );
-    assert.equal(readJSON(path.join(runDir(successor), "result.json")).status, "stopped");
+    assert.equal(running.details.status, "running", "parent abort leaves the continuation running");
+    const stop = await call("agent_runs", { action: "stop", id: successor }, "explicit-stop");
+    assert.equal(stop.details.stopAcknowledged, false);
+    const stopped = await settled(successor, "explicit Stop publishes the actual native outcome");
+    assert.equal(stopped.details.result.status, "stopped");
+    assert.match(
+      notices().find((notice) => notice.details.id === successor).content,
+      /: stopped\./,
+    );
     assert.equal(fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")), true);
     assert.equal(readJSON(path.join(runDir(id), "result.json")).status, "completed");
-    const nativeCallId = "owned-foreground";
-    faux.setResponses([
-      fauxAssistantMessage(
-        [
-          {
-            type: "toolCall",
-            id: nativeCallId,
-            name: "delegate",
-            arguments: {
-              prompt: "HOLD:owned",
-              model: "single-agent-fixture/literal-model",
-              async: false,
-            },
-          },
-        ],
-        { stopReason: "toolUse" },
-      ),
-      fauxAssistantMessage("ABORT_FOLLOWUP"),
-    ]);
-    const foreground = session.prompt("Launch cancellation-owned foreground work");
-    await until(
-      () => requests().some((request) => request.prompt === "HOLD:owned"),
-      "new owned native foreground producer is really running",
-    );
-    await session.abort();
-    await foreground;
-    const ownerDir = path.dirname(runDir(id));
-    const owned = fs
-      .readdirSync(ownerDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        id: entry.name,
-        launch: readJSON(path.join(ownerDir, entry.name, "launch.json")),
-      }))
-      .find((entry) => entry.launch.prompt === "HOLD:owned");
-    await until(
-      () => fs.existsSync(path.join(runDir(owned.id), "stop-acknowledged.json")),
-      "actual actor acknowledges cancellation of newly created owned work",
-    );
-    await until(
-      () => fs.existsSync(path.join(runDir(owned.id), "result.json")),
-      "cancelled producer publishes its actual native outcome",
-    );
-    assert.equal(readJSON(path.join(runDir(owned.id), "result.json")).status, "stopped");
     assert.equal(requests().filter((request) => request.prompt === "HOLD:existing").length, 1);
-  } else if (phase === "dispose-wait") {
+  } else if (phase === "dispose") {
     const launched = await call(
       "delegate",
       {
@@ -2841,15 +2835,7 @@ try {
     );
     assert.equal(reloaded.details.process.live, true);
     assert.equal(reloaded.details.completed, false, "reload is not parent termination");
-    const waiting = session.agent.state.tools
-      .find((t) => t.name === "agent_runs")
-      .execute("admitted-detach-wait", { action: "wait", id }, new AbortController().signal);
     await runtime.dispose();
-    const detached = await waiting;
-    assert.ok(
-      detached.details.wait === "detached" || detached.details.result?.status === "stopped",
-      "the observer detaches or collects the native stopped result racing shutdown",
-    );
     await until(
       () => fs.existsSync(path.join(runDir(id), "result.json")),
       "parent shutdown stops the held child without releasing its work",
@@ -2863,14 +2849,15 @@ try {
       "parent shutdown joins actual child process exit",
     );
   } else if (phase === "parallel-cold-continue") {
-    const initial = await call(
-      "delegate",
-      {
-        prompt: "PARALLEL_SEED_LITERAL",
-        model: "single-agent-fixture/literal-model",
-        async: false,
-      },
-      "parallel-seed",
+    const initial = await settled(
+      await call(
+        "delegate",
+        {
+          prompt: "PARALLEL_SEED_LITERAL",
+          model: "single-agent-fixture/literal-model",
+        },
+        "parallel-seed",
+      ),
     );
     assert.equal(initial.isError, false, JSON.stringify(initial));
     const original = initial.details.id;
@@ -2991,11 +2978,7 @@ try {
       assert.equal(ready.token, identity.token);
       assert.notEqual(identity.pid, oldPid);
       fs.writeFileSync(path.join(root, "release-parallelfirst"), "release");
-      const outcome = await call(
-        "agent_runs",
-        { action: "wait", id: original },
-        "parallel-cold-result",
-      );
+      const outcome = await settled(first);
       assert.equal(outcome.isError, false, JSON.stringify(outcome));
       assert.equal(outcome.details.id, first);
       assert.equal(
@@ -3013,15 +2996,16 @@ try {
       );
       const names = ["launch.json", "result.json", "output.txt"];
       const frozen = names.map((name) => fs.readFileSync(path.join(runDir(first), name)));
-      const retry = await call(
-        "agent_runs",
-        {
-          action: "continue",
-          id: original,
-          prompt: prompts[1],
-          async: false,
-        },
-        "retry-distinct-parallel-prompt",
+      const retry = await settled(
+        await call(
+          "agent_runs",
+          {
+            action: "continue",
+            id: original,
+            prompt: prompts[1],
+          },
+          "retry-distinct-parallel-prompt",
+        ),
       );
       assert.equal(retry.isError, false, JSON.stringify(retry));
       assert.equal(retry.details.output.text, `CHILD_LITERAL_RESULT:${prompts[1]}`);
@@ -3200,19 +3184,16 @@ try {
         return link(source, destination);
       };
       syncBuiltinESMExports();
-      const stale = await call(
+      const queued = await call(
         "agent_runs",
-        {
-          action: "continue",
-          id,
-          prompt: "LATE_MUST_NOT_START",
-          async: false,
-        },
+        { action: "continue", id, prompt: "LATE_MUST_NOT_START" },
         "late-boundary",
       );
-      assert.equal(stale.isError, false);
-      assert.equal(stale.details.guidance, "stale");
-      assert.equal(stale.details.receivedResult, undefined);
+      assert.equal(queued.isError, false, JSON.stringify(queued));
+      assert.equal(queued.details.receipt, "guidance", "late guidance is only a queue receipt");
+      await settled(queued);
+      const admission = path.join(runDir(id), "admissions", `${queued.details.command}.json`);
+      await until(() => fs.existsSync(admission), "live actor publishes its admission decision");
       assert.equal(
         requests().some((r) => r.prompt === "LATE_MUST_NOT_START"),
         false,
@@ -3221,7 +3202,7 @@ try {
       assert.equal(inspected.details.guidance.at(-1).state, "stale");
       const text = inspected.content.map((block) => block.text ?? "").join("\n");
       assert.ok(
-        text.includes(`${stale.details.command}: stale`),
+        text.includes(`${queued.details.command}: stale`),
         "model sees the guidance command ID and its actual rejection state",
       );
       assert.match(text, /stale.*no new work was started/i);
@@ -3280,11 +3261,7 @@ try {
       );
     }
     fs.writeFileSync(path.join(root, "release-replacement"), "release");
-    const outcome = await call(
-      "agent_runs",
-      { action: "wait", id: next.details.id },
-      "replacement-result",
-    );
+    const outcome = await settled(next.details.id);
     assert.equal(outcome.details.output.text, "CHILD_LITERAL_RESULT:HOLD:replacement");
     assert.equal(outcome.details.status, "completed", "old Stop must not mark successor stopped");
     ["launch.json", "result.json", "output.txt"].forEach((name, index) =>
@@ -3330,15 +3307,16 @@ try {
       timestamp: Date.now(),
     });
     session.refreshContext();
-    const first = await call(
-      "delegate",
-      {
-        prompt: "RECALL_LITERAL",
-        model: "single-agent-fixture/literal-model",
-        context: "fork",
-        async: false,
-      },
-      "fork-calibration",
+    const first = await settled(
+      await call(
+        "delegate",
+        {
+          prompt: "RECALL_LITERAL",
+          model: "single-agent-fixture/literal-model",
+          context: "fork",
+        },
+        "fork-calibration",
+      ),
     );
     assert.equal(first.isError, false, JSON.stringify(first));
     assert.equal(first.details.result.status, "completed");
@@ -3346,7 +3324,7 @@ try {
     const saved = readJSON(path.join(runDir(first.details.id), "launch.json"));
     const second = await call(
       "agent_runs",
-      { action: "continue", id: first.details.id, prompt: "HOLD:second", async: true },
+      { action: "continue", id: first.details.id, prompt: "HOLD:second" },
       "continue-one",
     );
     assert.notEqual(second.details.id, first.details.id);
@@ -3426,10 +3404,12 @@ try {
       "accepted guidance remains inside the tracked native turn outcome",
     );
     assert.equal(new Set(requests().map((request) => request.pid)).size, 1);
-    const long = await call(
-      "delegate",
-      { prompt: "LONG_LITERAL", model: "single-agent-fixture/literal-model", async: false },
-      "long-output",
+    const long = await settled(
+      await call(
+        "delegate",
+        { prompt: "LONG_LITERAL", model: "single-agent-fixture/literal-model" },
+        "long-output",
+      ),
     );
     let output = long.details.output.text,
       offset = long.details.output.nextOffset;
@@ -3445,18 +3425,24 @@ try {
       offset = page.details.output.nextOffset;
     }
     assert.equal(output, "😀雪".repeat(20000) + "END_LITERAL");
-    const failure = await call(
+    const failedLaunch = await call(
       "delegate",
-      { prompt: "FAIL_LITERAL", model: "single-agent-fixture/literal-model", async: false },
+      { prompt: "FAIL_LITERAL", model: "single-agent-fixture/literal-model" },
       "model-failure",
     );
-    assert.equal(failure.isError, true);
+    assert.equal(failedLaunch.isError, false, "the launch receipt is honest, not the outcome");
+    const failure = await settled(failedLaunch);
+    assert.equal(failure.details.result.status, "failed");
     assert.equal(failure.details.output.text, "ERROR_PARTIAL_LITERAL");
     assert.equal(failure.details.result.error, "CONTROLLED_MODEL_FAILURE");
+    assert.match(
+      notices().find((notice) => notice.details.id === failure.details.id).content,
+      /: failed\.[\s\S]*CONTROLLED_MODEL_FAILURE/,
+      "the parent's completion notice carries the actual native failure",
+    );
     const emitted = toolEnds.find((event) => event.toolCallId === "model-failure");
-    assert.equal(emitted.isError, true);
-    assert.deepEqual(emitted.result.content, failure.content);
-    assert.deepEqual(emitted.result.details, failure.details);
+    assert.deepEqual(emitted.result.content, failedLaunch.content);
+    assert.deepEqual(emitted.result.details, failedLaunch.details);
     const reopened = sdk.SessionManager.open(manager.getSessionFile())
       .getEntries()
       .find(
@@ -3468,10 +3454,12 @@ try {
     assert.equal(reopened.isError, emitted.isError);
     assert.deepEqual(reopened.content, emitted.result.content);
     assert.deepEqual(reopened.details, JSON.parse(JSON.stringify(emitted.result.details)));
-    const nested = await call(
-      "delegate",
-      { prompt: "NESTED_LITERAL", model: "single-agent-fixture/literal-model", async: false },
-      "nested-policy",
+    const nested = await settled(
+      await call(
+        "delegate",
+        { prompt: "NESTED_LITERAL", model: "single-agent-fixture/literal-model" },
+        "nested-policy",
+      ),
     );
     assert.equal(nested.isError, false);
     assert.equal(readJSON(path.join(root, "nested-result.json")).isError, true);

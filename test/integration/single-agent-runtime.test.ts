@@ -119,7 +119,7 @@ for (const phase of [
   "queue-steer",
   "queue-retain-one",
   "cancellation",
-  "dispose-wait",
+  "dispose",
   "custom-bash",
   "bash-before-registration",
   "trust",
@@ -234,7 +234,7 @@ test(
   },
 );
 test(
-  "single-agent native finalized usage charges once across concurrent waits, discard, inspect, continuation and a fresh reader",
+  "single-agent native child usage is recorded exactly once per native entry and never charged to the parent across notice, concurrent inspection, continuation and a fresh reader",
   { timeout: 60000 },
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-usage-"));

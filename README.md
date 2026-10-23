@@ -17,7 +17,8 @@ delegate({
 });
 ```
 
-Delegation is asynchronous by default. `async: false` waits for the result.
+Delegation is always asynchronous: tools return a receipt and the completion
+arrives later as a notification. Do other work or end the turn; do not poll.
 `context: "fresh"` is the default; `context: "fork"` preserves the native
 conversation, including prior tool results. There is no hidden role prompt,
 report-writing suffix, profile selection, or model fallback catalog.
@@ -30,7 +31,6 @@ agent_runs({
   id: "<run-id>",
   prompt: "Now inspect the refresh-token path. Do not edit.",
 });
-agent_runs({ action: "wait", id: "<run-id>" });
 agent_runs({ action: "stop", id: "<run-id>" });
 ```
 

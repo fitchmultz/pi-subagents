@@ -130,8 +130,8 @@ this production-only measurement; the full checkout functional smoke still runs.
 - Completed answers and inbound messages can enlarge later prompts. Passive
   messages and out-of-band `last` reads do not request model inference.
 - Owner recovery must verify journal publication and process identity. Elapsed
-  time and mere queue admission cannot replace those checks. Parent receipt and
-  finalized-usage indexes parse physical LF-published bytes. For native v3
+  time and mere queue admission cannot replace those checks. Completion-receipt
+  and child-usage indexes parse physical LF-published bytes. For native v3
   journals, same-inode growth follows the native append-only writer contract and
   reads from the previous LF boundary; it does not revalidate old bytes. An outside
   edit to old bytes followed by an append on the same inode between observations
@@ -139,24 +139,22 @@ this production-only measurement; the full checkout functional smoke still runs.
   and legacy/unclassified headers rebuild the index. Failed scans discard cached
   state. Native load-time migration is covered separately: official Pi 1.4.0
   rewrites in place, whereas fork core `7bc005fa` replaces the inode atomically.
-  Published persistent parent usage uses the physical journal, not a full
-  native-memory walk. In-memory, not-yet-flushed, and non-persistent sessions with
-  a source journal still include native entries. Preparing or discarding a result
-  never mutates the published-usage cache.
 - Paged output bounds each response, not all storage or history work. Keep the
   returned cursor/offset when reading large responses rather than assuming a
   preview is the full result.
 
 ## Accounting
 
-Native child journals are the underlying execution record. Parent attribution
-must use finalized native tool-result usage receipts, excluding inherited launch
-baseline entries and already attributed child contributions. Read-only inspection
-and custom completion notifications are not finalized nested-model charges.
-Preparing or discarding a result must not reserve usage as if it were published.
+Native child journals are the underlying execution record. Each child result
+records its direct native contributions once, excluding inherited launch baseline
+entries and contributions already recorded by a predecessor. New calls do not
+attribute child usage to the parent: completion notices, inspection and reload
+are observations, not nested-model charges.
 
-Do not sum a parent's attributed child usage and the same child's journal as two
-independent provider requests. An incomplete accounting record does not erase a
+Historical parent journals can retain child usage forwarded by the retired
+foreground and `wait` collectors. When calculating workflow spend, count shared
+continuation journals once and exclude child contributions already included in
+historical parent tool results. An incomplete accounting record does not erase a
 real completed answer or authorize fabricated usage. Preserve optional reasoning
 and cache fields according to native Pi semantics rather than adding them twice.
 
