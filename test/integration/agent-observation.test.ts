@@ -478,6 +478,10 @@ test(
     const started = await child(t, { prompt: "OBS_BENCH", gates: ["thinking", "text", "call"] });
     const peer = await viewer(started, "activity");
     started.run();
+    // A detail viewer subscribes to native events; its exit must not stop activity sampling.
+    const detail = await viewer(started, "detail");
+    detail.close();
+    await delay(50);
     for (const [gate, phase] of [
       ["thinking", "thinking"],
       ["text", "writing"],

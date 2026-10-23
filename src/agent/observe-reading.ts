@@ -53,7 +53,8 @@ export class Reading {
   reveal(anchor: EntryAnchor): void {
     const line = this.transcript.line(anchor);
     const top = line - (anchor.end === true ? this.scroll.viewportHeight : 0);
-    this.scroll.scrollTo(line <= 1 && anchor.end !== true ? 0 : top, { disableFollow: true });
+    const row = line <= 1 && anchor.end !== true && this.scroll.scrollTop === 0;
+    this.scroll.scrollTo(row ? 0 : top, { disableFollow: true });
     this.destination = undefined;
   }
   scrollBy(lines: number): void {

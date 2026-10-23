@@ -221,6 +221,7 @@ export class ActorObservation {
       const detail = viewer?.level === "detail";
       if (viewer && this.viewers.delete(viewer) && detail && this.details() === 0 && !this.closed) {
         this.observe(false);
+        this.schedule();
       }
     });
   };
