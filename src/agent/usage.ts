@@ -2,12 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Usage } from "@earendil-works/pi-ai";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { journalStamp } from "../shared/native-journal.ts";
+import { journalStamp, nativeAppend } from "../shared/native-journal.ts";
 import { isDeepStrictEqual } from "node:util";
 import { nativeProjection } from "../shared/journal-projections.ts";
 import { scanJournal } from "../shared/journal-frames.ts";
 import type { Projection } from "../shared/json-projection.ts";
-import { isRecord } from "../shared/unknown.ts";
+import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 import { Assert } from "./typebox.ts";
 import {
   contributionsSchema,
@@ -68,7 +68,7 @@ function publishedContributions(entry: unknown): Contribution[] {
   return values;
 }
 const receiptProjection: Projection = (keys) => {
-  if (keys.length === 0 || keys[0] === "type") {
+  if (keys.length === 0 || keys[0] === "type" || keys[0] === "version") {
     return true;
   }
   if (keys[0] !== "message") {
@@ -79,22 +79,84 @@ const receiptProjection: Projection = (keys) => {
   }
   return keys[1] === "details" && (keys.length === 2 || keys[2] === "agentUsage");
 };
-function priorUsage(ctx: ExtensionContext): Map<string, Contribution> {
-  const values = new Map<string, Contribution>();
-  const file = ctx.sessionManager.getSessionFile();
-  if (file !== undefined) {
-    scanJournal(
-      file,
-      receiptProjection,
-      ({ value: entry }) => {
-        for (const value of publishedContributions(entry)) {
-          values.set(value.id, value);
-        }
-      },
-      { policy: "live", requireNewline: true },
-    );
+interface UsageIndex {
+  readonly stamp: string;
+  readonly stat: fs.BigIntStats;
+  readonly end: number;
+  readonly header: UnknownRecord | undefined;
+  readonly values: Map<string, Contribution>;
+}
+const usageIndexes = new Map<string, UsageIndex>();
+function readUsage(fd: number, stat: fs.BigIntStats, cached: UsageIndex | undefined): UsageIndex {
+  const stamp = journalStamp(stat);
+  const retained = cached && nativeAppend(cached.stat, stat, cached.header) ? cached : undefined;
+  const appended = new Map<string, Contribution>();
+  let header = retained?.header;
+  const end = scanJournal(
+    fd,
+    receiptProjection,
+    ({ value: entry }) => {
+      header ??= entry;
+      for (const value of publishedContributions(entry)) {
+        appended.set(value.id, value);
+      }
+    },
+    { policy: "live", requireNewline: true, start: retained?.end ?? 0 },
+  );
+  if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== stamp) {
+    throw new Error("Native parent usage journal changed while reading.");
   }
-  for (const entry of ctx.sessionManager.getEntries()) {
+  const values = retained?.values ?? new Map<string, Contribution>();
+  for (const [id, value] of appended) {
+    values.set(id, value);
+  }
+  return { stamp, stat, end, header, values };
+}
+function physicalUsage(file: string, observed: fs.BigIntStats): ReadonlyMap<string, Contribution> {
+  const cached = usageIndexes.get(file);
+  if (cached?.stamp === journalStamp(observed)) {
+    return cached.values;
+  }
+  const fd = fs.openSync(file, "r");
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    const result = readUsage(fd, stat, cached);
+    usageIndexes.delete(file);
+    usageIndexes.set(file, result);
+    if (usageIndexes.size > 8) {
+      const oldest = usageIndexes.keys().next().value;
+      if (oldest !== undefined) {
+        usageIndexes.delete(oldest);
+      }
+    }
+    return result.values;
+  } catch (error) {
+    usageIndexes.delete(file);
+    throw error;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+/** Persistent journals return a live cache view; callers must not reserve prepared charges in it. */
+function priorUsage(ctx: ExtensionContext): ReadonlyMap<string, Contribution> {
+  // Native's public isPersisted() is omitted from its readonly extension type.
+  // Adapters without it retain the conservative disk-plus-memory behavior.
+  const manager: ExtensionContext["sessionManager"] & { isPersisted?: () => boolean } =
+    ctx.sessionManager;
+  const file = manager.getSessionFile();
+  const stat =
+    file === undefined ? undefined : fs.statSync(file, { bigint: true, throwIfNoEntry: false });
+  const physical =
+    file !== undefined && stat !== undefined
+      ? physicalUsage(file, stat)
+      : new Map<string, Contribution>();
+  if (stat !== undefined && manager.isPersisted?.() === true) {
+    // Flushed persistent sessions publish synchronous appends; memory may be stale.
+    return physical;
+  }
+  // A non-persistent manager can still have a source journal; its new entries stay in memory.
+  const values = new Map(physical);
+  for (const entry of manager.getEntries()) {
     for (const value of publishedContributions(entry)) {
       values.set(value.id, value);
     }
@@ -103,17 +165,18 @@ function priorUsage(ctx: ExtensionContext): Map<string, Contribution> {
 }
 function uncharged(
   values: readonly Contribution[],
-  prior: Map<string, Contribution>,
+  prior: ReadonlyMap<string, Contribution>,
 ): Contribution[] {
   const pending: Contribution[] = [];
+  const prepared = new Map<string, Contribution>();
   for (const value of values) {
-    const earlier = prior.get(value.id);
+    const earlier = prior.get(value.id) ?? prepared.get(value.id);
     if (earlier && !isDeepStrictEqual(earlier, value)) {
       throw new Error(`Conflicting native usage contribution ${value.id}`);
     }
     if (!earlier) {
       pending.push(value);
-      prior.set(value.id, value);
+      prepared.set(value.id, value);
     }
   }
   return pending;

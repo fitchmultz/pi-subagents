@@ -1,6 +1,11 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, test, type TestContext } from "node:test";
+import fs from "node:fs";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
+import { spy } from "sinon";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { JsonObject, Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createNativeSessionFixture } from "../support/native-session.ts";
@@ -22,8 +27,7 @@ afterEach(async () => {
   await Promise.all(disposals.splice(0).map((dispose) => dispose()));
 });
 
-async function harness() {
-  const manager = SessionManager.inMemory(process.cwd(), { id: "parent" });
+async function harness(manager = SessionManager.inMemory(process.cwd(), { id: "parent" })) {
   const native = await createNativeSessionFixture({
     cwd: process.cwd(),
     agentDir: process.env.HOME ?? process.cwd(),
@@ -59,6 +63,95 @@ async function harness() {
     persist: (message: Message) => manager.appendMessage(message),
   };
 }
+
+async function diskHarness(t: TestContext) {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "pi-parent-usage-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const manager = SessionManager.create(root, path.join(root, "sessions"));
+  manager.appendMessage({ role: "user", content: "x".repeat(1024 * 1024), timestamp: 1 });
+  const file = manager.getSessionFile();
+  assert.ok(file !== undefined);
+  return { ...(await harness(manager)), file };
+}
+
+test("native usage finalization reads only the published suffix after ordinary appends", async (t) => {
+  const h = await diskHarness(t);
+  const { manager, file } = h;
+  assert.deepEqual((await h.finalize([a])).usage, usage, "warm without reserving a charge");
+  const writer = SessionManager.open(file);
+  const before = fs.statSync(file).size;
+  writer.appendMessage(await h.finalize([a]));
+  const suffix = fs.statSync(file).size - before;
+  const entries = spy(manager, "getEntries");
+  const reads = spy(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    assert.equal((await h.finalize([a])).usage, undefined);
+    const bytes = reads.getCalls().reduce((total, call) => total + call.returnValue, 0);
+    t.diagnostic(`native usage append: ${suffix} bytes; readSync: ${bytes} bytes`);
+    assert.ok(bytes <= suffix + 4096, `native append of ${suffix} bytes reread ${bytes} bytes`);
+    assert.equal(entries.callCount, 0, "published journals do not rescan stale native memory");
+  } finally {
+    entries.restore();
+    reads.restore();
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(h.errors, []);
+});
+
+test("physical usage authority follows LF, edits, replacement, shrink and malformed recovery with stale memory", async (t) => {
+  const h = await diskHarness(t);
+  const before = fs.readFileSync(h.file, "utf8");
+  assert.deepEqual((await h.finalize([a])).usage, usage);
+  assert.deepEqual((await h.finalize([a])).usage, usage, "discarding cannot reserve a charge");
+  SessionManager.open(h.file).appendMessage(await h.finalize([a]));
+  const complete = fs.readFileSync(h.file, "utf8");
+  assert.equal((await h.finalize([a])).usage, undefined);
+  fs.writeFileSync(h.file, complete.trimEnd());
+  assert.deepEqual((await h.finalize([a])).usage, usage, "a missing LF unpublishes the charge");
+  fs.appendFileSync(h.file, "\n");
+  assert.equal((await h.finalize([a])).usage, undefined);
+  const wrong = complete.replace("actual-response", "other--response");
+  assert.equal(Buffer.byteLength(wrong), Buffer.byteLength(complete));
+  fs.writeFileSync(h.file, wrong);
+  assert.equal((await h.finalize([a])).usage, undefined);
+  assert.match(h.errors.pop() ?? "", /Conflicting native usage/);
+  fs.writeFileSync(h.file, complete);
+  assert.equal((await h.finalize([a])).usage, undefined);
+  fs.appendFileSync(h.file, "not JSON\n");
+  assert.equal((await h.finalize([a])).usage, undefined);
+  assert.match(h.errors.pop() ?? "", /Invalid JSONL/);
+  fs.writeFileSync(h.file, complete);
+  assert.equal((await h.finalize([a])).usage, undefined, "a failed scan does not poison recovery");
+  fs.writeFileSync(h.file + ".replacement", before);
+  fs.renameSync(h.file + ".replacement", h.file);
+  assert.deepEqual((await h.finalize([a])).usage, usage, "replacement removes the old charge");
+  fs.writeFileSync(h.file, complete);
+  assert.equal((await h.finalize([a])).usage, undefined);
+  fs.writeFileSync(h.file, before);
+  assert.deepEqual((await h.finalize([a])).usage, usage, "shrink removes the old charge");
+  assert.equal(
+    h.manager
+      .getEntries()
+      .some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+    false,
+    "the observing manager never loaded the charge",
+  );
+  assert.deepEqual(h.errors, []);
+});
+
+test("non-persistent native managers retain memory usage authority when attached to a source file", async (t) => {
+  const source = await diskHarness(t);
+  const manager = SessionManager.inMemory(process.cwd());
+  manager.setSessionFile(source.file);
+  assert.equal(manager.isPersisted(), false);
+  const h = await harness(manager);
+  const before = fs.readFileSync(source.file, "utf8");
+  h.persist(await h.finalize([a]));
+  assert.equal(fs.readFileSync(source.file, "utf8"), before, "the source is not published to");
+  assert.equal((await h.finalize([a])).usage, undefined, "native memory owns this new charge");
+  assert.deepEqual(h.errors, []);
+});
 
 test("details alone, custom messages and mismatched top-level usage are not portable receipts", async () => {
   const h = await harness();

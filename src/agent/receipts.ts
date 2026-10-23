@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
-import { createHash } from "node:crypto";
 import { scanJournal } from "../shared/journal-frames.ts";
-import { journalStamp } from "../shared/native-journal.ts";
+import { journalStamp, nativeAppend } from "../shared/native-journal.ts";
 import type { Projection } from "../shared/json-projection.ts";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 
@@ -36,7 +35,7 @@ const receiptProjection: Projection = (keys) => {
   if (keys.length === 0) {
     return true;
   }
-  if (["type", "id", "customType"].includes(String(keys[0]))) {
+  if (["type", "id", "customType", "version"].includes(String(keys[0]))) {
     return keys.length === 1 ? 4096 : false;
   }
   if (keys[0] !== "message") {
@@ -54,7 +53,7 @@ const receiptProjection: Projection = (keys) => {
 interface ReceiptIndex {
   stamp: string;
   end: number;
-  digest: string;
+  stat: fs.BigIntStats;
   entries: UnknownRecord[];
   /** First completion receipt per owned run ID, built in the same LF pass. */
   completions: Map<string, string | undefined>;
@@ -92,28 +91,10 @@ function addEntry(journal: Prefix, entry: UnknownRecord) {
   }
   journal.entries.push(entry);
 }
-function digest(fd: number, end: number): string {
-  const hash = createHash("sha256");
-  const buffer = Buffer.allocUnsafe(64 * 1024);
-  for (let offset = 0; offset < end;) {
-    const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, end - offset), offset);
-    if (count === 0) {
-      throw new Error("Native receipt journal truncated while reading.");
-    }
-    hash.update(buffer.subarray(0, count));
-    offset += count;
-  }
-  return hash.digest("hex");
-}
-function prefix(fd: number, stat: fs.BigIntStats, cached: ReceiptIndex | undefined): Prefix {
-  if (cached !== undefined && stat.size >= cached.end && digest(fd, cached.end) === cached.digest) {
-    return {
-      end: cached.end,
-      entries: [...cached.entries],
-      completions: new Map(cached.completions),
-    };
-  }
-  return { end: 0, entries: [], completions: new Map() };
+function prefix(stat: fs.BigIntStats, cached: ReceiptIndex | undefined): Prefix {
+  return cached && nativeAppend(cached.stat, stat, cached.entries[0])
+    ? cached
+    : { end: 0, entries: [], completions: new Map() };
 }
 function index(file: string, observed: fs.BigIntStats): ReceiptIndex {
   const cached = indexes.get(file);
@@ -127,12 +108,13 @@ function index(file: string, observed: fs.BigIntStats): ReceiptIndex {
     if (cached?.stamp === stamp) {
       return cached;
     }
-    const retained = prefix(fd, stat, cached);
+    const retained = prefix(stat, cached);
+    const appended: UnknownRecord[] = [];
     const end = scanJournal(
       fd,
       receiptProjection,
       ({ value }) => {
-        addEntry(retained, value);
+        appended.push(value);
       },
       {
         policy: "live",
@@ -140,10 +122,13 @@ function index(file: string, observed: fs.BigIntStats): ReceiptIndex {
         start: retained.end,
       },
     );
-    const result = { ...retained, stamp, end, digest: digest(fd, end) };
     if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== stamp) {
       throw new Error("Native receipt journal changed while reading.");
     }
+    for (const entry of appended) {
+      addEntry(retained, entry);
+    }
+    const result = { ...retained, stamp, end, stat };
     indexes.delete(file);
     indexes.set(file, result);
     if (indexes.size > 8) {
@@ -153,6 +138,9 @@ function index(file: string, observed: fs.BigIntStats): ReceiptIndex {
       }
     }
     return result;
+  } catch (error) {
+    indexes.delete(file);
+    throw error;
   } finally {
     fs.closeSync(fd);
   }
@@ -179,7 +167,9 @@ export function receiptId(
   );
   return typeof found?.id === "string" ? found.id : undefined;
 }
-/** Completion receipt IDs by run ID; a matching entry without an ID is unpublished. */
+/** Live read-only completion IDs by run; later appends extend this view.
+ * A matching entry without an ID is unpublished. Invalidations replace the view.
+ */
 export function completionReceipts(
   file: string | undefined,
   owner: string,

@@ -167,6 +167,22 @@ export class NativeJournal {
     return result;
   }
 }
+/** Native v3 writers append after attachment; loading older formats can rewrite in place.
+ * Outside prefix edits followed by same-inode growth are not an append-only operation.
+ */
+export function nativeAppend(
+  before: fs.BigIntStats,
+  after: fs.BigIntStats,
+  header: UnknownRecord | undefined,
+): boolean {
+  return (
+    header?.type === "session" &&
+    header.version === 3 &&
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    after.size > before.size
+  );
+}
 export function journalStamp(stat: fs.BigIntStats): string {
   return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
