@@ -71,6 +71,51 @@ conversation per scan, not for completed idle actors. The open watch polls at
 display lines. Those are display limits, not truncation of the native journal.
 Children and print/RPC sessions do not install the watcher.
 
+### TypeBox host-instance startup (#234)
+
+In runtime-only installs without a resolvable package-local or ancestor TypeBox,
+the extension now uses Pi's aliased/virtual `typebox` and `typebox/value` modules
+in the host. Only detached runners resolve absolute imports from the selected
+host package. The Type/Assert export contracts are unchanged; there is no
+package-local runtime TypeBox dependency.
+
+An isolated Linux x86_64 RPC probe compared `ae4c363713a6c4b75092b5f15927957e915cf050`
+with the same tree plus the conditional imports in `src/agent/typebox.ts`. Both
+full package copies contained compiled `dist` and only the production stream
+dependencies, with no TypeBox/Pi in their own `node_modules` or ancestors. The
+host was the lockfile's official npm Pi 1.4.0, bundled `dist/bundle/cli.js` SHA-256
+`e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774`, using
+`/usr/local/bin/node` v24.22.0. This is not a measurement of the maintained fork.
+
+Each fresh process had a private empty HOME/agent/runtime directory, offline
+mode, telemetry disabled, resource discovery disabled, and `PI_TIMING=1`.
+The CLI arguments were `--mode rpc --no-session -ne -ns -np -nc --no-themes
+--approve --offline --tools delegate,agent_runs,intercom -e <package>/dist/index.js
+-e <observer.mjs>`. The observer recorded the active tools and shut down at
+`session_start`; the harness asserted all three tools were registered. No
+subagent or model request was launched. After warming each
+snapshot once, seven A/B rounds alternated execution order (B/A, A/B, ...).
+
+| Metric (median; observed range)            | Before                 | After                  |
+| ------------------------------------------ | ---------------------- | ---------------------- |
+| `dist/index.js` module import, `PI_TIMING` | 241 ms (227–267)       | 86 ms (76–102)         |
+| Whole-process wall clock                   | 730.75 ms (617–754)    | 571.10 ms (546–595)    |
+| Whole-process user + system CPU            | 803.89 ms (771–834)    | 610.57 ms (581–627)    |
+| Peak RSS (`wait4`, MiB)                    | 141.87 (137.50–146.20) | 127.63 (120.89–129.46) |
+
+Individual import times were before `239, 236, 251, 227, 267, 241, 259` ms and
+after `78, 87, 76, 87, 81, 102, 86` ms. The median import dropped 155 ms (64%);
+these are local warm-cache startup observations, not cold-cache, interactive,
+model-latency, or universal performance guarantees. The package smoke separately
+checks host Type/Assert identity through Pi's loader, detached Type/Assert
+identity against the selected host in a production-only install, and actual
+native child execution. The bundled-host identity check rejects the pre-fix
+adapter. Native-loaded development or consumer graphs with independently
+installed or hoisted TypeBox can resolve that copy before Jiti applies aliases;
+this change does not force aliasing in those layouts. Their parent-side adapter
+can now use that copy instead of the host's on-disk copy. Those graphs are outside
+this production-only measurement; the full checkout functional smoke still runs.
+
 ## Necessary costs
 
 - Native Pi owns context loading and model execution. The extension cannot remove

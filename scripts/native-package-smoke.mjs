@@ -291,7 +291,23 @@ try {
   const observer = join(root, "observer.mjs");
   writeFileSync(
     observer,
-    `import { writeFileSync } from "node:fs"; export default function(pi) { pi.on("session_start", (_event, ctx) => { writeFileSync(${JSON.stringify(marker)}, JSON.stringify(pi.getActiveTools())); ctx.shutdown(); }); }`,
+    `import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
+import { Type as AgentType, Assert as AgentAssert } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href)};
+export default function(pi) {
+  // Native development graphs can resolve local peers before Jiti runs.
+  // Production-only installs must instead reuse the bundled host's virtual modules.
+  if (${!existsSync(join(packageRoot, "node_modules/typebox"))}) {
+    assert.equal(AgentType, Type, "extension schemas reuse Pi's TypeBox instance");
+    assert.equal(AgentAssert, Assert, "extension validation reuses Pi's TypeBox instance");
+  }
+  pi.on("session_start", (_event, ctx) => {
+    writeFileSync(${JSON.stringify(marker)}, JSON.stringify(pi.getActiveTools()));
+    ctx.shutdown();
+  });
+}`,
   );
   const cliEnv = { ...process.env, PATH: "/usr/bin:/bin" };
   delete cliEnv.PI_PACKAGE_DIR;
