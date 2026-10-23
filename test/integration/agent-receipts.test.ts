@@ -15,10 +15,10 @@ import { createNativeSessionFixture } from "../support/native-session.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 import { record } from "../support/assertions.ts";
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, content = "Publish native fixture history") {
   const root = fs.mkdtempSync(path.join(tmpdir(), "pi-agent-receipts-"));
   const manager = SessionManager.create(root, path.join(root, "sessions"));
-  manager.appendMessage({ role: "user", content: "Publish native fixture history", timestamp: 1 });
+  manager.appendMessage({ role: "user", content, timestamp: 1 });
   manager.appendMessage({
     role: "assistant",
     content: [{ type: "text", text: "Fixture history" }],
@@ -97,12 +97,14 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
   );
   fs.writeFileSync(h.file, complete);
   assert.equal(published(h.context, h.launch), receiptId, "restore the valid cached prefix");
-  fs.writeFileSync(h.file, wrong);
-  fs.appendFileSync(
-    h.file,
-    JSON.stringify({ type: "custom", id: "later", customType: "unrelated", data: {} }) + "\n",
-  );
-  assert.equal(published(h.context, h.launch), undefined, "growth cannot hide a changed prefix");
+  // Same-inode growth follows the native append-only contract. An outside prefix
+  // edit followed by an append between observations is outside that contract.
+  SessionManager.open(h.file).appendMessage({
+    role: "user",
+    content: "native append",
+    timestamp: 3,
+  });
+  assert.equal(published(h.context, h.launch), receiptId);
   fs.writeFileSync(h.file + ".replacement", complete);
   fs.renameSync(h.file + ".replacement", h.file);
   assert.equal(published(h.context, h.launch), receiptId, "replacement inode is inspected");
@@ -121,6 +123,74 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
     entryCount,
     "all external transitions occurred with stale native memory",
   );
+});
+
+test("native migration and a later append invalidate warmed physical receipt IDs", async (t) => {
+  const h = await fixture(t);
+  const before = h.manager.appendCustomMessageEntry("agent-completion", "done", false, {
+    owner: h.launch.owner,
+    id: h.launch.id,
+    completed: true,
+  });
+  const legacy = fs
+    .readFileSync(h.file, "utf8")
+    .replace('"version":3', '"version":1')
+    .replace(`"id":"${before}"`, '"id":"legacy-receipt"');
+  fs.writeFileSync(h.file, legacy);
+  assert.equal(published(h.context, h.launch), "legacy-receipt", "warm the valid legacy prefix");
+  const warmed = fs.statSync(h.file, { bigint: true });
+  const migrated = SessionManager.open(h.file);
+  const receipt = migrated
+    .getEntries()
+    .find((entry) => entry.type === "custom_message" && entry.customType === "agent-completion");
+  assert.ok(receipt);
+  assert.notEqual(receipt.id, "legacy-receipt", "native v1 migration assigns new entry IDs");
+  migrated.appendMessage({ role: "user", content: "after migration", timestamp: 3 });
+  const after = fs.statSync(h.file, { bigint: true });
+  assert.ok(after.size > warmed.size, "the native rewrite plus append grew the warmed journal");
+  t.diagnostic(`native migration replaced inode: ${after.ino !== warmed.ino}`);
+  assert.ok(
+    fs
+      .readFileSync(h.file, "utf8")
+      .split("\n")
+      .slice(0, -1)
+      .some((line) => record(JSON.parse(line)).id === receipt.id),
+    "the migrated ID is physically LF-published",
+  );
+  assert.equal(published(h.context, h.launch), receipt.id, "native memory is still stale");
+  assert.ok(h.manager.getEntry(before), "the former receipt remains in the old manager");
+});
+
+test("native receipt reconciliation reads only the published suffix after ordinary appends", async (t) => {
+  const h = await fixture(t, "x".repeat(1024 * 1024));
+  const receipt = h.manager.appendCustomMessageEntry("agent-completion", "done", false, {
+    owner: h.launch.owner,
+    id: h.launch.id,
+    completed: true,
+  });
+  assert.equal(published(h.context, h.launch), receipt);
+  for (let i = 0; i < 3; i++) {
+    const before = fs.statSync(h.file).size;
+    const launch = { ...h.launch, id: `run-${i}` };
+    const appended = h.manager.appendCustomMessageEntry("agent-completion", "later", false, {
+      owner: launch.owner,
+      id: launch.id,
+      completed: true,
+    });
+    const suffix = fs.statSync(h.file).size - before;
+    const reads = spy(fs, "readSync");
+    syncBuiltinESMExports();
+    try {
+      assert.equal(published(h.context, launch), appended, "the new physical receipt is indexed");
+      assert.equal(published(h.context, h.launch), receipt);
+      const bytes = reads.getCalls().reduce((total, call) => total + call.returnValue, 0);
+      t.diagnostic(`native receipt append: ${suffix} bytes; readSync: ${bytes} bytes`);
+      assert.ok(bytes <= suffix + 4096, `native append of ${suffix} bytes reread ${bytes} bytes`);
+    } finally {
+      reads.restore();
+      syncBuiltinESMExports();
+    }
+  }
 });
 
 test("native recovery publishes a completion backlog chronologically once, then polls history without rereads", async (t) => {

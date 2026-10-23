@@ -84,8 +84,20 @@ Children and print/RPC sessions do not install the watcher.
   with the parent's inference; there is no implicit daily spend limit.
 - Completed answers and inbound messages can enlarge later prompts. Passive
   messages and out-of-band `last` reads do not request model inference.
-- Owner recovery must verify journal publication and process identity. Stat-only
-  caches, elapsed time, and mere queue admission cannot replace those checks.
+- Owner recovery must verify journal publication and process identity. Elapsed
+  time and mere queue admission cannot replace those checks. Parent receipt and
+  finalized-usage indexes parse physical LF-published bytes. For native v3
+  journals, same-inode growth follows the native append-only writer contract and
+  reads from the previous LF boundary; it does not revalidate old bytes. An outside
+  edit to old bytes followed by an append on the same inode between observations
+  is outside that contract. Changed-stamp same-size edits, shrink, inode replacement,
+  and legacy/unclassified headers rebuild the index. Failed scans discard cached
+  state. Native load-time migration is covered separately: official Pi 1.4.0
+  rewrites in place, whereas fork core `7bc005fa` replaces the inode atomically.
+  Published persistent parent usage uses the physical journal, not a full
+  native-memory walk. In-memory, not-yet-flushed, and non-persistent sessions with
+  a source journal still include native entries. Preparing or discarding a result
+  never mutates the published-usage cache.
 - Paged output bounds each response, not all storage or history work. Keep the
   returned cursor/offset when reading large responses rather than assuming a
   preview is the full result.
