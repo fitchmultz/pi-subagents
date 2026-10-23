@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Restore native Android/Termux source builds and typechecking with installed Android `tsgo`, place shared sockets under the writable Termux prefix, and publish exclusive records atomically without hard links when Android denies them. Preserve no-clobber claims, private complete records, existing macOS/Linux namespaces, and native continuation/stop/recovery contracts.
 - Stop reparsing unchanged completed child results and searching historical receipts on every completion poll. Keep physical journal validation, chronological delivery and pending-accounting repair.
 - Preserve native Markdown formatting in collapsed message cards, including legacy human relays, and show clickable expansion hints only when content is hidden.
 - Skip provably reused child and native-shell PIDs during Stop, continuation and parent shutdown, including unrelated non-group-leaders. Keep genuine identity uncertainty visible and verified orphan cleanup intact; timezone differences alone never prove replacement.

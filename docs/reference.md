@@ -226,6 +226,16 @@ committed npm lockfile. The build publishes a complete staged `dist/`; failed
 compilation does not destroy the previous working tree. Do not rebuild a checkout
 while active sessions load its files.
 
+On native Android, source installation and verification require an Android build
+of `tsgo` on PATH. The prebuilt npm installation needs no compiler. See
+[Android development](development.md#native-androidtermux).
+
+Where the filesystem denies hard links, exclusive saved-run records are atomic
+relative symlinks to complete, private `.data` files beside them. Keep the entire
+run directory, including those backing files and relative links, when backing up
+or moving saved state; they are not disposable staging files. Existing regular
+records remain readable and are never replaced by a competing exclusive writer.
+
 Finish in-flight work before migrating from the old workflow engine. Preserve the
 prior package, native sessions, and durable state for rollback. Old profile files
 are left untouched but no longer configure delegation. Chain/fanout orchestration,

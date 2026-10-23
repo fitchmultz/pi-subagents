@@ -3183,7 +3183,7 @@ try {
         ) {
           assert.equal(heldStop, undefined, "one actual Stop publication is held");
           heldStop = { file: path.join(runDir(id), "unpublished-stop.json"), destination };
-          return link(source, heldStop.file);
+          return fs.renameSync(source, heldStop.file);
         }
         return link(source, destination);
       };
@@ -3221,8 +3221,7 @@ try {
         path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`),
       );
       // Publish the exact tool-produced record only after the predecessor cannot read it.
-      fs.linkSync(heldStop.file, heldStop.destination);
-      fs.unlinkSync(heldStop.file);
+      fs.renameSync(heldStop.file, heldStop.destination);
       assert.deepEqual(fs.readFileSync(heldStop.destination), heldBytes);
       assert.equal(
         readJSON(path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`))

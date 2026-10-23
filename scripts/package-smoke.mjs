@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostRoot } from "./compat-host.mjs";
 
@@ -143,7 +143,14 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
       process.execPath,
       [fileURLToPath(new URL("./native-package-smoke.mjs", import.meta.url)), packageRoot],
       root,
-      { ...process.env, PI_PACKAGE_DIR: hostRoot, PATH: "/usr/bin:/bin" },
+      {
+        ...process.env,
+        PI_PACKAGE_DIR: hostRoot,
+        PATH:
+          process.platform === "android"
+            ? `${dirname(process.execPath)}:/system/bin`
+            : "/usr/bin:/bin",
+      },
     ),
   );
 }

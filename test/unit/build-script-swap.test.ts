@@ -45,7 +45,7 @@ async function runBuild(
   return await new Promise((done) => {
     execFileCallback(
       process.execPath,
-      [...nodeArgs, buildScript],
+      [...nodeArgs, buildScript, join(cwd, "node_modules", "typescript", "bin", "tsc")],
       {
         cwd,
         env: { ...process.env, ...env },
@@ -112,6 +112,34 @@ test("build.mjs: loaded provenance fingerprints emitted code and stays fixed unt
     const next = json(fresh.stdout);
     assert.equal(next.version, "2.0.0");
     assert.notEqual(next.sha256, loaded.sha256);
+  }));
+
+test("build.mjs: Android uses a native tsgo on PATH without an npm platform compiler", () =>
+  withFixture(async (dir) => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "tsgo"),
+      `#!${process.execPath}\nprocess.env.TSC_STUB_MARKER = "native Android compiler";\nawait import(${JSON.stringify(pathToFileURL(tscStub).href)});\n`,
+      { mode: 0o700 },
+    );
+    const platform = join(dir, "android.mjs");
+    writeFileSync(platform, 'Object.defineProperty(process, "platform", { value: "android" });\n');
+    rmSync(join(dir, "node_modules"), { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      ["--import", pathToFileURL(platform).href, buildScript],
+      {
+        cwd: dir,
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(join(dir, "dist/index.js"), "utf8"),
+      'export const built = "native Android compiler";\n',
+    );
   }));
 
 test("build.mjs: failed compile preserves the previous dist and cleans staging", () =>

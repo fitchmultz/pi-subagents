@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 
 // ponytail: integration is sized for the 3-vCPU macOS hosted runner, where the suite takes
@@ -91,7 +91,9 @@ function sanitizedEnv() {
 function runNodeTest(label, files, timeoutMs, concurrency) {
   const args = [...(concurrency ? [`--test-concurrency=${concurrency}`] : []), "--test", ...files];
   const startedAt = Date.now();
-  const tempRoot = mkdtempSync(join("/tmp", "pi-subagents-test-"));
+  const tempRoot = mkdtempSync(
+    join(process.platform === "android" ? tmpdir() : "/tmp", "pi-subagents-test-"),
+  );
   const env = sanitizedEnv();
   env.PI_SUBAGENT_TEMP_ROOT = tempRoot;
   env.PI_INTERCOM_RUNTIME_DIR = join(tempRoot, "ic");

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Purpose: Build generated dist output for GitHub/source installs even when Pi invokes npm install --omit=dev.
- * Responsibilities: Build with the local compiler when present; otherwise install only the pinned
+ * Responsibilities: Build with native Android tsgo or the local compiler; otherwise install only the pinned
  * `typescript` into a throwaway prefix, build with it, and delete the prefix. Emit needs no type
  * information (tsconfig.build.json sets noCheck), so the Pi host graph is never installed here.
  * Scope: Package install lifecycle only; runtime behavior remains owned by scripts/build.mjs.
@@ -46,7 +46,7 @@ async function runNode(args) {
 }
 
 async function main() {
-  if (existsSync(tscBin(cwd))) {
+  if (process.platform === "android" || existsSync(tscBin(cwd))) {
     await runNode([buildScript]);
     return;
   }
