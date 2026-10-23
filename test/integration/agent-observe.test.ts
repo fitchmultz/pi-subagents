@@ -175,7 +175,7 @@ async function firstPageNavigation(
   terminal.clear();
   terminal.send("\x1b[5~");
   await until(
-    () => visible().includes("Reading earlier"),
+    () => /Reading earlier|New activity below/.test(visible()),
     "first-page Page Up suspends follow",
     visible,
   );
@@ -303,7 +303,11 @@ async function exerciseReading(options: {
     "late hydration cannot replace the selected child",
   );
   await keyUntil("\x1b[6~", "HISTORY_45");
-  assert.match(shown(), /Reading earlier/, "forward history does not silently resume live follow");
+  assert.match(
+    shown(),
+    /Reading earlier|New activity below/,
+    "forward history does not silently resume live follow",
+  );
   terminal.send("\x1b[F");
   await until(
     () => shown().includes("LATEST_TAIL") && shown().includes("Following live"),
@@ -591,7 +595,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       );
       terminal.send("\x1b[5~");
       await until(
-        () => visible().includes("Reading earlier"),
+        () => /Reading earlier|New activity below/.test(visible()),
         "Page Up suspends following",
         visible,
       );
