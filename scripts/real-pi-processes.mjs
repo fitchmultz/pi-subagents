@@ -123,7 +123,12 @@ export class SmokeProcesses {
       child.stdin.on("error", () => {
         // A command may exit without reading RPC input; execFile reports its exit failure.
       });
-      child.stdin.end(input);
+      // A function input owns a persistent RPC stdin and closes it to request orderly shutdown.
+      if (typeof input === "function") {
+        input(child);
+      } else {
+        child.stdin.end(input);
+      }
     });
   }
 
