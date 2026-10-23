@@ -121,8 +121,9 @@ not an end-to-end exactly-once guarantee for arbitrary tool side effects.
 Idle recovery preserves admission order within the non-passive backlog and wakes
 once on its last item; passive breadcrumbs are appended before that waking work.
 The first eligible ask remains the implicit reply target, independently of which
-message triggers the turn. Bursts of correlated asks share one bounded handoff
-probe rather than retaining one event listener per message.
+message triggers the turn. A busy recipient's steer is handed to Pi's native
+queue and consumed at its next tool boundary; no extension probe asks another
+tool to give up the turn.
 
 Shutdown joins admitted inbound work before detaching its native owner. Stale
 runtime generations must not checkpoint or deliver into a replacement session.
