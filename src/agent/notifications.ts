@@ -6,7 +6,7 @@ import { readOutputPage } from "../shared/output-page.ts";
 import { journalStamp } from "../shared/native-journal.ts";
 import type { Launch, Result } from "./contracts.ts";
 import { launchAt, list, runDirectory } from "./storage.ts";
-import { readResult } from "./usage.ts";
+import { readCanonicalResult, readResult } from "./usage.ts";
 
 function queuedAdmissions(): Set<string> {
   const store = globalThis as Record<string, unknown>;
@@ -103,13 +103,19 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     },
   };
 }
+interface PendingJournal {
+  readonly file: string;
+  readonly stamp: string | undefined;
+}
 interface Loaded {
   readonly launch: Launch;
   readonly result: Result | undefined;
+  readonly journal?: PendingJournal;
 }
 interface Settled {
   readonly launch: string;
   readonly result: string;
+  readonly pending?: Loaded;
   readonly endedAt: number;
   readonly createdAt: number;
 }
@@ -125,43 +131,79 @@ function stamp(file: string): string | undefined {
   const stat = fs.statSync(file, { bigint: true, throwIfNoEntry: false });
   return stat === undefined ? undefined : journalStamp(stat);
 }
+function pendingJournal(file: string): PendingJournal | undefined {
+  try {
+    return { file, stamp: stamp(file) };
+  } catch {
+    // Unavailable metadata cannot validate a cached attempt or hide execution.
+    return undefined;
+  }
+}
+function unchangedPending(pending: Loaded | undefined): boolean {
+  if (pending === undefined) {
+    return true;
+  }
+  const journal = pending.journal;
+  if (journal === undefined) {
+    return false;
+  }
+  const current = pendingJournal(journal.file);
+  return current !== undefined && current.stamp === journal.stamp;
+}
 function load(base: string, id: string, owner: string): Loaded {
   const launch = launchAt(base, id, owner);
-  return { launch, result: readResult(base, launch) };
+  const result = readCanonicalResult(base, launch);
+  if (result?.accountingPending === undefined) {
+    return { launch, result };
+  }
+  // Capture before the read: a concurrent publication must invalidate the next scan.
+  const journal = pendingJournal(launch.sessionFile);
+  return { launch, result: readResult(base, launch), journal };
+}
+function cacheableResult(loaded: Loaded): boolean {
+  return loaded.result?.accountingPending === undefined || loaded.journal !== undefined;
 }
 interface Scan {
   readonly base: string;
   readonly owner: string;
-  readonly known: ReadonlyMap<string, Settled> | undefined;
+  readonly known: ReadonlyMap<string, Settled>;
   readonly settled: Map<string, Settled>;
 }
 function completedRun({ base, owner, known, settled }: Scan, id: string): Completed | undefined {
   const directory = runDirectory(base, id);
   const launch = stamp(path.join(directory, "launch.json"));
   const result = stamp(path.join(directory, "result.json"));
-  const prior = known?.get(id);
-  if (prior !== undefined && prior.launch === launch && prior.result === result) {
+  const prior = known.get(id);
+  if (
+    prior !== undefined &&
+    prior.launch === launch &&
+    prior.result === result &&
+    unchangedPending(prior.pending)
+  ) {
     settled.set(id, prior);
-    return { id, ...prior };
+    return { id, ...prior, loaded: prior.pending };
   }
   const loaded = load(base, id, owner);
   if (loaded.result === undefined) {
     return;
   }
   const order = { endedAt: loaded.result.endedAt, createdAt: loaded.launch.createdAt };
-  // Pending accounting is retried every scan, even after the completion receipt.
-  if (
-    loaded.result.accountingPending === undefined &&
-    launch !== undefined &&
-    result !== undefined
-  ) {
-    settled.set(id, { launch, result, ...order });
+  // Pending accounting retries on child changes, even after the completion receipt.
+  // Ordinary settled history retains its launch/result-only idle probes.
+  const pending = loaded.result.accountingPending === undefined ? undefined : loaded;
+  if (launch !== undefined && result !== undefined && cacheableResult(loaded)) {
+    settled.set(id, { launch, result, pending, ...order });
   }
   return { id, ...order, loaded };
 }
 function completed(base: string, owner: string): Completed[] {
   const key = JSON.stringify([base, owner]);
-  const scan = { base, owner, known: settledRuns.get(key), settled: new Map<string, Settled>() };
+  const scan = {
+    base,
+    owner,
+    known: settledRuns.get(key) ?? new Map<string, Settled>(),
+    settled: new Map<string, Settled>(),
+  };
   const runs = list(base).flatMap((id) => completedRun(scan, id) ?? []);
   settledRuns.delete(key);
   settledRuns.set(key, scan.settled);

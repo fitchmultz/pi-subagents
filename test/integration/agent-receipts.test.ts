@@ -126,12 +126,13 @@ test("physical parent receipt authority follows LF, prefix replacement, inode, s
 test("native recovery publishes a completion backlog chronologically once, then polls history without rereads", async (t) => {
   const h = await fixture(t);
   const base = path.join(path.dirname(h.file), "runs");
-  const child = path.join(base, "child.jsonl");
-  fs.mkdirSync(base, { recursive: true });
-  fs.writeFileSync(
-    child,
-    `${JSON.stringify({ type: "session", id: "child" })}\n${JSON.stringify({ type: "custom", id: "terminal", customType: "fixture", data: {} })}`,
-  );
+  const childOwner = await fixture(t);
+  const child = childOwner.file;
+  childOwner.manager.appendCustomEntry("pending-padding", "x".repeat(1_048_576));
+  const baseline = childOwner.manager.getEntries().map((entry) => entry.id);
+  const terminal = childOwner.manager.appendCustomEntry("fixture", {});
+  // Fault-inject only the publication boundary of an otherwise native-written journal.
+  fs.truncateSync(child, fs.statSync(child).size - 1);
   for (const [id, endedAt] of [
     ["z-original", 10],
     ["a-continuation", 20],
@@ -142,6 +143,7 @@ test("native recovery publishes a completion backlog chronologically once, then 
       rootId: "z-original",
       createdAt: endedAt - 1,
       sessionFile: child,
+      sessionId: childOwner.manager.getSessionId(),
     };
     write(path.join(base, id, "launch.json"), launch);
     write(path.join(base, id, "result.json"), {
@@ -170,6 +172,7 @@ test("native recovery publishes a completion backlog chronologically once, then 
   assert.deepEqual(scan(), [], "settled history is observed after native publication");
   const opened = spy(fs, "openSync");
   const reads = spy(fs, "readSync");
+  const stats = spy(fs, "statSync");
   syncBuiltinESMExports();
   try {
     for (let i = 0; i < 10; i++) {
@@ -177,9 +180,15 @@ test("native recovery publishes a completion backlog chronologically once, then 
     }
     assert.equal(opened.callCount, 0, "unchanged delivered history opens no run or journal file");
     assert.equal(reads.callCount, 0, "unchanged delivered history reads no bytes");
+    assert.equal(
+      stats.getCalls().filter((call) => call.args[0] === child).length,
+      0,
+      "ordinary settled history does not stat its child journal",
+    );
   } finally {
     opened.restore();
     reads.restore();
+    stats.restore();
     syncBuiltinESMExports();
   }
 
@@ -203,21 +212,164 @@ test("native recovery publishes a completion backlog chronologically once, then 
     owner: h.launch.owner,
     status: "completed",
     endedAt: 20,
-    accountingPending: { terminalCandidate: "terminal", baseline: [] },
+    accountingPending: { terminalCandidate: terminal, baseline },
   });
   assert.deepEqual(scan(), [], "the completion receipt still suppresses a second notice");
   assert.deepEqual(scan(), []);
-  assert.ok("accountingPending" in record(JSON.parse(fs.readFileSync(resultFile, "utf8"))));
+  const pendingResult = fs.readFileSync(resultFile, "utf8");
+  assert.ok("accountingPending" in record(JSON.parse(pendingResult)));
+  assert.equal(record(JSON.parse(pendingResult)).status, "completed");
+  assert.equal(
+    fs.readFileSync(path.join(base, "a-continuation", "output.txt"), "utf8"),
+    "Result a-continuation",
+  );
+  const parentEntries = h.manager.getEntries().length;
+  const pendingOpens = spy(fs, "openSync");
+  const pendingReads = spy(fs, "readSync");
+  syncBuiltinESMExports();
+  try {
+    for (let i = 0; i < 25; i++) {
+      assert.deepEqual(scan(), []);
+    }
+    t.diagnostic(
+      `unchanged pending polling: ${pendingOpens.callCount} opens, ${pendingReads.returnValues.reduce((total, bytes) => total + bytes, 0)} bytes`,
+    );
+    assert.equal(pendingReads.callCount, 0, "unchanged pending accounting reads no bytes");
+    assert.equal(pendingOpens.callCount, 0, "unchanged pending accounting opens no files");
+  } finally {
+    pendingOpens.restore();
+    pendingReads.restore();
+    syncBuiltinESMExports();
+  }
+  const publishedJournal = fs.readFileSync(h.file, "utf8");
+  const pendingReceipt = publishedJournal.indexOf('"customType":"agent-completion"');
+  const withoutReceipts = publishedJournal.slice(
+    0,
+    publishedJournal.lastIndexOf("\n", pendingReceipt) + 1,
+  );
+  fs.writeFileSync(h.file, withoutReceipts);
+  assert.deepEqual(
+    scan().map((notice) => notice.id),
+    ["z-original", "a-continuation"],
+  );
+  const unreceivedOpens = spy(fs, "openSync");
+  syncBuiltinESMExports();
+  try {
+    for (let i = 0; i < 5; i++) {
+      const notices = scan();
+      assert.deepEqual(
+        notices.map((notice) => notice.id),
+        ["z-original", "a-continuation"],
+      );
+      const pendingNotice = notices.find((notice) => notice.id === "a-continuation");
+      const content = pendingNotice?.message.content;
+      assert.ok(typeof content === "string");
+      assert.match(content, /completed\. \nResult a-continuation/);
+      const result = record(record(pendingNotice?.message.details).result);
+      assert.deepEqual(result, record(JSON.parse(pendingResult)));
+    }
+    assert.equal(
+      unreceivedOpens.getCalls().filter((call) => call.args[0] === child).length,
+      0,
+      "unchanged pending accounting without a receipt reuses its canonical snapshot",
+    );
+  } finally {
+    unreceivedOpens.restore();
+    syncBuiltinESMExports();
+  }
+  fs.writeFileSync(h.file, publishedJournal);
+  assert.deepEqual(scan(), [], "restoring physical receipts suppresses notices again");
+
+  function assertPendingRetry(reason: string, file = child) {
+    const childOpens = spy(fs, "openSync");
+    syncBuiltinESMExports();
+    try {
+      assert.deepEqual(scan(), [], "published completion never notifies again during repair");
+      assert.ok(
+        childOpens.getCalls().some((call) => call.args[0] === file),
+        reason,
+      );
+      assert.ok("accountingPending" in record(JSON.parse(fs.readFileSync(resultFile, "utf8"))));
+    } finally {
+      childOpens.restore();
+      syncBuiltinESMExports();
+    }
+  }
+  const unpublished = fs.readFileSync(child, "utf8");
+  const childStat = fs.statSync(child);
+  fs.writeFileSync(child, unpublished.replace('"type":"session"', '"type":"sessioN"'));
+  fs.utimesSync(child, childStat.atime, childStat.mtime);
+  assertPendingRetry("same-size restored-mtime edits retry pending accounting");
+  fs.writeFileSync(child + ".replacement", unpublished);
+  fs.renameSync(child + ".replacement", child);
+  assertPendingRetry("replacement inode retries pending accounting");
+  fs.truncateSync(child, unpublished.lastIndexOf("\n") + 1);
+  assertPendingRetry("truncation retries, but an absent terminal remains pending");
+  SessionManager.open(child).appendCustomEntry("native-publication", {});
+  assertPendingRetry("native publication retries even while the saved terminal remains absent");
+  fs.renameSync(child, child + ".retained");
+  assert.deepEqual(scan(), [], "missing billing journal does not hide canonical execution");
+  assert.deepEqual(scan(), [], "known absence remains a valid pending dependency");
+  fs.renameSync(child + ".retained", child);
+  const failedStat = stub(fs, "statSync").callThrough();
+  failedStat.withArgs(child).throws(new Error("Injected child metadata failure"));
+  syncBuiltinESMExports();
+  try {
+    assertPendingRetry("failed metadata invalidates cached absence without hiding execution");
+    assertPendingRetry("failed metadata cannot cache an unvalidated pending attempt");
+  } finally {
+    failedStat.restore();
+    syncBuiltinESMExports();
+  }
+  assertPendingRetry("restoring a missing child journal retries accounting");
+  const alternate = child + ".alternate";
+  fs.copyFileSync(child, alternate);
+  write(launchFile, { ...record(JSON.parse(savedLaunch)), sessionFile: alternate });
+  assertPendingRetry("launch changes retry the selected child, not the cached path", alternate);
+  fs.writeFileSync(launchFile, savedLaunch);
+  assertPendingRetry("restored launch metadata is revalidated");
+  write(resultFile, {
+    ...record(JSON.parse(pendingResult)),
+    accountingPending: { terminalCandidate: "not-yet-native", baseline: [] },
+  });
+  assertPendingRetry("result changes retry pending accounting without a child change");
+  fs.writeFileSync(resultFile, pendingResult);
+  assertPendingRetry("restored result metadata is revalidated");
+  fs.writeFileSync(child, unpublished);
+  assertPendingRetry("a restored valid terminal without LF is still unpublished");
   fs.appendFileSync(child, "\n");
   assert.deepEqual(scan(), []);
   const repaired = record(JSON.parse(fs.readFileSync(resultFile, "utf8")));
   assert.equal("accountingPending" in repaired, false, "repair retries after the receipt");
-  assert.equal(repaired.terminalEntryId, "terminal");
+  assert.equal(repaired.terminalEntryId, terminal);
   assert.deepEqual(repaired.contributions, []);
+  assert.equal(repaired.status, "completed");
+  assert.equal(repaired.endedAt, 20);
+  assert.equal(
+    fs.readFileSync(path.join(base, "a-continuation", "output.txt"), "utf8"),
+    "Result a-continuation",
+  );
+  assert.equal(
+    h.manager.getEntries().length,
+    parentEntries,
+    "billing retries publish no messages or model turns",
+  );
+  assert.deepEqual(scan(), [], "the repaired result enters ordinary settled history");
+  const settledChildStats = spy(fs, "statSync");
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(scan(), []);
+    assert.equal(
+      settledChildStats.getCalls().filter((call) => call.args[0] === child).length,
+      0,
+      "repaired history stops polling child metadata",
+    );
+  } finally {
+    settledChildStats.restore();
+    syncBuiltinESMExports();
+  }
 
-  const journal = fs.readFileSync(h.file, "utf8");
-  const firstReceipt = journal.indexOf('"customType":"agent-completion"');
-  fs.writeFileSync(h.file, journal.slice(0, journal.lastIndexOf("\n", firstReceipt) + 1));
+  fs.writeFileSync(h.file, withoutReceipts);
   assert.deepEqual(
     scan().map((notice) => notice.id),
     ["z-original", "a-continuation"],
