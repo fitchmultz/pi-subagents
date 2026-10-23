@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import {
   cpSync,
   existsSync,
@@ -100,7 +99,6 @@ function installProduction(pack) {
 
 async function verifyRuntime(packageRoot) {
   verifyManifest(JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")));
-  const hostRequire = createRequire(join(hostRoot, "dist/index.js"));
   const sdk = await import(pathToFileURL(join(hostRoot, "dist/index.js")).href);
   const nativeHost = await import(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href);
   assert.equal(
@@ -108,11 +106,28 @@ async function verifyRuntime(packageRoot) {
     sdk,
     "actor must use the exact selected host SDK",
   );
-  const hostTypebox = await import(pathToFileURL(hostRequire.resolve("typebox")).href);
-  const nativeTypebox = await import(
-    pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href
+  run(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+const require = createRequire(${JSON.stringify(join(hostRoot, "dist/index.js"))});
+const hostTypebox = await import(pathToFileURL(require.resolve("typebox")).href);
+const hostValue = await import(pathToFileURL(require.resolve("typebox/value")).href);
+const native = await import(${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href)});
+assert.equal(native.Type, hostTypebox.Type, "detached schemas use the selected host");
+assert.equal(native.Assert, hostValue.Assert, "detached validation uses the selected host");`,
+    ],
+    root,
+    {
+      ...process.env,
+      PI_INTERCOM_ROOT_SESSION_ID: "package-smoke",
+      PI_INTERCOM_PARENT_SESSION_ID: "package-smoke",
+    },
   );
-  assert.equal(nativeTypebox.Type, hostTypebox.Type, "shared schemas use the selected host");
   const broker = await import(
     pathToFileURL(join(packageRoot, "dist/pi-intercom/broker/spawn.js")).href
   );
