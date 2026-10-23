@@ -40,6 +40,9 @@ fs.writeFileSync(
     compaction: { enabled: false },
   }),
 );
+if (phase.startsWith("command-polling")) {
+  process.env.SINGLE_AGENT_COMMAND_IO = "1";
+}
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const aiRoot = path.dirname(
   findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))),
@@ -426,6 +429,181 @@ try {
     } finally {
       fs.writeFileSync(launchFile, originalLaunch);
     }
+  } else if (phase === "command-polling") {
+    const first = await call(
+      "delegate",
+      { prompt: "POLL_LITERAL", model: "single-agent-fixture/literal-model", async: false },
+      "polling-launch",
+    );
+    const id = first.details.id;
+    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:POLL_LITERAL");
+    const directory = runDir(id);
+    const base = path.dirname(directory);
+    const launch = readJSON(path.join(directory, "launch.json"));
+    const { enqueue, write } = await import(
+      pathToFileURL(path.join(repo, "dist/agent/storage.js"))
+    );
+    const ids = Array.from({ length: 8 }, () =>
+      enqueue(base, launch, "steer", { prompt: "x".repeat(4096) }),
+    );
+    const receipts = ids.map((command) => path.join(directory, "admissions", `${command}.json`));
+    await until(
+      () => receipts.every((file) => fs.existsSync(file)),
+      "all eight native stale admissions published",
+    );
+    assert.ok(receipts.every((file) => readJSON(file).state === "stale"));
+    const frozen = receipts.map((file) => fs.readFileSync(file));
+    const polls = () =>
+      fs
+        .readFileSync(path.join(root, "command-polls.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+    const start = polls().length;
+    await until(() => polls().length >= start + 9, "nine actual later command polls complete");
+    const measured = polls()
+      .slice(start, start + 9)
+      .flatMap((poll) => poll.reads)
+      .filter((read) => ids.some((command) => read.file === `${command}.json`));
+    const counters = measured.reduce(
+      (sum, read) => ({ opens: sum.opens + read.opens, bytes: sum.bytes + read.bytes }),
+      { opens: 0, bytes: 0 },
+    );
+    console.log("post-admission command I/O:", JSON.stringify(counters));
+    assert.deepEqual(counters, { opens: 0, bytes: 0 });
+    receipts.forEach((file, index) => assert.deepEqual(fs.readFileSync(file), frozen[index]));
+    assert.deepEqual(
+      requests().map((request) => request.prompt),
+      ["POLL_LITERAL"],
+    );
+    assert.equal(
+      fs.readFileSync(path.join(directory, "output.txt"), "utf8"),
+      "CHILD_LITERAL_RESULT:POLL_LITERAL",
+    );
+    // Same-actor receipt loss must resume validation without reapplying a started command.
+    const changed = path.join(directory, "commands", `${ids[0]}.json`);
+    const fileReads = (from, file, pid) =>
+      polls()
+        .slice(from)
+        .filter((poll) => pid === undefined || poll.pid === pid)
+        .flatMap((poll) => poll.reads)
+        .filter((read) => read.file === path.basename(file));
+    let from = polls().length;
+    fs.unlinkSync(receipts[0]);
+    await until(
+      () => fileReads(from, changed).length >= 2,
+      "missing receipt resumes body reads on later polls",
+    );
+    assert.equal(fs.existsSync(receipts[0]), false, "started set still suppresses readmission");
+    fs.writeFileSync(receipts[0], frozen[0]);
+    const pid = requests()[0].pid;
+    const mutate = async (change) => {
+      process.kill(pid, "SIGSTOP");
+      await until(
+        () =>
+          spawnSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" })
+            .stdout.trim()
+            .startsWith("T"),
+        "native process is actually stopped before in-place mutation",
+      );
+      from = polls().length;
+      try {
+        change();
+      } finally {
+        process.kill(pid, "SIGCONT");
+      }
+      await until(
+        () => fileReads(from, changed).some((read) => read.bytes > 0),
+        "changed admitted body is revalidated",
+      );
+      const next = polls().length;
+      await until(
+        () => polls().length >= next + 2,
+        "two subsequent scans witness unchanged replacement",
+      );
+      assert.deepEqual(
+        fileReads(next, changed),
+        [],
+        "revalidated admitted body becomes skippable again",
+      );
+    };
+    const original = readJSON(changed);
+    const fixedTime = 1_700_000_000;
+    await mutate(() => {
+      write(changed, { ...original, prompt: "y".repeat(4096) });
+      fs.utimesSync(changed, fixedTime, fixedTime);
+    });
+    await mutate(() => {
+      const stat = fs.statSync(changed, { bigint: true });
+      fs.writeFileSync(changed, JSON.stringify({ ...original, prompt: "z".repeat(4096) }) + "\n");
+      fs.utimesSync(changed, fixedTime, fixedTime);
+      const after = fs.statSync(changed, { bigint: true });
+      assert.equal(after.ino, stat.ino, "in-place edit retains inode");
+      assert.equal(after.size, stat.size);
+      assert.equal(after.mtimeNs, stat.mtimeNs, "cached nanosecond mtime is exactly restored");
+      assert.notEqual(after.ctimeNs, stat.ctimeNs, "ctime alone invalidates this edit");
+    });
+    await mutate(() => write(changed, { ...original, prompt: "short" }));
+    await mutate(() => write(changed, { ...original, prompt: "long".repeat(4096) }));
+    // A filename is not command identity: a changed body ID requires its own admission.
+    const replacementId = (ids[0][0] === "a" ? "b" : "a") + ids[0].slice(1);
+    assert.notEqual(replacementId, ids[0]);
+    await mutate(() => write(changed, { ...original, id: replacementId }));
+    assert.equal(
+      readJSON(path.join(directory, "admissions", `${replacementId}.json`)).state,
+      "stale",
+    );
+
+    // Real actor replacement starts with no validation metadata. A lost steer receipt is
+    // readmitted stale; the unadmitted predecessor run stays suppressed by its successor.
+    const actor = readJSON(path.join(directory, "actor.lock/process.json"));
+    process.kill(pid, "SIGKILL");
+    await until(
+      () => fs.existsSync(path.join(directory, `exit-${actor.token}.json`)),
+      "native launcher witnesses actor death",
+    );
+    fs.unlinkSync(receipts[1]);
+    fs.unlinkSync(path.join(directory, "admissions", `${id}.json`));
+    from = polls().length;
+    const cold = await call(
+      "agent_runs",
+      { action: "continue", id, prompt: "POLL_COLD_LITERAL", async: false },
+      "polling-cold",
+    );
+    assert.equal(cold.details.output.text, "CHILD_LITERAL_RESULT:POLL_COLD_LITERAL");
+    const coldPid = requests().at(-1).pid;
+    assert.notEqual(coldPid, pid);
+    await until(
+      () =>
+        ids.every(
+          (command) =>
+            fileReads(from, path.join(directory, "commands", `${command}.json`), coldPid).length >
+            0,
+        ),
+      "cold actor validates every retained body before skipping",
+    );
+    assert.equal(readJSON(receipts[1]).state, "stale");
+    assert.equal(
+      fs.existsSync(path.join(directory, "admissions", `${id}.json`)),
+      false,
+      "successor suppresses predecessor without inventing admission",
+    );
+    assert.deepEqual(
+      requests().map((request) => request.prompt),
+      ["POLL_LITERAL", "POLL_COLD_LITERAL"],
+    );
+    assert.equal(
+      fs.readFileSync(path.join(directory, "output.txt"), "utf8"),
+      "CHILD_LITERAL_RESULT:POLL_LITERAL",
+    );
+    // Even a retained admitted file must still fail validation when its body changes.
+    const coldActor = readJSON(path.join(directory, "actor.lock/process.json"));
+    write(changed, { ...original, action: "invalid-action" });
+    await until(
+      () => fs.existsSync(path.join(directory, `exit-${coldActor.token}.json`)),
+      "schema-invalid admitted replacement fails the real actor",
+    );
+    assert.equal(readJSON(path.join(directory, `exit-${coldActor.token}.json`)).code, 1);
   } else if (phase === "inventory") {
     const saved = [];
     for (let index = 0; index < 51; index++) {

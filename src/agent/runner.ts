@@ -15,12 +15,23 @@ import {
   type Launch,
   type Result,
 } from "./contracts.ts";
-import { launchAt, read, runDirectory, write } from "./storage.ts";
+import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
 import { alive, ownIdentity, published, shellCommand, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
 
+function commandIdentity(file: string): string | undefined {
+  try {
+    const stat = fs.statSync(file, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch (error) {
+    if (missing(error)) {
+      return;
+    }
+    throw error;
+  }
+}
 function completionStatus(
   stopping: boolean,
   message: AssistantMessage | undefined,
@@ -61,6 +72,8 @@ class Actor {
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
+  // Actor-local validation metadata only; never retain command prompts or receipt authority.
+  private readonly validated = new Map<string, { identity: string; id: string }>();
   private session?: AgentSession;
   private context?: { pi: ExtensionAPI; ctx: ExtensionContext };
   private readonly base: string;
@@ -332,6 +345,24 @@ class Actor {
       timestamp: Date.now(),
     });
   }
+  private pendingCommand(file: string): Command | undefined {
+    const identity = commandIdentity(file);
+    const cached = this.validated.get(file);
+    if (
+      identity !== undefined &&
+      cached?.identity === identity &&
+      fs.existsSync(path.join(this.dir, "admissions", `${cached.id}.json`))
+    ) {
+      return;
+    }
+    this.validated.delete(file);
+    const command = read(file, commandSchema);
+    // A replacement during validation must not inherit the old body's validated identity.
+    if (command && identity !== undefined && commandIdentity(file) === identity) {
+      this.validated.set(file, { identity, id: command.id });
+    }
+    return command;
+  }
   private pending(): Command[] {
     const dir = path.join(this.dir, "commands");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -339,7 +370,7 @@ class Actor {
       .readdirSync(dir)
       .filter((file) => file.endsWith(".json"))
       .flatMap((file) => {
-        const command = read(path.join(dir, file), commandSchema);
+        const command = this.pendingCommand(path.join(dir, file));
         return command ? [command] : [];
       })
       .sort((a, b) => a.createdAt - b.createdAt);
