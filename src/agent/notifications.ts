@@ -156,7 +156,8 @@ function load(base: string, id: string, owner: string): Loaded {
   if (result?.accountingPending === undefined) {
     return { launch, result };
   }
-  // Capture before the read: a concurrent publication must invalidate the next scan.
+  // Only pending runs need this pre-read stamp to observe concurrent publication.
+  // readResult revalidates canonical state afterward: a miss intentionally reads result.json twice.
   const journal = pendingJournal(launch.sessionFile);
   return { launch, result: readResult(base, launch), journal };
 }
