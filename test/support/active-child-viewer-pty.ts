@@ -166,7 +166,9 @@ class Proof {
       compaction: { enabled: false },
       retry: { enabled: false },
     });
-    if (opts.managed) {
+  }
+  prepare(): void {
+    if (this.options.managed) {
       this.install();
     }
   }
@@ -812,7 +814,9 @@ class Proof {
       survivors,
     });
     assert.deepEqual(survivors, [], "Every discovered owned process exited");
-    assert.ok(fs.statSync(path.join(this.options.output, "terminal.raw")).size > 0);
+    if (this.server !== undefined) {
+      assert.ok(fs.statSync(path.join(this.options.output, "terminal.raw")).size > 0);
+    }
     this.report.cleanup.push(
       "Owned native actors, broker and tmux server exited; artifacts retained.",
     );
@@ -829,6 +833,10 @@ async function main(): Promise<void> {
     process.on(signal, cancel);
   }
   try {
+    proof.prepare();
+    if (proof.cancelled) {
+      throw proof.cancelled;
+    }
     proof.identities();
     proof.launch();
     await proof.ready();
