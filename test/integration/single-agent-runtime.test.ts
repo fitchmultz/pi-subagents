@@ -38,6 +38,9 @@ function run(root: string, phase: string, killed = false): string {
     `${phase}: ${result.stderr}\n${result.stdout}`,
   );
   assert.equal(result.status, killed ? null : 0, `${phase}: ${result.stderr}\n${result.stdout}`);
+  if (phase === "command-polling") {
+    console.log(result.stdout.trim());
+  }
   return result.stderr;
 }
 async function until(check: () => boolean, reason: string): Promise<void> {
@@ -133,6 +136,7 @@ for (const phase of [
   "launch-preparation-failure",
   "launch-preparation-fork-failure",
   "inventory",
+  "command-polling",
 ]) {
   test(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));
