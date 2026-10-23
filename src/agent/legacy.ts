@@ -18,29 +18,53 @@ interface LegacyInput {
   owner: string;
   single: boolean;
 }
-function legacyInput(file: string, owner: string): LegacyInput | undefined {
+interface IgnoredInputs {
+  readonly owner: string;
+  readonly directory: string;
+  readonly ignored: Map<string, string>;
+}
+interface LegacyScan extends IgnoredInputs {
+  readonly known: ReadonlyMap<string, string> | undefined;
+}
+// Retain only foreign classifications, never their saved output, for each live native manager.
+const ignoredInputs = new WeakMap<ExtensionContext["sessionManager"], IgnoredInputs>();
+function fileStamp(file: string): string | undefined {
   const stat = fs.lstatSync(file, { bigint: true });
-  if (!stat.isFile() || stat.isSymbolicLink()) {
+  return stat.isFile() && !stat.isSymbolicLink() ? journalStamp(stat) : undefined;
+}
+function legacyInput(file: string, scan: LegacyScan): LegacyInput | undefined {
+  const stamp = fileStamp(file);
+  if (stamp === undefined) {
+    return;
+  }
+  if (scan.known?.get(file) === stamp) {
+    scan.ignored.set(file, stamp);
     return;
   }
   const raw = fs.readFileSync(file, "utf8");
   const data: unknown = JSON.parse(raw);
-  if (!isRecord(data) || data.sessionId !== owner) {
+  if (!isRecord(data) || data.sessionId !== scan.owner) {
+    if (fileStamp(file) === stamp) {
+      scan.ignored.set(file, stamp);
+    }
     return;
   }
+  return ownedInput({ file, raw, stamp, owner: scan.owner }, data);
+}
+function ownedInput(
+  source: Pick<LegacyInput, "file" | "raw" | "stamp" | "owner">,
+  data: Record<string, unknown>,
+): LegacyInput | undefined {
   const id = typeof data.runId === "string" ? data.runId : data.id;
-  if (typeof id !== "string" || path.basename(file, ".json") !== id) {
+  if (typeof id !== "string" || path.basename(source.file, ".json") !== id) {
     return;
   }
   const legacy = `legacy:${id}:${typeof data.timestamp === "number" ? data.timestamp : "unknown"}`;
   const completionId = typeof data.completionId === "string" ? data.completionId : legacy;
   return {
-    file,
-    raw,
-    stamp: journalStamp(stat),
+    ...source,
     id,
     key: `completion:${completionId}`,
-    owner,
     single: data.mode === "single",
   };
 }
@@ -133,19 +157,38 @@ function notification(ctx: ExtensionContext, input: LegacyInput): Completion | u
     },
   };
 }
-function legacyNotice(ctx: ExtensionContext, file: string): Completion | undefined {
+function legacyNotice(
+  ctx: ExtensionContext,
+  file: string,
+  scan: LegacyScan,
+): Completion | undefined {
   try {
-    const input = legacyInput(file, ctx.sessionManager.getSessionId());
+    const input = legacyInput(file, scan);
     return input ? notification(ctx, input) : undefined;
   } catch (error) {
     console.error(`Skipped legacy completion ${file}: ${errorText(error)}`);
     return;
   }
 }
+function startScan(ctx: ExtensionContext, directory: string): LegacyScan {
+  const manager = ctx.sessionManager;
+  const owner = manager.getSessionId();
+  const prior = ignoredInputs.get(manager);
+  const scan: LegacyScan = {
+    directory,
+    owner,
+    known: prior?.directory === directory && prior.owner === owner ? prior.ignored : undefined,
+    ignored: new Map(),
+  };
+  // Replace even on a failed directory scan; vanished/unsafe inputs keep no cached decision.
+  ignoredInputs.set(manager, { directory, owner, ignored: scan.ignored });
+  return scan;
+}
 export function legacyNotifications(ctx: ExtensionContext): Completion[] {
   const notices: Completion[] = [];
   const root = resolveTempRootDir();
   const directory = path.join(root, "async-subagent-results");
+  const scan = startScan(ctx, directory);
   let names: string[];
   try {
     for (const candidate of [root, directory]) {
@@ -165,7 +208,7 @@ export function legacyNotifications(ctx: ExtensionContext): Completion[] {
     if (!name.endsWith(".json")) {
       continue;
     }
-    const notice = legacyNotice(ctx, path.join(directory, name));
+    const notice = legacyNotice(ctx, path.join(directory, name), scan);
     if (notice) {
       notices.push(notice);
     }
