@@ -211,6 +211,9 @@ waking recipients.
   evidence, and continuation all pass. The forked child can now read the preceding
   child's literal calibration fact without tools or filesystem access. All 21
   saved parent/child assistant responses used the explicitly selected model.
+  That run predates asynchronous-only execution. The harness now drives a
+  persistent RPC main through receipts and completion notifications; its migration
+  was qualified on both hosts with a local scripted model, not a new live-model run.
 - A separate real-model topology run used two persistent native Pi mains in
   different agent directories and two actual delegated children. The mains
   discovered each other and consumed messages in both directions; siblings

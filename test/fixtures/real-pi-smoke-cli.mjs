@@ -54,21 +54,10 @@ function promptKind(prompt) {
   const markers = [
     ["intercom tool", "intercom"],
     ["action list", "list"],
-    ["async true", "async"],
     ["CALIBRATION_FACT", "fork"],
   ];
-  return markers.find(([marker]) => prompt.includes(marker))?.[1] ?? "foreground";
+  return markers.find(([marker]) => prompt.includes(marker))?.[1] ?? "delegate";
 }
-function promptTool(kind) {
-  if (kind === "intercom") {
-    return "intercom";
-  }
-  if (kind === "list") {
-    return "agent_runs";
-  }
-  return "delegate";
-}
-
 if (["launcher", "runner", "child", "broker"].includes(role)) {
   record("started");
   process.on("SIGTERM", () => {
@@ -91,7 +80,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       await delay(10);
     }
     const state = scenarioState();
-    writeFileSync(join(asyncDir, "output.txt"), "real-pi-smoke async ok\n");
+    writeFileSync(join(asyncDir, "output.txt"), "real-pi-smoke delegate ok\n");
     if (state !== "running") {
       save(join(asyncDir, "result.json"), { id: runId, status: state });
     }
@@ -134,118 +123,146 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   console.log(JSON.parse(readFileSync(join(evidence, "install.json"), "utf8")).repo);
 } else if (role === "--version") {
   console.log("credential-free-fixture");
-} else if (args.includes("rpc")) {
-  writeFileSync(
-    join(root, "resources.json"),
-    JSON.stringify(["delegate", "agent_runs", "intercom"]),
-  );
-  console.log(
-    JSON.stringify({
-      type: "response",
-      id: "commands",
-      success: true,
-      data: {
-        commands: ["skill:pi-intercom", "skill:pi-subagents"].map((name) => ({ name })),
-      },
-    }),
-  );
 } else {
-  const prompt = args.at(-1);
-  const kind = promptKind(prompt);
-  record("prompt", { kind });
-  mkdirSync(sessions, { recursive: true });
-  if (!existsSync(sessionFile)) {
-    appendFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId })}\n`);
-  }
-  if (kind === "intercom") {
-    launch("broker").unref();
-    while (!existsSync(join(evidence, "broker-ready"))) {
-      // Child/broker readiness is published before the parent may emit its wire result.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(10);
-    }
-  }
-  if (
-    kind === "async" ||
-    (kind === "intercom" && !["success", "async-failure", "async-timeout"].includes(scenario))
-  ) {
-    const launcher = launch("launcher");
-    launcher.unref();
-    while (!existsSync(join(evidence, "runner-ready"))) {
-      // Child/broker readiness is published before the parent may emit its wire result.
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(10);
-    }
-    save(join(evidence, "parent-ready"), resourcesPresent());
-    if (scenario === "startup-failure") {
-      await delay(600);
-    } // Parent's broker startup wait fails before PID publication.
-    if (scenario === "failure" || scenario === "startup-failure") {
-      process.exit(19);
-    }
-    if (["timeout", "startup-timeout", "SIGINT", "SIGTERM"].includes(scenario)) {
-      setInterval(() => {
-        // Keep the controlled process alive so smoke cleanup must signal and reap it.
-      }, 1000);
-      await new Promise(() => {
-        // Deliberately never settle: the smoke controller must cancel or time out this parent.
-      });
-    }
-  }
-  const text = `real-pi-smoke ${kind === "async" ? "async launched ok" : `${kind} ok`}`;
-  const message = {
-    role: "assistant",
-    provider: "fixture",
-    model: "smoke",
-    content: [{ type: "text", text }],
-  };
-  appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message })}\n`);
-  const toolName = promptTool(kind);
-  const details =
-    kind === "fork"
-      ? {
-          id: runId,
-          status: "completed",
-          context: "fresh",
-          sessionFile,
-          output: { text: "CALIBRATION_FACT=packed-otter-7319" },
-        }
-      : {
-          id: runId,
-          sessionFile: join(asyncDir, "child.jsonl"),
-          receipt: "launch",
-          status: "completed",
-          output: { text: "real-pi-smoke foreground ok" },
-        };
-  for (const event of [
+  // RPC transport double: answers get_commands, or keeps one prompted main open until stdin closes.
+  const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+  const fact = "CALIBRATION_FACT=packed-otter-7319";
+  const toolEvents = (toolName, details) => [
     { type: "tool_execution_start", toolName },
-    {
-      type: "tool_execution_end",
-      toolName,
-      isError: false,
-      result: {
-        details,
-      },
+    { type: "tool_execution_end", toolName, isError: false, result: { details } },
+  ];
+  const notice = (id, status, text) => ({
+    type: "message_end",
+    message: {
+      role: "custom",
+      customType: "agent-completion",
+      details: { id, result: { status }, page: { text } },
     },
-    ...(kind === "fork"
-      ? [
-          {
-            type: "tool_execution_end",
-            toolName: "delegate",
-            isError: false,
-            result: { details: { ...details, context: "fork" } },
+  });
+  const reply = (text) => {
+    const message = {
+      role: "assistant",
+      provider: "fixture",
+      model: "smoke",
+      stopReason: "stop",
+      content: [{ type: "text", text }],
+    };
+    appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message })}\n`);
+    return { type: "message_end", message };
+  };
+  const forkRun = (id, extra) => ({
+    id: `00000000-0000-4000-8000-00000000000${id}`,
+    sessionFile: join(sessions, "fact.jsonl"),
+    ...extra,
+  });
+  const startOwned = async (kind) => {
+    if (kind === "intercom") {
+      launch("broker").unref();
+      while (!existsSync(join(evidence, "broker-ready"))) {
+        // Child/broker readiness is published before the parent may emit its wire result.
+        // oxlint-disable-next-line no-await-in-loop
+        await delay(10);
+      }
+    }
+    if (
+      kind === "delegate" ||
+      (kind === "intercom" && !["success", "async-failure", "async-timeout"].includes(scenario))
+    ) {
+      const launcher = launch("launcher");
+      launcher.unref();
+      while (!existsSync(join(evidence, "runner-ready"))) {
+        // Child/broker readiness is published before the parent may emit its wire result.
+        // oxlint-disable-next-line no-await-in-loop
+        await delay(10);
+      }
+      save(join(evidence, "parent-ready"), resourcesPresent());
+      if (scenario === "startup-failure") {
+        await delay(600);
+      } // Parent's broker startup wait fails before PID publication.
+      if (scenario === "failure" || scenario === "startup-failure") {
+        process.exit(19);
+      }
+      if (["timeout", "startup-timeout", "SIGINT", "SIGTERM"].includes(scenario)) {
+        await new Promise(() => {
+          // Deliberately never settle: the smoke controller must cancel or time out this parent.
+        });
+      }
+    }
+  };
+  const prompted = async (command) => {
+    const kind = promptKind(command.message);
+    record("prompt", { kind });
+    mkdirSync(sessions, { recursive: true });
+    if (!existsSync(sessionFile)) {
+      appendFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId })}\n`);
+    }
+    await startOwned(kind);
+    emit({ id: command.id, type: "response", command: "prompt", success: true });
+    if (kind === "intercom" || kind === "list") {
+      const toolName = kind === "list" ? "agent_runs" : "intercom";
+      for (const event of [...toolEvents(toolName, {}), reply(`real-pi-smoke ${kind} ok`)]) {
+        emit(event);
+      }
+    } else if (kind === "delegate") {
+      const details = { id: runId, name: "smoke-delegate", receipt: "launch" };
+      for (const event of [
+        ...toolEvents("delegate", { ...details, sessionFile: join(asyncDir, "child.jsonl") }),
+        { type: "agent_settled" },
+      ]) {
+        emit(event);
+      }
+      const result = join(asyncDir, "result.json");
+      while (!existsSync(result)) {
+        // The double reports completion only after its detached runner publishes a result.
+        // oxlint-disable-next-line no-await-in-loop
+        await delay(10);
+      }
+      const { status } = JSON.parse(readFileSync(result, "utf8"));
+      emit(notice(runId, status, readFileSync(join(asyncDir, "output.txt"), "utf8")));
+      emit(reply("real-pi-smoke delegate ok"));
+    } else {
+      const [first, forked, continued] = [
+        forkRun(3, { receipt: "launch", context: "fresh" }),
+        forkRun(4, { receipt: "launch", context: "fork" }),
+        forkRun(5, { receipt: "continuation", context: "fresh", predecessor: forkRun(3).id }),
+      ];
+      for (const event of [
+        ...toolEvents("delegate", first),
+        notice(first.id, "completed", fact),
+        ...toolEvents("delegate", forked),
+        ...toolEvents("agent_runs", continued),
+        notice(forked.id, "completed", fact),
+        notice(continued.id, "completed", fact),
+        reply("real-pi-smoke fork ok"),
+      ]) {
+        emit(event);
+      }
+    }
+    emit({ type: "agent_settled" });
+  };
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+    for (let end = input.indexOf("\n"); end >= 0; end = input.indexOf("\n")) {
+      const command = JSON.parse(input.slice(0, end));
+      input = input.slice(end + 1);
+      if (command.type === "get_commands") {
+        writeFileSync(
+          join(root, "resources.json"),
+          JSON.stringify(["delegate", "agent_runs", "intercom"]),
+        );
+        emit({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            commands: ["skill:pi-intercom", "skill:pi-subagents"].map((name) => ({ name })),
           },
-          {
-            type: "tool_execution_end",
-            toolName: "agent_runs",
-            isError: false,
-            result: { details: { ...details, predecessor: runId } },
-          },
-        ]
-      : []),
-    { type: "message_end", message },
-    { type: "agent_settled" },
-  ]) {
-    console.log(JSON.stringify(event));
-  }
+        });
+      } else {
+        void prompted(command);
+      }
+    }
+  });
 }
