@@ -231,12 +231,8 @@ export class ObserverScreen extends VStack {
   }
   private wait(): void {
     const reading = this.visible();
-    if (
-      reading !== undefined &&
-      this.failure.length === 0 &&
-      reading.transcript.waiting &&
-      this.options.data.row(this.selected)?.live === true
-    ) {
+    const live = this.options.data.row(this.selected)?.live === true;
+    if (reading && this.failure.length === 0 && reading.transcript.waiting && live) {
       this.schedule();
     }
   }

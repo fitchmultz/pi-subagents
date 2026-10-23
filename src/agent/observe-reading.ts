@@ -67,8 +67,7 @@ export class Reading {
     if (this.transcript.contentPage(this.scroll.scrollTop, height, direction)) {
       return false;
     }
-    // A one-line load-earlier/later row means a fully scrolled view never reaches line zero,
-    // so detect the clamped boundary from the actual scroll result instead.
+    // A history row keeps a full scroll above line zero; use the actual scroll result.
     const remaining = this.scroll.scrollBy(direction * height);
     if (remaining === 0) {
       return false;

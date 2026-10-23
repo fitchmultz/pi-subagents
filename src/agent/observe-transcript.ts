@@ -341,9 +341,8 @@ export class ObserverTranscript extends Container {
   }
   private boundary(entries: NativeRecord[]): number {
     const found = entries.findIndex((entry) => entry.value.id === this.before);
-    const stop = this.before === undefined || found < 0 ? entries.length : found;
     this.before = found < 0 ? undefined : this.before;
-    return stop;
+    return this.before === undefined || found < 0 ? entries.length : found;
   }
   private historyRow(label: string, direction: number): void {
     this.addChild(
