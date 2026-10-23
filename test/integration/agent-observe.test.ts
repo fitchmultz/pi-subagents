@@ -220,13 +220,17 @@ async function exerciseReading(options: {
   other.appendMessage({ role: "user", content: "SECOND_READING_FIXTURE", timestamp: 1 });
   other.appendMessage(fauxAssistantMessage("OTHER_CHILD_ONLY"));
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
+  let sent = 0;
   const keyUntil = (key: string, text: string) =>
     until(
       () => {
         if (shown().includes(text)) {
           return true;
         }
-        terminal.send(key);
+        if (Date.now() - sent >= 100) {
+          sent = Date.now();
+          terminal.send(key);
+        }
         return false;
       },
       `keyboard reaches ${text}`,
