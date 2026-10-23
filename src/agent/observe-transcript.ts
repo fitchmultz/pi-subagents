@@ -42,7 +42,7 @@ export class ObserverTranscript extends Container {
   waiting = false;
   private revision = "";
   private readonly display: CardOptions;
-  private readonly changed: (anchor?: string, direction?: number) => void;
+  private readonly changed: (anchor?: string, direction?: number, gap?: boolean) => void;
   private readonly loaded: () => void;
   private paused = false;
   private hydration?: Promise<void>;
@@ -56,7 +56,7 @@ export class ObserverTranscript extends Container {
     cwd: string;
     tui: TUI;
     hideThinking: boolean;
-    changed: (anchor?: string, direction?: number) => void;
+    changed: (anchor?: string, direction?: number, gap?: boolean) => void;
     loaded: () => void;
   }) {
     super();
@@ -89,10 +89,7 @@ export class ObserverTranscript extends Container {
     }
     const entries = this.journal.entries(client?.leaf);
     this.entries = entries;
-    const stop =
-      this.before === undefined
-        ? entries.length
-        : entries.findIndex((entry) => entry.value.id === this.before);
+    const stop = this.boundary(entries);
     const start = Math.max(0, stop - 24);
     this.start = start;
     this.stop = stop;
@@ -342,13 +339,19 @@ export class ObserverTranscript extends Container {
     this.mounted.push(card);
     this.addChild(card);
   }
+  private boundary(entries: NativeRecord[]): number {
+    const found = entries.findIndex((entry) => entry.value.id === this.before);
+    const stop = this.before === undefined || found < 0 ? entries.length : found;
+    this.before = found < 0 ? undefined : this.before;
+    return stop;
+  }
   private historyRow(label: string, direction: number): void {
     this.addChild(
       actionText(label, () => {
         const id = this.history(direction);
         if (id !== undefined) {
           this.sync(this.currentClient?.closed === true ? undefined : this.currentClient);
-          this.changed(id, direction);
+          this.changed(id, direction, direction < 0);
         }
       }),
     );

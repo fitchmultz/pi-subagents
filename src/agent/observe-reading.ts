@@ -22,10 +22,11 @@ export class Reading {
       file,
       sessionId,
       cwd,
-      changed: (id, direction) => {
+      changed: (id, direction, gap) => {
         this.following = false;
         if (id !== undefined) {
-          this.destination = { id, offset: 0, end: direction === -1 };
+          const offset = gap === true ? -this.scroll.viewportHeight : 0;
+          this.destination = { id, offset, end: gap !== true && direction === -1 };
         }
         options.changed();
       },

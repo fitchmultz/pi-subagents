@@ -355,11 +355,8 @@ export class ObserverScreen extends VStack {
     }
   }
   private toggleDetails(): void {
-    if (this.details || !this.reading) {
-      this.details = undefined;
-    } else {
-      this.details = new Details(this.reading.watch.launch);
-    }
+    this.details =
+      !this.details && this.reading ? new Details(this.reading.watch.launch) : undefined;
   }
   private actions(): ScreenAction[] {
     return [
