@@ -21,7 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { bridgeApi, exec, parseCredential, start, stop } from "../support/intercom-bridge.ts";
-import { json, readJson, record, records, text } from "../support/assertions.ts";
+import { json, numberValue, readJson, record, records, text } from "../support/assertions.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 
@@ -216,6 +216,44 @@ test(
   { timeout: 30000 },
   async (t) => {
     const f = await fixture(t, 1, true);
+    const timings: Record<string, number> = {};
+    const receipts: Record<string, unknown> = {};
+    const events = () =>
+      f
+        .current()
+        .output()
+        .split("\n")
+        .flatMap((line) => {
+          try {
+            return [json(line)];
+          } catch {
+            // Stderr warnings and incomplete output are retained below, not parsed as owner receipts.
+            return [];
+          }
+        });
+    t.after(() => {
+      const owner = events()
+        .filter(
+          (entry) =>
+            typeof entry.event === "string" &&
+            ["received", "request", "wake_delivery"].includes(entry.event),
+        )
+        .map(({ timestamp, event, requestId, messageId, result }) => ({
+          timestamp,
+          event,
+          requestId,
+          messageId,
+          result,
+        }));
+      t.diagnostic(
+        JSON.stringify({
+          timings,
+          receipts,
+          owner,
+          rawOwnerOutput: f.current().output().slice(-8192),
+        }),
+      );
+    });
     const mailboxPath = join(
       f.root,
       "state",
@@ -225,6 +263,7 @@ test(
     locked.exec("BEGIN IMMEDIATE");
     const release = delay(900).then(() => {
       locked.exec("COMMIT");
+      timings.lockReleaseMs = performance.now() - started;
       return;
     });
     const started = performance.now();
@@ -235,14 +274,37 @@ test(
           text: "healthy fsynced intake after real SQLite contention",
         })
       ).id;
+      receipts.messageId = id;
       await f.current().wait(new RegExp(`"messageId":"${id}".*"result":"stored"`));
+      timings.receivedAt = numberValue(
+        locked.prepare("SELECT receivedAt FROM mailbox WHERE id=?").get(id)?.receivedAt,
+      );
     } finally {
       await release;
       locked.close();
     }
     const committed = performance.now();
+    timings.commitWaitMs = committed - started;
+    const storedAt = Date.parse(text(events().find((entry) => entry.messageId === id)?.timestamp));
+    timings.storedAt = storedAt;
+    timings.fullWriteWaitMs = storedAt - timings.receivedAt;
     assert.ok(committed - started >= 800, "real SQLite writer contention delayed mailbox commit");
-    const intake = (await f.apis[0].api("inbox")).body;
+    assert.ok(storedAt - timings.receivedAt >= 800, "owner's FULL write actually waited on SQLite");
+    timings.inboxStartAfterObservedCommitMs = performance.now() - committed;
+    const inbox = await f.apis[0].api("inbox");
+    timings.inboxResponseAfterObservedCommitMs = performance.now() - committed;
+    receipts.inbox = { status: inbox.status, requestId: inbox.body.requestId };
+    assert.equal(inbox.status, 200);
+    const intake = inbox.body;
+    assert.deepEqual(
+      records(intake.messages).map((entry) => record(entry.message).id),
+      [id],
+    );
+    const envelope = record(records(intake.messages)[0]);
+    assert.equal(record(envelope.from).id, f.peer.sessionId);
+    assert.deepEqual(record(record(envelope.message).content), {
+      text: "healthy fsynced intake after real SQLite contention",
+    });
     const fd = openSync(join(f.root, "primary-intake.json"), "w", 0o600);
     try {
       writeSync(fd, JSON.stringify(intake));
@@ -250,18 +312,51 @@ test(
     } finally {
       closeSync(fd);
     }
-    await delay(1400, undefined, { signal: t.signal });
-    assert.deepEqual((await f.apis[0].api("ack", { ids: [id] })).body.acked, [id]);
-    assert.ok(
-      performance.now() - committed < 2000,
-      "successful primary ACK is within post-commit grace",
-    );
+    timings.fsyncCompleteAfterObservedCommitMs = performance.now() - committed;
+    // The inbox response witnesses owner processing after storeReceive/changed. Check the actual
+    // durable deadline, not whether 1400ms of deliberate sleep leaves enough CI time for TLS/fsync.
+    const batches = f.rows("SELECT due, backoff FROM wake_batches");
+    assert.equal(batches.length, 1, "owner published one initial grace for the fresh mailbox");
+    assert.equal(batches[0].backoff, 0, "deadline is initial grace, not a retry");
+    const due = numberValue(batches[0].due);
+    timings.due = due;
+    timings.graceAfterStoredLogMs = due - storedAt;
+    assert.ok(due >= storedAt + 2000, "FULL commit leaves the entire two-second ACK grace");
+    timings.ackStartAfterObservedCommitMs = performance.now() - committed;
+    const ack = await f.apis[0].api("ack", { ids: [id] });
+    timings.ackResponseAfterObservedCommitMs = performance.now() - committed;
+    receipts.ack = { status: ack.status, requestId: ack.body.requestId };
+    receipts.attemptsAfterAck = f.rows("SELECT attemptedAt FROM wake_attempts").length;
+    receipts.requestsAfterAck = f.requests.length;
+    assert.equal(ack.status, 200);
+    assert.deepEqual(ack.body.acked, [id]);
+    const requestId = text(ack.body.requestId);
+    await f.current().wait(new RegExp(`"requestId":"${requestId}".*"result":"ok"`));
+    const ackEvents = events().filter((entry) => entry.requestId === requestId);
+    assert.equal(ackEvents.length, 1);
+    assert.equal(ackEvents[0].event, "request");
+    assert.equal(ackEvents[0].result, "ok");
+    const ackAt = Date.parse(text(ackEvents[0].timestamp));
+    timings.ackOwnerAfterStoredLogMs = ackAt - storedAt;
+    // Response delivery/client scheduling can lag actual ACK processing. Its correlated owner
+    // receipt is after durable ACK/reconciliation and before HTTP reply, the relevant boundary.
+    assert.ok(ackAt < due, "owner processed successful primary ACK within post-commit grace");
     assert.equal(f.requests.length, 0, "FULL commit wait must not spend the primary's ACK grace");
     assert.equal(f.rows("SELECT attemptedAt FROM wake_attempts").length, 0);
     const cold = await f.peer.send(f.remoteIds[0], {
       text: "cold wake witnesses processing beyond the prior ACK grace",
     });
     await f.current().wait(new RegExp(`"messageId":"${cold.id}".*"result":"http_rejected"`));
+    timings.coldWitnessAfterObservedCommitMs = performance.now() - committed;
+    const coldAt = Date.parse(
+      text(
+        events().find((entry) => entry.messageId === cold.id && entry.event === "wake_delivery")
+          ?.timestamp,
+      ),
+    );
+    receipts.cold = { messageId: cold.id, timestamp: coldAt };
+    assert.ok(coldAt >= due, "owner processed cold wake beyond the healthy mail's saved grace");
+    assert.equal(f.rows("SELECT attemptedAt FROM wake_attempts").length, 1);
     assert.equal(
       f.requests.length,
       1,
