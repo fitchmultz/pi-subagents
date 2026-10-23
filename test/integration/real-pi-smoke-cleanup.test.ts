@@ -221,7 +221,8 @@ test(
           await until(() => existsSync(join(root, "parent-ready")) || completion.closed);
           assert.ok(
             existsSync(join(root, "parent-ready")),
-            "fixture must reach detached launch, not merely fail startup",
+            // startSmoke supplies only dummy auth, fixed prompts, and the credential-free CLI double.
+            `fixture must reach detached launch, not merely fail startup (controller exit ${String(completion.code)}).\nController output:\n${output}`,
           );
           smokeRoot = text(
             record(parseJson(readFileSync(join(root, "install.json"), "utf8"))).root,
