@@ -76,7 +76,6 @@ const aiRoot = path.dirname(aiManifest);
 const {
   createAgentSession,
   AgentSessionRuntime,
-  createEventBus,
   DefaultResourceLoader,
   ModelRuntime,
   parseSessionEntries,
@@ -247,7 +246,6 @@ async function makeSession(
   name: string,
   options: {
     readonly configure?: (pi: ExtensionAPI) => void;
-    readonly eventBus?: ExtensionAPI["events"];
     readonly hasUI?: boolean;
     readonly lineage?: { readonly rootSessionId: string; readonly parentSessionId: string };
     readonly config?: Readonly<Record<string, unknown>>;
@@ -274,7 +272,6 @@ async function makeSession(
     cwd,
     agentDir,
     settingsManager,
-    eventBus: options.eventBus,
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -965,32 +962,9 @@ for (const hasUI of [true, false]) {
     let toolStarted = false,
       seen = "";
     let sends: Promise<unknown[]> | undefined;
-    let stageAtDetach: unknown;
     const receiver = await makeSession(t, name, {
       hasUI,
       configure(pi) {
-        if (hasUI) {
-          pi.events.on("pi-intercom:detach-request", (payload) => {
-            const stages = receiver.session.sessionManager
-              .getEntries()
-              .filter(
-                (entry) =>
-                  entry.type === "custom" &&
-                  entry.customType === "intercom_delivery" &&
-                  (at(entry, "data", "entry", "message", "id") === "new-steer" ||
-                    at(entry, "data", "messageId") === "new-steer"),
-              );
-            if (stages.length === 0) {
-              return;
-            }
-            const last = record(property(stages.at(-1), "data"));
-            stageAtDetach = last.stage ?? at(last, "entry", "stage");
-            pi.events.emit("pi-intercom:detach-response", {
-              ...record(payload),
-              accepted: true,
-            });
-          });
-        }
         pi.registerTool({
           name: "hold",
           label: "Hold",
@@ -1068,11 +1042,6 @@ for (const hasUI of [true, false]) {
       "all arrivals delivered once",
     );
     if (hasUI) {
-      assert.equal(
-        stageAtDetach,
-        "native",
-        "hand off the staged blocking steer before requesting foreground detachment",
-      );
       const staged = receiver.session.sessionManager
         .getEntries()
         .find(
@@ -1093,69 +1062,6 @@ for (const hasUI of [true, false]) {
       assert.equal(receiver.visible(id).length, 1, id);
     }
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
-    assert.deepEqual(receiver.errors, []);
-  });
-}
-
-for (const expectsReply of [false, true]) {
-  test(`native ${expectsReply ? "ask" : "ordinary"} steer bursts bound unanswered handshakes`, async (t) => {
-    const responseGate = gate(t);
-    let active = 0,
-      peak = 0;
-    const eventBus = createEventBus();
-    const original = eventBus.on.bind(eventBus);
-    eventBus.on = (channel, handler) => {
-      if (channel !== "pi-intercom:detach-response") {
-        return original(channel, handler);
-      }
-      active++;
-      peak = Math.max(peak, active);
-      const unsubscribe = original(channel, handler);
-      let subscribed = true;
-      return () => {
-        if (subscribed) {
-          active--;
-          subscribed = false;
-        }
-        unsubscribe();
-      };
-    };
-    const receiver = await makeSession(t, `attention-burst-${expectsReply}`, { eventBus });
-    receiver.faux.setResponses([
-      async () => {
-        await responseGate.promise;
-        return fauxAssistantMessage("First response");
-      },
-      fauxAssistantMessage("Directions handled"),
-    ]);
-    const running = receiver.session.prompt("Hold while ordinary steers arrive");
-    try {
-      await waitFor(() => receiver.faux.state.callCount === 1, "held provider");
-      for (let index = 0; index < 12; index++) {
-        // Exercise the ordered native burst rather than concurrent broker races.
-        // oxlint-disable-next-line no-await-in-loop
-        await receiver.send(`burst-${index}`, { text: `message:burst-${index}`, expectsReply });
-      }
-      await waitFor(
-        async () => (await receiver.status()).includes("Pending inbound messages: 12"),
-        "all native handoffs",
-      );
-      const retained = active;
-      receiver.events.push({ type: "fixture.attention-handshakes", peak, retained });
-      t.diagnostic(`Attention response listeners: peak=${peak}, after handoff=${retained}.`);
-      assert.equal(peak, 1, "a burst never accumulates concurrent response listeners");
-      if (!expectsReply) {
-        assert.equal(retained, 0, "ordinary attention retains no response listener");
-      }
-    } finally {
-      responseGate.resolve();
-      await running;
-    }
-    for (const id of receiver.sends) {
-      assert.equal(receiver.visible(id).length, 1);
-    }
-    await receiver.session.reload();
-    assert.equal(active, 0, "native reload drains pending handshakes");
     assert.deepEqual(receiver.errors, []);
   });
 }
@@ -1841,12 +1747,10 @@ test("native unresolved ordinary ask restores through recipient reload and repli
   assert.deepEqual(recipient.errors, []);
 });
 
-test("native correlated steer hands off before releasing a controlled busy tool", async (t) => {
+test("native correlated steer reaches the native queue during a held tool and is answered after it", async (t) => {
   const release = gate(t);
   let started = false,
-    checkpointAtDetach: unknown,
-    sawQuestion = false,
-    detachRequests = 0;
+    sawQuestion = false;
   const recipient = await makeSession(t, "busy-question-recipient", {
     hasUI: true,
     configure(pi) {
@@ -1860,16 +1764,6 @@ test("native correlated steer hands off before releasing a controlled busy tool"
           await release.promise;
           return { content: [{ type: "text", text: "Released" }], details: {} };
         },
-      });
-      pi.events.on("pi-intercom:detach-request", (payload) => {
-        detachRequests++;
-        const stages = recipient.session.sessionManager
-          .getEntries()
-          .filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery");
-        const last = record(at(stages.at(-1), "data"));
-        checkpointAtDetach = last.stage ?? at(last, "entry", "stage");
-        release.resolve();
-        pi.events.emit("pi-intercom:detach-response", { ...record(payload), accepted: true });
       });
     },
   });
@@ -1900,9 +1794,16 @@ test("native correlated steer hands off before releasing a controlled busy tool"
   const receiving = recipient.session.prompt("Wait for an ordinary peer");
   await waitFor(() => started, "controlled native tool");
   const asking = asker.session.prompt("Ask before continuing");
+  await waitFor(() => {
+    const stages = recipient.session.sessionManager
+      .getEntries()
+      .filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery");
+    const last = at(stages.at(-1), "data");
+    return (at(last, "stage") ?? at(last, "entry", "stage")) === "native";
+  }, "correlated steer reaches the native queue while the tool is held");
+  assert.equal(recipient.faux.state.callCount, 1, "the busy tool still owns the turn");
+  release.resolve();
   await Promise.all([receiving, asking]);
-  assert.equal(detachRequests, 1);
-  assert.equal(checkpointAtDetach, "native", "native handoff must precede the detach request");
   assert.equal(sawQuestion, true);
   assert.equal(recipient.faux.state.callCount, 3);
   assert.equal(asker.faux.state.callCount, 2);

@@ -15,7 +15,7 @@ type Lifecycle = Readonly<
   Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "markActivity">
 >;
 type InboundDeliveryHandle = Readonly<
-  Pick<InboundDeliveryOwner, "batching" | "detach" | "queue" | "restoring" | "send">
+  Pick<InboundDeliveryOwner, "batching" | "queue" | "restoring" | "send">
 >;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "receive">>;
 type Connection = Readonly<Pick<IntercomConnection, "syncStatus">>;
@@ -83,7 +83,7 @@ export class IntercomInbound {
       return;
     }
     if (!this.lifecycle.isIdle(active)) {
-      await this.busy(entry, generation);
+      this.busy(entry, generation);
       return;
     }
     if (this.lifecycle.live(live, generation)) {
@@ -94,11 +94,10 @@ export class IntercomInbound {
       );
     }
   }
-  private async busy(entry: InboundMessageEntry, generation: number): Promise<void> {
+  private busy(entry: InboundMessageEntry, generation: number): void {
     const delivery = requestedDelivery(entry.message);
     if (delivery === "steer") {
       this.owners.delivery.send(entry, "steer", generation);
-      await this.owners.delivery.detach(entry, entry.message.expectsReply !== true);
       return;
     }
     if (delivery === "queue") {

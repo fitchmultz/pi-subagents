@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { InboundJournal } from "./inbound-journal.ts";
@@ -9,7 +8,6 @@ import type {
   PendingInboundMessage,
 } from "./runtime-types.ts";
 import { requestedDelivery } from "./inbound-record.ts";
-import { isRecord } from "./validation.ts";
 import { runCooperatively } from "../shared/cooperative.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "toolCount">>;
@@ -41,7 +39,6 @@ export class InboundDeliveryOwner {
   private timer: NodeJS.Timeout | null = null;
   private restoreTask: Promise<void> | undefined;
   private batchTask: Promise<void> | undefined;
-  private detachTask: Promise<boolean> | undefined;
   private readonly pi: ExtensionAPI;
   private readonly lifecycle: Lifecycle;
   private readonly journal: Journal;
@@ -66,7 +63,7 @@ export class InboundDeliveryOwner {
   }
   async drain(): Promise<void> {
     this.clearTimer();
-    await Promise.allSettled([this.restoreTask, this.batchTask, this.detachTask]);
+    await Promise.allSettled([this.restoreTask, this.batchTask]);
     this.clearTimer();
   }
   reset(): void {
@@ -208,7 +205,6 @@ export class InboundDeliveryOwner {
   private *sendSteers(
     entries: readonly PendingInboundMessage[],
     generation: number,
-    onDetach: (task: Promise<boolean>) => void,
   ): Generator<void, void> {
     for (const entry of entries) {
       if (!this.live(generation)) {
@@ -218,9 +214,6 @@ export class InboundDeliveryOwner {
         continue;
       }
       this.send(entry, "steer", generation);
-      if (requestedDelivery(entry.message) === "steer") {
-        onDetach(this.detach(entry, entry.message.expectsReply !== true));
-      }
       yield;
     }
   }
@@ -249,15 +242,7 @@ export class InboundDeliveryOwner {
       this.schedule(500);
       return;
     }
-    return this.runBatch(async () => {
-      const detachments: Promise<boolean>[] = [];
-      await runCooperatively(
-        this.sendSteers(steers, generation, (task) => {
-          detachments.push(task);
-        }),
-      );
-      await Promise.all(detachments);
-    }, generation);
+    return this.runBatch(() => runCooperatively(this.sendSteers(steers, generation)), generation);
   }
   private messageOptions(delivery: InboundDelivery): {
     readonly triggerTurn?: boolean;
@@ -315,53 +300,6 @@ export class InboundDeliveryOwner {
       display: true,
       details: { ...entry, bodyText: entry.bodyText },
     };
-  }
-  async detach(entry: InboundMessageEntry, attention = false): Promise<boolean> {
-    if (!attention && entry.message.expectsReply !== true) {
-      return false;
-    }
-    if (!attention) {
-      this.detachTask ??= this.requestDetach(false).finally(() => {
-        this.detachTask = undefined;
-      });
-      return this.detachTask;
-    }
-    return this.requestDetach(true);
-  }
-  private async requestDetach(attention: boolean): Promise<boolean> {
-    const requestId = randomUUID();
-    return await new Promise((resolve) => {
-      let settled = false;
-
-      const finish = (accepted: boolean) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        unsubscribe();
-        resolve(accepted);
-      };
-      const timer = setTimeout(() => finish(false), 500);
-      timer.unref();
-      const unsubscribe = this.pi.events.on("pi-intercom:detach-response", (payload: unknown) => {
-        if (isRecord(payload) && payload.requestId === requestId) {
-          finish(payload.accepted === true);
-        }
-      });
-      try {
-        this.pi.events.emit("pi-intercom:detach-request", {
-          requestId,
-          ...(attention ? { reason: "attention" } : {}),
-        });
-        // Owned waits answer ordinary attention synchronously; an unanswered probe completes now.
-        if (attention) {
-          finish(false);
-        }
-      } catch {
-        finish(false);
-      }
-    });
   }
   async redeliver(ctx: ExtensionContext, generation: number): Promise<void> {
     if (this.batchTask) {
