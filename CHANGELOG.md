@@ -5,6 +5,7 @@
 ### Breaking
 
 - Make child execution asynchronous-only. `delegate` and `agent_runs` no longer accept `async`, and `agent_runs` no longer has `wait`; launches, continuations and guidance return honest receipts, and existing completion notifications resume the parent. A blocking wait held the parent's tool batch open, so admitted Intercom steering could not reach it until the child finished. Aborting a parent turn no longer stops children; use `stop`. New calls no longer attribute child usage to the parent; child results keep exactly-once native contributions, and historical parent charges remain unchanged. The opt-in `smoke:real-pi -- --llm`/`--llm-full` prompts now keep a persistent RPC main open until each launch or continuation receipt's completion notification resumes it, then close it and confirm the delegated actor exits.
+- Remove the Intercom busy-recipient detach probe and its timer. Steers go straight to Pi's native queue for the next tool boundary.
 - Stop child actors and verified owned native shells when their parent exits, including active work and asynchronous delegation from one-shot callers. Keep saved conversations for explicit continuation after parent resume; do not replay interrupted tools. Ordinary extension reload keeps children alive.
 
 ### Fixed
@@ -17,7 +18,7 @@
 - Restore fullscreen click-to-watch on named child rows and clickable `/agents` navigation. Keep regular-mode keyboard controls and read-only observation.
 - Collapse lengthy agent/Intercom result and notification cards by visual lines, reusing Pi's native expansion state and keybindings without truncating saved or model-visible content.
 - Restore default steering for incoming Intercom asks in interactive and print modes; keep explicit queue/passive behavior and sender-side busy capability reporting.
-- Preserve non-passive recovery order, suppress repeated message/reply IDs without reviving answered or superseded work, and coalesce concurrent ask handoff probes.
+- Preserve non-passive recovery order and suppress repeated message/reply IDs without reviving answered or superseded work.
 - Restore circle indicators and hide completed runs from the above-editor widget and `/agents` picker. Saved run IDs and already-open read-only watches remain available; failed, stopped, interrupted, and unavailable runs stay visible.
 - Restore steering delivery for new and legacy child completions. Publish an idle backlog before a single native wakeup, preventing separately deferred settlement turns from requeueing the same results.
 - Log and skip a malformed legacy result file instead of dropping every other legacy completion on each scan.

@@ -133,6 +133,17 @@ Every row below is **R**. No replacement is required for a removed custom compon
 | topics         | resource ownership stays inspectable without a footer across publication, disconnect and restoration                                                                                      | Removed local ownership/topic journal/view. Disconnect-not-release was a topic contract, not generic session presence.           |
 | topics         | presence refresh cannot swallow the first live topic blocker; presence refresh cannot swallow the first live topic decision; presence refresh cannot swallow the first live topic release | Removed local subscription/action deduplication and topic restoration. Broker namespace protocol tests remain distinct.          |
 
+## Async-only redesign (detach probe retired)
+
+The busy-recipient detach request/response probe and its 500 ms timer were removed with
+blocking child waits. `native ordinary/ask steer bursts bound unanswered handshakes` was
+deleted: it only counted listeners of the retired probe. Burst ordering, exactly-once
+visibility and reload draining remain covered by the native recovery, restored-backlog and
+hard-kill resume keepers. The recovery-arrival test keeps its staged `flushDelivery` steer
+assertion without the probe listener. The correlated busy-steer test now releases its held
+tool only after observing the native stage while the provider call count is still 1, then
+asserts the question and reply after the tool boundary.
+
 ## Risks and verification
 
 Official1.3 direct runtime.dispose while a provider is active does not await final settlement: that invalid fixture produced native stale-context events. The queued-work disposal test instead disposes an idle runtime after its actual queued question checkpoint is observed, then observes a later real broker/native replacement window on another runtime before checking no disposed wake. It does not claim active-run cancellation/settlement or child-process stop ownership; those remain parent/core contracts.
