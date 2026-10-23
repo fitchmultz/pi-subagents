@@ -1,4 +1,5 @@
-import { createRequire } from "node:module";
+import * as fs from "node:fs";
+import { findPackageJSON } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as Tui from "@earendil-works/pi-tui";
@@ -7,8 +8,22 @@ import type * as Dispatch from "@earendil-works/pi-tui/dist/tui.js";
 import { packageRoot } from "./host.ts";
 
 // Jiti aliases the root to an index file, so submodule URLs must resolve in the actual host graph.
-const require = createRequire(path.join(packageRoot(), "dist/index.js"));
-const root = pathToFileURL(require.resolve("@earendil-works/pi-tui"));
+const manifest = findPackageJSON(
+  "@earendil-works/pi-tui",
+  path.join(packageRoot(), "dist/index.js"),
+);
+if (manifest === undefined) {
+  throw new Error("Cannot locate the native Pi TUI package.");
+}
+const declared: unknown = JSON.parse(fs.readFileSync(manifest, "utf8"));
+const main =
+  typeof declared === "object" &&
+  declared !== null &&
+  "main" in declared &&
+  typeof declared.main === "string"
+    ? declared.main
+    : "dist/index.js";
+const root = pathToFileURL(path.resolve(path.dirname(manifest), main));
 // oxlint-disable-next-line typescript/no-unsafe-assignment
 const tui: typeof Tui = await import(root.href);
 // oxlint-disable-next-line typescript/no-unsafe-assignment
