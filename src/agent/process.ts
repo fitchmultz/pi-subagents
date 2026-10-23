@@ -9,6 +9,7 @@ import {
   readChildProcessIdentity,
   trySignalChildTree,
 } from "../shared/post-exit-stdio-guard.ts";
+import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
@@ -138,6 +139,7 @@ export async function ensureActor(
     if (shells(base, launch, existing.token).some(alive)) {
       throw new Error("Owned native shell work remains live; stop it before continuing.");
     }
+    removeObservationEndpoint(existing.token);
     fs.rmSync(lock, { recursive: true });
   }
   try {
@@ -153,6 +155,17 @@ export async function ensureActor(
   const token = randomUUID();
   write(path.join(lock, "claim.json"), { ...ownIdentity(), token });
   spawnActor(base, launch, token);
+}
+/** A crashed generation cannot unlink its endpoint; its exact token names the leftover. */
+function removeObservationEndpoint(token: string): void {
+  try {
+    const socketPath = agentObservationSocketPath(token);
+    if (fs.lstatSync(socketPath, { throwIfNoEntry: false })?.isSocket() === true) {
+      fs.rmSync(socketPath, { force: true });
+    }
+  } catch {
+    // Observation leftovers are inert to a new token and must never block native work.
+  }
 }
 function verifyLiveness(pid: number): boolean {
   try {

@@ -22,3 +22,18 @@ export function actionText(text: string, action: (column: number) => void): Comp
     return { handled: true, render: event.type === "click" };
   });
 }
+
+/** Each visible hint dispatches the same action as its corresponding keyboard binding. */
+export function actionHints(hints: readonly { text: string; action: () => void }[]): Component {
+  return actionText(hints.map((hint) => hint.text).join(" · "), (column) => {
+    let start = 0;
+    for (const hint of hints) {
+      const end = start + visibleWidth(hint.text);
+      if (column >= start && column < end) {
+        hint.action();
+        return;
+      }
+      start = end + 3;
+    }
+  });
+}

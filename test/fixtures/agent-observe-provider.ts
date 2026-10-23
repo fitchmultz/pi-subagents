@@ -54,7 +54,9 @@ export default function fixture(pi: ExtensionAPI): void {
       },
     });
   }
+  let observerCommand: boolean | undefined;
   pi.on("session_start", (_event, ctx) => {
+    observerCommand ??= pi.getCommands().some((command) => command.name === "agents");
     fs.appendFileSync(
       path.join(root, "sessions.jsonl"),
       JSON.stringify({
@@ -62,13 +64,14 @@ export default function fixture(pi: ExtensionAPI): void {
         pid: process.pid,
         owner: ctx.sessionManager.getSessionId(),
         mode: ctx.mode,
-        observerCommand: pi.getCommands().some((command) => command.name === "agents"),
+        observerCommand,
       }) + "\n",
     );
   });
   const provider = fauxProvider({
     provider: "observe-fixture",
     models: [{ id: "native-observe", reasoning: false }],
+    ...(child ? { tokensPerSecond: 40, tokenSize: { min: 16, max: 16 } } : {}),
   });
   provider.setResponses(
     Array.from({ length: 20 }, () => async (context, options) => {
@@ -78,8 +81,16 @@ export default function fixture(pi: ExtensionAPI): void {
       );
       const result = context.messages.some((message) => message.role === "toolResult");
       if (child) {
+        const live = context.messages.some(
+          (message) =>
+            message.role === "user" && JSON.stringify(message.content).includes("OBSERVE_CHILD"),
+        );
         return result
-          ? fauxAssistantMessage("CHILD_FINAL_FACT")
+          ? fauxAssistantMessage(
+              live
+                ? `CHILD_STREAM_START\n${Array.from({ length: 40 }, (_, index) => `Child streaming row ${String(index)} 雪😀`).join("\n")}\nCHILD_FINAL_FACT`
+                : "CHILD_FINAL_FACT",
+            )
           : fauxAssistantMessage(
               [
                 { type: "text", text: "CHILD_TEXT_LIVE 雪😀" },
@@ -122,11 +133,28 @@ export default function fixture(pi: ExtensionAPI): void {
     label: "Observe gate",
     description: "Native held tool for passive observer verification",
     parameters: Type.Object({}),
-    execute: async (_id, _args, signal) => {
+    execute: async (_id, _args, signal, onUpdate) => {
+      let progress = "";
+      const control = path.join(root, "progress-child");
       fs.writeFileSync(path.join(root, "child-ready"), "ready");
       while (!fs.existsSync(path.join(root, "release-child"))) {
         if (signal?.aborted === true) {
           break;
+        }
+        if (fs.existsSync(control)) {
+          const next = fs.readFileSync(control, "utf8");
+          if (next !== progress) {
+            progress = next;
+            onUpdate?.({
+              content: [
+                {
+                  type: "text",
+                  text: `LIVE_PROGRESS_${progress}\n${Array.from({ length: 80 }, (_, index) => `LIVE_ROW_${progress}_${String(index).padStart(2, "0")} 雪😀`).join("\n")}\nLIVE_PROGRESS_${progress}_END`,
+                },
+              ],
+              details: { progress },
+            });
+          }
         }
         // oxlint-disable-next-line no-await-in-loop
         await delay(20);

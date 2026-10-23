@@ -20,6 +20,8 @@ import { alive, ownIdentity, published, shellCommand, shells, signalProcess } fr
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
+import { ActorObservation, type ObservationStats } from "./observation.ts";
+import type { ToolEvent } from "./observation-state.ts";
 
 function commandIdentity(file: string): string | undefined {
   try {
@@ -75,6 +77,7 @@ class Actor {
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
   private readonly validated = new Map<string, { identity: string; id: string }>();
   private session?: AgentSession;
+  private observation?: ActorObservation;
   private context?: { pi: ExtensionAPI; ctx: ExtensionContext };
   private readonly base: string;
   private readonly initial: Launch;
@@ -179,6 +182,11 @@ class Actor {
               pi.on("session_start", (_event, ctx) => {
                 this.context = { pi, ctx };
               });
+              // Sparse tool lifecycle keeps the live view's tools even while nobody watches.
+              const tool = (event: ToolEvent): void => this.observation?.tool(event);
+              pi.on("tool_execution_start", tool);
+              pi.on("tool_execution_update", tool);
+              pi.on("tool_execution_end", tool);
             },
           ],
         },
@@ -243,6 +251,7 @@ class Actor {
     }
     this.current = launch;
     const baseline = new Set(session.sessionManager.getEntries().map((entry) => entry.id));
+    this.observation?.working(true);
     this.active = (async () => {
       try {
         if (
@@ -260,6 +269,7 @@ class Actor {
       } finally {
         this.active = undefined;
         this.current = undefined;
+        this.observation?.working(false);
       }
     })();
   }
@@ -430,6 +440,12 @@ class Actor {
       if (this.initial.name !== undefined) {
         this.session.sessionManager.appendSessionInfo(this.initial.name);
       }
+      // Optional live view, bound before readiness; its faults never change native execution.
+      this.observation = await ActorObservation.open(this.session, {
+        token: this.token,
+        rootId: this.initial.rootId,
+        sessionId: this.session.sessionManager.getSessionId(),
+      });
       write(path.join(this.dir, "actor.lock", "process.json"), {
         ...ownIdentity(),
         token: this.token,
@@ -456,6 +472,7 @@ class Actor {
     } finally {
       process.off("SIGTERM", this.stop);
       process.off("SIGINT", this.stop);
+      const observation: ObservationStats | undefined = this.observation?.close();
       await runtime?.dispose();
       if (this.stopping) {
         this.stopShells("SIGKILL");
@@ -464,6 +481,7 @@ class Actor {
       write(path.join(this.dir, `shutdown-${this.token}.json`), {
         at: Date.now(),
         errors: this.errors,
+        ...(observation === undefined ? {} : { observation }),
       });
       // Keep the process claim until a launcher proves this exact actor is gone.
     }
