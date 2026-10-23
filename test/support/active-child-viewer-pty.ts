@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -167,9 +167,9 @@ class Proof {
       retry: { enabled: false },
     });
   }
-  prepare(): void {
+  async prepare(): Promise<void> {
     if (this.options.managed) {
-      this.install();
+      await this.install();
     }
   }
   private cli(): string {
@@ -177,40 +177,36 @@ class Proof {
     assert.equal(manifest.name, "@earendil-works/pi-coding-agent");
     return path.resolve(this.options.host, text(json(JSON.stringify(manifest.bin)).pi));
   }
-  private install(): void {
+  private async install(): Promise<void> {
     const packages = path.join(this.options.output, "package");
     fs.mkdirSync(packages);
-    this.command(
-      "npm",
-      ["pack", this.options.source, "--pack-destination", packages, "--silent"],
-      true,
-      60000,
-    );
+    await this.installCommand("npm", [
+      "pack",
+      this.options.source,
+      "--pack-destination",
+      packages,
+      "--silent",
+    ]);
     const archives = fs.readdirSync(packages).filter((file) => file.endsWith(".tgz"));
     assert.equal(archives.length, 1, "npm pack must produce one archive");
     const tarball = path.join(packages, archives[0]);
     const unpacked = path.join(packages, "unpacked");
     fs.mkdirSync(unpacked);
-    this.command("/usr/bin/tar", ["-xzf", tarball, "-C", unpacked]);
+    await this.installCommand("/usr/bin/tar", ["-xzf", tarball, "-C", unpacked]);
     const installed = path.join(unpacked, "package");
-    this.command(
-      "npm",
-      [
-        "install",
-        "--prefix",
-        installed,
-        "--omit=dev",
-        "--omit=peer",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--silent",
-      ],
-      true,
-      60000,
-    );
-    this.command(this.cli(), ["install", installed, "--approve"]);
-    const listed = this.command(this.cli(), ["list", "--approve"]);
+    await this.installCommand("npm", [
+      "install",
+      "--prefix",
+      installed,
+      "--omit=dev",
+      "--omit=peer",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--silent",
+    ]);
+    await this.installCommand(this.cli(), ["install", installed, "--approve"]);
+    const listed = await this.installCommand(this.cli(), ["list", "--approve"]);
     assert.ok(listed.includes(installed), `pi list did not include managed package:\n${listed}`);
     this.report.checks.push("packed package installed and listed through managed Pi discovery");
     this.save("managed-install.json", {
@@ -229,12 +225,53 @@ class Proof {
   save(name: string, data: unknown): void {
     this.saveAt(path.join(this.options.output, name), data);
   }
-  command(binary: string, args: string[], required = true, timeout = 5000): string {
+  private installCommand(binary: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (this.cancelled) {
+        reject(this.cancelled);
+        return;
+      }
+      execFile(
+        binary,
+        args,
+        {
+          env: this.env,
+          cwd: this.project,
+          encoding: "utf8",
+          timeout: 60000,
+          maxBuffer: 4 * 1024 * 1024,
+        },
+        (error, stdout, stderr) => {
+          fs.appendFileSync(
+            path.join(this.options.output, "commands.jsonl"),
+            JSON.stringify({
+              at: Date.now(),
+              binary,
+              args,
+              status: error?.code ?? 0,
+              signal: error?.signal,
+              stdoutBytes: Buffer.byteLength(stdout),
+              stderr,
+              error: error?.message,
+            }) + "\n",
+          );
+          if (this.cancelled) {
+            reject(this.cancelled);
+          } else if (error) {
+            reject(new Error(`${binary} ${args.join(" ")}\n${stderr}`, { cause: error }));
+          } else {
+            resolve(stdout);
+          }
+        },
+      );
+    });
+  }
+  command(binary: string, args: string[], required = true): string {
     const result = spawnSync(binary, args, {
       env: this.env,
       cwd: this.project,
       encoding: "utf8",
-      timeout,
+      timeout: 5000,
       maxBuffer: 4 * 1024 * 1024,
     });
     fs.appendFileSync(
@@ -833,7 +870,7 @@ async function main(): Promise<void> {
     process.on(signal, cancel);
   }
   try {
-    proof.prepare();
+    await proof.prepare();
     if (proof.cancelled) {
       throw proof.cancelled;
     }

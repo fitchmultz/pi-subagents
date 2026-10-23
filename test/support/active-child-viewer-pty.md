@@ -25,6 +25,9 @@ driver runs `npm pack`, installs the tarball's runtime dependencies, installs th
 package into the isolated Pi home, and launches the CLI with package discovery enabled and
 no `-e` source entry. This catches missing packaged files, peer-resolution differences, and
 extension-discovery failures that the direct source path cannot.
+Setup failures produce a failed `report.json` and remove the runtime directory. Setup is
+asynchronous: cancellation prevents later setup steps and session launch. An in-flight
+setup command may finish before cancellation is reported; each has a 60 s timeout.
 
 ```sh
 /Users/mitchfultz/.local/share/mise/installs/node/24.22.1/bin/node \
