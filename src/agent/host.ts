@@ -6,6 +6,8 @@ import type * as SDK from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
+export { errorMessage as errorText } from "../shared/unknown.ts";
+
 // The native resolver is optional until official Pi exports it at the package root.
 type HostSDK = typeof SDK & {
   resolveModelReference?: (
@@ -89,7 +91,4 @@ export function isChild(): boolean {
     throw new Error("Malformed child identity; delegation is disabled.");
   }
   return true;
-}
-export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : JSON.stringify(error);
 }
