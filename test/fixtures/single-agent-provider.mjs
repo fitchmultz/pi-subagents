@@ -165,6 +165,24 @@ export default async function fixture(pi) {
     }
     return fauxAssistantMessage(JSON.stringify(results));
   };
+  const usageAnswer = (context) => {
+    const steps = context.messages.filter(
+      (message) => message.role === "toolResult" && message.toolCallId?.startsWith("usage-step-"),
+    ).length;
+    return steps < 34
+      ? fauxAssistantMessage(
+          [
+            {
+              type: "toolCall",
+              id: `usage-step-${steps}`,
+              name: "read",
+              arguments: { path: "AGENTS.md" },
+            },
+          ],
+          { stopReason: "toolUse" },
+        )
+      : fauxAssistantMessage("CHILD_LITERAL_RESULT:USAGE_LITERAL");
+  };
   const answer = (context, prompt) => {
     if (prompt?.startsWith("CWD_")) {
       return cwdAnswer(context, prompt);
@@ -206,6 +224,9 @@ export default async function fixture(pi) {
         ],
         { stopReason: "toolUse" },
       );
+    }
+    if (prompt === "USAGE_LITERAL") {
+      return usageAnswer(context);
     }
     if (prompt === "FAIL_LITERAL") {
       return fauxAssistantMessage("ERROR_PARTIAL_LITERAL", {
