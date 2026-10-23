@@ -178,7 +178,12 @@ class Proof {
   private install(): void {
     const packages = path.join(this.options.output, "package");
     fs.mkdirSync(packages);
-    this.command("npm", ["pack", this.options.source, "--pack-destination", packages, "--silent"]);
+    this.command(
+      "npm",
+      ["pack", this.options.source, "--pack-destination", packages, "--silent"],
+      true,
+      60000,
+    );
     const archives = fs.readdirSync(packages).filter((file) => file.endsWith(".tgz"));
     assert.equal(archives.length, 1, "npm pack must produce one archive");
     const tarball = path.join(packages, archives[0]);
@@ -193,6 +198,7 @@ class Proof {
         "--prefix",
         installed,
         "--omit=dev",
+        "--omit=peer",
         "--ignore-scripts",
         "--no-audit",
         "--no-fund",
