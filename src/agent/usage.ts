@@ -137,6 +137,7 @@ function physicalUsage(file: string, observed: fs.BigIntStats): ReadonlyMap<stri
     fs.closeSync(fd);
   }
 }
+/** Persistent journals return a live cache view; callers must not reserve prepared charges in it. */
 function priorUsage(ctx: ExtensionContext): ReadonlyMap<string, Contribution> {
   // Native's public isPersisted() is omitted from its readonly extension type.
   // Adapters without it retain the conservative disk-plus-memory behavior.

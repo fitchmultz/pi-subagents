@@ -167,7 +167,9 @@ export function receiptId(
   );
   return typeof found?.id === "string" ? found.id : undefined;
 }
-/** Completion receipt IDs by run ID; a matching entry without an ID is unpublished. */
+/** Live read-only completion IDs by run; later appends extend this view.
+ * A matching entry without an ID is unpublished. Invalidations replace the view.
+ */
 export function completionReceipts(
   file: string | undefined,
   owner: string,
