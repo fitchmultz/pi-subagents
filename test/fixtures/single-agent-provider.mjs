@@ -4,6 +4,54 @@ import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
+// Observe the actual runner's synchronous command scans, not a replacement Actor.
+function commandIO(root) {
+  const original = {
+    open: fs.openSync,
+    read: fs.readSync,
+    close: fs.closeSync,
+    readdir: fs.readdirSync,
+  };
+  const descriptors = new Map();
+  let reads = [];
+  fs.openSync = (file, ...args) => {
+    const fd = original.open(file, ...args);
+    if (typeof file === "string" && file.includes("/commands/") && args[0] === "r") {
+      const count = { file: path.basename(file), opens: 1, bytes: 0 };
+      reads.push(count);
+      descriptors.set(fd, count);
+    }
+    return fd;
+  };
+  fs.readSync = (fd, ...args) => {
+    const bytes = original.read(fd, ...args);
+    const count = descriptors.get(fd);
+    if (count) {
+      count.bytes += bytes;
+    }
+    return bytes;
+  };
+  fs.closeSync = (fd) => {
+    descriptors.delete(fd);
+    return original.close(fd);
+  };
+  fs.readdirSync = (directory, ...args) => {
+    const entries = original.readdir(directory, ...args);
+    if (typeof directory === "string" && directory.endsWith("/commands")) {
+      // pending() and admission finish synchronously before this microtask runs.
+      queueMicrotask(() => {
+        fs.appendFileSync(
+          path.join(root, "command-polls.jsonl"),
+          JSON.stringify({ pid: process.pid, reads }) + "\n",
+        );
+        reads = [];
+      });
+    }
+    return entries;
+  };
+  syncBuiltinESMExports();
+}
+
 export default async function fixture(pi) {
   const sdkEntry = path.join(process.env.PI_PACKAGE_DIR, "dist/index.js");
   const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdkEntry)));
@@ -11,6 +59,9 @@ export default async function fixture(pi) {
     pathToFileURL(path.join(aiRoot, "dist/index.js")).href
   );
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
+  if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
+    commandIO(root);
+  }
   pi.on("session_start", (_event, ctx) => {
     fs.appendFileSync(
       path.join(root, "native-actor-starts.jsonl"),
