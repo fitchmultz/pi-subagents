@@ -420,6 +420,42 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
       h.manager.getEntries().some((entry) => entry.type === "custom_message"),
       false,
     );
+    const priorNotices: string[] = [];
+    if (change === "same-size") {
+      const peer = path.join(directory, "zz-owned-peer.json");
+      const peerRaw = JSON.stringify({
+        runId: "zz-owned-peer",
+        sessionId: h.launch.owner,
+        output: "Peer",
+      });
+      fs.writeFileSync(peer, peerRaw);
+      t.after(() => fs.rmSync(peer, { force: true }));
+      const names = fs.readdirSync(directory);
+      assert.ok(names.indexOf(path.basename(hint)) < names.indexOf(path.basename(peer)));
+      deliver(h.pi, h.context, legacyNotifications(h.context));
+      assert.equal(fs.existsSync(peer), true, "peer send acceptance is not retirement");
+      await h.session.waitForIdle();
+      assert.deepEqual(
+        h.manager
+          .getEntries()
+          .flatMap((entry) =>
+            entry.type === "custom_message" && entry.customType === "subagent-notify"
+              ? [entry.content]
+              : [],
+          ),
+        [peerRaw],
+        "an ignored cache hit cannot drop the later owned peer's actual native publication",
+      );
+      deliver(h.pi, h.context, legacyNotifications(h.context));
+      assert.equal(fs.existsSync(peer), false, "the published peer retires normally");
+      assert.equal(fs.existsSync(hint), true);
+      assert.equal(
+        reads.withArgs(hint).callCount,
+        1,
+        "valid peer processing never rereads the foreign body",
+      );
+      priorNotices.push(peerRaw);
+    }
     assert.equal(fs.readFileSync(hint, "utf8"), foreign, "foreign bytes stay untouched");
     let owned = foreign.replace("x".repeat(h.launch.owner.length), h.launch.owner);
     if (change === "growth") {
@@ -461,8 +497,8 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
             ? [entry.content]
             : [],
         ),
-      [owned],
-      "the actual native SDK publishes exactly one literal completion",
+      [...priorNotices, owned],
+      "the actual native SDK publishes each literal completion exactly once",
     );
     deliver(h.pi, h.context, legacyNotifications(h.context));
     assert.equal(fs.existsSync(hint), false, "actual matching receipt retires unchanged input");
