@@ -9,6 +9,8 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
 import { Assert } from "typebox/value";
+import { ensureActor } from "../../src/agent/process.ts";
+import { usageLaunch } from "../support/agent-launch.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const manifest = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
@@ -378,3 +380,80 @@ test(
     }
   },
 );
+for (const [name, thrown, error] of [
+  ["Error", "new Error('CONTROLLED_SDK_STARTUP_FAILURE')", "CONTROLLED_SDK_STARTUP_FAILURE"],
+  ["string", "'CONTROLLED_SDK_STARTUP_TEXT'", "CONTROLLED_SDK_STARTUP_TEXT"],
+  ["circular", "Object.assign(failure, { self: failure })", "Unserializable failure"],
+  ["BigInt", "7n", "7"],
+  ["undefined", "undefined", "undefined"],
+] as const) {
+  test(
+    `single-agent detached actor publishes a canonical failed result when a controlled SDK double throws ${name} at startup`,
+    { timeout: 30000 },
+    async (t) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-startup-failure-"));
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const sdkDouble = path.join(root, "sdk");
+      fs.mkdirSync(path.join(sdkDouble, "dist"), { recursive: true });
+      fs.mkdirSync(path.join(sdkDouble, "node_modules"));
+      const hostTypebox = findPackageJSON("typebox", path.join(sdk, "dist/index.js"));
+      assert.notEqual(hostTypebox, undefined);
+      fs.symlinkSync(path.dirname(hostTypebox ?? ""), path.join(sdkDouble, "node_modules/typebox"));
+      fs.writeFileSync(
+        path.join(sdkDouble, "package.json"),
+        JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module" }),
+      );
+      fs.writeFileSync(
+        path.join(sdkDouble, "dist/index.js"),
+        `const failure = {};
+export const SessionManager = { open: () => ({}) };
+export async function createAgentSessionRuntime() { throw ${thrown}; }
+`,
+      );
+      const base = path.join(root, "owner");
+      const directory = path.join(base, "run");
+      fs.mkdirSync(directory, { recursive: true });
+      const launch = {
+        ...usageLaunch(path.join(directory, "child.jsonl")),
+        owner: "owner",
+        sdk: sdkDouble,
+      };
+      fs.writeFileSync(path.join(directory, "launch.json"), JSON.stringify(launch));
+      await ensureActor(base, launch);
+      const claim: unknown = JSON.parse(
+        fs.readFileSync(path.join(directory, "actor.lock/claim.json"), "utf8"),
+      );
+      Assert(Type.Object({ token: Type.String() }), claim);
+      const exitFile = path.join(directory, `exit-${claim.token}.json`);
+      await until(() => fs.existsSync(exitFile), "detached actor exit is recorded");
+      const exit: unknown = JSON.parse(fs.readFileSync(exitFile, "utf8"));
+      Assert(
+        Type.Object({
+          code: Type.Union([Type.Integer(), Type.Null()]),
+          signal: Type.Union([Type.String(), Type.Null()]),
+        }),
+        exit,
+      );
+      assert.deepEqual(
+        {
+          code: exit.code,
+          signal: exit.signal,
+          log: fs.readFileSync(path.join(directory, "runner.log"), "utf8"),
+        },
+        { code: 1, signal: null, log: "" },
+      );
+      assert.equal(fs.readFileSync(path.join(directory, "output.txt"), "utf8"), "");
+      const result: unknown = JSON.parse(
+        fs.readFileSync(path.join(directory, "result.json"), "utf8"),
+      );
+      Assert(Type.Object({ endedAt: Type.Number() }), result);
+      assert.deepEqual(result, {
+        id: "run",
+        owner: "owner",
+        status: "failed",
+        endedAt: result.endedAt,
+        error,
+      });
+    },
+  );
+}
