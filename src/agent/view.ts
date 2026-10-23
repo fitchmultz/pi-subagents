@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readOutputPage } from "../shared/output-page.ts";
+import { isRecord } from "../shared/unknown.ts";
 import { actor, alive } from "./process.ts";
 import {
   admissionSchema,
@@ -56,7 +57,15 @@ interface RunView extends Omit<RunSummary, "result"> {
   result?: Result;
   output: ReturnType<typeof outputView>;
 }
-export function toolResult(value: unknown, text = JSON.stringify(value, null, 2)): ToolReply {
+function modelText(value: unknown): string {
+  // Per-entry accounting stays in canonical results and tool details, not model text.
+  const view =
+    isRecord(value) && isRecord(value.result)
+      ? { ...value, result: { ...value.result, contributions: undefined } }
+      : value;
+  return JSON.stringify(view, null, 2);
+}
+export function toolResult(value: unknown, text = modelText(value)): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
 }
 function processView(base: string, launch: Launch) {

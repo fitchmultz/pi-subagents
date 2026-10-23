@@ -148,7 +148,11 @@ New calls do not attribute child usage to the parent's token/cost totals. Each
 child result records its own native contributions exactly once, and continuations
 add only newly published entries. Completion notices, inspection, reload and
 metadata inventory do not charge the parent. Explicit inspection can reconcile
-pending child accounting.
+pending child accounting. Per-entry `result.contributions` remain in canonical
+results and native tool details; JSON receipt text (including `stop`) omits only
+that array. Status, accounting errors/pending state, process/stop evidence and
+output/paging fields remain available in the text. Inspection and completion
+notices retain their separate readable text rendering.
 
 Historical foreground and `wait` charges already recorded in a parent's journal
 remain in its native totals. For workflow totals, count shared continuation

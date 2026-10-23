@@ -268,12 +268,12 @@ const notices = () =>
   manager
     .getEntries()
     .filter((entry) => entry.type === "custom_message" && entry.customType === "agent-completion");
-const call = async (name, args, id) => {
+const call = async (name, args, id, response = fauxAssistantMessage("PARENT_LITERAL_FINISHED")) => {
   faux.setResponses([
     fauxAssistantMessage([{ type: "toolCall", id, name, arguments: args }], {
       stopReason: "toolUse",
     }),
-    fauxAssistantMessage("PARENT_LITERAL_FINISHED"),
+    response,
   ]);
   await session.prompt(`Fixture native tool invocation ${id}`);
   await session.waitForIdle();
@@ -2689,9 +2689,107 @@ try {
     const contributions = first.details.result.contributions;
     assert.deepEqual(
       contributions.map((part) => [part.id.startsWith(`${first.details.sessionId}:`), part.usage]),
-      [[true, childTurnUsage]],
-      "the child's one native turn is recorded with exact optional counters",
+      Array.from({ length: 35 }, () => [true, childTurnUsage]),
+      "all 35 real native turns are recorded with exact optional counters",
     );
+    const nativeTurns = sdk.SessionManager.open(first.details.sessionFile)
+      .getEntries()
+      .filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+    assert.deepEqual(
+      contributions.map((part) => part.id),
+      nativeTurns.map((entry) => `${first.details.sessionId}:${entry.id}`),
+    );
+    const canonicalFile = path.join(runDir(runId), "result.json");
+    const canonical = fs.readFileSync(canonicalFile);
+    assert.deepEqual(JSON.parse(canonical), first.details.result);
+    assert.deepEqual(notices()[0].details.result, first.details.result);
+    for (const state of ["live", "exited"]) {
+      const stopId = `usage-stop-${state}`;
+      let downstream;
+      // The second Stop observes the first Stop's published process exit.
+      // oxlint-disable-next-line no-await-in-loop
+      const stopped = await call("agent_runs", { action: "stop", id: runId }, stopId, (context) => {
+        downstream = structuredClone(
+          context.messages.findLast(
+            (message) => message.role === "toolResult" && message.toolCallId === stopId,
+          ),
+        );
+        return fauxAssistantMessage("COMPACT_STOP_CONSUMED");
+      });
+      const fullText = JSON.stringify(stopped.details, null, 2);
+      const expected = JSON.parse(JSON.stringify(stopped.details));
+      delete expected.result.contributions;
+      const text = stopped.content.map((block) => block.text ?? "").join("\n");
+      const expectedText = JSON.stringify(expected, null, 2);
+      console.log(
+        JSON.stringify({
+          projection: "stop",
+          state,
+          contributions: contributions.length,
+          beforeCharacters: fullText.length,
+          afterCharacters: text.length,
+          expectedCharacters: expectedText.length,
+        }),
+      );
+      assert.deepEqual(
+        JSON.parse(text),
+        expected,
+        "only per-entry accounting is omitted from model text",
+      );
+      assert.equal(text, expectedText);
+      assert.deepEqual(
+        downstream.content,
+        stopped.content,
+        "the actual downstream provider context consumes the compact text",
+      );
+      assert.deepEqual(
+        stopped.details.result,
+        first.details.result,
+        "tool details keep full accounting",
+      );
+      assert.deepEqual(
+        fs.readFileSync(canonicalFile),
+        canonical,
+        "stop text projection never rewrites canonical accounting",
+      );
+      assert.equal(stopped.details.status, "completed");
+      assert.equal(stopped.details.completed, true);
+      assert.equal(stopped.details.stopAcknowledged, false);
+      assert.equal(stopped.details.process.exitKnown, state === "exited");
+      assert.equal(typeof stopped.details.stopRequest, state === "live" ? "string" : "undefined");
+      assert.match(
+        stopped.details.note,
+        state === "live"
+          ? /Stop requested; neither native admission nor process exit is implied/
+          : /No matching live actor or owned shell/,
+      );
+      const emitted = toolEnds.find((event) => event.toolCallId === stopId);
+      assert.deepEqual(emitted.result.details, stopped.details);
+      const persisted = sdk.SessionManager.open(manager.getSessionFile())
+        .getEntries()
+        .find(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "toolResult" &&
+            entry.message.toolCallId === stopId,
+        ).message;
+      assert.deepEqual(persisted.content, stopped.content);
+      assert.deepEqual(persisted.details, JSON.parse(JSON.stringify(stopped.details)));
+      if (state === "live") {
+        // Exit publication must precede the next registered Stop.
+        // oxlint-disable-next-line no-await-in-loop
+        await until(
+          () =>
+            fs.existsSync(
+              path.join(
+                runDir(runId),
+                "exit-" + readJSON(path.join(runDir(runId), "ready.json")).token + ".json",
+              ),
+            ),
+          "the completed actor publishes actual process exit before a repeated stop",
+        );
+      }
+    }
     faux.setResponses([
       fauxAssistantMessage(
         ["concurrent-one", "concurrent-two"].map((id) => ({
