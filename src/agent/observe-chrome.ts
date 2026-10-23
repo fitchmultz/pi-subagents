@@ -124,11 +124,11 @@ export function appendConversation(
     ),
     { basis: 0, grow: 1, minSize: 1 },
   );
-  let follow = "Reading earlier · End to follow live";
-  if (options.reading.pending) {
-    follow = "New activity below · End to follow live";
-  }
-  if (options.reading.following) {
+  const { following, pending } = options.reading;
+  let follow = pending
+    ? "New activity below · End to follow live"
+    : "Reading earlier · End to follow live";
+  if (following) {
     follow = "Following live";
   }
   target.addChild(actionText(follow, options.follow), { basis: 1 });

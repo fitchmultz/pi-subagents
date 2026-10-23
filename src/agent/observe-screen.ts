@@ -407,10 +407,7 @@ export class ObserverScreen extends VStack {
         connecting: this.connection.connecting,
       }),
       details: this.details,
-      toggle: () => {
-        this.toggleDetails();
-        this.paint();
-      },
+      toggle: () => this.perform(() => this.toggleDetails()),
     });
     appendConversation(this, {
       list: this.list,

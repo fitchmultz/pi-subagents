@@ -63,8 +63,7 @@ export class Reading {
   page(direction: number): boolean {
     this.following = false;
     const height = Math.max(1, this.scroll.viewportHeight);
-    const top = this.scroll.scrollTop;
-    if (this.transcript.contentPage(top, height, direction)) {
+    if (this.transcript.contentPage(this.scroll.scrollTop, height, direction)) {
       return false;
     }
     // A one-line load-earlier/later row means a fully scrolled view never reaches line zero,

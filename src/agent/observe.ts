@@ -231,7 +231,8 @@ class Observer {
     if (!ctx) {
       return;
     }
-    if (this.strip().length === 0 && this.rows.size === this.total && this.error.length === 0) {
+    const rows = this.strip();
+    if (rows.length === 0 && this.rows.size === this.total && this.error.length === 0) {
       if (this.widgetVisible) {
         ctx.ui.setWidget(STATUS_KEY, undefined);
       }
@@ -239,7 +240,6 @@ class Observer {
       this.widgetSignature = "";
       return;
     }
-    const rows = this.strip();
     const signature = JSON.stringify([this.status(), rows.slice(0, 4), rows.length]);
     if (signature === this.widgetSignature) {
       return;

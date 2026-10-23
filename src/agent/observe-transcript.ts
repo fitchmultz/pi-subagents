@@ -32,6 +32,7 @@ export class ObserverTranscript extends Container {
   private readonly pages = new Map<string, PageRequest>();
   private readonly expanded = new Set<string>();
   private before?: string;
+  private currentClient?: ObservationClient;
   private start = 0;
   private stop = 0;
   private entries: NativeRecord[] = [];
@@ -82,6 +83,7 @@ export class ObserverTranscript extends Container {
     return true;
   }
   sync(client?: ObservationClient): boolean {
+    this.currentClient = client;
     if (!this.refresh(client)) {
       return false;
     }
@@ -97,14 +99,7 @@ export class ObserverTranscript extends Container {
     const selected = entries.slice(start, stop);
     this.clear();
     if (start > 0) {
-      this.addChild(
-        actionText("↑ Load earlier activity", () => {
-          if (this.history(-1) !== undefined) {
-            this.sync(client);
-            this.changed();
-          }
-        }),
-      );
+      this.historyRow("↑ Load earlier activity", -1);
     }
     this.mounted = [];
     for (const entry of selected.toReversed()) {
@@ -119,14 +114,7 @@ export class ObserverTranscript extends Container {
       this.live(client);
     }
     if (this.before !== undefined) {
-      this.addChild(
-        actionText("↓ Load later activity", () => {
-          if (this.history(1) !== undefined) {
-            this.sync(client);
-            this.changed();
-          }
-        }),
-      );
+      this.historyRow("↓ Load later activity", 1);
     }
     this.evict();
     return true;
@@ -221,10 +209,9 @@ export class ObserverTranscript extends Container {
       return;
     }
     const { entry, card, request, controller } = job;
-    const { requested } = request;
     const options = { signal: controller.signal, hideThinking: this.display.hideThinking };
-    let page = await this.journal.page(entry, Math.max(0, requested), options);
-    if (requested < 0 && page.pages > 1) {
+    let page = await this.journal.page(entry, Math.max(0, request.requested), options);
+    if (request.requested < 0 && page.pages > 1) {
       page = await this.journal.page(entry, page.pages - 1, options);
     }
     const call =
@@ -355,6 +342,17 @@ export class ObserverTranscript extends Container {
     this.mounted.push(card);
     this.addChild(card);
   }
+  private historyRow(label: string, direction: number): void {
+    this.addChild(
+      actionText(label, () => {
+        const id = this.history(direction);
+        if (id !== undefined) {
+          this.sync(this.currentClient?.closed === true ? undefined : this.currentClient);
+          this.changed(id, direction);
+        }
+      }),
+    );
+  }
   history(direction: number): string | undefined {
     if ((direction < 0 && this.start === 0) || (direction > 0 && this.before === undefined)) {
       return;
@@ -406,6 +404,9 @@ export class ObserverTranscript extends Container {
     this.cards.get(this.selected ?? "")?.toggle();
   }
   anchor(line: number): EntryAnchor | undefined {
+    if (line <= 0 && this.start > 0) {
+      return;
+    }
     const position = this.positions.find((item) => item.end > line);
     return position && { id: position.id, offset: Math.max(0, line - position.start) };
   }

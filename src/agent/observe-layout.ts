@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import { findPackageJSON } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,15 +14,7 @@ const manifest = findPackageJSON(
 if (manifest === undefined) {
   throw new Error("Cannot locate the native Pi TUI package.");
 }
-const declared: unknown = JSON.parse(fs.readFileSync(manifest, "utf8"));
-const main =
-  typeof declared === "object" &&
-  declared !== null &&
-  "main" in declared &&
-  typeof declared.main === "string"
-    ? declared.main
-    : "dist/index.js";
-const root = pathToFileURL(path.resolve(path.dirname(manifest), main));
+const root = pathToFileURL(path.join(path.dirname(manifest), "dist/index.js"));
 // oxlint-disable-next-line typescript/no-unsafe-assignment
 const tui: typeof Tui = await import(root.href);
 // oxlint-disable-next-line typescript/no-unsafe-assignment
