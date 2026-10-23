@@ -321,11 +321,31 @@ for (const boundary of ["root", "results"] as const) {
     const configured = path.join(scratch, "pi-subagents-root");
     const outside = path.join(scratch, "outside");
     fs.mkdirSync(outside);
+    fs.mkdirSync(path.join(configured, "async-subagent-results"), { recursive: true });
+    fs.writeFileSync(
+      path.join(configured, "async-subagent-results", "legacy-run.json"),
+      JSON.stringify({ runId: "legacy-run", sessionId: "foreign", output: "Warm ignored input" }),
+    );
+    const prior = process.env.PI_SUBAGENT_TEMP_ROOT;
+    process.env.PI_SUBAGENT_TEMP_ROOT = configured;
+    t.after(() => {
+      if (prior === undefined) {
+        delete process.env.PI_SUBAGENT_TEMP_ROOT;
+      } else {
+        process.env.PI_SUBAGENT_TEMP_ROOT = prior;
+      }
+      fs.rmSync(scratch, { recursive: true, force: true });
+    });
+    assert.deepEqual(legacyNotifications(h.context), [], "warm the safe directory first");
     if (boundary === "root") {
+      fs.renameSync(configured, path.join(scratch, "previous"));
       fs.mkdirSync(path.join(outside, "async-subagent-results"));
       fs.symlinkSync(outside, configured, "dir");
     } else {
-      fs.mkdirSync(configured);
+      fs.renameSync(
+        path.join(configured, "async-subagent-results"),
+        path.join(scratch, "previous"),
+      );
       fs.symlinkSync(outside, path.join(configured, "async-subagent-results"), "dir");
     }
     const target = path.join(
@@ -345,16 +365,6 @@ for (const boundary of ["root", "results"] as const) {
         key: "completion:legacy:legacy-run:7",
         ownerSessionId: h.launch.owner,
       },
-    });
-    const prior = process.env.PI_SUBAGENT_TEMP_ROOT;
-    process.env.PI_SUBAGENT_TEMP_ROOT = configured;
-    t.after(() => {
-      if (prior === undefined) {
-        delete process.env.PI_SUBAGENT_TEMP_ROOT;
-      } else {
-        process.env.PI_SUBAGENT_TEMP_ROOT = prior;
-      }
-      fs.rmSync(scratch, { recursive: true, force: true });
     });
     assert.throws(
       () => deliver(h.pi, h.context, legacyNotifications(h.context)),
@@ -381,6 +391,8 @@ test("a malformed legacy hint is logged and skipped without dropping valid legac
     timestamp: 7,
     output: "Valid literal legacy output",
   });
+  fs.writeFileSync(corrupt, JSON.stringify({ sessionId: "foreign", output: "Previously ignored" }));
+  assert.deepEqual(legacyNotifications(h.context), []);
   fs.writeFileSync(corrupt, '{"incomplete":');
   fs.writeFileSync(valid, raw);
   const errors = stub(console, "error");
@@ -407,6 +419,265 @@ test("a malformed legacy hint is logged and skipped without dropping valid legac
   assert.equal(fs.readFileSync(corrupt, "utf8"), '{"incomplete":');
   assert.equal(errors.callCount, 2);
   assert.ok(errors.alwaysCalledWithMatch(corrupt), "each scan names the skipped file");
+  const repaired = JSON.stringify({
+    runId: "corrupt-legacy",
+    sessionId: h.launch.owner,
+    output: "Repaired",
+  });
+  fs.writeFileSync(corrupt, repaired);
+  deliver(h.pi, h.context, legacyNotifications(h.context));
+  assert.equal(
+    fs.readFileSync(corrupt, "utf8"),
+    repaired,
+    "repair is not retired on send acceptance",
+  );
+  await h.session.waitForIdle();
+  assert.deepEqual(
+    h.manager
+      .getEntries()
+      .flatMap((entry) =>
+        entry.type === "custom_message" && entry.customType === "subagent-notify"
+          ? [entry.content]
+          : [],
+      ),
+    [raw, repaired],
+    "changed malformed input recovers through actual native publication",
+  );
+  deliver(h.pi, h.context, legacyNotifications(h.context));
+  assert.equal(fs.existsSync(corrupt), false);
+  assert.equal(errors.callCount, 2, "repair adds no errors");
+});
+
+for (const change of ["same-size", "replacement", "growth", "shrink"] as const) {
+  test(`foreign legacy body reads are bounded until changed input: ${change}`, async (t) => {
+    const h = await fixture(t);
+    const directory = path.join(resolveTempRootDir(), "async-subagent-results");
+    fs.mkdirSync(directory, { recursive: true });
+    const id = `foreign-${change}`;
+    const hint = path.join(directory, id + ".json");
+    const foreign = JSON.stringify(
+      {
+        runId: id,
+        sessionId: "x".repeat(h.launch.owner.length),
+        mode: "single",
+        timestamp: 7,
+        output: "Literal saved output\n" + "x".repeat(1024 * 1024),
+      },
+      null,
+      2,
+    );
+    fs.writeFileSync(hint, foreign);
+    fs.utimesSync(hint, 1234567890, 1234567890);
+    const before = fs.lstatSync(hint, { bigint: true });
+    const reads = spy(fs, "readFileSync");
+    syncBuiltinESMExports();
+    t.after(() => {
+      reads.restore();
+      syncBuiltinESMExports();
+      fs.rmSync(hint, { force: true });
+    });
+    assert.deepEqual(legacyNotifications(h.context), []);
+    assert.equal(reads.withArgs(hint).callCount, 1, "classify the real foreign body");
+    for (let tick = 0; tick < 25; tick++) {
+      assert.deepEqual(legacyNotifications(h.context), []);
+    }
+    assert.equal(
+      reads.withArgs(hint).callCount,
+      1,
+      "unchanged foreign input must not be reread on every poll",
+    );
+    assert.equal(
+      h.manager.getEntries().some((entry) => entry.type === "custom_message"),
+      false,
+    );
+    const priorNotices: string[] = [];
+    if (change === "same-size") {
+      const peer = path.join(directory, "zz-owned-peer.json");
+      const peerRaw = JSON.stringify({
+        runId: "zz-owned-peer",
+        sessionId: h.launch.owner,
+        output: "Peer",
+      });
+      fs.writeFileSync(peer, peerRaw);
+      t.after(() => fs.rmSync(peer, { force: true }));
+      const names = fs.readdirSync(directory);
+      assert.ok(names.indexOf(path.basename(hint)) < names.indexOf(path.basename(peer)));
+      deliver(h.pi, h.context, legacyNotifications(h.context));
+      assert.equal(fs.existsSync(peer), true, "peer send acceptance is not retirement");
+      await h.session.waitForIdle();
+      assert.deepEqual(
+        h.manager
+          .getEntries()
+          .flatMap((entry) =>
+            entry.type === "custom_message" && entry.customType === "subagent-notify"
+              ? [entry.content]
+              : [],
+          ),
+        [peerRaw],
+        "an ignored cache hit cannot drop the later owned peer's actual native publication",
+      );
+      deliver(h.pi, h.context, legacyNotifications(h.context));
+      assert.equal(fs.existsSync(peer), false, "the published peer retires normally");
+      assert.equal(fs.existsSync(hint), true);
+      assert.equal(
+        reads.withArgs(hint).callCount,
+        1,
+        "valid peer processing never rereads the foreign body",
+      );
+      priorNotices.push(peerRaw);
+    }
+    assert.equal(fs.readFileSync(hint, "utf8"), foreign, "foreign bytes stay untouched");
+    let owned = foreign.replace("x".repeat(h.launch.owner.length), h.launch.owner);
+    if (change === "growth") {
+      owned += "\n ";
+    } else if (change === "shrink") {
+      owned = owned.replace("x".repeat(1024 * 1024), "short literal output");
+    }
+    const target = change === "replacement" ? hint + ".next" : hint;
+    fs.writeFileSync(target, owned);
+    fs.utimesSync(target, 1234567890, 1234567890);
+    if (change === "replacement") {
+      fs.renameSync(target, hint);
+    }
+    const after = fs.lstatSync(hint, { bigint: true });
+    assert.equal(after.mtimeNs, before.mtimeNs, "mtime is deliberately restored");
+    if (change === "same-size" || change === "replacement") {
+      assert.equal(after.size, before.size);
+    }
+    if (change === "replacement") {
+      assert.notEqual(after.ino, before.ino, "replacement really changes inode");
+    } else {
+      assert.notEqual(after.ctimeNs, before.ctimeNs, "in-place mutation changes ctime");
+    }
+    const notices = legacyNotifications(h.context);
+    assert.equal(notices.length, 1, "changed foreign input is reclassified for its current owner");
+    assert.equal(
+      notices[0]?.message.content,
+      owned,
+      "publish exact literal bytes, not parsed JSON",
+    );
+    deliver(h.pi, h.context, notices);
+    assert.equal(fs.readFileSync(hint, "utf8"), owned, "send acceptance is not retirement");
+    await h.session.waitForIdle();
+    assert.deepEqual(
+      h.manager
+        .getEntries()
+        .flatMap((entry) =>
+          entry.type === "custom_message" && entry.customType === "subagent-notify"
+            ? [entry.content]
+            : [],
+        ),
+      [...priorNotices, owned],
+      "the actual native SDK publishes each literal completion exactly once",
+    );
+    deliver(h.pi, h.context, legacyNotifications(h.context));
+    assert.equal(fs.existsSync(hint), false, "actual matching receipt retires unchanged input");
+    assert.equal(fs.existsSync(path.join(resolveTempRootDir(), "async-subagent-runs", id)), false);
+  });
+}
+
+test("warm ignored legacy files refuse symlinks and retry input changed during classification", async (t) => {
+  const h = await fixture(t);
+  const directory = path.join(resolveTempRootDir(), "async-subagent-results");
+  fs.mkdirSync(directory, { recursive: true });
+  const hint = path.join(directory, "warm-boundary.json");
+  const outside = path.join(directory, "outside-saved.txt");
+  const foreign = JSON.stringify({
+    runId: "warm-boundary",
+    sessionId: "foreign",
+    output: "Ignored",
+  });
+  const raw = JSON.stringify({
+    runId: "warm-boundary",
+    sessionId: h.launch.owner,
+    output: "Actual",
+  });
+  fs.writeFileSync(hint, foreign);
+  assert.deepEqual(legacyNotifications(h.context), []);
+  fs.writeFileSync(outside, raw);
+  fs.unlinkSync(hint);
+  fs.symlinkSync(outside, hint);
+  t.after(() => {
+    fs.rmSync(hint, { force: true });
+    fs.rmSync(outside, { force: true });
+  });
+  const reads = spy(fs, "readFileSync");
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(legacyNotifications(h.context), []);
+    assert.equal(reads.withArgs(hint).callCount, 0, "never follow the warm file symlink");
+    assert.equal(fs.readFileSync(outside, "utf8"), raw);
+  } finally {
+    reads.restore();
+    syncBuiltinESMExports();
+  }
+  fs.unlinkSync(hint);
+  fs.writeFileSync(hint, foreign);
+  const read = fs.readFileSync;
+  const changing = stub(fs, "readFileSync").callsFake((...args: Parameters<typeof read>) => {
+    const result = read(...args);
+    if (args[0] === hint) {
+      fs.writeFileSync(hint, raw);
+    }
+    return result;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(
+      legacyNotifications(h.context),
+      [],
+      "first classification saw the foreign bytes",
+    );
+    assert.equal(changing.withArgs(hint).callCount, 1, "observe the actual classification read");
+  } finally {
+    changing.restore();
+    syncBuiltinESMExports();
+  }
+  const notices = legacyNotifications(h.context);
+  assert.equal(
+    notices[0]?.message.content,
+    raw,
+    "changed-during-read input cannot be cached as ignored",
+  );
+  deliver(h.pi, h.context, notices);
+  assert.equal(fs.readFileSync(hint, "utf8"), raw);
+  await h.session.waitForIdle();
+  deliver(h.pi, h.context, legacyNotifications(h.context));
+  assert.equal(fs.existsSync(hint), false);
+  assert.equal(fs.readFileSync(outside, "utf8"), raw, "outside saved bytes are never consumed");
+});
+
+test("ignored legacy classification follows the actual current session owner", async (t) => {
+  const h = await fixture(t);
+  const other = await fixture(t);
+  const directory = path.join(resolveTempRootDir(), "async-subagent-results");
+  fs.mkdirSync(directory, { recursive: true });
+  const hint = path.join(directory, "owner-switch.json");
+  const raw = JSON.stringify({
+    runId: "owner-switch",
+    sessionId: other.launch.owner,
+    output: "Saved",
+  });
+  fs.writeFileSync(hint, raw);
+  t.after(() => fs.rmSync(hint, { force: true }));
+  assert.deepEqual(legacyNotifications(h.context), []);
+  assert.deepEqual(legacyNotifications(h.context), []);
+  h.manager.setSessionFile(other.file);
+  try {
+    assert.equal(legacyNotifications(h.context)[0]?.message.content, raw);
+  } finally {
+    h.manager.setSessionFile(h.file);
+  }
+  assert.deepEqual(
+    legacyNotifications(h.context),
+    [],
+    "the original owner still cannot consume it",
+  );
+  deliver(other.pi, other.context, legacyNotifications(other.context));
+  assert.equal(fs.readFileSync(hint, "utf8"), raw);
+  await other.session.waitForIdle();
+  deliver(other.pi, other.context, legacyNotifications(other.context));
+  assert.equal(fs.existsSync(hint), false);
 });
 
 for (const scenario of legacyCases) {
