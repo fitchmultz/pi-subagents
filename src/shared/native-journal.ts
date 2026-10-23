@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
-import { scanJournal, type JournalPolicy, type JournalRecord } from "./journal-frames.ts";
+import { JournalFrames, type JournalPolicy, type JournalRecord } from "./journal-frames.ts";
+import type { Projection, StringChunk } from "./json-projection.ts";
 import { nativeProjection } from "./journal-projections.ts";
 import { isRecord, recordAt, type UnknownRecord } from "./unknown.ts";
 
@@ -44,44 +45,153 @@ function configurationModel(value: NativePreview): string | undefined {
 export class NativeJournal {
   readonly records: NativeRecord[] = [];
   readonly byId = new Map<string, NativeRecord>();
-  readonly stamp: string;
-  readonly end: number;
+  stamp: string;
+  end: number;
   readonly file: string;
-  constructor(file: string, policy: JournalPolicy = "inspect", requireNewline = policy === "live") {
+  private readonly identity: string;
+  private offset = 0;
+  private readonly frames: JournalFrames;
+  constructor(
+    file: string,
+    policy: JournalPolicy = "inspect",
+    requireNewline = policy === "live",
+    options: { readBytes?: number; select?: Projection } = {},
+  ) {
     this.file = file;
-    const fd = fs.openSync(file, "r");
+    let parent: string | null = null;
+    this.frames = new JournalFrames(
+      options.select ?? nativeProjection,
+      (raw) => {
+        const record = preview(raw, parent, this.records[0]?.value.version === 1);
+        if (!record) {
+          if (policy !== "inspect") {
+            throw new SyntaxError(`Native record at byte ${raw.start} requires a type`);
+          }
+          return;
+        }
+        if (record.value.type !== "session") {
+          parent = record.value.id;
+        }
+        this.records.push(record);
+        this.byId.set(record.value.id, record);
+      },
+      { policy, requireNewline },
+    );
+    const fd = fs.openSync(
+      file,
+      fs.constants.O_RDONLY | (policy === "live" ? fs.constants.O_NOFOLLOW : 0),
+    );
     try {
       const stat = fs.fstatSync(fd, { bigint: true });
       this.stamp = journalStamp(stat);
+      this.identity = `${stat.dev}:${stat.ino}`;
       this.end = Number(stat.size);
-      let parent: string | null = null;
-      scanJournal(
-        fd,
-        nativeProjection,
-        (raw) => {
-          const record = preview(raw, parent, this.records[0]?.value.version === 1);
-          if (!record) {
-            if (policy !== "inspect") {
-              throw new SyntaxError(`Native record at byte ${raw.start} requires a type`);
-            }
-            return;
-          }
-          if (record.value.type !== "session") {
-            parent = record.value.id;
-          }
-          this.records.push(record);
-          this.byId.set(record.value.id, record);
-        },
-        { policy, requireNewline, end: this.end },
-      );
-      if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== this.stamp) {
-        throw new Error("Journal changed while indexing; refresh history.");
-      }
+      this.index(fd, Math.min(this.end, options.readBytes ?? Infinity));
+      this.checkInitial(stat, fs.fstatSync(fd, { bigint: true }), policy);
     } finally {
       fs.closeSync(fd);
     }
     if (this.records[0]?.value.type !== "session") {
       throw new Error("Not a readable native Pi session.");
+    }
+  }
+  private checkInitial(before: fs.BigIntStats, after: fs.BigIntStats, policy: JournalPolicy): void {
+    if (
+      journalStamp(after) !== this.stamp &&
+      (policy !== "live" ||
+        after.size < before.size ||
+        `${after.dev}:${after.ino}` !== this.identity)
+    ) {
+      throw new Error("Journal changed while indexing; refresh history.");
+    }
+  }
+  private index(fd: number, end: number): void {
+    const buffer = Buffer.allocUnsafe(65536);
+    while (this.offset < end) {
+      const count = fs.readSync(
+        fd,
+        buffer,
+        0,
+        Math.min(buffer.length, end - this.offset),
+        this.offset,
+      );
+      if (count === 0) {
+        throw new Error("Journal truncated while reading");
+      }
+      this.frames.write(buffer.subarray(0, count));
+      this.offset += count;
+    }
+    this.frames.finish();
+  }
+  get indexed(): boolean {
+    return this.offset === this.end;
+  }
+  /** Incremental, LF-published indexing. Append work is budgeted independently of paint. */
+  refresh(bytes = 256 * 1024): boolean {
+    const fd = fs.openSync(this.file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      const stat = fs.fstatSync(fd, { bigint: true });
+      if (`${stat.dev}:${stat.ino}` !== this.identity || Number(stat.size) < this.offset) {
+        throw new Error("Native journal was replaced or truncated; reopen this conversation.");
+      }
+      if (journalStamp(stat) === this.stamp && this.indexed) {
+        return false;
+      }
+      const previous = this.records.length;
+      this.end = Number(stat.size);
+      this.index(fd, Math.min(this.end, this.offset + bytes));
+      this.stamp = journalStamp(stat);
+      return previous !== this.records.length;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  /** Project one immutable, published record, including bounded slices of very large strings. */
+  async project(
+    record: NativeRecord,
+    select: Projection,
+    stringChunk?: StringChunk,
+    signal?: AbortSignal,
+  ): Promise<UnknownRecord> {
+    const fd = fs.openSync(this.file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    let stream: fs.ReadStream | undefined;
+    try {
+      const stat = fs.fstatSync(fd, { bigint: true });
+      if (`${stat.dev}:${stat.ino}` !== this.identity || Number(stat.size) < record.end) {
+        throw new Error("Native journal was replaced or truncated.");
+      }
+      let value: UnknownRecord | undefined;
+      const frames = new JournalFrames(
+        select,
+        (entry) => {
+          value = entry.value;
+        },
+        { policy: "live", start: record.start, stringChunk },
+      );
+      stream = fs.createReadStream(this.file, {
+        fd,
+        start: record.start,
+        end: record.end - 1,
+        highWaterMark: 65536,
+        signal,
+      });
+      for await (const chunk of stream) {
+        if (!Buffer.isBuffer(chunk)) {
+          throw new TypeError("Native journal reads require bytes.");
+        }
+        frames.write(chunk);
+      }
+      frames.finish();
+      if (!value) {
+        throw new Error("Native entry is not published.");
+      }
+      return value;
+    } finally {
+      if (stream) {
+        stream.destroy();
+      } else {
+        fs.closeSync(fd);
+      }
     }
   }
   branch(leaf?: string | null, endedAt?: number): NativeRecord[] {

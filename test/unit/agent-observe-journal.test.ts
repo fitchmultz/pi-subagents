@@ -1,189 +1,185 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { spy, stub } from "sinon";
-import { JournalTail } from "../../src/agent/journal-tail.ts";
+import { ConversationJournal } from "../../src/agent/journal-tail.ts";
 
-const header = `${JSON.stringify({ type: "session", id: "child-session", version: 3 })}\n`;
-function entry(message: unknown): string {
-  return `${JSON.stringify({ type: "message", id: "entry", message })}\n`;
-}
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "observe-journal-"));
   const file = path.join(root, "child.jsonl");
-  fs.writeFileSync(file, header);
-  return { root, file, tail: new JournalTail(file, "child-session") };
+  fs.writeFileSync(
+    file,
+    `${JSON.stringify({ type: "session", id: "child-session", version: 3 })}\n`,
+  );
+  return { root, file };
+}
+function entry(id: string, parentId: string | null, message: unknown): string {
+  return `${JSON.stringify({ type: "message", id, parentId, message })}\n`;
 }
 
-test("observer reads only LF-published native tool/text activity and renders errors/non-text safely", () => {
-  const { root, file, tail } = fixture();
+test("selected native conversation indexes only published appends and retains branch ancestry", async () => {
+  const { root, file } = fixture();
   try {
     fs.appendFileSync(
       file,
-      entry({
+      entry("a", null, {
         role: "assistant",
+        content: [{ type: "text", text: "first\nsecond 雪😀" }],
+      }),
+    );
+    const journal = new ConversationJournal(file, "child-session");
+    const pending = entry("b", "a", {
+      role: "toolResult",
+      content: [{ type: "text", text: "published result" }],
+    });
+    fs.appendFileSync(file, pending.slice(0, -1));
+    journal.native.refresh();
+    assert.deepEqual(
+      journal.entries().map((record) => record.value.id),
+      ["a"],
+    );
+    assert.deepEqual((await journal.page(journal.entries()[0])).message.content, [
+      { type: "text", text: "first\nsecond 雪😀" },
+    ]);
+    fs.appendFileSync(file, "\n");
+    journal.native.refresh();
+    assert.deepEqual(
+      journal.entries("b").map((record) => record.value.id),
+      ["a", "b"],
+    );
+    assert.equal(journal.native.refresh(), false, "unchanged index does not replay a publication");
+    fs.appendFileSync(file, entry("branch", "a", { role: "assistant", content: "other branch" }));
+    journal.native.refresh();
+    assert.deepEqual(
+      journal.entries("branch").map((record) => record.value.id),
+      ["a", "branch"],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("large native output is completely reachable in bounded content pages without flattening", async () => {
+  const { root, file } = fixture();
+  const text = `START\n${"雪😀\n".repeat(40000)}END`;
+  try {
+    fs.appendFileSync(
+      file,
+      entry("large", null, {
+        role: "toolResult",
+        toolName: "read",
+        toolCallId: "call",
+        isError: true,
         content: [
-          { type: "text", text: "working 雪😀\u001b]52;c;hostile\u0007" },
-          { type: "toolCall", name: "read", arguments: { path: "fact.txt" } },
-          { type: "thinking", thinking: "PRIVATE_THINKING" },
+          { type: "text", text },
+          { type: "image", data: "NOT_TEXT", mimeType: "image/png" },
         ],
       }),
     );
-    const result = entry({
-      role: "toolResult",
-      toolName: "read",
-      isError: true,
-      content: [
-        { type: "text", text: "actual failure" },
-        { type: "image", data: "PRIVATE_IMAGE" },
-      ],
-    });
-    fs.appendFileSync(file, result.slice(0, -1));
-    tail.poll();
-    assert.deepEqual(tail.lines, [
-      "assistant: working 雪😀 ]52;c;hostile ",
-      'assistant: tool read {"path":"fact.txt"}',
-    ]);
-    assert.match(tail.notice, /newline publication/);
-    fs.appendFileSync(file, "\n");
-    tail.poll();
-    assert.deepEqual(tail.lines.slice(-3), [
-      "tool error read:",
-      "actual failure",
-      "[image omitted]",
-    ]);
-    tail.poll();
-    assert.equal(tail.lines.length, 5, "unchanged polling cannot replay entries");
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("observer bounds actual filesystem reads, tail memory and oversized/partial entries", () => {
-  const { root, file, tail } = fixture();
-  const reads = spy(fs, "readSync");
-  const lengths = () =>
-    reads.getCalls().map((call) => {
-      const args: readonly unknown[] = call.args;
-      const length = args[3];
-      assert.ok(typeof length === "number");
-      return length;
-    });
-  try {
-    const fd = fs.openSync(file, "a");
-    fs.writeSync(fd, "x".repeat(2 * 1024 * 1024));
-    fs.closeSync(fd);
-    fs.appendFileSync(
-      file,
-      "\n" + entry({ role: "assistant", content: [{ type: "text", text: "RECENT_FACT" }] }),
-    );
-    syncBuiltinESMExports();
-    tail.poll();
-    assert.deepEqual(tail.lines, [
-      "[Earlier native activity omitted; full journal retained.]",
-      "assistant: RECENT_FACT",
-    ]);
-    assert.ok(
-      lengths().every((length) => length <= 65536),
-      "never read a giant native journal in one tick",
-    );
-    assert.ok(lengths().reduce((sum, length) => sum + length, 0) <= 69632);
-    reads.resetHistory();
-    tail.poll();
-    assert.ok(
-      lengths().reduce((sum, length) => sum + length, 0) <= 4096,
-      "idle poll only checks the bounded header",
-    );
-    fs.appendFileSync(file, "x".repeat(40000));
-    tail.poll();
-    assert.equal(tail.lines.at(-1), "[Large native entry omitted; read the full journal.]");
-    fs.appendFileSync(file, "\nmalformed published JSON\n");
-    tail.poll();
-    assert.equal(tail.lines.at(-1), "[Malformed published native entry omitted.]");
-    for (let i = 0; i < 120; i++) {
-      fs.appendFileSync(
-        file,
-        entry({ role: "assistant", content: [{ type: "text", text: `line-${i}` }] }),
-      );
-    }
-    tail.poll();
-    assert.equal(tail.lines.length, 80);
-    assert.equal(tail.lines.at(-1), "assistant: line-119");
-    assert.ok(tail.lines.every((line) => line.length < 600));
-  } finally {
-    reads.restore();
-    syncBuiltinESMExports();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("observer preserves prior activity across a skipped large burst and recovers after a transient read error", () => {
-  const { root, file, tail } = fixture();
-  try {
-    tail.poll();
-    assert.equal(tail.notice, "Waiting for published native activity.");
-    fs.appendFileSync(file, entry({ role: "assistant", content: "BEFORE_BURST" }));
-    tail.poll();
-    fs.appendFileSync(
-      file,
-      entry({ role: "toolResult", toolName: "write", content: "x".repeat(100000) }),
-    );
-    tail.poll();
-    assert.equal(tail.lines[0], "assistant: BEFORE_BURST");
-    assert.ok(tail.lines.includes("[Earlier native activity omitted; full journal retained.]"));
-    fs.appendFileSync(file, entry({ role: "assistant", content: "AFTER_BURST" }));
-    tail.poll();
-    assert.equal(tail.lines.at(-1), "assistant: AFTER_BURST");
-    const open = stub(fs, "openSync").callThrough();
-    open.onFirstCall().throws(new Error("TEMPORARY_READ_FAILURE"));
-    syncBuiltinESMExports();
-    try {
-      tail.poll();
-      assert.equal(tail.lines.length, 0);
-      assert.equal(tail.notice, "TEMPORARY_READ_FAILURE");
-    } finally {
-      open.restore();
-      syncBuiltinESMExports();
-    }
-    tail.poll();
+    const journal = new ConversationJournal(file, "child-session");
+    const indexedOnOpen = journal.native.indexed;
+    assert.equal(indexedOnOpen, false, "opening does not synchronously index a large body");
     assert.equal(
-      tail.lines.at(-1),
-      "assistant: AFTER_BURST",
-      "unchanged file is re-read after recovery",
+      journal.entries().length,
+      0,
+      "a partially indexed record is not a published message",
+    );
+    while (!journal.native.indexed) {
+      journal.native.refresh();
+    }
+    const record = journal.entries()[0];
+    const first = await journal.page(record);
+    assert.ok(first.pages > 1);
+    const parts: string[] = [];
+    for (let index = 0; index < first.pages; index++) {
+      // oxlint-disable-next-line no-await-in-loop
+      const page = await journal.page(record, index);
+      assert.equal(page.message.isError, true);
+      const content = page.message.content;
+      assert.ok(Array.isArray(content));
+      const block: unknown = content[0];
+      assert.ok(
+        typeof block === "object" &&
+          block !== null &&
+          "text" in block &&
+          typeof block.text === "string",
+      );
+      assert.ok(block.text.length <= 65536);
+      assert.equal(block.text.isWellFormed(), true, "content pages do not split a Unicode scalar");
+      parts.push(block.text);
+      assert.doesNotMatch(JSON.stringify(page), /NOT_TEXT/);
+    }
+    assert.equal(parts.join(""), text);
+    const controller = new AbortController();
+    let chunks = 0;
+    await assert.rejects(
+      journal.native.project(
+        record,
+        () => true,
+        () => {
+          chunks++;
+          controller.abort();
+        },
+        controller.signal,
+      ),
+      { name: "AbortError" },
+    );
+    assert.ok(chunks > 0, "cancellation occurs after an actual published-body chunk was read");
+    assert.equal(
+      (await journal.page(record)).message.toolCallId,
+      "call",
+      "a cancelled body does not poison the next selected read",
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("observer refuses foreign/symlink journals and resets a replaced or truncated file", () => {
-  const { root, file, tail } = fixture();
+test("hidden thinking does not consume visible message pages", async () => {
+  const { root, file } = fixture();
   try {
-    fs.appendFileSync(file, entry({ role: "assistant", content: "OLD_CHILD" }));
-    tail.poll();
-    fs.writeFileSync(file + ".new", header + entry({ role: "assistant", content: "NEW_CHILD" }));
-    fs.renameSync(file + ".new", file);
-    tail.poll();
-    assert.deepEqual(tail.lines, ["assistant: NEW_CHILD"]);
-    fs.writeFileSync(file, header);
-    tail.poll();
-    assert.deepEqual(tail.lines, []);
-    fs.writeFileSync(
+    fs.appendFileSync(
       file,
-      header.replace("child-session", "foreign-owner") +
-        entry({ role: "assistant", content: "FOREIGN" }),
+      entry("reply", null, {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "hidden".repeat(20000) },
+          { type: "text", text: "VISIBLE_REPLY" },
+        ],
+      }),
     );
-    tail.poll();
-    assert.deepEqual(tail.lines, []);
-    assert.match(tail.notice, /identity does not match/);
-    fs.renameSync(file, file + ".target");
-    fs.symlinkSync(file + ".target", file);
-    tail.poll();
-    assert.deepEqual(tail.lines, []);
-    assert.match(tail.notice, /ELOOP/);
+    const journal = new ConversationJournal(file, "child-session");
+    const record = journal.entries()[0];
+    const hidden = await journal.page(record, 0, { hideThinking: true });
+    assert.equal(hidden.pages, 1);
+    assert.deepEqual(hidden.message.content, [
+      { type: "thinking", thinking: "" },
+      { type: "text", text: "VISIBLE_REPLY" },
+    ]);
+    assert.ok(
+      (await journal.page(record)).pages > 1,
+      "thinking remains reachable when native visibility allows it",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("selected conversation refuses foreign and symlink journals and detects replacement before reading a body", async () => {
+  const { root, file } = fixture();
+  try {
+    fs.appendFileSync(file, entry("old", null, { role: "assistant", content: "old child" }));
+    assert.throws(() => new ConversationJournal(file, "another-child"), /identity does not match/);
+    const journal = new ConversationJournal(file, "child-session");
+    const old = journal.entries()[0];
+    fs.renameSync(file, file + ".old");
+    fs.copyFileSync(file + ".old", file);
+    await assert.rejects(journal.page(old), /replaced or truncated/);
+    assert.throws(() => journal.native.refresh(), /replaced or truncated/);
+    fs.unlinkSync(file);
+    fs.symlinkSync(file + ".old", file);
+    assert.throws(() => new ConversationJournal(file, "child-session"), /regular file/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

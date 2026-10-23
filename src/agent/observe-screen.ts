@@ -1,24 +1,32 @@
-import { rawKeyHint, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
-  Container,
+  type Container,
   TruncatedText,
-  sliceByColumn,
-  visibleWidth,
-  type Component,
   type TUI,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { type JournalTail, plainText } from "./journal-tail.ts";
-import { actionText } from "../shared/tui-action.ts";
+import {
+  renderLayoutFrame,
+  dispatchLayoutMouse,
+  type LayoutFrame,
+  VStack,
+} from "./observe-layout.ts";
+import { errorMessage } from "../shared/unknown.ts";
+import { plainText } from "./journal-tail.ts";
+import { Reading } from "./observe-reading.ts";
+import { ObservationChannel, type ObservationClient, type Watch } from "./observe-client.ts";
 
-export type ObserverRow = {
-  id: string;
-  name: string;
-  status: string;
-  live: boolean;
-  createdAt: number;
-};
-export type Watch = { tail: JournalTail; file: string; id: string; inherited: boolean };
+import {
+  ChildList,
+  Details,
+  activityLabel,
+  appendConversation,
+  appendHeader,
+  appendHints,
+  type ObserverRow,
+  type ScreenAction,
+} from "./observe-chrome.ts";
+
 export interface ObserverData {
   inventory: () => ObserverRow[];
   checking: () => boolean;
@@ -27,209 +35,459 @@ export interface ObserverData {
   error: () => string;
   watch: (id: string) => Watch;
 }
-export class ObserverScreen {
+interface ScreenOptions {
+  data: ObserverData;
+  tui: TUI;
+  theme: Theme;
+  keys: KeybindingsManager;
+  done: () => void;
+  selected: string;
+  hideThinking: boolean;
+}
+
+/** Native layout, cards and scrolling; all controls affect local reading state only. */
+export class ObserverScreen extends VStack {
   private selected: string;
-  private watching?: Watch;
+  private readonly list = new ChildList((id) => this.open(id));
+  private reading?: Reading;
+  private readonly connection = new ObservationChannel(() => this.schedule());
+  private get client(): ObservationClient | undefined {
+    return this.connection.current;
+  }
+  private observed = { revision: -1, status: "", signature: "" };
+  private readonly saved = new Map<string, Reading>();
+  private focus: "list" | "conversation" = "list";
+  private details?: Details;
   private failure = "";
-  private readonly data: ObserverData;
-  private readonly tui: TUI;
-  private readonly theme: Theme;
-  private readonly keys: KeybindingsManager;
-  private readonly done: () => void;
-  private readonly timer: NodeJS.Timeout;
-  private readonly content = new Container();
-  constructor(options: {
-    data: ObserverData;
-    tui: TUI;
-    theme: Theme;
-    keys: KeybindingsManager;
-    done: () => void;
-    selected: string;
-  }) {
-    this.data = options.data;
-    this.tui = options.tui;
-    this.theme = options.theme;
-    this.keys = options.keys;
-    this.done = options.done;
+  private timer?: NodeJS.Timeout;
+  private indexer?: NodeJS.Immediate;
+  private lastFlush = -Infinity;
+  private closed = false;
+  private frame?: LayoutFrame;
+  private readonly options: ScreenOptions;
+  constructor(options: ScreenOptions) {
+    super();
+    this.options = options;
     this.selected = options.selected;
-    if (this.selected.length > 0) {
+    if (options.selected.length > 0) {
       this.open(this.selected);
     }
-    this.timer = setInterval(() => this.update(), 250);
-    this.timer.unref();
-    this.update();
+    this.structure();
   }
   private open(id: string): void {
     try {
-      this.watching = this.data.watch(id);
-      this.selected = this.watching.id;
+      const watch = this.options.data.watch(id);
+      const reading: Reading =
+        this.saved.get(watch.launch.id) ??
+        new Reading(watch, {
+          tui: this.options.tui,
+          hideThinking: this.options.hideThinking,
+          changed: () => {
+            if (this.reading === reading) {
+              this.paint();
+            }
+          },
+          loaded: () => {
+            if (this.visible() === reading) {
+              this.schedule();
+            }
+          },
+        });
+      this.reading?.transcript.pause();
+      this.connection.clear();
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      clearImmediate(this.indexer);
+      this.indexer = undefined;
+      this.saved.delete(watch.launch.id);
+      this.saved.set(watch.launch.id, reading);
+      this.reading = reading;
+      this.details = undefined;
+      reading.transcript.resume();
+      this.selected = watch.launch.id;
+      this.focus = "conversation";
       this.failure = "";
+      this.connect();
+      this.index();
+      this.structure();
+      this.options.tui.requestRender();
+      for (const key of this.saved.keys()) {
+        if (this.saved.size > 4 && key !== this.selected) {
+          this.saved.delete(key);
+        }
+      }
     } catch (error) {
-      this.failure = error instanceof Error ? plainText(error.message) : "Journal unavailable.";
+      this.failure = plainText(errorMessage(error));
+      this.paint();
     }
+  }
+  private visible(): Reading | undefined {
+    return this.focus === "conversation" || (this.reading?.width ?? 0) >= 100
+      ? this.reading
+      : undefined;
+  }
+  private connect(): void {
+    const reading = this.visible();
+    if (!reading) {
+      return;
+    }
+    try {
+      const id = reading.watch.launch.id;
+      const watch = this.options.data.watch(id);
+      if (!watch.identity || this.options.data.row(id)?.live !== true) {
+        return;
+      }
+      this.connection.connect(watch.identity);
+    } catch {
+      /* The owner refresh retries; preserve the last confirmed conversation meanwhile. */
+    }
+  }
+  private index(): void {
+    const reading = this.visible();
+    if (
+      !reading ||
+      reading.transcript.journal.native.indexed ||
+      this.indexer !== undefined ||
+      this.failure.length > 0 ||
+      this.closed
+    ) {
+      return;
+    }
+    this.indexer = setImmediate(() => {
+      this.indexer = undefined;
+      if (this.visible() !== reading) {
+        return;
+      }
+      try {
+        reading.transcript.journal.native.refresh();
+        this.index();
+      } catch (error) {
+        this.failure = plainText(errorMessage(error));
+      }
+      this.schedule();
+    });
+    this.indexer.unref();
+  }
+  private schedule(): void {
+    if (this.closed || this.timer !== undefined) {
+      return;
+    }
+    this.timer = setTimeout(
+      () => {
+        this.timer = undefined;
+        this.flush();
+      },
+      Math.max(0, this.lastFlush + 250 - performance.now()),
+    );
+    this.timer.unref();
+  }
+  private snapshot(): typeof this.observed {
+    const revision = this.client?.revision ?? -1;
+    const status = this.options.data.row(this.selected)?.status ?? "";
+    const signature = JSON.stringify([
+      this.options.data.status(),
+      this.options.data.inventory().map(({ id, name, status: state }) => [id, name, state]),
+      this.client
+        ? [this.client.activity, this.client.connected, this.client.model, this.client.thinking]
+        : undefined,
+      this.selected,
+      this.failure,
+      this.reading?.transcript.version,
+    ]);
+    return { revision, status, signature };
+  }
+  private flush(force = false): void {
+    if (this.closed) {
+      return;
+    }
+    const before = this.observed;
+    this.observed = this.snapshot();
+    const changed =
+      before.revision !== this.observed.revision || before.status !== this.observed.status;
+    const pending = this.reading?.pending;
+    const applied = this.apply(force, changed);
+    this.lastFlush = performance.now();
+    if (
+      force ||
+      before.signature !== this.observed.signature ||
+      applied ||
+      pending !== this.reading?.pending
+    ) {
+      this.structure();
+      this.options.tui.requestRender();
+    }
+    this.index();
+    this.wait();
+  }
+  private apply(force: boolean, changed: boolean): boolean {
+    try {
+      return this.refreshReading(force, changed);
+    } catch (error) {
+      this.failure = plainText(errorMessage(error));
+      this.saved.delete(this.reading?.watch.launch.id ?? "");
+      this.reading?.transcript.pause();
+      return true;
+    }
+  }
+  private wait(): void {
+    const reading = this.visible();
+    if (
+      reading !== undefined &&
+      this.failure.length === 0 &&
+      reading.transcript.waiting &&
+      this.options.data.row(this.selected)?.live === true
+    ) {
+      this.schedule();
+    }
+  }
+  private refreshReading(force: boolean, changed: boolean): boolean {
+    const reading = this.visible();
+    if (!reading) {
+      return false;
+    }
+    reading.following = reading.following && reading.scroll.isFollowingEnd;
+    if (!reading.following && !force) {
+      reading.transcript.observe(this.client);
+      reading.pending ||= changed;
+      return false;
+    }
+    const client =
+      this.options.data.row(reading.watch.launch.id)?.live === true ? this.client : undefined;
+    const applied = reading.transcript.sync(client);
+    if (reading.following) {
+      reading.scroll.scrollToEnd();
+      reading.pending = false;
+    }
+    return applied;
   }
   update(): void {
-    this.watching?.tail.poll();
-    this.tui.requestRender();
-  }
-  private select(direction: number): void {
-    const rows = this.data.inventory();
-    const index = Math.max(
-      0,
-      rows.findIndex((row) => row.id === this.selected),
-    );
-    this.selected = rows[Math.max(0, Math.min(rows.length - 1, index + direction))]?.id ?? "";
-  }
-  private confirm(): void {
-    this.select(0);
-    if (this.selected.length > 0) {
-      this.open(this.selected);
+    if (!this.visible()) {
+      this.connection.pause();
+      this.reading?.transcript.pause();
     }
-  }
-  private move(data: string): void {
-    if (this.keys.matches(data, "tui.select.confirm")) {
-      this.confirm();
-    } else if (this.keys.matches(data, "tui.select.down")) {
-      this.select(1);
-    } else if (this.keys.matches(data, "tui.select.up")) {
-      this.select(-1);
-    }
-  }
-  handleInput(data: string): void {
-    if (this.keys.matches(data, "tui.select.cancel")) {
-      this.back();
-    } else if (!this.watching) {
-      this.move(data);
-    }
-    this.update();
+    this.connect();
+    this.flush();
   }
   private back(): void {
-    if (this.watching) {
-      this.watching = undefined;
-      this.failure = "";
+    if (this.details) {
+      this.details = undefined;
+    } else if (this.reading) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      clearImmediate(this.indexer);
+      this.indexer = undefined;
+      this.connection.clear();
+      this.reading.transcript.pause();
+      this.reading = undefined;
+      this.focus = "list";
     } else {
-      this.done();
+      this.options.done();
+      return;
     }
+    this.structure();
+    this.options.tui.requestRender();
   }
-  handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-    return this.content.handleMouse(event);
-  }
-  private listLines(height: number): Component[] {
-    const rows = this.data.inventory();
+  private move(direction: number): void {
+    if (this.focus === "conversation") {
+      if (this.details) {
+        this.details.scrollBy(direction);
+      } else {
+        this.visible()?.scrollBy(direction);
+      }
+      return;
+    }
+    const rows = this.options.data.inventory();
     const index = Math.max(
       0,
       rows.findIndex((row) => row.id === this.selected),
     );
-    const size = Math.max(1, height - 1);
-    const start = Math.max(0, index - size + 1);
-    const page = rows.slice(start, start + size);
-    if (rows.length === 0) {
-      return [
-        new TruncatedText(
-          this.data.checking()
-            ? "Checking saved child runs…"
-            : "No child runs to show. Completed runs are hidden.",
-          0,
-          0,
-        ),
-      ];
+    const next = Math.max(0, Math.min(rows.length - 1, index + direction));
+    this.selected = rows[next]?.id ?? "";
+    this.list.reveal(next);
+  }
+  private page(direction: number): void {
+    if (this.focus === "list") {
+      this.list.scrollBy(direction * this.list.viewportHeight);
+      return;
     }
+    if (this.details) {
+      this.details.scrollBy(direction * this.details.viewportHeight);
+      return;
+    }
+    if (this.reading?.page(direction) === true) {
+      this.flush(true);
+    }
+  }
+  private end(): void {
+    if (this.details && this.focus === "conversation") {
+      this.details.scrollToEnd();
+      return;
+    }
+    if (!this.reading) {
+      return;
+    }
+    this.focus = "conversation";
+    this.reading.transcript.resume();
+    this.connect();
+    this.reading.following = true;
+    this.reading.scroll.scrollToEnd();
+    this.reading.transcript.latest();
+    this.flush(true);
+  }
+  private confirm(): void {
+    if (this.focus === "list") {
+      this.open(
+        this.selected.length > 0 ? this.selected : (this.options.data.inventory()[0]?.id ?? ""),
+      );
+    } else if (this.reading) {
+      this.reading.transcript.toggle();
+    }
+  }
+  private switchFocus(): void {
+    this.focus = this.focus === "list" && this.reading ? "conversation" : "list";
+    if (!this.visible()) {
+      this.connection.pause();
+      this.reading?.transcript.pause();
+    } else {
+      this.reading?.transcript.resume();
+      this.connect();
+      this.index();
+    }
+  }
+  private toggleDetails(): void {
+    if (this.details || !this.reading) {
+      this.details = undefined;
+    } else {
+      this.details = new Details(this.reading.watch.launch);
+    }
+  }
+  private actions(): ScreenAction[] {
     return [
-      new TruncatedText(
-        `Runs ${start + 1}–${start + page.length} of ${rows.length} · active first`,
-        0,
-        0,
-      ),
-      ...page.map((row, i) =>
-        actionText(
-          `${start + i === index ? ">" : " "} ${row.id.slice(0, 8)} ${row.status} · ${row.name}`,
-          () => {
-            this.open(row.id);
-            this.update();
-          },
-        ),
-      ),
+      ["tui.select.cancel", this.reading ? "back" : "close", () => this.back()],
+      ["tui.select.confirm", this.focus === "list" ? "open" : "expand", () => this.confirm()],
+      ["tui.select.up", "", () => this.move(-1)],
+      ["tui.select.down", "", () => this.move(1)],
+      ["tui.select.pageUp", "read up", () => this.page(-1)],
+      ["tui.select.pageDown", "read down", () => this.page(1)],
+      ["tui.editor.cursorLineEnd", this.details ? "details end" : "live", () => this.end()],
+      ["app.session.togglePath", "details", () => this.toggleDetails()],
+      [
+        "tui.input.tab",
+        this.focus === "list" && this.reading ? "conversation" : "children",
+        () => this.switchFocus(),
+      ],
     ];
   }
-  private journalPath(width: number, file: string): string {
-    const text = plainText(file.slice(-2048), 2048);
-    const size = visibleWidth(text);
-    const room = Math.max(0, width - 1);
-    return size > width ? `…${sliceByColumn(text, size - room, room)}` : text;
+  private perform(action: () => void): void {
+    action();
+    this.paint();
   }
-  private watchLines(height: number, watch: Watch, width: number): string[] {
-    const row = this.data.row(this.selected);
-    return [
-      `${this.selected.slice(0, 8)} ${row?.status ?? "checking"} · ${row?.name ?? this.selected}`,
-      this.journalPath(width, watch.file),
-      ...(watch.inherited ? ["Fork context: includes inherited parent activity."] : []),
-      ...watch.tail.lines.slice(-Math.max(1, height - 3)),
-      watch.tail.notice,
-    ];
-  }
-  render(width: number): string[] {
-    const height = Math.max(1, Math.min(16, this.tui.terminal.rows - 9));
-    const content = this.watching
-      ? this.watchLines(height, this.watching, width).map((line) => new TruncatedText(line, 0, 0))
-      : this.listLines(height);
-    const hint = (
-      key: "tui.select.cancel" | "tui.select.up" | "tui.select.down" | "tui.select.confirm",
-      label: string,
-      action: () => void,
-    ): { text: string; action?: () => void } => ({
-      text: rawKeyHint(this.keys.getKeys(key)[0] ?? "", label),
-      action,
-    });
-    const hints = this.watching
-      ? [
-          hint("tui.select.cancel", "back", () => this.back()),
-          { text: "native published entries, not token deltas" },
-        ]
-      : [
-          hint("tui.select.up", "up", () => this.select(-1)),
-          hint("tui.select.down", "down", () => this.select(1)),
-          hint("tui.select.confirm", "watch", () => this.confirm()),
-          hint("tui.select.cancel", "close", () => this.back()),
-        ];
-    const error = this.failure.length > 0 ? this.failure : this.data.error();
-    this.content.clear();
-    this.content.addChild(
-      new TruncatedText(
-        this.theme.fg(
-          "accent",
-          this.watching?.inherited === true
-            ? "Agents · read-only · fork context"
-            : "Agents · read-only",
-        ),
-        0,
-        0,
-      ),
-    );
-    this.content.addChild(new TruncatedText(this.theme.fg("muted", this.data.status()), 0, 0));
-    for (const component of content) {
-      this.content.addChild(component);
+  private paint(): void {
+    if (this.closed) {
+      return;
     }
-    this.content.addChild(new TruncatedText(this.theme.fg("error", error), 0, 0));
-    this.content.addChild(
-      actionText(this.theme.fg("dim", hints.map((item) => item.text).join("  ")), (column) => {
-        let start = 0;
-        for (const item of hints) {
-          const end = start + visibleWidth(item.text);
-          if (column >= start && column < end) {
-            item.action?.();
-            this.update();
-            return;
-          }
-          start = end + 2;
-        }
+    this.structure();
+    this.options.tui.requestRender();
+  }
+  handleInput(data: string): void {
+    const action = this.actions().find(([key]) => this.options.keys.matches(data, key));
+    if (action) {
+      this.perform(action[2]);
+    }
+  }
+  private conversation(reading: Reading): void {
+    const configuration = this.client ?? reading.watch.launch;
+    appendHeader(this, {
+      launch: reading.watch.launch,
+      model: configuration.model,
+      thinking: configuration.thinking,
+      activity: activityLabel({
+        row: this.options.data.row(reading.watch.launch.id),
+        client: this.client,
+        connecting: this.connection.connecting,
       }),
-    );
-    return this.content.render(width);
+      details: this.details,
+      toggle: () => {
+        this.toggleDetails();
+        this.paint();
+      },
+    });
+    appendConversation(this, {
+      list: this.list,
+      reading,
+      follow: () => this.end(),
+    });
   }
-  invalidate(): void {
-    this.tui.requestRender();
+  private structure(): void {
+    this.clear();
+    this.addChild(new TruncatedText(this.options.theme.fg("accent", "Agents · read-only"), 0, 0), {
+      basis: 1,
+    });
+    const rows = this.options.data.inventory();
+    if (this.selected.length === 0) {
+      this.selected = rows[0]?.id ?? "";
+    }
+    this.list.update(rows, this.selected, this.options.data.checking());
+    const reading = this.visible();
+    if (reading) {
+      this.conversation(reading);
+    } else {
+      this.addChild(new TruncatedText(this.options.data.status(), 0, 0), { basis: 1 });
+      this.addChild(this.list, {
+        basis: 0,
+        grow: 1,
+        minSize: 1,
+      });
+    }
+    const error = this.failure.length > 0 ? this.failure : this.options.data.error();
+    if (error.length > 0) {
+      this.addChild(new TruncatedText(this.options.theme.fg("warning", error), 0, 0), { basis: 1 });
+    }
+    appendHints(this, {
+      actions: this.actions(),
+      keys: this.options.keys,
+      perform: (action) => this.perform(action),
+    });
+  }
+  override render(width: number): string[] {
+    const reading = this.reading;
+    const anchor = reading?.anchor();
+    if (reading?.resize(width) === true) {
+      this.structure();
+    }
+    const frame = () =>
+      renderLayoutFrame(this, width, Math.max(1, this.options.tui.terminal.rows), () =>
+        this.options.tui.requestRender(),
+      );
+    this.frame = frame();
+    const visible = this.visible();
+    const selected =
+      visible?.transcript.select(visible.scroll.scrollTop, visible.scroll.viewportHeight) === true;
+    if (visible && anchor) {
+      visible.reveal(anchor);
+    }
+    if (selected || (visible && anchor)) {
+      this.frame = frame();
+    }
+    return this.frame.lines;
+  }
+  override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+    const result = this.frame ? dispatchLayoutMouse(this, this.frame, event) : undefined;
+    const reading = this.visible();
+    if (reading?.following === true && !reading.scroll.isFollowingEnd) {
+      reading.following = false;
+      this.structure();
+    }
+    return result;
   }
   dispose(): void {
-    clearInterval(this.timer);
+    this.closed = true;
+    clearTimeout(this.timer);
+    clearImmediate(this.indexer);
+    this.connection.clear();
+    for (const reading of this.saved.values()) {
+      reading.transcript.pause();
+    }
+    this.saved.clear();
   }
 }

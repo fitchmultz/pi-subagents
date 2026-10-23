@@ -1,14 +1,10 @@
 import * as fs from "node:fs";
+import { NativeJournal, type NativeRecord } from "../shared/native-journal.ts";
+import { nativeProjection } from "../shared/journal-projections.ts";
+import type { Projection } from "../shared/json-projection.ts";
+import { isRecord, recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
-const READ_BYTES = 65536;
-const LINE_BYTES = 32768;
-const KEEP_LINES = 80;
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 export function plainText(value: string, length = 512): string {
-  // Journal content is untrusted terminal input, never terminal control sequences.
   return Array.from(value.slice(0, length))
     .map((char) => {
       const code = char.codePointAt(0) ?? 0;
@@ -16,169 +12,161 @@ export function plainText(value: string, length = 512): string {
     })
     .join("");
 }
-function contentLines(content: unknown): string[] {
-  if (typeof content === "string") {
-    return [plainText(content)];
+const PAGE_CHARS = 32 * 1024;
+const callFields = new Set(["type", "id", "name"]);
+const textFields = new Set(["text", "thinking"]);
+const metadata: Projection = (keys, root) => {
+  if (
+    keys[0] === "message" &&
+    keys[1] === "content" &&
+    keys.length > 3 &&
+    !callFields.has(String(keys[3]))
+  ) {
+    return false;
   }
-  if (!Array.isArray(content)) {
-    return [];
+  return nativeProjection(keys, root);
+};
+function contentIndex(keys: readonly (string | number)[]): number | undefined {
+  if (keys[0] !== "message" || keys[1] !== "content") {
+    return undefined;
   }
-  return content.slice(0, 12).flatMap((block: unknown) => {
-    if (!record(block)) {
-      return [];
-    }
-    if (block.type === "text" && typeof block.text === "string") {
-      return [plainText(block.text)];
-    }
-    if (block.type === "toolCall" && typeof block.name === "string") {
-      return [`tool ${plainText(block.name, 80)} ${plainText(JSON.stringify(block.arguments))}`];
-    }
-    return block.type === "thinking"
-      ? []
-      : [`[${typeof block.type === "string" ? plainText(block.type, 40) : "non-text"} omitted]`];
-  });
+  if (keys.length === 2) {
+    return -1;
+  }
+  return typeof keys[2] === "number" && textFields.has(String(keys[3])) ? keys[2] : undefined;
 }
-function activity(value: unknown): string[] {
-  if (!record(value) || value.type !== "message" || !record(value.message)) {
-    return [];
+class TextPage {
+  private chars = 0;
+  private carry?: { index: number; text: string };
+  private readonly text = new Map<number, string>();
+  private readonly start: number;
+  constructor(page: number) {
+    this.start = page * PAGE_CHARS;
   }
-  const message = value.message;
-  if (message.role === "assistant") {
-    const lines = contentLines(message.content).map((line) => `assistant: ${line}`);
-    if (typeof message.errorMessage === "string") {
-      lines.push(`assistant error: ${plainText(message.errorMessage)}`);
+  add(index: number, chunk: string): void {
+    const previous = this.carry;
+    this.carry = undefined;
+    if (previous && previous.index !== index) {
+      this.take(previous.index, previous.text);
     }
-    return lines;
+    const text = previous?.index === index ? previous.text + chunk : chunk;
+    const last = text.charCodeAt(text.length - 1);
+    const pending = last >= 0xd800 && last <= 0xdbff;
+    this.take(index, pending ? text.slice(0, -1) : text);
+    if (pending) {
+      this.carry = { index, text: text.slice(-1) };
+    }
   }
-  if (message.role === "toolResult") {
-    const label = message.isError === true ? "tool error" : "tool result";
-    const name = typeof message.toolName === "string" ? plainText(message.toolName, 80) : "unknown";
-    return [`${label} ${name}:`, ...contentLines(message.content)];
+  private take(index: number, text: string): void {
+    const points = Array.from(text);
+    const from = Math.max(0, this.start - this.chars);
+    const to = Math.min(points.length, this.start + PAGE_CHARS - this.chars);
+    if (to > from) {
+      this.text.set(index, (this.text.get(index) ?? "") + points.slice(from, to).join(""));
+    }
+    this.chars += points.length;
   }
-  return [];
+  finish(value: UnknownRecord, page: number): ConversationPage {
+    if (this.carry) {
+      this.take(this.carry.index, this.carry.text);
+    }
+    const message = { ...recordAt(value, "message") };
+    if (typeof message.content === "string") {
+      message.content = this.text.get(-1) ?? "";
+    }
+    if (Array.isArray(message.content)) {
+      for (const [index, block] of (message.content as unknown[]).entries()) {
+        if (isRecord(block) && typeof block.type === "string" && textFields.has(block.type)) {
+          block[block.type] = this.text.get(index) ?? "";
+        }
+      }
+    }
+    return { message, page, pages: Math.max(1, Math.ceil(this.chars / PAGE_CHARS)) };
+  }
+}
+export interface ConversationPage {
+  message: UnknownRecord;
+  page: number;
+  pages: number;
 }
 
-/** A lossy display tail; the native journal remains the complete source of truth. */
-export class JournalTail {
-  readonly lines: string[] = [];
-  notice = "Waiting for published native activity.";
-  private offset = 0;
-  private partial: Buffer = Buffer.alloc(0);
-  private dropping = false;
-  private identity = "";
-  private stamp = 0;
-  private readonly file: string;
-  private readonly sessionId: string;
+/** Native indexing owns ancestry and publication; only requested message pages are hydrated. */
+export class ConversationJournal {
+  readonly native: NativeJournal;
+  private branch?: { length: number; leaf: string | null | undefined; entries: NativeRecord[] };
   constructor(file: string, sessionId: string) {
-    this.file = file;
-    this.sessionId = sessionId;
-  }
-  private reset(size: number): void {
-    this.lines.length = 0;
-    this.offset = 0;
-    this.partial = Buffer.alloc(0);
-    this.dropping = false;
-    if (size > READ_BYTES) {
-      this.skip(size);
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("Child journal is not a regular file.");
     }
-  }
-  private skip(size: number): void {
-    this.offset = size - READ_BYTES;
-    this.partial = Buffer.alloc(0);
-    this.dropping = true;
-    this.lines.push("[Earlier native activity omitted; full journal retained.]");
-  }
-  private header(fd: number): void {
-    const head = Buffer.alloc(4096);
-    const count = fs.readSync(fd, head, 0, head.length, 0);
-    const lf = head.indexOf(10, 0);
-    if (lf < 0 || lf >= count) {
-      throw new Error("Native journal header is incomplete or too large.");
-    }
-    const value: unknown = JSON.parse(head.subarray(0, lf).toString("utf8"));
-    if (!record(value) || value.type !== "session" || value.id !== this.sessionId) {
+    this.native = new NativeJournal(file, "live", true, {
+      readBytes: 256 * 1024,
+      select: metadata,
+    });
+    if (this.native.records[0]?.value.id !== sessionId) {
       throw new Error("Native journal identity does not match this child.");
     }
   }
-  private line(line: Buffer): void {
-    if (line.length > LINE_BYTES) {
-      this.lines.push("[Large native entry omitted; read the full journal.]");
-      return;
+  entries(requested?: string | null): NativeRecord[] {
+    const leaf =
+      typeof requested === "string" && !this.native.byId.has(requested) ? undefined : requested;
+    if (this.branch?.length !== this.native.records.length || this.branch.leaf !== leaf) {
+      this.branch = {
+        length: this.native.records.length,
+        leaf,
+        entries: this.native.branch(leaf).filter((entry) => entry.value.type === "message"),
+      };
     }
-    try {
-      const value: unknown = JSON.parse(line.toString("utf8"));
-      this.lines.push(...activity(value));
-    } catch {
-      this.lines.push("[Malformed published native entry omitted.]");
-    }
+    return this.branch.entries;
   }
-  private consume(chunk: Buffer): void {
-    const bytes = Buffer.concat([this.partial, chunk]);
-    let start = 0;
-    let lf = bytes.indexOf(10);
-    while (lf >= 0) {
-      if (!this.dropping) {
-        this.line(bytes.subarray(start, lf));
-      }
-      this.dropping = false;
-      start = lf + 1;
-      lf = bytes.indexOf(10, start);
-    }
-    this.partial = bytes.subarray(start);
-    if (this.partial.length > LINE_BYTES) {
-      this.partial = Buffer.alloc(0);
-      this.dropping = true;
-      this.lines.push("[Large native entry omitted; read the full journal.]");
-    }
-    this.lines.splice(0, Math.max(0, this.lines.length - KEEP_LINES));
-    if (this.partial.length > 0) {
-      this.notice = "Waiting for newline publication of the latest native entry.";
-    }
+  async call(id: string, result: string, signal?: AbortSignal): Promise<UnknownRecord | undefined> {
+    const contains = (entry: NativeRecord) => {
+      const content = recordAt(entry.value, "message")?.content;
+      return (
+        Array.isArray(content) &&
+        content.some(
+          (part: unknown) => isRecord(part) && part.type === "toolCall" && part.id === id,
+        )
+      );
+    };
+    const entries = this.branch?.entries ?? [];
+    const entry = entries
+      .slice(
+        0,
+        entries.findIndex((item) => item.value.id === result),
+      )
+      .findLast(contains);
+    const content = entry && (await this.page(entry, 0, { signal })).message.content;
+    return Array.isArray(content)
+      ? content.find(
+          (part: unknown): part is UnknownRecord =>
+            isRecord(part) && part.type === "toolCall" && part.id === id,
+        )
+      : undefined;
   }
-  private changed(stat: fs.Stats, identity: string): boolean {
-    return (
-      identity !== this.identity ||
-      stat.size < this.offset ||
-      (stat.size === this.offset && stat.mtimeMs !== this.stamp)
+  async page(
+    entry: NativeRecord,
+    page = 0,
+    options: { signal?: AbortSignal; hideThinking?: boolean } = {},
+  ): Promise<ConversationPage> {
+    const text = new TextPage(page);
+    const value = await this.native.project(
+      entry,
+      (keys, root) => {
+        if (contentIndex(keys) !== undefined && keys.length > 2) {
+          return 0;
+        }
+        return nativeProjection(keys, root);
+      },
+      (keys, chunk) => {
+        const index = contentIndex(keys);
+        if (index === undefined || (options.hideThinking === true && keys[3] === "thinking")) {
+          return;
+        }
+        text.add(index, chunk);
+      },
+      options.signal,
     );
-  }
-  private observe(fd: number, stat: fs.Stats): void {
-    const identity = `${stat.dev}:${stat.ino}`;
-    if (this.changed(stat, identity)) {
-      this.reset(stat.size);
-    } else if (stat.size - this.offset > READ_BYTES) {
-      this.skip(stat.size);
-    }
-    this.identity = identity;
-    this.stamp = stat.mtimeMs;
-    const chunk = Buffer.alloc(Math.min(READ_BYTES, stat.size - this.offset));
-    const count = fs.readSync(fd, chunk, 0, chunk.length, this.offset);
-    this.offset += count;
-    this.notice =
-      this.offset > READ_BYTES ? "Recent journal tail only; full journal retained." : "";
-    this.consume(chunk.subarray(0, count));
-    if (this.lines.length === 0 && this.notice.length === 0) {
-      this.notice = "Waiting for published native activity.";
-    }
-  }
-  poll(): void {
-    let fd: number | undefined;
-    try {
-      fd = fs.openSync(this.file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-      const stat = fs.fstatSync(fd);
-      if (!stat.isFile()) {
-        throw new Error("Native journal is not a regular file.");
-      }
-      this.header(fd);
-      this.observe(fd, stat);
-    } catch (error) {
-      this.lines.length = 0;
-      this.identity = "";
-      this.notice = error instanceof Error ? plainText(error.message) : "Journal unavailable.";
-    } finally {
-      if (fd !== undefined) {
-        fs.closeSync(fd);
-      }
-    }
+    return text.finish(value, page);
   }
 }

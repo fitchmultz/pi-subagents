@@ -136,6 +136,186 @@ async function cleanupActors(root: string): Promise<void> {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+async function firstPageNavigation(
+  terminal: CaptureTerminal,
+  view: TUI | undefined,
+  fork: boolean,
+): Promise<void> {
+  const visible = () =>
+    view instanceof TuiAltScreen
+      ? view.getScreenLines().map(stripTerminalSequences).join("\n")
+      : terminal.text();
+  terminal.clear();
+  terminal.send("\x10");
+  await until(
+    () => visible().includes("Assignment preview"),
+    "Details is keyboard reachable",
+    visible,
+  );
+  if (fork) {
+    assert.match(visible(), /Fork context: includes inherited parent activity/);
+  }
+  terminal.clear();
+  terminal.send("\x1b[6~");
+  await until(
+    () => visible().includes(".jsonl"),
+    "Details scrolls to the complete journal identity",
+    visible,
+  );
+  terminal.clear();
+  terminal.send("\x1b");
+  await until(
+    () =>
+      view instanceof TuiAltScreen
+        ? !visible().includes("Assignment preview")
+        : terminal.text().includes("Following live"),
+    "Escape closes Details before the viewer",
+    visible,
+  );
+  terminal.clear();
+  terminal.send("\x1b[5~");
+  await until(
+    () => visible().includes("Reading earlier"),
+    "first-page Page Up suspends follow",
+    visible,
+  );
+  if (view instanceof TuiAltScreen) {
+    assert.match(
+      visible(),
+      /CHILD_TEXT_LIVE|observe_gate/,
+      "Page Up at the beginning cannot blank the first conversation page",
+    );
+  }
+  terminal.send("\x1b[F");
+  await until(
+    () => visible().includes("Following live"),
+    "End returns from the first page",
+    visible,
+  );
+}
+
+async function exerciseReading(options: {
+  terminal: CaptureTerminal;
+  screen: TuiAltScreen;
+  mode: sdk.InteractiveMode;
+  session: sdk.AgentSession;
+  a: ReturnType<typeof usageLaunch>;
+  b: ReturnType<typeof usageLaunch>;
+}): Promise<void> {
+  const { terminal, screen, a, b } = options;
+  const native = sdk.SessionManager.open(a.sessionFile);
+  native.appendMessage({ role: "user", content: "READING_FIXTURE", timestamp: 1 });
+  for (let index = 0; index < 56; index++) {
+    native.appendMessage(
+      fauxAssistantMessage(
+        `HISTORY_${String(index).padStart(2, "0")}\n${"A long independent history row 雪😀 ".repeat(15)}\n`,
+      ),
+    );
+  }
+  const page = (label: string) => `${label}\n${"W".repeat(32768 - label.length - 2)}\n`;
+  native.appendMessage(
+    fauxAssistantMessage(`${page("PAGE_ONE")}${page("PAGE_TWO")}PAGE_THREE\nLATEST_TAIL`),
+  );
+  const other = sdk.SessionManager.open(b.sessionFile);
+  other.appendMessage({ role: "user", content: "SECOND_READING_FIXTURE", timestamp: 1 });
+  other.appendMessage(fauxAssistantMessage("OTHER_CHILD_ONLY"));
+  const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
+  const keyUntil = (key: string, text: string) =>
+    until(
+      () => {
+        if (shown().includes(text)) {
+          return true;
+        }
+        terminal.send(key);
+        return false;
+      },
+      `keyboard reaches ${text}`,
+      shown,
+    );
+  const command = options.mode.getUserInput().then((text) => options.session.prompt(text));
+  terminal.send(`/agents ${a.id}`);
+  terminal.send("\r");
+  await until(
+    () => shown().includes("LATEST_TAIL"),
+    "opening starts at the latest content page",
+    shown,
+  );
+  assert.match(shown(), /Content page 3\/3/);
+  terminal.send("\x1b[5~");
+  await until(
+    () => shown().includes("Content page 2/3"),
+    "backward content navigation lands at the previous page end",
+    shown,
+  );
+  await keyUntil("\x1b[5~", "PAGE_TWO");
+  terminal.send("\x1b[5~");
+  await until(
+    () => shown().includes("Content page 1/3"),
+    "the next backward content navigation preserves its landing",
+    shown,
+  );
+  await keyUntil("\x1b[5~", "PAGE_ONE");
+  await keyUntil("\x1b[5~", "HISTORY_45");
+  const anchor = shown().match(/HISTORY_\d+/)?.[0];
+  assert.ok(anchor !== undefined);
+  terminal.width = 46;
+  terminal.resize?.();
+  await until(
+    () => visibleWidth(screen.getScreenLines()[0] ?? "") === 46,
+    "reading resizes to46 columns",
+  );
+  assert.ok(shown().includes(anchor), "width reflow preserves the observed native entry");
+  await keyUntil("\x1b[5~", "HISTORY_00");
+  const saved = shown().match(/HISTORY_\d+/)?.[0];
+  assert.ok(saved !== undefined);
+  terminal.send("\t");
+  await until(
+    () => shown().includes("enter open"),
+    "narrow Tab shows the actual child list",
+    shown,
+  );
+  terminal.click(screen, "running · reader-b");
+  await until(
+    () => shown().includes("OTHER_CHILD_ONLY"),
+    "switching hydrates only the selected child",
+    shown,
+  );
+  assert.doesNotMatch(shown(), /HISTORY_\d+/);
+  terminal.send("\t");
+  await until(
+    () => shown().includes("enter open"),
+    "the second child can return to its list",
+    shown,
+  );
+  terminal.click(screen, "running · reader-a");
+  await until(
+    () => shown().includes(saved),
+    "returning restores the first child's entry anchor",
+    shown,
+  );
+  assert.doesNotMatch(
+    shown(),
+    /OTHER_CHILD_ONLY/,
+    "late hydration cannot replace the selected child",
+  );
+  await keyUntil("\x1b[6~", "HISTORY_45");
+  assert.match(shown(), /Reading earlier/, "forward history does not silently resume live follow");
+  terminal.send("\x1b[F");
+  await until(
+    () => shown().includes("LATEST_TAIL") && shown().includes("Following live"),
+    "End returns to the latest page, not an old page of the last message",
+    shown,
+  );
+  assert.equal(
+    options.session.isStreaming,
+    false,
+    "reading and switching never invoke the provider",
+  );
+  terminal.send("\x1b");
+  terminal.send("\x1b");
+  await command;
+}
+
 for (const tuiMode of ["fullscreen", "regular"] as const) {
   test(
     `native ${tuiMode} observer watches an actual child without waking or aborting either agent and clears on replacement`,
@@ -248,6 +428,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       await until(
         () => terminal.text().includes("No child runs"),
         "native command opens empty inventory",
+        () => terminal.text(),
       );
       terminal.send("\x1b");
       await emptyCommand;
@@ -259,7 +440,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         "actual provider and child tool are both live",
       );
       await until(
-        () => terminal.text().includes("● watch-child 雪 · running"),
+        () => terminal.text().includes("● watch-child 雪 ·"),
         "above-editor widget names the running child without opening /agents",
       );
       const childStart = fs
@@ -318,11 +499,11 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         assert.equal(runtime.session.isStreaming, true, "click-to-watch does not abort the parent");
         click("escape back");
         await until(
-          () => screenLines().some((line) => line.includes("enter watch")),
+          () => screenLines().some((line) => line.includes("enter open")),
           "mouse Back returns to inventory",
           () => screenLines().join("\n"),
         );
-        click(`${runId.slice(0, 8)} running`);
+        click("running · watch-child");
         await until(
           () => screenLines().some((line) => line.includes("CHILD_TEXT_LIVE")),
           "clicking an inventory row opens it",
@@ -332,13 +513,14 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         await until(() => visibleWidth(screenLines()[0] ?? "") === 46, "narrow frame is rendered");
         click("escape back");
         await until(
-          () => screenLines().some((line) => line.includes("enter watch")),
+          () => screenLines().some((line) => line.includes("enter open")),
           "narrow Back returns to inventory",
         );
-        click("enter watch");
+        click("enter open");
         await until(
           () => screenLines().some((line) => line.includes("CHILD_TEXT_LIVE")),
           "narrow watch hint opens the child",
+          () => screenLines().join("\n"),
         );
         click("escape back");
         await until(
@@ -354,7 +536,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.send("/agents");
       terminal.send("\r");
       await until(
-        () => terminal.text().includes("watch-child") && terminal.text().includes("enter watch"),
+        () => terminal.text().includes("watch-child") && terminal.text().includes("enter open"),
         "native key path lists child while parent streams",
       );
       const calls = requests(root);
@@ -362,8 +544,9 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.height = 10;
       terminal.resize?.();
       await until(
-        () => terminal.text().includes(`> ${runId.slice(0, 8)}`),
+        () => terminal.text().includes("> running · watch-child"),
         "selected child stays visible in a ten-row terminal",
+        () => terminal.text(),
       );
       terminal.height = 32;
       terminal.resize?.();
@@ -373,14 +556,85 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         () =>
           terminal.text().includes("CHILD_TEXT_LIVE") && terminal.text().includes("observe_gate"),
         "published assistant text and pending native tool call appear",
+        () => terminal.text(),
       );
-      if (tuiMode === "regular") {
-        assert.match(terminal.text(), /Fork context: includes inherited parent activity/);
+      assert.match(terminal.text(), /native-observe/);
+      assert.match(terminal.text(), /Following live/);
+      const visible = () =>
+        view instanceof TuiAltScreen
+          ? view.getScreenLines().map(stripTerminalSequences).join("\n")
+          : terminal.text();
+      await firstPageNavigation(terminal, view, tuiMode === "regular");
+      const launch = record(JSON.parse(fs.readFileSync(path.join(runDir, "launch.json"), "utf8")));
+      assert.ok(typeof launch.sessionFile === "string");
+      const journalFile = launch.sessionFile;
+      fs.writeFileSync(path.join(root, "progress-child"), "1");
+      await until(
+        () => visible().includes("LIVE_PROGRESS_1"),
+        "actual native tool progress appears before its result exists",
+        visible,
+      );
+      assert.doesNotMatch(
+        fs.readFileSync(journalFile, "utf8"),
+        /LIVE_PROGRESS_1/,
+        "progress is transient, not an already-published result",
+      );
+      terminal.send("\r");
+      await until(
+        () => visible().includes("LIVE_PROGRESS_1_END"),
+        "local expansion reveals the full native partial output",
+        visible,
+      );
+      terminal.send("\x1b[5~");
+      await until(
+        () => visible().includes("Reading earlier"),
+        "Page Up suspends following",
+        visible,
+      );
+      const anchors = visible()
+        .split("\n")
+        .filter((line) => line.includes("LIVE_ROW_1_"));
+      assert.ok(anchors.length > 0, "earlier partial-output rows are actually visible");
+      terminal.clear();
+      fs.writeFileSync(path.join(root, "progress-child"), "2");
+      await until(
+        () => visible().includes("New activity below"),
+        "new progress is observed without disturbing reading",
+        visible,
+      );
+      assert.doesNotMatch(
+        visible(),
+        /LIVE_ROW_2_/,
+        "incoming progress does not reflow the earlier viewport",
+      );
+      if (view instanceof TuiAltScreen) {
+        assert.deepEqual(
+          visible()
+            .split("\n")
+            .filter((line) => line.includes("LIVE_ROW_1_")),
+          anchors,
+        );
       }
+      terminal.send("\x1b[F");
+      await until(
+        () => visible().includes("LIVE_PROGRESS_2_END"),
+        "End resumes live output and preserves local tool expansion",
+        visible,
+      );
       terminal.width = 46;
       terminal.resize?.();
       terminal.clear();
       fs.writeFileSync(path.join(root, "release-child"), "release");
+      await until(
+        () => terminal.text().includes("CHILD_STREAM_START"),
+        "native assistant tokens render before message publication",
+        visible,
+      );
+      assert.doesNotMatch(
+        fs.readFileSync(journalFile, "utf8"),
+        /CHILD_STREAM_START/,
+        "visible assistant text is genuinely live",
+      );
       await until(
         () =>
           terminal.text().includes("CHILD_TOOL_ERROR_FACT") &&
@@ -397,8 +651,16 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         "canonical completion is published",
       );
       await until(
-        () => terminal.text().includes("Agents: 0 active") && terminal.text().includes("completed"),
+        () =>
+          (view instanceof TuiAltScreen
+            ? view.getScreenLines().map(stripTerminalSequences).join("\n")
+            : terminal.text()
+          ).includes("completed"),
         "completed messageable actor is not counted as active work",
+        () =>
+          view instanceof TuiAltScreen
+            ? view.getScreenLines().map(stripTerminalSequences).join("\n")
+            : terminal.text(),
       );
       const actor = record(
         JSON.parse(fs.readFileSync(path.join(runDir, "actor.lock/process.json"), "utf8")),
@@ -418,6 +680,11 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         () => terminal.text().includes("No child runs to show"),
         "completed child disappears from the picker",
       );
+      assert.match(
+        terminal.text(),
+        /Agents: 0 active/,
+        "the canonical completed idle actor is not active work",
+      );
       assert.doesNotMatch(terminal.text(), /watch-child 雪 · completed/);
       assert.equal(requests(root), calls + 1, "hiding completed work never wakes a model");
       terminal.send("\x1b");
@@ -431,11 +698,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         "visible unique eight-character prefix opens the child read-only",
         () => terminal.text(),
       );
-      assert.match(
-        terminal.text(),
-        /\.jsonl/,
-        "narrow journal paths retain their useful filename suffix",
-      );
+      assert.doesNotMatch(terminal.text(), /\.jsonl/, "journal paths stay behind Details");
       assert.equal(requests(root), calls + 1, "direct watching is also non-waking");
       fs.writeFileSync(path.join(root, "release-parent"), "release");
       await work.prompt;
@@ -646,7 +909,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       await watch("changed-adopted-path", "Child journal path is outside", false);
       fs.renameSync(originalFile, originalFile + ".held");
       fs.symlinkSync(originalFile + ".held", originalFile);
-      await watch(continued.id, "ELOOP");
+      await watch(continued.id, "Child journal is not a regular file");
       assert.doesNotMatch(terminal.text(), /LEGACY_PUBLISHED_ACTIVITY|FOREIGN_NATIVE_ACTIVITY/);
       fs.unlinkSync(originalFile);
       fs.copyFileSync(foreignFile, originalFile);
@@ -662,8 +925,16 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.send("/agents");
       terminal.send("\r");
       await until(
-        () => terminal.text().includes("No child runs"),
+        () =>
+          (view instanceof TuiAltScreen
+            ? view.getScreenLines().map(stripTerminalSequences).join("\n")
+            : terminal.text()
+          ).includes("No child runs"),
         "replacement cannot mix previous owner's children",
+        () =>
+          view instanceof TuiAltScreen
+            ? view.getScreenLines().map(stripTerminalSequences).join("\n")
+            : terminal.text(),
       );
       assert.equal(runtime.session.isStreaming, false);
       await runtime.dispose();
@@ -1030,5 +1301,10 @@ test(
     );
     terminal.send("\x1b");
     await missing;
+    const a = { ...publish("reader-a", false), name: "reader-a" };
+    const b = { ...publish("reader-b", false), name: "reader-b" };
+    write(path.join(base, a.id, "launch.json"), a);
+    write(path.join(base, b.id, "launch.json"), b);
+    await exerciseReading({ terminal, screen, mode, session: runtime.session, a, b });
   },
 );
