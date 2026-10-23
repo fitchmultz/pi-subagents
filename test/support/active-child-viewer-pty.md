@@ -20,6 +20,25 @@ Run it with the physical Node executable. `--source` selects extension source;
 Use `--mode regular` for the non-fullscreen TUI. Qualify the intended fork separately by
 passing its package root as `--host`; a matching version number does not establish it.
 
+Add `--managed` to test the packed package boundary instead of direct source loading. The
+driver runs `npm pack`, installs the tarball's runtime dependencies, installs the extracted
+package into the isolated Pi home, and launches the CLI with package discovery enabled and
+no `-e` source entry. This catches missing packaged files, peer-resolution differences, and
+extension-discovery failures that the direct source path cannot.
+
+```sh
+/Users/mitchfultz/.local/share/mise/installs/node/24.22.1/bin/node \
+  test/support/active-child-viewer-pty.ts --managed \
+  --source /Users/mitchfultz/Projects/worktrees/pi-subagents/managed-viewer-gate \
+  --host /Users/mitchfultz/Projects/worktrees/pi-subagents/managed-viewer-gate/node_modules/@earendil-works/pi-coding-agent \
+  --output /tmp/pi-viewer-managed-official --mode fullscreen
+```
+
+Managed acceptance passed both modes on official Pi 1.4.0 and the intended fork: 53 checks
+each, zero failures, with the native completion audit and process cleanup intact. Managed
+fullscreen idle CPU was 0.21 s open vs 0.08 s closed on official and 0.25 s vs 0.18 s on
+the fork over 4 s.
+
 ## Scenario
 
 The parent delegates `watch-child 雪`; the child publishes `CHILD_TEXT_LIVE 雪😀` and
@@ -66,4 +85,8 @@ normal Pi polling and the whole smoke, and the measurement window is short. The 
 history is short, so durable multi-page paging is covered by the native integration
 test; this driver proves the PTY boundary for live view, follow, resize, details,
 reopen and settlement. No event-loop, memory, file-read or network metric is collected.
+
+Managed mode installs a locally packed and extracted package, not a remote git/npm
+checkout. It verifies packaged contents and discovery, but does not exercise the registry
+or package-manager update path.
 Offline and an allowlisted empty-credential environment prevent ordinary provider use.

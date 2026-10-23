@@ -14,6 +14,7 @@ type Options = {
   output: string;
   tmux: string;
   mode: "fullscreen" | "regular";
+  managed: boolean;
 };
 type ProcessIdentity = { pid: number; birth: string; role: string };
 type Evidence = {
@@ -29,12 +30,20 @@ function options(): Options {
   const args = process.argv.slice(2);
   const values = new Map<string, string>();
   const allowed = new Set(["--source", "--host", "--output", "--tmux", "--mode"]);
-  for (let i = 0; i < args.length; i += 2) {
+  let managed = false;
+  for (let i = 0; i < args.length;) {
     const key = args[i];
+    if (key === "--managed") {
+      assert.ok(!managed, "Duplicate option --managed");
+      managed = true;
+      i += 1;
+      continue;
+    }
     const value = args.at(i + 1);
     assert.ok(allowed.has(key) && value !== undefined, `Invalid option ${key}`);
     assert.ok(!values.has(key), `Duplicate option ${key}`);
     values.set(key, value);
+    i += 2;
   }
   const source = values.get("--source");
   const host = values.get("--host");
@@ -51,6 +60,7 @@ function options(): Options {
     output: path.resolve(output),
     tmux: values.get("--tmux") ?? "/opt/homebrew/bin/tmux",
     mode,
+    managed,
   };
 }
 function quote(value: string): string {
@@ -156,6 +166,54 @@ class Proof {
       compaction: { enabled: false },
       retry: { enabled: false },
     });
+    if (opts.managed) {
+      this.install();
+    }
+  }
+  private cli(): string {
+    const manifest = json(fs.readFileSync(path.join(this.options.host, "package.json"), "utf8"));
+    assert.equal(manifest.name, "@earendil-works/pi-coding-agent");
+    return path.resolve(this.options.host, text(json(JSON.stringify(manifest.bin)).pi));
+  }
+  private install(): void {
+    const packages = path.join(this.options.output, "package");
+    fs.mkdirSync(packages);
+    this.command("npm", ["pack", this.options.source, "--pack-destination", packages, "--silent"]);
+    const archives = fs.readdirSync(packages).filter((file) => file.endsWith(".tgz"));
+    assert.equal(archives.length, 1, "npm pack must produce one archive");
+    const tarball = path.join(packages, archives[0]);
+    const unpacked = path.join(packages, "unpacked");
+    fs.mkdirSync(unpacked);
+    this.command("/usr/bin/tar", ["-xzf", tarball, "-C", unpacked]);
+    const installed = path.join(unpacked, "package");
+    this.command(
+      "npm",
+      [
+        "install",
+        "--prefix",
+        installed,
+        "--omit=dev",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--silent",
+      ],
+      true,
+      60000,
+    );
+    this.command(this.cli(), ["install", installed, "--approve"]);
+    const listed = this.command(this.cli(), ["list", "--approve"]);
+    assert.ok(listed.includes(installed), `pi list did not include managed package:\n${listed}`);
+    this.report.checks.push("packed package installed and listed through managed Pi discovery");
+    this.save("managed-install.json", {
+      tarball,
+      sha256: hash(tarball),
+      installed,
+      listed: listed.trim(),
+      settings: json(
+        fs.readFileSync(path.join(this.env.PI_CODING_AGENT_DIR ?? "", "settings.json"), "utf8"),
+      ),
+    });
   }
   saveAt(file: string, data: unknown): void {
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
@@ -163,12 +221,12 @@ class Proof {
   save(name: string, data: unknown): void {
     this.saveAt(path.join(this.options.output, name), data);
   }
-  command(binary: string, args: string[], required = true): string {
+  command(binary: string, args: string[], required = true, timeout = 5000): string {
     const result = spawnSync(binary, args, {
       env: this.env,
       cwd: this.project,
       encoding: "utf8",
-      timeout: 5000,
+      timeout,
       maxBuffer: 4 * 1024 * 1024,
     });
     fs.appendFileSync(
@@ -278,8 +336,7 @@ class Proof {
   identities(): void {
     const git = (args: string[]) => this.command("/usr/bin/git", args).trim();
     const manifest = json(fs.readFileSync(path.join(this.options.host, "package.json"), "utf8"));
-    assert.equal(manifest.name, "@earendil-works/pi-coding-agent");
-    const cli = path.resolve(this.options.host, text(json(JSON.stringify(manifest.bin)).pi));
+    const cli = this.cli();
     const files = [
       fileURLToPath(import.meta.url),
       fileURLToPath(new URL("../fixtures/agent-observe-pty.ts", import.meta.url)),
@@ -329,18 +386,20 @@ class Proof {
       runtime: this.runtime,
       project: this.project,
       mode: this.options.mode,
+      managed: this.options.managed,
+      install: this.options.managed
+        ? json(fs.readFileSync(path.join(this.options.output, "managed-install.json"), "utf8"))
+        : null,
       initialSize: { columns: 100, rows: 32 },
     });
   }
   launch(): void {
-    const manifest = json(fs.readFileSync(path.join(this.options.host, "package.json"), "utf8"));
-    const cli = path.resolve(this.options.host, text(json(JSON.stringify(manifest.bin)).pi));
     const args = [
       process.execPath,
-      cli,
+      this.cli(),
       "--offline",
       "--approve",
-      "--no-extensions",
+      ...(this.options.managed ? [] : ["--no-extensions"]),
       "--no-skills",
       "--no-context-files",
       "--no-prompt-templates",
@@ -348,8 +407,7 @@ class Proof {
       "--no-mcp",
       "--tui-mode",
       this.options.mode,
-      "-e",
-      path.join(this.options.source, "src/index.ts"),
+      ...(this.options.managed ? [] : ["-e", path.join(this.options.source, "src/index.ts")]),
       "-e",
       fileURLToPath(new URL("../fixtures/agent-observe-pty.ts", import.meta.url)),
       "--provider",
