@@ -406,9 +406,6 @@ export class ObserverTranscript extends Container {
     this.cards.get(this.selected ?? "")?.toggle();
   }
   anchor(line: number): EntryAnchor | undefined {
-    if (line <= 0 && this.start > 0) {
-      return;
-    }
     const position = this.positions.find((item) => item.end > line);
     return position && { id: position.id, offset: Math.max(0, line - position.start) };
   }

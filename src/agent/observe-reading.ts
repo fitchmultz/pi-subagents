@@ -51,10 +51,9 @@ export class Reading {
     return changed;
   }
   reveal(anchor: EntryAnchor): void {
-    this.scroll.scrollTo(
-      this.transcript.line(anchor) - (anchor.end === true ? this.scroll.viewportHeight : 0),
-      { disableFollow: true },
-    );
+    const line = this.transcript.line(anchor);
+    const top = line - (anchor.end === true ? this.scroll.viewportHeight : 0);
+    this.scroll.scrollTo(line <= 1 && anchor.end !== true ? 0 : top, { disableFollow: true });
     this.destination = undefined;
   }
   scrollBy(lines: number): void {
