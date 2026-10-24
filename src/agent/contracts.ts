@@ -36,11 +36,17 @@ export const processSchema = Type.Object({
   pid: Type.Integer({ minimum: 1 }),
   identity: Type.String(),
   token: Type.String(),
+  clock: Type.Optional(
+    Type.Object({
+      boot: Type.String(),
+      namespace: Type.String(),
+      at: Type.String({ pattern: "^[1-9][0-9]*$", maxLength: 20 }),
+    }),
+  ),
 });
 export type ProcessIdentity = Static<typeof processSchema>;
 export const attachmentSchema = Type.Object({
-  pid: Type.Integer({ minimum: 1 }),
-  identity: Type.String(),
+  ...Type.Pick(processSchema, ["pid", "identity", "clock"]).properties,
   generation: Type.String(),
   attached: Type.Boolean(),
 });

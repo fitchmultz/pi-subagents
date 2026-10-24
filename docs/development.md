@@ -16,6 +16,34 @@ Run narrow owner-boundary tests locally through `scripts/run-tests.mjs`. Full
 `npm run ci` belongs in hosted CI and includes package/install smokes and the
 complete suites. Keep the strict Oxlint/Oxfmt rules; see [code quality](code-quality.md).
 
+## Native Android/Termux
+
+Use app-private storage, not Android's shared `/sdcard` filesystem. No Termux app
+patch, privileged access, or Android security-policy change is required.
+
+TypeScript 7.0.2 does not publish its Android ARM64 npm compiler package. Source
+installs, `build`, and `typecheck` therefore use an Android-native `tsgo` on PATH;
+other platforms keep using the committed npm TypeScript version. Install a native
+build from Microsoft's maintained [TypeScript source](https://github.com/microsoft/typescript-go)
+with Android support. A Linux ARM64 binary is not an Android substitute. The
+prebuilt npm package needs no compiler.
+
+The package uses Termux's shared `$PREFIX/tmp` for its default broker and
+observation endpoints, independently of individual sessions' HOME or TMPDIR.
+Other Android environments without PREFIX use Node's native temporary directory.
+Tests keep their isolated sockets short enough for the same 100-byte path limit.
+
+Android process-reuse checks compare native elapsed age with a saved monotonic
+bound, qualified by the real boot ID and time namespace, rather than wall clocks
+or `ps` boot-epoch dates. Keep the conservative second/tick allowance and reject
+missing or incomparable clock evidence. Legacy records without that evidence
+retain fail-closed identity checks; do not bypass unavailable procfs PID-namespace
+guards or invent a namespace.
+
+The published Oxlint type-aware backend currently has no Android package. Keep
+the canonical lint command and rules intact and obtain its passing evidence in
+hosted CI; do not substitute a weakened checker or incompatible Linux executable.
+
 ## Runtime qualification
 
 Qualify the latest stable official Pi and the intended fork revision separately.

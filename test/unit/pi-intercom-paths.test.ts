@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import net from "node:net";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
+  agentObservationSocketPath,
   getBrokerRuntimeDir,
   getBrokerSocketPath,
   getPreviousBrokerSocketPaths,
   isOwnedBrokerSocket,
   prepareBrokerSocketPath,
+  preparePrivateSocketPath,
 } from "../../src/pi-intercom/broker/paths.ts";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 
@@ -28,6 +31,7 @@ function restoreEnvironment(t: test.TestContext): void {
 
 test("default socket is pure, UID-scoped and independent of all session directories", (t) => {
   restoreEnvironment(t);
+  t.mock.property(process, "platform", "linux");
   delete process.env.PI_INTERCOM_RUNTIME_DIR;
   const uid = t.mock.property(process, "getuid", () => 501);
   for (const root of ["/first", "/second"]) {
@@ -40,8 +44,41 @@ test("default socket is pure, UID-scoped and independent of all session director
   assert.equal(getBrokerSocketPath(), "/tmp/pi-intercom-502/broker.sock");
 });
 
-test("explicit runtime directory isolates deployments without an implicit fallback", (t) => {
+test("Android defaults to its shared Termux prefix rather than session HOME or TMPDIR", (t) => {
   restoreEnvironment(t);
+  t.mock.property(process, "platform", "android");
+  t.mock.property(process, "getuid", () => 10442);
+  delete process.env.PI_INTERCOM_RUNTIME_DIR;
+  process.env.PREFIX = "/data/data/com.termux/files/usr";
+  for (const root of ["/first", "/second"]) {
+    process.env.HOME = root;
+    process.env.PI_CODING_AGENT_DIR = `${root}/agent`;
+    process.env.TMPDIR = `${root}/tmp`;
+    assert.equal(
+      getBrokerSocketPath(),
+      "/data/data/com.termux/files/usr/tmp/pi-intercom-10442/broker.sock",
+    );
+  }
+  delete process.env.PREFIX;
+  process.env.TMPDIR = "/native-android-tmp";
+  assert.equal(getBrokerSocketPath(), "/native-android-tmp/pi-intercom-10442/broker.sock");
+});
+
+test("explicit runtime namespace binds observation and isolates without fallback", async (t) => {
+  restoreEnvironment(t);
+  const socketPath = preparePrivateSocketPath(agentObservationSocketPath("test-namespace"));
+  const server = net.createServer();
+  try {
+    server.listen(socketPath);
+    await once(server, "listening");
+  } finally {
+    if (server.listening) {
+      const closed = once(server, "close");
+      server.close();
+      await closed;
+    }
+    fs.rmdirSync(dirname(socketPath));
+  }
   const runtimeDir = join(process.env.HOME ?? "", "isolated");
   process.env.PI_INTERCOM_RUNTIME_DIR = runtimeDir;
   assert.equal(getBrokerSocketPath(), join(runtimeDir, "broker.sock"));
@@ -75,7 +112,7 @@ test("client never falls back to either live previous namespace or mutates its s
   restoreEnvironment(t);
   process.env.PI_CODING_AGENT_DIR = join(process.env.HOME ?? "", "old-agent");
   // Keep the historical socket path short on macOS as well.
-  process.env.TMPDIR = "/tmp";
+  process.env.TMPDIR = process.platform === "android" ? tmpdir() : "/tmp";
   for (const legacyPath of getPreviousBrokerSocketPaths()) {
     fs.mkdirSync(dirname(legacyPath), { recursive: true });
     const server = net.createServer((socket) => {

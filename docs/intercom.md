@@ -138,6 +138,12 @@ Default files on macOS/Linux:
 - `/tmp/pi-intercom-<uid>/broker.pid`
 - `/tmp/pi-intercom-<uid>/broker.spawn.lock`
 
+Native Android/Termux uses `$PREFIX/tmp/pi-intercom-<uid>` instead of `/tmp`.
+This is shared across the app's sessions, not derived from a session's HOME,
+agent directory, or TMPDIR. Android without a Termux PREFIX uses Node's native
+temporary directory. The separate read-only child observation endpoints use
+the same runtime-root policy.
+
 The runtime directory is owned by the OS user, nonsymlink, and mode 0700; the
 socket is mode 0600. The broker starts on first use and exits after five seconds
 without connected sessions. Concurrent startup uses the shared spawn lock.
@@ -160,7 +166,7 @@ then verify the expected exact peers from both mains and the helper. The warning
 only detects old brokers for the current agent directory; it cannot certify that
 all old sessions elsewhere have migrated.
 
-The predictable `/tmp` namespace is independent of caller HOME/TMPDIR, which is
+The predictable macOS/Linux `/tmp` namespace is independent of caller HOME/TMPDIR, which is
 needed for same-user discovery across differently configured sessions. A foreign
 user who pre-creates that path can deny availability, but cannot be adopted as the
 broker owner: startup refuses foreign or symlink directories. It must not delete

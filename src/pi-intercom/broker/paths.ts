@@ -36,13 +36,20 @@ export function isOwnedBrokerSocket(socketPath: string): boolean {
   }
 }
 
+function defaultRuntimeRoot(): string {
+  if (process.platform !== "android") {
+    return "/tmp";
+  }
+  return process.env.PREFIX === undefined ? tmpdir() : join(process.env.PREFIX, "tmp");
+}
+
 function runtimeDirectory(socketName: string, sibling = ""): string {
   const configured = process.env.PI_INTERCOM_RUNTIME_DIR;
   const uid = process.getuid?.();
   if (uid === undefined) {
     throw new Error("Intercom requires Unix user IDs and Unix domain sockets.");
   }
-  const base = configured ?? join("/tmp", `pi-intercom-${uid}`);
+  const base = configured ?? join(defaultRuntimeRoot(), `pi-intercom-${uid}`);
   const directory = isAbsolute(base) && sibling !== "" ? `${resolve(base)}${sibling}` : base;
   if (
     !isAbsolute(directory) ||

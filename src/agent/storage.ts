@@ -6,6 +6,7 @@ import type { Projection } from "../shared/json-projection.ts";
 import { Assert } from "./typebox.ts";
 import type { Static, TSchema } from "typebox";
 import { launchSchema, successorSchema, type Launch, type Command } from "./contracts.ts";
+import { hasErrorCode } from "../shared/unknown.ts";
 
 export function missing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -29,24 +30,41 @@ export function read<T extends TSchema>(
   // oxlint-disable-next-line typescript/no-unsafe-return
   return value;
 }
+/** Publish complete bytes without replacing a winner, even where Android denies hard links. */
+function publishExclusive(temp: string, file: string): boolean {
+  try {
+    fs.linkSync(temp, file);
+    return false;
+  } catch (error) {
+    if (!["EACCES", "EPERM", "ENOTSUP"].some((code) => hasErrorCode(error, code))) {
+      throw error;
+    }
+    // The immutable, private backing file must outlive its atomic no-clobber symlink.
+    fs.symlinkSync(path.basename(temp), file);
+    return true;
+  }
+}
 export function write(file: string, value: unknown, exclusive = false): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temp = `${file}.${randomUUID()}.tmp`;
+  const temp = `${file}.${randomUUID()}.${exclusive ? "data" : "tmp"}`;
   const fd = fs.openSync(temp, "wx", 0o600);
+  let retained = false;
   try {
-    fs.writeFileSync(fd, `${JSON.stringify(value)}\n`);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
+    try {
+      fs.writeFileSync(fd, `${JSON.stringify(value)}\n`);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     if (exclusive) {
-      fs.linkSync(temp, file);
+      retained = publishExclusive(temp, file);
     } else {
       fs.renameSync(temp, file);
     }
   } finally {
-    fs.rmSync(temp, { force: true });
+    if (!retained) {
+      fs.rmSync(temp, { force: true });
+    }
   }
 }
 export function safeId(id: string): string {
