@@ -43,7 +43,7 @@ import {
 } from "./storage.ts";
 import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
-import { toolResult, projection, render, summaries } from "./view.ts";
+import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
 import { legacyNotifications } from "./legacy.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
@@ -195,11 +195,10 @@ class AgentRuntime {
     const base = this.base;
     const { targets: live, command: id } = requestStop(base, launch);
     if (live.length === 0) {
-      return {
-        ...projection(base, launch, this.ctx),
+      return renderReceipt(base, launch, this.ctx, {
         stopAcknowledged: false,
         note: "No matching live actor or owned shell; process exit code remains unknown.",
-      };
+      });
     }
     const escalation = setTimeout(() => {
       try {
@@ -211,12 +210,11 @@ class AgentRuntime {
       }
     }, 3000);
     escalation.unref();
-    return {
-      ...projection(base, launch, this.ctx),
+    return renderReceipt(base, launch, this.ctx, {
       stopRequest: id,
       stopAcknowledged: false,
       note: "Stop requested; neither native admission nor process exit is implied.",
-    };
+    });
   }
   private async delegate(
     input: DelegateInput,
@@ -240,8 +238,7 @@ class AgentRuntime {
     this.checkMain();
     enqueue(this.base, launch, "run");
     await ensureActor(this.base, launch, this.shutdown.signal);
-    return toolResult({
-      ...projection(this.base, launch, this.ctx),
+    return renderReceipt(this.base, launch, this.ctx, {
       receipt: "launch",
       note: "Launch accepted, not completion or native receipt publication. Completion arrives as a notification; do other work or end the turn instead of polling.",
     });
@@ -250,14 +247,7 @@ class AgentRuntime {
     const all = list(this.base)
       .map((id) => launchAt(this.base, id, this.owner))
       .sort((a, b) => a.createdAt - b.createdAt);
-    const offset = input.offset ?? 0;
-    const page = summaries(this.base, all.slice(offset, offset + 50), this.ctx);
-    return toolResult({
-      runs: page,
-      offset,
-      nextOffset: offset + page.length < all.length ? offset + page.length : undefined,
-      total: all.length,
-    });
+    return renderInventory(this.base, all, this.ctx, input);
   }
   private successor(launch: Launch, prompt: string): Launch | undefined {
     const id = randomUUID();
@@ -308,7 +298,7 @@ class AgentRuntime {
     }
     // Only an unadmitted durable command is retryable; keep all process/shell claim guards.
     await ensureActor(this.base, launch, this.shutdown.signal);
-    return toolResult({ ...projection(this.base, launch, this.ctx), receipt: "continuation" });
+    return renderReceipt(this.base, launch, this.ctx, { receipt: "continuation" });
   }
   private async continue(launch: Launch, input: RunsInput) {
     if (input.prompt === undefined) {
@@ -324,8 +314,7 @@ class AgentRuntime {
     const identity = actor(this.base, launch);
     if (!completed && identity && alive(identity)) {
       const command = enqueue(this.base, launch, "steer", { prompt: input.prompt });
-      return toolResult({
-        ...projection(this.base, launch, this.ctx),
+      return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",
         command,
         note: "Guidance queued, not actual completion or model consumption.",
@@ -333,15 +322,14 @@ class AgentRuntime {
     }
     const next = this.successor(launch, input.prompt);
     if (!next) {
-      return toolResult({
-        ...projection(this.base, latest(this.base, launch), this.ctx),
+      return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
         receipt: "existing-successor",
       });
     }
     // Retain successor claims on ambiguous after-launch failures: no replay.
     enqueue(this.base, next, "run");
     await ensureActor(this.base, next, this.shutdown.signal);
-    return toolResult({ ...projection(this.base, next, this.ctx), receipt: "continuation" });
+    return renderReceipt(this.base, next, this.ctx, { receipt: "continuation" });
   }
   private async continueSaved(input: RunsInput & { id: string }, context: ExtensionContext) {
     if (input.prompt === undefined) {
@@ -359,8 +347,7 @@ class AgentRuntime {
       enqueue(this.base, launch, "run");
       await ensureActor(this.base, launch, this.shutdown.signal);
     }
-    return toolResult({
-      ...projection(this.base, launch, this.ctx),
+    return renderReceipt(this.base, launch, this.ctx, {
       receipt: created ? "continuation" : "existing-successor",
     });
   }
@@ -382,11 +369,11 @@ class AgentRuntime {
     }
     const original = launchAt(this.base, input.id, this.owner);
     if (input.action === "inspect") {
-      return render(this.base, original, this.ctx, input);
+      return renderInspection(this.base, original, this.ctx, input);
     }
     const launch = latest(this.base, original);
     if (input.action === "stop") {
-      return toolResult(this.stop(launch));
+      return this.stop(launch);
     }
     return this.continue(launch, input);
   }

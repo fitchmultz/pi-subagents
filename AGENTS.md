@@ -22,6 +22,21 @@ package/install smokes and complete test suites. Keep the strict rules in
 `.oxlintrc.json` and formatting in `.oxfmtrc.json`; use the published tools directly.
 See [Code quality](docs/code-quality.md) for the rules and commands.
 
+# Rule enforcement
+
+| Rule                                                                                          | Enforcement                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Keep run replies separate from saved results and renderer details.                            | `src/agent/view.ts` owns receipt, inventory and inspection rendering; raw projections and the generic reply constructor are private. TypeScript rejects the old imports. The native inventory and child-usage keepers run in `npm run ci`. |
+| Preserve native receipt, crash, shutdown, continuation and broker contracts.                  | `single-agent-runtime`, `agent-receipts` and `pi-intercom-native-replay` exercise their real owners in hosted CI. New or transferred assertions still need test-ownership review.                                                          |
+| Use independent expectations and observe the relevant publication before negative assertions. | Native journal/process/socket assertions enforce the named cases. Test-authoring review must identify the operation-specific processing barrier; no general static check can prove asynchronous readiness.                                 |
+| Keep strict lint, formatting, types and the committed dependency graph.                       | `npm ci`, `npm run lint`, `npm run format:check`, `npm run typecheck` and the aggregate hosted compatibility gate.                                                                                                                         |
+| Qualify official Pi and the intended fork separately.                                         | `.github/workflows/ci.yml`, `ci-host.mjs` and `compat-host.mjs` select and verify each actual dependency graph.                                                                                                                            |
+
+Local check scope, avoiding edits during checks, choosing native APIs, test
+transfers, dependency-release review and rollout authorization remain judgment
+calls. The checks above do not claim to automate them. See
+[repeated corrections](docs/corrections.md) for historical rejection evidence.
+
 # Dependency maintenance
 
 - Frequently review and proactively update maintained packages and all runtime,
