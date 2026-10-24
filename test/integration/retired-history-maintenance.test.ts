@@ -22,7 +22,20 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertDefined, readJson, record, strings, text } from "../support/assertions.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import agents from "../../src/agent/index.ts";
+import { ownerDirectory, write } from "../../src/agent/storage.ts";
+import { usageLaunch } from "../support/agent-launch.ts";
+import {
+  assertDefined,
+  parseJson,
+  readJson,
+  record,
+  strings,
+  text,
+} from "../support/assertions.ts";
+import { createNativeSessionFixture } from "../support/native-session.ts";
+import { until } from "../support/observation-child.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const manifest = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
@@ -221,6 +234,101 @@ test("actual selected-host CLI leaves stale, unknown, linked and active legacy d
     active.close();
     dispose(root);
   }
+});
+
+test("native deferred completion recovery and tool reconciliation preserve retired SQLite data", async (t) => {
+  const root = fixture("deferred");
+  const agentDir = join(root, "agent");
+  const directory = join(agentDir, "history-index");
+  const outside = join(root, "sessions", "sentinel.jsonl");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const cleanup = new AsyncDisposableStack();
+  t.after(() => cleanup.disposeAsync());
+  cleanup.defer(() => dispose(root));
+  cleanup.defer(() => {
+    if (previousAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
+  });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  crashedWriter(directory, true);
+  writeFileSync(join(directory, "unknown.keep"), "foreign contents must survive\n");
+  symlinkSync(outside, join(directory, "foreign-link"));
+  linkSync(outside, join(directory, "foreign-hard-link"));
+  const active = new DatabaseSync(join(directory, "active.sqlite"));
+  cleanup.defer(() => active.close());
+  active.exec("PRAGMA journal_mode=WAL; CREATE TABLE heartbeat(value TEXT)");
+  const before = inventory(directory);
+  const sentinel = readFileSync(outside);
+  const manager = SessionManager.create(root, join(root, "sessions"));
+  manager.appendMessage({ role: "user", content: "Synthetic archive owner", timestamp: 1 });
+  const owner = manager.getSessionId();
+  const id = "archive-deferred";
+  const base = ownerDirectory(agentDir, owner);
+  write(join(base, id, "launch.json"), {
+    ...usageLaunch(join(root, "unused-child.jsonl")),
+    owner,
+    id,
+    rootId: id,
+  });
+  write(join(base, id, "result.json"), { owner, id, status: "completed", endedAt: 2 });
+  writeFileSync(join(base, id, "output.txt"), "Synthetic recovered completion");
+  const native = await createNativeSessionFixture({
+    cwd: root,
+    agentDir,
+    sessionManager: manager,
+    configure: agents,
+    bindExtensions: false,
+  });
+  cleanup.defer(async () => {
+    try {
+      await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    } finally {
+      await native.dispose();
+    }
+  });
+  await native.session.bindExtensions({ mode: "print" });
+  const receipts = () =>
+    manager
+      .getEntries()
+      .flatMap((entry) =>
+        entry.type === "custom_message" && entry.customType === "agent-completion" ? [entry] : [],
+      );
+  await until(() => receipts().length === 1, "native background completion is published", 5_000);
+  await native.session.waitForIdle();
+  assert.equal(record(receipts()[0]?.details).id, id);
+  const sessionFile = manager.getSessionFile();
+  assertDefined(sessionFile);
+  assert.ok(
+    readFileSync(sessionFile, "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => record(parseJson(line)))
+      .some((entry) => entry.type === "custom_message" && record(entry.details).id === id),
+    "the recovery receipt must reach the actual native journal",
+  );
+  assert.deepEqual(inventory(directory), before, "deferred recovery preserves retired files");
+  const runs = native.session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+  assertDefined(runs);
+  assert.equal(record((await runs.execute("archive-list", { action: "list" })).details).total, 1);
+  await runs.execute("archive-inspect", { action: "inspect", id });
+  await native.session.waitForIdle();
+  assert.equal(receipts().length, 1, "explicit reconciliation does not duplicate recovery");
+  assert.deepEqual(inventory(directory), before, "tool reconciliation preserves retired files");
+  assert.deepEqual(readFileSync(outside), sentinel);
+  active.exec("INSERT INTO heartbeat VALUES ('still writable after recovery')");
+  assert.equal(active.prepare("SELECT count(*) AS n FROM heartbeat").get()?.n, 1);
+  console.log(
+    JSON.stringify({
+      host: host.version,
+      recoveredReceipts: 1,
+      legacyMembers: before.length,
+      removed: 0,
+      errors: 0,
+    }),
+  );
 });
 
 for (const committed of [false, true]) {

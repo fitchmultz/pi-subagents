@@ -1,0 +1,352 @@
+[
+  {
+    "repo": "/workspace/issue-248-baseline",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 688.0428859999483,
+    "responsiveMs": 689.5986480000147,
+    "attachMs": 542.395802,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 519.5172429999998,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 22.878559000000223,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 72.7026719999999,
+    "firstToolReadyMs": 763.7744009999778,
+    "profile": false,
+    "label": "A",
+    "round": 0
+  },
+  {
+    "repo": "/workspace/issue-248",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 194.2507360000718,
+    "responsiveMs": 195.23448600000393,
+    "attachMs": 22.20572900000002,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 21.005128000000013,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.200601000000006,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 383.7700869999999,
+    "firstToolReadyMs": 580.3578850000122,
+    "profile": false,
+    "label": "B",
+    "round": 0
+  },
+  {
+    "repo": "/workspace/issue-248-baseline",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 754.2714530000012,
+    "responsiveMs": 755.4339940001,
+    "attachMs": 570.8273670000001,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 545.7252249999999,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 25.102142000000185,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 72.34159099999988,
+    "firstToolReadyMs": 829.275007000092,
+    "profile": false,
+    "label": "A",
+    "round": 1
+  },
+  {
+    "repo": "/workspace/issue-248",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 163.95042999999987,
+    "responsiveMs": 164.60026999993715,
+    "attachMs": 27.605843999999934,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 26.365562999999838,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.2402810000000954,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 419.8723279999999,
+    "firstToolReadyMs": 585.9730600000148,
+    "profile": false,
+    "label": "B",
+    "round": 1
+  },
+  {
+    "repo": "/workspace/issue-248-baseline",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 746.4499459999843,
+    "responsiveMs": 747.5385669999923,
+    "attachMs": 589.6477720000003,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 563.3798000000002,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 26.2679720000001,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 69.90709000000015,
+    "firstToolReadyMs": 819.0142779999405,
+    "profile": false,
+    "label": "A",
+    "round": 2
+  },
+  {
+    "repo": "/workspace/issue-248",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 188.65184099990984,
+    "responsiveMs": 189.56471199999214,
+    "attachMs": 3.111462000000074,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.6835209999999279,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.4279410000001462,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 517.3594910000002,
+    "firstToolReadyMs": 708.4192940000094,
+    "profile": false,
+    "label": "B",
+    "round": 2
+  },
+  {
+    "repo": "/workspace/issue-248-baseline",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 791.091204000054,
+    "responsiveMs": 792.3132050000277,
+    "attachMs": 590.526803,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 566.7541429999999,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 23.772660000000087,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 72.23151199999984,
+    "firstToolReadyMs": 866.221118999988,
+    "profile": false,
+    "label": "A",
+    "round": 3
+  },
+  {
+    "repo": "/workspace/issue-248",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 165.21697999996832,
+    "responsiveMs": 165.9653609999623,
+    "attachMs": 18.082735000000184,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 16.928104000000076,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.1546310000001085,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 425.65032199999996,
+    "firstToolReadyMs": 593.0152050000288,
+    "profile": false,
+    "label": "B",
+    "round": 3
+  },
+  {
+    "repo": "/workspace/issue-248-baseline",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 770.4972569999882,
+    "responsiveMs": 771.6339869999729,
+    "attachMs": 628.3064259999999,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 604.0459349999999,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 24.260491000000002,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 75.44889400000011,
+    "firstToolReadyMs": 848.7010229999896,
+    "profile": false,
+    "label": "A",
+    "round": 4
+  },
+  {
+    "repo": "/workspace/issue-248",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594931,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 191.13785299998653,
+    "responsiveMs": 191.95655400005762,
+    "attachMs": 20.601748000000043,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 19.485417000000098,
+        "counters": {}
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.1163309999999456,
+        "counters": {}
+      }
+    ],
+    "firstListMs": 393.7630250000002,
+    "firstToolReadyMs": 587.0094310000695,
+    "profile": false,
+    "label": "B",
+    "round": 4
+  }
+]

@@ -1,0 +1,5 @@
+{
+  "node": "v24.22.1",
+  "hostManifest": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/package.json",
+  "host": "1.4.0"
+}

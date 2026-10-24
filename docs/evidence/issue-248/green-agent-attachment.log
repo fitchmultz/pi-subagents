@@ -1,0 +1,11 @@
+✔ native session_start publishes ownership without scanning runs, then tools and timer recover the backlog (261.244342ms)
+✔ official Pi without a managed host attaches the current process at session_start (59.00412ms)
+✔ a managed worker attaches its launcher only after readiness is accepted, and hands children off (26.498862ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2487.66207

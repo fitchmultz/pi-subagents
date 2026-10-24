@@ -1,0 +1,12 @@
+{"host":"1.4.0","hostRoot":"/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent","cli":"/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","extension":"/workspace/issue-249/src/index.ts","legacyMembers":16,"removed":0,"errors":0}
+✔ actual selected-host CLI leaves stale, unknown, linked and active legacy data untouched (2248.954816ms)
+{"host":"1.4.0","recoveredReceipts":1,"legacyMembers":16,"removed":0,"errors":0}
+✔ native deferred completion recovery and tool reconciliation preserve retired SQLite data (344.242133ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3872.146331

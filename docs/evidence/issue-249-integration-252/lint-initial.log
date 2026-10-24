@@ -1,0 +1,38 @@
+
+> @fitchmultz/pi-subagents@0.50.0 lint
+> oxlint --type-aware .
+
+
+  x eslint(prefer-const): `active` is never reassigned.
+     ,-[test/integration/retired-history-maintenance.test.ts:248:7]
+ 247 |   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+ 248 |   let active: DatabaseSync | undefined;
+     :       ^^^^^^
+ 249 |   let native: NativeSessionFixture | undefined;
+     `----
+  help: Use `const` instead.
+
+  x eslint(prefer-const): `native` is never reassigned.
+     ,-[test/integration/retired-history-maintenance.test.ts:249:7]
+ 248 |   let active: DatabaseSync | undefined;
+ 249 |   let native: NativeSessionFixture | undefined;
+     :       ^^^^^^
+ 250 |   process.env.PI_CODING_AGENT_DIR = agentDir;
+     `----
+  help: Use `const` instead.
+
+  x typescript(TS2339): Property 'details' does not exist on type 'SessionEntry'.
+     ,-[test/integration/retired-history-maintenance.test.ts:304:38]
+ 303 |   await native.session.waitForIdle();
+ 304 |   assert.equal(record(receipts()[0]?.details).id, id);
+     :                                      ^^^^^^^
+ 305 |   const sessionFile = manager.getSessionFile();
+     `----
+
+Found 0 warnings and 3 errors.
+Finished in 7.2s on 181 files with 224 rules using 2 threads.
+npm notice
+npm notice New major version of npm available! 11.19.1 -> 12.2.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+npm notice To update run: npm install -g npm@12.2.1
+npm notice
