@@ -1299,13 +1299,16 @@ try {
       try {
         fs.writeFileSync(processFile, JSON.stringify({ ...identity, pid: bystander.pid }));
         fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
-        const blocked = await call(
+        const reusedActorContinue = await call(
           "agent_runs",
           { action: "continue", id: runId, prompt },
           "reused-actor-pid-cannot-mask-owned-shell",
         );
-        assert.equal(blocked.isError, true, JSON.stringify(blocked));
-        assert.match(JSON.stringify(blocked.content), /Owned native shell work remains live/);
+        assert.equal(reusedActorContinue.isError, true, JSON.stringify(reusedActorContinue));
+        assert.match(
+          JSON.stringify(reusedActorContinue.content),
+          /Owned native shell work remains live/,
+        );
         assert.equal(commands(), beforeCommands);
         await survives("reused actor PID survives the processed continuation refusal");
       } finally {
