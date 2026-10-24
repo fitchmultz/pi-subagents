@@ -69,9 +69,11 @@ it("exclusive record failures do not publish data or hide unrelated filesystem e
 
 function writer(file: string, id: number, gate?: string) {
   const fixture = fileURLToPath(new URL("../fixtures/atomic-record-writer.mjs", import.meta.url));
-  const child = spawn(process.execPath, [fixture, file, String(id), ...(gate ? [gate] : [])], {
-    stdio: ["ignore", "ignore", "inherit", "ipc"],
-  });
+  const child = spawn(
+    process.execPath,
+    [fixture, file, String(id), ...(gate === undefined ? [] : [gate])],
+    { stdio: ["ignore", "ignore", "inherit", "ipc"] },
+  );
   return {
     child,
     ready: once(child, "message").then(([message]: readonly unknown[]) => message),
@@ -87,7 +89,9 @@ it(
     const file = path.join(dir, "launch.json");
     const writers = Array.from({ length: 4 }, (_, id) => writer(file, id));
     t.after(async () => {
-      writers.forEach(({ child }) => child.kill("SIGKILL"));
+      writers.forEach(({ child }) => {
+        child.kill("SIGKILL");
+      });
       await Promise.all(writers.map(({ exit }) => exit));
       fs.rmSync(dir, { recursive: true, force: true });
     });
@@ -97,17 +101,22 @@ it(
       "ready",
       "ready",
     ]);
-    const outcomes = writers.map(({ child }) => once(child, "message"));
-    writers.forEach(({ child }) => child.send("publish"));
+    const outcomes = writers.map(({ child }) =>
+      once(child, "message").then(([status]: readonly unknown[]) => {
+        assert.ok(status === "published" || status === "exists");
+        return status;
+      }),
+    );
+    writers.forEach(({ child }) => {
+      child.send("publish");
+    });
     const results = await Promise.all(outcomes);
-    const winner = results.findIndex(([status]) => status === "published");
+    const winner = results.findIndex((status) => status === "published");
     assert.notEqual(winner, -1);
-    assert.deepEqual(results.map(([status]) => status).sort(), [
-      "exists",
-      "exists",
-      "exists",
-      "published",
-    ]);
+    assert.deepEqual(
+      results.sort((a, b) => a.localeCompare(b)),
+      ["exists", "exists", "exists", "published"],
+    );
     for (const { exit } of writers) {
       // The published backing must remain readable after every producer exits.
       // oxlint-disable-next-line no-await-in-loop

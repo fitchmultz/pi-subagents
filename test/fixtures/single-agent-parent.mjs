@@ -243,9 +243,9 @@ const processView = (pid) => {
     .split(/\s+/);
   return { birth: fields.slice(0, -1).join(" "), group: Number(fields.at(-1)) };
 };
-// Darwin ps reports whole-second births; stand-ins spawned in a later second are provably
-// born after earlier record publication.
-const nextBirthSecond = () => delay(1020 - (Date.now() % 1000));
+// Darwin births and Android elapsed ages have whole-second precision. Leave a full second
+// beyond publication so even a conservative birth lower bound proves the stand-in is newer.
+const nextBirthSecond = () => delay(2020 - (Date.now() % 1000));
 const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? fs
@@ -305,6 +305,8 @@ const settled = async (receipt, why = "canonical native completion reaches the p
 };
 const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSessionId(), id);
 const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+const publishedFiles = (directory) =>
+  fs.readdirSync(directory).filter((name) => name.endsWith(".json"));
 let runId = seed?.runId;
 try {
   if (phase.startsWith("launch-preparation-")) {
@@ -1106,7 +1108,7 @@ try {
     if (phase.startsWith("bash-shutdown-")) {
       const actor = readJSON(path.join(runDir(runId), "actor.lock/process.json"));
       const ledger = path.join(runDir(runId), "shells", actor.token);
-      const original = path.join(ledger, fs.readdirSync(ledger)[0]);
+      const original = path.join(ledger, publishedFiles(ledger)[0]);
       const shell = readJSON(original);
       const publishedAt = fs.statSync(original).mtime;
       const dead = (pid) => {
@@ -1185,7 +1187,7 @@ try {
           extras.forEach((file) => {
             fs.writeFileSync(file, JSON.stringify(shell));
           });
-          const names = fs.readdirSync(ledger);
+          const names = publishedFiles(ledger);
           assert.equal(names.length, 4);
           // Stale PID reuse (group leader and not) and true ambiguity precede the verified shell.
           [
@@ -1224,7 +1226,7 @@ try {
     const directory = runDir(runId);
     const identity = readJSON(path.join(directory, "actor.lock/process.json"));
     const ledger = path.join(directory, "shells", identity.token);
-    const recordFile = path.join(ledger, fs.readdirSync(ledger)[0]);
+    const recordFile = path.join(ledger, publishedFiles(ledger)[0]);
     const shell = readJSON(recordFile);
     const publishedAt = fs.statSync(recordFile).mtime;
     const prompt = "RECOVER_QUEUED_SHELL_CONTINUATION";
@@ -1250,7 +1252,7 @@ try {
     );
     assert.equal(stillBlocked.isError, true, JSON.stringify(stillBlocked));
     assert.match(JSON.stringify(stillBlocked.content), /Owned native shell work remains live/);
-    const commands = () => fs.readdirSync(path.join(directory, "commands")).length;
+    const commands = () => publishedFiles(path.join(directory, "commands")).length;
     const beforeCommands = commands();
     await nextBirthSecond();
     const bystander = spawn(
@@ -1443,7 +1445,7 @@ try {
       fs.writeFileSync(processFile, JSON.stringify(identity));
     }
     const ledger = path.join(runDir(runId), "shells", identity.token);
-    const shell = readJSON(path.join(ledger, fs.readdirSync(ledger)[0]));
+    const shell = readJSON(path.join(ledger, publishedFiles(ledger)[0]));
     const kill = process.kill;
     let stopping = false,
       raced = false;

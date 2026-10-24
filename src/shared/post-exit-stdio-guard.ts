@@ -28,13 +28,13 @@ export function readChildProcessIdentity(pid: number): string | undefined {
   if (process.platform === "linux") {
     return readLinuxProcess(pid)?.identity;
   }
-  const identity = readPsBirthAndGroup(pid);
+  const identity = readPsFields(pid, ["lstart=", "pgid="]);
   return Number(identity?.split(" ").at(-1)) === pid ? identity : undefined;
 }
 
-function readPsBirthAndGroup(pid: number, zone?: string): string | undefined {
+function readPsFields(pid: number, fields: readonly string[], zone?: string): string | undefined {
   try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
+    return execFileSync("ps", ["-p", String(pid), ...fields.flatMap((field) => ["-o", field])], {
       encoding: "utf8",
       timeout: 1000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -53,7 +53,7 @@ const MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
 function readUtcBirth(pid: number): number {
   const [, month = "", day, hours, minutes, seconds, year] =
-    PS_IDENTITY.exec(readPsBirthAndGroup(pid, "UTC0") ?? "") ?? [];
+    PS_IDENTITY.exec(readPsFields(pid, ["lstart=", "pgid="], "UTC0") ?? "") ?? [];
   const index = MONTHS.indexOf(month);
   // Unreadable or malformed observations yield NaN, which never proves a later birth.
   return month.length === 3 && index % 3 === 0
@@ -68,10 +68,22 @@ function readUtcBirth(pid: number): number {
     : Number.NaN;
 }
 
+/** Android ps can use a boot epoch unlike file timestamps; elapsed age bounds birth instead. */
+function readElapsedBirthBound(pid: number): number {
+  const before = Date.now();
+  const elapsed = readPsFields(pid, ["etimes="]) ?? "";
+  const seconds = Number(elapsed);
+  // Observe before ps and include its whole-second uncertainty: never round birth forward.
+  return /^\d+$/.test(elapsed) && Number.isSafeInteger(seconds)
+    ? before - (seconds + 1) * 1000
+    : Number.NaN;
+}
+
 /**
  * True only when a live PID provably names a different process than an owner-published record.
  * Darwin identities are unzoned local times, so they are never compared across zones; only a
- * UTC-observed birth strictly after the record's publication proves replacement.
+ * UTC-observed birth strictly after the record's publication proves replacement. Android uses
+ * a conservative elapsed-age bound against that same publication time.
  */
 export function isChildProcessReplaced(pid: number, recorded: string, published?: number): boolean {
   if (process.platform === "linux") {
@@ -80,7 +92,8 @@ export function isChildProcessReplaced(pid: number, recorded: string, published?
   if (published === undefined || !PS_IDENTITY.test(recorded)) {
     return false;
   }
-  return readUtcBirth(pid) > published;
+  const birth = process.platform === "android" ? readElapsedBirthBound(pid) : readUtcBirth(pid);
+  return birth > published;
 }
 
 function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {

@@ -285,14 +285,17 @@ export function shells(base: string, launch: Launch, token: string): OwnedProces
   if (!fs.existsSync(dir)) {
     return [];
   }
-  return fs.readdirSync(dir).map((name) => {
-    const file = path.join(dir, name);
-    const identity = published(file, read(file, processSchema));
-    if (!identity || identity.token !== token) {
-      throw new Error("Foreign or missing native shell identity.");
-    }
-    return identity;
-  });
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => {
+      const file = path.join(dir, name);
+      const identity = published(file, read(file, processSchema));
+      if (!identity || identity.token !== token) {
+        throw new Error("Foreign or missing native shell identity.");
+      }
+      return identity;
+    });
 }
 function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;

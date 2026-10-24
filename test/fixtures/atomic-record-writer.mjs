@@ -6,7 +6,7 @@ const [file, id, gate] = process.argv.slice(2);
 fs.linkSync = () => {
   throw Object.assign(new Error("Hard links are denied"), { code: "EACCES" });
 };
-if (gate) {
+if (gate !== undefined) {
   const fsync = fs.fsyncSync;
   fs.fsyncSync = (fd) => {
     fsync(fd);

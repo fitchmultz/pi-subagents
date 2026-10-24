@@ -3,7 +3,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** Android's npm compiler package is not published; use its installed native compiler. */
+/**
+ * Android's npm compiler package is not published; use its installed native compiler.
+ * @param {string} [script]
+ * @returns {{ command: string, args: string[] }}
+ */
 export function compilerInvocation(script) {
   if (script === undefined && process.platform === "android") {
     return { command: "tsgo", args: [] };
