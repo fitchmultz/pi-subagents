@@ -1,0 +1,19 @@
+{
+  "baseline": "4906e67e3a6701a753df3af112304dea2246aeb1",
+  "baselineTree": "54dab296b81e3aaeb02cc4b8fbc3cd29b41239d5",
+  "node": "v24.22.1",
+  "npm": "11.19.1",
+  "os": "Linux 521a1eccf06f7b873f40bde72d1d82fb530c459fee9c90d1ec83af42c2cb7263 6.18.54-cloudflare-microvm-2026.9.16 #1 SMP PREEMPT_DYNAMIC Mon Sep 27 00:00:00 UTC 2010 x86_64 GNU/Linux",
+  "cores": 2,
+  "loadBefore": "0.11, 0.04, 0.01",
+  "officialVersion": "1.4.0",
+  "forkMainResolved": "c17adbc400319887c5ab34fce1ed2a59be746da4",
+  "sourceChange": "Remove the final this.scan() call in AgentRuntime.attach; no other production change.",
+  "lockSha256": "1cb02c3cb30151a74ad147e28add6b4f4b4aff8ad48d39b008c1e7852c794f93",
+  "baselineAgentSourceSha256": "04616f42674a1430a003895070ba4414357d0af7b9f4d07e4332a3e517a0198c",
+  "candidateAgentSourceSha256": "d76f9c0a20919c7a539b8edcfc6d2b168c154b55580f31f0cece01e5682a24f2",
+  "sdkIndexSha256": "4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff",
+  "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "baselineBuildInfo": "export const EXTENSION_BUILD = Object.freeze({\"version\":\"0.50.0\",\"sha256\":\"09b93d7fea1539a8e23003be654cc3bd02064d5f0e8487c2ec35f75f02c02b86\"});",
+  "candidateBuildInfo": "export const EXTENSION_BUILD = Object.freeze({\"version\":\"0.50.0\",\"sha256\":\"5ca86446981decd79fbb9061992687feae9c27a3685cb3ca6a567effc976839b\"});"
+}

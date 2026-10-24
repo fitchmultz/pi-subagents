@@ -1,0 +1,14 @@
+{
+  "source": "Coordinator-provided supported owner-authenticated read-only chat configuration",
+  "endpoint": "GET https://pi-durable.mitchfultz.workers.dev/api/chats/4ddaa826-ef78-4b0d-af01-1f31c9dba18d",
+  "observedAt": "2026-10-24T13:23:15.989540+00:00",
+  "provider": "openai",
+  "modelId": "gpt-6.1-sol",
+  "thinkingLevel": "xhigh",
+  "contextWindow": 300000,
+  "fastMode": null,
+  "connectionReady": true,
+  "rootRunBusy": true,
+  "configurationVersionSha256": "c52404be6ba45b2e0427d98acc645cf5eeba33d251e1acd2e798807cd4d3d5ea",
+  "changesToConfiguration": false
+}
