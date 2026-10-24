@@ -304,6 +304,42 @@ const settled = async (receipt, why = "canonical native completion reaches the p
   const signal = new AbortController().signal;
   return await runsTool().execute(`settled-${id}`, { action: "inspect", id }, signal);
 };
+// Observe the actual native child's broker registration as a peer in this parent's session tree.
+const childRegistered = async () => {
+  const { IntercomClient } = await import(
+    pathToFileURL(path.join(repo, "dist/pi-intercom/broker/client.js")).href
+  );
+  const probe = new IntercomClient();
+  let failure;
+  const listed = async () => {
+    try {
+      if (!probe.isConnected()) {
+        await probe.connect({
+          name: "registration-probe",
+          cwd,
+          model: "none",
+          rootSessionId: manager.getSessionId(),
+        });
+      }
+      const sessions = await probe.listSessions();
+      return sessions.some((peer) => peer.parentSessionId === manager.getSessionId());
+    } catch (error) {
+      failure = error;
+      return false;
+    }
+  };
+  try {
+    const deadline = Date.now() + 15000;
+    // oxlint-disable-next-line no-await-in-loop
+    while (!(await listed())) {
+      assert.ok(Date.now() < deadline, `native child registers with its broker: ${failure}`);
+      // oxlint-disable-next-line no-await-in-loop
+      await delay(20);
+    }
+  } finally {
+    await probe.disconnect();
+  }
+};
 const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSessionId(), id);
 const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const publishedFiles = (directory) =>
@@ -3260,6 +3296,9 @@ try {
     if (phase === "generation") {
       const oldPid = requests()[0].pid;
       const oldActor = readJSON(path.join(runDir(id), "actor.lock/process.json"));
+      // Intercom shutdown joins the actor's bounded broker startup connect, which can outlast the
+      // 3000 ms Stop escalation on a slow host. Graceful exit is the contract once it registered.
+      await childRegistered();
       const link = fs.linkSync;
       let heldStop;
       fs.linkSync = (source, destination) => {
