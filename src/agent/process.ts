@@ -44,9 +44,9 @@ export function alive(identity: Pick<ProcessIdentity, "pid" | "identity"> & Publ
     !isChildProcessReplaced(identity.pid, identity.identity, identity.published)
   );
 }
-export function ownIdentity(): { pid: number; identity: string } {
-  // An ordinary main need not be a group leader. Ambiguous live PIDs fail closed.
-  return { pid: process.pid, identity: readChildProcessIdentity(process.pid) ?? "unverified" };
+export function ownIdentity(pid = process.pid): { pid: number; identity: string } {
+  // An ordinary main or managed launcher need not be a group leader. Ambiguous live PIDs fail closed.
+  return { pid, identity: readChildProcessIdentity(pid) ?? "unverified" };
 }
 export function actor(base: string, launch: Launch): OwnedProcess | undefined {
   const file = path.join(conversation(base, launch), "actor.lock", "process.json");

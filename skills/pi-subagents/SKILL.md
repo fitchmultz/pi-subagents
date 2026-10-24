@@ -52,9 +52,14 @@ Use IDs returned by the tools. Runs belong to their native main session, not a
 cwd, project, name, or forked copy of its transcript. Resume the same main for
 ownership. Do not delete ambiguous launch state to force another attempt.
 
-Children terminate when their parent exits. Resume the same parent and explicitly
+Escape aborts the parent's reply, not already-launched children; `stop` ends one
+run. Children terminate when their parent exits. Resume the same parent and explicitly
 continue a saved child conversation; the child inspects the interrupted work
 rather than automatically replaying tool calls. Ordinary `/reload` is not exit.
+Under a fork launcher that provides `ctx.managedHost`, `pi restart` or `/restart`
+is not exit either: children keep running and report to the ready replacement.
+That needs one full CLI relaunch after upgrading; a worker under an older loaded
+launcher still stops children when it exits.
 
 ## Coordination and delivery
 

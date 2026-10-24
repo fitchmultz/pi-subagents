@@ -42,9 +42,10 @@ resources still apply. Forking does not authorize nested delegation.
 
 The response acknowledges launch only. It does not claim a model response or
 completion, and no tool waits for child completion: the parent continues other
-work or ends its turn, and the completion notice resumes it. Aborting a parent turn
-does not stop its children; use `stop`. Exiting or replacing the parent session
-stops its children, including active work, and preserves their saved conversations.
+work or ends its turn, and the completion notice resumes it. Aborting a parent reply
+with Escape does not stop already-launched children; use `stop` for one run. Exiting
+or replacing the parent session stops its children, including active work, and
+preserves their saved conversations.
 
 Completion notifications need a running main session. Ending a turn in a persistent
 TUI, RPC or SDK session is not parent exit. A one-shot print invocation exits after
@@ -99,6 +100,15 @@ attached. Parent exit or session replacement stops its actors and verified owned
 native shells, allowing native abort a short grace period before escalation.
 Actors also watch for parent death, including a hard kill. Ordinary extension
 reload keeps children alive because the parent has not exited.
+
+Under a fitchmultz/pi fork launcher that provides `ctx.managedHost`, the launcher
+that survives `pi restart` and `/restart` owns child lifetime instead of the worker
+process. A restart keeps children running; the replacement attaches and delivers
+their completions only after it becomes ready, and startup rollback keeps them too.
+Quitting, including quitting a replacement before it is ready, still stops them.
+After upgrading, relaunch the full CLI once: a worker started by an already-running
+older launcher has no `managedHost`, so restart still stops children with the old
+worker. Official Pi, SDK, print and RPC sessions keep worker-lifetime ownership.
 
 Resume the same parent and use `continue` with a new prompt to resume a saved
 child conversation. This does not replay interrupted tool calls or reconstruct

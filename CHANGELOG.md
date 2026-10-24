@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Keep children running across a managed fork `pi restart` or `/restart` and publish their completions once from the ready replacement. With the fork's `ctx.managedHost`, the launcher owns child liveness; an unready replacement neither adopts children nor publishes, a committed restart or startup rollback keeps them, and parent exit (including quitting an unready replacement) still stops them. Official Pi and older fork launchers keep process-lifetime ownership.
 - Stop reparsing unchanged completed child results and searching historical receipts on every completion poll. Keep physical journal validation, chronological delivery and pending-accounting repair.
 - Preserve native Markdown formatting in collapsed message cards, including legacy human relays, and show clickable expansion hints only when content is hidden.
 - Skip provably reused child and native-shell PIDs during Stop, continuation and parent shutdown, including unrelated non-group-leaders. Keep genuine identity uncertainty visible and verified orphan cleanup intact; timezone differences alone never prove replacement.
