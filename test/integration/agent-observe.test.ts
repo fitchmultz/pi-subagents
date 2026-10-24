@@ -10,17 +10,36 @@ import {
   ProcessTerminal,
   stripTerminalSequences,
   TuiAltScreen,
+  TuiMainScreen,
   visibleWidth,
+  type Component,
   type TUI,
 } from "@earendil-works/pi-tui";
 import * as sdk from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
-import { record } from "../support/assertions.ts";
+import { assertDefined, record } from "../support/assertions.ts";
 import { spy } from "sinon";
 import { usageLaunch } from "../support/agent-launch.ts";
 import { ownIdentity } from "../../src/agent/process.ts";
 import { write } from "../../src/agent/storage.ts";
+import type { ObserverTranscript } from "../../src/agent/observe-transcript.ts";
+import type { ObservationClient } from "../../src/agent/observe-client.ts";
+
+function components(component: Component): Component[] {
+  return [
+    component,
+    ...(component instanceof Container ? component.children.flatMap(components) : []),
+  ];
+}
+
+function observesNativeProgress(component: Component): component is ObserverTranscript {
+  return (
+    component instanceof Container &&
+    "observe" in component &&
+    typeof component.observe === "function"
+  );
+}
 
 class CaptureTerminal extends ProcessTerminal {
   output = "";
@@ -90,8 +109,13 @@ class CaptureTerminal extends ProcessTerminal {
     this.output = "";
   }
 }
-async function until(check: () => boolean, reason: string, detail?: () => string): Promise<void> {
-  const deadline = Date.now() + 15000;
+async function until(
+  check: () => boolean,
+  reason: string,
+  detail?: () => string,
+  timeout = 15000,
+): Promise<void> {
+  const deadline = Date.now() + timeout;
   while (!check()) {
     assert.ok(Date.now() < deadline, `${reason}\n${detail?.() ?? ""}`);
     // oxlint-disable-next-line no-await-in-loop
@@ -206,10 +230,9 @@ async function exerciseReading(options: {
   const native = sdk.SessionManager.open(a.sessionFile);
   native.appendMessage({ role: "user", content: "READING_FIXTURE", timestamp: 1 });
   for (let index = 0; index < 56; index++) {
+    const marker = `HISTORY_${String(index).padStart(2, "0")}`;
     native.appendMessage(
-      fauxAssistantMessage(
-        `HISTORY_${String(index).padStart(2, "0")}\n${"A long independent history row 雪😀 ".repeat(15)}\n`,
-      ),
+      fauxAssistantMessage(`${marker}\n${`${marker} independent history row 雪😀 `.repeat(15)}\n`),
     );
   }
   const page = (label: string) => `${label}\n${"W".repeat(32768 - label.length - 2)}\n`;
@@ -221,7 +244,7 @@ async function exerciseReading(options: {
   other.appendMessage(fauxAssistantMessage("OTHER_CHILD_ONLY"));
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
   let sent = 0;
-  const keyUntil = (key: string, text: string) =>
+  const keyUntil = (key: string, text: string, repeats = 1) =>
     until(
       () => {
         if (shown().includes(text)) {
@@ -229,7 +252,9 @@ async function exerciseReading(options: {
         }
         if (Date.now() - sent >= 100) {
           sent = Date.now();
-          terminal.send(key);
+          for (let index = 0; index < repeats; index++) {
+            terminal.send(key);
+          }
         }
         return false;
       },
@@ -314,6 +339,34 @@ async function exerciseReading(options: {
     "End returns to the latest page, not an old page of the last message",
     shown,
   );
+  terminal.height = 12;
+  terminal.resize?.();
+  await keyUntil("\x1b[A", "Load earlier activity", 25);
+  await until(
+    () => !shown().includes("Loading published content") && /HISTORY_\d+/.test(shown()),
+    "the top overlap card has rendered its published content",
+    shown,
+    5000,
+  );
+  const overlap = shown().match(/HISTORY_(\d+)/)?.[1];
+  assert.ok(overlap !== undefined && Number(overlap) > 0, shown());
+  terminal.click(screen, "Load earlier activity");
+  await until(
+    () =>
+      [...shown().matchAll(/HISTORY_(\d+)/g)].some((match) => Number(match[1]) < Number(overlap)),
+    "mouse history navigation reveals activity above a taller-than-viewport overlap card",
+    shown,
+    5000,
+  );
+  await keyUntil("\x1b[B", "Load later activity", 25);
+  terminal.click(screen, "Load later activity");
+  await until(
+    () => shown().includes(`HISTORY_${overlap}`) && !shown().includes("Load later activity"),
+    "mouse forward history keeps the overlap instead of jumping to the new window's bottom",
+    shown,
+    5000,
+  );
+  assert.match(shown(), /Reading earlier|New activity below/);
   assert.equal(
     options.session.isStreaming,
     false,
@@ -411,6 +464,12 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         tuiMode,
         initialThemeSetting: "dark",
       });
+      const screenPrototype = {
+        fullscreen: TuiAltScreen.prototype,
+        regular: TuiMainScreen.prototype,
+      }[tuiMode];
+      const overlays = spy(screenPrototype, "showOverlay");
+      t.after(() => overlays.restore());
       const work: { prompt?: Promise<void>; disposed: boolean } = { disposed: false };
       t.after(async () => {
         fs.writeFileSync(path.join(root, "release-child"), "release");
@@ -603,13 +662,32 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         .split("\n")
         .filter((line) => line.includes("LIVE_ROW_1_"));
       assert.ok(anchors.length > 0, "earlier partial-output rows are actually visible");
+      const shown = overlays.lastCall;
+      assertDefined(shown);
+      const transcript = components(shown.args[0]).find(observesNativeProgress);
+      assert.ok(transcript !== undefined);
+      const observe = transcript.observe.bind(transcript);
+      let processed = false;
+      const observation = t.mock.method(transcript, "observe", (client?: ObservationClient) => {
+        observe(client);
+        processed ||= [...(client?.tools.values() ?? [])].some(
+          (tool) =>
+            tool.name === "observe_gate" &&
+            tool.partial !== undefined &&
+            record(record(record(tool.partial).json).details).progress === "2",
+        );
+      });
       terminal.clear();
       fs.writeFileSync(path.join(root, "progress-child"), "2");
       await until(
-        () => visible().includes("New activity below"),
-        "new progress is observed without disturbing reading",
+        () => processed,
+        "selected viewer processes native progress 2 before checking the frozen viewport",
         visible,
       );
+      observation.mock.restore();
+      assert.ok(view !== undefined);
+      view.renderNow(true);
+      assert.match(visible(), /New activity below/);
       assert.doesNotMatch(
         visible(),
         /LIVE_ROW_2_/,

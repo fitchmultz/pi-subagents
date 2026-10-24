@@ -14,8 +14,13 @@ export interface EntryAnchor {
 
 interface PageRequest {
   requested: number;
-  navigation?: number;
+  navigation?: -1 | 1;
 }
+
+type TranscriptChange =
+  | { kind: "history"; direction: -1 | 1 }
+  | { kind: "content"; id: string; direction: -1 | 1 }
+  | { kind: "pending" };
 
 interface Hydration {
   entry: NativeRecord;
@@ -32,7 +37,6 @@ export class ObserverTranscript extends Container {
   private readonly pages = new Map<string, PageRequest>();
   private readonly expanded = new Set<string>();
   private before?: string;
-  private currentClient?: ObservationClient;
   private start = 0;
   private stop = 0;
   private entries: NativeRecord[] = [];
@@ -42,7 +46,7 @@ export class ObserverTranscript extends Container {
   waiting = false;
   private revision = "";
   private readonly display: CardOptions;
-  private readonly changed: (anchor?: string, direction?: number, gap?: boolean) => void;
+  private readonly changed: (event: TranscriptChange) => void;
   private readonly loaded: () => void;
   private paused = false;
   private hydration?: Promise<void>;
@@ -56,7 +60,7 @@ export class ObserverTranscript extends Container {
     cwd: string;
     tui: TUI;
     hideThinking: boolean;
-    changed: (anchor?: string, direction?: number, gap?: boolean) => void;
+    changed: (event: TranscriptChange) => void;
     loaded: () => void;
   }) {
     super();
@@ -83,7 +87,6 @@ export class ObserverTranscript extends Container {
     return true;
   }
   sync(client?: ObservationClient): boolean {
-    this.currentClient = client;
     if (!this.refresh(client)) {
       return false;
     }
@@ -225,7 +228,7 @@ export class ObserverTranscript extends Container {
     if (request.navigation === undefined) {
       this.loaded();
     } else {
-      this.changed(card.id, request.navigation);
+      this.changed({ kind: "content", id: card.id, direction: request.navigation });
     }
   }
   private evict(): void {
@@ -259,7 +262,7 @@ export class ObserverTranscript extends Container {
       card.footer.addChild(new Text(`Content page ${page.page + 1}/${page.pages}`, 0, 0));
       card.footer.addChild(
         actionHints(
-          [-1, 1].map((direction) => ({
+          ([-1, 1] as const).map((direction) => ({
             text: direction < 0 ? "Previous page" : "Next page",
             action: () => {
               this.changePage(id, direction);
@@ -270,7 +273,7 @@ export class ObserverTranscript extends Container {
     }
     card.invalidate();
   }
-  private changePage(id: string, direction: number): boolean {
+  private changePage(id: string, direction: -1 | 1): boolean {
     const card = this.cards.get(id);
     const entry = this.journal.native.byId.get(id);
     if (!card || !entry) {
@@ -282,11 +285,11 @@ export class ObserverTranscript extends Container {
     }
     const request = { requested: page, navigation: direction };
     this.pages.set(id, request);
-    this.changed();
+    this.changed({ kind: "pending" });
     this.load(entry, card, request);
     return true;
   }
-  contentPage(line: number, height: number, direction: number): boolean {
+  contentPage(line: number, height: number, direction: -1 | 1): boolean {
     const positions = direction < 0 ? this.positions.toReversed() : this.positions;
     return positions.some((item) => {
       const visible = item.end > line && item.start < line + height;
@@ -344,18 +347,14 @@ export class ObserverTranscript extends Container {
     this.before = found < 0 ? undefined : this.before;
     return this.before === undefined || found < 0 ? entries.length : found;
   }
-  private historyRow(label: string, direction: number): void {
+  private historyRow(label: string, direction: -1 | 1): void {
     this.addChild(
       actionText(label, () => {
-        const id = this.history(direction);
-        if (id !== undefined) {
-          this.sync(this.currentClient?.closed === true ? undefined : this.currentClient);
-          this.changed(id, direction, direction < 0);
-        }
+        this.changed({ kind: "history", direction });
       }),
     );
   }
-  history(direction: number): string | undefined {
+  history(direction: -1 | 1): string | undefined {
     if ((direction < 0 && this.start === 0) || (direction > 0 && this.before === undefined)) {
       return;
     }

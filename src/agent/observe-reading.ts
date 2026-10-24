@@ -11,24 +11,34 @@ export class Reading {
   pending = false;
   width = 0;
   destination?: EntryAnchor;
+  private readonly changed: (kind: "history" | "content") => void;
   constructor(
     watch: Watch,
-    options: { tui: TUI; hideThinking: boolean; changed: () => void; loaded: () => void },
+    options: {
+      tui: TUI;
+      hideThinking: boolean;
+      changed: (kind: "history" | "content") => void;
+      loaded: () => void;
+    },
   ) {
     this.watch = watch;
+    this.changed = options.changed;
     const { sessionFile: file, sessionId, cwd } = watch.launch;
     this.transcript = new ObserverTranscript({
       ...options,
       file,
       sessionId,
       cwd,
-      changed: (id, direction, gap) => {
+      changed: (event) => {
         this.following = false;
-        if (id !== undefined) {
-          const offset = gap === true ? -this.scroll.viewportHeight : 0;
-          this.destination = { id, offset, end: gap !== true && direction === -1 };
+        if (event.kind === "history") {
+          this.history(event.direction);
+          return;
         }
-        options.changed();
+        if (event.kind === "content") {
+          this.destination = { id: event.id, offset: 0, end: event.direction === -1 };
+        }
+        this.changed("content");
       },
     });
     this.transcript.sync();
@@ -61,22 +71,27 @@ export class Reading {
     this.following = false;
     this.scroll.scrollTo(this.scroll.scrollTop + lines, { disableFollow: true });
   }
-  page(direction: number): boolean {
+  page(direction: -1 | 1): void {
     this.following = false;
     const height = Math.max(1, this.scroll.viewportHeight);
     if (this.transcript.contentPage(this.scroll.scrollTop, height, direction)) {
-      return false;
+      return;
     }
     // A history row keeps a full scroll above line zero; use the actual scroll result.
     const remaining = this.scroll.scrollBy(direction * height);
     if (remaining === 0) {
-      return false;
+      return;
     }
+    this.history(direction);
+  }
+  private history(direction: -1 | 1): void {
     const id = this.transcript.history(direction);
     if (id !== undefined) {
-      this.destination = { id, offset: direction < 0 ? -height : 1 };
-      return true;
+      this.destination = {
+        id,
+        offset: direction < 0 ? -Math.max(1, this.scroll.viewportHeight) : 1,
+      };
+      this.changed("history");
     }
-    return false;
   }
 }

@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import childProcess, { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { registeredSession } from "../support/native-readiness.ts";
 
 const [root, repo, sdkRoot, phase] = process.argv.slice(2);
 const cwd = path.join(root, "project"),
@@ -304,38 +305,21 @@ const settled = async (receipt, why = "canonical native completion reaches the p
   const signal = new AbortController().signal;
   return await runsTool().execute(`settled-${id}`, { action: "inspect", id }, signal);
 };
-// Observe the actual native child's broker registration as a peer in this parent's session tree.
-const childRegistered = async () => {
+const childRegistered = async (id) => {
   const { IntercomClient } = await import(
     pathToFileURL(path.join(repo, "dist/pi-intercom/broker/client.js")).href
   );
   const probe = new IntercomClient();
-  let failure;
-  const listed = async () => {
-    try {
-      if (!probe.isConnected()) {
-        await probe.connect({
-          name: "registration-probe",
-          cwd,
-          model: "none",
-          rootSessionId: manager.getSessionId(),
-        });
-      }
-      const sessions = await probe.listSessions();
-      return sessions.some((peer) => peer.parentSessionId === manager.getSessionId());
-    } catch (error) {
-      failure = error;
-      return false;
-    }
-  };
   try {
-    const deadline = Date.now() + 15000;
-    // oxlint-disable-next-line no-await-in-loop
-    while (!(await listed())) {
-      assert.ok(Date.now() < deadline, `native child registers with its broker: ${failure}`);
-      // oxlint-disable-next-line no-await-in-loop
-      await delay(20);
-    }
+    await registeredSession(probe, readJSON(path.join(runDir(id), "launch.json")).sessionId, {
+      observer: {
+        name: "registration-probe",
+        cwd,
+        model: "none",
+        rootSessionId: manager.getSessionId(),
+      },
+      timeoutMs: 15000,
+    });
   } finally {
     await probe.disconnect();
   }
@@ -803,17 +787,17 @@ try {
       syncBuiltinESMExports();
     }
     console.log("inventory command I/O:", JSON.stringify(io));
+    const text = inventory.content.map((block) => block.text ?? "").join("\n");
+    assert.ok(
+      Buffer.byteLength(text) < 100 * 1024,
+      `metadata inventory was ${Buffer.byteLength(text)} bytes`,
+    );
     assert.equal(io.scans, 1, "one shared conversation scan, not one per continuation");
     assert.equal(io.opens, 100, "each guidance record is opened once for the entire page");
     assert.ok(io.reads <= 600, `bounded command read calls: ${io.reads}`);
     assert.ok(io.maxReadBytes <= 64 * 1024, `bounded individual reads: ${io.maxReadBytes}`);
     assert.ok(io.bytes >= 100 * 256 * 1024, "the actual large command spool was read");
     assert.ok(io.bytes < 100 * (256 * 1024 + 1024), `command bytes read: ${io.bytes}`);
-    const text = inventory.content.map((block) => block.text ?? "").join("\n");
-    assert.ok(
-      Buffer.byteLength(text) < 100 * 1024,
-      `metadata inventory was ${Buffer.byteLength(text)} bytes`,
-    );
     const page = JSON.parse(text);
     assert.equal(page.total, 51);
     assert.equal(page.runs.length, 50);
@@ -2822,9 +2806,15 @@ try {
       nativeTurns.map((entry) => `${first.details.sessionId}:${entry.id}`),
     );
     const canonicalFile = path.join(runDir(runId), "result.json");
-    const canonical = fs.readFileSync(canonicalFile);
-    assert.deepEqual(JSON.parse(canonical), first.details.result);
+    const stored = readJSON(canonicalFile);
+    assert.deepEqual(stored, first.details.result);
     assert.deepEqual(notices()[0].details.result, first.details.result);
+    const extended = {
+      ...stored,
+      diagnostics: { turns: Array(35).fill("PRIVATE_ACCOUNTING_DIAGNOSTIC") },
+    };
+    fs.writeFileSync(canonicalFile, JSON.stringify(extended));
+    const canonical = fs.readFileSync(canonicalFile);
     for (const state of ["live", "exited"]) {
       const stopId = `usage-stop-${state}`;
       let downstream;
@@ -2839,10 +2829,7 @@ try {
         return fauxAssistantMessage("COMPACT_STOP_CONSUMED");
       });
       const fullText = JSON.stringify(stopped.details, null, 2);
-      const expected = JSON.parse(JSON.stringify(stopped.details));
-      delete expected.result.contributions;
       const text = stopped.content.map((block) => block.text ?? "").join("\n");
-      const expectedText = JSON.stringify(expected, null, 2);
       console.log(
         JSON.stringify({
           projection: "stop",
@@ -2850,15 +2837,20 @@ try {
           contributions: contributions.length,
           beforeCharacters: fullText.length,
           afterCharacters: text.length,
-          expectedCharacters: expectedText.length,
         }),
       );
       assert.deepEqual(
-        JSON.parse(text),
-        expected,
-        "only per-entry accounting is omitted from model text",
+        JSON.parse(text).result,
+        {
+          id: runId,
+          owner: manager.getSessionId(),
+          status: "completed",
+          endedAt: stored.endedAt,
+          terminalEntryId: nativeTurns.at(-1).id,
+        },
+        "receipt text selects execution metadata, not per-turn or unknown saved diagnostics",
       );
-      assert.equal(text, expectedText);
+      assert.doesNotMatch(text, /contributions|PRIVATE_ACCOUNTING_DIAGNOSTIC/);
       assert.deepEqual(
         downstream.content,
         stopped.content,
@@ -2866,8 +2858,8 @@ try {
       );
       assert.deepEqual(
         stopped.details.result,
-        first.details.result,
-        "tool details keep full accounting",
+        extended,
+        "tool details keep full accounting and unknown saved diagnostics",
       );
       assert.deepEqual(
         fs.readFileSync(canonicalFile),
@@ -3298,7 +3290,7 @@ try {
       const oldActor = readJSON(path.join(runDir(id), "actor.lock/process.json"));
       // Intercom shutdown joins the actor's bounded broker startup connect, which can outlast the
       // 3000 ms Stop escalation on a slow host. Graceful exit is the contract once it registered.
-      await childRegistered();
+      await childRegistered(id);
       const link = fs.linkSync;
       let heldStop;
       fs.linkSync = (source, destination) => {

@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readOutputPage } from "../shared/output-page.ts";
-import { isRecord } from "../shared/unknown.ts";
 import { actor, alive } from "./process.ts";
 import {
   admissionSchema,
@@ -57,16 +56,28 @@ interface RunView extends Omit<RunSummary, "result"> {
   result?: Result;
   output: ReturnType<typeof outputView>;
 }
-function modelText(value: unknown): string {
-  // Per-entry accounting stays in canonical results and tool details, not model text.
-  const view =
-    isRecord(value) && isRecord(value.result)
-      ? { ...value, result: { ...value.result, contributions: undefined } }
-      : value;
-  return JSON.stringify(view, null, 2);
-}
-export function toolResult(value: unknown, text = modelText(value)): ToolReply {
+type Receipt =
+  | { readonly receipt: "launch"; readonly note: string }
+  | { readonly receipt: "continuation" | "existing-successor" }
+  | { readonly receipt: "guidance"; readonly command: string; readonly note: string }
+  | { readonly stopRequest?: string; readonly stopAcknowledged: false; readonly note: string };
+
+function toolResult(value: unknown, text: string): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
+}
+function receiptResult(result: Result | undefined) {
+  return result === undefined
+    ? undefined
+    : {
+        id: result.id,
+        owner: result.owner,
+        status: result.status,
+        endedAt: result.endedAt,
+        terminalEntryId: result.terminalEntryId,
+        error: result.error,
+        accountingError: result.accountingError,
+        accountingPending: result.accountingPending,
+      };
 }
 function processView(base: string, launch: Launch) {
   const identity = actor(base, launch);
@@ -165,7 +176,7 @@ function metadata(
     guidance: options.guidance,
   };
 }
-export function summaries(
+function summaries(
   base: string,
   launches: readonly Launch[],
   ctx?: ExtensionContext,
@@ -189,7 +200,7 @@ export function summaries(
     };
   });
 }
-export function projection(
+function projection(
   base: string,
   launch: Launch,
   ctx?: ExtensionContext,
@@ -203,6 +214,32 @@ export function projection(
     ...view,
     output: outputView(view.outputFile, input),
   };
+}
+export function renderReceipt(
+  base: string,
+  launch: Launch,
+  ctx: ExtensionContext | undefined,
+  receipt: Receipt,
+): ToolReply {
+  const details = { ...projection(base, launch, ctx), ...receipt };
+  const model = { ...details, result: receiptResult(details.result) };
+  return toolResult(details, JSON.stringify(model, null, 2));
+}
+export function renderInventory(
+  base: string,
+  launches: readonly Launch[],
+  ctx: ExtensionContext | undefined,
+  input: Pick<RunsInput, "offset">,
+): ToolReply {
+  const offset = input.offset ?? 0;
+  const runs = summaries(base, launches.slice(offset, offset + 50), ctx);
+  const details = {
+    runs,
+    offset,
+    nextOffset: offset + runs.length < launches.length ? offset + runs.length : undefined,
+    total: launches.length,
+  };
+  return toolResult(details, JSON.stringify(details, null, 2));
 }
 function receiptText(details: RunView): string {
   return details.nativeReceipt !== null
@@ -234,7 +271,7 @@ function resultText(details: RunView): string {
     `Native journal: ${details.sessionFile}`,
   ].join("\n");
 }
-export function render(
+export function renderInspection(
   base: string,
   launch: Launch,
   ctx?: ExtensionContext,

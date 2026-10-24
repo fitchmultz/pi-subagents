@@ -82,9 +82,13 @@ export class ObserverScreen extends VStack {
         new Reading(watch, {
           tui: this.options.tui,
           hideThinking: this.options.hideThinking,
-          changed: () => {
+          changed: (kind) => {
             if (this.reading === reading) {
-              this.paint();
+              if (kind === "history") {
+                this.flush(true);
+              } else {
+                this.paint();
+              }
             }
           },
           loaded: () => {
@@ -301,7 +305,7 @@ export class ObserverScreen extends VStack {
     this.selected = rows[next]?.id ?? "";
     this.list.reveal(next);
   }
-  private page(direction: number): void {
+  private page(direction: -1 | 1): void {
     if (this.focus === "list") {
       this.list.scrollBy(direction * this.list.viewportHeight);
       return;
@@ -310,9 +314,7 @@ export class ObserverScreen extends VStack {
       this.details.scrollBy(direction * this.details.viewportHeight);
       return;
     }
-    if (this.reading?.page(direction) === true) {
-      this.flush(true);
-    }
+    this.reading?.page(direction);
   }
   private end(): void {
     if (this.details && this.focus === "conversation") {
