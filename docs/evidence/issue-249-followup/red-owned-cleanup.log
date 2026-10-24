@@ -1,0 +1,29 @@
+✖ retained fixture journals outlive the caller's temporary cleanup scope (108.656132ms)
+ℹ Synthetic caller cleanup scope at /tmp/history-owned-tmp-iWU1qM
+ℹ Synthetic retained-lifetime evidence at /tmp/history-owned-tmp-iWU1qM/history-retained-wsvrX3
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 480.271029
+
+✖ failing tests:
+
+test at test/integration/retired-history-archive.test.ts:75:1
+✖ retained fixture journals outlive the caller's temporary cleanup scope (108.656132ms)
+  AssertionError [ERR_ASSERTION]: Retained evidence entered caller cleanup scope
+      at TestContext.<anonymous> (file:///workspace/issue-249/test/integration/retired-history-archive.test.ts:92:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

@@ -2,7 +2,6 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as path from "node:path";
-import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -17,7 +16,7 @@ import { record } from "../support/assertions.ts";
 import { until } from "../support/observation-child.ts";
 
 test("native session_start publishes ownership without scanning runs, then tools and timer recover the backlog", async (t) => {
-  const root = fs.mkdtempSync(path.join(tmpdir(), "agent-attachment-"));
+  const root = fs.mkdtempSync("/tmp/agent-attachment-");
   t.diagnostic(`Synthetic native journal retained at ${root}`);
   const manager = SessionManager.create(root, path.join(root, "sessions"));
   manager.appendMessage({ role: "user", content: "Synthetic owner", timestamp: 1 });

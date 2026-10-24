@@ -1,0 +1,1480 @@
+2026-10-24T16:32:36.4876722Z Current runner version: '2.338.0'
+2026-10-24T16:32:36.4900871Z ##[group]Runner Image Provisioner
+2026-10-24T16:32:36.4901997Z Hosted Compute Agent
+2026-10-24T16:32:36.4902545Z Version: 20261012.601
+2026-10-24T16:32:36.4903162Z Commit: f3dc54e1fb89da6852db922499a0233137369e1d
+2026-10-24T16:32:36.4903860Z Build Date: 2026-10-12T17:48:21Z
+2026-10-24T16:32:36.4904513Z Worker ID: {cd8597b3-adfe-4524-aeaf-1358274433fa}
+2026-10-24T16:32:36.4905166Z Region: westus3
+2026-10-24T16:32:36.4905692Z Cloud: Azure
+2026-10-24T16:32:36.4906175Z ##[endgroup]
+2026-10-24T16:32:36.4907561Z ##[group]Operating System
+2026-10-24T16:32:36.4908148Z Ubuntu
+2026-10-24T16:32:36.4908621Z 24.04.5
+2026-10-24T16:32:36.4909141Z LTS
+2026-10-24T16:32:36.4909625Z ##[endgroup]
+2026-10-24T16:32:36.4910119Z ##[group]Runner Image
+2026-10-24T16:32:36.4910783Z Image: ubuntu-24.04
+2026-10-24T16:32:36.4911287Z Version: 20261012.334.1
+2026-10-24T16:32:36.4912666Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+2026-10-24T16:32:36.4914006Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+2026-10-24T16:32:36.4914905Z ##[endgroup]
+2026-10-24T16:32:36.4915920Z ##[group]GITHUB_TOKEN Permissions
+2026-10-24T16:32:36.4917868Z Contents: read
+2026-10-24T16:32:36.4918391Z Metadata: read
+2026-10-24T16:32:36.4918976Z ##[endgroup]
+2026-10-24T16:32:36.4920949Z Secret source: Actions
+2026-10-24T16:32:36.4922039Z Cache mode: write
+2026-10-24T16:32:36.4922667Z Prepare workflow directory
+2026-10-24T16:32:36.5442002Z Prepare all required actions
+2026-10-24T16:32:36.5491934Z Getting action download info
+2026-10-24T16:32:36.8417344Z Download action repository 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-10-24T16:32:36.9215985Z Download action repository 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020' (SHA:820762786026740c76f36085b0efc47a31fe5020)
+2026-10-24T16:32:37.1587979Z Complete job name: qualification (ubuntu-latest, fork)
+2026-10-24T16:32:37.2290722Z ##[group]Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+2026-10-24T16:32:37.2291804Z with:
+2026-10-24T16:32:37.2292217Z   path: extension
+2026-10-24T16:32:37.2292657Z   persist-credentials: false
+2026-10-24T16:32:37.2293137Z   repository: fitchmultz/pi-subagents
+2026-10-24T16:32:37.2296642Z   token: ***
+2026-10-24T16:32:37.2297022Z   ssh-strict: true
+2026-10-24T16:32:37.2297425Z   ssh-user: git
+2026-10-24T16:32:37.2297819Z   clean: true
+2026-10-24T16:32:37.2298237Z   sparse-checkout-cone-mode: true
+2026-10-24T16:32:37.2298736Z   fetch-depth: 1
+2026-10-24T16:32:37.2299144Z   fetch-tags: false
+2026-10-24T16:32:37.2299562Z   show-progress: true
+2026-10-24T16:32:37.2299981Z   lfs: false
+2026-10-24T16:32:37.2300360Z   submodules: false
+2026-10-24T16:32:37.2300779Z   set-safe-directory: true
+2026-10-24T16:32:37.2301249Z   allow-unsafe-pr-checkout: false
+2026-10-24T16:32:37.2302083Z env:
+2026-10-24T16:32:37.2302465Z   CI: true
+2026-10-24T16:32:37.2303015Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:37.2303804Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:32:37.2304562Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:37.2305342Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:37.2306059Z ##[endgroup]
+2026-10-24T16:32:37.3263951Z Syncing repository: fitchmultz/pi-subagents
+2026-10-24T16:32:37.3266231Z ##[group]Getting Git version info
+2026-10-24T16:32:37.3267024Z Working directory is '/home/runner/work/pi-subagents/pi-subagents/extension'
+2026-10-24T16:32:37.3268066Z [command]/usr/bin/git version
+2026-10-24T16:32:37.3352427Z git version 2.55.0
+2026-10-24T16:32:37.3376526Z ##[endgroup]
+2026-10-24T16:32:37.3388486Z Temporarily overriding HOME='/home/runner/work/_temp/c7820f04-8d39-43c2-a805-a56bd835bc83' before making global git config changes
+2026-10-24T16:32:37.3389772Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:32:37.3400270Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/extension
+2026-10-24T16:32:37.3457825Z ##[group]Determining repository object format
+2026-10-24T16:32:37.3459590Z ##[endgroup]
+2026-10-24T16:32:37.3460796Z ##[group]Initializing the repository
+2026-10-24T16:32:37.3465215Z [command]/usr/bin/git init /home/runner/work/pi-subagents/pi-subagents/extension
+2026-10-24T16:32:37.3571600Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-24T16:32:37.3593656Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-24T16:32:37.3605414Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-24T16:32:37.3607154Z hint: call:
+2026-10-24T16:32:37.3608470Z hint:
+2026-10-24T16:32:37.3609362Z hint: 	git config --global init.defaultBranch <name>
+2026-10-24T16:32:37.3610283Z hint:
+2026-10-24T16:32:37.3611224Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-24T16:32:37.3612928Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-24T16:32:37.3614108Z hint:
+2026-10-24T16:32:37.3614748Z hint: 	git branch -m <name>
+2026-10-24T16:32:37.3615510Z hint:
+2026-10-24T16:32:37.3616479Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-24T16:32:37.3618269Z Initialized empty Git repository in /home/runner/work/pi-subagents/pi-subagents/extension/.git/
+2026-10-24T16:32:37.3621049Z [command]/usr/bin/git remote add origin https://github.com/fitchmultz/pi-subagents
+2026-10-24T16:32:37.3657613Z ##[endgroup]
+2026-10-24T16:32:37.3658913Z ##[group]Disabling automatic garbage collection
+2026-10-24T16:32:37.3663127Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-24T16:32:37.3692125Z ##[endgroup]
+2026-10-24T16:32:37.3693686Z ##[group]Setting up auth
+2026-10-24T16:32:37.3695081Z Removing SSH command configuration
+2026-10-24T16:32:37.3696811Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:37.3736224Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:37.4080205Z Removing HTTP extra header
+2026-10-24T16:32:37.4088172Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:37.4127517Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:37.4307055Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:37.4312241Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:37.4343393Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:37.4522934Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-24T16:32:37.4565938Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git.path /home/runner/work/_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:37.4599071Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:37.4635439Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/extension/.git.path /github/runner_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:37.4663704Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/extension/.git/worktrees/*.path /github/runner_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:37.4689597Z ##[endgroup]
+2026-10-24T16:32:37.4690585Z ##[group]Fetching the repository
+2026-10-24T16:32:37.4696090Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +28924742af4bce06d64f5f49fef58670141b52a7:refs/remotes/pull/251/merge
+2026-10-24T16:32:38.7057677Z From https://github.com/fitchmultz/pi-subagents
+2026-10-24T16:32:38.7059685Z  * [new ref]         28924742af4bce06d64f5f49fef58670141b52a7 -> pull/251/merge
+2026-10-24T16:32:38.7064442Z ##[endgroup]
+2026-10-24T16:32:38.7066166Z ##[group]Determining the checkout info
+2026-10-24T16:32:38.7067997Z ##[endgroup]
+2026-10-24T16:32:38.7070348Z [command]/usr/bin/git sparse-checkout disable
+2026-10-24T16:32:38.7127745Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-24T16:32:38.7159083Z ##[group]Checking out the ref
+2026-10-24T16:32:38.7164662Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/251/merge
+2026-10-24T16:32:38.7535691Z Note: switching to 'refs/remotes/pull/251/merge'.
+2026-10-24T16:32:38.7537602Z 
+2026-10-24T16:32:38.7538907Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:32:38.7542195Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:32:38.7545534Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:32:38.7547287Z 
+2026-10-24T16:32:38.7548601Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:32:38.7551739Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:32:38.7553600Z 
+2026-10-24T16:32:38.7554346Z   git switch -c <new-branch-name>
+2026-10-24T16:32:38.7555502Z 
+2026-10-24T16:32:38.7556345Z Or undo this operation with:
+2026-10-24T16:32:38.7557330Z 
+2026-10-24T16:32:38.7558161Z   git switch -
+2026-10-24T16:32:38.7559476Z 
+2026-10-24T16:32:38.7560805Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:32:38.7562952Z 
+2026-10-24T16:32:38.7565085Z HEAD is now at 2892474 Merge 576587ab4e4326782bb3a90d38c4b0a174242ca6 into 9bf0f6b21b26fcfb975761c3243b512382aec6d8
+2026-10-24T16:32:38.7569120Z ##[endgroup]
+2026-10-24T16:32:38.7585293Z [command]/usr/bin/git log -1 --format=%H
+2026-10-24T16:32:38.7610057Z 28924742af4bce06d64f5f49fef58670141b52a7
+2026-10-24T16:32:38.7622857Z ##[group]Removing auth
+2026-10-24T16:32:38.7624782Z Removing SSH command configuration
+2026-10-24T16:32:38.7627334Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:38.7655806Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:38.7841006Z Removing HTTP extra header
+2026-10-24T16:32:38.7844671Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:38.7878010Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:38.8055015Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:38.8058605Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:38.8084899Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git.path
+2026-10-24T16:32:38.8089204Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git/worktrees/*.path
+2026-10-24T16:32:38.8092941Z includeif.gitdir:/github/workspace/extension/.git.path
+2026-10-24T16:32:38.8096086Z includeif.gitdir:/github/workspace/extension/.git/worktrees/*.path
+2026-10-24T16:32:38.8103196Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git.path
+2026-10-24T16:32:38.8117291Z /home/runner/work/_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:38.8131201Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-425846bc\-60b2\-4503\-8af2\-c6aaffa1f057\.config
+2026-10-24T16:32:38.8188105Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git/worktrees/*.path
+2026-10-24T16:32:38.8209478Z /home/runner/work/_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:38.8217149Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/extension/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-425846bc\-60b2\-4503\-8af2\-c6aaffa1f057\.config
+2026-10-24T16:32:38.8246310Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/extension/.git.path
+2026-10-24T16:32:38.8267913Z /github/runner_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:38.8275927Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/extension/.git.path \/github\/runner_temp\/git\-credentials\-425846bc\-60b2\-4503\-8af2\-c6aaffa1f057\.config
+2026-10-24T16:32:38.8305330Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/extension/.git/worktrees/*.path
+2026-10-24T16:32:38.8324889Z /github/runner_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config
+2026-10-24T16:32:38.8339069Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/extension/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-425846bc\-60b2\-4503\-8af2\-c6aaffa1f057\.config
+2026-10-24T16:32:38.8362683Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:38.8536974Z Removing credentials config '/home/runner/work/_temp/git-credentials-425846bc-60b2-4503-8af2-c6aaffa1f057.config'
+2026-10-24T16:32:38.8545867Z ##[endgroup]
+2026-10-24T16:32:38.8886916Z ##[group]Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+2026-10-24T16:32:38.8888320Z with:
+2026-10-24T16:32:38.8889204Z   repository: fitchmultz/.github
+2026-10-24T16:32:38.8890314Z   ref: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:38.8891419Z   path: automation
+2026-10-24T16:32:38.8892559Z   persist-credentials: false
+2026-10-24T16:32:38.8899808Z   token: ***
+2026-10-24T16:32:38.8900670Z   ssh-strict: true
+2026-10-24T16:32:38.8901668Z   ssh-user: git
+2026-10-24T16:32:38.8902520Z   clean: true
+2026-10-24T16:32:38.8903428Z   sparse-checkout-cone-mode: true
+2026-10-24T16:32:38.8904472Z   fetch-depth: 1
+2026-10-24T16:32:38.8905349Z   fetch-tags: false
+2026-10-24T16:32:38.8906247Z   show-progress: true
+2026-10-24T16:32:38.8907201Z   lfs: false
+2026-10-24T16:32:38.8908047Z   submodules: false
+2026-10-24T16:32:38.8908956Z   set-safe-directory: true
+2026-10-24T16:32:38.8909988Z   allow-unsafe-pr-checkout: false
+2026-10-24T16:32:38.8911017Z env:
+2026-10-24T16:32:38.8911963Z   CI: true
+2026-10-24T16:32:38.8912998Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:38.8914548Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:32:38.8916098Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:38.8917656Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:38.8919098Z ##[endgroup]
+2026-10-24T16:32:38.9717959Z Syncing repository: fitchmultz/.github
+2026-10-24T16:32:38.9721387Z ##[group]Getting Git version info
+2026-10-24T16:32:38.9723994Z Working directory is '/home/runner/work/pi-subagents/pi-subagents/automation'
+2026-10-24T16:32:38.9752249Z [command]/usr/bin/git version
+2026-10-24T16:32:38.9789580Z git version 2.55.0
+2026-10-24T16:32:38.9812111Z ##[endgroup]
+2026-10-24T16:32:38.9820443Z Temporarily overriding HOME='/home/runner/work/_temp/f521b05b-aaef-4716-b733-9c6ff7b086de' before making global git config changes
+2026-10-24T16:32:38.9825199Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:32:38.9829369Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/automation
+2026-10-24T16:32:38.9868967Z ##[group]Determining repository object format
+2026-10-24T16:32:38.9872787Z ##[endgroup]
+2026-10-24T16:32:38.9875616Z ##[group]Initializing the repository
+2026-10-24T16:32:38.9877491Z [command]/usr/bin/git init /home/runner/work/pi-subagents/pi-subagents/automation
+2026-10-24T16:32:38.9917017Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-24T16:32:38.9919080Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-24T16:32:38.9920997Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-24T16:32:38.9922856Z hint: call:
+2026-10-24T16:32:38.9923765Z hint:
+2026-10-24T16:32:38.9924864Z hint: 	git config --global init.defaultBranch <name>
+2026-10-24T16:32:38.9926120Z hint:
+2026-10-24T16:32:38.9927565Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-24T16:32:38.9929416Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-24T16:32:38.9931451Z hint:
+2026-10-24T16:32:38.9932961Z hint: 	git branch -m <name>
+2026-10-24T16:32:38.9933990Z hint:
+2026-10-24T16:32:38.9935308Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-24T16:32:38.9937536Z Initialized empty Git repository in /home/runner/work/pi-subagents/pi-subagents/automation/.git/
+2026-10-24T16:32:38.9944491Z [command]/usr/bin/git remote add origin https://github.com/fitchmultz/.github
+2026-10-24T16:32:38.9973677Z ##[endgroup]
+2026-10-24T16:32:38.9975484Z ##[group]Disabling automatic garbage collection
+2026-10-24T16:32:38.9979124Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-24T16:32:39.0012137Z ##[endgroup]
+2026-10-24T16:32:39.0013624Z ##[group]Setting up auth
+2026-10-24T16:32:39.0014972Z Removing SSH command configuration
+2026-10-24T16:32:39.0017845Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:39.0051406Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:39.0276948Z Removing HTTP extra header
+2026-10-24T16:32:39.0279921Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:39.0313820Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:39.0507851Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:39.0511598Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:39.0539807Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:39.0743538Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-24T16:32:39.0778056Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git.path /home/runner/work/_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.0805623Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.0835272Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/automation/.git.path /github/runner_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.0865328Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/automation/.git/worktrees/*.path /github/runner_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.0892185Z ##[endgroup]
+2026-10-24T16:32:39.0894882Z ##[group]Fetching the repository
+2026-10-24T16:32:39.0900639Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:39.5766127Z From https://github.com/fitchmultz/.github
+2026-10-24T16:32:39.5767068Z  * branch            54c687228d840506555801b9db038373e697d901 -> FETCH_HEAD
+2026-10-24T16:32:39.5776349Z [command]/usr/bin/git rev-parse --verify --quiet 54c687228d840506555801b9db038373e697d901^{object}
+2026-10-24T16:32:39.5800685Z 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:39.5804644Z ##[endgroup]
+2026-10-24T16:32:39.5805347Z ##[group]Determining the checkout info
+2026-10-24T16:32:39.5806258Z ##[endgroup]
+2026-10-24T16:32:39.5812030Z [command]/usr/bin/git sparse-checkout disable
+2026-10-24T16:32:39.5848475Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-24T16:32:39.5876833Z ##[group]Checking out the ref
+2026-10-24T16:32:39.5881971Z [command]/usr/bin/git checkout --progress --force 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:39.5944770Z Note: switching to '54c687228d840506555801b9db038373e697d901'.
+2026-10-24T16:32:39.5945418Z 
+2026-10-24T16:32:39.5945834Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:32:39.5946762Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:32:39.5947469Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:32:39.5947839Z 
+2026-10-24T16:32:39.5948058Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:32:39.5948567Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:32:39.5949172Z 
+2026-10-24T16:32:39.5949319Z   git switch -c <new-branch-name>
+2026-10-24T16:32:39.5949572Z 
+2026-10-24T16:32:39.5949767Z Or undo this operation with:
+2026-10-24T16:32:39.5949978Z 
+2026-10-24T16:32:39.5950103Z   git switch -
+2026-10-24T16:32:39.5950255Z 
+2026-10-24T16:32:39.5950509Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:32:39.5950835Z 
+2026-10-24T16:32:39.5951110Z HEAD is now at 54c6872 test: resolve transitive imports from the native ESM host path
+2026-10-24T16:32:39.5952893Z ##[endgroup]
+2026-10-24T16:32:39.5985088Z [command]/usr/bin/git log -1 --format=%H
+2026-10-24T16:32:39.6007467Z 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:39.6015491Z ##[group]Removing auth
+2026-10-24T16:32:39.6015937Z Removing SSH command configuration
+2026-10-24T16:32:39.6020243Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:39.6048605Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:39.6228884Z Removing HTTP extra header
+2026-10-24T16:32:39.6233005Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:39.6262826Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:39.6442781Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:39.6447159Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:39.6469328Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git.path
+2026-10-24T16:32:39.6470465Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git/worktrees/*.path
+2026-10-24T16:32:39.6471815Z includeif.gitdir:/github/workspace/automation/.git.path
+2026-10-24T16:32:39.6472609Z includeif.gitdir:/github/workspace/automation/.git/worktrees/*.path
+2026-10-24T16:32:39.6479900Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git.path
+2026-10-24T16:32:39.6534418Z /home/runner/work/_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.6545080Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-3facff4a\-4f1c\-4fd2\-8411\-0b7c24d22a54\.config
+2026-10-24T16:32:39.6576727Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git/worktrees/*.path
+2026-10-24T16:32:39.6598085Z /home/runner/work/_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.6608508Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/automation/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-3facff4a\-4f1c\-4fd2\-8411\-0b7c24d22a54\.config
+2026-10-24T16:32:39.6642316Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/automation/.git.path
+2026-10-24T16:32:39.6661990Z /github/runner_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.6676104Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/automation/.git.path \/github\/runner_temp\/git\-credentials\-3facff4a\-4f1c\-4fd2\-8411\-0b7c24d22a54\.config
+2026-10-24T16:32:39.6698658Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/automation/.git/worktrees/*.path
+2026-10-24T16:32:39.6716421Z /github/runner_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config
+2026-10-24T16:32:39.6722467Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/automation/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-3facff4a\-4f1c\-4fd2\-8411\-0b7c24d22a54\.config
+2026-10-24T16:32:39.6749932Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:39.6924086Z Removing credentials config '/home/runner/work/_temp/git-credentials-3facff4a-4f1c-4fd2-8411-0b7c24d22a54.config'
+2026-10-24T16:32:39.6933170Z ##[endgroup]
+2026-10-24T16:32:39.7195376Z ##[group]Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+2026-10-24T16:32:39.7195830Z with:
+2026-10-24T16:32:39.7196124Z   repository: fitchmultz/pi-apply-edits
+2026-10-24T16:32:39.7196503Z   ref: 7ef892acce906dcd8c27d2efc67a7fd12a850089
+2026-10-24T16:32:39.7196863Z   path: editor
+2026-10-24T16:32:39.7197137Z   persist-credentials: false
+2026-10-24T16:32:39.7199919Z   token: ***
+2026-10-24T16:32:39.7200176Z   ssh-strict: true
+2026-10-24T16:32:39.7200435Z   ssh-user: git
+2026-10-24T16:32:39.7200694Z   clean: true
+2026-10-24T16:32:39.7200976Z   sparse-checkout-cone-mode: true
+2026-10-24T16:32:39.7201288Z   fetch-depth: 1
+2026-10-24T16:32:39.7201779Z   fetch-tags: false
+2026-10-24T16:32:39.7202084Z   show-progress: true
+2026-10-24T16:32:39.7202349Z   lfs: false
+2026-10-24T16:32:39.7202593Z   submodules: false
+2026-10-24T16:32:39.7202858Z   set-safe-directory: true
+2026-10-24T16:32:39.7203164Z   allow-unsafe-pr-checkout: false
+2026-10-24T16:32:39.7203469Z env:
+2026-10-24T16:32:39.7203770Z   CI: true
+2026-10-24T16:32:39.7204081Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:39.7204578Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:32:39.7205098Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:39.7205808Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:39.7206260Z ##[endgroup]
+2026-10-24T16:32:39.8032799Z Syncing repository: fitchmultz/pi-apply-edits
+2026-10-24T16:32:39.8043349Z ##[group]Getting Git version info
+2026-10-24T16:32:39.8047773Z Working directory is '/home/runner/work/pi-subagents/pi-subagents/editor'
+2026-10-24T16:32:39.8104726Z [command]/usr/bin/git version
+2026-10-24T16:32:39.8150033Z git version 2.55.0
+2026-10-24T16:32:39.8173342Z ##[endgroup]
+2026-10-24T16:32:39.8184029Z Temporarily overriding HOME='/home/runner/work/_temp/2f0bc08c-21b8-4199-a96c-85e806437d4a' before making global git config changes
+2026-10-24T16:32:39.8185198Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:32:39.8190521Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:39.8222422Z ##[group]Determining repository object format
+2026-10-24T16:32:39.8224651Z ##[endgroup]
+2026-10-24T16:32:39.8225418Z ##[group]Initializing the repository
+2026-10-24T16:32:39.8230803Z [command]/usr/bin/git init /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:39.8270324Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-24T16:32:39.8272258Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-24T16:32:39.8273619Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-24T16:32:39.8274638Z hint: call:
+2026-10-24T16:32:39.8275251Z hint:
+2026-10-24T16:32:39.8275901Z hint: 	git config --global init.defaultBranch <name>
+2026-10-24T16:32:39.8276718Z hint:
+2026-10-24T16:32:39.8277422Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-24T16:32:39.8278563Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-24T16:32:39.8279411Z hint:
+2026-10-24T16:32:39.8280070Z hint: 	git branch -m <name>
+2026-10-24T16:32:39.8280692Z hint:
+2026-10-24T16:32:39.8281431Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-24T16:32:39.8282811Z Initialized empty Git repository in /home/runner/work/pi-subagents/pi-subagents/editor/.git/
+2026-10-24T16:32:39.8285475Z [command]/usr/bin/git remote add origin https://github.com/fitchmultz/pi-apply-edits
+2026-10-24T16:32:39.8316053Z ##[endgroup]
+2026-10-24T16:32:39.8316962Z ##[group]Disabling automatic garbage collection
+2026-10-24T16:32:39.8319650Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-24T16:32:39.8347672Z ##[endgroup]
+2026-10-24T16:32:39.8348370Z ##[group]Setting up auth
+2026-10-24T16:32:39.8349215Z Removing SSH command configuration
+2026-10-24T16:32:39.8355909Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:39.8392662Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:39.8595775Z Removing HTTP extra header
+2026-10-24T16:32:39.8604171Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:39.8643432Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:39.8843811Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:39.8848948Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:39.8879126Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:39.9081219Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-24T16:32:39.9118157Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git.path /home/runner/work/_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:39.9146051Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:39.9174634Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/editor/.git.path /github/runner_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:39.9200678Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/editor/.git/worktrees/*.path /github/runner_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:39.9224017Z ##[endgroup]
+2026-10-24T16:32:39.9224755Z ##[group]Fetching the repository
+2026-10-24T16:32:39.9231460Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 7ef892acce906dcd8c27d2efc67a7fd12a850089
+2026-10-24T16:32:40.6455972Z From https://github.com/fitchmultz/pi-apply-edits
+2026-10-24T16:32:40.6456981Z  * branch            7ef892acce906dcd8c27d2efc67a7fd12a850089 -> FETCH_HEAD
+2026-10-24T16:32:40.6467141Z [command]/usr/bin/git rev-parse --verify --quiet 7ef892acce906dcd8c27d2efc67a7fd12a850089^{object}
+2026-10-24T16:32:40.6490947Z 7ef892acce906dcd8c27d2efc67a7fd12a850089
+2026-10-24T16:32:40.6495479Z ##[endgroup]
+2026-10-24T16:32:40.6496191Z ##[group]Determining the checkout info
+2026-10-24T16:32:40.6496995Z ##[endgroup]
+2026-10-24T16:32:40.6502539Z [command]/usr/bin/git sparse-checkout disable
+2026-10-24T16:32:40.6544033Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-24T16:32:40.6572318Z ##[group]Checking out the ref
+2026-10-24T16:32:40.6577267Z [command]/usr/bin/git checkout --progress --force 7ef892acce906dcd8c27d2efc67a7fd12a850089
+2026-10-24T16:32:40.6694591Z Note: switching to '7ef892acce906dcd8c27d2efc67a7fd12a850089'.
+2026-10-24T16:32:40.6695096Z 
+2026-10-24T16:32:40.6695435Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:32:40.6696104Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:32:40.6696563Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:32:40.6696824Z 
+2026-10-24T16:32:40.6697001Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:32:40.6697422Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:32:40.6697861Z 
+2026-10-24T16:32:40.6697972Z   git switch -c <new-branch-name>
+2026-10-24T16:32:40.6698149Z 
+2026-10-24T16:32:40.6698266Z Or undo this operation with:
+2026-10-24T16:32:40.6698423Z 
+2026-10-24T16:32:40.6698517Z   git switch -
+2026-10-24T16:32:40.6698635Z 
+2026-10-24T16:32:40.6698856Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:32:40.6699182Z 
+2026-10-24T16:32:40.6699377Z HEAD is now at 7ef892a docs: authorize proactive dependency maintenance (#52)
+2026-10-24T16:32:40.6700426Z ##[endgroup]
+2026-10-24T16:32:40.6734821Z [command]/usr/bin/git log -1 --format=%H
+2026-10-24T16:32:40.6756874Z 7ef892acce906dcd8c27d2efc67a7fd12a850089
+2026-10-24T16:32:40.6769658Z ##[group]Removing auth
+2026-10-24T16:32:40.6769952Z Removing SSH command configuration
+2026-10-24T16:32:40.6770359Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:40.6798650Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:40.6974970Z Removing HTTP extra header
+2026-10-24T16:32:40.6978882Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:40.7006563Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:40.7179879Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:40.7183411Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:40.7204661Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git.path
+2026-10-24T16:32:40.7205694Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git/worktrees/*.path
+2026-10-24T16:32:40.7206593Z includeif.gitdir:/github/workspace/editor/.git.path
+2026-10-24T16:32:40.7207238Z includeif.gitdir:/github/workspace/editor/.git/worktrees/*.path
+2026-10-24T16:32:40.7215291Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git.path
+2026-10-24T16:32:40.7239113Z /home/runner/work/_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:40.7250253Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-5e48ac63\-454f\-435d\-87cb\-b0924dfedcad\.config
+2026-10-24T16:32:40.7280599Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git/worktrees/*.path
+2026-10-24T16:32:40.7300626Z /home/runner/work/_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:40.7313133Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/editor/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-5e48ac63\-454f\-435d\-87cb\-b0924dfedcad\.config
+2026-10-24T16:32:40.7341912Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/editor/.git.path
+2026-10-24T16:32:40.7361197Z /github/runner_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:40.7369407Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/editor/.git.path \/github\/runner_temp\/git\-credentials\-5e48ac63\-454f\-435d\-87cb\-b0924dfedcad\.config
+2026-10-24T16:32:40.7400265Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/editor/.git/worktrees/*.path
+2026-10-24T16:32:40.7419711Z /github/runner_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config
+2026-10-24T16:32:40.7426852Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/editor/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-5e48ac63\-454f\-435d\-87cb\-b0924dfedcad\.config
+2026-10-24T16:32:40.7456361Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:40.7625261Z Removing credentials config '/home/runner/work/_temp/git-credentials-5e48ac63-454f-435d-87cb-b0924dfedcad.config'
+2026-10-24T16:32:40.7634829Z ##[endgroup]
+2026-10-24T16:32:40.7787874Z ##[group]Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+2026-10-24T16:32:40.7788245Z with:
+2026-10-24T16:32:40.7788466Z   repository: fitchmultz/pi
+2026-10-24T16:32:40.7788755Z   ref: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:40.7789036Z   path: fork
+2026-10-24T16:32:40.7789247Z   persist-credentials: false
+2026-10-24T16:32:40.7791946Z   token: ***
+2026-10-24T16:32:40.7792158Z   ssh-strict: true
+2026-10-24T16:32:40.7792381Z   ssh-user: git
+2026-10-24T16:32:40.7792584Z   clean: true
+2026-10-24T16:32:40.7792825Z   sparse-checkout-cone-mode: true
+2026-10-24T16:32:40.7793082Z   fetch-depth: 1
+2026-10-24T16:32:40.7793285Z   fetch-tags: false
+2026-10-24T16:32:40.7793496Z   show-progress: true
+2026-10-24T16:32:40.7793702Z   lfs: false
+2026-10-24T16:32:40.7793894Z   submodules: false
+2026-10-24T16:32:40.7794109Z   set-safe-directory: true
+2026-10-24T16:32:40.7794480Z   allow-unsafe-pr-checkout: false
+2026-10-24T16:32:40.7794732Z env:
+2026-10-24T16:32:40.7794967Z   CI: true
+2026-10-24T16:32:40.7795225Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:40.7795660Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:32:40.7796078Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:40.7796500Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:40.7796883Z ##[endgroup]
+2026-10-24T16:32:40.8653232Z Syncing repository: fitchmultz/pi
+2026-10-24T16:32:40.8659158Z ##[group]Getting Git version info
+2026-10-24T16:32:40.8659741Z Working directory is '/home/runner/work/pi-subagents/pi-subagents/fork'
+2026-10-24T16:32:40.8694766Z [command]/usr/bin/git version
+2026-10-24T16:32:40.8733403Z git version 2.55.0
+2026-10-24T16:32:40.8755415Z ##[endgroup]
+2026-10-24T16:32:40.8765893Z Temporarily overriding HOME='/home/runner/work/_temp/63014b44-ac25-429f-890e-7ac26376098c' before making global git config changes
+2026-10-24T16:32:40.8767367Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:32:40.8772319Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/fork
+2026-10-24T16:32:40.8804887Z ##[group]Determining repository object format
+2026-10-24T16:32:40.8812167Z ##[endgroup]
+2026-10-24T16:32:40.8821049Z ##[group]Initializing the repository
+2026-10-24T16:32:40.8821938Z [command]/usr/bin/git init /home/runner/work/pi-subagents/pi-subagents/fork
+2026-10-24T16:32:40.8851063Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-24T16:32:40.8852337Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-24T16:32:40.8853371Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-24T16:32:40.8854203Z hint: call:
+2026-10-24T16:32:40.8854700Z hint:
+2026-10-24T16:32:40.8855500Z hint: 	git config --global init.defaultBranch <name>
+2026-10-24T16:32:40.8856166Z hint:
+2026-10-24T16:32:40.8856921Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-24T16:32:40.8857896Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-24T16:32:40.8858712Z hint:
+2026-10-24T16:32:40.8859321Z hint: 	git branch -m <name>
+2026-10-24T16:32:40.8859935Z hint:
+2026-10-24T16:32:40.8860689Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-24T16:32:40.8861867Z Initialized empty Git repository in /home/runner/work/pi-subagents/pi-subagents/fork/.git/
+2026-10-24T16:32:40.8865145Z [command]/usr/bin/git remote add origin https://github.com/fitchmultz/pi
+2026-10-24T16:32:40.8896719Z ##[endgroup]
+2026-10-24T16:32:40.8897494Z ##[group]Disabling automatic garbage collection
+2026-10-24T16:32:40.8901313Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-24T16:32:40.8929910Z ##[endgroup]
+2026-10-24T16:32:40.8930687Z ##[group]Setting up auth
+2026-10-24T16:32:40.8931233Z Removing SSH command configuration
+2026-10-24T16:32:40.8936700Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:40.8967608Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:40.9173190Z Removing HTTP extra header
+2026-10-24T16:32:40.9174193Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:40.9210975Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:40.9427846Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:40.9433581Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:40.9465684Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:40.9668938Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-24T16:32:40.9708391Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git.path /home/runner/work/_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:40.9736707Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:40.9764789Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/fork/.git.path /github/runner_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:40.9793315Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/fork/.git/worktrees/*.path /github/runner_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:40.9816339Z ##[endgroup]
+2026-10-24T16:32:40.9816718Z ##[group]Fetching the repository
+2026-10-24T16:32:40.9823266Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:42.6885034Z From https://github.com/fitchmultz/pi
+2026-10-24T16:32:42.6885711Z  * branch            c17adbc400319887c5ab34fce1ed2a59be746da4 -> FETCH_HEAD
+2026-10-24T16:32:42.6895255Z [command]/usr/bin/git rev-parse --verify --quiet c17adbc400319887c5ab34fce1ed2a59be746da4^{object}
+2026-10-24T16:32:42.6918534Z c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:42.6922570Z ##[endgroup]
+2026-10-24T16:32:42.6922972Z ##[group]Determining the checkout info
+2026-10-24T16:32:42.6923608Z ##[endgroup]
+2026-10-24T16:32:42.6930873Z [command]/usr/bin/git sparse-checkout disable
+2026-10-24T16:32:42.6970687Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-24T16:32:42.6996578Z ##[group]Checking out the ref
+2026-10-24T16:32:42.7001939Z [command]/usr/bin/git checkout --progress --force c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:42.8432802Z Note: switching to 'c17adbc400319887c5ab34fce1ed2a59be746da4'.
+2026-10-24T16:32:42.8433471Z 
+2026-10-24T16:32:42.8433904Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:32:42.8434486Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:32:42.8434957Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:32:42.8435229Z 
+2026-10-24T16:32:42.8435410Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:32:42.8435848Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:32:42.8436113Z 
+2026-10-24T16:32:42.8436414Z   git switch -c <new-branch-name>
+2026-10-24T16:32:42.8436648Z 
+2026-10-24T16:32:42.8436822Z Or undo this operation with:
+2026-10-24T16:32:42.8437009Z 
+2026-10-24T16:32:42.8437106Z   git switch -
+2026-10-24T16:32:42.8437234Z 
+2026-10-24T16:32:42.8437436Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:32:42.8437725Z 
+2026-10-24T16:32:42.8437962Z HEAD is now at c17adbc Merge pull request #246 from fitchmultz/feat/restart-child-handoff
+2026-10-24T16:32:42.8438916Z ##[endgroup]
+2026-10-24T16:32:42.8477988Z [command]/usr/bin/git log -1 --format=%H
+2026-10-24T16:32:42.8501361Z c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:42.8510142Z ##[group]Removing auth
+2026-10-24T16:32:42.8510699Z Removing SSH command configuration
+2026-10-24T16:32:42.8515320Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:32:42.8544554Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:32:42.8722829Z Removing HTTP extra header
+2026-10-24T16:32:42.8727419Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:32:42.8756381Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:32:42.8931803Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:32:42.8936333Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:32:42.8958030Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git.path
+2026-10-24T16:32:42.8959003Z includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git/worktrees/*.path
+2026-10-24T16:32:42.8959541Z includeif.gitdir:/github/workspace/fork/.git.path
+2026-10-24T16:32:42.8960138Z includeif.gitdir:/github/workspace/fork/.git/worktrees/*.path
+2026-10-24T16:32:42.8967183Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git.path
+2026-10-24T16:32:42.8992712Z /home/runner/work/_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:42.9002619Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-ec033bf8\-d070\-4103\-a3da\-6437e3aaef46\.config
+2026-10-24T16:32:42.9032349Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git/worktrees/*.path
+2026-10-24T16:32:42.9050839Z /home/runner/work/_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:42.9058528Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/pi-subagents/pi-subagents/fork/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-ec033bf8\-d070\-4103\-a3da\-6437e3aaef46\.config
+2026-10-24T16:32:42.9092211Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/fork/.git.path
+2026-10-24T16:32:42.9111147Z /github/runner_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:42.9117959Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/fork/.git.path \/github\/runner_temp\/git\-credentials\-ec033bf8\-d070\-4103\-a3da\-6437e3aaef46\.config
+2026-10-24T16:32:42.9147430Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/fork/.git/worktrees/*.path
+2026-10-24T16:32:42.9166281Z /github/runner_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config
+2026-10-24T16:32:42.9173802Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/fork/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-ec033bf8\-d070\-4103\-a3da\-6437e3aaef46\.config
+2026-10-24T16:32:42.9203681Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:32:42.9375554Z Removing credentials config '/home/runner/work/_temp/git-credentials-ec033bf8-d070-4103-a3da-6437e3aaef46.config'
+2026-10-24T16:32:42.9384308Z ##[endgroup]
+2026-10-24T16:32:42.9513752Z ##[group]Run actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+2026-10-24T16:32:42.9514126Z with:
+2026-10-24T16:32:42.9514337Z   node-version: >=24.21.0 <25
+2026-10-24T16:32:42.9514585Z   check-latest: true
+2026-10-24T16:32:42.9514821Z   package-manager-cache: false
+2026-10-24T16:32:42.9517148Z   token: ***
+2026-10-24T16:32:42.9517352Z env:
+2026-10-24T16:32:42.9517534Z   CI: true
+2026-10-24T16:32:42.9517785Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:42.9518221Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:32:42.9518750Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:42.9519176Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:42.9519564Z ##[endgroup]
+2026-10-24T16:32:43.0700781Z Attempt to resolve the latest version from manifest...
+2026-10-24T16:32:44.0919166Z Resolved as '24.22.1'
+2026-10-24T16:32:44.0930097Z Attempting to download 24.22.1...
+2026-10-24T16:32:45.1128225Z Acquiring 24.22.1 - x64 from https://github.com/actions/node-versions/releases/download/24.22.1-39619001896/node-24.22.1-linux-x64.tar.gz
+2026-10-24T16:32:45.6554204Z Extracting ...
+2026-10-24T16:32:45.6662913Z [command]/usr/bin/tar xz --strip 1 --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/4fc61026-208f-45e7-9e75-c3f774dbcc7d -f /home/runner/work/_temp/3527d373-f0b6-4ec5-ac81-c50a1e140f66
+2026-10-24T16:32:46.8416342Z Adding to the cache ...
+2026-10-24T16:32:48.2380102Z ##[group]Environment details
+2026-10-24T16:32:48.4578838Z node: v24.22.1
+2026-10-24T16:32:48.4579225Z npm: 11.19.1
+2026-10-24T16:32:48.4579527Z yarn: 1.22.22
+2026-10-24T16:32:48.4579981Z ##[endgroup]
+2026-10-24T16:32:48.4718465Z ##[group]Run if [ "$RUNNER_OS" = Linux ]; then
+2026-10-24T16:32:48.4718951Z [36;1mif [ "$RUNNER_OS" = Linux ]; then[0m
+2026-10-24T16:32:48.4719282Z [36;1m  sudo apt-get update[0m
+2026-10-24T16:32:48.4719677Z [36;1m  sudo apt-get install -y fd-find ripgrep libcap2-bin lsof[0m
+2026-10-24T16:32:48.4720158Z [36;1m  sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd[0m
+2026-10-24T16:32:48.4720533Z [36;1melse[0m
+2026-10-24T16:32:48.4720774Z [36;1m  brew install fd ripgrep[0m
+2026-10-24T16:32:48.4721050Z [36;1mfi[0m
+2026-10-24T16:32:48.4898089Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-24T16:32:48.4898444Z env:
+2026-10-24T16:32:48.4898641Z   CI: true
+2026-10-24T16:32:48.4898904Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:32:48.4899372Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:32:48.4899786Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:32:48.4900271Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:32:48.4900659Z ##[endgroup]
+2026-10-24T16:32:48.5958549Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-10-24T16:32:48.6056191Z Get:6 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+2026-10-24T16:32:48.6242622Z Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+2026-10-24T16:32:48.6256031Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+2026-10-24T16:32:48.6327497Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+2026-10-24T16:32:48.6380807Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+2026-10-24T16:32:48.7134307Z Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [589 kB]
+2026-10-24T16:32:48.7338272Z Get:8 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [652 kB]
+2026-10-24T16:32:48.7420449Z Get:9 https://packages.microsoft.com/ubuntu/24.04/prod noble/main armhf Packages [12.4 kB]
+2026-10-24T16:32:48.8204437Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1400 kB]
+2026-10-24T16:32:48.8274608Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [310 kB]
+2026-10-24T16:32:48.8313252Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1706 kB]
+2026-10-24T16:32:48.8458431Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [342 kB]
+2026-10-24T16:32:48.8523970Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1805 kB]
+2026-10-24T16:32:48.8613501Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [411 kB]
+2026-10-24T16:32:48.9246330Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [1146 kB]
+2026-10-24T16:32:48.9306976Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [231 kB]
+2026-10-24T16:32:48.9324674Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1222 kB]
+2026-10-24T16:32:48.9386272Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [246 kB]
+2026-10-24T16:32:48.9850224Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1713 kB]
+2026-10-24T16:32:48.9946378Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted Translation-en [392 kB]
+2026-10-24T16:32:54.1705423Z Fetched 12.6 MB in 1s (9609 kB/s)
+2026-10-24T16:32:55.1741272Z Reading package lists...
+2026-10-24T16:32:55.2055120Z Reading package lists...
+2026-10-24T16:32:55.4272954Z Building dependency tree...
+2026-10-24T16:32:55.4279747Z Reading state information...
+2026-10-24T16:32:55.6199942Z libcap2-bin is already the newest version (1:2.66-5ubuntu2.4).
+2026-10-24T16:32:55.6200778Z libcap2-bin set to manually installed.
+2026-10-24T16:32:55.6201912Z lsof is already the newest version (4.95.0-1build3).
+2026-10-24T16:32:55.6202475Z lsof set to manually installed.
+2026-10-24T16:32:55.6203110Z The following NEW packages will be installed:
+2026-10-24T16:32:55.6214701Z   fd-find ripgrep
+2026-10-24T16:32:55.6382400Z 0 upgraded, 2 newly installed, 0 to remove and 99 not upgraded.
+2026-10-24T16:32:55.6383049Z Need to get 2907 kB of archives.
+2026-10-24T16:32:55.6383711Z After this operation, 8798 kB of additional disk space will be used.
+2026-10-24T16:32:55.6384461Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-10-24T16:32:55.7243083Z Get:2 http://azure.archive.ubuntu.com/ubuntu noble/universe amd64 fd-find amd64 9.0.0-1 [1356 kB]
+2026-10-24T16:32:55.8552565Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble/universe amd64 ripgrep amd64 14.1.0-1 [1551 kB]
+2026-10-24T16:32:56.1954847Z Fetched 2907 kB in 0s (9459 kB/s)
+2026-10-24T16:32:56.2322323Z Selecting previously unselected package fd-find.
+2026-10-24T16:32:56.2596858Z (Reading database ... 
+2026-10-24T16:32:56.2597335Z (Reading database ... 5%
+2026-10-24T16:32:56.2597776Z (Reading database ... 10%
+2026-10-24T16:32:56.2598121Z (Reading database ... 15%
+2026-10-24T16:32:56.2598371Z (Reading database ... 20%
+2026-10-24T16:32:56.2598623Z (Reading database ... 25%
+2026-10-24T16:32:56.2598961Z (Reading database ... 30%
+2026-10-24T16:32:56.2600855Z (Reading database ... 35%
+2026-10-24T16:32:56.2601319Z (Reading database ... 40%
+2026-10-24T16:32:56.2601832Z (Reading database ... 45%
+2026-10-24T16:32:56.2602185Z (Reading database ... 50%
+2026-10-24T16:32:56.3000820Z (Reading database ... 55%
+2026-10-24T16:32:56.6086595Z (Reading database ... 60%
+2026-10-24T16:32:56.8659904Z (Reading database ... 65%
+2026-10-24T16:32:57.1321132Z (Reading database ... 70%
+2026-10-24T16:32:57.4622576Z (Reading database ... 75%
+2026-10-24T16:32:57.8361788Z (Reading database ... 80%
+2026-10-24T16:32:58.4047486Z (Reading database ... 85%
+2026-10-24T16:32:59.0571232Z (Reading database ... 90%
+2026-10-24T16:32:59.6227357Z (Reading database ... 95%
+2026-10-24T16:32:59.6227977Z (Reading database ... 100%
+2026-10-24T16:32:59.6228671Z (Reading database ... 203540 files and directories currently installed.)
+2026-10-24T16:32:59.6270229Z Preparing to unpack .../fd-find_9.0.0-1_amd64.deb ...
+2026-10-24T16:32:59.6297698Z Unpacking fd-find (9.0.0-1) ...
+2026-10-24T16:32:59.6670878Z Selecting previously unselected package ripgrep.
+2026-10-24T16:32:59.6785556Z Preparing to unpack .../ripgrep_14.1.0-1_amd64.deb ...
+2026-10-24T16:32:59.6796007Z Unpacking ripgrep (14.1.0-1) ...
+2026-10-24T16:32:59.7314911Z Setting up fd-find (9.0.0-1) ...
+2026-10-24T16:32:59.7336248Z Setting up ripgrep (14.1.0-1) ...
+2026-10-24T16:32:59.7353560Z Processing triggers for man-db (2.12.0-4build2) ...
+2026-10-24T16:32:59.7371889Z Not building database; man-db/auto-update is not 'true'.
+2026-10-24T16:33:00.8072739Z 
+2026-10-24T16:33:00.8073684Z Running kernel seems to be up-to-date.
+2026-10-24T16:33:00.8074043Z 
+2026-10-24T16:33:00.8074272Z No services need to be restarted.
+2026-10-24T16:33:00.8074565Z 
+2026-10-24T16:33:00.8074797Z No containers need to be restarted.
+2026-10-24T16:33:00.8075071Z 
+2026-10-24T16:33:00.8075355Z No user sessions are running outdated binaries.
+2026-10-24T16:33:00.8075691Z 
+2026-10-24T16:33:00.8076145Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+2026-10-24T16:33:01.7977162Z ##[group]Run PM="$(node -p 'require("./automation/package.json").packageManager')"
+2026-10-24T16:33:01.7977826Z [36;1mPM="$(node -p 'require("./automation/package.json").packageManager')"[0m
+2026-10-24T16:33:01.7978397Z [36;1mnpm exec --yes --package="$PM" -- npm install --global "$PM"[0m
+2026-10-24T16:33:01.8020199Z shell: /usr/bin/bash -e {0}
+2026-10-24T16:33:01.8020463Z env:
+2026-10-24T16:33:01.8020659Z   CI: true
+2026-10-24T16:33:01.8020919Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:33:01.8021373Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:33:01.8022035Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:33:01.8022466Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:33:01.8022855Z ##[endgroup]
+2026-10-24T16:33:07.0963141Z 
+2026-10-24T16:33:07.0963748Z removed 8 packages, and changed 72 packages in 2s
+2026-10-24T16:33:07.1581021Z ##[group]Run npm ci --ignore-scripts --no-audit --no-fund
+2026-10-24T16:33:07.1581928Z [36;1mnpm ci --ignore-scripts --no-audit --no-fund[0m
+2026-10-24T16:33:07.1582492Z [36;1mnpm run hydrate:model-data[0m
+2026-10-24T16:33:07.1583045Z [36;1mPI_OFFLINE=1 PI_TELEMETRY=0 npm run build:offline[0m
+2026-10-24T16:33:07.1583943Z [36;1mnode ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"[0m
+2026-10-24T16:33:07.1584730Z [36;1mgit diff --exit-code[0m
+2026-10-24T16:33:07.1643984Z shell: /usr/bin/bash -e {0}
+2026-10-24T16:33:07.1644414Z env:
+2026-10-24T16:33:07.1644708Z   CI: true
+2026-10-24T16:33:07.1645146Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:33:07.1645882Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:33:07.1646548Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:33:07.1647285Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:33:07.1647906Z ##[endgroup]
+2026-10-24T16:33:07.6523887Z npm warn EBADENGINE Unsupported engine {
+2026-10-24T16:33:07.6524445Z npm warn EBADENGINE   package: 'autoevals@0.3.0',
+2026-10-24T16:33:07.6524824Z npm warn EBADENGINE   required: {
+2026-10-24T16:33:07.6525189Z npm warn EBADENGINE     npm: 'please-use-pnpm',
+2026-10-24T16:33:07.6525556Z npm warn EBADENGINE     pnpm: '>=10.27.0',
+2026-10-24T16:33:07.6525918Z npm warn EBADENGINE     yarn: 'please-use-pnpm'
+2026-10-24T16:33:07.6526235Z npm warn EBADENGINE   },
+2026-10-24T16:33:07.6526668Z npm warn EBADENGINE   current: { node: 'v24.22.1', npm: '12.2.0' }
+2026-10-24T16:33:07.6527028Z npm warn EBADENGINE }
+2026-10-24T16:33:08.8135213Z npm warn deprecated prebuild-install@7.1.3: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.
+2026-10-24T16:33:09.0839029Z npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+2026-10-24T16:33:09.1319724Z npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+2026-10-24T16:33:10.3098296Z npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-10-24T16:33:18.3327246Z 
+2026-10-24T16:33:18.3327787Z added 339 packages in 11s
+2026-10-24T16:33:18.4509241Z npm notice run pi-monorepo@0.0.3 hydrate:model-data
+2026-10-24T16:33:18.4511906Z npm notice run npm --prefix packages/ai run hydrate-model-data
+2026-10-24T16:33:18.5476619Z npm notice run @earendil-works/pi-ai@1.4.0 hydrate-model-data
+2026-10-24T16:33:18.5479533Z npm notice run node scripts/generate-models.ts --strict --data-only
+2026-10-24T16:33:18.6796406Z Fetching models from models.dev API...
+2026-10-24T16:33:19.0156075Z Fetching models from NVIDIA NIM API...
+2026-10-24T16:33:19.1372939Z Fetched 85 model IDs from NVIDIA NIM
+2026-10-24T16:33:19.1442806Z Loaded 810 tool-capable models from models.dev
+2026-10-24T16:33:19.1443567Z Fetching classifier models from models.dev API...
+2026-10-24T16:33:19.2042347Z Fetching models from OpenRouter API...
+2026-10-24T16:33:19.3039048Z Fetched 400 tool-capable, 63 image, and 30 classifier models from OpenRouter
+2026-10-24T16:33:19.3039915Z Fetching models from Vercel AI Gateway API...
+2026-10-24T16:33:19.5383019Z Fetched 301 tool-capable and 14 classifier models from Vercel AI Gateway
+2026-10-24T16:33:19.5383762Z Fetching models from Radius API...
+2026-10-24T16:33:19.6884089Z Fetched 32 models from Radius
+2026-10-24T16:33:19.7770484Z Hydrated JSON model values under src/providers/data/
+2026-10-24T16:33:19.7773417Z 
+2026-10-24T16:33:19.7773743Z Model Statistics:
+2026-10-24T16:33:19.7774236Z   Total tool-capable models: 1598
+2026-10-24T16:33:19.7774964Z   Reasoning-capable models: 1351
+2026-10-24T16:33:19.7775470Z   amazon-bedrock: 193 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7776048Z   anthropic: 17 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7776564Z   google: 24 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7777098Z   google-vertex: 14 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7777606Z   openai: 42 chat models, 0 image models, 1 classifier models
+2026-10-24T16:33:19.7778106Z   groq: 7 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7778604Z   cerebras: 2 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7779174Z   cloudflare-workers-ai: 19 chat models, 0 image models, 5 classifier models
+2026-10-24T16:33:19.7779791Z   cloudflare-ai-gateway: 58 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7780323Z   xai: 4 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7780798Z   meta: 6 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7781261Z   zai: 7 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7781995Z   zai-coding-cn: 4 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7782521Z   mistral: 32 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7783039Z   huggingface: 77 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7783560Z   fireworks: 29 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7784081Z   nvidia: 22 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7784585Z   together: 15 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7785106Z   baseten: 14 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7785602Z   opencode: 81 chat models, 0 image models, 2 classifier models
+2026-10-24T16:33:19.7786127Z   opencode-go: 29 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7786664Z   github-copilot: 26 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7787174Z   minimax: 4 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7787674Z   minimax-cn: 4 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7788202Z   kimi-coding: 6 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7788710Z   moonshotai: 6 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7789266Z   moonshotai-cn: 6 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7789957Z   xiaomi: 3 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7790518Z   xiaomi-token-plan-cn: 2 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7791123Z   xiaomi-token-plan-ams: 2 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7792010Z   xiaomi-token-plan-sgp: 2 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7793054Z   qwen-token-plan: 21 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7793964Z   qwen-token-plan-individual: 9 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7795025Z   qwen-token-plan-cn: 21 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7795935Z   openrouter: 402 chat models, 63 image models, 30 classifier models
+2026-10-24T16:33:19.7796877Z   vercel-ai-gateway: 301 chat models, 0 image models, 14 classifier models
+2026-10-24T16:33:19.7797748Z   radius: 32 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7798608Z   deepseek: 2 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7799456Z   ant-ling: 3 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7800399Z   openai-codex: 7 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7801244Z   azure: 43 chat models, 0 image models, 0 classifier models
+2026-10-24T16:33:19.7802340Z   typesafe: 0 chat models, 0 image models, 1 classifier models
+2026-10-24T16:33:19.8880299Z npm notice run pi-monorepo@0.0.3 build:offline
+2026-10-24T16:33:19.8882811Z npm notice run node scripts/build.mjs --offline
+2026-10-24T16:33:20.0662315Z npm notice run @earendil-works/pi-tui@1.4.0 build
+2026-10-24T16:33:20.0665290Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:20.0669022Z npm notice run @earendil-works/pi-telemetry@1.4.0 build
+2026-10-24T16:33:20.0673099Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:20.5012721Z npm notice run @earendil-works/chord@1.4.0 build
+2026-10-24T16:33:20.5034969Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:20.8203016Z npm notice run @earendil-works/pi-codemode@1.4.0 build
+2026-10-24T16:33:20.8230614Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:21.2922713Z npm notice run @earendil-works/pi-mcp@1.4.0 build
+2026-10-24T16:33:21.2950431Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:21.7714872Z npm notice run @earendil-works/pi-ai@1.4.0 build:offline
+2026-10-24T16:33:21.7743679Z npm notice run npm run check:model-data && tsc -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data
+2026-10-24T16:33:22.1402692Z npm notice run @earendil-works/pi-ai@1.4.0 check:model-data
+2026-10-24T16:33:22.1452519Z npm notice run node scripts/check-model-data.ts
+2026-10-24T16:33:22.4622842Z Generated model data is valid.
+2026-10-24T16:33:24.2723659Z npm notice run @earendil-works/pi-durable@1.4.0 build
+2026-10-24T16:33:24.2752800Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:24.2753475Z npm notice run @earendil-works/pi-agent-core@1.4.0 build
+2026-10-24T16:33:24.2753909Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:26.8886076Z npm notice run @earendil-works/pi-coding-agent@1.4.0 build
+2026-10-24T16:33:26.8889553Z npm notice run npm run build:unbundled && node ../../scripts/build-coding-agent-bundle.mjs
+2026-10-24T16:33:26.8905379Z npm notice run @earendil-works/pi-env@1.4.0 build
+2026-10-24T16:33:26.8909068Z npm notice run tsc -p tsconfig.build.json
+2026-10-24T16:33:27.0733452Z npm notice run @earendil-works/pi-coding-agent@1.4.0 build:unbundled
+2026-10-24T16:33:27.0737806Z npm notice run tsc -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets
+2026-10-24T16:33:30.4009537Z npm notice run @earendil-works/pi-coding-agent@1.4.0 copy-assets
+2026-10-24T16:33:30.4018556Z npm notice run shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/
+2026-10-24T16:33:31.7319691Z Built packages/coding-agent/dist/bundle (87 files, 10.0 MiB)
+2026-10-24T16:33:31.7810664Z $ git rev-parse HEAD
+2026-10-24T16:33:31.7844563Z $ git show c17adbc400319887c5ab34fce1ed2a59be746da4:packages/coding-agent/install-lock/package.json
+2026-10-24T16:33:31.7872595Z $ git show c17adbc400319887c5ab34fce1ed2a59be746da4:packages/coding-agent/install-lock/package-lock.json
+2026-10-24T16:33:36.1760690Z   @earendil-works/pi-agent-core@1.4.0: 26 files, 63217 bytes packed, 275797 bytes unpacked
+2026-10-24T16:33:36.1789465Z   @earendil-works/pi-ai@1.4.0: 861 files, 874517 bytes packed, 4449603 bytes unpacked
+2026-10-24T16:33:36.1801093Z   @earendil-works/chord@1.4.0: 163 files, 488141 bytes packed, 1994873 bytes unpacked
+2026-10-24T16:33:36.1804801Z   @earendil-works/pi-codemode@1.4.0: 66 files, 107669 bytes packed, 380164 bytes unpacked
+2026-10-24T16:33:36.2077644Z   @earendil-works/pi-coding-agent@1.4.0: 1370 files, 8156402 bytes packed, 25665625 bytes unpacked
+2026-10-24T16:33:36.2100288Z   @earendil-works/pi-durable@1.4.0: 339 files, 805794 bytes packed, 3535945 bytes unpacked
+2026-10-24T16:33:36.2104350Z   @earendil-works/pi-env@1.4.0: 37 files, 82702 bytes packed, 322466 bytes unpacked
+2026-10-24T16:33:36.2107040Z   @earendil-works/pi-mcp@1.4.0: 76 files, 94665 bytes packed, 398802 bytes unpacked
+2026-10-24T16:33:36.2109210Z   @earendil-works/pi-telemetry@1.4.0: 34 files, 49121 bytes packed, 219260 bytes unpacked
+2026-10-24T16:33:36.2131251Z   @earendil-works/pi-tui@1.4.0: 204 files, 530165 bytes packed, 2424208 bytes unpacked
+2026-10-24T16:33:36.2463327Z $ npm --version
+2026-10-24T16:33:36.3534430Z ##[group]Run node extension/.github/scripts/ci-host.mjs fork "$RUNNER_TEMP/fork-package" automation extension
+2026-10-24T16:33:36.3535174Z [36;1mnode extension/.github/scripts/ci-host.mjs fork "$RUNNER_TEMP/fork-package" automation extension[0m
+2026-10-24T16:33:36.3571853Z shell: /usr/bin/bash -e {0}
+2026-10-24T16:33:36.3572114Z env:
+2026-10-24T16:33:36.3572312Z   CI: true
+2026-10-24T16:33:36.3572573Z   PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901
+2026-10-24T16:33:36.3573022Z   npm_config_cache: /home/runner/work/pi-subagents/pi-subagents/.npm-cache
+2026-10-24T16:33:36.3573458Z   PI_FORK_REF: c17adbc400319887c5ab34fce1ed2a59be746da4
+2026-10-24T16:33:36.3573891Z   PI_EDITOR_RECEIPT_TEST_ROOT: /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:33:36.3574274Z ##[endgroup]
+2026-10-24T16:33:36.3985790Z $ git clone --no-hardlinks --quiet /home/runner/work/pi-subagents/pi-subagents/extension /tmp/ps-ci-Vgmbdn/development
+2026-10-24T16:33:36.5040767Z Note: switching to '28924742af4bce06d64f5f49fef58670141b52a7'.
+2026-10-24T16:33:36.5041358Z $ git ls-files -z --cached --others --exclude-standard
+2026-10-24T16:33:36.5041838Z 
+2026-10-24T16:33:36.5042122Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:33:36.5042663Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:33:36.5043184Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:33:36.5043454Z 
+2026-10-24T16:33:36.5043704Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:33:36.5044419Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:33:36.5044772Z 
+2026-10-24T16:33:36.5044958Z   git switch -c <new-branch-name>
+2026-10-24T16:33:36.5045193Z 
+2026-10-24T16:33:36.5045366Z Or undo this operation with:
+2026-10-24T16:33:36.5045597Z 
+2026-10-24T16:33:36.5045763Z   git switch -
+2026-10-24T16:33:36.5045896Z 
+2026-10-24T16:33:36.5046187Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:33:36.5046480Z 
+2026-10-24T16:33:36.5336854Z $ npm ci --ignore-scripts
+2026-10-24T16:33:42.1347876Z npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-10-24T16:33:42.1348558Z 
+2026-10-24T16:33:42.1349063Z added 144 packages in 6s
+2026-10-24T16:33:42.1775548Z $ npm ci --ignore-scripts --omit=dev --include=optional
+2026-10-24T16:33:46.7132666Z npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-10-24T16:33:46.7133084Z 
+2026-10-24T16:33:46.7133217Z added 125 packages in 4s
+2026-10-24T16:33:46.7134198Z $ npm ls --all --json
+2026-10-24T16:33:47.3338923Z $ npm install --ignore-scripts --install-links=false
+2026-10-24T16:33:48.2039169Z 
+2026-10-24T16:33:48.2040046Z added 2 packages, removed 112 packages, and changed 8 packages in 812ms
+2026-10-24T16:33:48.2040761Z $ npm ls --all --json
+2026-10-24T16:33:48.7820223Z $ git rev-parse HEAD
+2026-10-24T16:33:48.7868997Z {"qualification":"fork","version":"1.4.0","provenance":{"ref":"c17adbc400319887c5ab34fce1ed2a59be746da4","node":"v24.22.1","npm":"12.2.0","lockSha256":"64ce3f10abc70d4a0d03319216b024ab21825717d2c3a643956e59c05e24b32e","artifactManifestSha256":"a72f9f71a109178eca4f924a38b4b80f560f7932efbd2a3b6a03a8fe5a796171","installFiles":{"package.json":"87c8402c922551c80381c93b2d6338315da7b0c63b01961e650e5535a75168fd","package-lock.json":"a62530e126d15c5308475c4f1474ce7c6d50287d82927f42b7d3c6ef223bfba4","install-lock/package.json":"9792b34aba5a94320fde5c68600eac4a5720d0d63ebc527d462bd125665b29ee","install-lock/package-lock.json":"bcd91368ae31e73cc17946c79e9279467c19c432c1e6df475ee07521cbc766e8"},"modelDataManifestSha256":"4101d1eb5217d218a42804c6640711c5fb662c9c4b9e3071944da7f2a1e62a0f","packages":[{"name":"@earendil-works/chord","version":"1.4.0","file":"tarballs/earendil-works-chord-1.4.0-65ce32ed0de4.tgz","integrity":"sha512-Zc4y7Q3kc1UvFt2dT+a7/r3etWya8L6afbeVJB2OT5D1VmAxpIepfLkr2aqEClY7ahzcdXZHVrBreBgTMKYtrA==","sha256":"ad363e1cfa7c63d4b8bd74767ae9a9bd4295d13edf07ca559cd919cacc4d1bec"},{"name":"@earendil-works/pi-agent-core","version":"1.4.0","file":"tarballs/earendil-works-pi-agent-core-1.4.0-dad89c82d951.tgz","integrity":"sha512-2ticgtlRoFRVK0sdkLbu7EIFzGe3MHcvuEA9TkaeNA8/o1nCR9uBuGDvljSxQs6mWXzxOMfxaCtnmaMZ2rM+ZA==","sha256":"40ec1775a2f5b3f78a4b2701e2cdd03642d1779d0511b92ab20fa852d4576b55"},{"name":"@earendil-works/pi-ai","version":"1.4.0","file":"tarballs/earendil-works-pi-ai-1.4.0-d3a733e0ce42.tgz","integrity":"sha512-06cz4M5Ch9ypdlsIkdcl3+g7aVhu2aNNIYYyaDOVtmlk2pajvztWOPhVJea8AO81scGIkdfsm4mT/PwZt2m91g==","sha256":"874bbab455861f26a7f605cb191655fc9ef139303d4c32f6a331d8a97984e71f"},{"name":"@earendil-works/pi-codemode","version":"1.4.0","file":"tarballs/earendil-works-pi-codemode-1.4.0-847291ffb833.tgz","integrity":"sha512-hHKR/7gzyjDxzjXj4iMaZSXEaYtBPl8hZDVRuAB8H1DtgAmK6R63AcpZmnuu/9H/5JIU+7e8y3YOT3bY8YbkRw==","sha256":"03d988105a7da3cdc07cc1a4873b1d3844d16454400088ee37b68946f803759b"},{"name":"@earendil-works/pi-coding-agent","version":"1.4.0","file":"tarballs/earendil-works-pi-coding-agent-1.4.0-4aa5fcfaf78b.tgz","integrity":"sha512-SqX8+veLIHzA8EQGZHdy07y2istjAChNCgUlFouMUH6RWUb9G7Gh7F6WjAQWCCn+aSXL909xgJ/ALXASJvWpaA==","sha256":"6a07730e22c803dbfd686e89d1b8ecd173685b515cb9853fa73b4d71aa3ddd09"},{"name":"@earendil-works/pi-durable","version":"1.4.0","file":"tarballs/earendil-works-pi-durable-1.4.0-2d495ad378df.tgz","integrity":"sha512-LUla03jfkz5cnJQfLLqt4bMkFa4wBYzgH1LI7ANNnihcPZPgkHtUD3KBjVmWcDXBn4sVLJVXrHCFWl3auCbQ7Q==","sha256":"ccbb4040fb261bdb2a36ad99fd4e85ca468e7741a1ff7557e8197caabac4ae66"},{"name":"@earendil-works/pi-env","version":"1.4.0","file":"tarballs/earendil-works-pi-env-1.4.0-e587ce56c3f5.tgz","integrity":"sha512-5YfOVsP1ZW1EgAeks31XuE+DRX2Qn18/3zoFoUEO5wyzBzina2VQFnsRweJaJ70PeP3Ms1Xk762lHk5+cxvGxg==","sha256":"f569f993df8a92e83e2511d196b1b8e6d8da6cd595a0154dd39902d54a21ad54"},{"name":"@earendil-works/pi-mcp","version":"1.4.0","file":"tarballs/earendil-works-pi-mcp-1.4.0-ce6a3a637205.tgz","integrity":"sha512-zmo6Y3IFCdumAAIoF5JxZAREiuSg067pnHyQkict18QbTZ415mhf0gmxQKUUAlslePCsVGekrFicwQhXNiSQFQ==","sha256":"36cde7cb6a39cb850f3a0da30e5ee86c3b9f17901707420aa5059521d22db4f1"},{"name":"@earendil-works/pi-telemetry","version":"1.4.0","file":"tarballs/earendil-works-pi-telemetry-1.4.0-aa8e5cf3480b.tgz","integrity":"sha512-qo5c80gL9czBGB8clnhZJkJY/gZNJu116GwD6oqCkGlxnUA+nKFr1kKKDteHqxn/C+IvisBSsp9Gatg0GpoQRQ==","sha256":"9408a6a3a76fa5b7b3293800e6e322e2e52677a61a12acbc8abddcb03b01d427"},{"name":"@earendil-works/pi-tui","version":"1.4.0","file":"tarballs/earendil-works-pi-tui-1.4.0-9ac4e10f328b.tgz","integrity":"sha512-msThDzKLvrvBofotUXBO4LWG0iVJZ+rwoNwfNSwzJmdQQT7oHsWfVksZ4eb0A0PVYYftzX1qYbNtPgtH7VehaQ==","sha256":"45cf974e1db98974396fbd6ea923ee96042ba3351de2dc36bdaf28cdfe62dd7b"}]},"editorRef":"7ef892acce906dcd8c27d2efc67a7fd12a850089"}
+2026-10-24T16:33:48.7883449Z $ npm run check:compat
+2026-10-24T16:33:48.8810500Z npm notice run @fitchmultz/pi-subagents@0.50.0 check:compat
+2026-10-24T16:33:48.8812702Z npm notice run node scripts/check-compat.mjs
+2026-10-24T16:33:48.9193765Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:33:48.9658070Z Note: switching to '7ef892acce906dcd8c27d2efc67a7fd12a850089'.
+2026-10-24T16:33:48.9658650Z 
+2026-10-24T16:33:48.9659075Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:33:48.9659863Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:33:48.9660538Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:33:48.9661137Z 
+2026-10-24T16:33:48.9661429Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:33:48.9662216Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:33:48.9662559Z 
+2026-10-24T16:33:48.9662745Z   git switch -c <new-branch-name>
+2026-10-24T16:33:48.9662931Z 
+2026-10-24T16:33:48.9663107Z Or undo this operation with:
+2026-10-24T16:33:48.9663279Z 
+2026-10-24T16:33:48.9663402Z   git switch -
+2026-10-24T16:33:48.9663571Z 
+2026-10-24T16:33:48.9663918Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:33:48.9664288Z 
+2026-10-24T16:33:49.4331762Z 
+2026-10-24T16:33:49.4332309Z added 1 package in 393ms
+2026-10-24T16:33:49.4494887Z {"nativeEditor":{"ref":"7ef892acce906dcd8c27d2efc67a7fd12a850089","source":"/tmp/ps-ci-Vgmbdn/tmp/ps-editor-ronSy2/source","supplied":"/home/runner/work/pi-subagents/pi-subagents/editor"}}
+2026-10-24T16:33:49.5415444Z npm notice run @fitchmultz/pi-subagents@0.50.0 ci
+2026-10-24T16:33:49.5420070Z npm notice run npm run lint && npm run format:check && npm run typecheck && npm run check:size && npm run smoke:package && npm run smoke:install && npm run test:all
+2026-10-24T16:33:49.6364150Z npm notice run @fitchmultz/pi-subagents@0.50.0 lint
+2026-10-24T16:33:49.6366414Z npm notice run oxlint --type-aware .
+2026-10-24T16:33:52.4748302Z Found 0 warnings and 0 errors.
+2026-10-24T16:33:52.4748764Z Finished in 2.8s on 184 files with 224 rules using 4 threads.
+2026-10-24T16:33:52.5722454Z npm notice run @fitchmultz/pi-subagents@0.50.0 format:check
+2026-10-24T16:33:52.5724831Z npm notice run oxfmt --check .
+2026-10-24T16:33:52.6174953Z Checking formatting...
+2026-10-24T16:33:52.6175417Z 
+2026-10-24T16:33:52.6814269Z All matched files use the correct format.
+2026-10-24T16:33:52.6823182Z Finished in 64ms on 225 files using 4 threads.
+2026-10-24T16:33:52.7848267Z npm notice run @fitchmultz/pi-subagents@0.50.0 typecheck
+2026-10-24T16:33:52.7850880Z npm notice run node scripts/typescript.mjs --noEmit
+2026-10-24T16:33:55.2860383Z npm notice run @fitchmultz/pi-subagents@0.50.0 check:size
+2026-10-24T16:33:55.2862944Z npm notice run node scripts/measure-size.mjs
+2026-10-24T16:33:55.3343859Z {
+2026-10-24T16:33:55.3344152Z   "files": 116,
+2026-10-24T16:33:55.3344402Z   "measured": {
+2026-10-24T16:33:55.3344624Z     "sourceLines": 17799,
+2026-10-24T16:33:55.3344880Z     "productionLines": 21181,
+2026-10-24T16:33:55.3345144Z     "productionBytes": 705319
+2026-10-24T16:33:55.3345377Z   },
+2026-10-24T16:33:55.3345567Z   "ceilings": {
+2026-10-24T16:33:55.3345781Z     "sourceLines": 18000,
+2026-10-24T16:33:55.3346016Z     "productionLines": 22000,
+2026-10-24T16:33:55.3346297Z     "productionBytes": 1048576
+2026-10-24T16:33:55.3346535Z   }
+2026-10-24T16:33:55.3346722Z }
+2026-10-24T16:33:55.4325885Z npm notice run @fitchmultz/pi-subagents@0.50.0 smoke:package
+2026-10-24T16:33:55.4328557Z npm notice run node scripts/package-smoke.mjs
+2026-10-24T16:33:55.4731391Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:34:06.4670804Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:34:06.4676555Z [native-package-smoke] one compiled entry; exactly delegate/agent_runs/intercom eager; real native actor prompt, tool result and published completion; selected-host bundled CLI passed (local faux provider, zero paid/network model calls)
+2026-10-24T16:34:10.0968775Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:34:10.0971298Z [native-package-smoke] one compiled entry; exactly delegate/agent_runs/intercom eager; real native actor prompt, tool result and published completion; selected-host bundled CLI passed (local faux provider, zero paid/network model calls)
+2026-10-24T16:34:10.0976798Z [package-smoke] @fitchmultz/pi-subagents@0.50.0: 229 files; one entry, zero profiles/prompts; runtime-only npm and standalone native actors passed
+2026-10-24T16:34:10.2342752Z npm notice run @fitchmultz/pi-subagents@0.50.0 smoke:install
+2026-10-24T16:34:10.2345461Z npm notice run node scripts/local-install-smoke.mjs
+2026-10-24T16:34:10.2738179Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:34:11.0934378Z [local-install-smoke] installed and listed the single pi-subagents package with bundled intercom
+2026-10-24T16:34:11.1868906Z npm notice run @fitchmultz/pi-subagents@0.50.0 test:all
+2026-10-24T16:34:11.1871173Z npm notice run node scripts/run-tests.mjs all
+2026-10-24T16:34:12.8006048Z ✔ official Pi without a managed host attaches the current process at session_start (76.876338ms)
+2026-10-24T16:34:12.8279397Z ✔ a managed worker attaches its launcher only after readiness is accepted, and hands children off (33.971448ms)
+2026-10-24T16:34:12.8873528Z ✔ selected native conversation indexes only published appends and retains branch ancestry (16.508857ms)
+2026-10-24T16:34:12.8906207Z ✔ large native output is completely reachable in bounded content pages without flattening (770.603024ms)
+2026-10-24T16:34:12.8923354Z ✔ hidden thinking does not consume visible message pages (18.410685ms)
+2026-10-24T16:34:12.8943970Z ✔ selected conversation refuses foreign and symlink journals and detects replacement before reading a body (2.570898ms)
+2026-10-24T16:34:12.8974261Z ✔ native shell inventory reads publications once and ignores unpublished backing files (13.30789ms)
+2026-10-24T16:34:12.9003114Z ✔ ambiguous actor liveness cannot reclaim its claim or authorize a stop signal (6.124517ms)
+2026-10-24T16:34:13.2454952Z ✔ native agent storage creates private files (3.703437ms)
+2026-10-24T16:34:13.2456625Z ✔ exclusive records remain complete and cannot be replaced when hard links are denied (8.784904ms)
+2026-10-24T16:34:13.2458111Z ✔ exclusive record failures do not publish data or hide unrelated filesystem errors (4.710645ms)
+2026-10-24T16:34:13.2459552Z ✔ exclusive fallback admits one complete winner across independent writer processes (982.301859ms)
+2026-10-24T16:34:13.7206725Z ✔ a writer killed after fsync cannot expose or reserve an unpublished exclusive record (466.487491ms)
+2026-10-24T16:34:13.7210598Z ✔ native run paths reject traversal and separators before accessing storage (1.222885ms)
+2026-10-24T16:34:13.7249604Z ✔ saved owner reads preserve values with snapshot-sized reads and a 64 KiB ceiling (12.351485ms)
+2026-10-24T16:34:13.7470923Z ✔ bounded live previews serialize ordinary values exactly like JSON.stringify (9.794457ms)
+2026-10-24T16:34:13.7476702Z ✔ bounded live previews classify values they cannot or should not serialize (12.743448ms)
+2026-10-24T16:34:13.7478117Z ✔ bounded live previews never run accessors, proxy traps or custom serializers (0.672089ms)
+2026-10-24T16:34:13.7539996Z ✔ build.mjs: loaded provenance fingerprints emitted code and stays fixed until a fresh import (456.436831ms)
+2026-10-24T16:34:13.7543692Z ✔ build.mjs: Android uses a native tsgo on PATH without an npm platform compiler (149.060721ms)
+2026-10-24T16:34:13.7545064Z ✔ build.mjs: failed compile preserves the previous dist and cleans staging (133.437291ms)
+2026-10-24T16:34:13.7546368Z ✔ build.mjs: successful build replaces dist atomically, purging stale files (122.563818ms)
+2026-10-24T16:34:13.9281602Z ✔ build.mjs: reaps dead-pid staging and keeps live-pid staging (168.177446ms)
+2026-10-24T16:34:14.0166951Z ✔ build.mjs: warns and continues when stranded staging cannot be removed (137.677063ms)
+2026-10-24T16:34:14.1041153Z ✔ build.mjs: fails loudly when the previous dist cannot be removed (76.48216ms)
+2026-10-24T16:34:14.2719464Z ✔ build.mjs: concurrent build storms succeed with valid dist (178.260453ms)
+2026-10-24T16:34:16.5873528Z ✔ build.mjs: publishes retained staging instead of timing out on a slow winner (2312.883158ms)
+2026-10-24T16:34:16.7125884Z ✔ build.mjs: deterministically discards staging after a concurrent winner (126.766128ms)
+2026-10-24T16:34:16.8897044Z ✔ build.mjs: does not accept an empty dist as a published winner (176.352171ms)
+2026-10-24T16:34:19.5404180Z ✔ build.mjs: caps persistent rename failures and preserves the diagnostic (2651.503442ms)
+2026-10-24T16:34:19.6189870Z ✔ build.mjs: rethrows when the staged emit disappears before publication (81.226157ms)
+2026-10-24T16:34:19.6299806Z ▶ child process lifecycle
+2026-10-24T16:34:19.6300845Z   ✔ reports whether a termination signal was actually delivered (1.266874ms)
+2026-10-24T16:34:19.6302242Z   ✔ falls back to signaling the child when no process group exists (3.367458ms)
+2026-10-24T16:34:19.6303230Z   ✔ cancels cleanup after a clean close (1.767384ms)
+2026-10-24T16:34:19.6304485Z   ✔ destroys silent stdio at the idle deadline (0.741936ms)
+2026-10-24T16:34:19.6305394Z   ✔ destroys chatty stdio at the hard deadline (0.711901ms)
+2026-10-24T16:34:19.6306227Z ✔ child process lifecycle (10.147116ms)
+2026-10-24T16:34:26.0649001Z ✔ JSONL cursors commit complete validated records across one-byte Unicode chunks and keep torn tails (10.090519ms)
+2026-10-24T16:34:26.0654389Z ✔ sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records (8.633112ms)
+2026-10-24T16:34:26.0656029Z ✔ sealed inspection and LF-published native bodies never weaken strict accounting or inherited baselines (19.013739ms)
+2026-10-24T16:34:26.0658517Z ✔ strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors (1.490052ms)
+2026-10-24T16:34:26.0662252Z ✔ output pages preserve Unicode at byte boundaries and do not read the preceding output (2.942256ms)
+2026-10-24T16:34:26.0666979Z ✔ a valid ignored individual value larger than Node's string ceiling preserves billing, configuration, baselines and source bytes under a 96 MiB heap (12370.651597ms)
+2026-10-24T16:34:26.0668454Z ℹ bounded native storage: exact counters/IDs/configuration/body, source unchanged, heap limit 96 MiB
+2026-10-24T16:34:26.0878539Z ✔ native accounting excludes inherited entries and checkpoints and includes tool/summary/usage entries (22.61855ms)
+2026-10-24T16:34:26.0880037Z ✔ missing, foreign and malformed journals cannot authorize native accounting (1.964464ms)
+2026-10-24T16:34:26.0900184Z ✔ new assistant/native usage requires complete billing evidence; tool/summary usage is optional and inherited work is excluded (2.671027ms)
+2026-10-24T16:34:26.0903109Z ✔ direct @earendil-works runtime imports are declared for local installs (10.824036ms)
+2026-10-24T16:34:26.0904862Z ✔ Pi development dependencies use one exact baseline with optional wildcard peers (0.588571ms)
+2026-10-24T16:34:26.0905484Z ✔ package lock uses the public npm registry (2.704542ms)
+2026-10-24T16:34:26.0906015Z ✔ old pi package scope is not used by source or tests (9.589499ms)
+2026-10-24T16:34:26.0906516Z ✔ Pi package resolution stays export-map safe (7.365976ms)
+2026-10-24T16:34:26.0907453Z ✔ native agent directory follows dynamic environment overrides and home expansion (1.950705ms)
+2026-10-24T16:34:26.0908748Z ✔ partial or nested child launch metadata cannot silently become a main session (2.560381ms)
+2026-10-24T16:34:26.0910012Z ✔ retired UI and enabled settings do not disable ordinary messaging (1.122425ms)
+2026-10-24T16:34:26.0911186Z ✔ framing rejects oversized incoming frames before buffering payload (1.637971ms)
+2026-10-24T16:34:26.0912138Z ✔ framing refuses to write oversized messages (7.317303ms)
+2026-10-24T16:34:26.0912918Z ✔ framing preserves split headers, UTF-8 and coalesced messages up to the exact limit (33.509907ms)
+2026-10-24T16:34:26.0913765Z ✔ framing drops an oversized read but retains the unprocessed tail after parse or handler errors (1.225971ms)
+2026-10-24T16:34:26.0914498Z ✔ framing validates and writes the same single JSON encoding (9.367145ms)
+2026-10-24T16:34:26.0915194Z ✔ default socket is pure, UID-scoped and independent of all session directories (3.413676ms)
+2026-10-24T16:34:26.0915927Z ✔ Android defaults to its shared Termux prefix rather than session HOME or TMPDIR (0.900943ms)
+2026-10-24T16:34:26.0916634Z ✔ explicit runtime namespace binds observation and isolates without fallback (7.464289ms)
+2026-10-24T16:34:26.0917409Z ✔ runtime preparation rejects files, symlinks and foreign owners; owned directory is private (2.28076ms)
+2026-10-24T16:34:26.0918176Z ✔ client never falls back to either live previous namespace or mutates its socket (6.250855ms)
+2026-10-24T16:34:26.0918847Z ✔ real Pi smoke CLI preserves help and invalid-argument behavior (2512.836103ms)
+2026-10-24T16:34:26.0919451Z ✔ reply resolves from current triggered message context (1.087081ms)
+2026-10-24T16:34:26.0920021Z ✔ queueTurnContext ignores a second enqueue of the same ask (0.191024ms)
+2026-10-24T16:34:26.0920858Z ✔ non-ask trigger context does not override a pending ask reply target (0.16956ms)
+2026-10-24T16:34:26.0921628Z ✔ reply targets and errors keep exact sender and ask correlation (1.656954ms)
+2026-10-24T16:34:26.0922342Z ✔ reply preserves every pending ask and queued turn context beyond 100 messages (4.69971ms)
+2026-10-24T16:34:26.0922954Z ✔ reply expires pending and queued contexts together (1.093787ms)
+2026-10-24T16:34:26.0923584Z ✔ message text cannot grant an ordinary ask a disconnect or timeout exemption (0.469973ms)
+2026-10-24T16:34:26.0924235Z ✔ reply expires pending and active asks when sender disconnects (0.463171ms)
+2026-10-24T16:34:26.0924892Z ✔ formatSessionTarget returns the shortest safe prefix across ids and names (1.019144ms)
+2026-10-24T16:34:26.0925628Z ✔ targetDisplayName adds a safe target when a name collides with another id prefix (0.217451ms)
+2026-10-24T16:34:26.0926369Z ✔ resolveSessionTarget rejects too-short id prefixes with a specific status (0.826619ms)
+2026-10-24T16:34:26.0927112Z ✔ resolveSessionTarget resolves safe prefixes and reports name-prefix ambiguity (0.211309ms)
+2026-10-24T16:34:26.0927852Z ✔ resolveSessionTarget accepts an exact short name that only overlaps its own id (0.185421ms)
+2026-10-24T16:34:26.0928540Z ✔ resolveSessionProjectId matches a repository and linked worktree (39.800686ms)
+2026-10-24T16:34:26.0929209Z ✔ resolveSessionProjectId ignores inherited Git repository overrides (22.180186ms)
+2026-10-24T16:34:26.0929856Z ✔ resolveSessionProjectId runs Git outside the project checkout (42.473608ms)
+2026-10-24T16:34:26.0930549Z ✔ filterProjectSessions includes the current checkout and linked worktrees only (0.509759ms)
+2026-10-24T16:34:26.0931639Z ✔ formatPeerAwarenessHint detects only same-project sessions without exposing peer metadata (0.609057ms)
+2026-10-24T16:34:26.0932757Z ✔ formatPeerAwarenessHint always matches exact cwd across mixed project-id resolution (0.184272ms)
+2026-10-24T16:34:26.0933656Z ✔ formatPeerAwarenessHint stays byte-identical regardless of peer or checkout counts (0.135555ms)
+2026-10-24T16:34:26.0934540Z ✔ resolveSessionTarget rejects exact names that are unsafe too-short id prefixes (0.145573ms)
+2026-10-24T16:34:26.0935339Z ✔ legacy PID alias to a real Linux thread cannot be a broker process (39.406913ms)
+2026-10-24T16:34:26.0936020Z ✔ legacy numeric live process remains ambiguous and blocking (1.379073ms)
+2026-10-24T16:34:26.0936826Z ✔ native PID identity preserves a live process and only disproves comparable identities (2.505643ms)
+2026-10-24T16:34:26.0937606Z ✔ unreadable or mismatched procfs views cannot disprove a live PID (1.568993ms)
+2026-10-24T16:34:26.0938306Z ﹣ non-Linux PID records remain numeric without procfs (0.127156ms) # SKIP
+2026-10-24T16:34:26.0938988Z ✔ getBrokerLaunchSpec maps the legacy tsx default to native Node (0.206557ms)
+2026-10-24T16:34:26.0939623Z ✔ getBrokerLaunchSpec uses custom broker command (0.348782ms)
+2026-10-24T16:34:26.0940316Z ✔ getBrokerSpawnOptions detaches the broker with no inherited stdio (0.372463ms)
+2026-10-24T16:34:26.0941075Z ✔ spawn guard fails loud instead of killing a live unhealthy broker PID (0.638966ms)
+2026-10-24T16:34:26.0942022Z ✔ spawn guard treats EPERM as a live unhealthy broker PID and fails loud (2.637689ms)
+2026-10-24T16:34:26.0942639Z ▶ pi-intercom wire validation
+2026-10-24T16:34:26.0943077Z   ✔ accepts the current session registration shape (1.367364ms)
+2026-10-24T16:34:26.0943633Z   ✔ drops malformed project ids from older broker session info (1.255988ms)
+2026-10-24T16:34:26.0944281Z   ✔ rejects control characters and non-finite numbers (0.488181ms)
+2026-10-24T16:34:26.0945270Z   ✔ rejects invalid session counters and labels (0.217437ms)
+2026-10-24T16:34:26.0946029Z ✔ pi-intercom wire validation (5.052014ms)
+2026-10-24T16:34:26.0946412Z ▶ resolveTempScopeId
+2026-10-24T16:34:26.0946729Z   ✔ prefers uid when available (2.377395ms)
+2026-10-24T16:34:26.0947224Z   ✔ falls back to environment usernames when uid is unavailable (3.062398ms)
+2026-10-24T16:34:26.0947935Z   ✔ falls back to os.userInfo when environment is missing (1.694183ms)
+2026-10-24T16:34:26.0948450Z   ✔ falls back to home path when os.userInfo throws (1.393414ms)
+2026-10-24T16:34:26.0948873Z ✔ resolveTempScopeId (10.388134ms)
+2026-10-24T16:34:26.0949173Z ▶ resolveTempRootDir
+2026-10-24T16:34:26.0949678Z   ✔ accepts only dedicated pi-subagents directories (1.062098ms)
+2026-10-24T16:34:26.0950096Z ✔ resolveTempRootDir (1.269396ms)
+2026-10-24T16:34:26.0950369Z ℹ tests 104
+2026-10-24T16:34:26.0950583Z ℹ suites 4
+2026-10-24T16:34:26.0950792Z ℹ pass 103
+2026-10-24T16:34:26.0950997Z ℹ fail 0
+2026-10-24T16:34:26.0951202Z ℹ cancelled 0
+2026-10-24T16:34:26.0951417Z ℹ skipped 1
+2026-10-24T16:34:26.0951875Z ℹ todo 0
+2026-10-24T16:34:26.0952130Z ℹ duration_ms 14848.223013
+2026-10-24T16:34:28.3675921Z ✔ native session_start publishes ownership without scanning runs, then tools and timer recover the backlog (360.140931ms)
+2026-10-24T16:34:28.3703479Z ℹ Synthetic native journal retained at /tmp/ps-ci-Vgmbdn/tmp/agent-attachment-ykjTRS
+2026-10-24T16:34:32.3498570Z ✔ live text reconstructs exactly, survives reopen and hands over to durable entries (5578.680892ms)
+2026-10-24T16:34:32.3523098Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-dKvRt2
+2026-10-24T16:34:34.7727706Z ✔ concurrent tool progress stays bounded across reopen and reverse completion (2413.154582ms)
+2026-10-24T16:34:34.7754752Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-iQJJg1
+2026-10-24T16:34:38.1293580Z ✔ a paused viewer never changes native output and catches up after resuming (3371.608933ms)
+2026-10-24T16:34:38.1294967Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-WQVOUy
+2026-10-24T16:34:40.7597519Z ✔ a viewer that misses retained handovers resynchronizes from a durable baseline (2626.198776ms)
+2026-10-24T16:34:40.7602028Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-yglaQA
+2026-10-24T16:34:44.2825230Z ✔ live blocks that shrink or change type in place are resent, never stitched (3523.721493ms)
+2026-10-24T16:34:44.2827024Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-EYyyTJ
+2026-10-24T16:34:48.7246980Z ✔ a crashed generation's endpoint is removed before its replacement starts (4440.628595ms)
+2026-10-24T16:34:48.7254570Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-WKwc5q
+2026-10-24T16:34:52.5103441Z ✔ a connected viewer of an idle actor arms no recurring flush (3785.029139ms)
+2026-10-24T16:34:52.5113096Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-qR0bch
+2026-10-24T16:34:57.9311060Z ✔ foreign viewers are refused and an unsafe endpoint only disables observation (5425.874903ms)
+2026-10-24T16:34:57.9322887Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-cKdURU
+2026-10-24T16:34:57.9324103Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-ParMOl
+2026-10-24T16:35:01.0524000Z ✔ an observer fault whose teardown cannot remove the endpoint never touches native work (3105.71679ms)
+2026-10-24T16:35:01.0553313Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-fjFNAI
+2026-10-24T16:35:04.5760715Z ✔ a late viewer starts from native state and tools stay exact across unobserved intervals (3538.008962ms)
+2026-10-24T16:35:04.5763235Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-b1olqc
+2026-10-24T16:35:09.7264042Z ✔ an activity peer follows block transitions within one native message (5148.111288ms)
+2026-10-24T16:35:09.7267558Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-t7AfMq
+2026-10-24T16:35:11.8309224Z ✔ nested tool calls are shown live and retired with their parent's result (2111.911068ms)
+2026-10-24T16:35:11.8310837Z ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-Zx8MC6
+2026-10-24T16:35:11.8977022Z ✔ native fullscreen observer watches an actual child without waking or aborting either agent and clears on replacement (17048.874373ms)
+2026-10-24T16:35:11.9020706Z ✔ native regular observer watches an actual child without waking or aborting either agent and clears on replacement (13006.41614ms)
+2026-10-24T16:35:11.9071269Z ✔ native observer caches completed metadata, probes each active root once per tick, strips only active work and resolves ambiguity beyond its row cache (13732.668017ms)
+2026-10-24T16:35:11.9094059Z ✔ physical parent receipt authority follows LF, prefix replacement, inode, shrink and recovery, not stale memory (87.889432ms)
+2026-10-24T16:35:11.9125699Z ✔ native migration and a later append invalidate warmed physical receipt IDs (58.47076ms)
+2026-10-24T16:35:11.9130807Z ℹ native migration replaced inode: true
+2026-10-24T16:35:11.9132485Z ✔ native receipt reconciliation reads only the published suffix after ordinary appends (99.526372ms)
+2026-10-24T16:35:11.9133891Z ℹ native receipt append: 258 bytes; readSync: 258 bytes
+2026-10-24T16:35:11.9135027Z ℹ native receipt append: 258 bytes; readSync: 258 bytes
+2026-10-24T16:35:11.9136105Z ℹ native receipt append: 258 bytes; readSync: 258 bytes
+2026-10-24T16:35:11.9137767Z ✔ native recovery publishes a completion backlog chronologically once, then polls history without rereads (340.699865ms)
+2026-10-24T16:35:11.9139215Z ℹ unchanged pending polling: 0 opens, 0 bytes
+2026-10-24T16:35:11.9140458Z ✔ legacy receipt consumption refuses a symlinked root directory (16.758416ms)
+2026-10-24T16:35:11.9142220Z ✔ legacy receipt consumption refuses a symlinked results directory (18.643545ms)
+2026-10-24T16:35:11.9143897Z ✔ a malformed legacy hint is logged and skipped without dropping valid legacy results (23.714957ms)
+2026-10-24T16:35:11.9145327Z ✔ foreign legacy body reads are bounded until changed input: same-size (68.366405ms)
+2026-10-24T16:35:11.9146600Z ✔ foreign legacy body reads are bounded until changed input: replacement (78.219786ms)
+2026-10-24T16:35:11.9148210Z ✔ foreign legacy body reads are bounded until changed input: growth (124.693342ms)
+2026-10-24T16:35:11.9182839Z ✔ foreign legacy body reads are bounded until changed input: shrink (32.760576ms)
+2026-10-24T16:35:11.9189926Z ✔ warm ignored legacy files refuse symlinks and retry input changed during classification (27.634242ms)
+2026-10-24T16:35:11.9222821Z ✔ ignored legacy classification follows the actual current session owner (40.733681ms)
+2026-10-24T16:35:11.9253070Z ✔ sole legacy hint uses actual historical native receipt authority: owner absent notice (27.282867ms)
+2026-10-24T16:35:11.9283126Z ✔ sole legacy hint uses actual historical native receipt authority: current owner notice (26.377295ms)
+2026-10-24T16:35:11.9284895Z ✔ sole legacy hint uses actual historical native receipt authority: foreign owner notice (36.109609ms)
+2026-10-24T16:35:11.9313292Z ✔ sole legacy hint uses actual historical native receipt authority: historical intercom receipt (17.906318ms)
+2026-10-24T16:35:11.9333125Z ✔ sole legacy hint uses actual historical native receipt authority: completed whole wait (21.210558ms)
+2026-10-24T16:35:11.9334853Z ✔ sole legacy hint uses actual historical native receipt authority: completed single-child zero wait (16.724982ms)
+2026-10-24T16:35:11.9363019Z ✔ sole legacy hint uses actual historical native receipt authority: nonmatching child wait (34.565393ms)
+2026-10-24T16:35:11.9385811Z ✔ sole legacy hint uses actual historical native receipt authority: failed tool wait (24.691976ms)
+2026-10-24T16:35:11.9402877Z ✔ sole legacy hint uses actual historical native receipt authority: pending wait (33.674919ms)
+2026-10-24T16:35:11.9438069Z ✔ sole legacy hint uses actual historical native receipt authority: launch-only receipt (20.225197ms)
+2026-10-24T16:35:11.9494006Z ✔ legacy continuation rejects malformed native metadata and non-journal paths before adoption (164.708807ms)
+2026-10-24T16:35:11.9496295Z ✔ persistent presence and event-driven HTTPS fallback survive helper crashes without consumer polling (6051.578246ms)
+2026-10-24T16:35:11.9535887Z ℹ {"relayDelayMs":250,"elapsed":[{"forwardedMs":251.0949270000001,"handshakeMs":259.46691899999996,"requestedMs":260.6128389999999},{"forwardedMs":251.52717399999983,"handshakeMs":261.86548700000003,"requestedMs":262.40787},{"forwardedMs":251.6976109999996,"handshakeMs":259.7176789999994,"requestedMs":259.983029}]}
+2026-10-24T16:35:11.9562904Z ✔ real mailbox commit reaches HTTPS just after ACK grace without consumer polling (2887.916478ms)
+2026-10-24T16:35:11.9592415Z ℹ real broker commit -> HTTPS result: 2144ms
+2026-10-24T16:35:11.9593392Z ✔ FULL commit delay cannot shorten healthy consumer ACK grace (3831.619308ms)
+2026-10-24T16:35:11.9670637Z ℹ {"timings":{"lockReleaseMs":900.7969370000005,"receivedAt":1792859674237,"commitWaitMs":946.2956710000003,"storedAt":1792859675176,"fullWriteWaitMs":939,"inboxStartAfterObservedCommitMs":0.2620550000001458,"inboxResponseAfterObservedCommitMs":18.02468399999998,"fsyncCompleteAfterObservedCommitMs":19.18945900000017,"due":1792859677177,"graceAfterStoredLogMs":2001,"ackStartAfterObservedCommitMs":19.553922999999486,"ackResponseAfterObservedCommitMs":35.34002599999985,"ackOwnerAfterStoredLogMs":36,"coldWitnessAfterObservedCommitMs":2082.22623},"receipts":{"messageId":"c4a66d9c-14f3-4564-a439-208a9c7bd2ee","inbox":{"status":200,"requestId":"c8b2f704-7aad-4e7e-bc8c-b8e5dd6566fd"},"ack":{"status":200,"requestId":"6bc00abd-b373-4b9f-a959-debf14b19ba2"},"attemptsAfterAck":0,"requestsAfterAck":0,"cold":{"messageId":"44418c15-3df2-41f0-8038-b115c50fa906","timestamp":1792859677260}},"owner":[{"timestamp":"2026-10-24T16:34:34.226Z","event":"request","requestId":"a1d084ce-f62a-4bba-a26e-73c613c8f53c","result":"ok"},{"timestamp":"2026-10-24T16:34:35.176Z","event":"received","messageId":"c4a66d9c-14f3-4564-a439-208a9c7bd2ee","result":"stored"},{"timestamp":"2026-10-24T16:34:35.195Z","event":"request","requestId":"c8b2f704-7aad-4e7e-bc8c-b8e5dd6566fd","result":"ok"},{"timestamp":"2026-10-24T16:34:35.212Z","event":"request","requestId":"6bc00abd-b373-4b9f-a959-debf14b19ba2","result":"ok"},{"timestamp":"2026-10-24T16:34:35.220Z","event":"received","messageId":"44418c15-3df2-41f0-8038-b115c50fa906","result":"stored"},{"timestamp":"2026-10-24T16:34:37.260Z","event":"wake_delivery","messageId":"44418c15-3df2-41f0-8038-b115c50fa906","result":"http_rejected"}],"rawOwnerOutput":"{\"timestamp\":\"2026-10-24T16:34:34.162Z\",\"event\":\"listening\",\"result\":\"ready\",\"host\":\"127.0.0.1\",\"pid\":5865,\"port\":33321,\"brokerSocket\":\"/tmp/pi-subagents-wvGgMB/i2t7yvg/broker.sock\"}\n{\"timestamp\":\"2026-10-24T16:34:34.179Z\",\"event\":\"connected\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"result\":\"authenticated\"}\n{\"timestamp\":\"2026-10-24T16:34:34.225Z\",\"event\":\"registered\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\"}\n{\"timestamp\":\"2026-10-24T16:34:34.226Z\",\"event\":\"request\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"requestId\":\"a1d084ce-f62a-4bba-a26e-73c613c8f53c\",\"result\":\"ok\"}\n{\"timestamp\":\"2026-10-24T16:34:35.176Z\",\"event\":\"received\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"peer\":\"a428cf30-0679-4119-86c1-3252cb62568c\",\"messageId\":\"c4a66d9c-14f3-4564-a439-208a9c7bd2ee\",\"result\":\"stored\"}\n{\"timestamp\":\"2026-10-24T16:34:35.191Z\",\"event\":\"connected\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"result\":\"authenticated\"}\n{\"timestamp\":\"2026-10-24T16:34:35.195Z\",\"event\":\"request\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"requestId\":\"c8b2f704-7aad-4e7e-bc8c-b8e5dd6566fd\",\"result\":\"ok\"}\n{\"timestamp\":\"2026-10-24T16:34:35.205Z\",\"event\":\"connected\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"result\":\"authenticated\"}\n{\"timestamp\":\"2026-10-24T16:34:35.212Z\",\"event\":\"request\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"requestId\":\"6bc00abd-b373-4b9f-a959-debf14b19ba2\",\"result\":\"ok\"}\n{\"timestamp\":\"2026-10-24T16:34:35.220Z\",\"event\":\"received\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"peer\":\"a428cf30-0679-4119-86c1-3252cb62568c\",\"messageId\":\"44418c15-3df2-41f0-8038-b115c50fa906\",\"result\":\"stored\"}\n{\"timestamp\":\"2026-10-24T16:34:37.260Z\",\"event\":\"wake_delivery\",\"name\":\"bot-0\",\"messageId\":\"44418c15-3df2-41f0-8038-b115c50fa906\",\"result\":\"http_rejected\",\"status\":400}\n{\"timestamp\":\"2026-10-24T16:34:37.266Z\",\"event\":\"session_closed\",\"name\":\"bot-0\",\"fingerprint\":\"4ED9369D7F125A558B169304D51C724F04AE2E45B360F431CC9E61658B2B2948\",\"result\":\"shutting_down\"}\n{\"timestamp\":\"2026-10-24T16:34:37.266Z\",\"event\":\"shutdown\",\"result\":\"closed\"}\n"}
+2026-10-24T16:35:11.9720266Z ✔ wake-key reload preserves unread retry after owner timers and authenticated reattachment (802.166268ms)
+2026-10-24T16:35:11.9722163Z ✔ all URLs/fingerprints share 20 durable attempts; reload, rotation, and crash cannot reset quota (2103.135101ms)
+2026-10-24T16:35:11.9723708Z ✔ healthy fsynced ACK, passive and exact note prefixes suppress wake; explicit asks and retained fingerprints coalesce (1819.507744ms)
+2026-10-24T16:35:11.9725031Z ✔ failed POST settlement recovers after ACK even with no remaining candidate (833.229063ms)
+2026-10-24T16:35:11.9726361Z ✔ reservation survives crash before POST; permission and corrupt ledger fail closed (2612.499119ms)
+2026-10-24T16:35:11.9727875Z ✔ pre-quota native state reserves one unknown-use hour, persists across reopen and clock rollback (15.139851ms)
+2026-10-24T16:35:11.9729488Z ✔ stopped-helper audit preflight preserves known remaining quota plus unknown attempt reservations (210.755715ms)
+2026-10-24T16:35:11.9731334Z ✔ existing empty or unreadable quota ledger is never initialized as zero usage (1.330866ms)
+2026-10-24T16:35:11.9763696Z ✔ version-1 history gains a single conservative completion window without resetting batches (24.190704ms)
+2026-10-24T16:35:11.9765496Z ✔ a live shared listener never ages out open attempts; SIGKILL recovery retains one full hour (159.632438ms)
+2026-10-24T16:35:11.9767221Z ✔ failed completion writes remain open and retry durably before a subsequent reservation (12.579567ms)
+2026-10-24T16:35:11.9769058Z ✔ shared recovery cannot reap a listener between owner-file creation and native lock acquisition (1145.312238ms)
+2026-10-24T16:35:11.9770309Z ℹ {"ownerRetained":true,"peerAdmitted":false}
+2026-10-24T16:35:11.9771892Z ✔ failed owner-publication COMMIT closes its OS lock and removes only its unpublished owner (1151.494107ms)
+2026-10-24T16:35:11.9773615Z ✔ SQLite COMMIT and TLS latency cannot shorten the native POST trailing-hour window (7445.54984ms)
+2026-10-24T16:35:11.9774842Z ℹ {"commitLag":818,"wireSpan":3600282,"trailing":19}
+2026-10-24T16:35:11.9776011Z ▶ real mTLS bridge admits only messaging, preserves peer identity and cancels waits
+2026-10-24T16:35:11.9777294Z   ✔ mutual authentication, least privilege and real remote CLI (1127.136767ms)
+2026-10-24T16:35:11.9778512Z   ✔ stable IDs reject invalid and non-send inputs before dispatch (976.250145ms)
+2026-10-24T16:35:11.9779849Z   ✔ ordinary messages preserve correlation and authenticated sender metadata (40.551112ms)
+2026-10-24T16:35:11.9781237Z   ✔ bounded input and inbox report overflow without losing retained messages (218.8915ms)
+2026-10-24T16:35:11.9782818Z   ✔ cancelling admitted sends retires the generation and accounts for volatile mail (119.935467ms)
+2026-10-24T16:35:11.9784072Z   ✔ broker outage does not hang or replace the broker (265.442986ms)
+2026-10-24T16:35:11.9785455Z   ✔ credential rotation and revoke cancel admitted inbox waits and deny the old certificate (499.250951ms)
+2026-10-24T16:35:11.9787165Z ✔ real mTLS bridge admits only messaging, preserves peer identity and cancels waits (4166.969331ms)
+2026-10-24T16:35:11.9788997Z ▶ persistent mailbox survives restart, lease, broker outage and bounded paging
+2026-10-24T16:35:11.9847709Z   ✔ ACK transfers the complete envelope and tombstones it across sender reconnection (52.384952ms)
+2026-10-24T16:35:11.9848859Z   ✔ inbox waits release after commit, respect cursors and never consume mail (413.673677ms)
+2026-10-24T16:35:11.9849943Z   ✔ cancelling inbox leaves correlated messages and native identity intact (24.169684ms)
+2026-10-24T16:35:11.9851100Z   ✔ inbox waits share the eight-request cap and release slots on cancellation (39.372711ms)
+2026-10-24T16:35:11.9852476Z   ✔ intake exceeds old count/byte caps with stable bounded pages and deduplication (2024.290492ms)
+2026-10-24T16:35:11.9853756Z   ✔ lease retirement and broker outage retain obligations and allow offline reads/acks (755.67096ms)
+2026-10-24T16:35:11.9855192Z   ✔ broker disconnect, revocation, invalid reload and shutdown settle admitted inbox waits (1070.953893ms)
+2026-10-24T16:35:11.9856491Z   ✔ certificate expiry settles an admitted inbox wait and retires its identity (4900.998008ms)
+2026-10-24T16:35:11.9857749Z   ✔ storage admission failure is recorded durably without a false receipt (212.670087ms)
+2026-10-24T16:35:11.9858787Z   ✔ unsafe directory/database permissions and symlinks fail closed (920.64738ms)
+2026-10-24T16:35:11.9860051Z ✔ persistent mailbox survives restart, lease, broker outage and bounded paging (11277.631853ms)
+2026-10-24T16:35:11.9861385Z ✔ durable ACK retires wake intents and payloads but preserves replay tombstones (379.770866ms)
+2026-10-24T16:35:11.9862746Z ✔ credential issue cannot overwrite a concurrent revocation (675.709973ms)
+2026-10-24T16:35:11.9863969Z ✔ actual editor receipts survive the single extension through native publication (3343.797243ms)
+2026-10-24T16:35:11.9865319Z ℹ Actual native editor receipt evidence: /tmp/ps-ci-Vgmbdn/tmp/native-editor-receipts-3K8zqc
+2026-10-24T16:35:11.9866921Z ✔ real broker startup writes a backward-readable PID identity and stays protected (222.605314ms)
+2026-10-24T16:35:11.9867732Z ✔ unchanged protocol: accepted replace delivery is lost on recipient disconnect (1525.80457ms)
+2026-10-24T16:35:11.9868510Z ✔ broker restores transactionally with exact cached frame limits and ordered records (389.90861ms)
+2026-10-24T16:35:11.9869185Z ✔ multipart client snapshots stay private through complete (6.025386ms)
+2026-10-24T16:35:11.9869783Z ✔ multipart client snapshots stay private through broker-error (2.750021ms)
+2026-10-24T16:35:11.9870359Z ✔ multipart client snapshots stay private through topic (1.936802ms)
+2026-10-24T16:35:11.9870949Z ✔ multipart client snapshots stay private through subscription (1.694384ms)
+2026-10-24T16:35:11.9871852Z ✔ multipart client snapshots stay private through receipt (1.622547ms)
+2026-10-24T16:35:11.9872826Z ✔ multipart client snapshots stay private through identity (2.702959ms)
+2026-10-24T16:35:11.9873909Z ✔ multipart client snapshots stay private through disconnect (1.415519ms)
+2026-10-24T16:35:11.9875240Z ✔ last-message frames correlate concurrent pages without using direct-message delivery (180.611741ms)
+2026-10-24T16:35:11.9876675Z ✔ collaboration lineage restricts discovery and all delivery paths at the broker (272.768321ms)
+2026-10-24T16:35:11.9878169Z ✔ shared runtime routes across agent directories/cwds/temp roots without taking over old brokers (1187.383303ms)
+2026-10-24T16:35:11.9879649Z ✔ native session renaming after startup updates its broker target without a model turn (418.730541ms)
+2026-10-24T16:35:11.9881160Z ✔ native steady passive receipts do not rescan old history and still survive tree navigation (335.259139ms)
+2026-10-24T16:35:11.9883084Z ℹ 1,024 historical receipts; 12 passive deliveries; full history reads: 0; old entry lookups: 1; total lookups: 37.
+2026-10-24T16:35:11.9884565Z ✔ native idle send is visible once and passive delivery does not start a turn (73.815094ms)
+2026-10-24T16:35:11.9885700Z ℹ 2 one-time sends; 2 visible messages; 1 provider call; no passive wakeup.
+2026-10-24T16:35:11.9983757Z ✔ native steer reaches the next tool boundary, queue waits, and busy passive stays passive (83.692495ms)
+2026-10-24T16:35:11.9985672Z ℹ steer before next response; follow-up after current work; 3 visible once; no replay/passive turn.
+2026-10-24T16:35:11.9987055Z ✔ native clearQueue plus abort recovers 2 messages once through a second abort (78.564555ms)
+2026-10-24T16:35:11.9988283Z ℹ 4 sends visible once; 2 aborted requests + 1 recovery request; consumed batch followers are not replayed.
+2026-10-24T16:35:11.9989722Z ✔ native clearQueue plus abort recovers 101 messages once without replaying appended followers (261.683252ms)
+2026-10-24T16:35:11.9991217Z ℹ 101 sends visible once; 1 aborted requests + 1 recovery request; consumed batch followers are not replayed.
+2026-10-24T16:35:12.0020905Z ✔ native clearQueue plus abort recovers 101 messages once across an in-flight reload (208.75174ms)
+2026-10-24T16:35:12.0022630Z ℹ 101 sends visible once; 1 aborted requests + 1 recovery request; consumed batch followers are not replayed.
+2026-10-24T16:35:12.0023939Z ✔ native abort during restored busy handoff recovers cleared steers once (322.972078ms)
+2026-10-24T16:35:12.0025188Z ✔ native arrivals during recovery reach the next tool boundary in UI mode (98.067074ms)
+2026-10-24T16:35:12.0026506Z ✔ native arrivals during recovery reach the next tool boundary in print mode (107.03383ms)
+2026-10-24T16:35:12.0027707Z ✔ native abort retaining custom queues does not enqueue a second copy (73.120797ms)
+2026-10-24T16:35:12.0029155Z ℹ retained native queues survive reload; next prompt delivers both once, without a recovery-only turn.
+2026-10-24T16:35:12.0030770Z ✔ native explicit queued passive/plain/multi-ask batch keeps the selected ask as the default reply target (3081.140692ms)
+2026-10-24T16:35:12.0043871Z ℹ Actual provider context sees followers before the real intercom reply targets the selected ask; passive and multi-ask idle ordering stay distinct from abort recovery.
+2026-10-24T16:35:12.0045523Z ✔ native recovered plain/ask batch keeps the selected ask as the default reply target (105.904648ms)
+2026-10-24T16:35:12.0047807Z ℹ Actual provider context sees followers before the real intercom reply targets the selected ask; passive and multi-ask idle ordering stay distinct from abort recovery.
+2026-10-24T16:35:12.0049726Z ✔ native concurrent asks reserve one reply waiter after a completed ask (174.167839ms)
+2026-10-24T16:35:12.0051133Z ✔ native rejected input leaves the active intercom run and idle wait intact (53.882258ms)
+2026-10-24T16:35:12.0053248Z ℹ Real losing input rejects once; the original custom signal, busy state and idle wait survive; one visible custom receipt, one clean provider call and one true settlement.
+2026-10-24T16:35:12.0055293Z ✔ native user preparation preserves both inputs through separate admission or busy-start steering (73.6692ms)
+2026-10-24T16:35:12.0057064Z ℹ Discriminated preparation is busy: native steering preserves both inputs once in the owning request.
+2026-10-24T16:35:12.0058822Z ✔ native recovery, compaction, and reload preserve receipts without replaying consumed messages (138.041504ms)
+2026-10-24T16:35:12.0060922Z ℹ recovery retains each receipt once in history; actual compact/reload never replays it; optional context reset also prunes the active window.
+2026-10-24T16:35:12.0063148Z ✔ native unresolved ordinary ask restores through recipient reload and replies with its correlation (157.222082ms)
+2026-10-24T16:35:12.0064953Z ✔ native correlated steer reaches the native queue during a held tool and is answered after it (191.535917ms)
+2026-10-24T16:35:12.0066492Z ✔ native peer metadata never elevates ordinary context to human authority (55.284957ms)
+2026-10-24T16:35:12.0068261Z ✔ native reload joins admitted socket registration before invalidation and preserves other broker clients (131.643924ms)
+2026-10-24T16:35:12.0070273Z ✔ native dispose joins admitted socket registration before invalidation and preserves other broker clients (110.148588ms)
+2026-10-24T16:35:12.0072158Z ✔ native prior delegation calls and results remain in provider context after reload (74.443844ms)
+2026-10-24T16:35:12.0074280Z ✔ native explicit lineage scopes discovery, send and last across unrelated directories (300.36599ms)
+2026-10-24T16:35:12.0075911Z ✔ native last reads the latest stop response in full pages without waking a busy peer (451.78293ms)
+2026-10-24T16:35:12.0077503Z ✔ native last reads the latest length response in full pages without waking a busy peer (257.622117ms)
+2026-10-24T16:35:12.0079167Z ✔ fresh native processes resume pending messages once without fork/new-session adoption (6695.011874ms)
+2026-10-24T16:35:12.0081342Z ℹ hard-killed host restores 2 native-queued + 2 staged messages once in 1 turn; second resume/fork/new/passive-only restore run 0 turns; superseded progress stays absent.
+2026-10-24T16:35:12.0083212Z ✔ native ordinary progress reaches the first tool boundary before the recipient finishes (92.017426ms)
+2026-10-24T16:35:12.0084749Z ✔ native latest material milestone survives two minutes busy and reload without stale superseded delivery (301.712011ms)
+2026-10-24T16:35:12.0086419Z ℹ latest backdated material finding survives native reload while busy; superseded progress never wakes the model.
+2026-10-24T16:35:12.0087858Z ✔ native runtime disposal cancels deferred startup before any broker registration (47.749693ms)
+2026-10-24T16:35:12.0089621Z ✔ native public tools resolve displayed targets safely through duplicate names and prefix collisions (86.578436ms)
+2026-10-24T16:35:12.0091365Z ✔ native named ask refuses a peer absent from discovery even when it registers before send (63.226441ms)
+2026-10-24T16:35:12.0093090Z ℹ {"reasonCode":"delivery_failed","sends":[],"received":[],"replyReceipts":[],"publishedAnswers":0}
+2026-10-24T16:35:12.0094808Z ✔ native ordinary asks honor busy capability and explicit steer/queue without claiming consumption (43.646101ms)
+2026-10-24T16:35:12.0098444Z ✔ native ordinary ask timeout settles with its original correlation and releases the waiter (1051.335478ms)
+2026-10-24T16:35:12.0100377Z ✔ native ordinary ask disconnect settles with its original correlation and releases the waiter (59.769094ms)
+2026-10-24T16:35:12.0105381Z ✔ native ordinary ask cancel settles with its original correlation and releases the waiter (38.252597ms)
+2026-10-24T16:35:12.0107193Z ✔ native ordinary ask failure-marker settles with its original correlation and releases the waiter (43.223253ms)
+2026-10-24T16:35:12.0108999Z ✔ native ordinary ask normal-prefix settles with its original correlation and releases the waiter (53.404302ms)
+2026-10-24T16:35:12.0110730Z ✔ native recipient provider failure on its first turn reaches the ordinary ask as an error (124.129376ms)
+2026-10-24T16:35:12.0112541Z ✔ native recipient provider failure after a tool turn reaches the ordinary ask as an error (135.967293ms)
+2026-10-24T16:35:12.0114087Z ✔ native already-replied does not produce a spurious recipient-failure reply (55.205515ms)
+2026-10-24T16:35:12.0115562Z ✔ native agent-settled does not produce a spurious recipient-failure reply (66.732313ms)
+2026-10-24T16:35:12.0116971Z ✔ native non-error does not produce a spurious recipient-failure reply (83.70539ms)
+2026-10-24T16:35:13.5599513Z ✔ native replace asks retire superseded pending questions and wake once after print provider work settles (1594.457245ms)
+2026-10-24T16:35:15.1743612Z ✔ native replace asks retire superseded pending questions and wake once after UI tool work settles (1595.951231ms)
+2026-10-24T16:35:15.2283486Z ✔ native public tool rejects invalid delivery combinations and preserves recovery actions (64.977026ms)
+2026-10-24T16:35:15.2979006Z ✔ native busy print work steers ordinary asks without aborting and admits only the latest replacement at its tool boundary (59.378811ms)
+2026-10-24T16:35:18.6196969Z ✔ native runtime disposal cancels queued inbound work without a later wake (3328.17276ms)
+2026-10-24T16:35:18.7236613Z ✔ native lifecycle presence follows parallel tools, selected model and final settlement (95.864818ms)
+2026-10-24T16:35:26.9040519Z ✔ native reconnect retries after a failed background launch (8189.482178ms)
+2026-10-24T16:35:30.0627210Z ✔ native reconnect retries after a failed foreground takeover during backoff (3193.183533ms)
+2026-10-24T16:35:30.1096186Z ✔ broker exits when no session ever registers (5198.37034ms)
+2026-10-24T16:35:30.1097482Z ✔ broker returns a clean delivery failure when forwarding would exceed the frame cap (220.309525ms)
+2026-10-24T16:35:30.1098672Z ✔ invalid presence updates cannot poison peer session lists (175.434251ms)
+2026-10-24T16:35:30.1099942Z ✔ broker delivers every unique replace-mode thread beyond the former sender cap (1681.854196ms)
+2026-10-24T16:35:30.1101239Z ✔ broker-staged replace delivery survives when sender disconnects (1682.471355ms)
+2026-10-24T16:35:30.1102704Z ✔ broker-staged replace asks are dropped when sender disconnects (1680.464023ms)
+2026-10-24T16:35:32.1557812Z ▶ real smoke stops its owned detached processes before deleting credentials and artifacts
+2026-10-24T16:35:32.1561044Z   ✔ timeout (6768.196533ms)
+2026-10-24T16:35:32.1562400Z   ✔ startup-timeout (6785.608527ms)
+2026-10-24T16:35:32.1563197Z   ✔ failure (6669.029634ms)
+2026-10-24T16:35:38.8030605Z   ✔ startup-failure (6648.758036ms)
+2026-10-24T16:35:45.4391728Z   ✔ SIGINT (6635.961634ms)
+2026-10-24T16:35:52.0391698Z   ✔ SIGTERM (6599.405189ms)
+2026-10-24T16:35:58.7421094Z   ✔ async-failure (6702.956661ms)
+2026-10-24T16:36:05.5010575Z   ✔ async-timeout (6758.488518ms)
+2026-10-24T16:36:07.6205773Z   ✔ success (2119.454564ms)
+2026-10-24T16:36:09.6913115Z   ✔ success-clean (2074.414019ms)
+2026-10-24T16:36:09.6917330Z ✔ real smoke stops its owned detached processes before deleting credentials and artifacts (57766.66308ms)
+2026-10-24T16:36:09.7017961Z ✔ shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=false (3050.024245ms)
+2026-10-24T16:36:09.7019810Z ℹ Synthetic archive evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-route-iTqGJb
+2026-10-24T16:36:09.7021208Z ✔ shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=true (2843.627927ms)
+2026-10-24T16:36:09.7022846Z ℹ Synthetic archive evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-route-DdCzGr
+2026-10-24T16:36:09.7023507Z ✔ shipped archive CLI refuses unknown entry before reservation (87.278735ms)
+2026-10-24T16:36:09.7024170Z ℹ Synthetic refusal evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-refused-7txL6b
+2026-10-24T16:36:09.7024808Z ✔ shipped archive CLI refuses symbolic link before reservation (94.841141ms)
+2026-10-24T16:36:09.7025450Z ℹ Synthetic refusal evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-refused-9tfvA2
+2026-10-24T16:36:09.7026076Z ✔ shipped archive CLI refuses hard link before reservation (87.800862ms)
+2026-10-24T16:36:09.7026772Z ℹ Synthetic refusal evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-refused-8OqIUo
+2026-10-24T16:36:09.7027889Z ✔ shipped archive CLI refuses foreign ownership before reservation (149.211378ms)
+2026-10-24T16:36:09.7029034Z ℹ Synthetic refusal evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-refused-XtFkzA
+2026-10-24T16:36:09.7030250Z ✔ shipped archive CLI refuses unsafe permissions before reservation (141.522363ms)
+2026-10-24T16:36:09.7033082Z ℹ Synthetic refusal evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-refused-hVb9LY
+2026-10-24T16:36:09.7034156Z ✔ shipped archive CLI stops on changed recorded bytes after preparation (1037.843151ms)
+2026-10-24T16:36:09.7034840Z ℹ Synthetic drift evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-drift-ErVKFD
+2026-10-24T16:36:09.7035927Z ✔ shipped archive CLI stops on replaced source directory after preparation (735.714839ms)
+2026-10-24T16:36:09.7037125Z ℹ Synthetic drift evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-drift-2jCZux
+2026-10-24T16:36:09.7038318Z ✔ shipped archive CLI stops on replaced container after preparation (723.608347ms)
+2026-10-24T16:36:09.7039502Z ℹ Synthetic drift evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-drift-MPeRuS
+2026-10-24T16:36:09.7040281Z ✔ shipped archive CLI stops on unexpected destination after preparation (825.002258ms)
+2026-10-24T16:36:09.7041401Z ℹ Synthetic drift evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-drift-6sUJOM
+2026-10-24T16:36:09.7042366Z ✔ shipped archive CLI stops on record symlink after preparation (691.028741ms)
+2026-10-24T16:36:09.7043017Z ℹ Synthetic drift evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-drift-FR4Fyx
+2026-10-24T16:36:09.7043833Z ✔ shipped archive CLI requires explicit operator acknowledgment and refuses a different filesystem (142.751671ms)
+2026-10-24T16:36:09.7044633Z ℹ Synthetic device evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-cross-device-K2BhKx
+2026-10-24T16:36:09.7045532Z ✔ shipped archive CLI refuses actual SQLite writers and later raw database readers despite operator acknowledgment (1998.813426ms)
+2026-10-24T16:36:09.7046388Z ℹ Synthetic handle evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-handles-1CknKT
+2026-10-24T16:36:09.7047668Z ✔ shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=false (98.262252ms)
+2026-10-24T16:36:09.7048489Z ℹ Synthetic ancestor evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-ancestors-mCyb0o
+2026-10-24T16:36:09.7049191Z ✔ shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=true (147.317512ms)
+2026-10-24T16:36:09.7049880Z ℹ Synthetic ancestor evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-ancestors-CQ0BvJ
+2026-10-24T16:36:09.7050669Z ✔ actual selected-host CLI preserves retired data through extension load and session_start (2390.018672ms)
+2026-10-24T16:36:09.7051383Z ℹ Synthetic evidence retained at /tmp/ps-ci-Vgmbdn/tmp/history-cli-v9gpEV
+2026-10-24T16:36:09.7052534Z ✔ native deferred completion recovery and tool reconciliation preserve retired SQLite data (311.048246ms)
+2026-10-24T16:36:09.7053296Z ℹ Synthetic native journal retained at /tmp/ps-ci-Vgmbdn/tmp/history-deferred-d0Zbtu
+2026-10-24T16:36:30.6360066Z post-admission command I/O: {"opens":0,"bytes":0}
+2026-10-24T16:36:46.5415944Z ✔ single-agent native receipt (2081.598632ms)
+2026-10-24T16:36:46.5419314Z ✔ single-agent native model-selection (7357.869484ms)
+2026-10-24T16:36:46.5420498Z ✔ single-agent native continuation (5124.210783ms)
+2026-10-24T16:36:46.5421422Z ✔ single-agent native queue-drop (1832.44318ms)
+2026-10-24T16:36:46.5422815Z ✔ single-agent native queue-drop-two (2535.88107ms)
+2026-10-24T16:36:46.5423755Z ✔ single-agent native queue-retain (2497.084425ms)
+2026-10-24T16:36:46.5424695Z ✔ single-agent native queue-steer (2778.453822ms)
+2026-10-24T16:36:46.5435719Z ✔ single-agent native queue-retain-one (2605.172464ms)
+2026-10-24T16:36:46.5436794Z ✔ single-agent native cancellation (1996.994736ms)
+2026-10-24T16:36:46.5437740Z ✔ single-agent native dispose (1742.8928ms)
+2026-10-24T16:36:46.5438870Z ✔ single-agent native custom-bash (1790.750052ms)
+2026-10-24T16:36:46.5439902Z ✔ single-agent native bash-before-registration (2853.224497ms)
+2026-10-24T16:36:46.5446741Z ✔ single-agent native trust (3931.859256ms)
+2026-10-24T16:36:46.5447601Z ✔ single-agent native accounting-lf (1894.80548ms)
+2026-10-24T16:36:46.5453891Z ✔ single-agent native receipt-mutation (1910.10158ms)
+2026-10-24T16:36:46.5464638Z ✔ single-agent native generation (5123.084726ms)
+2026-10-24T16:36:46.5467415Z ✔ single-agent native parallel-cold-continue (3086.941823ms)
+2026-10-24T16:36:46.5469086Z ✔ single-agent native late-guidance (2077.941538ms)
+2026-10-24T16:36:46.5474660Z ✔ single-agent native cwd-invalid-missing-resolver (766.62715ms)
+2026-10-24T16:36:46.5477972Z ✔ single-agent native cwd-invalid-missing-setter (3830.01386ms)
+2026-10-24T16:36:46.5482327Z ✔ single-agent native cwd-invalid-wrong-owner (759.330778ms)
+2026-10-24T16:36:46.5487755Z ✔ single-agent native cwd-invalid-wrong-directory (1764.459055ms)
+2026-10-24T16:36:46.5488887Z ✔ single-agent native cwd-invalid-error (763.283302ms)
+2026-10-24T16:36:46.5489970Z ✔ single-agent native launch-preparation-failure (2885.605989ms)
+2026-10-24T16:36:46.5492107Z ✔ single-agent native launch-preparation-fork-failure (2883.943008ms)
+2026-10-24T16:36:46.5493026Z ✔ single-agent native inventory (1216.902777ms)
+2026-10-24T16:36:46.5494238Z ✔ single-agent native command-polling (5445.007744ms)
+2026-10-24T16:36:46.5499945Z ✔ single-agent bash-shutdown-stale parent shutdown stops verified owners, spares reused PIDs and reports only true ambiguity (6450.348265ms)
+2026-10-24T16:36:46.5505000Z ✔ single-agent bash-shutdown-stale-exited parent shutdown stops verified owners, spares reused PIDs and reports only true ambiguity (2987.810787ms)
+2026-10-24T16:36:46.5507417Z ✔ single-agent bash-shutdown-timezone parent shutdown stops verified owners, spares reused PIDs and reports only true ambiguity (4906.263063ms)
+2026-10-24T16:36:57.6436293Z {"projection":"stop","state":"live","contributions":35,"beforeCharacters":20261,"afterCharacters":1437,"expectedCharacters":1437}
+2026-10-24T16:36:57.6437889Z {"projection":"stop","state":"exited","contributions":35,"beforeCharacters":20296,"afterCharacters":1472,"expectedCharacters":1472}
+2026-10-24T16:37:24.7389158Z ✔ single-agent native preparation SIGKILL leaves only an unadmitted directory and does not starve saved completion or subsequent launches (4433.773552ms)
+2026-10-24T16:37:24.7397319Z ✔ single-agent native cwd captures active parent B, initializes fork C once and restores child-selected D on cold continuation (4433.724307ms)
+2026-10-24T16:37:24.7399654Z ✔ single-agent actual native runtime shutdown joins admitted filesystem initialization (724.171267ms)
+2026-10-24T16:37:24.7402142Z ✔ single-agent native child usage is recorded exactly once per native entry and never charged to the parent across notice, concurrent inspection, continuation and a fresh reader (3860.562158ms)
+2026-10-24T16:37:24.7475658Z ✔ single-agent continues only owned frozen legacy single-native journals, retaining identity and refusing missing, foreign, retired or duplicate launches (2677.361788ms)
+2026-10-24T16:37:24.7477806Z ✔ single-agent legacy-only native queued input survives SIGKILL without canonical storage or invented ownership (3738.508306ms)
+2026-10-24T16:37:24.7479122Z ✔ single-agent cold stopped-result recovery after orderly parent exit (6716.029989ms)
+2026-10-24T16:37:24.7480494Z ✔ single-agent cold stopped-result recovery after SIGKILL before native append (5784.864661ms)
+2026-10-24T16:37:24.7481913Z ✔ single-agent cold stopped-result recovery after SIGKILL after native append (5546.832991ms)
+2026-10-24T16:37:32.8621146Z ✔ single-agent actor SIGKILL retains native shell ownership for cold Stop and same-run continuation retry without replay or bystander signals (5337.465068ms)
+2026-10-24T16:37:32.8625192Z ✔ single-agent cold Stop verifies birth and stops an OS-suspended actor and descendants without fabricated exit (2778.300089ms)
+2026-10-24T16:37:35.6449005Z ✔ single-agent parent SIGKILL stops native shell work and cold continuation reuses the interrupted child conversation (4622.591275ms)
+2026-10-24T16:37:41.2954931Z ✔ single-agent parent SIGKILL with reused attachment PID stops native shell work and cold continuation reuses the interrupted child conversation (5646.99021ms)
+2026-10-24T16:37:41.6065807Z ✔ single-agent detached actor publishes a canonical failed result when a controlled SDK double throws Error at startup (312.928873ms)
+2026-10-24T16:37:41.9200862Z ✔ single-agent detached actor publishes a canonical failed result when a controlled SDK double throws string at startup (313.963143ms)
+2026-10-24T16:37:42.2512576Z ✔ single-agent detached actor publishes a canonical failed result when a controlled SDK double throws circular at startup (331.074267ms)
+2026-10-24T16:37:42.5633477Z ✔ single-agent detached actor publishes a canonical failed result when a controlled SDK double throws BigInt at startup (311.992528ms)
+2026-10-24T16:37:42.8890937Z ✔ single-agent detached actor publishes a canonical failed result when a controlled SDK double throws undefined at startup (329.396873ms)
+2026-10-24T16:37:42.8987372Z ℹ tests 226
+2026-10-24T16:37:42.8987727Z ℹ suites 0
+2026-10-24T16:37:42.8987982Z ℹ pass 226
+2026-10-24T16:37:42.8988297Z ℹ fail 0
+2026-10-24T16:37:42.8988656Z ℹ cancelled 0
+2026-10-24T16:37:42.8989360Z ℹ skipped 0
+2026-10-24T16:37:42.8989565Z ℹ todo 0
+2026-10-24T16:37:42.8989818Z ℹ duration_ms 196771.943635
+2026-10-24T16:37:43.0088437Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:37:46.3909503Z [native-package-smoke] one compiled entry; exactly delegate/agent_runs/intercom eager; real native actor prompt, tool result and published completion; selected-host bundled CLI passed (local faux provider, zero paid/network model calls)
+2026-10-24T16:37:46.4377526Z $ git clone --no-hardlinks --quiet /home/runner/work/pi-subagents/pi-subagents/extension /tmp/ps-ci-Vgmbdn/git-consumer
+2026-10-24T16:37:46.5405028Z Note: switching to '28924742af4bce06d64f5f49fef58670141b52a7'.
+2026-10-24T16:37:46.5405384Z 
+2026-10-24T16:37:46.5405654Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-24T16:37:46.5406190Z changes and commit them, and you can discard any commits you make in this
+2026-10-24T16:37:46.5406718Z state without impacting any branches by switching back to a branch.
+2026-10-24T16:37:46.5406978Z 
+2026-10-24T16:37:46.5407232Z If you want to create a new branch to retain commits you create, you may
+2026-10-24T16:37:46.5407722Z do so (now or later) by using -c with the switch command. Example:
+2026-10-24T16:37:46.5407970Z 
+2026-10-24T16:37:46.5408099Z   git switch -c <new-branch-name>
+2026-10-24T16:37:46.5408276Z 
+2026-10-24T16:37:46.5408405Z Or undo this operation with:
+2026-10-24T16:37:46.5408559Z 
+2026-10-24T16:37:46.5408929Z   git switch -
+2026-10-24T16:37:46.5409058Z 
+2026-10-24T16:37:46.5409351Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-24T16:37:46.5409661Z 
+2026-10-24T16:37:46.5409885Z $ git ls-files -z --cached --others --exclude-standard
+2026-10-24T16:37:46.5654604Z $ npm install --omit=dev
+2026-10-24T16:37:47.9772686Z npm notice run @fitchmultz/pi-subagents@0.50.0 prepare
+2026-10-24T16:37:47.9773174Z 
+2026-10-24T16:37:47.9773375Z added 2 packages in 687ms
+2026-10-24T16:37:47.9773624Z 
+2026-10-24T16:37:47.9773787Z added 2 packages in 1s
+2026-10-24T16:37:47.9774662Z $ /opt/hostedtoolcache/node/24.22.1/x64/bin/node /tmp/ps-ci-Vgmbdn/development/scripts/local-install-smoke.mjs
+2026-10-24T16:37:47.9775561Z npm notice run node ./scripts/prepare.mjs
+2026-10-24T16:37:48.8414142Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:37:48.8416123Z [local-install-smoke] installed and listed the single pi-subagents package with bundled intercom
+2026-10-24T16:37:48.8416913Z $ /opt/hostedtoolcache/node/24.22.1/x64/bin/node scripts/native-package-smoke.mjs /tmp/ps-ci-Vgmbdn/git-consumer
+2026-10-24T16:37:52.1785508Z {"host":"fork","version":"1.4.0","node":"v24.22.1","hostRoot":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/tmp/ps-ci-Vgmbdn/host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554","cliSha256":"ded5a256890d696a7aca93e62cf5ba26b0d63e1d176c6c97103b8df476c19e48"}
+2026-10-24T16:37:52.1788025Z [native-package-smoke] one compiled entry; exactly delegate/agent_runs/intercom eager; real native actor prompt, tool result and published completion; selected-host bundled CLI passed (local faux provider, zero paid/network model calls)
+2026-10-24T16:37:52.3227951Z node:fs:1282
+2026-10-24T16:37:52.3229076Z   return binding.rmSync(getValidatedPath(path), opts.maxRetries, opts.recursive, opts.retryDelay);
+2026-10-24T16:37:52.3230879Z                  ^
+2026-10-24T16:37:52.3231234Z 
+2026-10-24T16:37:52.3231954Z Error: EACCES, Permission denied: '/tmp/ps-ci-Vgmbdn'
+2026-10-24T16:37:52.3232602Z     at rmSync (node:fs:1282:18)
+2026-10-24T16:37:52.3233534Z     at file:///home/runner/work/pi-subagents/pi-subagents/extension/.github/scripts/ci-host.mjs:91:3 {
+2026-10-24T16:37:52.3234383Z   errno: 13,
+2026-10-24T16:37:52.3234892Z   code: 'EACCES',
+2026-10-24T16:37:52.3235650Z   path: '/tmp/ps-ci-Vgmbdn',
+2026-10-24T16:37:52.3236035Z   syscall: 'rm'
+2026-10-24T16:37:52.3236264Z }
+2026-10-24T16:37:52.3236374Z 
+2026-10-24T16:37:52.3236470Z Node.js v24.22.1
+2026-10-24T16:37:52.3289541Z ##[error]Process completed with exit code 1.
+2026-10-24T16:37:52.3404618Z Post job cleanup.
+2026-10-24T16:37:52.4272557Z [command]/usr/bin/git version
+2026-10-24T16:37:52.4291079Z git version 2.55.0
+2026-10-24T16:37:52.4325895Z Temporarily overriding HOME='/home/runner/work/_temp/ae5a2891-b9c8-413b-8868-e09bc7cb3551' before making global git config changes
+2026-10-24T16:37:52.4327507Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:37:52.4332643Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/fork
+2026-10-24T16:37:52.4364640Z Removing SSH command configuration
+2026-10-24T16:37:52.4372954Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:37:52.4409025Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:37:52.4626825Z Removing HTTP extra header
+2026-10-24T16:37:52.4633968Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:37:52.4668185Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:37:52.4867136Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:37:52.4872227Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:37:52.4902995Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:37:52.5242225Z Post job cleanup.
+2026-10-24T16:37:52.6166736Z [command]/usr/bin/git version
+2026-10-24T16:37:52.6213395Z git version 2.55.0
+2026-10-24T16:37:52.6255717Z Temporarily overriding HOME='/home/runner/work/_temp/aea5f8f9-8355-457e-890d-412dd48c5d60' before making global git config changes
+2026-10-24T16:37:52.6257008Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:37:52.6262207Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/editor
+2026-10-24T16:37:52.6293171Z Removing SSH command configuration
+2026-10-24T16:37:52.6300836Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:37:52.6334622Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:37:52.6530996Z Removing HTTP extra header
+2026-10-24T16:37:52.6536911Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:37:52.6570163Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:37:52.6767824Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:37:52.6776530Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:37:52.6827034Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:37:52.7262221Z Post job cleanup.
+2026-10-24T16:37:52.8130027Z [command]/usr/bin/git version
+2026-10-24T16:37:52.8170456Z git version 2.55.0
+2026-10-24T16:37:52.8205882Z Temporarily overriding HOME='/home/runner/work/_temp/902c5a0b-f5bc-4441-a006-0a72201f05da' before making global git config changes
+2026-10-24T16:37:52.8207646Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:37:52.8211085Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/automation
+2026-10-24T16:37:52.8244814Z Removing SSH command configuration
+2026-10-24T16:37:52.8251681Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:37:52.8285895Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:37:52.8529646Z Removing HTTP extra header
+2026-10-24T16:37:52.8535520Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:37:52.8566076Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:37:52.8760431Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:37:52.8767946Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:37:52.8798820Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:37:52.9176251Z Post job cleanup.
+2026-10-24T16:37:53.0092008Z [command]/usr/bin/git version
+2026-10-24T16:37:53.0135710Z git version 2.55.0
+2026-10-24T16:37:53.0168876Z Temporarily overriding HOME='/home/runner/work/_temp/6d79058f-b2bc-4bb1-80e0-75fa3b7ce68c' before making global git config changes
+2026-10-24T16:37:53.0170537Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-24T16:37:53.0175059Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/pi-subagents/pi-subagents/extension
+2026-10-24T16:37:53.0204776Z Removing SSH command configuration
+2026-10-24T16:37:53.0211757Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-24T16:37:53.0244574Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-24T16:37:53.0436990Z Removing HTTP extra header
+2026-10-24T16:37:53.0443199Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-24T16:37:53.0474064Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-24T16:37:53.0683729Z Removing includeIf entries pointing to credentials config files
+2026-10-24T16:37:53.0690249Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-24T16:37:53.0744284Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-24T16:37:53.1251293Z Cleaning up orphan processes

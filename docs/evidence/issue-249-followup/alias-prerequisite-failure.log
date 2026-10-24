@@ -1,0 +1,56 @@
+✖ shipped prepare rejects a physical source alias as archive parent before writing (94.720041ms)
+ℹ Synthetic physical-alias evidence retained at /tmp/history-alias-archive-WJEQCU
+✖ shipped prepare rejects a physical source alias as record parent before writing (85.178933ms)
+ℹ Synthetic physical-alias evidence retained at /tmp/history-alias-record-WGiQ8R
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 533.057414
+
+✖ failing tests:
+
+test at test/integration/retired-history-archive.test.ts:99:3
+✖ shipped prepare rejects a physical source alias as archive parent before writing (94.720041ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /E_OVERLAPPING_PATHS/. Input:
+  
+  'unshare: cannot change root filesystem propagation: Invalid argument\n'
+  
+      at stopped (file:///workspace/issue-249/test/integration/retired-history-archive.test.ts:68:10)
+      at TestContext.<anonymous> (file:///workspace/issue-249/test/integration/retired-history-archive.test.ts:148:5)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'unshare: cannot change root filesystem propagation: Invalid argument\n',
+    expected: /E_OVERLAPPING_PATHS/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at test/integration/retired-history-archive.test.ts:99:3
+✖ shipped prepare rejects a physical source alias as record parent before writing (85.178933ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /E_OVERLAPPING_PATHS/. Input:
+  
+  'unshare: cannot change root filesystem propagation: Invalid argument\n'
+  
+      at stopped (file:///workspace/issue-249/test/integration/retired-history-archive.test.ts:68:10)
+      at TestContext.<anonymous> (file:///workspace/issue-249/test/integration/retired-history-archive.test.ts:148:5)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'unshare: cannot change root filesystem propagation: Invalid argument\n',
+    expected: /E_OVERLAPPING_PATHS/,
+    operator: 'match',
+    diff: 'simple'
+  }

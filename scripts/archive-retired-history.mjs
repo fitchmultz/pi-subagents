@@ -351,7 +351,7 @@ function prepare(values, uid) {
   outside(source, archive);
   outside(file, source);
   outside(file, archive);
-  directory(path.dirname(file), uid, true);
+  const recordParent = directory(path.dirname(file), uid, true);
   if (exists(file)) {
     const record = recordAt(file, uid);
     assert.ok(record.source === source, "E_RECORD_SOURCE");
@@ -361,6 +361,12 @@ function prepare(values, uid) {
   const sourceParent = directory(path.dirname(source), uid);
   const archiveParent = directory(path.dirname(archive), uid, true);
   const sourceStat = directory(source, uid);
+  for (const parent of [archiveParent, recordParent]) {
+    assert.ok(
+      sourceStat.dev !== parent.dev || sourceStat.ino !== parent.ino,
+      "E_OVERLAPPING_PATHS",
+    );
+  }
   assert.ok(sourceStat.dev === archiveParent.dev, "E_CROSS_DEVICE");
   assert.ok(!exists(archive), "E_UNRECORDED_CONTAINER");
   const members = inventory(source, uid);

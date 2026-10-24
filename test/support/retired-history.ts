@@ -9,14 +9,14 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const generation = "00000000-0000-4000-8000-000000000001.sqlite";
 const manifestName = `${"a".repeat(64)}.json`;
 
 export function fixture(label: string): string {
-  const root = mkdtempSync(join(tmpdir(), `history-${label}-`));
+  // Retained journals and foreign-owner cases must outlive harness-owned TMPDIR cleanup.
+  const root = mkdtempSync(`/tmp/history-${label}-`);
   mkdirSync(join(root, "agent", "history-index"), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, "sessions"), { mode: 0o700 });
   writeFileSync(join(root, "sessions", "sentinel.jsonl"), '{"synthetic":"keep"}\n');

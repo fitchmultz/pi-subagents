@@ -71,6 +71,66 @@ function stopped(result: ReturnType<typeof invoke>, reason: RegExp) {
   );
 }
 
+for (const target of ["archive", "record"] as const) {
+  test(`shipped prepare rejects a physical source alias as ${target} parent before writing`, (t) => {
+    if (process.platform !== "linux") {
+      t.skip("Linux bind-mount fixture");
+      return;
+    }
+    const root = realpathSync(fixture(`alias-${target}`));
+    t.diagnostic(`Synthetic physical-alias evidence retained at ${root}`);
+    const source = join(root, "agent", "history-index");
+    crashedWriter(source, true);
+    const before = inventory(source);
+    const alias = join(root, "alias");
+    mkdirSync(alias, { mode: 0o700 });
+    const archive = join(target === "archive" ? alias : root, "container");
+    const record = join(target === "record" ? alias : root, "plan.json");
+    const bound = `import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
+const [source, alias, ...args] = process.argv.slice(1);
+execFileSync("/usr/bin/mount", ["--bind", source, alias]);
+try {
+  const original = statSync(source, { bigint: true });
+  const mounted = statSync(alias, { bigint: true });
+  assert.equal(original.dev, mounted.dev);
+  assert.equal(original.ino, mounted.ino);
+  const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+  if (result.error) throw result.error;
+  process.exitCode = result.status ?? 1;
+} finally {
+  execFileSync("/usr/bin/umount", [alias]);
+}`;
+    const isolated = `import { spawnSync } from "node:child_process";
+const result = spawnSync("/usr/bin/unshare", ["--mount", "--propagation", "private", process.execPath, "--input-type=module", "-e", ${JSON.stringify(bound)}, ...process.argv.slice(1)], { stdio: "inherit" });
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;`;
+    const result = elevated([
+      "--input-type=module",
+      "-e",
+      isolated,
+      source,
+      alias,
+      command,
+      "prepare",
+      "--source",
+      source,
+      "--archive",
+      archive,
+      "--record",
+      record,
+      "--owner-uid",
+      String(uid),
+      "--quiesced",
+    ]);
+    stopped(result, /E_OVERLAPPING_PATHS/);
+    assert.deepEqual(inventory(source), before);
+    assert.equal(existsSync(archive), false);
+    assert.equal(existsSync(record), false);
+  });
+}
+
 for (const committed of [false, true]) {
   test(`shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=${committed}`, (t) => {
     const root = realpathSync(fixture("route"));

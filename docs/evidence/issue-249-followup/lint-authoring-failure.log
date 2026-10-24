@@ -1,0 +1,25 @@
+
+> @fitchmultz/pi-subagents@0.50.0 lint
+> oxlint --type-aware .
+
+
+  x eslint(curly): Expected { after 'if' condition.
+    ,-[test/integration/retired-history-archive.test.ts:76:39]
+ 75 |   test(`shipped prepare rejects a physical source alias as ${target} parent before writing`, (t) => {
+ 76 |     if (process.platform !== "linux") return t.skip("Linux bind-mount fixture");
+    :                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 77 |     const root = realpathSync(fixture(`alias-${target}`));
+    `----
+  help: Replace `return t.skip("Linux bind-mount fixture");` with `{return t.skip("Linux bind-mount fixture");}`.
+
+  x typescript(no-confusing-void-expression): Returning a void expression from a function is forbidden.
+    ,-[test/integration/retired-history-archive.test.ts:76:46]
+ 75 |   test(`shipped prepare rejects a physical source alias as ${target} parent before writing`, (t) => {
+ 76 |     if (process.platform !== "linux") return t.skip("Linux bind-mount fixture");
+    :                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 77 |     const root = realpathSync(fixture(`alias-${target}`));
+    `----
+  help: Move it before the `return` statement.
+
+Found 0 warnings and 2 errors.
+Finished in 6.8s on 184 files with 224 rules using 2 threads.

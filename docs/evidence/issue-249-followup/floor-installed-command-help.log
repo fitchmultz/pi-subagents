@@ -1,0 +1,5 @@
+Usage: node scripts/archive-retired-history.mjs prepare --source /canonical/agent/history-index --archive /private/archives/unique-container --record /private/records/unique.json --owner-uid UID --quiesced
+       node scripts/archive-retired-history.mjs inspect --record /private/records/unique.json --owner-uid UID
+       node scripts/archive-retired-history.mjs archive --record /private/records/unique.json --owner-uid UID --quiesced
+
+Offline-only opt-in maintenance on Linux/macOS. Run with administrative lsof visibility. --quiesced acknowledges owner-approved stopped/disabled launchers, services, readers and writers; it is NOT an exclusivity check. Read docs/retired-history-maintenance.md first. No startup/install integration, deletion, SQLite open/recovery, or cross-filesystem copy. An interrupted or ambiguous attempt retains its record and both paths for inspection. Archiving reclaims no file allocations.

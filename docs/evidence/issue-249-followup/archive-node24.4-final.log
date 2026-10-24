@@ -1,0 +1,50 @@
+(node:31) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ shipped prepare rejects a physical source alias as archive parent before writing (178.420982ms)
+ℹ Synthetic physical-alias evidence retained at /tmp/history-alias-archive-FLJT47
+✔ shipped prepare rejects a physical source alias as record parent before writing (169.296635ms)
+ℹ Synthetic physical-alias evidence retained at /tmp/history-alias-record-3NM0pG
+✔ shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=false (619.964298ms)
+ℹ Synthetic archive evidence retained at /tmp/history-route-KzJO3A
+✔ shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=true (646.506852ms)
+ℹ Synthetic archive evidence retained at /tmp/history-route-juaHH3
+✔ shipped archive CLI refuses unknown entry before reservation (102.818237ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-zHYGJk
+✔ shipped archive CLI refuses symbolic link before reservation (103.570558ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-HAzJWF
+✔ shipped archive CLI refuses hard link before reservation (100.435476ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-t7tV09
+✔ shipped archive CLI refuses foreign ownership before reservation (130.932812ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-FrVOzi
+✔ shipped archive CLI refuses unsafe permissions before reservation (109.724874ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-KTu21j
+✔ shipped archive CLI stops on changed recorded bytes after preparation (275.871265ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-HWJfoX
+✔ shipped archive CLI stops on replaced source directory after preparation (219.495537ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-7QU2OZ
+✔ shipped archive CLI stops on replaced container after preparation (216.079424ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-Qt2cwu
+✔ shipped archive CLI stops on unexpected destination after preparation (236.415512ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-m2hxJg
+✔ shipped archive CLI stops on record symlink after preparation (221.300448ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-nJxRz6
+✔ shipped archive CLI requires explicit operator acknowledgment and refuses a different filesystem (153.985882ms)
+ℹ Synthetic device evidence retained at /tmp/history-cross-device-lvOWu9
+(node:490) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:519) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ shipped archive CLI refuses actual SQLite writers and later raw database readers despite operator acknowledgment (562.426669ms)
+ℹ Synthetic handle evidence retained at /tmp/history-handles-AeOzKx
+✔ shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=false (97.975434ms)
+ℹ Synthetic ancestor evidence retained at /tmp/history-ancestors-BCpVNY
+✔ shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=true (131.620432ms)
+ℹ Synthetic ancestor evidence retained at /tmp/history-ancestors-d9E0Cs
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4628.522565
