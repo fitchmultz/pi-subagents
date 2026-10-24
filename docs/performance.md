@@ -116,6 +116,26 @@ this change does not force aliasing in those layouts. Their parent-side adapter
 can now use that copy instead of the host's on-disk copy. Those graphs are outside
 this production-only measurement; the full checkout functional smoke still runs.
 
+### Session attach inventory (#248)
+
+Session attachment no longer scans retained completions before returning. It still
+publishes the same durable process identity and generation before ordinary SDK or
+RPC startup completes. The existing completion scanner and explicit reconciliation
+paths perform recovery afterward. Managed launcher attachment remains gated on
+accepted host readiness.
+
+An isolated official Pi 1.4.0 CLI probe on Linux compared current-main source
+`4906e67` with this change. Five alternating pairs switched into a synthetic
+42.6 MB, 5,180-entry journal with 1,000 completed runs. The median wait from the
+switch request through an immediate successful `get_state` response changed from
+755.43 ms to 189.56 ms. The first `agent_runs list` itself became slower because
+it now pays for cold receipt indexing. This is a change to when recovery work
+runs, not an installed macOS or general delegation-latency claim.
+
+The [issue 248 evidence](evidence/issue-248/README.md) includes both waits,
+switch-to-first-tool measurements, ranges, profiler results, exact runtime and
+build identities, reproducible commands, and retained synthetic RPC transcripts.
+
 ## Necessary costs
 
 - Native Pi owns context loading and model execution. The extension cannot remove

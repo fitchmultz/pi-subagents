@@ -1,0 +1,208 @@
+[
+  {
+    "repo": "/workspace/issue-248-baseline",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594928,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 686.9240459999446,
+    "responsiveMs": 687.8865569999562,
+    "attachMs": 533.3417550000001,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 510.00622499999986,
+        "counters": {
+          "readFileSync": {
+            "calls": 4,
+            "ms": 0.18494000000009692
+          },
+          "openSync": {
+            "calls": 2003,
+            "ms": 15.233841000004077
+          },
+          "mkdirSync": {
+            "calls": 1,
+            "ms": 0.023410000000012587
+          },
+          "writeFileSync": {
+            "calls": 1,
+            "ms": 0.02507000000014159
+          },
+          "fsyncSync": {
+            "calls": 1,
+            "ms": 0.7212910000000647
+          },
+          "renameSync": {
+            "calls": 1,
+            "ms": 0.19297000000005937
+          },
+          "lstatSync": {
+            "calls": 1002,
+            "ms": 5.889011999999639
+          },
+          "readdirSync": {
+            "calls": 1,
+            "ms": 0.8172409999999672
+          },
+          "statSync": {
+            "calls": 2001,
+            "ms": 15.916874999998527
+          },
+          "readSync": {
+            "calls": 2650,
+            "ms": 25.43628900000408
+          }
+        }
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 23.33553000000029,
+        "counters": {
+          "readFileSync": {
+            "calls": 4,
+            "ms": 0.13264100000060353
+          },
+          "openSync": {
+            "calls": 2,
+            "ms": 0.1408289999999397
+          },
+          "mkdirSync": {
+            "calls": 1,
+            "ms": 0.013210000000071886
+          },
+          "writeFileSync": {
+            "calls": 1,
+            "ms": 0.05227000000013504
+          },
+          "fsyncSync": {
+            "calls": 1,
+            "ms": 0.7320810000001075
+          },
+          "renameSync": {
+            "calls": 1,
+            "ms": 0.1178410000002259
+          },
+          "lstatSync": {
+            "calls": 1002,
+            "ms": 4.608474000000115
+          },
+          "readdirSync": {
+            "calls": 1,
+            "ms": 0.4280300000000352
+          },
+          "statSync": {
+            "calls": 2001,
+            "ms": 8.61056800000324
+          }
+        }
+      }
+    ],
+    "firstListMs": 74.16850299999987,
+    "firstToolReadyMs": 763.4028609999177,
+    "profile": true,
+    "label": "A",
+    "round": 0
+  },
+  {
+    "repo": "/workspace/issue-248",
+    "sdk": "/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent",
+    "version": "1.4.0",
+    "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+    "sessionBytes": 42594928,
+    "entries": 5180,
+    "runCount": 1000,
+    "errors": 0,
+    "switches": 1,
+    "listRows": 50,
+    "total": 1000,
+    "switchMs": 146.35795499998494,
+    "responsiveMs": 147.0905749999929,
+    "attachMs": 2.8088419999999132,
+    "attachEvents": [
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.5107909999999265,
+        "counters": {
+          "readFileSync": {
+            "calls": 4,
+            "ms": 0.1340299999999388
+          },
+          "openSync": {
+            "calls": 2,
+            "ms": 0.17444000000000415
+          },
+          "mkdirSync": {
+            "calls": 1,
+            "ms": 0.016860000000178843
+          },
+          "writeFileSync": {
+            "calls": 1,
+            "ms": 0.029859999999871434
+          },
+          "fsyncSync": {
+            "calls": 1,
+            "ms": 0.6154710000000705
+          },
+          "renameSync": {
+            "calls": 1,
+            "ms": 0.13931000000002314
+          },
+          "lstatSync": {
+            "calls": 1,
+            "ms": 0.011730000000170548
+          }
+        }
+      },
+      {
+        "type": "perf_attach",
+        "owner": "synthetic-owner-248",
+        "ms": 1.2980509999999867,
+        "counters": {
+          "readFileSync": {
+            "calls": 4,
+            "ms": 0.15800100000001294
+          },
+          "openSync": {
+            "calls": 2,
+            "ms": 0.08187900000007176
+          },
+          "mkdirSync": {
+            "calls": 1,
+            "ms": 0.013251000000082058
+          },
+          "writeFileSync": {
+            "calls": 1,
+            "ms": 0.022510000000011132
+          },
+          "fsyncSync": {
+            "calls": 1,
+            "ms": 0.47064000000000306
+          },
+          "renameSync": {
+            "calls": 1,
+            "ms": 0.22408999999993284
+          },
+          "lstatSync": {
+            "calls": 1,
+            "ms": 0.015799999999899228
+          }
+        }
+      }
+    ],
+    "firstListMs": 461.428453,
+    "firstToolReadyMs": 609.8540990000174,
+    "profile": true,
+    "label": "B",
+    "round": 0
+  }
+]

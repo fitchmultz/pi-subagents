@@ -1,0 +1,10 @@
+
+> @fitchmultz/pi-subagents@0.50.0 smoke:package
+> node scripts/package-smoke.mjs
+
+{"host":"local","version":"1.4.0","node":"v24.22.1","hostRoot":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff","cliSha256":"e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774"}
+{"host":"local","version":"1.4.0","node":"v24.22.1","hostRoot":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff","cliSha256":"e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774"}
+[native-package-smoke] one compiled entry; exactly delegate/agent_runs/intercom eager; real native actor prompt, tool result and published completion; selected-host bundled CLI passed (local faux provider, zero paid/network model calls)
+{"host":"local","version":"1.4.0","node":"v24.22.1","hostRoot":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent","hostIndex":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent/dist/index.js","hostCli":"/workspace/issue-248/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","indexSha256":"4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff","cliSha256":"e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774"}
+[native-package-smoke] one compiled entry; exactly delegate/agent_runs/intercom eager; real native actor prompt, tool result and published completion; selected-host bundled CLI passed (local faux provider, zero paid/network model calls)
+[package-smoke] @fitchmultz/pi-subagents@0.50.0: 227 files; one entry, zero profiles/prompts; runtime-only npm and standalone native actors passed

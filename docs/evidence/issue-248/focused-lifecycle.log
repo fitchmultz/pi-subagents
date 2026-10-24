@@ -1,0 +1,14 @@
+✔ single-agent native continuation (6703.751164ms)
+✔ single-agent native cancellation (2616.75205ms)
+✔ single-agent native dispose (2397.601274ms)
+✔ single-agent native generation (5667.382601ms)
+✔ single-agent native inventory (1734.233208ms)
+✔ single-agent actual native runtime shutdown joins admitted filesystem initialization (1210.601822ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 20686.769242
