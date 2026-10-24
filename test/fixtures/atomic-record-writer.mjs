@@ -2,7 +2,8 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { write } from "../../src/agent/storage.ts";
 
-const [file, id, gate] = process.argv.slice(2);
+const [file, id] = process.argv.slice(2);
+const gate = process.argv.at(4);
 fs.linkSync = () => {
   throw Object.assign(new Error("Hard links are denied"), { code: "EACCES" });
 };
