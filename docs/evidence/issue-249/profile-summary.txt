@@ -1,0 +1,13 @@
+Separate diagnostic run, excluded from all uninstrumented samples.
+strace 6.13 -f -e trace=%file
+Exec boundaries:
+5363  execve("/usr/local/bin/node", ["node", "--test", "--test-name-pattern=actual selec"..., "test/integration/retired-history"...], 0x7ffe598c0500 /* 12 vars */) = 0
+5369  execve("/usr/local/bin/node", ["/usr/local/bin/node", "--test-coverage-functions=0", "--test-concurrency=0", "--inspect-publish-uid=stderr,htt"..., "--inspect-port=127.0.0.1:9229", "--stack-trace-limit=10", "--report-signal=SIGUSR2", "--test-coverage-lines=0", "--secure-heap-min=2", "--test-isolation=process", "--heap-prof-interval=524288", "--cpu-prof-interval=1000", "--v8-pool-size=4", "--trace-event-file-pattern=node_"..., "--test-coverage-branches=0", "--watch-kill-signal=SIGTERM", "--tls-cipher-list=TLS_AES_256_GC"..., "--experimental-addon-modules", "--test-name-pattern=actual selec"..., "--use-largepages=off", "--max-http-header-size=16384", "--test-timeout=0", "--node-snapshot", "--secure-heap=0", "--network-family-autoselection-a"..., "--heapsnapshot-near-heap-limit=0", "test/integration/retired-history"...], 0x34cc8020 /* 14 vars */) = 0
+5376  execve("/usr/local/bin/node", ["/usr/local/bin/node", "--input-type=module", "-e", "import { DatabaseSync } from \"no"..., "/workspace/issue-249-evidence/bi"...], 0x1b72eef0 /* 16 vars */) = 0
+5383  execve("/usr/local/bin/node", ["/usr/local/bin/node", "/workspace/issue-249/node_module"..., "--mode", "rpc", "--session-dir", "/workspace/issue-249-evidence/bi"..., "-ne", "-ns", "-np", "-nc", "--no-themes", "--approve", "--tools", "delegate,agent_runs,intercom", "-e", "/workspace/issue-249/src/index.t"..., "-e", "/workspace/issue-249-evidence/bi"...], 0x1b809ef0 /* 8 vars */) = 0
+5395  execve("/usr/local/bin/node", ["/usr/local/bin/node", "/workspace/issue-249/src/pi-inte"...], 0x185428e0 /* 12 vars */) = 0
+
+History-path file-syscall PID set: [5369, 5376]
+Test owner PID 5369 and crash fixture PID 5376 only. Selected package-bin CLI exec PID 5383, private broker exec PID 5395.
+No history-path file syscall from CLI/broker or their remaining threads appears in the full trace.
+This identifies absent retired-cache lifecycle work, not a CPU/latency optimization.

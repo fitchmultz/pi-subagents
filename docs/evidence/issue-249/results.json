@@ -1,0 +1,497 @@
+{
+  "verdict": "No automatic disk reclaim and no runtime change. Manual same-filesystem archive preserves all file allocations; no latency claim.",
+  "samples": [
+    {
+      "sample": 1,
+      "side": "main",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249-baseline/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 1,
+      "side": "candidate",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "side": "main",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249-baseline/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "side": "candidate",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "side": "main",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249-baseline/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "side": "candidate",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 4,
+      "side": "main",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249-baseline/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 4,
+      "side": "candidate",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "side": "main",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249-baseline/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "side": "candidate",
+      "records": [
+        {
+          "host": "1.4.0",
+          "hostRoot": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent",
+          "cli": "/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+          "extension": "/workspace/issue-249/src/index.ts",
+          "legacyMembers": 16,
+          "removed": 0,
+          "errors": 0
+        },
+        {
+          "committed": false,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "afterArchiveBytes": {
+            "logical": 147822,
+            "allocated": 163840
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        },
+        {
+          "committed": true,
+          "archiveMembers": 10,
+          "beforeBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "afterArchiveBytes": {
+            "logical": 160182,
+            "allocated": 176128
+          },
+          "recoveredDatabases": 3,
+          "originalFilesDeleted": 0,
+          "errors": 0
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "main-committed=False-logical": {
+      "medianBytes": 147822,
+      "rangeBytes": [147822, 147822],
+      "samples": 5
+    },
+    "main-committed=False-allocated": {
+      "medianBytes": 163840,
+      "rangeBytes": [163840, 163840],
+      "samples": 5
+    },
+    "main-committed=True-logical": {
+      "medianBytes": 160182,
+      "rangeBytes": [160182, 160182],
+      "samples": 5
+    },
+    "main-committed=True-allocated": {
+      "medianBytes": 176128,
+      "rangeBytes": [176128, 176128],
+      "samples": 5
+    },
+    "candidate-committed=False-logical": {
+      "medianBytes": 147822,
+      "rangeBytes": [147822, 147822],
+      "samples": 5
+    },
+    "candidate-committed=False-allocated": {
+      "medianBytes": 163840,
+      "rangeBytes": [163840, 163840],
+      "samples": 5
+    },
+    "candidate-committed=True-logical": {
+      "medianBytes": 160182,
+      "rangeBytes": [160182, 160182],
+      "samples": 5
+    },
+    "candidate-committed=True-allocated": {
+      "medianBytes": 176128,
+      "rangeBytes": [176128, 176128],
+      "samples": 5
+    }
+  }
+}

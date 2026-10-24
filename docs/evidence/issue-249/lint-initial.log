@@ -1,0 +1,23 @@
+
+> @fitchmultz/pi-subagents@0.50.0 lint
+> oxlint --type-aware .
+
+
+  x typescript(TS2339): Property 'sort' does not exist on type 'readonly string[]'.
+     ,-[test/integration/retired-history-maintenance.test.ts:175:65]
+ 174 |   assert.doesNotMatch(result.stderr, /Failed to load extension|Extension error/);
+ 175 |   assert.deepEqual(strings(readJson(join(root, "loaded.json"))).sort(), [
+     :                                                                 ^^^^
+ 176 |     "agent_runs",
+     `----
+
+  x typescript(no-unsafe-call): Unsafe call of a(n) `error` type typed value.
+     ,-[test/integration/retired-history-maintenance.test.ts:175:20]
+ 174 |   assert.doesNotMatch(result.stderr, /Failed to load extension|Extension error/);
+ 175 |   assert.deepEqual(strings(readJson(join(root, "loaded.json"))).sort(), [
+     :                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 176 |     "agent_runs",
+     `----
+
+Found 0 warnings and 2 errors.
+Finished in 8.6s on 180 files with 224 rules using 2 threads.

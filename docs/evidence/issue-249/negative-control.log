@@ -1,0 +1,27 @@
+✖ actual selected-host CLI leaves stale, unknown, linked and active legacy data untouched (715.204239ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 846.561731
+
+✖ failing tests:
+
+test at test/integration/retired-history-maintenance.test.ts:187:1
+✖ actual selected-host CLI leaves stale, unknown, linked and active legacy data untouched (715.204239ms)
+  Error: ENOENT: no such file or directory, scandir '/workspace/issue-249-evidence/bin-negative-control/history-cli-g1wBXl/agent/history-index'
+      at readdirSync (node:fs:1630:26)
+      at inventory (file:///workspace/issue-249/test/integration/retired-history-maintenance.test.ts:56:10)
+      at TestContext.<anonymous> (file:///workspace/issue-249/test/integration/retired-history-maintenance.test.ts:202:7)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    errno: -2,
+    code: 'ENOENT',
+    syscall: 'scandir',
+    path: '/workspace/issue-249-evidence/bin-negative-control/history-cli-g1wBXl/agent/history-index'
+  }

@@ -1,0 +1,4 @@
+
+> @fitchmultz/pi-subagents@0.50.0 build
+> node ./scripts/build.mjs
+
