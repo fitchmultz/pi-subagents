@@ -243,9 +243,10 @@ const processView = (pid) => {
     .split(/\s+/);
   return { birth: fields.slice(0, -1).join(" "), group: Number(fields.at(-1)) };
 };
-// Darwin ps reports whole-second births; stand-ins spawned in a later second are provably
-// born after earlier record publication.
-const nextBirthSecond = () => delay(1020 - (Date.now() % 1000));
+// Leave full seconds beyond publication for conservative native birth bounds, including
+// Android's elapsed-second/tick uncertainty. Actual birth/group observations follow this wait.
+const nextBirthSecond = () =>
+  delay((process.platform === "android" ? 3020 : 2020) - (Date.now() % 1000));
 const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? fs
@@ -305,6 +306,8 @@ const settled = async (receipt, why = "canonical native completion reaches the p
 };
 const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSessionId(), id);
 const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+const publishedFiles = (directory) =>
+  fs.readdirSync(directory).filter((name) => name.endsWith(".json"));
 let runId = seed?.runId;
 try {
   if (phase.startsWith("launch-preparation-")) {
@@ -1052,6 +1055,7 @@ try {
   } else if (
     phase === "bash-seed" ||
     phase === "bash-seed-paused" ||
+    phase === "bash-parent-reuse" ||
     phase.startsWith("bash-shutdown-")
   ) {
     const zone = process.env.TZ;
@@ -1104,9 +1108,10 @@ try {
       );
     }
     if (phase.startsWith("bash-shutdown-")) {
-      const actor = readJSON(path.join(runDir(runId), "actor.lock/process.json"));
+      const processFile = path.join(runDir(runId), "actor.lock/process.json");
+      const actor = readJSON(processFile);
       const ledger = path.join(runDir(runId), "shells", actor.token);
-      const original = path.join(ledger, fs.readdirSync(ledger)[0]);
+      const original = path.join(ledger, publishedFiles(ledger)[0]);
       const shell = readJSON(original);
       const publishedAt = fs.statSync(original).mtime;
       const dead = (pid) => {
@@ -1124,8 +1129,26 @@ try {
         }
       };
       const stopAcrossZones = async () => {
+        const now = Date.now;
         process.env.TZ = "America/Los_Angeles";
         try {
+          if (process.platform === "android") {
+            // A controller clock correction must not disprove a live native owner.
+            const claim = fs.readFileSync(processFile);
+            const { ensureActor } = await import(
+              pathToFileURL(path.join(repo, "dist/agent/process.js")).href
+            );
+            Date.now = () => now() + 300000;
+            await ensureActor(
+              path.dirname(runDir(runId)),
+              readJSON(path.join(runDir(runId), "launch.json")),
+            );
+            assert.deepEqual(
+              fs.readFileSync(processFile),
+              claim,
+              "clock advance and timezone mismatch retain the live actor without replacement",
+            );
+          }
           await runtime.dispose();
           const owned = [actor.pid, shell.pid, family.pid, family.descendant];
           if (process.platform === "linux") {
@@ -1138,15 +1161,18 @@ try {
             assert.equal(owned.some(dead), false, "no owned process was signalled");
           }
         } finally {
+          Date.now = now;
           if (zone === undefined) {
             delete process.env.TZ;
           } else {
             process.env.TZ = zone;
           }
-          signalIfLive(-actor.pid, "SIGKILL");
-          signalIfLive(-shell.pid, "SIGKILL");
+          const claimed = fs.existsSync(processFile) ? readJSON(processFile).pid : actor.pid;
+          for (const pid of new Set([claimed, actor.pid, shell.pid])) {
+            signalIfLive(-pid, "SIGKILL");
+          }
           await until(
-            () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
+            () => [claimed, actor.pid, shell.pid, family.pid, family.descendant].every(dead),
             "fixture cleanup stops the owned processes it left running",
           );
         }
@@ -1185,7 +1211,7 @@ try {
           extras.forEach((file) => {
             fs.writeFileSync(file, JSON.stringify(shell));
           });
-          const names = fs.readdirSync(ledger);
+          const names = publishedFiles(ledger);
           assert.equal(names.length, 4);
           // Stale PID reuse (group leader and not) and true ambiguity precede the verified shell.
           [
@@ -1217,14 +1243,45 @@ try {
         }
       };
       await (phase === "bash-shutdown-timezone" ? stopAcrossZones() : stopWithStaleClaims());
+    } else if (phase === "bash-parent-reuse") {
+      const file = path.join(path.dirname(runDir(runId)), "attachment.json");
+      const attachment = readJSON(file);
+      const publishedAt = fs.statSync(file).mtime;
+      assert.equal(attachment.pid, process.pid);
+      assert.equal(processView(process.pid).group, process.pid, "parent leads its native group");
+      assert.notEqual(attachment.identity, "unverified");
+      await nextBirthSecond();
+      const beat = path.join(root, "parent-bystander-heartbeat");
+      const bystander = spawn(
+        process.execPath,
+        [
+          "-e",
+          `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(beat)},'ready');setInterval(()=>fs.appendFileSync(${JSON.stringify(beat)},'tick\\n'),20);`,
+        ],
+        { detached: true, stdio: "ignore" },
+      );
+      assert.ok(bystander.pid);
+      bystander.unref();
+      fs.writeFileSync(
+        seedFile,
+        JSON.stringify({ ...readJSON(seedFile), bystanderPid: bystander.pid }),
+      );
+      await until(() => fs.existsSync(beat), "later native bystander publishes readiness");
+      assert.notEqual(processView(bystander.pid).birth, processView(process.pid).birth);
+      fs.writeFileSync(file, JSON.stringify({ ...attachment, pid: bystander.pid }));
+      // Retain the attachment's original publication, as a claim predating PID reuse does.
+      fs.utimesSync(file, publishedAt, publishedAt);
+      process.kill(process.pid, "SIGKILL");
     } else {
       process.kill(process.pid, "SIGKILL");
     }
   } else if (phase === "cold-actor-stop") {
     const directory = runDir(runId);
-    const identity = readJSON(path.join(directory, "actor.lock/process.json"));
+    const processFile = path.join(directory, "actor.lock/process.json");
+    const identity = readJSON(processFile);
+    const actorPublishedAt = fs.statSync(processFile).mtime;
     const ledger = path.join(directory, "shells", identity.token);
-    const recordFile = path.join(ledger, fs.readdirSync(ledger)[0]);
+    const recordFile = path.join(ledger, publishedFiles(ledger)[0]);
     const shell = readJSON(recordFile);
     const publishedAt = fs.statSync(recordFile).mtime;
     const prompt = "RECOVER_QUEUED_SHELL_CONTINUATION";
@@ -1250,7 +1307,7 @@ try {
     );
     assert.equal(stillBlocked.isError, true, JSON.stringify(stillBlocked));
     assert.match(JSON.stringify(stillBlocked.content), /Owned native shell work remains live/);
-    const commands = () => fs.readdirSync(path.join(directory, "commands")).length;
+    const commands = () => publishedFiles(path.join(directory, "commands")).length;
     const beforeCommands = commands();
     await nextBirthSecond();
     const bystander = spawn(
@@ -1269,6 +1326,25 @@ try {
         const size = fs.statSync(beat).size;
         await until(() => fs.statSync(beat).size > size, why);
       };
+      try {
+        fs.writeFileSync(processFile, JSON.stringify({ ...identity, pid: bystander.pid }));
+        fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
+        const reusedActorContinue = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt },
+          "reused-actor-pid-cannot-mask-owned-shell",
+        );
+        assert.equal(reusedActorContinue.isError, true, JSON.stringify(reusedActorContinue));
+        assert.match(
+          JSON.stringify(reusedActorContinue.content),
+          /Owned native shell work remains live/,
+        );
+        assert.equal(commands(), beforeCommands);
+        await survives("reused actor PID survives the processed continuation refusal");
+      } finally {
+        fs.writeFileSync(processFile, JSON.stringify(identity));
+        fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
+      }
       const view = processView(bystander.pid);
       assert.notEqual(view.group, bystander.pid, "bystander is not a group leader");
       assert.notEqual(view.birth, processView(shell.pid).birth, "bystander has a different birth");
@@ -1277,6 +1353,17 @@ try {
         { ...shell, identity: "wrong process birth" },
         { ...shell, identity: "unverified" },
         { ...shell, token: "foreign actor generation" },
+        // Legacy or incomparable Android clocks cannot disprove this live bystander's claim.
+        ...(process.platform === "android"
+          ? [
+              { ...shell, pid: bystander.pid, clock: undefined },
+              {
+                ...shell,
+                pid: bystander.pid,
+                clock: { ...shell.clock, namespace: "time:[0]" },
+              },
+            ]
+          : []),
         // This live nonleader predates the rewritten claim, so macOS cannot disprove it.
         ...(process.platform === "darwin" ? [{ ...shell, pid: process.pid }] : []),
       ].entries()) {
@@ -1340,7 +1427,6 @@ try {
       );
       assert.equal(distinct.isError, true, JSON.stringify(distinct));
       assert.match(JSON.stringify(distinct.content), /awaiting native admission.*retry/i);
-      const processFile = path.join(directory, "actor.lock/process.json");
       const retryWithout = async (file, expected) => {
         const held = `${file}.held`;
         fs.renameSync(file, held);
@@ -1443,7 +1529,7 @@ try {
       fs.writeFileSync(processFile, JSON.stringify(identity));
     }
     const ledger = path.join(runDir(runId), "shells", identity.token);
-    const shell = readJSON(path.join(ledger, fs.readdirSync(ledger)[0]));
+    const shell = readJSON(path.join(ledger, publishedFiles(ledger)[0]));
     const kill = process.kill;
     let stopping = false,
       raced = false;
@@ -3183,7 +3269,7 @@ try {
         ) {
           assert.equal(heldStop, undefined, "one actual Stop publication is held");
           heldStop = { file: path.join(runDir(id), "unpublished-stop.json"), destination };
-          return link(source, heldStop.file);
+          return fs.renameSync(source, heldStop.file);
         }
         return link(source, destination);
       };
@@ -3221,8 +3307,7 @@ try {
         path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`),
       );
       // Publish the exact tool-produced record only after the predecessor cannot read it.
-      fs.linkSync(heldStop.file, heldStop.destination);
-      fs.unlinkSync(heldStop.file);
+      fs.renameSync(heldStop.file, heldStop.destination);
       assert.deepEqual(fs.readFileSync(heldStop.destination), heldBytes);
       assert.equal(
         readJSON(path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`))

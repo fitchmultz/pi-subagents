@@ -4,8 +4,8 @@
  * Responsibilities: Run TypeScript emit into a staging directory, then atomically swap it
  * into dist/ so a failed TypeScript emit never destroys a previously working dist.
  * Usage: `npm run build`; also invoked by scripts/prepare.mjs during install lifecycles, which may pass
- * the path of a throwaway compiler's `bin/tsc` as the first argument.
- * Invariants/Assumptions: `node_modules` (or that argument) provides `typescript`; deleting `dist/` is safe generated output.
+ * the path of a throwaway compiler's `bin/tsc` as the first argument. Android uses native tsgo.
+ * Invariants/Assumptions: deleting `dist/` is safe generated output.
  */
 
 import { execFile as execFileCallback } from "node:child_process";
@@ -16,13 +16,12 @@ import { join } from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { compilerInvocation } from "./typescript.mjs";
 
 const execFile = promisify(execFileCallback);
 const RM_OPTIONS = { force: true, maxRetries: 5, recursive: true, retryDelay: 100 };
 const RENAME_RETRY_LIMIT = 50;
 const RENAME_RETRY_MS = 50;
-// Use the current Node binary without a shell, including install paths with spaces.
-const tscPath = process.argv[2] ?? join(process.cwd(), "node_modules", "typescript", "bin", "tsc");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -76,11 +75,11 @@ async function reapStrandedStaging(cwd) {
   }
 }
 
-async function compileToStaging(cwd, stagingDir) {
+async function compileToStaging(cwd, stagingDir, compiler) {
   try {
     const { stderr, stdout } = await execFile(
-      process.execPath,
-      [tscPath, "-p", "tsconfig.build.json", "--outDir", stagingDir],
+      compiler.command,
+      [...compiler.args, "-p", "tsconfig.build.json", "--outDir", stagingDir],
       { cwd, maxBuffer: 10 * 1024 * 1024 },
     );
     if (stdout) {
@@ -161,14 +160,12 @@ async function publishStaging(stagingDir, distDir) {
 
 async function main() {
   const cwd = process.cwd();
-  if (!existsSync(tscPath)) {
-    throw new Error(`typescript is not installed at ${tscPath}; run npm install first.`);
-  }
+  const compiler = compilerInvocation(process.argv[2]);
   await reapStrandedStaging(cwd);
   // Pid-scoped staging isolates concurrent emits; only a complete tree publishes.
   const stagingDir = join(cwd, `dist.staging.${process.pid}`);
   await rm(stagingDir, RM_OPTIONS);
-  await compileToStaging(cwd, stagingDir);
+  await compileToStaging(cwd, stagingDir, compiler);
   await publishStaging(stagingDir, join(cwd, "dist"));
 }
 

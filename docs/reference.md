@@ -145,6 +145,15 @@ assumes native record timestamps have not been backdated and the clock did not
 move backward between process birth and publication. Missing timestamps,
 same-second uncertainty and timezone differences alone do not prove replacement.
 Linux uses its native process-clock and namespace identity instead.
+New Android actor and shell records also save a native monotonic-clock bound
+after process birth, qualified by the real boot ID and reader's time namespace.
+Only a conservative birth lower bound from native process elapsed age, in that
+same clock context, can disprove ownership. This survives controller clock and
+timezone changes without comparing `ps` boot-epoch dates with record timestamps.
+Unreadable ages, missing legacy clock bounds, different clock contexts and
+whole-second/tick uncertainty do not prove replacement; identity checks still
+fail closed rather than signal an unverified PID. An existing record without a
+clock bound remains usable when its original process identity is verifiable.
 
 ## `intercom`
 
@@ -235,6 +244,16 @@ Development dependencies are for verification, not a second host runtime. Use th
 committed npm lockfile. The build publishes a complete staged `dist/`; failed
 compilation does not destroy the previous working tree. Do not rebuild a checkout
 while active sessions load its files.
+
+On native Android, source installation and verification require an Android build
+of `tsgo` on PATH. The prebuilt npm installation needs no compiler. See
+[Android development](development.md#native-androidtermux).
+
+Where the filesystem denies hard links, exclusive saved-run records are atomic
+relative symlinks to complete, private `.data` files beside them. Keep the entire
+run directory, including those backing files and relative links, when backing up
+or moving saved state; they are not disposable staging files. Existing regular
+records remain readable and are never replaced by a competing exclusive writer.
 
 Finish in-flight work before migrating from the old workflow engine. Preserve the
 prior package, native sessions, and durable state for rollback. Old profile files

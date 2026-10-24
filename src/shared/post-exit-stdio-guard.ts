@@ -1,4 +1,5 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
+import { readFileSync, readlinkSync } from "node:fs";
 import { isLinuxProcessReplaced, readLinuxProcess } from "../pi-intercom/broker/pid.ts";
 import { hasErrorCode } from "./unknown.ts";
 
@@ -20,6 +21,31 @@ interface ChildWithKill {
   readonly kill: (signal?: NodeJS.Signals | number) => boolean;
 }
 
+interface ProcessClock {
+  readonly boot: string;
+  readonly namespace: string;
+  readonly at: string;
+}
+
+/** Capture only a real, cross-process clock context; unavailable context proves nothing. */
+export function readProcessClock(): ProcessClock | undefined {
+  if (process.platform !== "android") {
+    return undefined;
+  }
+  try {
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    const namespace = readlinkSync("/proc/self/ns/time");
+    const at = process.hrtime.bigint();
+    return at > 0n &&
+      /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(boot) &&
+      /^time:\[\d+\]$/.test(namespace)
+      ? { boot, namespace, at: at.toString() }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Capture the detached group leader's birth identity; Pi may replace its command-line title. */
 export function readChildProcessIdentity(pid: number): string | undefined {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
@@ -28,13 +54,13 @@ export function readChildProcessIdentity(pid: number): string | undefined {
   if (process.platform === "linux") {
     return readLinuxProcess(pid)?.identity;
   }
-  const identity = readPsBirthAndGroup(pid);
+  const identity = readPsFields(pid, ["lstart=", "pgid="]);
   return Number(identity?.split(" ").at(-1)) === pid ? identity : undefined;
 }
 
-function readPsBirthAndGroup(pid: number, zone?: string): string | undefined {
+function readPsFields(pid: number, fields: readonly string[], zone?: string): string | undefined {
   try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
+    return execFileSync("ps", ["-p", String(pid), ...fields.flatMap((field) => ["-o", field])], {
       encoding: "utf8",
       timeout: 1000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -53,7 +79,7 @@ const MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
 function readUtcBirth(pid: number): number {
   const [, month = "", day, hours, minutes, seconds, year] =
-    PS_IDENTITY.exec(readPsBirthAndGroup(pid, "UTC0") ?? "") ?? [];
+    PS_IDENTITY.exec(readPsFields(pid, ["lstart=", "pgid="], "UTC0") ?? "") ?? [];
   const index = MONTHS.indexOf(month);
   // Unreadable or malformed observations yield NaN, which never proves a later birth.
   return month.length === 3 && index % 3 === 0
@@ -68,19 +94,49 @@ function readUtcBirth(pid: number): number {
     : Number.NaN;
 }
 
+function sameClock(left: ProcessClock, right: ProcessClock): boolean {
+  return left.boot === right.boot && left.namespace === right.namespace;
+}
+
+/** Android's elapsed age bounds birth in the saved monotonic clock, never wall time. */
+function bornAfterClock(pid: number, clock: ProcessClock | undefined): boolean {
+  const before = readProcessClock();
+  if (clock === undefined || before === undefined || !sameClock(clock, before)) {
+    return false;
+  }
+  const elapsed = readPsFields(pid, ["etimes="]) ?? "";
+  const after = readProcessClock();
+  if (after === undefined || !sameClock(before, after) || !/^\d+$/.test(elapsed)) {
+    return false;
+  }
+  // Include displayed-second and native tick uncertainty. BOOTTIME age includes suspend,
+  // unlike hrtime's MONOTONIC clock, so suspend only moves this lower bound earlier.
+  const birth = BigInt(before.at) - (BigInt(elapsed) + 2n) * 1_000_000_000n;
+  return BigInt(after.at) >= BigInt(before.at) && birth > BigInt(clock.at);
+}
+
 /**
  * True only when a live PID provably names a different process than an owner-published record.
  * Darwin identities are unzoned local times, so they are never compared across zones; only a
- * UTC-observed birth strictly after the record's publication proves replacement.
+ * UTC-observed birth strictly after the record's publication proves replacement. Android uses
+ * a conservative elapsed-age bound against its recorded boot-qualified monotonic clock.
  */
-export function isChildProcessReplaced(pid: number, recorded: string, published?: number): boolean {
+export function isChildProcessReplaced(
+  pid: number,
+  recorded: string,
+  published?: number,
+  clock?: ProcessClock,
+): boolean {
   if (process.platform === "linux") {
     return isLinuxProcessReplaced(pid, recorded);
   }
-  if (published === undefined || !PS_IDENTITY.test(recorded)) {
+  if (!PS_IDENTITY.test(recorded)) {
     return false;
   }
-  return readUtcBirth(pid) > published;
+  if (process.platform === "android") {
+    return bornAfterClock(pid, clock);
+  }
+  return published !== undefined && readUtcBirth(pid) > published;
 }
 
 function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {

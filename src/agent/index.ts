@@ -25,6 +25,7 @@ import {
   commandSchema,
   type Attachment,
   type Launch,
+  type ProcessIdentity,
   type Result,
   type DelegateInput,
   type RunsInput,
@@ -138,7 +139,7 @@ class AgentRuntime {
       });
     return undefined;
   }
-  private ownerIdentity(): { pid: number; identity: string } {
+  private ownerIdentity(): Omit<ProcessIdentity, "token"> {
     return ownIdentity(this.host?.owner.pid);
   }
   private async attach(context: ExtensionContext): Promise<void> {

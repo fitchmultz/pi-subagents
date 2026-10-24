@@ -10,7 +10,7 @@ import {
   existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -226,7 +226,18 @@ try {
   }, 30_000);
   await session.prompt("Exercise the packed native delegate.", { expandPromptTemplates: false });
   await session.waitForIdle();
-  assert.equal(session.getLastAssistantText(), "PACKED_LAUNCH_RECEIPT_SEEN");
+  assert.equal(
+    session.getLastAssistantText(),
+    "PACKED_LAUNCH_RECEIPT_SEEN",
+    JSON.stringify({
+      errors,
+      messages: events.filter(
+        (event) =>
+          (event.type === "message_end" && event.message?.role === "assistant") ||
+          event.type === "tool_execution_end",
+      ),
+    }),
+  );
   const completionDeadline = Date.now() + 30_000;
   while (session.getLastAssistantText() !== "PACKED_PARENT_COMPLETE") {
     // Observe the native completion notification turn, not a fixed delay.
@@ -336,7 +347,11 @@ export default function(pi) {
   });
 }`,
   );
-  const cliEnv = { ...process.env, PATH: "/usr/bin:/bin" };
+  const cliEnv = {
+    ...process.env,
+    PATH:
+      process.platform === "android" ? `${dirname(process.execPath)}:/system/bin` : "/usr/bin:/bin",
+  };
   delete cliEnv.PI_PACKAGE_DIR;
   const cliProcesses = new SmokeProcesses({
     cwd: root,

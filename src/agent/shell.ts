@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { readChildProcessIdentity } from "../shared/post-exit-stdio-guard.ts";
+import { readChildProcessIdentity, readProcessClock } from "../shared/post-exit-stdio-guard.ts";
 import { read, write } from "./storage.ts";
 import { processSchema } from "./contracts.ts";
 import { verifyProcess } from "./process.ts";
@@ -50,6 +50,7 @@ write(
     pid,
     identity,
     token,
+    clock: readProcessClock(),
   },
   true,
 );
