@@ -1,4 +1,5 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
+import { readFileSync, readlinkSync } from "node:fs";
 import { isLinuxProcessReplaced, readLinuxProcess } from "../pi-intercom/broker/pid.ts";
 import { hasErrorCode } from "./unknown.ts";
 
@@ -18,6 +19,31 @@ interface ChildWithPipedStdio {
 interface ChildWithKill {
   readonly pid?: number;
   readonly kill: (signal?: NodeJS.Signals | number) => boolean;
+}
+
+interface ProcessClock {
+  readonly boot: string;
+  readonly namespace: string;
+  readonly at: string;
+}
+
+/** Capture only a real, cross-process clock context; unavailable context proves nothing. */
+export function readProcessClock(): ProcessClock | undefined {
+  if (process.platform !== "android") {
+    return undefined;
+  }
+  try {
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    const namespace = readlinkSync("/proc/self/ns/time");
+    const at = process.hrtime.bigint();
+    return at > 0n &&
+      /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(boot) &&
+      /^time:\[\d+\]$/.test(namespace)
+      ? { boot, namespace, at: at.toString() }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Capture the detached group leader's birth identity; Pi may replace its command-line title. */
@@ -68,32 +94,49 @@ function readUtcBirth(pid: number): number {
     : Number.NaN;
 }
 
-/** Android ps can use a boot epoch unlike file timestamps; elapsed age bounds birth instead. */
-function readElapsedBirthBound(pid: number): number {
-  const before = Date.now();
+function sameClock(left: ProcessClock, right: ProcessClock): boolean {
+  return left.boot === right.boot && left.namespace === right.namespace;
+}
+
+/** Android's elapsed age bounds birth in the saved monotonic clock, never wall time. */
+function bornAfterClock(pid: number, clock: ProcessClock | undefined): boolean {
+  const before = readProcessClock();
+  if (clock === undefined || before === undefined || !sameClock(clock, before)) {
+    return false;
+  }
   const elapsed = readPsFields(pid, ["etimes="]) ?? "";
-  const seconds = Number(elapsed);
-  // Observe before ps and include its whole-second uncertainty: never round birth forward.
-  return /^\d+$/.test(elapsed) && Number.isSafeInteger(seconds)
-    ? before - (seconds + 1) * 1000
-    : Number.NaN;
+  const after = readProcessClock();
+  if (after === undefined || !sameClock(before, after) || !/^\d+$/.test(elapsed)) {
+    return false;
+  }
+  // Include displayed-second and native tick uncertainty. BOOTTIME age includes suspend,
+  // unlike hrtime's MONOTONIC clock, so suspend only moves this lower bound earlier.
+  const birth = BigInt(before.at) - (BigInt(elapsed) + 2n) * 1_000_000_000n;
+  return BigInt(after.at) >= BigInt(before.at) && birth > BigInt(clock.at);
 }
 
 /**
  * True only when a live PID provably names a different process than an owner-published record.
  * Darwin identities are unzoned local times, so they are never compared across zones; only a
  * UTC-observed birth strictly after the record's publication proves replacement. Android uses
- * a conservative elapsed-age bound against that same publication time.
+ * a conservative elapsed-age bound against its recorded boot-qualified monotonic clock.
  */
-export function isChildProcessReplaced(pid: number, recorded: string, published?: number): boolean {
+export function isChildProcessReplaced(
+  pid: number,
+  recorded: string,
+  published?: number,
+  clock?: ProcessClock,
+): boolean {
   if (process.platform === "linux") {
     return isLinuxProcessReplaced(pid, recorded);
   }
-  if (published === undefined || !PS_IDENTITY.test(recorded)) {
+  if (!PS_IDENTITY.test(recorded)) {
     return false;
   }
-  const birth = process.platform === "android" ? readElapsedBirthBound(pid) : readUtcBirth(pid);
-  return birth > published;
+  if (process.platform === "android") {
+    return bornAfterClock(pid, clock);
+  }
+  return published !== undefined && readUtcBirth(pid) > published;
 }
 
 function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {

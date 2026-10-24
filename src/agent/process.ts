@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   isChildProcessReplaced,
   readChildProcessIdentity,
+  readProcessClock,
   trySignalChildTree,
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
@@ -14,7 +15,7 @@ import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 
-/** In-memory publication time of an owner record; never persisted. */
+/** Darwin's in-memory publication bound; Android records carry their own native clock. */
 interface Published {
   readonly published?: number | undefined;
 }
@@ -26,7 +27,9 @@ export function published<T extends object>(
 ): (T & Published) | undefined {
   return record && { ...record, published: fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs };
 }
-export function alive(identity: Pick<ProcessIdentity, "pid" | "identity"> & Published): boolean {
+export function alive(
+  identity: Pick<ProcessIdentity, "pid" | "identity" | "clock"> & Published,
+): boolean {
   try {
     process.kill(identity.pid, 0);
   } catch (error) {
@@ -41,7 +44,7 @@ export function alive(identity: Pick<ProcessIdentity, "pid" | "identity"> & Publ
   // Only a proven different birth disproves a live PID; ambiguous identities stay possibly owned.
   return (
     readChildProcessIdentity(identity.pid) === identity.identity ||
-    !isChildProcessReplaced(identity.pid, identity.identity, identity.published)
+    !isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
   );
 }
 export function ownIdentity(): { pid: number; identity: string } {
@@ -101,6 +104,7 @@ function spawnActor(base: string, launch: Launch, token: string): void {
     pid: child.pid,
     identity: readChildProcessIdentity(child.pid) ?? "unverified",
     token,
+    clock: readProcessClock(),
   });
 }
 async function awaitStopping(
@@ -189,7 +193,9 @@ export function verifyProcess(identity: OwnedProcess): boolean {
       return false;
     }
     // A different-birth process at the PID proves the recorded process is gone.
-    if (isChildProcessReplaced(identity.pid, identity.identity, identity.published)) {
+    if (
+      isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
+    ) {
       return false;
     }
   }

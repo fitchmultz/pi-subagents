@@ -33,9 +33,12 @@ observation endpoints, independently of individual sessions' HOME or TMPDIR.
 Other Android environments without PREFIX use Node's native temporary directory.
 Tests keep their isolated sockets short enough for the same 100-byte path limit.
 
-Android process-reuse checks use native elapsed age rather than comparing `ps`
-boot-epoch dates with record timestamps. Keep the conservative whole-second bound
-and fail-closed identity checks; do not bypass unavailable procfs namespace guards.
+Android process-reuse checks compare native elapsed age with a saved monotonic
+bound, qualified by the real boot ID and time namespace, rather than wall clocks
+or `ps` boot-epoch dates. Keep the conservative second/tick allowance and reject
+missing or incomparable clock evidence. Legacy records without that evidence
+retain fail-closed identity checks; do not bypass unavailable procfs PID-namespace
+guards or invent a namespace.
 
 The published Oxlint type-aware backend currently has no Android package. Keep
 the canonical lint command and rules intact and obtain its passing evidence in

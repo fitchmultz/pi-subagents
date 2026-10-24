@@ -243,9 +243,10 @@ const processView = (pid) => {
     .split(/\s+/);
   return { birth: fields.slice(0, -1).join(" "), group: Number(fields.at(-1)) };
 };
-// Darwin births and Android elapsed ages have whole-second precision. Leave a full second
-// beyond publication so even a conservative birth lower bound proves the stand-in is newer.
-const nextBirthSecond = () => delay(2020 - (Date.now() % 1000));
+// Leave full seconds beyond publication for conservative native birth bounds, including
+// Android's elapsed-second/tick uncertainty. Actual birth/group observations follow this wait.
+const nextBirthSecond = () =>
+  delay((process.platform === "android" ? 3020 : 2020) - (Date.now() % 1000));
 const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? fs
@@ -1106,7 +1107,8 @@ try {
       );
     }
     if (phase.startsWith("bash-shutdown-")) {
-      const actor = readJSON(path.join(runDir(runId), "actor.lock/process.json"));
+      const processFile = path.join(runDir(runId), "actor.lock/process.json");
+      const actor = readJSON(processFile);
       const ledger = path.join(runDir(runId), "shells", actor.token);
       const original = path.join(ledger, publishedFiles(ledger)[0]);
       const shell = readJSON(original);
@@ -1126,8 +1128,26 @@ try {
         }
       };
       const stopAcrossZones = async () => {
+        const now = Date.now;
         process.env.TZ = "America/Los_Angeles";
         try {
+          if (process.platform === "android") {
+            // A controller clock correction must not disprove a live native owner.
+            const claim = fs.readFileSync(processFile);
+            const { ensureActor } = await import(
+              pathToFileURL(path.join(repo, "dist/agent/process.js")).href
+            );
+            Date.now = () => now() + 300000;
+            await ensureActor(
+              path.dirname(runDir(runId)),
+              readJSON(path.join(runDir(runId), "launch.json")),
+            );
+            assert.deepEqual(
+              fs.readFileSync(processFile),
+              claim,
+              "clock advance and timezone mismatch retain the live actor without replacement",
+            );
+          }
           await runtime.dispose();
           const owned = [actor.pid, shell.pid, family.pid, family.descendant];
           if (process.platform === "linux") {
@@ -1140,15 +1160,18 @@ try {
             assert.equal(owned.some(dead), false, "no owned process was signalled");
           }
         } finally {
+          Date.now = now;
           if (zone === undefined) {
             delete process.env.TZ;
           } else {
             process.env.TZ = zone;
           }
-          signalIfLive(-actor.pid, "SIGKILL");
-          signalIfLive(-shell.pid, "SIGKILL");
+          const claimed = fs.existsSync(processFile) ? readJSON(processFile).pid : actor.pid;
+          for (const pid of new Set([claimed, actor.pid, shell.pid])) {
+            signalIfLive(-pid, "SIGKILL");
+          }
           await until(
-            () => [actor.pid, shell.pid, family.pid, family.descendant].every(dead),
+            () => [claimed, actor.pid, shell.pid, family.pid, family.descendant].every(dead),
             "fixture cleanup stops the owned processes it left running",
           );
         }
@@ -1224,7 +1247,9 @@ try {
     }
   } else if (phase === "cold-actor-stop") {
     const directory = runDir(runId);
-    const identity = readJSON(path.join(directory, "actor.lock/process.json"));
+    const processFile = path.join(directory, "actor.lock/process.json");
+    const identity = readJSON(processFile);
+    const actorPublishedAt = fs.statSync(processFile).mtime;
     const ledger = path.join(directory, "shells", identity.token);
     const recordFile = path.join(ledger, publishedFiles(ledger)[0]);
     const shell = readJSON(recordFile);
@@ -1271,6 +1296,22 @@ try {
         const size = fs.statSync(beat).size;
         await until(() => fs.statSync(beat).size > size, why);
       };
+      try {
+        fs.writeFileSync(processFile, JSON.stringify({ ...identity, pid: bystander.pid }));
+        fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
+        const blocked = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt },
+          "reused-actor-pid-cannot-mask-owned-shell",
+        );
+        assert.equal(blocked.isError, true, JSON.stringify(blocked));
+        assert.match(JSON.stringify(blocked.content), /Owned native shell work remains live/);
+        assert.equal(commands(), beforeCommands);
+        await survives("reused actor PID survives the processed continuation refusal");
+      } finally {
+        fs.writeFileSync(processFile, JSON.stringify(identity));
+        fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
+      }
       const view = processView(bystander.pid);
       assert.notEqual(view.group, bystander.pid, "bystander is not a group leader");
       assert.notEqual(view.birth, processView(shell.pid).birth, "bystander has a different birth");
@@ -1279,6 +1320,17 @@ try {
         { ...shell, identity: "wrong process birth" },
         { ...shell, identity: "unverified" },
         { ...shell, token: "foreign actor generation" },
+        // Legacy or incomparable Android clocks cannot disprove this live bystander's claim.
+        ...(process.platform === "android"
+          ? [
+              { ...shell, pid: bystander.pid, clock: undefined },
+              {
+                ...shell,
+                pid: bystander.pid,
+                clock: { ...shell.clock, namespace: "time:[0]" },
+              },
+            ]
+          : []),
         // This live nonleader predates the rewritten claim, so macOS cannot disprove it.
         ...(process.platform === "darwin" ? [{ ...shell, pid: process.pid }] : []),
       ].entries()) {
@@ -1342,7 +1394,6 @@ try {
       );
       assert.equal(distinct.isError, true, JSON.stringify(distinct));
       assert.match(JSON.stringify(distinct.content), /awaiting native admission.*retry/i);
-      const processFile = path.join(directory, "actor.lock/process.json");
       const retryWithout = async (file, expected) => {
         const held = `${file}.held`;
         fs.renameSync(file, held);

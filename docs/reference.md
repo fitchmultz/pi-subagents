@@ -135,10 +135,15 @@ assumes native record timestamps have not been backdated and the clock did not
 move backward between process birth and publication. Missing timestamps,
 same-second uncertainty and timezone differences alone do not prove replacement.
 Linux uses its native process-clock and namespace identity instead.
-Android uses a conservative birth lower bound from native process elapsed age:
-its `ps` boot-clock epoch need not match record timestamps. Unreadable ages and
-whole-second uncertainty do not prove replacement; identity checks still fail
-closed rather than signal an unverified PID.
+New Android actor and shell records also save a native monotonic-clock bound
+after process birth, qualified by the real boot ID and reader's time namespace.
+Only a conservative birth lower bound from native process elapsed age, in that
+same clock context, can disprove ownership. This survives controller clock and
+timezone changes without comparing `ps` boot-epoch dates with record timestamps.
+Unreadable ages, missing legacy clock bounds, different clock contexts and
+whole-second/tick uncertainty do not prove replacement; identity checks still
+fail closed rather than signal an unverified PID. An existing record without a
+clock bound remains usable when its original process identity is verifiable.
 
 ## `intercom`
 
