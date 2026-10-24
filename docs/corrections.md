@@ -67,3 +67,47 @@ passed with the actor fixture selecting the installed fork SDK at
 This is native fixture evidence, not paid-model or whole-runtime performance
 evidence. Full official/fork dependency-graph qualification remains a hosted
 delivery gate.
+
+## Keyboard and mouse history drift apart
+
+Three distinct faults in [PR #233](https://github.com/fitchmultz/pi-subagents/pull/233):
+
+- Review comment `4356105180`: a mouse history callback captured a stale
+  observation client.
+- Review comment `4356143823`: the mouse path dropped the history destination
+  anchor that keyboard navigation preserved.
+- Review comment `4356289488`: the mouse destination landed at the wrong edge of
+  an overlap card taller than the viewport.
+
+**Level: architecture, reinforced by discriminated events and native UI checks.**
+`Reading` now owns the history operation and destination for both input paths.
+The transcript emits typed history, content or pending events instead of an
+optional anchor/direction/gap tuple. It no longer stores a second observation
+client or synchronizes itself from a mouse callback. The screen refreshes from
+its current connection for either input path.
+
+There is no higher level than removing the alternate owner. Types alone cannot
+establish the correct visible destination for a tall card. The existing native
+observer keeper now clicks both history controls after keyboard/content-page
+navigation and checks the rendered earlier/overlap rows. All prior assertions,
+including the idle-provider check, remain.
+
+### Rejection evidence
+
+The actual pre-fix `observe-reading.ts` and `observe-transcript.ts` from
+`26356263^` (`0e4ee5eb`) were transplanted onto the current fixture in an isolated
+worktree. The expanded native observer keeper failed specifically at the
+taller-than-viewport mouse assertion: it remained at the bottom of `HISTORY_33`
+instead of exposing the preceding activity. This exercises the old sources
+against the current fixture, not the entire historical dependency graph.
+
+```sh
+node --test --test-name-pattern='native observer caches completed metadata' \
+  test/integration/agent-observe.test.ts
+```
+
+The same keeper passed on the candidate with official Pi 1.4.0 and separately
+with the installed fork at `c37f5730c9a0ebabb05488120f9a42ea97decbfd`.
+The focused viewer/journal selection passed seven cases on each target. Native
+terminal input and rendered rows supply the mouse/key evidence; these checks
+make no paid model calls.

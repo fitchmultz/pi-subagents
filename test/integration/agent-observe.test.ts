@@ -90,8 +90,13 @@ class CaptureTerminal extends ProcessTerminal {
     this.output = "";
   }
 }
-async function until(check: () => boolean, reason: string, detail?: () => string): Promise<void> {
-  const deadline = Date.now() + 15000;
+async function until(
+  check: () => boolean,
+  reason: string,
+  detail?: () => string,
+  timeout = 15000,
+): Promise<void> {
+  const deadline = Date.now() + timeout;
   while (!check()) {
     assert.ok(Date.now() < deadline, `${reason}\n${detail?.() ?? ""}`);
     // oxlint-disable-next-line no-await-in-loop
@@ -206,10 +211,9 @@ async function exerciseReading(options: {
   const native = sdk.SessionManager.open(a.sessionFile);
   native.appendMessage({ role: "user", content: "READING_FIXTURE", timestamp: 1 });
   for (let index = 0; index < 56; index++) {
+    const marker = `HISTORY_${String(index).padStart(2, "0")}`;
     native.appendMessage(
-      fauxAssistantMessage(
-        `HISTORY_${String(index).padStart(2, "0")}\n${"A long independent history row 雪😀 ".repeat(15)}\n`,
-      ),
+      fauxAssistantMessage(`${marker}\n${`${marker} independent history row 雪😀 `.repeat(15)}\n`),
     );
   }
   const page = (label: string) => `${label}\n${"W".repeat(32768 - label.length - 2)}\n`;
@@ -221,7 +225,7 @@ async function exerciseReading(options: {
   other.appendMessage(fauxAssistantMessage("OTHER_CHILD_ONLY"));
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
   let sent = 0;
-  const keyUntil = (key: string, text: string) =>
+  const keyUntil = (key: string, text: string, repeats = 1) =>
     until(
       () => {
         if (shown().includes(text)) {
@@ -229,7 +233,9 @@ async function exerciseReading(options: {
         }
         if (Date.now() - sent >= 100) {
           sent = Date.now();
-          terminal.send(key);
+          for (let index = 0; index < repeats; index++) {
+            terminal.send(key);
+          }
         }
         return false;
       },
@@ -314,6 +320,34 @@ async function exerciseReading(options: {
     "End returns to the latest page, not an old page of the last message",
     shown,
   );
+  terminal.height = 12;
+  terminal.resize?.();
+  await keyUntil("\x1b[A", "Load earlier activity", 25);
+  await until(
+    () => !shown().includes("Loading published content") && /HISTORY_\d+/.test(shown()),
+    "the top overlap card has rendered its published content",
+    shown,
+    5000,
+  );
+  const overlap = shown().match(/HISTORY_(\d+)/)?.[1];
+  assert.ok(overlap !== undefined && Number(overlap) > 0, shown());
+  terminal.click(screen, "Load earlier activity");
+  await until(
+    () =>
+      [...shown().matchAll(/HISTORY_(\d+)/g)].some((match) => Number(match[1]) < Number(overlap)),
+    "mouse history navigation reveals activity above a taller-than-viewport overlap card",
+    shown,
+    5000,
+  );
+  await keyUntil("\x1b[B", "Load later activity", 25);
+  terminal.click(screen, "Load later activity");
+  await until(
+    () => shown().includes(`HISTORY_${overlap}`) && !shown().includes("Load later activity"),
+    "mouse forward history keeps the overlap instead of jumping to the new window's bottom",
+    shown,
+    5000,
+  );
+  assert.match(shown(), /Reading earlier|New activity below/);
   assert.equal(
     options.session.isStreaming,
     false,
