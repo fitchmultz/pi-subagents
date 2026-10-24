@@ -24,6 +24,7 @@ import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import type { ReadonlyDeep as ReadonlyInput } from "type-fest";
 import { createMessageReader } from "../../src/pi-intercom/broker/framing.ts";
 import { importSelectedNative } from "../support/native-import.ts";
+import { registeredSession, waitFor } from "../support/native-readiness.ts";
 import {
   assertDefined,
   array,
@@ -121,21 +122,6 @@ const collectBrokerLog = (chunk: unknown) => {
   brokerLog += text(chunk);
 };
 let broker = launchBroker();
-
-async function waitFor(
-  check: () => boolean | Promise<boolean>,
-  description: string,
-): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  // Each native readiness observation must finish before retrying it.
-  // oxlint-disable-next-line no-await-in-loop
-  while (!(await check())) {
-    assert.ok(Date.now() < deadline, `Timed out waiting for ${description}`);
-    // Back off only after observing the preceding readiness check.
-    // oxlint-disable-next-line no-await-in-loop
-    await sleep(5);
-  }
-}
 
 const fixtureClient = new IntercomClient();
 beforeAll(async () => {
@@ -398,10 +384,7 @@ async function makeSession(
     },
   });
   if (options.waitForRegistration !== false) {
-    await waitFor(
-      async () => (await sender.listSessions()).some((peer) => peer.name === name),
-      "receiver registration",
-    );
+    await registeredSession(sender, session.sessionManager.getSessionId());
   }
   return {
     session,
@@ -430,6 +413,7 @@ async function makeSession(
         text: `message:${id}`,
       },
     ) => {
+      await registeredSession(sender, session.sessionManager.getSessionId());
       sends.push(id);
       const receipt = await sender.send(name, { ...input, messageId: id });
       assert.equal(receipt.accepted, true, JSON.stringify(receipt));
@@ -1327,12 +1311,6 @@ test("native concurrent asks reserve one reply waiter after a completed ask", as
     if (reload) {
       // oxlint-disable-next-line no-await-in-loop
       await asker.session.reload();
-      // oxlint-disable-next-line no-await-in-loop
-      await waitFor(
-        async () =>
-          (await asker.sender.listSessions()).some((peer) => peer.name === "concurrent-asks"),
-        "reloaded asker registration",
-      );
     }
     // oxlint-disable-next-line no-await-in-loop
     await asker.send("reply-before", {

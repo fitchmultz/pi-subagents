@@ -111,3 +111,66 @@ with the installed fork at `c37f5730c9a0ebabb05488120f9a42ea97decbfd`.
 The focused viewer/journal selection passed seven cases on each target. Native
 terminal input and rendered rows supply the mouse/key evidence; these checks
 make no paid model calls.
+
+## Tests accept the wrong readiness boundary
+
+Repeated independent repairs include:
+
+- [PR #195](https://github.com/fitchmultz/pi-subagents/pull/195), `d18d7b8d`:
+  repair native intercom readiness assertions.
+- [PR #199](https://github.com/fitchmultz/pi-subagents/pull/199), `ad21a3e2`:
+  wait for the native answer journal before refreshing the fixture.
+- [PR #209](https://github.com/fitchmultz/pi-subagents/pull/209), `1646ab89`:
+  observe dropped-queue absorption before ending the turn.
+- [PR #224](https://github.com/fitchmultz/pi-subagents/pull/224), `b9b0966e`:
+  measure ACK grace at the durable owner.
+- [PR #250](https://github.com/fitchmultz/pi-subagents/pull/250), `27c9cc34`:
+  wait for actual child broker registration before asserting graceful exit.
+
+The live observer keeper also waited for `New activity below` after publishing
+progress 2 even though progress 1 could already display that text. Its negative
+viewport assertion could pass before the selected viewer processed progress 2.
+
+**Level: fixture ownership plus behavior checks at the native boundary.**
+`test/support/native-readiness.ts` owns broker registration observation. Ordinary
+native fixture sends use it after startup or reload; individual tests no longer
+copy readiness loops. Child shutdown resolves the exact admitted native session
+from its launch record instead of accepting any descendant's registration.
+The live observer keeper now observes the selected transcript processing
+progress 2 before asserting that its rendered viewport stays frozen.
+
+A production abstraction or type cannot prove that an external broker or native
+viewer processed a particular operation. Adding production hooks would move the
+test away from that owner. The fixture centralizes the reusable admission rule;
+the operation-specific UI checkpoint stays in its existing native keeper, without
+new production exports or injection. General test-boundary selection remains a
+review judgment, not a claimed static guarantee.
+
+### Rejection evidence
+
+The actual pre-#250 fixture from `af967aa56216` was replayed against a real broker
+whose startup was delayed by four seconds. The generation keeper failed at the
+native exit assertion (`null !== 0`); the candidate's exact-child registration
+gate passed. Removing the fixture-owned send gate while delaying real reload
+registration by 500 ms produced `Session not found`; restoring it passed.
+
+For the live observer, skipping the selected transcript's progress processing
+while frozen left the old assertions green in both fullscreen and regular modes:
+`New activity below` was already present. The new checkpoint rejected the same
+ablation in both modes because progress 2 was never processed. Replacing frozen
+observation with synchronization also failed the actual rendered `LIVE_ROW_2_`
+negative assertion in both modes. Correct production source was restored.
+
+```sh
+node --test --test-name-pattern='single-agent native generation' \
+  test/integration/single-agent-runtime.test.ts
+node --test test/integration/pi-intercom-native-replay.test.ts
+node --test --test-name-pattern='native (fullscreen|regular) observer' \
+  test/integration/agent-observe.test.ts
+```
+
+The candidate passed the 51-case native replay file, five focused lifecycle cases
+and both live observer modes separately with official Pi 1.4.0 and the installed
+fork at `c37f5730c9a0ebabb05488120f9a42ea97decbfd`. The fork UI runs used an
+isolated matching SDK/TUI dependency graph, not mixed official/fork constructors.
+Hosted `npm run ci` runs the same native keepers with the complete selected graph.

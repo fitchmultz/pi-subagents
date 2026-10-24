@@ -10,17 +10,36 @@ import {
   ProcessTerminal,
   stripTerminalSequences,
   TuiAltScreen,
+  TuiMainScreen,
   visibleWidth,
+  type Component,
   type TUI,
 } from "@earendil-works/pi-tui";
 import * as sdk from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
-import { record } from "../support/assertions.ts";
+import { assertDefined, record } from "../support/assertions.ts";
 import { spy } from "sinon";
 import { usageLaunch } from "../support/agent-launch.ts";
 import { ownIdentity } from "../../src/agent/process.ts";
 import { write } from "../../src/agent/storage.ts";
+import type { ObserverTranscript } from "../../src/agent/observe-transcript.ts";
+import type { ObservationClient } from "../../src/agent/observe-client.ts";
+
+function components(component: Component): Component[] {
+  return [
+    component,
+    ...(component instanceof Container ? component.children.flatMap(components) : []),
+  ];
+}
+
+function observesNativeProgress(component: Component): component is ObserverTranscript {
+  return (
+    component instanceof Container &&
+    "observe" in component &&
+    typeof component.observe === "function"
+  );
+}
 
 class CaptureTerminal extends ProcessTerminal {
   output = "";
@@ -445,6 +464,12 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         tuiMode,
         initialThemeSetting: "dark",
       });
+      const screenPrototype = {
+        fullscreen: TuiAltScreen.prototype,
+        regular: TuiMainScreen.prototype,
+      }[tuiMode];
+      const overlays = spy(screenPrototype, "showOverlay");
+      t.after(() => overlays.restore());
       const work: { prompt?: Promise<void>; disposed: boolean } = { disposed: false };
       t.after(async () => {
         fs.writeFileSync(path.join(root, "release-child"), "release");
@@ -637,13 +662,32 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         .split("\n")
         .filter((line) => line.includes("LIVE_ROW_1_"));
       assert.ok(anchors.length > 0, "earlier partial-output rows are actually visible");
+      const shown = overlays.lastCall;
+      assertDefined(shown);
+      const transcript = components(shown.args[0]).find(observesNativeProgress);
+      assert.ok(transcript !== undefined);
+      const observe = transcript.observe.bind(transcript);
+      let processed = false;
+      const observation = t.mock.method(transcript, "observe", (client?: ObservationClient) => {
+        observe(client);
+        processed ||= [...(client?.tools.values() ?? [])].some(
+          (tool) =>
+            tool.name === "observe_gate" &&
+            tool.partial !== undefined &&
+            record(record(record(tool.partial).json).details).progress === "2",
+        );
+      });
       terminal.clear();
       fs.writeFileSync(path.join(root, "progress-child"), "2");
       await until(
-        () => visible().includes("New activity below"),
-        "new progress is observed without disturbing reading",
+        () => processed,
+        "selected viewer processes native progress 2 before checking the frozen viewport",
         visible,
       );
+      observation.mock.restore();
+      assert.ok(view !== undefined);
+      view.renderNow(true);
+      assert.match(visible(), /New activity below/);
       assert.doesNotMatch(
         visible(),
         /LIVE_ROW_2_/,
