@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { findPackageJSON } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -21,6 +21,7 @@ const seedSchema = Type.Object({
   sessionId: Type.String(),
   sessionFile: Type.String(),
   childPid: Type.Integer(),
+  bystanderPid: Type.Optional(Type.Integer()),
 });
 function seed(root: string) {
   const value: unknown = JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
@@ -358,28 +359,61 @@ test(
     }
   },
 );
-test(
-  "single-agent parent SIGKILL stops native shell work and cold continuation reuses the interrupted child conversation",
-  { timeout: 60000 },
-  async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-parent-exit-"));
-    try {
-      run(root, "bash-seed", true);
-      const saved = seed(root);
-      const family: unknown = JSON.parse(
-        fs.readFileSync(path.join(root, "shell-family.json"), "utf8"),
-      );
-      Assert(Type.Object({ pid: Type.Integer(), descendant: Type.Integer() }), family);
-      await until(
-        () => [saved.childPid, family.pid, family.descendant].every(dead),
-        "actor and native shell descendants terminate without any request to the dead parent",
-      );
-      run(root, "resume-stopped-bash");
-    } finally {
-      await cleanup(root);
-    }
-  },
-);
+for (const [death, phase] of [
+  ["SIGKILL", "bash-seed"],
+  ["SIGKILL with reused attachment PID", "bash-parent-reuse"],
+] as const) {
+  test(
+    `single-agent parent ${death} stops native shell work and cold continuation reuses the interrupted child conversation`,
+    { timeout: 60000 },
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-parent-exit-"));
+      try {
+        if (phase === "bash-parent-reuse") {
+          const child = spawn(
+            process.execPath,
+            [path.join(repo, "test/fixtures/single-agent-parent.mjs"), root, repo, sdk, phase],
+            { cwd: repo, detached: true, stdio: "inherit", timeout: 35000 },
+          );
+          const exitSignal = await new Promise<NodeJS.Signals | null>((resolve, reject) => {
+            child.once("error", reject);
+            child.once("close", (_code, signal) => resolve(signal));
+          });
+          assert.equal(exitSignal, "SIGKILL");
+        } else {
+          run(root, phase, true);
+        }
+        const saved = seed(root);
+        const family: unknown = JSON.parse(
+          fs.readFileSync(path.join(root, "shell-family.json"), "utf8"),
+        );
+        Assert(Type.Object({ pid: Type.Integer(), descendant: Type.Integer() }), family);
+        await until(
+          () => [saved.childPid, family.pid, family.descendant].every(dead),
+          "actor and native shell descendants terminate without any request to the dead parent",
+        );
+        if (saved.bystanderPid !== undefined) {
+          const beat = path.join(root, "parent-bystander-heartbeat");
+          const size = fs.statSync(beat).size;
+          await until(
+            () => fs.statSync(beat).size > size,
+            "the reused parent PID survives the actor's actual shutdown",
+          );
+          process.kill(saved.bystanderPid, 0);
+        }
+        run(root, "resume-stopped-bash");
+      } finally {
+        if (fs.existsSync(path.join(root, "seed.json"))) {
+          const pid = seed(root).bystanderPid;
+          if (pid !== undefined && !dead(pid)) {
+            process.kill(pid, "SIGKILL");
+          }
+        }
+        await cleanup(root);
+      }
+    },
+  );
+}
 for (const [name, thrown, error] of [
   ["Error", "new Error('CONTROLLED_SDK_STARTUP_FAILURE')", "CONTROLLED_SDK_STARTUP_FAILURE"],
   ["string", "'CONTROLLED_SDK_STARTUP_TEXT'", "CONTROLLED_SDK_STARTUP_TEXT"],

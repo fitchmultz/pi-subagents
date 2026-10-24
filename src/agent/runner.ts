@@ -8,7 +8,6 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { readProcessClock } from "../shared/post-exit-stdio-guard.ts";
 import {
   attachmentSchema,
   commandSchema,
@@ -450,7 +449,6 @@ class Actor {
       write(path.join(this.dir, "actor.lock", "process.json"), {
         ...ownIdentity(),
         token: this.token,
-        clock: readProcessClock(),
       });
       write(path.join(this.dir, "ready.json"), {
         pid: process.pid,

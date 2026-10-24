@@ -1055,6 +1055,7 @@ try {
   } else if (
     phase === "bash-seed" ||
     phase === "bash-seed-paused" ||
+    phase === "bash-parent-reuse" ||
     phase.startsWith("bash-shutdown-")
   ) {
     const zone = process.env.TZ;
@@ -1242,6 +1243,35 @@ try {
         }
       };
       await (phase === "bash-shutdown-timezone" ? stopAcrossZones() : stopWithStaleClaims());
+    } else if (phase === "bash-parent-reuse") {
+      const file = path.join(path.dirname(runDir(runId)), "attachment.json");
+      const attachment = readJSON(file);
+      const publishedAt = fs.statSync(file).mtime;
+      assert.equal(attachment.pid, process.pid);
+      assert.equal(processView(process.pid).group, process.pid, "parent leads its native group");
+      assert.notEqual(attachment.identity, "unverified");
+      await nextBirthSecond();
+      const beat = path.join(root, "parent-bystander-heartbeat");
+      const bystander = spawn(
+        process.execPath,
+        [
+          "-e",
+          `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(beat)},'ready');setInterval(()=>fs.appendFileSync(${JSON.stringify(beat)},'tick\\n'),20);`,
+        ],
+        { detached: true, stdio: "ignore" },
+      );
+      assert.ok(bystander.pid);
+      bystander.unref();
+      fs.writeFileSync(
+        seedFile,
+        JSON.stringify({ ...readJSON(seedFile), bystanderPid: bystander.pid }),
+      );
+      await until(() => fs.existsSync(beat), "later native bystander publishes readiness");
+      assert.notEqual(processView(bystander.pid).birth, processView(process.pid).birth);
+      fs.writeFileSync(file, JSON.stringify({ ...attachment, pid: bystander.pid }));
+      // Retain the attachment's original publication, as a claim predating PID reuse does.
+      fs.utimesSync(file, publishedAt, publishedAt);
+      process.kill(process.pid, "SIGKILL");
     } else {
       process.kill(process.pid, "SIGKILL");
     }

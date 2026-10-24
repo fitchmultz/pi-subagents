@@ -7,11 +7,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
+  agentObservationSocketPath,
   getBrokerRuntimeDir,
   getBrokerSocketPath,
   getPreviousBrokerSocketPaths,
   isOwnedBrokerSocket,
   prepareBrokerSocketPath,
+  preparePrivateSocketPath,
 } from "../../src/pi-intercom/broker/paths.ts";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 
@@ -62,8 +64,21 @@ test("Android defaults to its shared Termux prefix rather than session HOME or T
   assert.equal(getBrokerSocketPath(), "/native-android-tmp/pi-intercom-10442/broker.sock");
 });
 
-test("explicit runtime directory isolates deployments without an implicit fallback", (t) => {
+test("explicit runtime namespace binds observation and isolates without fallback", async (t) => {
   restoreEnvironment(t);
+  const socketPath = preparePrivateSocketPath(agentObservationSocketPath("test-namespace"));
+  const server = net.createServer();
+  try {
+    server.listen(socketPath);
+    await once(server, "listening");
+  } finally {
+    if (server.listening) {
+      const closed = once(server, "close");
+      server.close();
+      await closed;
+    }
+    fs.rmdirSync(dirname(socketPath));
+  }
   const runtimeDir = join(process.env.HOME ?? "", "isolated");
   process.env.PI_INTERCOM_RUNTIME_DIR = runtimeDir;
   assert.equal(getBrokerSocketPath(), join(runtimeDir, "broker.sock"));

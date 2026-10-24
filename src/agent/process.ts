@@ -47,9 +47,13 @@ export function alive(
     !isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
   );
 }
-export function ownIdentity(): { pid: number; identity: string } {
+export function ownIdentity(): Omit<ProcessIdentity, "token"> {
   // An ordinary main need not be a group leader. Ambiguous live PIDs fail closed.
-  return { pid: process.pid, identity: readChildProcessIdentity(process.pid) ?? "unverified" };
+  return {
+    pid: process.pid,
+    identity: readChildProcessIdentity(process.pid) ?? "unverified",
+    clock: readProcessClock(),
+  };
 }
 export function actor(base: string, launch: Launch): OwnedProcess | undefined {
   const file = path.join(conversation(base, launch), "actor.lock", "process.json");

@@ -46,8 +46,7 @@ export const processSchema = Type.Object({
 });
 export type ProcessIdentity = Static<typeof processSchema>;
 export const attachmentSchema = Type.Object({
-  pid: Type.Integer({ minimum: 1 }),
-  identity: Type.String(),
+  ...Type.Pick(processSchema, ["pid", "identity", "clock"]).properties,
   generation: Type.String(),
   attached: Type.Boolean(),
 });
