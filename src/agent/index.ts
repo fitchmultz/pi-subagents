@@ -162,7 +162,6 @@ class AgentRuntime {
     }
     this.timer = setInterval(this.scan, 200);
     this.timer.unref();
-    this.scan();
   }
   private async dispose(retain: boolean): Promise<void> {
     this.closing = true;

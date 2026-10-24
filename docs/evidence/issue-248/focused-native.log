@@ -1,0 +1,39 @@
+✔ native session_start publishes ownership without scanning runs, then tools and timer recover the backlog (274.602314ms)
+✔ physical parent receipt authority follows LF, prefix replacement, inode, shrink and recovery, not stale memory (45.661029ms)
+✔ native migration and a later append invalidate warmed physical receipt IDs (17.098684ms)
+ℹ native migration replaced inode: false
+✔ native receipt reconciliation reads only the published suffix after ordinary appends (37.275342ms)
+ℹ native receipt append: 258 bytes; readSync: 258 bytes
+ℹ native receipt append: 258 bytes; readSync: 258 bytes
+ℹ native receipt append: 258 bytes; readSync: 258 bytes
+✔ native recovery publishes a completion backlog chronologically once, then polls history without rereads (197.812939ms)
+ℹ unchanged pending polling: 0 opens, 0 bytes
+✔ legacy receipt consumption refuses a symlinked root directory (30.976036ms)
+✔ legacy receipt consumption refuses a symlinked results directory (8.264737ms)
+✔ a malformed legacy hint is logged and skipped without dropping valid legacy results (11.28979ms)
+✔ foreign legacy body reads are bounded until changed input: same-size (39.773374ms)
+✔ foreign legacy body reads are bounded until changed input: replacement (46.8493ms)
+✔ foreign legacy body reads are bounded until changed input: growth (43.163317ms)
+✔ foreign legacy body reads are bounded until changed input: shrink (26.596763ms)
+✔ warm ignored legacy files refuse symlinks and retry input changed during classification (16.471044ms)
+✔ ignored legacy classification follows the actual current session owner (25.907082ms)
+✔ sole legacy hint uses actual historical native receipt authority: owner absent notice (12.435661ms)
+✔ sole legacy hint uses actual historical native receipt authority: current owner notice (12.42654ms)
+✔ sole legacy hint uses actual historical native receipt authority: foreign owner notice (13.946492ms)
+✔ sole legacy hint uses actual historical native receipt authority: historical intercom receipt (12.20449ms)
+✔ sole legacy hint uses actual historical native receipt authority: completed whole wait (10.98531ms)
+✔ sole legacy hint uses actual historical native receipt authority: completed single-child zero wait (44.699198ms)
+✔ sole legacy hint uses actual historical native receipt authority: nonmatching child wait (10.359939ms)
+✔ sole legacy hint uses actual historical native receipt authority: failed tool wait (8.739867ms)
+✔ sole legacy hint uses actual historical native receipt authority: pending wait (9.684548ms)
+✔ sole legacy hint uses actual historical native receipt authority: launch-only receipt (8.479267ms)
+✔ official Pi without a managed host attaches the current process at session_start (54.498937ms)
+✔ a managed worker attaches its launcher only after readiness is accepted, and hands children off (26.432843ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4829.369426

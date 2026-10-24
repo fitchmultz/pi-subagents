@@ -1,0 +1,28 @@
+✖ native session_start publishes ownership without scanning runs, then tools and timer recover the backlog (77.192386ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1455.08146
+
+✖ failing tests:
+
+test at test/integration/agent-attachment.test.ts:19:1
+✖ native session_start publishes ownership without scanning runs, then tools and timer recover the backlog (77.192386ms)
+  AssertionError [ERR_ASSERTION]: run inventory must not block the awaited native session_start boundary
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///workspace/issue-248/test/integration/agent-attachment.test.ts:59:12)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

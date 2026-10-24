@@ -1,0 +1,64 @@
+[
+  {
+    "label": "A",
+    "note": "Whole-process inclusive CPU samples, including subsequent timer work; not comparative latency samples. Nested rows overlap.",
+    "agentFrames": [
+      {
+        "function": "scan",
+        "url": "file:///workspace/issue-248-baseline/dist/agent/index.js",
+        "sampledMs": 483.424
+      },
+      {
+        "function": "notifications",
+        "url": "file:///workspace/issue-248-baseline/dist/agent/notifications.js",
+        "sampledMs": 482.709
+      },
+      {
+        "function": "completed",
+        "url": "file:///workspace/issue-248-baseline/dist/agent/notifications.js",
+        "sampledMs": 282.534
+      },
+      {
+        "function": "completedRun",
+        "url": "file:///workspace/issue-248-baseline/dist/agent/notifications.js",
+        "sampledMs": 250.357
+      },
+      {
+        "function": "load",
+        "url": "file:///workspace/issue-248-baseline/dist/agent/notifications.js",
+        "sampledMs": 202.4
+      }
+    ]
+  },
+  {
+    "label": "B",
+    "note": "Whole-process inclusive CPU samples, including subsequent timer work; not comparative latency samples. Nested rows overlap.",
+    "agentFrames": [
+      {
+        "function": "scan",
+        "url": "file:///workspace/issue-248/dist/agent/index.js",
+        "sampledMs": 150.715
+      },
+      {
+        "function": "completed",
+        "url": "file:///workspace/issue-248/dist/agent/notifications.js",
+        "sampledMs": 148.53
+      },
+      {
+        "function": "notifications",
+        "url": "file:///workspace/issue-248/dist/agent/notifications.js",
+        "sampledMs": 148.53
+      },
+      {
+        "function": "completedRun",
+        "url": "file:///workspace/issue-248/dist/agent/notifications.js",
+        "sampledMs": 134.978
+      },
+      {
+        "function": "load",
+        "url": "file:///workspace/issue-248/dist/agent/notifications.js",
+        "sampledMs": 109.064
+      }
+    ]
+  }
+]

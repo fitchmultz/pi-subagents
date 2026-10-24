@@ -180,6 +180,13 @@ tool result already includes them.
 
 ## Completion delivery
 
+Attachment publishes durable ownership before ordinary session startup returns.
+Retained completion recovery runs on the existing 200 ms scanner or an explicit
+reconciliation, not on the awaited startup path. The interval is not a delivery
+deadline. A short-lived main may exit before recovery, and a prompt started
+immediately after startup may receive the recovered backlog as steering input.
+Managed launchers still gate attachment on accepted host readiness.
+
 Completion notices use steering, not follow-up delivery. A busy parent receives
 results at the next native tool boundary; it need not finish its task first.
 An idle backlog, including retained legacy results, is published before one wakeup.
