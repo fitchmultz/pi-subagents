@@ -47,11 +47,11 @@ export function alive(
     !isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
   );
 }
-export function ownIdentity(): Omit<ProcessIdentity, "token"> {
-  // An ordinary main need not be a group leader. Ambiguous live PIDs fail closed.
+export function ownIdentity(pid = process.pid): Omit<ProcessIdentity, "token"> {
+  // An ordinary main or managed launcher need not be a group leader. Ambiguous live PIDs fail closed.
   return {
-    pid: process.pid,
-    identity: readChildProcessIdentity(process.pid) ?? "unverified",
+    pid,
+    identity: readChildProcessIdentity(pid) ?? "unverified",
     clock: readProcessClock(),
   };
 }

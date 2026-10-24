@@ -23,7 +23,9 @@ import {
   attachmentSchema,
   admissionSchema,
   commandSchema,
+  type Attachment,
   type Launch,
+  type ProcessIdentity,
   type Result,
   type DelegateInput,
   type RunsInput,
@@ -48,8 +50,35 @@ import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
 
+/** Native fork lifetime owner (`ctx.managedHost`); read structurally so official Pi stays supported. */
+interface ManagedHost {
+  readonly owner: { readonly pid: number };
+  readonly ready: Promise<boolean>;
+}
+/** `handoff` and `provisional` mean another worker under the same launcher may still own these children. */
+function retainsChildren(event: object): boolean {
+  const disposition: unknown = Reflect.get(event, "disposition");
+  return disposition === "handoff" || disposition === "provisional";
+}
+function managedHost(context: ExtensionContext): ManagedHost | undefined {
+  const host: unknown = Reflect.get(context, "managedHost");
+  if (typeof host !== "object" || host === null) {
+    return undefined;
+  }
+  const owner: unknown = Reflect.get(host, "owner");
+  const pid: unknown =
+    typeof owner === "object" && owner !== null ? Reflect.get(owner, "pid") : undefined;
+  const ready: unknown = Reflect.get(host, "ready");
+  return typeof pid === "number" && Number.isSafeInteger(pid) && ready instanceof Promise
+    ? { owner: { pid }, ready: ready.then((accepted) => accepted === true) }
+    : undefined;
+}
+
 class AgentRuntime {
   private ctx?: ExtensionContext;
+  // A managed launcher owns children across worker replacement; otherwise this process does.
+  private host?: ManagedHost;
+  private accepted = false;
   private base = "";
   private owner = "";
   private generation = "";
@@ -87,9 +116,31 @@ class AgentRuntime {
       console.error(`Agent completion reconciliation: ${errorText(error)}`);
     }
   };
-  private start(context: ExtensionContext): Promise<void> {
-    this.reset = this.reset.then(() => this.attach(context));
-    return this.reset;
+  private start(context: ExtensionContext): Promise<void> | undefined {
+    this.host = managedHost(context);
+    if (this.host === undefined || this.accepted || this.child) {
+      this.reset = this.reset.then(() => this.attach(context));
+      return this.reset;
+    }
+    // Attach and publish only after the launcher retires rollback: an unready replacement
+    // must neither adopt children nor append completions to a journal it may abandon.
+    // Readiness follows session_start, so never await it here.
+    this.owner = context.sessionManager.getSessionId();
+    this.base = ownerDirectory(this.agentDir, this.owner);
+    this.host.ready
+      .then(async (accepted) => {
+        if (accepted && !this.closing) {
+          this.accepted = true;
+          await this.start(context);
+        }
+      })
+      .catch((error: unknown) => {
+        console.error(`Agent runtime attachment: ${errorText(error)}`);
+      });
+    return undefined;
+  }
+  private ownerIdentity(): Omit<ProcessIdentity, "token"> {
+    return ownIdentity(this.host?.owner.pid);
   }
   private async attach(context: ExtensionContext): Promise<void> {
     clearInterval(this.timer);
@@ -102,7 +153,7 @@ class AgentRuntime {
     this.generation = randomUUID();
     await fs.promises.mkdir(this.base, { recursive: true, mode: 0o700 });
     write(path.join(this.base, "attachment.json"), {
-      ...ownIdentity(),
+      ...this.ownerIdentity(),
       generation: this.generation,
       attached: true,
     });
@@ -113,19 +164,33 @@ class AgentRuntime {
     this.timer.unref();
     this.scan();
   }
-  private async dispose(reload: boolean): Promise<void> {
+  private async dispose(retain: boolean): Promise<void> {
     this.closing = true;
     clearInterval(this.timer);
     this.shutdown.abort();
     await this.reset;
-    if (!reload && this.base.length > 0) {
+    if (!retain && this.base.length > 0) {
       const file = path.join(this.base, "attachment.json");
-      if (read(file, attachmentSchema)?.generation === this.generation) {
-        write(file, { ...ownIdentity(), generation: this.generation, attached: false });
+      const attachment = read(file, attachmentSchema);
+      if (attachment !== undefined && this.releases(attachment)) {
+        write(file, {
+          ...this.ownerIdentity(),
+          generation: attachment.generation,
+          attached: false,
+        });
         await stopChildren(this.base, this.owner);
       }
     }
     this.ctx = undefined;
+  }
+  private releases(attachment: Attachment): boolean {
+    if (attachment.generation === this.generation) {
+      return true;
+    }
+    // An unready replacement never attached, but exiting still releases the launcher-owned children.
+    return (
+      this.generation.length === 0 && attachment.attached && attachment.pid === this.host?.owner.pid
+    );
   }
   private stop(launch: Launch) {
     const base = this.base;
@@ -336,7 +401,9 @@ class AgentRuntime {
     this.pi.on("agent_settled", () => {
       this.scan();
     });
-    this.pi.on("session_shutdown", (event) => this.dispose(event.reason === "reload"));
+    this.pi.on("session_shutdown", (event) =>
+      this.dispose(event.reason === "reload" || retainsChildren(event)),
+    );
     if (this.child) {
       this.pi.on("tool_call", (event) => {
         if (event.toolName === "delegate" || event.toolName === "agent_runs") {
