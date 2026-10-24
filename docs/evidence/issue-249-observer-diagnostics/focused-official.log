@@ -1,0 +1,62 @@
+Warning: Ignoring extra certs from `/etc/cloudflare/certs/cloudflare-containers-ca.crt`, load failed: error:80000002:system library::No such file or directory
+✔ native observer caches completed metadata, probes each active root once per tick, strips only active work and resolves ambiguity beyond its row cache (20724.655869ms)
+ℹ Synthetic observer-cache journals and diagnostics retained at /tmp/observer-cache-eDKB6o
+ℹ Observer-cache phase: create fixture
+ℹ Observer-cache phase: create model runtime
+ℹ Observer-cache phase: create session services
+ℹ Observer-cache phase: create session runtime
+ℹ Observer-cache phase: initialize interactive mode
+ℹ Observer-cache phase: incomplete native inventory qualifies the active count naturally
+ℹ Observer-cache phase: picker is rendered before the final metadata batch
+ℹ Observer-cache phase: initial owner metadata scan has completed
+ℹ Observer-cache phase: explicit inventory keeps stopped history
+ℹ Observer-cache phase: settle loading command
+ℹ Observer-cache phase: loading command settled
+ℹ Observer-cache phase: strip renders the completed inventory scan after the picker closes
+ℹ Observer-cache phase: next actual metadata scan processed the owner inventory
+ℹ Observer-cache phase: owner processes the published A-to-B successor on the next scan
+ℹ Observer-cache phase: missing-result predecessor no longer inherits the successor's liveness
+ℹ Observer-cache phase: clicking the active strip row watches it
+ℹ Observer-cache phase: watch returns to the explicit inventory with saved history
+ℹ Observer-cache phase: inventory closes
+ℹ Observer-cache phase: owner processes B's canonical completion on the next scan
+ℹ Observer-cache phase: fully scanned zero-active work removes the strip despite interrupted and stopped history
+ℹ Observer-cache phase: completed successor cannot make the interrupted predecessor look active in the inventory
+ℹ Observer-cache phase: settle retired command
+ℹ Observer-cache phase: retired command settled
+ℹ Observer-cache phase: an unreadable run keeps uncertainty in the zero-active strip
+ℹ Observer-cache phase: resolved uncertainty clears the strip
+ℹ Observer-cache phase: all canonical IDs, not just the first 50 cached rows, participate in prefix resolution
+ℹ Observer-cache phase: settle ambiguous command
+ℹ Observer-cache phase: ambiguous command settled
+ℹ Observer-cache phase: missing ID has observer-specific, non-launch wording
+ℹ Observer-cache phase: settle missing command
+ℹ Observer-cache phase: missing command settled
+ℹ Observer-cache phase: publish reading journals
+ℹ Observer-cache phase: submit reading command
+ℹ Observer-cache phase: opening starts at the latest content page
+ℹ Observer-cache phase: backward content navigation lands at the previous page end
+ℹ Observer-cache phase: keyboard reaches PAGE_TWO
+ℹ Observer-cache phase: the next backward content navigation preserves its landing
+ℹ Observer-cache phase: keyboard reaches PAGE_ONE
+ℹ Observer-cache phase: keyboard reaches HISTORY_45
+ℹ Observer-cache phase: reading resizes to46 columns
+ℹ Observer-cache phase: keyboard reaches HISTORY_00
+ℹ Observer-cache phase: narrow Tab shows the actual child list
+ℹ Observer-cache phase: switching hydrates only the selected child
+ℹ Observer-cache phase: the second child can return to its list
+ℹ Observer-cache phase: returning restores the first child's entry anchor
+ℹ Observer-cache phase: keyboard reaches HISTORY_45
+ℹ Observer-cache phase: End returns to the latest page, not an old page of the last message
+ℹ Observer-cache phase: settle reading command
+ℹ Observer-cache phase: reading command settled
+ℹ Observer-cache phase: teardown before disposal
+ℹ Observer-cache phase: session runtime disposed
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 23916.314117

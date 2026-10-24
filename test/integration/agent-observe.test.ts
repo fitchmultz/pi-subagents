@@ -195,6 +195,7 @@ async function firstPageNavigation(
 }
 
 async function exerciseReading(options: {
+  checkpoint: (label: string) => void;
   terminal: CaptureTerminal;
   screen: TuiAltScreen;
   mode: sdk.InteractiveMode;
@@ -202,7 +203,12 @@ async function exerciseReading(options: {
   a: ReturnType<typeof usageLaunch>;
   b: ReturnType<typeof usageLaunch>;
 }): Promise<void> {
-  const { terminal, screen, a, b } = options;
+  const { terminal, screen, a, b, checkpoint } = options;
+  const wait = (check: () => boolean, reason: string, detail?: () => string) => {
+    checkpoint(reason);
+    return until(check, reason, detail);
+  };
+  checkpoint("publish reading journals");
   const native = sdk.SessionManager.open(a.sessionFile);
   native.appendMessage({ role: "user", content: "READING_FIXTURE", timestamp: 1 });
   for (let index = 0; index < 56; index++) {
@@ -222,7 +228,7 @@ async function exerciseReading(options: {
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
   let sent = 0;
   const keyUntil = (key: string, text: string) =>
-    until(
+    wait(
       () => {
         if (shown().includes(text)) {
           return true;
@@ -236,24 +242,25 @@ async function exerciseReading(options: {
       `keyboard reaches ${text}`,
       shown,
     );
+  checkpoint("submit reading command");
   const command = options.mode.getUserInput().then((text) => options.session.prompt(text));
   terminal.send(`/agents ${a.id}`);
   terminal.send("\r");
-  await until(
+  await wait(
     () => shown().includes("LATEST_TAIL"),
     "opening starts at the latest content page",
     shown,
   );
   assert.match(shown(), /Content page 3\/3/);
   terminal.send("\x1b[5~");
-  await until(
+  await wait(
     () => shown().includes("Content page 2/3"),
     "backward content navigation lands at the previous page end",
     shown,
   );
   await keyUntil("\x1b[5~", "PAGE_TWO");
   terminal.send("\x1b[5~");
-  await until(
+  await wait(
     () => shown().includes("Content page 1/3"),
     "the next backward content navigation preserves its landing",
     shown,
@@ -264,7 +271,7 @@ async function exerciseReading(options: {
   assert.ok(anchor !== undefined);
   terminal.width = 46;
   terminal.resize?.();
-  await until(
+  await wait(
     () => visibleWidth(screen.getScreenLines()[0] ?? "") === 46,
     "reading resizes to46 columns",
   );
@@ -273,26 +280,22 @@ async function exerciseReading(options: {
   const saved = shown().match(/HISTORY_\d+/)?.[0];
   assert.ok(saved !== undefined);
   terminal.send("\t");
-  await until(
-    () => shown().includes("enter open"),
-    "narrow Tab shows the actual child list",
-    shown,
-  );
+  await wait(() => shown().includes("enter open"), "narrow Tab shows the actual child list", shown);
   terminal.click(screen, "running · reader-b");
-  await until(
+  await wait(
     () => shown().includes("OTHER_CHILD_ONLY"),
     "switching hydrates only the selected child",
     shown,
   );
   assert.doesNotMatch(shown(), /HISTORY_\d+/);
   terminal.send("\t");
-  await until(
+  await wait(
     () => shown().includes("enter open"),
     "the second child can return to its list",
     shown,
   );
   terminal.click(screen, "running · reader-a");
-  await until(
+  await wait(
     () => shown().includes(saved),
     "returning restores the first child's entry anchor",
     shown,
@@ -309,7 +312,7 @@ async function exerciseReading(options: {
     "forward history does not silently resume live follow",
   );
   terminal.send("\x1b[F");
-  await until(
+  await wait(
     () => shown().includes("LATEST_TAIL") && shown().includes("Following live"),
     "End returns to the latest page, not an old page of the last message",
     shown,
@@ -321,7 +324,9 @@ async function exerciseReading(options: {
   );
   terminal.send("\x1b");
   terminal.send("\x1b");
+  checkpoint("settle reading command");
   await command;
+  checkpoint("reading command settled");
 }
 
 for (const tuiMode of ["fullscreen", "regular"] as const) {
@@ -978,7 +983,19 @@ test(
   { timeout: 30000 },
   async (t) => {
     const sdkRoot = nativeSdkRoot(process.env.PI_SINGLE_AGENT_TEST_SDK);
-    const root = fs.mkdtempSync(path.join(process.env.HOME ?? "", "observer-cache-"));
+    const root = fs.realpathSync(fs.mkdtempSync("/tmp/observer-cache-"));
+    t.diagnostic(`Synthetic observer-cache journals and diagnostics retained at ${root}`);
+    const started = performance.now();
+    const phases: { label: string; elapsedMs: number }[] = [];
+    const checkpoint = (label: string) => {
+      phases.push({ label, elapsedMs: performance.now() - started });
+      t.diagnostic(`Observer-cache phase: ${label}`);
+    };
+    const wait = (check: () => boolean, reason: string, detail?: () => string) => {
+      checkpoint(reason);
+      return until(check, reason, detail);
+    };
+    checkpoint("create fixture");
     const agentDir = path.join(root, "agent");
     fs.mkdirSync(agentDir);
     const prior = {
@@ -1053,6 +1070,7 @@ test(
       rootId: firstId,
       predecessor: firstId,
     });
+    checkpoint("create model runtime");
     const models = await sdk.ModelRuntime.create({
       credentials: new InMemoryCredentialStore(),
       modelsPath: null,
@@ -1061,6 +1079,7 @@ test(
     const faux = fauxProvider({ provider: "observe-fixture", models: [{ id: "native-observe" }] });
     models.registerNativeProvider(faux.provider);
     let view: TUI | undefined;
+    checkpoint("create session services");
     const services = await sdk.createAgentSessionServices({
       cwd: root,
       agentDir,
@@ -1085,6 +1104,7 @@ test(
         ],
       },
     });
+    checkpoint("create session runtime");
     const runtime = await sdk.createAgentSessionRuntime(
       async ({ sessionManager }) => ({
         ...(await sdk.createAgentSessionFromServices({
@@ -1103,6 +1123,7 @@ test(
       tuiMode: "fullscreen",
       initialThemeSetting: "dark",
     });
+    const inputs = spy(terminal, "send");
     const opens = spy(fs, "openSync");
     const probes = spy(process, "kill");
     const scans = spy(fs, "readdirSync");
@@ -1124,22 +1145,47 @@ test(
       });
     t.after(async () => {
       try {
-        await runtime.dispose();
+        checkpoint("teardown before disposal");
+        const snapshot = {
+          phases,
+          aborted: t.signal.aborted,
+          screen: view instanceof TuiAltScreen ? view.getScreenLines() : [],
+          terminalTail: terminal.output.slice(-16384),
+          inputs: inputs
+            .getCalls()
+            .slice(-40)
+            .map((call) => call.args),
+          opens: opened().slice(-40),
+          scans: scans.callCount,
+          probes: identityProbes(),
+        };
+        fs.writeFileSync(path.join(root, "observer-diagnostic.json"), JSON.stringify(snapshot), {
+          mode: 0o600,
+        });
+        if (t.signal.aborted) {
+          t.diagnostic(`Cancelled observer-cache state: ${JSON.stringify(snapshot)}`);
+        }
       } finally {
-        mode.stop();
-        opens.restore();
-        probes.restore();
-        scans.restore();
-        syncBuiltinESMExports();
-        restoreEnvironment(prior);
-        fs.rmSync(root, { recursive: true, force: true });
+        try {
+          await runtime.dispose();
+          checkpoint("session runtime disposed");
+        } finally {
+          mode.stop();
+          inputs.restore();
+          opens.restore();
+          probes.restore();
+          scans.restore();
+          syncBuiltinESMExports();
+          restoreEnvironment(prior);
+        }
       }
     });
+    checkpoint("initialize interactive mode");
     await mode.init();
     assert.ok(view instanceof TuiAltScreen);
     const screen = view;
     const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
-    await until(
+    await wait(
       () => terminal.text().includes("Agents: 0+ active (checking…) · 122 runs"),
       "incomplete native inventory qualifies the active count naturally",
     );
@@ -1147,25 +1193,27 @@ test(
     const loading = mode.getUserInput().then((text) => runtime.session.prompt(text));
     terminal.send("/agents");
     terminal.send("\r");
-    await until(
+    await wait(
       () =>
         terminal.text().includes("Agents · read-only") && terminal.text().includes("(checking…)"),
       "picker is rendered before the final metadata batch",
     );
     assert.match(terminal.text(), /Checking saved child runs…/);
     assert.doesNotMatch(terminal.text(), /No child runs to show/);
-    await until(
+    await wait(
       () => terminal.text().includes("Agents: 2 active · 122 runs"),
       "initial owner metadata scan has completed",
     );
     assert.doesNotMatch(terminal.text(), /completed-\d/, "completed rows stay out of the widget");
-    await until(
+    await wait(
       () => terminal.text().includes("stopped · stopped-history"),
       "explicit inventory keeps stopped history",
     );
     terminal.send("\x1b");
+    checkpoint("settle loading command");
     await loading;
-    await until(
+    checkpoint("loading command settled");
+    await wait(
       () =>
         !shown().includes("Agents · read-only") &&
         shown().includes("● active-first · running") &&
@@ -1182,7 +1230,7 @@ test(
     opens.resetHistory();
     probes.resetHistory();
     scans.resetHistory();
-    await until(scanned, "next actual metadata scan processed the owner inventory");
+    await wait(scanned, "next actual metadata scan processed the owner inventory");
     const reads = opened();
     assert.ok(
       reads.includes(path.join(base, secondId, "result.json")),
@@ -1208,14 +1256,14 @@ test(
     opens.resetHistory();
     probes.resetHistory();
     scans.resetHistory();
-    await until(scanned, "owner processes the published A-to-B successor on the next scan");
+    await wait(scanned, "owner processes the published A-to-B successor on the next scan");
     assert.ok(opened().includes(path.join(base, firstId, "successor.json")));
     assert.equal(
       identityProbes(),
       1,
       "only successor B probes its shared live actor; superseded A does not",
     );
-    await until(
+    await wait(
       () =>
         shown().includes("Agents: 1 active · 122 runs") &&
         shown().includes("● active-second · running"),
@@ -1224,13 +1272,13 @@ test(
     );
     assert.doesNotMatch(shown(), /active-first|stopped-history/, "strip lists active work only");
     terminal.click(screen, "● active-second");
-    await until(
+    await wait(
       () => shown().includes("running · active-second") && shown().includes("escape back"),
       "clicking the active strip row watches it",
       shown,
     );
     terminal.send("\x1b");
-    await until(
+    await wait(
       () =>
         shown().includes("interrupted · active-first") &&
         shown().includes("stopped · stopped-history"),
@@ -1238,7 +1286,7 @@ test(
       shown,
     );
     terminal.send("\x1b");
-    await until(() => !shown().includes("Agents · read-only"), "inventory closes", shown);
+    await wait(() => !shown().includes("Agents · read-only"), "inventory closes", shown);
     write(path.join(base, secondId, "result.json"), {
       id: secondId,
       owner,
@@ -1248,7 +1296,7 @@ test(
     opens.resetHistory();
     probes.resetHistory();
     scans.resetHistory();
-    await until(scanned, "owner processes B's canonical completion on the next scan");
+    await wait(scanned, "owner processes B's canonical completion on the next scan");
     assert.ok(
       opened().includes(path.join(base, secondId, "result.json")),
       "warm B refresh is not delayed behind 120 completed histories",
@@ -1263,7 +1311,7 @@ test(
       0,
       "B's live idle actor is not probed after canonical completion",
     );
-    await until(
+    await wait(
       () => !shown().includes("Agents:"),
       "fully scanned zero-active work removes the strip despite interrupted and stopped history",
       shown,
@@ -1272,7 +1320,7 @@ test(
     const retired = mode.getUserInput().then((text) => runtime.session.prompt(text));
     terminal.send("/agents");
     terminal.send("\r");
-    await until(
+    await wait(
       () =>
         terminal.text().includes("Agents: 0 active · 122 runs") &&
         terminal.text().includes("interrupted · active-first") &&
@@ -1281,7 +1329,9 @@ test(
     );
     assert.doesNotMatch(terminal.text(), /completed · active-second/);
     terminal.send("\x1b");
+    checkpoint("settle retired command");
     await retired;
+    checkpoint("retired command settled");
     const unreadable = path.join(base, "foreign-owner");
     write(path.join(unreadable, "launch.json"), {
       ...active,
@@ -1289,14 +1339,14 @@ test(
       rootId: "foreign-owner",
       owner: "another-native-parent",
     });
-    await until(
+    await wait(
       () =>
         shown().includes("○ foreign-owner · unavailable") && shown().includes("inventory error"),
       "an unreadable run keeps uncertainty in the zero-active strip",
       shown,
     );
     fs.rmSync(unreadable, { recursive: true });
-    await until(() => !shown().includes("Agents:"), "resolved uncertainty clears the strip", shown);
+    await wait(() => !shown().includes("Agents:"), "resolved uncertainty clears the strip", shown);
     for (let i = 0; i < 101; i++) {
       publish(`padding-${String(i).padStart(3, "0")}`, true);
     }
@@ -1307,7 +1357,7 @@ test(
     const ambiguous = mode.getUserInput().then((text) => runtime.session.prompt(text));
     terminal.send("/agents zzprefix");
     terminal.send("\r");
-    await until(
+    await wait(
       () => terminal.text().includes("Ambiguous child run prefix"),
       "all canonical IDs, not just the first 50 cached rows, participate in prefix resolution",
     );
@@ -1317,21 +1367,25 @@ test(
       "ambiguity is rejected while both matching rows remain outside the metadata cache",
     );
     terminal.send("\x1b");
+    checkpoint("settle ambiguous command");
     await ambiguous;
+    checkpoint("ambiguous command settled");
     terminal.clear();
     const missing = mode.getUserInput().then((text) => runtime.session.prompt(text));
     terminal.send("/agents missing-run");
     terminal.send("\r");
-    await until(
+    await wait(
       () => terminal.text().includes("No child run matches that ID"),
       "missing ID has observer-specific, non-launch wording",
     );
     terminal.send("\x1b");
+    checkpoint("settle missing command");
     await missing;
+    checkpoint("missing command settled");
     const a = { ...publish("reader-a", false), name: "reader-a" };
     const b = { ...publish("reader-b", false), name: "reader-b" };
     write(path.join(base, a.id, "launch.json"), a);
     write(path.join(base, b.id, "launch.json"), b);
-    await exerciseReading({ terminal, screen, mode, session: runtime.session, a, b });
+    await exerciseReading({ checkpoint, terminal, screen, mode, session: runtime.session, a, b });
   },
 );
