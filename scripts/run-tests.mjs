@@ -92,7 +92,7 @@ function runNodeTest(label, files, timeoutMs, concurrency) {
   const args = [...(concurrency ? [`--test-concurrency=${concurrency}`] : []), "--test", ...files];
   const startedAt = Date.now();
   const tempRoot = mkdtempSync(
-    join(process.platform === "android" ? tmpdir() : "/tmp", "ps-test-"),
+    join(process.platform === "android" ? tmpdir() : "/tmp", "pi-subagents-"),
   );
   const env = sanitizedEnv();
   env.PI_SUBAGENT_TEMP_ROOT = tempRoot;

@@ -58,6 +58,7 @@ describe("resolveTempScopeId", () => {
 
 describe("resolveTempRootDir", () => {
   it("accepts only dedicated pi-subagents directories", () => {
+    assert.equal(resolveTempRootDir(), process.env.PI_SUBAGENT_TEMP_ROOT);
     assert.equal(
       resolveTempRootDir("/tmp/pi-subagents-isolated"),
       path.resolve("/tmp/pi-subagents-isolated"),
