@@ -1,0 +1,48 @@
+Warning: Ignoring extra certs from `/etc/cloudflare/certs/cloudflare-containers-ca.crt`, load failed: error:80000002:system library::No such file or directory
+✔ native session_start publishes ownership without scanning runs, then tools and timer recover the backlog (282.286913ms)
+ℹ Synthetic native journal retained at /tmp/agent-attachment-fzcUII
+✔ shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=false (634.722832ms)
+ℹ Synthetic archive evidence retained at /tmp/history-route-XcYCRy
+✔ shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=true (676.04551ms)
+ℹ Synthetic archive evidence retained at /tmp/history-route-FkqrZy
+✔ shipped archive CLI refuses unknown entry before reservation (103.591074ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-gg0VHJ
+✔ shipped archive CLI refuses symbolic link before reservation (100.188254ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-ntQmw0
+✔ shipped archive CLI refuses hard link before reservation (107.217033ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-Cy20cw
+✔ shipped archive CLI refuses foreign ownership before reservation (148.476411ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-2TpPZI
+✔ shipped archive CLI refuses unsafe permissions before reservation (115.352493ms)
+ℹ Synthetic refusal evidence retained at /tmp/history-refused-qSBShy
+✔ shipped archive CLI stops on changed recorded bytes after preparation (258.761414ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-16NKUu
+✔ shipped archive CLI stops on replaced source directory after preparation (217.471377ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-zmdsun
+✔ shipped archive CLI stops on replaced container after preparation (219.074017ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-XWxYH2
+✔ shipped archive CLI stops on unexpected destination after preparation (231.022156ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-CKXMrd
+✔ shipped archive CLI stops on record symlink after preparation (221.589887ms)
+ℹ Synthetic drift evidence retained at /tmp/history-drift-f9OZjD
+✔ shipped archive CLI requires explicit operator acknowledgment and refuses a different filesystem (162.787821ms)
+ℹ Synthetic device evidence retained at /tmp/history-cross-device-xAYOPf
+✔ shipped archive CLI refuses actual SQLite writers and later raw database readers despite operator acknowledgment (559.945596ms)
+ℹ Synthetic handle evidence retained at /tmp/history-handles-JSPknl
+✔ shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=false (99.295994ms)
+ℹ Synthetic ancestor evidence retained at /tmp/history-ancestors-E30vP8
+✔ shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=true (124.945333ms)
+ℹ Synthetic ancestor evidence retained at /tmp/history-ancestors-6ByHaN
+Warning: Ignoring extra certs from `/etc/cloudflare/certs/cloudflare-containers-ca.crt`, load failed: error:80000002:system library::No such file or directory
+✔ actual selected-host CLI preserves retired data through extension load and session_start (2396.326047ms)
+ℹ Synthetic evidence retained at /tmp/history-cli-fhdPao
+✔ native deferred completion recovery and tool reconciliation preserve retired SQLite data (352.912019ms)
+ℹ Synthetic native journal retained at /tmp/history-deferred-lj9xnU
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9781.653947

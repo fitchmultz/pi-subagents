@@ -1,0 +1,8 @@
+
+> @fitchmultz/pi-subagents@0.50.0 format:check
+> oxfmt --check .
+
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 83ms on 224 files using 2 threads.

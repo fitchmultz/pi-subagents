@@ -1,0 +1,11 @@
+
+> @fitchmultz/pi-subagents@0.50.0 lint
+> oxlint --type-aware .
+
+Found 0 warnings and 0 errors.
+Finished in 7.3s on 184 files with 224 rules using 2 threads.
+npm notice
+npm notice New major version of npm available! 11.19.1 -> 12.2.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+npm notice To update run: npm install -g npm@12.2.1
+npm notice

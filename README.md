@@ -102,10 +102,10 @@ state for rollback; qualify the helper and Box client/worker as an immutable pai
 with the companion's offline receipt-reconciliation gate. This repository change
 does not deploy or restart anything.
 
-Upgrades leave the retired SQLite history index in place. To preserve it outside
-its old location, use the [offline archive procedure](docs/retired-history-maintenance.md).
-It requires isolation from relaunchable old releases and does not delete data or
-free disk space automatically.
+Upgrades leave the retired SQLite history index in place. The packaged opt-in
+[offline archive command](docs/retired-history-maintenance.md) preserves its complete
+recovery set after owner-enforced quiescence and observable safety checks.
+It never runs during startup/install, deletes data, or reclaims disk space.
 
 - [Tools and lifecycle](docs/reference.md)
 - [Local messaging and broker migration](docs/intercom.md)

@@ -1,0 +1,15 @@
+Warning: Ignoring extra certs from `/etc/cloudflare/certs/cloudflare-containers-ca.crt`, load failed: error:80000002:system library::No such file or directory
+✔ live text reconstructs exactly, survives reopen and hands over to durable entries (5086.645996ms)
+ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-OrTQ6k
+✔ concurrent tool progress stays bounded across reopen and reverse completion (2264.596555ms)
+ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-dscOnr
+✔ live blocks that shrink or change type in place are resent, never stitched (3394.103698ms)
+ℹ Synthetic observation journal and gate evidence retained at /tmp/pao-kTWbL5
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11118.182497

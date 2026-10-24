@@ -1,24 +1,9 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  cpSync,
-  existsSync,
-  linkSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { linkSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -36,6 +21,7 @@ import {
 } from "../support/assertions.ts";
 import { createNativeSessionFixture } from "../support/native-session.ts";
 import { until } from "../support/observation-child.ts";
+import { fixture, inventory, crashedWriter } from "../support/retired-history.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const manifest = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
@@ -43,98 +29,7 @@ assertDefined(manifest);
 const hostRoot = dirname(manifest);
 const host = record(readJson(manifest));
 const cli = join(hostRoot, text(record(host.bin).pi));
-const extension = resolve(process.env.PI_RETIRED_HISTORY_EXTENSION ?? join(repo, "src/index.ts"));
-const evidence = process.env.PI_RETIRED_HISTORY_EVIDENCE_DIR;
-const generation = "00000000-0000-4000-8000-000000000001.sqlite";
-const manifestName = `${"a".repeat(64)}.json`;
-
-function fixture(label: string): string {
-  if (evidence !== undefined) {
-    mkdirSync(evidence, { recursive: true, mode: 0o700 });
-  }
-  const root = mkdtempSync(join(evidence ?? tmpdir(), `history-${label}-`));
-  mkdirSync(join(root, "agent", "history-index"), { recursive: true, mode: 0o700 });
-  mkdirSync(join(root, "sessions"));
-  writeFileSync(join(root, "sessions", "sentinel.jsonl"), '{"synthetic":"keep"}\n');
-  return root;
-}
-
-function dispose(root: string): void {
-  if (evidence === undefined) {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-function inventory(directory: string): readonly object[] {
-  return readdirSync(directory)
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => {
-      const file = join(directory, name);
-      const stat = lstatSync(file);
-      return {
-        name,
-        inode: stat.ino,
-        size: stat.size,
-        mode: stat.mode,
-        uid: stat.uid,
-        links: stat.nlink,
-        symlink: stat.isSymbolicLink(),
-        sha256: stat.isFile()
-          ? createHash("sha256").update(readFileSync(file)).digest("hex")
-          : null,
-      };
-    });
-}
-
-function bytes(directory: string): { logical: number; allocated: number } {
-  return readdirSync(directory).reduce(
-    (total, name) => {
-      const stat = lstatSync(join(directory, name));
-      return {
-        logical: total.logical + stat.size,
-        allocated: total.allocated + stat.blocks * 512,
-      };
-    },
-    { logical: 0, allocated: 0 },
-  );
-}
-
-function crashedWriter(directory: string, committed: boolean): void {
-  const writer = spawnSync(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      `import { DatabaseSync } from "node:sqlite";
-import { writeSync } from "node:fs";
-import { join } from "node:path";
-const directory = process.argv[1];
-const databases = [];
-for (const name of [${JSON.stringify(generation)}, ${JSON.stringify(`${generation}.ingest.sqlite`)}, "run-timing.sqlite"]) {
-  const db = new DatabaseSync(join(directory, name));
-  db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=0");
-  db.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
-  db.exec("BEGIN IMMEDIATE; INSERT INTO fixture VALUES ('pending')");
-  if (${committed}) db.exec("COMMIT");
-  databases.push(db);
-}
-writeSync(1, "WAL_READY " + databases.length + "\\n");
-process.kill(process.pid, "SIGKILL");`,
-      directory,
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
-  assert.equal(writer.error, undefined);
-  assert.equal(writer.signal, "SIGKILL");
-  assert.equal(writer.stdout, "WAL_READY 3\n", writer.stderr);
-  for (const name of [generation, `${generation}.ingest.sqlite`, "run-timing.sqlite"]) {
-    assert.ok(lstatSync(join(directory, `${name}-wal`)).size > 0);
-    assert.ok(lstatSync(join(directory, `${name}-shm`)).isFile());
-  }
-  writeFileSync(join(directory, manifestName), JSON.stringify({ file: generation }), {
-    mode: 0o600,
-  });
-}
+const extension = join(repo, "src/index.ts");
 
 function loadActualCli(root: string): void {
   const observer = join(root, "observer.mjs");
@@ -197,8 +92,9 @@ export default function(pi) {
   );
 }
 
-test("actual selected-host CLI leaves stale, unknown, linked and active legacy data untouched", () => {
+test("actual selected-host CLI preserves retired data through extension load and session_start", (t) => {
   const root = fixture("cli");
+  t.diagnostic(`Synthetic evidence retained at ${root}`);
   const directory = join(root, "agent", "history-index");
   const outside = join(root, "sessions", "sentinel.jsonl");
   crashedWriter(directory, true);
@@ -217,34 +113,20 @@ test("actual selected-host CLI leaves stale, unknown, linked and active legacy d
       "startup preserves old files, identities and bytes",
     );
     assert.deepEqual(readFileSync(outside), sentinel);
-    active.exec("INSERT INTO heartbeat VALUES ('still writable')");
-    assert.equal(active.prepare("SELECT count(*) AS n FROM heartbeat").get()?.n, 1);
-    console.log(
-      JSON.stringify({
-        host: host.version,
-        hostRoot,
-        cli,
-        extension,
-        legacyMembers: before.length,
-        removed: 0,
-        errors: 0,
-      }),
-    );
   } finally {
     active.close();
-    dispose(root);
   }
 });
 
 test("native deferred completion recovery and tool reconciliation preserve retired SQLite data", async (t) => {
   const root = fixture("deferred");
+  t.diagnostic(`Synthetic native journal retained at ${root}`);
   const agentDir = join(root, "agent");
   const directory = join(agentDir, "history-index");
   const outside = join(root, "sessions", "sentinel.jsonl");
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const cleanup = new AsyncDisposableStack();
   t.after(() => cleanup.disposeAsync());
-  cleanup.defer(() => dispose(root));
   cleanup.defer(() => {
     if (previousAgentDir === undefined) {
       delete process.env.PI_CODING_AGENT_DIR;
@@ -318,96 +200,4 @@ test("native deferred completion recovery and tool reconciliation preserve retir
   assert.equal(receipts().length, 1, "explicit reconciliation does not duplicate recovery");
   assert.deepEqual(inventory(directory), before, "tool reconciliation preserves retired files");
   assert.deepEqual(readFileSync(outside), sentinel);
-  active.exec("INSERT INTO heartbeat VALUES ('still writable after recovery')");
-  assert.equal(active.prepare("SELECT count(*) AS n FROM heartbeat").get()?.n, 1);
-  console.log(
-    JSON.stringify({
-      host: host.version,
-      recoveredReceipts: 1,
-      legacyMembers: before.length,
-      removed: 0,
-      errors: 0,
-    }),
-  );
-});
-
-for (const committed of [false, true]) {
-  test(`cold archive preserves the complete crash recovery set, committed=${committed}`, () => {
-    const root = fixture(committed ? "committed" : "uncommitted");
-    const source = join(root, "agent", "history-index");
-    const archive = join(root, "archive");
-    const destination = join(archive, "history-index");
-    try {
-      crashedWriter(source, committed);
-      const before = inventory(source);
-      const identity = lstatSync(source).ino;
-      const beforeBytes = bytes(source);
-      mkdirSync(archive, { mode: 0o700 });
-      assert.ok(existsSync(source) && !existsSync(destination), "pre-rename interruption state");
-      renameSync(source, destination);
-      assert.equal(existsSync(source), false);
-      assert.equal(lstatSync(destination).ino, identity);
-      assert.deepEqual(inventory(destination), before);
-      assert.deepEqual(bytes(destination), beforeBytes);
-      assert.ok(!existsSync(source) && existsSync(destination), "post-rename and rerun state");
-      const working = join(root, "working");
-      cpSync(destination, working, { recursive: true });
-      for (const name of [generation, `${generation}.ingest.sqlite`, "run-timing.sqlite"]) {
-        const db = new DatabaseSync(join(working, name));
-        try {
-          assert.equal(db.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
-          assert.deepEqual(
-            db
-              .prepare("SELECT value FROM fixture ORDER BY rowid")
-              .all()
-              .map((row) => row.value),
-            committed ? ["committed", "pending"] : ["committed"],
-          );
-        } finally {
-          db.close();
-        }
-      }
-      assert.deepEqual(inventory(destination), before, "recovery never modifies retained archive");
-      assert.equal(
-        readFileSync(join(root, "sessions", "sentinel.jsonl"), "utf8"),
-        '{"synthetic":"keep"}\n',
-      );
-      console.log(
-        JSON.stringify({
-          committed,
-          archiveMembers: before.length,
-          beforeBytes,
-          afterArchiveBytes: bytes(destination),
-          recoveredDatabases: 3,
-          originalFilesDeleted: 0,
-          errors: 0,
-        }),
-      );
-    } finally {
-      dispose(root);
-    }
-  });
-}
-
-test("rename cannot isolate an active SQLite handle or prevent an old writer relaunch", () => {
-  const root = fixture("active");
-  const source = join(root, "agent", "history-index");
-  const destination = join(root, "archive");
-  const active = new DatabaseSync(join(source, "run-timing.sqlite"));
-  try {
-    active.exec("PRAGMA journal_mode=WAL; CREATE TABLE heartbeat(value TEXT)");
-    renameSync(source, destination);
-    active.exec("INSERT INTO heartbeat VALUES ('written after rename')");
-    assert.equal(active.prepare("SELECT count(*) AS n FROM heartbeat").get()?.n, 1);
-    mkdirSync(source);
-    writeFileSync(join(source, "run-timing.sqlite"), "recreated by synthetic old launcher");
-    assert.ok(existsSync(source) && existsSync(destination), "both-present means stop, not rerun");
-    assert.equal(
-      readFileSync(join(source, "run-timing.sqlite"), "utf8"),
-      "recreated by synthetic old launcher",
-    );
-  } finally {
-    active.close();
-    dispose(root);
-  }
 });

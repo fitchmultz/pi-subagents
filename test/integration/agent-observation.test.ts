@@ -35,7 +35,7 @@ async function child(t: TestContext, options: Omit<ObservedChildOptions, "sdk">)
     try {
       await started.stop();
     } finally {
-      started.cleanup();
+      t.diagnostic(`Synthetic observation journal and gate evidence retained at ${started.root}`);
     }
   });
   return started;

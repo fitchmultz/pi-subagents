@@ -18,6 +18,7 @@ import { until } from "../support/observation-child.ts";
 
 test("native session_start publishes ownership without scanning runs, then tools and timer recover the backlog", async (t) => {
   const root = fs.mkdtempSync(path.join(tmpdir(), "agent-attachment-"));
+  t.diagnostic(`Synthetic native journal retained at ${root}`);
   const manager = SessionManager.create(root, path.join(root, "sessions"));
   manager.appendMessage({ role: "user", content: "Synthetic owner", timestamp: 1 });
   const owner = manager.getSessionId();
@@ -51,7 +52,6 @@ test("native session_start publishes ownership without scanning runs, then tools
   t.after(async () => {
     await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     await native.dispose();
-    fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(base, { recursive: true, force: true });
   });
   const scans = spy(fs, "readdirSync");
