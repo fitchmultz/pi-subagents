@@ -1,0 +1,17 @@
+
+> @fitchmultz/pi-subagents@0.50.0 check:size
+> node scripts/measure-size.mjs
+
+{
+  "files": 115,
+  "measured": {
+    "sourceLines": 17800,
+    "productionLines": 20717,
+    "productionBytes": 689044
+  },
+  "ceilings": {
+    "sourceLines": 18000,
+    "productionLines": 22000,
+    "productionBytes": 1048576
+  }
+}

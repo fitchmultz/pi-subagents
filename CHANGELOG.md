@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Document an explicit offline archive route for the retired SQLite history index. Upgrades leave the directory untouched because relaunchable old releases can still write it. Preserve complete SQLite recovery sets and keep deletion separately authorized. A same-filesystem archive move does not free disk space. See the [maintenance guide](docs/retired-history-maintenance.md).
 - Keep children running across a managed fork `pi restart` or `/restart` and publish their completions once from the ready replacement. With the fork's `ctx.managedHost`, the launcher owns child liveness; an unready replacement neither adopts children nor publishes, a committed restart or startup rollback keeps them, and parent exit (including quitting an unready replacement) still stops them. Official Pi and older fork launchers keep process-lifetime ownership.
 - Restore native Android/Termux source builds and typechecking with installed Android `tsgo`, place shared sockets under the writable Termux prefix, publish exclusive records atomically without denied hard links, and verify reused PIDs with a boot-qualified monotonic elapsed-age bound that survives controller clock changes. Preserve no-clobber claims, private complete records, existing macOS/Linux namespaces, and native continuation/stop/recovery contracts.
 - Stop reparsing unchanged completed child results and searching historical receipts on every completion poll. Keep physical journal validation, chronological delivery and pending-accounting repair.

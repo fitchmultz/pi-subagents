@@ -1,0 +1,15 @@
+{"host":"1.4.0","hostRoot":"/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent","cli":"/workspace/issue-249/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","extension":"/workspace/issue-249/src/index.ts","legacyMembers":16,"removed":0,"errors":0}
+{"committed":false,"archiveMembers":10,"beforeBytes":{"logical":147822,"allocated":163840},"afterArchiveBytes":{"logical":147822,"allocated":163840},"recoveredDatabases":3,"originalFilesDeleted":0,"errors":0}
+{"committed":true,"archiveMembers":10,"beforeBytes":{"logical":160182,"allocated":176128},"afterArchiveBytes":{"logical":160182,"allocated":176128},"recoveredDatabases":3,"originalFilesDeleted":0,"errors":0}
+✔ actual selected-host CLI leaves stale, unknown, linked and active legacy data untouched (731.024443ms)
+✔ cold archive preserves the complete crash recovery set, committed=false (63.140014ms)
+✔ cold archive preserves the complete crash recovery set, committed=true (65.150835ms)
+✔ rename cannot isolate an active SQLite handle or prevent an old writer relaunch (6.414196ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 991.555295

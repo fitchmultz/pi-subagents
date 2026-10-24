@@ -1,0 +1,17 @@
+{
+  "source": "Coordinator-provided result of supported owner-authenticated read-only chat GET, not model self-description or guest introspection",
+  "verifiedAt": "2026-10-24T13:23:15.454220+00:00",
+  "chatId": "6ec64002-5070-4a97-b716-6e87628a2764",
+  "configuration": {
+    "provider": "openai",
+    "modelId": "gpt-6.1-sol",
+    "thinkingLevel": "xhigh",
+    "contextWindow": 300000,
+    "fastMode": null
+  },
+  "connectionReady": true,
+  "rootRunBusy": true,
+  "configurationVersionSha256": "c52404be6ba45b2e0427d98acc645cf5eeba33d251e1acd2e798807cd4d3d5ea",
+  "settingsChanged": false,
+  "originalReceipt": "Retained by the coordinator as actual-model-evidence.json; the approved non-secret values were supplied in this task's answered admission question"
+}

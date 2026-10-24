@@ -178,6 +178,7 @@ try {
     "scripts/build.mjs",
     "scripts/real-pi-smoke.mjs",
     "scripts/intercom-remote.mjs",
+    "docs/retired-history-maintenance.md",
     "skills/pi-subagents/SKILL.md",
     "skills/pi-intercom/SKILL.md",
   ]) {
