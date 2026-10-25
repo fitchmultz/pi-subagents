@@ -26,8 +26,6 @@ export function read<T extends TSchema>(
     throw error;
   }
   Assert(schema, value);
-  // TypeBox's generic Static<T> is intentionally the asserted schema's type.
-  // oxlint-disable-next-line typescript/no-unsafe-return
   return value;
 }
 /** Publish complete bytes without replacing a winner, even where Android denies hard links. */
