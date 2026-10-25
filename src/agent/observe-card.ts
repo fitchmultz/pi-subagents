@@ -1,5 +1,12 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Component, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
+import { isRecord } from "../shared/unknown.ts";
+import type { ViewedBlock, ViewedTool } from "./observe-client.ts";
+import type { ConversationPage } from "./journal-tail.ts";
 import {
   AssistantMessageComponent,
+  Container,
+  Text,
   ToolExecutionComponent,
   createBashToolDefinition,
   createEditToolDefinition,
@@ -9,18 +16,7 @@ import {
   createPowerShellToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
-} from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import {
-  Container,
-  Text,
-  type Component,
-  type TUI,
-  type TuiMouseEvent,
-} from "@earendil-works/pi-tui";
-import { isRecord } from "../shared/unknown.ts";
-import type { ViewedBlock, ViewedTool } from "./observe-client.ts";
-import type { ConversationPage } from "./journal-tail.ts";
+} from "./observe-layout.ts";
 
 export interface CardOptions {
   tui: TUI;
@@ -42,7 +38,7 @@ function nativeTool(
   id: string,
   args: unknown,
   options: CardOptions,
-): ToolExecutionComponent {
+): InstanceType<typeof ToolExecutionComponent> {
   return new ToolExecutionComponent(
     name,
     id,
@@ -118,12 +114,12 @@ export class Card implements Component {
   id: string;
   readonly content = new Container();
   readonly footer = new Container();
-  assistant?: AssistantMessageComponent;
-  status?: Text;
+  assistant?: InstanceType<typeof AssistantMessageComponent>;
+  status?: InstanceType<typeof Text>;
   blocks?: ViewedBlock[];
   ended?: boolean;
   value?: unknown;
-  tool?: ToolExecutionComponent;
+  tool?: InstanceType<typeof ToolExecutionComponent>;
   selected = false;
   expanded = false;
   ready = false;

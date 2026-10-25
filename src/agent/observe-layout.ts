@@ -4,13 +4,13 @@ import { pathToFileURL } from "node:url";
 import type * as Tui from "@earendil-works/pi-tui";
 import type * as Layout from "@earendil-works/pi-tui/dist/layout.js";
 import type * as Dispatch from "@earendil-works/pi-tui/dist/tui.js";
-import { packageRoot } from "./host.ts";
+import { loadSDK, packageRoot } from "./host.ts";
 
-// Jiti aliases the root to an index file, so submodule URLs must resolve in the actual host graph.
-const manifest = findPackageJSON(
-  "@earendil-works/pi-tui",
-  path.join(packageRoot(), "dist/index.js"),
-);
+// Every runtime UI and SDK value in the lazy viewer graph comes from the selected host's files.
+// A bare import would resolve against whatever node_modules exist when /agents first opens.
+// Jiti aliases the pi-tui root to an index file, so submodule URLs must resolve here too.
+const sdkRoot = packageRoot();
+const manifest = findPackageJSON("@earendil-works/pi-tui", path.join(sdkRoot, "dist/index.js"));
 if (manifest === undefined) {
   throw new Error("Cannot locate the native Pi TUI package.");
 }
@@ -21,7 +21,21 @@ const tui: typeof Tui = await import(root.href);
 const layout: typeof Layout = await import(new URL("./layout.js", root).href);
 // oxlint-disable-next-line typescript/no-unsafe-assignment
 const dispatch: typeof Dispatch = await import(new URL("./tui.js", root).href);
-export const { HStack, VStack, ScrollView } = tui;
+const sdk = await loadSDK(sdkRoot);
+export const { Container, HStack, ScrollView, Text, TruncatedText, VStack } = tui;
+export const {
+  AssistantMessageComponent,
+  ToolExecutionComponent,
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
+  createPowerShellToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  rawKeyHint,
+} = sdk;
 export const { renderLayoutFrame, getLayoutBoxesAt, getScrollViewsAt } = layout;
 export const { dispatchMouseEvent } = dispatch;
 export type { LayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";

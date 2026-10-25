@@ -1,14 +1,10 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import {
-  type Container,
-  TruncatedText,
-  type TUI,
-  type TuiMouseEvent,
-} from "@earendil-works/pi-tui";
+import type { Container, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import {
   renderLayoutFrame,
   dispatchLayoutMouse,
   type LayoutFrame,
+  TruncatedText,
   VStack,
 } from "./observe-layout.ts";
 import { errorMessage } from "../shared/unknown.ts";

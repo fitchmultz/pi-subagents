@@ -1,10 +1,11 @@
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import { recordAt, errorMessage } from "../shared/unknown.ts";
 import { actionText, actionHints } from "../shared/tui-action.ts";
 import { ConversationJournal, plainText, type ConversationPage } from "./journal-tail.ts";
 import type { NativeRecord } from "../shared/native-journal.ts";
 import type { ObservationClient, ViewedTool } from "./observe-client.ts";
 import { Card, type CardOptions } from "./observe-card.ts";
+import { Container, Text } from "./observe-layout.ts";
 
 export interface EntryAnchor {
   id: string;

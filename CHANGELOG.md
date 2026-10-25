@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Keep `/agents` working after an install refresh removes package-local development copies of Pi. The lazy viewer now resolves UI and SDK values through the selected host. A session that already reported a missing `pi-tui` package recovers on its next `/agents` after the fix is installed, without a reload or restart.
 - Report `reply_failed` with pending/list recovery when an Intercom reply's `to` names a different sender than its `replyTo` ask. A `to` containing "too short" was previously misreported as an ambiguous reply target; recovery codes now come from the failing owner, not message wording.
 - Add an opt-in offline archive command for the retired SQLite history index, with private inventory, whole-set identity checks and prepared/completed retry reconciliation. Refuse unsafe entries, links, foreign ownership, active handles and cross-filesystem moves. Upgrades leave the directory untouched; archiving never deletes or reclaims file allocations. Releases v0.44.0–v0.49.1 can still reopen the data, so owner-enforced quiescence remains required. See the [maintenance guide](docs/retired-history-maintenance.md).
 - Keep the last-good `dist/` when the build fails after compiling. The build now moves the previous tree aside and renames it back if publication fails, instead of deleting it first. Replacement is two renames, not an atomic exchange: a concurrent reader can briefly find no `dist/`, but never a partial tree. A build killed between the two renames can still leave `dist/` absent until the next successful build.

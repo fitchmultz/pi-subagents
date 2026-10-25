@@ -1,7 +1,15 @@
-import { rawKeyHint, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import { Container, Text, TruncatedText, type Component } from "@earendil-works/pi-tui";
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import { actionHints, actionText } from "../shared/tui-action.ts";
-import { HStack, ScrollView, type VStack } from "./observe-layout.ts";
+import {
+  Container,
+  HStack,
+  rawKeyHint,
+  ScrollView,
+  Text,
+  TruncatedText,
+  type VStack,
+} from "./observe-layout.ts";
 import type { Launch } from "./contracts.ts";
 import { plainText } from "./journal-tail.ts";
 
@@ -28,7 +36,7 @@ export class Details extends ScrollView {
 }
 
 export class ChildList extends ScrollView {
-  private readonly list: Container;
+  private readonly list: InstanceType<typeof Container>;
   private readonly open: (id: string) => void;
   constructor(open: (id: string) => void) {
     const list = new Container();
