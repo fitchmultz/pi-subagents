@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Spend less CPU reading large child journals, such as when finding completion receipts. Records are now validated by an incremental scanner that decodes only the strings it keeps, replacing stream-json's per-character tokenizer. The package no longer depends on stream-json or stream-chain.
+- Validate large child journals with an incremental scanner that decodes selected or observed string chunks, replacing stream-json's tokenizer. The package no longer depends on stream-json or stream-chain.
 - Let Stop and continuation release a saved actor or native-shell PID that another user's process now holds, when its native birth proves replacement. Permission-denied probes previously blocked that existing proof, stranding children after a reboot. Unverified identities, unreadable births and claims written after the current process still refuse without signaling.
 - Keep `/agents` working after a live install refresh removes package-local development copies of Pi. Lazy-only viewer modules now resolve UI and SDK values through the selected host. Sessions already using the current viewer API recover on their next `/agents` after installing the fix. Sessions started from the published v0.50.0 package need to restart Pi.
 - Report `reply_failed` with pending/list recovery when an Intercom reply's `to` names a different sender than its `replyTo` ask. A `to` containing "too short" was previously misreported as an ambiguous reply target; recovery codes now come from the failing owner, not message wording.
