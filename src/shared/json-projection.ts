@@ -37,11 +37,6 @@ const NUMBER = 8;
 // Unescaped units exclude quote, backslash and C0 controls. Native regexp code skips a bounded
 // run of them and valid escapes, so JavaScript handles only the unit that stopped it.
 const BODY = /[ !#-[\]-\uffff]*(?:\\(?:["\\/bfnrt]|u[\da-fA-F]{4})[ !#-[\]-\uffff]*){0,1024}/y;
-const ESCAPE = /\\(?:u([\da-fA-F]{4})|(.))/g;
-const HEX = /^[\da-fA-F]{4}$/;
-const ESCAPES = new Map(
-  Array.from('"/\\bfnrt', (char, index) => [char.charCodeAt(0), '"/\\\b\f\n\r\t'.charAt(index)]),
-);
 const LITERALS = new Map<number, readonly [string, boolean | null]>([
   [102, ["false", false]],
   [110, ["null", null]],
@@ -63,30 +58,33 @@ const NUMBER_NEXT = [
 ];
 const NUMBER_END = new Set([2, 3, 5, 8]);
 const NUMBER_COLUMN = new Int8Array(128).fill(-1);
-for (const [index, char] of Array.from("0123456789.eE+-").entries()) {
-  NUMBER_COLUMN[char.charCodeAt(0)] = Number("011111111123344"[index]);
-}
-function unescape(_escape: string, hex: string | undefined, char: string): string {
-  return hex === undefined
-    ? (ESCAPES.get(char.charCodeAt(0)) ?? "")
-    : String.fromCharCode(Number.parseInt(hex, 16));
-}
-/** Validate one escape at a backslash; false means the chunk ended inside it. */
-function escapeComplete(text: string, index: number): boolean {
-  if (text.charCodeAt(index) !== 92) {
-    throw new SyntaxError(`Bad control character in JSON string at ${index}`);
+for (const [column, units] of ["0", "123456789", ".", "eE", "+-"].entries()) {
+  for (const unit of units) {
+    NUMBER_COLUMN[unit.charCodeAt(0)] = column;
   }
-  const code = text.charCodeAt(index + 1);
-  if (index + (code === 117 ? 6 : 2) > text.length) {
-    return false;
-  }
-  if (code === 117 ? !HEX.test(text.slice(index + 2, index + 6)) : !ESCAPES.has(code)) {
-    throw new SyntaxError(`Bad escaped character in JSON string at ${index}`);
-  }
-  return true;
 }
-function unexpected(index: number): SyntaxError {
-  return new SyntaxError(`Unexpected character in JSON at ${index}`);
+/**
+ * Classify where BODY stopped short of a closing quote. True means the chunk ends at or inside an
+ * escape, so the rest carries; false means a bounded run ended at a valid escape. Controls throw,
+ * and so does a complete escape BODY made no progress at, because BODY consumes any valid one.
+ */
+function chunkEnds(text: string, end: number, progressed: boolean): boolean {
+  if (end === text.length) {
+    return true;
+  }
+  if (text.charCodeAt(end) !== 92) {
+    throw new SyntaxError("Bad control character in JSON string");
+  }
+  if (end + (text.charCodeAt(end + 1) === 117 ? 6 : 2) > text.length) {
+    return true;
+  }
+  if (!progressed) {
+    throw new SyntaxError("Bad escaped character in JSON string");
+  }
+  return false;
+}
+function unexpected(): SyntaxError {
+  return new SyntaxError("Unexpected character in JSON");
 }
 function retained(keep: boolean | number): boolean {
   return keep === true || (typeof keep === "number" && keep !== 0 && !Number.isNaN(keep));
@@ -99,10 +97,10 @@ export class JsonProjection {
   private carry = "";
   private path: readonly (string | number)[] = [];
   private key = false;
-  private limit = 0;
+  private textCap = 0;
   private text = "";
   private numberState = 0;
-  private keyLength?: number;
+  private keyBudget?: number;
   private nodes = 0;
   private readonly select: Projection;
   private readonly stringChunk?: StringChunk;
@@ -123,16 +121,6 @@ export class JsonProjection {
   private root(): UnknownRecord | undefined {
     return isRecord(this.value) ? this.value : undefined;
   }
-  private shape(parent: Container | undefined): void {
-    const limits = this.limits;
-    if (
-      limits &&
-      (this.stack.length > limits.depth ||
-        (parent?.array === true && parent.index >= limits.arrayLength))
-    ) {
-      throw new RangeError("JSON projection exceeds its depth or array-position budget.");
-    }
-  }
   private selected(): boolean | number {
     const keep = this.select(this.path, this.root());
     if (retained(keep) && this.limits && ++this.nodes > this.limits.nodes) {
@@ -143,7 +131,14 @@ export class JsonProjection {
   /** Paths inside skipped containers are only built for string observers, never selected. */
   private start(): boolean | number {
     const parent = this.stack.at(-1);
-    this.shape(parent);
+    const limits = this.limits;
+    if (
+      limits &&
+      (this.stack.length > limits.depth ||
+        (parent?.array === true && parent.index >= limits.arrayLength))
+    ) {
+      throw new RangeError("JSON projection exceeds its depth or array-position budget.");
+    }
     if (!parent) {
       this.path = [];
       return this.selected();
@@ -178,16 +173,18 @@ export class JsonProjection {
     this.ended();
     return index + 1;
   }
-  private scalar(state: number, key: boolean, limit: number): void {
+  private scalar(state: number, key: boolean, keep: boolean | number, keyBudget?: number): void {
+    const cap = keep === true ? Infinity : Number(keep);
     this.state = state;
     this.key = key;
-    this.keyLength = undefined;
-    this.limit = Number.isNaN(limit) ? 0 : limit;
+    this.textCap = Number.isNaN(cap) ? 0 : cap;
+    this.keyBudget = keyBudget;
     this.text = "";
+    this.numberState = 0;
   }
   private append(text: string): void {
-    if (this.text.length < this.limit) {
-      this.text += text.slice(0, this.limit - this.text.length);
+    if (this.text.length < this.textCap) {
+      this.text += text.slice(0, this.textCap - this.text.length);
     }
   }
   private container(array: boolean): void {
@@ -200,8 +197,12 @@ export class JsonProjection {
     this.state = array ? FIRST_VALUE : FIRST_KEY;
   }
   private literal(text: string, index: number, code: number): number {
-    const [word, value] = LITERALS.get(code) ?? ["", undefined];
-    if (word !== "" && text.startsWith(word, index)) {
+    const literal = LITERALS.get(code);
+    if (!literal) {
+      throw unexpected();
+    }
+    const [word, value] = literal;
+    if (text.startsWith(word, index)) {
       if (retained(this.start())) {
         this.put(value);
       }
@@ -212,20 +213,15 @@ export class JsonProjection {
       this.carry = text.slice(index);
       return text.length;
     }
-    throw unexpected(index);
+    throw unexpected();
   }
-  private open(state: number): void {
-    const keep = this.start();
-    this.scalar(state, false, keep === true ? Infinity : Number(keep));
-    this.numberState = 0;
-  }
-  private value1(text: string, index: number, code: number): number {
+  private startValue(text: string, index: number, code: number): number {
     if (code === 34) {
-      this.open(STRING);
+      this.scalar(STRING, false, this.start());
       return index + 1;
     }
     if (code === 45 || (code >= 48 && code <= 57)) {
-      this.open(NUMBER);
+      this.scalar(NUMBER, false, this.start());
       return index;
     }
     if (code === 123 || code === 91) {
@@ -240,10 +236,15 @@ export class JsonProjection {
       return this.close(index);
     }
     if (code !== 34 || !parent) {
-      throw unexpected(index);
+      throw unexpected();
     }
-    this.scalar(STRING, true, parent.value === undefined ? 0 : this.keys(parent.path, this.root()));
-    this.keyLength = parent.value === undefined ? undefined : this.limits?.keyLength;
+    const skipped = parent.value === undefined;
+    this.scalar(
+      STRING,
+      true,
+      skipped ? 0 : this.keys(parent.path, this.root()),
+      skipped ? undefined : this.limits?.keyLength,
+    );
     return index + 1;
   }
   private after(index: number, code: number): number {
@@ -255,27 +256,27 @@ export class JsonProjection {
     if (parent && code === (parent.array ? 93 : 125)) {
       return this.close(index);
     }
-    throw unexpected(index);
+    throw unexpected();
   }
   private structure(text: string, index: number, code: number): number {
     switch (this.state) {
       case VALUE:
-        return this.value1(text, index, code);
+        return this.startValue(text, index, code);
       case FIRST_VALUE:
-        return code === 93 ? this.close(index) : this.value1(text, index, code);
+        return code === 93 ? this.close(index) : this.startValue(text, index, code);
       case KEY:
       case FIRST_KEY:
         return this.member(index, code);
       case COLON:
         if (code !== 58) {
-          throw unexpected(index);
+          throw unexpected();
         }
         this.state = VALUE;
         return index + 1;
       case AFTER:
         return this.after(index, code);
       default:
-        throw unexpected(index);
+        throw unexpected();
     }
   }
   private observed(decoded: string): void {
@@ -285,7 +286,7 @@ export class JsonProjection {
     if (this.stringChunk && !this.key) {
       this.stringChunk(this.path, decoded, this.root());
     }
-    if (this.keyLength !== undefined && this.text.length + decoded.length > this.keyLength) {
+    if (this.keyBudget !== undefined && this.text.length + decoded.length > this.keyBudget) {
       throw new RangeError("JSON projection exceeds its property-key budget.");
     }
     this.append(decoded);
@@ -296,7 +297,7 @@ export class JsonProjection {
       parent.key = this.text;
       this.state = COLON;
     } else {
-      if (this.limit !== 0) {
+      if (this.textCap !== 0) {
         this.put(this.text);
       }
       this.ended();
@@ -306,8 +307,8 @@ export class JsonProjection {
   private decoding(): boolean {
     return (
       (this.stringChunk !== undefined && !this.key) ||
-      this.text.length < this.limit ||
-      this.keyLength !== undefined
+      this.text.length < this.textCap ||
+      this.keyBudget !== undefined
     );
   }
   private string(text: string, start: number): number {
@@ -317,17 +318,14 @@ export class JsonProjection {
       const end = BODY.lastIndex;
       if (end > index && this.decoding()) {
         const raw = text.slice(index, end);
-        this.observed(raw.includes("\\") ? raw.replace(ESCAPE, unescape) : raw);
-      }
-      if (end === text.length) {
-        return end;
+        // A matched run is a complete valid string body no longer than this chunk.
+        this.observed(raw.includes("\\") ? String(JSON.parse(`"${raw}"`)) : raw);
       }
       if (text.charCodeAt(end) === 34) {
         this.closeString();
         return end + 1;
       }
-      // Throws for controls and invalid escapes; a valid escape only ended a bounded run.
-      if (!escapeComplete(text, end)) {
+      if (chunkEnds(text, end, end > index)) {
         this.carry = text.slice(end);
         return text.length;
       }
@@ -350,9 +348,9 @@ export class JsonProjection {
       return index;
     }
     if (!NUMBER_END.has(state)) {
-      throw new SyntaxError(`Incomplete number in JSON at ${index}`);
+      throw new SyntaxError("Incomplete number in JSON");
     }
-    if (this.limit !== 0) {
+    if (this.textCap !== 0) {
       this.put(Number(this.text));
     }
     this.ended();

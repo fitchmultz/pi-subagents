@@ -80,7 +80,7 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
   assert.deepEqual(projection.finish(), { text: "abc" });
 });
 
-test("JSON projection validates exactly native JSON and reports string values at every chunk boundary", () => {
+test("JSON projection matches JSON.parse acceptance, values and observed strings for its grammar corpus at every two-chunk split and one UTF-16 unit at a time", () => {
   const valid = [
     '{"a":"\\uD83E\\uDD84é日\\u00e9\\/\\b\\f\\n\\r\\t\\"\\\\","b":[true,false,null,-0,0.5e-3,1E+2,-12.75,0],"c":{},"d":[]}',
     ' { "__proto__" : {"x":"\\uDD84"}, "a":1, "a":[2,{"k\\u0041":""}] } ',
@@ -101,11 +101,15 @@ test("JSON projection validates exactly native JSON and reports string values at
     '{"a":-}',
     '{"a":.5}',
     '{"a":1e}',
+    '{"a":1e+}',
+    '{"a":1e-}',
     '{"a":+1}',
     '{"a":tru}',
     '{"a":nulll}',
     '{"a":1,}',
     "[1,]",
+    '{"o":{"k\\x":1}}',
+    '{"o":{"k\u0001":1}}',
     '{"a" 1}',
     '{"a",1}',
     "{a:1}",
@@ -127,34 +131,44 @@ test("JSON projection validates exactly native JSON and reports string values at
         )
       : [];
   };
-  for (const json of [...valid, ...invalid]) {
-    for (let split = 0; split <= json.length; split++) {
+  const feeds = (json: string): [string, string[]][] => [
+    ...Array.from({ length: json.length + 1 }, (_, split): [string, string[]] => [
+      `split at ${split}`,
+      [json.slice(0, split), json.slice(split)],
+    ]),
+    ["one unit at a time", json.split("").flatMap((unit) => [unit, ""])],
+  ];
+  const project = (chunks: readonly string[], all: boolean) => {
+    const strings = new Map<string, string>();
+    const projection = new JsonProjection(
+      (keys) => all || keys.length === 0,
+      (keys, chunk) => {
+        strings.set(JSON.stringify(keys), (strings.get(JSON.stringify(keys)) ?? "") + chunk);
+      },
+      () => Infinity,
+    );
+    for (const chunk of chunks) {
+      projection.write(chunk);
+    }
+    return { value: projection.finish(), strings: [...strings] };
+  };
+  for (const json of invalid) {
+    assert.throws(() => JSON.parse(json), `${JSON.stringify(json)} is invalid JSON`);
+    for (const [feed, chunks] of feeds(json)) {
       for (const all of [true, false]) {
-        const strings = new Map<string, string>();
-        const projection = new JsonProjection(
-          (keys) => all || keys.length === 0,
-          (keys, chunk) => {
-            strings.set(JSON.stringify(keys), (strings.get(JSON.stringify(keys)) ?? "") + chunk);
-          },
-          () => Infinity,
-        );
-        const parse = () => {
-          projection.write(json.slice(0, split));
-          projection.write(json.slice(split));
-          return projection.finish();
-        };
-        if (invalid.includes(json)) {
-          assert.throws(parse, `${JSON.stringify(json)} split at ${split}`);
-          continue;
-        }
-        const expected: unknown = JSON.parse(json);
-        const skipped = Array.isArray(expected) ? [] : {};
-        const root = expected !== null && typeof expected === "object" ? skipped : expected;
-        assert.deepEqual(parse(), all ? expected : root, `${json} split at ${split}`);
-        if (all) {
-          assert.deepEqual([...strings], stringsAt(expected), `${json} split at ${split}`);
-        }
+        assert.throws(() => project(chunks, all), `${JSON.stringify(json)} ${feed}`);
       }
+    }
+  }
+  for (const json of valid) {
+    const expected: unknown = JSON.parse(json);
+    const skipped = Array.isArray(expected) ? [] : {};
+    const root = expected !== null && typeof expected === "object" ? skipped : expected;
+    for (const [feed, chunks] of feeds(json)) {
+      const all = project(chunks, true);
+      assert.deepEqual(all.value, expected, `${json} ${feed}`);
+      assert.deepEqual(all.strings, stringsAt(expected), `${json} ${feed}`);
+      assert.deepEqual(project(chunks, false).value, root, `${json} ${feed}`);
     }
   }
 });
