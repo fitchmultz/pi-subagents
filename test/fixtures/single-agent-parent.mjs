@@ -3482,6 +3482,51 @@ try {
       assert.deepEqual(fs.readFileSync(path.join(runDir(id), name)), frozen[index]),
     );
     globalThis.setTimeout = originalTimeout;
+  } else if (phase === "lineage") {
+    // A generated child carries its parent's native ID in both variables; nothing else boots.
+    const lineage = (rootId, parentId) => ({
+      PI_INTERCOM_ROOT_SESSION_ID: rootId,
+      PI_INTERCOM_PARENT_SESSION_ID: parentId,
+    });
+    for (const malformed of [
+      { PI_INTERCOM_ROOT_SESSION_ID: "lineage-native-id" },
+      { PI_INTERCOM_PARENT_SESSION_ID: "lineage-native-id" },
+      lineage("", ""),
+      lineage("lineage-native-id", "other-native-id"),
+      lineage(" lineage-native-id ", " lineage-native-id "),
+      lineage(" lineage-native-id", "lineage-native-id"),
+      lineage(" ", " "),
+    ]) {
+      const label = JSON.stringify(malformed);
+      const packageLoader = new sdk.DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager: settings,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        additionalExtensionPaths: [path.join(repo, "dist/index.js")],
+      });
+      Object.assign(process.env, malformed);
+      try {
+        // oxlint-disable-next-line no-await-in-loop
+        await packageLoader.reload();
+      } finally {
+        delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
+        delete process.env.PI_INTERCOM_PARENT_SESSION_ID;
+      }
+      // The actor's bootstrap refuses any extension load error, so no delegation can follow.
+      const loaded = packageLoader.getExtensions();
+      assert.deepEqual(loaded.extensions, [], label);
+      assert.equal(loaded.errors.length, 1, label);
+      assert.match(
+        loaded.errors[0].error,
+        /Child launch requires identical, unpadded root and parent native session IDs\./,
+        label,
+      );
+    }
   } else if (phase === "continuation") {
     manager.appendMessage({
       role: "user",

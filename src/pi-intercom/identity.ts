@@ -4,20 +4,23 @@ export interface IntercomLineage {
   readonly rootSessionId: string;
   readonly parentSessionId: string;
 }
+// Launches set both variables to the parent's exact native session ID. Absence means a main;
+// anything else is refused, never normalized into a different identity.
 export function readIntercomLineage(): IntercomLineage | undefined {
-  const rootSessionId = process.env.PI_INTERCOM_ROOT_SESSION_ID?.trim();
-  const parentSessionId = process.env.PI_INTERCOM_PARENT_SESSION_ID?.trim();
+  const rootSessionId = process.env.PI_INTERCOM_ROOT_SESSION_ID;
+  const parentSessionId = process.env.PI_INTERCOM_PARENT_SESSION_ID;
   if (rootSessionId === undefined && parentSessionId === undefined) {
     return;
   }
   if (
     rootSessionId === undefined ||
-    parentSessionId === undefined ||
     rootSessionId === "" ||
-    parentSessionId === "" ||
+    rootSessionId !== rootSessionId.trim() ||
     rootSessionId !== parentSessionId
   ) {
-    throw new Error("Intercom child launch requires matching root and parent native session IDs.");
+    throw new Error(
+      "Child launch requires identical, unpadded root and parent native session IDs.",
+    );
   }
   return { rootSessionId, parentSessionId };
 }
