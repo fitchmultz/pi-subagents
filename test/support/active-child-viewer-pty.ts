@@ -960,7 +960,15 @@ class Proof {
     this.report.cleanup.push(
       "Owned native actors, broker and tmux server exited; artifacts retained.",
     );
-    fs.rmSync(this.runtime, { recursive: true, force: true });
+    if (
+      fs
+        .readdirSync(this.runtime, { recursive: true, encoding: "utf8" })
+        .some((file) => file.endsWith(".jsonl"))
+    ) {
+      this.report.cleanup.push("Runtime retained because native JSONL files remain.");
+    } else {
+      fs.rmSync(this.runtime, { recursive: true, force: true });
+    }
   }
 }
 
