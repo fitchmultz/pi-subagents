@@ -80,6 +80,85 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
   assert.deepEqual(projection.finish(), { text: "abc" });
 });
 
+test("JSON projection validates exactly native JSON and reports string values at every chunk boundary", () => {
+  const valid = [
+    '{"a":"\\uD83E\\uDD84é日\\u00e9\\/\\b\\f\\n\\r\\t\\"\\\\","b":[true,false,null,-0,0.5e-3,1E+2,-12.75,0],"c":{},"d":[]}',
+    ' { "__proto__" : {"x":"\\uDD84"}, "a":1, "a":[2,{"k\\u0041":""}] } ',
+    `{"long":"${"plain text ".repeat(4)}","after":"${"日本".repeat(9)}\\n"}`,
+    `{"escapes":"${"\\n".repeat(1030)}"}`,
+    '"top"',
+    "-1.5e9",
+    "null",
+    "[[[]]]",
+  ];
+  const invalid = [
+    '{"a":"\\u12"}',
+    '{"a":"\\x"}',
+    '{"a":"\u0001"}',
+    `{"a":"${"plain text ".repeat(4)}\u0001"}`,
+    '{"a":01}',
+    '{"a":1.}',
+    '{"a":-}',
+    '{"a":.5}',
+    '{"a":1e}',
+    '{"a":+1}',
+    '{"a":tru}',
+    '{"a":nulll}',
+    '{"a":1,}',
+    "[1,]",
+    '{"a" 1}',
+    '{"a",1}',
+    "{a:1}",
+    '{"a":1}}',
+    '{"a":1} x',
+    "",
+    '{"a":"x',
+    '{"a":[1}}',
+    "[NaN]",
+    "\uFEFF{}",
+  ];
+  const stringsAt = (value: unknown, at: (string | number)[] = []): [string, string][] => {
+    if (typeof value === "string") {
+      return value === "" ? [] : [[JSON.stringify(at), value]];
+    }
+    return value !== null && typeof value === "object"
+      ? Object.entries(value).flatMap(([key, item]) =>
+          stringsAt(item, [...at, Array.isArray(value) ? Number(key) : key]),
+        )
+      : [];
+  };
+  for (const json of [...valid, ...invalid]) {
+    for (let split = 0; split <= json.length; split++) {
+      for (const all of [true, false]) {
+        const strings = new Map<string, string>();
+        const projection = new JsonProjection(
+          (keys) => all || keys.length === 0,
+          (keys, chunk) => {
+            strings.set(JSON.stringify(keys), (strings.get(JSON.stringify(keys)) ?? "") + chunk);
+          },
+          () => Infinity,
+        );
+        const parse = () => {
+          projection.write(json.slice(0, split));
+          projection.write(json.slice(split));
+          return projection.finish();
+        };
+        if (invalid.includes(json)) {
+          assert.throws(parse, `${JSON.stringify(json)} split at ${split}`);
+          continue;
+        }
+        const expected: unknown = JSON.parse(json);
+        const skipped = Array.isArray(expected) ? [] : {};
+        const root = expected !== null && typeof expected === "object" ? skipped : expected;
+        assert.deepEqual(parse(), all ? expected : root, `${json} split at ${split}`);
+        if (all) {
+          assert.deepEqual([...strings], stringsAt(expected), `${json} split at ${split}`);
+        }
+      }
+    }
+  }
+});
+
 test("sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records", (t) => {
   const root = temporary(t),
     file = path.join(root, "native.jsonl");

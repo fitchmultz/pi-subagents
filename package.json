@@ -111,9 +111,5 @@
   },
   "engines": {
     "node": ">=24.21.0"
-  },
-  "dependencies": {
-    "stream-chain": "4.2.6",
-    "stream-json": "3.7.0"
   }
 }
