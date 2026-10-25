@@ -9,9 +9,9 @@ import {
   exitSchema,
   successorSchema,
   type Launch,
-  type RunsInput,
   type Result,
 } from "./contracts.ts";
+import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { readCanonicalResult, readResult } from "./usage.ts";

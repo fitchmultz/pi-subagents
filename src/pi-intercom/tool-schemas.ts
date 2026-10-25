@@ -1,26 +1,14 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "../agent/typebox.ts";
 export const intercomSchema = Type.Object({
-  action: StringEnum(["list", "send", "ask", "reply", "pending", "status", "last"] as const, {
-    description:
-      "List, send, ask, reply, pending asks, connection status, or last completed assistant response.",
-  }),
+  action: StringEnum(["list", "send", "ask", "reply", "pending", "status", "last"] as const),
   scope: Type.Optional(
     StringEnum(["project", "all"] as const, {
-      description:
-        "For list/status: 'all' (default) includes every reachable session; 'project' further filters this repository and its worktrees.",
+      description: "all (default) or project (repo and worktrees)",
     }),
   ),
-  to: Type.Optional(
-    Type.String({
-      description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')",
-    }),
-  ),
-  message: Type.Optional(
-    Type.String({
-      description: "Message for send/ask/reply",
-    }),
-  ),
+  to: Type.Optional(Type.String({ description: "Session name or ID" })),
+  message: Type.Optional(Type.String()),
   attachments: Type.Optional(
     Type.Array(
       Type.Object({
@@ -31,41 +19,21 @@ export const intercomSchema = Type.Object({
       }),
     ),
   ),
-  replyTo: Type.Optional(
-    Type.String({
-      description: "Message ID to reply to (for threading or responding to an 'ask')",
-    }),
-  ),
+  replyTo: Type.Optional(Type.String({ description: "Message ID to answer or thread" })),
   delivery: Type.Optional(
     StringEnum(["queue", "steer", "passive"] as const, {
       description:
-        "Delivery mode. Omitted send delivery defaults to 'steer', which injects after the current tool call. Use 'queue' only to intentionally wait behind active work; 'passive' does not wake the recipient model.",
+        "steer (default) at next tool boundary; queue after active work; passive never wakes the model",
     }),
   ),
   queueMode: Type.Optional(
     StringEnum(["stack", "replace"] as const, {
-      description:
-        "For delivery='queue': 'stack' keeps all messages; 'replace' keeps only the latest undelivered message for the same threadId.",
+      description: "stack keeps all; replace keeps only the latest per threadId",
     }),
   ),
-  threadId: Type.Optional(
-    Type.String({ description: "Stable topic key for queueMode='replace'." }),
-  ),
-  entryId: Type.Optional(Type.String({ description: "Last response entry ID for stable paging." })),
-  offset: Type.Optional(
-    Type.Integer({ minimum: 0, description: "Last response character offset (UTF-16)." }),
-  ),
-  limit: Type.Optional(
-    Type.Integer({
-      minimum: 1,
-      maximum: 16384,
-      description: "Last response page size; default/max 16384 characters.",
-    }),
-  ),
-  passive: Type.Optional(
-    Type.Boolean({
-      description:
-        "For action='send' only: legacy alias for delivery='passive'. Discouraged for agent-to-agent messages.",
-    }),
-  ),
+  threadId: Type.Optional(Type.String()),
+  entryId: Type.Optional(Type.String()),
+  offset: Type.Optional(Type.Integer({ minimum: 0, description: "UTF-16 characters" })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 16384 })),
+  passive: Type.Optional(Type.Boolean({ description: "Legacy alias for delivery=passive" })),
 });

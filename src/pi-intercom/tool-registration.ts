@@ -13,7 +13,7 @@ export function registerIntercomTools(
     name: "intercom",
     label: "Intercom",
     description:
-      "Discover and message connected Pi sessions in your collaboration group; main sessions can also reach other mains, across projects. Use list for unambiguous targets. Send defaults to steer at the next tool boundary; queue defers; passive never wakes the model. Ask waits for a correlated reply; reply answers the active or single pending ask (specify replyTo when ambiguous). Pending lists asks; status shows connection and inbound queue state. Last reads a peer's original completed assistant response without waking it; page using entryId and nextOffset. Broker acceptance is not recipient persistence, consumption, or task completion.",
+      "Message connected Pi sessions in your group; mains also reach other mains across projects. List shows target IDs. Ask waits for a correlated reply; reply answers the active or sole pending ask. Pending lists asks; status shows connection and inbound queue. Last pages a peer's last completed response without waking it. Broker acceptance is not recipient persistence, consumption or completion.",
     parameters: intercomSchema,
     renderResult: renderCompactResult,
     async execute(_id, params, signal, _update, ctx) {
