@@ -3156,7 +3156,7 @@ test("native public tool rejects invalid delivery combinations and preserves rec
   assert.deepEqual(receiver.errors, []);
 });
 
-test("native reply to several pending asks reports an ambiguous reply target", async (t) => {
+test("native reply to several pending asks reports ambiguity and refuses a mismatched sender without sending", async (t) => {
   const receiver = await makeSession(t, "ambiguous-reply");
   receiver.faux.setResponses([fauxAssistantMessage("Noted"), fauxAssistantMessage("Noted")]);
   await receiver.send("first-pending", { text: "First question", expectsReply: true });
@@ -3191,6 +3191,36 @@ test("native reply to several pending asks reports an ambiguous reply target", a
       },
     );
   }
+  const firstDelivered = once(receiver.sender, "message");
+  await assert.rejects(
+    executeIntercom(receiver, {
+      action: "reply",
+      replyTo: "first-pending",
+      to: "too short",
+      message: "Wrong sender",
+    }),
+    (error: unknown) => {
+      assert.equal(at(error, "details", "reasonCode"), "reply_failed");
+      assert.deepEqual(
+        records(at(error, "details", "nextActions")).map((action) => action.action),
+        ["pending", "list"],
+      );
+      return true;
+    },
+  );
+  await executeIntercom(receiver, {
+    action: "reply",
+    replyTo: "first-pending",
+    to: "sender-ambiguous-reply",
+    message: "First answer",
+  });
+  const [, delivered] = array(await firstDelivered);
+  assert.equal(at(delivered, "replyTo"), "first-pending");
+  assert.equal(
+    at(delivered, "content", "text"),
+    "First answer",
+    "the refused reply was not delivered ahead of the valid reply",
+  );
   assert.equal(receiver.faux.state.callCount, 2);
   assert.deepEqual(receiver.errors, []);
 });
