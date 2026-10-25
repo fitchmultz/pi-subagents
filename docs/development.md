@@ -67,7 +67,9 @@ Every test/smoke broker uses a short, explicit `PI_INTERCOM_RUNTIME_DIR` owned b
 the fixture. Do not touch `/tmp/pi-intercom-<uid>` to test namespace behavior on a
 workstation with active sessions. Tests for the default path inspect it without
 starting or deleting the user's broker. Stop owned processes and remove temporary
-resources even on failure or signal cancellation.
+resources even on failure or signal cancellation. The native package smoke and
+`.github/scripts/ci-host.mjs` are exceptions: they keep their roots, including
+native session journals, and print each root's path.
 
 Preserve native receipt, cold-crash, shutdown, continuation and broker contracts
 at their actual SDK, journal, filesystem or process boundary. Carry distinct
