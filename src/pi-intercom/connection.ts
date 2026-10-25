@@ -7,6 +7,7 @@ import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { LastMessageQuery, Message, SessionInfo } from "./types.ts";
 import { readLastMessage } from "./last-message.ts";
 import { asError } from "./validation.ts";
+import { RecoveryError } from "./tool-results.ts";
 import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
 
 type Lifecycle = Readonly<
@@ -279,12 +280,14 @@ export async function resolveConnectedTarget(
     return resolution.target.id;
   }
   if (resolution.status === "ambiguous") {
-    throw new Error(
+    throw new RecoveryError(
+      "ambiguous_target",
       `Target "${name}" matches multiple sessions. Use one of these targets: ${formatTargetOptions(resolution.matches, sessions)}.`,
     );
   }
   if (resolution.status === "prefix_too_short") {
-    throw new Error(
+    throw new RecoveryError(
+      "ambiguous_target",
       `Target "${name}" is too short. Use the displayed target from intercom list, such as ${formatTargetOptions(resolution.matches, sessions)}.`,
     );
   }

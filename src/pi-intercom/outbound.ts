@@ -22,7 +22,7 @@ import { formatAttachments } from "./message-format.ts";
 import {
   AskDeliveryError,
   failureDetails,
-  replyFailureReason,
+  RecoveryError,
   type RecoveryAction,
 } from "./tool-results.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
@@ -155,11 +155,10 @@ export class IntercomOutbound {
       }
       return this.sent(to, params, result);
     } catch (error) {
-      const text = errorMessage(error);
       return toolError(
-        `Failed to send: ${text}`,
+        `Failed to send: ${errorMessage(error)}`,
         failureDetails(
-          text.startsWith("Target ") ? "ambiguous_target" : "send_failed",
+          error instanceof RecoveryError ? error.code : "send_failed",
           [
             { action: "list" },
             { action: "send", guidance: "Retry with an exact active recipient target." },
@@ -225,17 +224,10 @@ export class IntercomOutbound {
       const result = this.deliveryFailure(to, error.result);
       return { ...result, details: { ...result.details, error: true } };
     }
-    const text = errorMessage(error);
-    let reason = "ask_failed";
-    if (text.startsWith("No reply from")) {
-      reason = "reply_timeout";
-    } else if (text.startsWith("Target ")) {
-      reason = "ambiguous_target";
-    }
     return toolError(
-      `Failed: ${text}`,
+      `Failed: ${errorMessage(error)}`,
       failureDetails(
-        reason,
+        error instanceof RecoveryError ? error.code : "ask_failed",
         [
           { action: "status" },
           { action: "list" },
@@ -409,8 +401,7 @@ export class IntercomOutbound {
     }
   }
   private replyFailure(error: unknown, replyTo: string | undefined): ToolResultLike {
-    const text = errorMessage(error);
-    const reason = replyFailureReason(text);
+    const reason = error instanceof RecoveryError ? error.code : "reply_failed";
     const actions: readonly RecoveryAction[] =
       reason === "no_pending_reply"
         ? [
@@ -423,7 +414,7 @@ export class IntercomOutbound {
           ]
         : [{ action: "pending" }, { action: "list" }];
     return toolError(
-      `Failed to reply: ${text}`,
+      `Failed to reply: ${errorMessage(error)}`,
       failureDetails(reason, actions, {
         error: true,
         ...((replyTo ?? "") !== "" ? { replyTo } : {}),

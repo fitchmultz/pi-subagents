@@ -3,7 +3,7 @@ import type { IntercomClient, SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
 import { asError } from "./validation.ts";
-import { AskDeliveryError } from "./tool-results.ts";
+import { AskDeliveryError, RecoveryError } from "./tool-results.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
 interface ReplyWaiter {
@@ -71,7 +71,8 @@ export class ReplyWait {
       const { from, replyTo, signal } = options;
       const timeout = setTimeout(() => {
         this.reject(
-          new Error(
+          new RecoveryError(
+            "reply_timeout",
             `No reply from "${from}" within ${Math.max(1, Math.round(this.timeoutMs / 60000))} minute(s)`,
           ),
         );

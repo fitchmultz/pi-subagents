@@ -1,5 +1,10 @@
 import type { SendResult } from "./types.ts";
 import type { ToolResultLike } from "./runtime-types.ts";
+type RecoveryCode =
+  | "ambiguous_target"
+  | "reply_timeout"
+  | "no_pending_reply"
+  | "ambiguous_reply_target";
 export interface RecoveryAction {
   readonly action: "list" | "pending" | "send" | "status";
   readonly guidance?: string;
@@ -11,16 +16,12 @@ export function failureDetails(
 ): Readonly<Record<string, unknown>> {
   return { ...details, reasonCode, nextActions };
 }
-export function replyFailureReason(
-  message: string,
-): "no_pending_reply" | "ambiguous_reply_target" | "reply_failed" {
-  if (message.startsWith("No active intercom context") || message.startsWith("No pending ask")) {
-    return "no_pending_reply";
+export class RecoveryError extends Error {
+  readonly code: RecoveryCode;
+  constructor(code: RecoveryCode, message: string) {
+    super(message);
+    this.code = code;
   }
-  if (message.startsWith("Multiple pending asks") || message.includes("too short")) {
-    return "ambiguous_reply_target";
-  }
-  return "reply_failed";
 }
 export function firstTextContent(result: {
   readonly content?: readonly { readonly type: string; readonly text?: string }[];

@@ -1,5 +1,6 @@
 import type { Message, SessionInfo } from "./types.ts";
 import { formatSessionTarget, resolveSessionTarget, shortSessionId } from "./session-targets.ts";
+import { RecoveryError } from "./tool-results.ts";
 
 export interface IntercomContext {
   readonly from: SessionInfo;
@@ -55,7 +56,7 @@ function matchingSender(
 ): readonly IntercomContext[] {
   const tooShort = tooShortSenderTargetMessage(contexts, to);
   if (tooShort !== null && tooShort !== "") {
-    throw new Error(tooShort);
+    throw new RecoveryError("ambiguous_reply_target", tooShort);
   }
   return resolveBySenderTarget(contexts, to);
 }
@@ -66,7 +67,7 @@ function explicitReply(
 ): IntercomContext {
   const target = contexts.find((context) => context.message.id === replyTo);
   if (!target) {
-    throw new Error(`No pending ask with replyTo "${replyTo}"`);
+    throw new RecoveryError("no_pending_reply", `No pending ask with replyTo "${replyTo}"`);
   }
   if (
     to !== "" &&
@@ -82,11 +83,12 @@ function replyBySender(contexts: readonly IntercomContext[], to: string): Interc
     return matches[0];
   }
   if (matches.length > 1) {
-    throw new Error(
+    throw new RecoveryError(
+      "ambiguous_reply_target",
       `Multiple pending asks from "${to}" — use one of: ${pendingSenderOptions(matches, contexts)}.`,
     );
   }
-  throw new Error(`No pending ask from "${to}"`);
+  throw new RecoveryError("no_pending_reply", `No pending ask from "${to}"`);
 }
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
@@ -209,9 +211,9 @@ export class ReplyTracker {
       return pending[0];
     }
     if (pending.length === 0) {
-      throw new Error("No active intercom context to reply to");
+      throw new RecoveryError("no_pending_reply", "No active intercom context to reply to");
     }
-    throw new Error("Multiple pending asks — specify `to`");
+    throw new RecoveryError("ambiguous_reply_target", "Multiple pending asks — specify `to`");
   }
 
   markReplied(replyTo: string): void {
