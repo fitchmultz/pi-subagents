@@ -3071,7 +3071,8 @@ for (const hasUI of [false, true]) {
 
 test("native public tool rejects invalid delivery combinations and preserves recovery actions", async (t) => {
   const receiver = await makeSession(t, "invalid-options");
-  for (const { params, expected, reason } of [
+  const shortTarget = text(receiver.sender.sessionId).slice(0, 3);
+  for (const { params, expected, reason, actions } of [
     {
       params: { action: "ask", delivery: "passive", to: "nobody", message: "Invalid" },
       expected: /delivery='passive' is only valid/,
@@ -3109,18 +3110,38 @@ test("native public tool rejects invalid delivery combinations and preserves rec
       reason: "delivery_failed",
     },
     {
+      params: { action: "send", to: shortTarget, message: "Ambiguous target" },
+      reason: "ambiguous_target",
+      actions: ["list", "send"],
+    },
+    {
+      params: { action: "ask", to: shortTarget, message: "Ambiguous target" },
+      reason: "ambiguous_target",
+      actions: ["status", "list", "send"],
+    },
+    {
       params: { action: "reply", message: "No question" },
-      expected: /No active intercom context/,
       reason: "no_pending_reply",
+      actions: ["pending", "send"],
     },
   ]) {
     // Validate one public tool invocation before the next reuses its session.
     // oxlint-disable-next-line no-await-in-loop
     await assert.rejects(executeIntercom(receiver, params), (error: unknown) => {
-      assert.match(text(property(error, "message")), expected);
+      if (expected !== undefined) {
+        assert.match(text(property(error, "message")), expected);
+      }
       if (reason !== undefined) {
         assert.equal(at(error, "details", "reasonCode"), reason);
-        assert.ok(records(at(error, "details", "nextActions")).length > 0);
+        const nextActions = records(at(error, "details", "nextActions"));
+        if (actions === undefined) {
+          assert.ok(nextActions.length > 0);
+        } else {
+          assert.deepEqual(
+            nextActions.map((action) => action.action),
+            actions,
+          );
+        }
       }
       return true;
     });
@@ -3132,6 +3153,45 @@ test("native public tool rejects invalid delivery combinations and preserves rec
     passive: true,
   });
   assert.match(JSON.stringify(passive.content), /passive; recipient model was not woken/);
+  assert.deepEqual(receiver.errors, []);
+});
+
+test("native reply to several pending asks reports an ambiguous reply target", async (t) => {
+  const receiver = await makeSession(t, "ambiguous-reply");
+  receiver.faux.setResponses([fauxAssistantMessage("Noted"), fauxAssistantMessage("Noted")]);
+  await receiver.send("first-pending", { text: "First question", expectsReply: true });
+  await receiver.send("second-pending", { text: "Second question", expectsReply: true });
+  await waitFor(
+    async () =>
+      receiver.settled() === 2 &&
+      (await receiver.sender.listSessions()).find((peer) => peer.name === "ambiguous-reply")
+        ?.pendingAsks === 2,
+    "two published pending asks",
+  );
+  for (const to of [
+    undefined,
+    "sender-ambiguous-reply",
+    text(receiver.sender.sessionId).slice(0, 3),
+  ]) {
+    // Each rejected reply must leave both asks pending for the next target form.
+    // oxlint-disable-next-line no-await-in-loop
+    await assert.rejects(
+      executeIntercom(receiver, {
+        action: "reply",
+        message: "Which one?",
+        ...(to === undefined ? {} : { to }),
+      }),
+      (error: unknown) => {
+        assert.equal(at(error, "details", "reasonCode"), "ambiguous_reply_target");
+        assert.deepEqual(
+          records(at(error, "details", "nextActions")).map((action) => action.action),
+          ["pending", "list"],
+        );
+        return true;
+      },
+    );
+  }
+  assert.equal(receiver.faux.state.callCount, 2);
   assert.deepEqual(receiver.errors, []);
 });
 
