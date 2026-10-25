@@ -32,6 +32,10 @@
 - Reuse a bounded physical-receipt index instead of repeatedly parsing unchanged parent journals. Validate changed prefixes and retain newline, replacement, truncation, corruption and owner checks.
 - Restore the above-editor named running-agent widget, active-first status rows and expansion, while retaining read-only `/agents` watching. No live runtime, broker, bridge, model or auth changes.
 
+### Changed
+
+- Update development tooling to oxlint 1.89.0 with tsgolint 7.0.2005, oxfmt 0.74.0, TypeBox 1.4.3, and Node 24.19.2 and Sinon 22.0.2 typings, with a regenerated lockfile. Runtime dependencies, optional host-provided Pi and TypeBox peers, and the Node 24.21 floor are unchanged.
+
 ## [0.50.0] - Unreleased
 
 ### Breaking
