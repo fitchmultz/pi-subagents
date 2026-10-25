@@ -12,12 +12,6 @@ export type StringChunk = (
   text: string,
   root?: UnknownRecord,
 ) => void;
-export interface ProjectionLimits {
-  readonly depth: number;
-  readonly nodes: number;
-  readonly arrayLength: number;
-  readonly keyLength: number;
-}
 interface Container {
   path: (string | number)[];
   value?: Record<string, unknown> | unknown[];
@@ -36,22 +30,14 @@ export class JsonProjection {
   private scalar?: { path: (string | number)[]; text: string; limit: number; number: boolean };
   private key = false;
   private keyLimit = 4096;
-  private nodes = 0;
   private readonly select: Projection;
   private readonly stringChunk?: StringChunk;
   private readonly keys: KeyLimit;
-  private readonly limits?: ProjectionLimits;
   value: unknown;
-  constructor(
-    select: Projection,
-    stringChunk?: StringChunk,
-    keys: KeyLimit = () => 4096,
-    limits?: ProjectionLimits,
-  ) {
+  constructor(select: Projection, stringChunk?: StringChunk, keys: KeyLimit = () => 4096) {
     this.select = select;
     this.stringChunk = stringChunk;
     this.keys = keys;
-    this.limits = limits;
   }
   private root(): UnknownRecord | undefined {
     return isRecord(this.value) ? this.value : undefined;
@@ -65,20 +51,10 @@ export class JsonProjection {
   }
   private selected(path: readonly (string | number)[]): boolean | number {
     const parent = this.stack.at(-1);
-    const keep = parent && parent.value === undefined ? false : this.select(path, this.root());
-    if (retained(keep) && this.limits && ++this.nodes > this.limits.nodes) {
-      throw new RangeError("JSON projection exceeds its assembled-node budget.");
-    }
-    return keep;
+    return parent && parent.value === undefined ? false : this.select(path, this.root());
   }
   private nextPath(): (string | number)[] {
     const parent = this.stack.at(-1);
-    if (
-      this.limits &&
-      (this.stack.length > this.limits.depth || (parent && parent.index >= this.limits.arrayLength))
-    ) {
-      throw new RangeError("JSON projection exceeds its depth or array-position budget.");
-    }
     if (!parent) {
       return [];
     }
@@ -119,13 +95,6 @@ export class JsonProjection {
   }
   private appendKey(text: string): void {
     const parent = this.parent();
-    if (
-      parent.value !== undefined &&
-      this.limits &&
-      parent.key.length + text.length > this.limits.keyLength
-    ) {
-      throw new RangeError("JSON projection exceeds its property-key budget.");
-    }
     if (parent.key.length < this.keyLimit) {
       parent.key += text.slice(0, this.keyLimit - parent.key.length);
     }
