@@ -42,6 +42,30 @@ each, zero failures, with the native completion audit and process cleanup intact
 fullscreen idle CPU was 0.21 s open vs 0.08 s closed on official and 0.25 s vs 0.18 s on
 the fork over 4 s.
 
+Managed mode asserts that the packed `dist/agent/observe-screen.js` cannot resolve
+`@earendil-works/pi-tui` from its own location or ancestors, so the run proves host-owned
+resolution rather than a development checkout's peers. Keep `--output` outside any directory
+tree with those packages in `node_modules`.
+
+Add `--refresh` (requires `--managed`) for the install lifecycle behind issue #265. The
+driver installs the committed lockfile's full graph, so Pi's loader binds the extension
+natively to package-local SDK copies at startup. After both actors are ready, it refreshes
+the install with Pi's git-package arguments (`npm install --omit=dev --legacy-peer-deps
+--no-audit`, plus `--ignore-scripts` to keep the packed `dist/`), asserts the SDK peers are
+gone, then opens `/agents`. A viewer that imports SDK packages by bare name fails here with
+`Cannot find package '@earendil-works/pi-tui'`. A fresh production-only start does not
+reproduce the failure, because Pi's loader falls back to its host modules whenever native
+resolution fails.
+
+Add `--adopt CANDIDATE` (requires `--refresh`) with a baseline `--source` to prove that a
+session which already failed recovers without a restart or `/reload`. The driver opens
+`/agents`, observes the failure, packs the candidate, copies its compiled
+`dist/agent/observe-*.js` viewer files over the installed artifact at the same paths, then
+runs the full scenario in the same CLI. Node does not keep a module whose imports failed to
+resolve, and the baseline viewer fails on its first import, so the cached extension's lazy
+import reads the new files. Modules from the startup graph stay cached, so the candidate's
+viewer must not need new exports from them.
+
 ## Scenario
 
 The parent delegates `watch-child 雪`; the child publishes `CHILD_TEXT_LIVE 雪😀` and
@@ -92,4 +116,6 @@ reopen and settlement. No event-loop, memory, file-read or network metric is col
 Managed mode installs a locally packed and extracted package, not a remote git/npm
 checkout. It verifies packaged contents and discovery, but does not exercise the registry
 or package-manager update path.
+`--refresh` runs Pi's npm refresh arguments directly against the extracted package; it
+does not run `pi update`, a git fetch, or the package's lifecycle scripts.
 Offline and an allowlisted empty-credential environment prevent ordinary provider use.

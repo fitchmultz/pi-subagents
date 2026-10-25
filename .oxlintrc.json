@@ -305,6 +305,30 @@
   "overrides": [
     {
       "files": [
+        "src/agent/observe-card.ts",
+        "src/agent/observe-chrome.ts",
+        "src/agent/observe-layout.ts",
+        "src/agent/observe-reading.ts",
+        "src/agent/observe-screen.ts",
+        "src/agent/observe-transcript.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["@earendil-works/**"],
+                "allowTypeImports": true,
+                "message": "Resolve lazy viewer values through the selected host in observe-layout.ts."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "**/*.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "**/*.spec.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "**/__tests__/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",

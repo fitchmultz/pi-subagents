@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { findPackageJSON } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { json, numberValue, text } from "./assertions.ts";
 
 type Options = {
@@ -15,6 +16,8 @@ type Options = {
   tmux: string;
   mode: "fullscreen" | "regular";
   managed: boolean;
+  refresh: boolean;
+  adopt?: string;
 };
 type ProcessIdentity = { pid: number; birth: string; role: string };
 type Evidence = {
@@ -29,13 +32,20 @@ type Evidence = {
 function options(): Options {
   const args = process.argv.slice(2);
   const values = new Map<string, string>();
-  const allowed = new Set(["--source", "--host", "--output", "--tmux", "--mode"]);
+  const allowed = new Set(["--source", "--host", "--output", "--tmux", "--mode", "--adopt"]);
   let managed = false;
+  let refresh = false;
   for (let i = 0; i < args.length;) {
     const key = args[i];
     if (key === "--managed") {
       assert.ok(!managed, "Duplicate option --managed");
       managed = true;
+      i += 1;
+      continue;
+    }
+    if (key === "--refresh") {
+      assert.ok(!refresh, "Duplicate option --refresh");
+      refresh = true;
       i += 1;
       continue;
     }
@@ -54,6 +64,9 @@ function options(): Options {
   );
   const mode = values.get("--mode") ?? "fullscreen";
   assert.ok(mode === "fullscreen" || mode === "regular");
+  assert.ok(managed || !refresh, "--refresh requires --managed");
+  const adopt = values.get("--adopt");
+  assert.ok(refresh || adopt === undefined, "--adopt requires --refresh");
   return {
     source: fs.realpathSync(source),
     host: fs.realpathSync(host),
@@ -61,6 +74,8 @@ function options(): Options {
     tmux: values.get("--tmux") ?? "/opt/homebrew/bin/tmux",
     mode,
     managed,
+    refresh,
+    adopt: adopt === undefined ? undefined : fs.realpathSync(adopt),
   };
 }
 function quote(value: string): string {
@@ -125,6 +140,7 @@ class Proof {
   readonly socket: string;
   server?: ProcessIdentity;
   runDir?: string;
+  installed?: string;
   cancelled?: Error;
   constructor(opts: Options) {
     this.options = opts;
@@ -177,34 +193,61 @@ class Proof {
     assert.equal(manifest.name, "@earendil-works/pi-coding-agent");
     return path.resolve(this.options.host, text(json(JSON.stringify(manifest.bin)).pi));
   }
-  private async install(): Promise<void> {
-    const packages = path.join(this.options.output, "package");
+  private async unpack(
+    source: string,
+    packages: string,
+  ): Promise<{ tarball: string; root: string }> {
     fs.mkdirSync(packages);
-    await this.installCommand("npm", [
-      "pack",
-      this.options.source,
-      "--pack-destination",
-      packages,
-      "--silent",
-    ]);
+    await this.installCommand("npm", ["pack", source, "--pack-destination", packages, "--silent"]);
     const archives = fs.readdirSync(packages).filter((file) => file.endsWith(".tgz"));
     assert.equal(archives.length, 1, "npm pack must produce one archive");
     const tarball = path.join(packages, archives[0]);
     const unpacked = path.join(packages, "unpacked");
     fs.mkdirSync(unpacked);
     await this.installCommand("/usr/bin/tar", ["-xzf", tarball, "-C", unpacked]);
-    const installed = path.join(unpacked, "package");
-    await this.installCommand("npm", [
-      "install",
-      "--prefix",
-      installed,
-      "--omit=dev",
-      "--omit=peer",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--silent",
-    ]);
+    return { tarball, root: path.join(unpacked, "package") };
+  }
+  private async install(): Promise<void> {
+    const { tarball, root: installed } = await this.unpack(
+      this.options.source,
+      path.join(this.options.output, "package"),
+    );
+    this.installed = installed;
+    if (this.options.refresh) {
+      // A running session can start while its install still holds the full lockfile graph.
+      fs.copyFileSync(
+        path.join(this.options.source, "package-lock.json"),
+        path.join(installed, "package-lock.json"),
+      );
+      await this.installCommand("npm", [
+        "ci",
+        "--prefix",
+        installed,
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--silent",
+      ]);
+      assert.ok(this.sdkResolvable(), "full lockfile graph exposes package-local SDK peers");
+      this.report.checks.push("full lockfile graph exposes package-local SDK peers at startup");
+    } else {
+      await this.installCommand("npm", [
+        "install",
+        "--prefix",
+        installed,
+        "--omit=dev",
+        "--omit=peer",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--silent",
+      ]);
+      assert.ok(
+        !this.sdkResolvable(),
+        "production install resolves no SDK peers from the packed artifact or its ancestors",
+      );
+      this.report.checks.push("production install resolves SDK peers only through the host");
+    }
     await this.installCommand(this.cli(), ["install", installed, "--approve"]);
     const listed = await this.installCommand(this.cli(), ["list", "--approve"]);
     assert.ok(listed.includes(installed), `pi list did not include managed package:\n${listed}`);
@@ -218,6 +261,58 @@ class Proof {
         fs.readFileSync(path.join(this.env.PI_CODING_AGENT_DIR ?? "", "settings.json"), "utf8"),
       ),
     });
+  }
+  private sdkResolvable(): boolean {
+    const viewer = path.join(this.installed ?? "", "dist/agent/observe-screen.js");
+    assert.ok(fs.existsSync(viewer), "packed artifact contains the compiled viewer");
+    try {
+      return findPackageJSON("@earendil-works/pi-tui", pathToFileURL(viewer)) !== undefined;
+    } catch (error) {
+      assert.ok(
+        error instanceof Error && "code" in error && error.code === "ERR_MODULE_NOT_FOUND",
+        message(error),
+      );
+      return false;
+    }
+  }
+  async refreshInstall(): Promise<void> {
+    if (!this.options.refresh) {
+      return;
+    }
+    // Pi's git-package refresh arguments, without lifecycle scripts so the packed dist stays under test.
+    await this.installCommand("npm", [
+      "install",
+      "--prefix",
+      this.installed ?? "",
+      "--omit=dev",
+      "--legacy-peer-deps",
+      "--no-audit",
+      "--no-fund",
+      "--ignore-scripts",
+      "--silent",
+    ]);
+    assert.ok(!this.sdkResolvable(), "production refresh removed package-local SDK peers");
+    this.report.checks.push("running session's install refreshed to the production graph");
+    if (this.options.adopt !== undefined) {
+      await this.adopt(this.options.adopt);
+    }
+  }
+  // An already-failed session keeps its cached extension; only the lazy viewer files are read again.
+  private async adopt(source: string): Promise<void> {
+    await this.line("/agents");
+    await this.visible("Cannot find package '@earendil-works/pi-tui'", "adopt-01-agents-failed");
+    const { root } = await this.unpack(source, path.join(this.options.output, "adopted"));
+    const viewer = fs
+      .readdirSync(path.join(root, "dist/agent"))
+      .filter((file) => file.startsWith("observe-") && file !== "observe-client.js");
+    const adopted: Record<string, string> = {};
+    for (const file of viewer) {
+      const target = path.join(this.installed ?? "", "dist/agent", file);
+      fs.copyFileSync(path.join(root, "dist/agent", file), target);
+      adopted[file] = createHash("sha256").update(fs.readFileSync(target)).digest("hex");
+    }
+    this.report.metrics.adopted = adopted;
+    this.report.checks.push("same session published the candidate's lazy viewer files in place");
   }
   saveAt(file: string, data: unknown): void {
     fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
@@ -393,6 +488,11 @@ class Proof {
         "src/agent/journal-tail.ts",
         "package-lock.json",
       ].map((file) => path.join(this.options.source, file)),
+      ...(this.installed === undefined
+        ? []
+        : ["dist/agent/observe.js", "dist/agent/observe-screen.js", "dist/build-info.js"].map(
+            (file) => path.join(this.installed ?? "", file),
+          )),
       path.join(this.options.host, "package.json"),
       path.join(this.options.host, "dist/index.js"),
       cli,
@@ -432,6 +532,9 @@ class Proof {
       project: this.project,
       mode: this.options.mode,
       managed: this.options.managed,
+      refresh: this.options.refresh,
+      adopt: this.options.adopt ?? null,
+      artifact: this.installed ?? null,
       install: this.options.managed
         ? json(fs.readFileSync(path.join(this.options.output, "managed-install.json"), "utf8"))
         : null,
@@ -857,7 +960,15 @@ class Proof {
     this.report.cleanup.push(
       "Owned native actors, broker and tmux server exited; artifacts retained.",
     );
-    fs.rmSync(this.runtime, { recursive: true, force: true });
+    if (
+      fs
+        .readdirSync(this.runtime, { recursive: true, encoding: "utf8" })
+        .some((file) => file.endsWith(".jsonl"))
+    ) {
+      this.report.cleanup.push("Runtime retained because native JSONL files remain.");
+    } else {
+      fs.rmSync(this.runtime, { recursive: true, force: true });
+    }
   }
 }
 
@@ -877,6 +988,7 @@ async function main(): Promise<void> {
     proof.identities();
     proof.launch();
     await proof.ready();
+    await proof.refreshInstall();
     await proof.exercise();
     proof.report.status = "passed";
   } catch (error) {
