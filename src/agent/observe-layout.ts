@@ -6,7 +6,7 @@ import type * as Layout from "@earendil-works/pi-tui/dist/layout.js";
 import type * as Dispatch from "@earendil-works/pi-tui/dist/tui.js";
 import { loadSDK, packageRoot } from "./host.ts";
 
-// Every runtime UI and SDK value in the lazy viewer graph comes from the selected host's files.
+// Runtime values in lazy-only viewer modules come from the selected host's files.
 // A bare import would resolve against whatever node_modules exist when /agents first opens.
 // Jiti aliases the pi-tui root to an index file, so submodule URLs must resolve here too.
 const sdkRoot = packageRoot();
