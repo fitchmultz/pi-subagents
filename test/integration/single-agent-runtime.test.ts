@@ -63,6 +63,14 @@ function dead(pid: number): boolean {
     return error instanceof Error && "code" in error && error.code === "ESRCH";
   }
 }
+function signalable(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 async function cleanup(root: string): Promise<void> {
   for (const name of [
     "first",
@@ -104,7 +112,8 @@ async function cleanup(root: string): Promise<void> {
       if (typeof file === "string" && file.includes("/shells/") && file.endsWith(".json")) {
         const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
         Assert(Type.Object({ pid: Type.Integer() }), value);
-        if (!dead(value.pid)) {
+        // Permission-denied claims name another user's process; never signal them.
+        if (signalable(value.pid)) {
           process.kill(-value.pid, "SIGKILL");
         }
       }
@@ -332,16 +341,20 @@ for (const crash of [undefined, "before", "after"]) {
   );
 }
 test(
-  "single-agent actor SIGKILL retains native shell ownership for cold Stop and same-run continuation retry without replay or bystander signals",
+  "single-agent actor SIGKILL retains native shell ownership for cold Stop and same-run continuation retry without replay, bystander signals or blocking on another user's proven-reused PID",
   { timeout: 60000 },
-  async () => {
+  async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-orphan-"));
     try {
       run(root, "bash-seed-paused", true);
       const saved = seed(root);
       process.kill(saved.childPid, "SIGKILL");
       await until(() => dead(saved.childPid), "actual actor SIGKILL completes");
-      run(root, "cold-actor-stop");
+      for (const line of run(root, "cold-actor-stop").split("\n")) {
+        if (line.startsWith("Skipped permission-denied")) {
+          t.diagnostic(line);
+        }
+      }
     } finally {
       await cleanup(root);
     }

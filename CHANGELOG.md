@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Let Stop and continuation release a saved actor or native-shell PID that another user's process now holds, when its native birth proves replacement. Permission-denied probes previously blocked that existing proof, stranding children after a reboot. Unverified identities, unreadable births and claims written after the current process still refuse without signaling.
 - Keep `/agents` working after a live install refresh removes package-local development copies of Pi. Lazy-only viewer modules now resolve UI and SDK values through the selected host. Sessions already using the current viewer API recover on their next `/agents` after installing the fix. Sessions started from the published v0.50.0 package need to restart Pi.
 - Report `reply_failed` with pending/list recovery when an Intercom reply's `to` names a different sender than its `replyTo` ask. A `to` containing "too short" was previously misreported as an ambiguous reply target; recovery codes now come from the failing owner, not message wording.
 - Add an opt-in offline archive command for the retired SQLite history index, with private inventory, whole-set identity checks and prepared/completed retry reconciliation. Refuse unsafe entries, links, foreign ownership, active handles and cross-filesystem moves. Upgrades leave the directory untouched; archiving never deletes or reclaims file allocations. Releases v0.44.0–v0.49.1 can still reopen the data, so owner-enforced quiescence remains required. See the [maintenance guide](docs/retired-history-maintenance.md).

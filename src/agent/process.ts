@@ -11,6 +11,7 @@ import {
   trySignalChildTree,
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
+import { hasErrorCode } from "../shared/unknown.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
@@ -20,6 +21,7 @@ interface Published {
   readonly published?: number | undefined;
 }
 type OwnedProcess = ProcessIdentity & Published;
+type ClaimedProcess = Pick<ProcessIdentity, "pid" | "identity" | "clock"> & Published;
 /** Owner records follow their process's birth; stat after read only moves the bound later. */
 export function published<T extends object>(
   file: string,
@@ -27,24 +29,25 @@ export function published<T extends object>(
 ): (T & Published) | undefined {
   return record && { ...record, published: fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs };
 }
-export function alive(
-  identity: Pick<ProcessIdentity, "pid" | "identity" | "clock"> & Published,
-): boolean {
+export function alive(identity: ClaimedProcess): boolean {
   try {
     process.kill(identity.pid, 0);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
-      return false;
+    // EPERM still names a live PID, possibly another user's reuse; check its birth below.
+    if (!hasErrorCode(error, "EPERM")) {
+      return !hasErrorCode(error, "ESRCH");
     }
-    return true;
   }
   if (identity.identity === "unverified") {
     return true;
   }
   // Only a proven different birth disproves a live PID; ambiguous identities stay possibly owned.
+  return readChildProcessIdentity(identity.pid) === identity.identity || !replaced(identity);
+}
+function replaced(identity: ClaimedProcess): boolean {
   return (
-    readChildProcessIdentity(identity.pid) === identity.identity ||
-    !isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
+    identity.identity !== "unverified" &&
+    isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
   );
 }
 export function ownIdentity(pid = process.pid): Omit<ProcessIdentity, "token"> {
@@ -175,11 +178,12 @@ function removeObservationEndpoint(token: string): void {
     // Observation leftovers are inert to a new token and must never block native work.
   }
 }
-function verifyLiveness(pid: number): boolean {
+function verifyLiveness(identity: OwnedProcess): boolean {
   try {
-    process.kill(pid, 0);
+    process.kill(identity.pid, 0);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+    // Another user's live PID is released only by the same proof as a signalable one.
+    if (hasErrorCode(error, "ESRCH") || (hasErrorCode(error, "EPERM") && replaced(identity))) {
       return false;
     }
     throw new Error("Actor liveness is ambiguous; no stop was sent.", { cause: error });
@@ -187,19 +191,17 @@ function verifyLiveness(pid: number): boolean {
   return true;
 }
 export function verifyProcess(identity: OwnedProcess): boolean {
-  if (!verifyLiveness(identity.pid)) {
+  if (!verifyLiveness(identity)) {
     return false;
   }
   const actual = readChildProcessIdentity(identity.pid);
   if (identity.identity !== "unverified" && actual !== identity.identity) {
-    if (actual === undefined && !verifyLiveness(identity.pid)) {
+    if (actual === undefined && !verifyLiveness(identity)) {
       // Native abort can reap a shell between the liveness probe and birth lookup.
       return false;
     }
     // A different-birth process at the PID proves the recorded process is gone.
-    if (
-      isChildProcessReplaced(identity.pid, identity.identity, identity.published, identity.clock)
-    ) {
+    if (replaced(identity)) {
       return false;
     }
   }
