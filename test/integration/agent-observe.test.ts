@@ -1202,15 +1202,29 @@ test(
       });
     t.after(async () => {
       try {
-        await runtime.dispose();
+        if (t.signal.aborted) {
+          t.diagnostic(
+            `Cancelled observer-cache state: ${JSON.stringify({
+              screen: view instanceof TuiAltScreen ? view.getScreenLines() : [],
+              terminalTail: terminal.output.slice(-8192),
+              opens: opened().slice(-20),
+              scans: scans.callCount,
+              probes: identityProbes(),
+            })}`,
+          );
+        }
       } finally {
-        mode.stop();
-        opens.restore();
-        probes.restore();
-        scans.restore();
-        syncBuiltinESMExports();
-        restoreEnvironment(prior);
-        fs.rmSync(root, { recursive: true, force: true });
+        try {
+          await runtime.dispose();
+        } finally {
+          mode.stop();
+          opens.restore();
+          probes.restore();
+          scans.restore();
+          syncBuiltinESMExports();
+          restoreEnvironment(prior);
+          fs.rmSync(root, { recursive: true, force: true });
+        }
       }
     });
     await mode.init();

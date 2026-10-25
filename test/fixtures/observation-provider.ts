@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { Session } from "node:inspector";
 import * as path from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -80,7 +81,10 @@ function gateFor(root: string): Gate {
     if (!enabled.includes(name)) {
       return;
     }
-    fs.writeFileSync(path.join(root, `gate-${name}.json`), JSON.stringify(detail));
+    const file = path.join(root, `gate-${name}.json`);
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(detail), { flag: "wx", mode: 0o600 });
+    fs.renameSync(temporary, file);
     while (!fs.existsSync(path.join(root, `release-${name}`))) {
       if (signal?.aborted === true) {
         return;
