@@ -410,7 +410,9 @@ export class IntercomClient extends EventEmitter {
       const timeout = setTimeout(() => {
         if (this.pendingLists.has(requestId)) {
           this.pendingLists.delete(requestId);
-          wrappedReject(new Error("List sessions timeout"));
+          wrappedReject(
+            Object.assign(new Error("List sessions timeout"), { code: "list_timeout" }),
+          );
         }
       }, this.listTimeoutMs);
       timeout.unref();

@@ -6,7 +6,7 @@ import type { Message, SendResult, SessionInfo } from "./types.ts";
 import type { Identity } from "./bridge-config.ts";
 import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
 import { Mailbox } from "./bridge-mailbox.ts";
-import type { UnknownRecord } from "../shared/unknown.ts";
+import { hasErrorCode, type UnknownRecord } from "../shared/unknown.ts";
 import type { Operation } from "./bridge-routes.ts";
 import type { RequestContext } from "./bridge-http.ts";
 import { resolveBridgeTarget, bridgeSessionList } from "./bridge-target.ts";
@@ -272,7 +272,7 @@ export class Session {
       peers = await wait(this.client.listSessions(), signal);
     } catch (error) {
       cancelled(signal);
-      if (error instanceof Error && error.message === "List sessions timeout") {
+      if (hasErrorCode(error, "list_timeout")) {
         throw new Fault(504, "list_timeout", "Broker session list deadline exceeded.");
       }
       throw new Fault(503, "broker_unavailable", "Broker session list failed.");

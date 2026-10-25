@@ -534,6 +534,18 @@ test(
         },
       );
 
+      await t.test("an unanswered broker session list returns the list deadline", async () => {
+        activeBroker.child.kill("SIGSTOP");
+        try {
+          const late = await api("list");
+          assert.equal(late.status, 504);
+          assert.equal(record(late.body.error).code, "list_timeout");
+        } finally {
+          activeBroker.child.kill("SIGCONT");
+        }
+        assert.equal((await api("list")).body.ok, true);
+      });
+
       await t.test("broker outage does not hang or replace the broker", async () => {
         await stop(activeBroker.child);
         const down = await api("list");
