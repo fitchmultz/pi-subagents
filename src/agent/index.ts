@@ -17,8 +17,6 @@ import {
 } from "./process.ts";
 import { isChild, errorText } from "./host.ts";
 import {
-  delegateSchema,
-  runsSchema,
   resultSchema,
   attachmentSchema,
   admissionSchema,
@@ -27,9 +25,8 @@ import {
   type Launch,
   type ProcessIdentity,
   type Result,
-  type DelegateInput,
-  type RunsInput,
 } from "./contracts.ts";
+import { delegateSchema, runsSchema, type DelegateInput, type RunsInput } from "./tool-schemas.ts";
 import {
   enqueue,
   latest,
@@ -404,7 +401,7 @@ class AgentRuntime {
       name: "delegate",
       label: "Delegate",
       description:
-        "Launch one child with exactly the supplied prompt. Fresh context by default; fork preserves the full native conversation. Main sessions only. Returns an asynchronous launch receipt; completion arrives later as a notification, so do other work or end the turn instead of polling.",
+        "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
       parameters: delegateSchema,
       exposure: this.child ? "hidden" : "direct",
       renderResult: renderCompactResult,
@@ -416,7 +413,7 @@ class AgentRuntime {
       name: "agent_runs",
       label: "Agent runs",
       description:
-        "List, inspect, continue, or stop this native main session's durable child runs. No action waits for child completion; completions arrive as notifications. Inspect is paged with byte offsets and never interrupts a child. Continue requires the complete new prompt, reuses the saved conversation and returns a guidance or continuation receipt.",
+        "Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation.",
       parameters: runsSchema,
       exposure: this.child ? "hidden" : "direct",
       renderResult: renderCompactResult,

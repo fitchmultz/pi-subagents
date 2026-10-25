@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Launch, DelegateInput } from "./contracts.ts";
+import type { Launch } from "./contracts.ts";
+import type { DelegateInput } from "./tool-schemas.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
 import { runDirectory, write } from "./storage.ts";
 
