@@ -152,7 +152,7 @@ test("build.mjs: failed compile preserves the previous dist and cleans staging",
     assert.deepEqual(stagingDirs(dir), []);
   }));
 
-test("build.mjs: successful build replaces dist atomically, purging stale files", () =>
+test("build.mjs: successful build replaces dist, purging stale files", () =>
   withFixture(async (dir) => {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist", "stale.txt"), "old output");
@@ -167,9 +167,11 @@ test("build.mjs: reaps dead-pid staging and keeps live-pid staging", () =>
     const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
     assert.equal(typeof deadPid, "number");
     mkdirSync(join(dir, `dist.staging.${deadPid}`, "partial"), { recursive: true });
+    mkdirSync(join(dir, `dist.staging.${deadPid}.previous`, "retired"), { recursive: true });
     mkdirSync(join(dir, `dist.staging.${process.pid}`, "inflight"), { recursive: true });
     assert.equal((await runBuild(dir)).code, 0);
     assert.ok(!existsSync(join(dir, `dist.staging.${deadPid}`)));
+    assert.ok(!existsSync(join(dir, `dist.staging.${deadPid}.previous`)));
     assert.ok(existsSync(join(dir, `dist.staging.${process.pid}`)));
   }));
 
@@ -190,7 +192,7 @@ test("build.mjs: warns and continues when stranded staging cannot be removed", (
     assert.ok(existsSync(join(dir, "dist", "index.js")));
   }));
 
-test("build.mjs: fails loudly when the previous dist cannot be removed", () =>
+test("build.mjs: fails loudly when the previous dist cannot be retired", () =>
   withFixture(async (dir) => {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist", "sentinel.txt"), "previous build");
@@ -207,12 +209,14 @@ test("build.mjs: fails loudly when the previous dist cannot be removed", () =>
 
 test("build.mjs: concurrent build storms succeed with valid dist", { timeout: 30_000 }, () =>
   withFixture(async (dir) => {
+    mkdirSync(join(dir, "dist"));
+    writeFileSync(join(dir, "dist", "stale.txt"), "old output");
     const results = await Promise.all(Array.from({ length: 4 }, () => runBuild(dir)));
     assert.deepEqual(
       results.flatMap((result) => (result.code === 0 ? [] : [result.stderr])),
       [],
     );
-    assert.ok(existsSync(join(dir, "dist", "index.js")));
+    assert.deepEqual(readdirSync(join(dir, "dist")).sort(), ["build-info.js", "index.js"]);
     assert.deepEqual(stagingDirs(dir), []);
   }),
 );
@@ -248,7 +252,7 @@ test("build.mjs: does not accept an empty dist as a published winner", () =>
   }));
 
 test(
-  "build.mjs: caps persistent rename failures and preserves the diagnostic",
+  "build.mjs: restores the exact previous dist after persistent publication failure",
   { timeout: 10_000 },
   () =>
     withFixture(async (dir) => {
@@ -257,8 +261,8 @@ test(
       const result = await runBuild(dir, { BUILD_SWAP_FAULT: "rename-always" }, faultArgs());
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /synthetic permanent rename failure/);
-      assert.ok(!existsSync(join(dir, "dist")));
-      assert.ok(!existsSync(join(dir, "dist", "sentinel.txt")));
+      assert.deepEqual(readdirSync(join(dir, "dist")), ["sentinel.txt"]);
+      assert.equal(readFileSync(join(dir, "dist", "sentinel.txt"), "utf8"), "previous build");
       assert.deepEqual(stagingDirs(dir), []);
     }),
 );

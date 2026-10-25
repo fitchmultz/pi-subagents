@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * Purpose: Produce the compiled runtime files that the Pi extension manifest loads.
- * Responsibilities: Run TypeScript emit into a staging directory, then atomically swap it
- * into dist/ so a failed TypeScript emit never destroys a previously working dist.
+ * Responsibilities: Run TypeScript emit into a staging directory, move the last-good dist/ aside,
+ * and rename the complete staging tree into place. A failed emit never touches dist/; a failed
+ * publication renames the last-good tree back. Replacement is two renames, not an atomic exchange:
+ * a concurrent reader can briefly find no dist/, but never a partial tree.
  * Usage: `npm run build`; also invoked by scripts/prepare.mjs during install lifecycles, which may pass
  * the path of a throwaway compiler's `bin/tsc` as the first argument. Android uses native tsgo.
  * Invariants/Assumptions: deleting `dist/` is safe generated output.
@@ -25,7 +27,7 @@ const RENAME_RETRY_MS = 50;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: node scripts/build.mjs [compiler-path]\n\nCompile into PID-owned staging, stamp the package version/content hash, then publish dist.\nA failed compiler preserves existing dist. Concurrent publishers retain the winning tree.\nExample: npm run build\nExit codes: 0 published or concurrent winner retained; 1 compile/publish failed.",
+    "Usage: node scripts/build.mjs [compiler-path]\n\nCompile into PID-owned staging, stamp the package version/content hash, then publish dist.\nA failed compiler preserves existing dist; a failed publication restores it. Concurrent publishers retain a complete winning tree.\nExample: npm run build\nExit codes: 0 published or concurrent winner retained; 1 compile/publish failed.",
   );
   process.exit(0);
 }
@@ -61,7 +63,7 @@ async function reapStrandedStaging(cwd) {
   // Signal 0 proves only that the owner was gone at probe time. Pid reuse
   // between this probe and removal is inherent to pid-based reaping.
   for (const entry of await readdir(cwd, { withFileTypes: true })) {
-    const match = /^dist\.staging\.(\d+)$/.exec(entry.name);
+    const match = /^dist\.staging\.(\d+)(?:\.previous)?$/.exec(entry.name);
     if (!match || !entry.isDirectory()) {
       continue;
     }
@@ -141,17 +143,32 @@ async function tryPublish(stagingDir, distDir, retry) {
 }
 
 async function publishStaging(stagingDir, distDir) {
+  const previousDir = `${stagingDir}.previous`;
   try {
-    // A failed dist removal must fail loudly; keep it outside the retry loop.
-    // Remove dist exactly once so retries never delete a concurrent winner.
-    await rm(distDir, RM_OPTIONS);
+    // Retire dist exactly once, outside the retry loop, so retries never retire a concurrent winner.
+    await rename(distDir, previousDir).catch((error) => {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    });
     for (let retry = 0; ; retry++) {
       // Each retry must observe publication before another rename can race it.
       // oxlint-disable-next-line no-await-in-loop
       if (await tryPublish(stagingDir, distDir, retry)) {
-        return;
+        break;
       }
     }
+    await discardStaging(previousDir);
+  } catch (error) {
+    // ENOENT: nothing was retired. Otherwise a concurrent winner may already own dist.
+    await rename(previousDir, distDir).catch((restoreError) => {
+      if (restoreError?.code !== "ENOENT") {
+        console.warn(
+          `could not restore ${previousDir} to dist: ${restoreError?.message ?? restoreError}`,
+        );
+      }
+    });
+    throw error;
   } finally {
     // Safe after success too: rename moved stagingDir, so force makes this a no-op.
     await discardStaging(stagingDir);
@@ -165,6 +182,7 @@ async function main() {
   // Pid-scoped staging isolates concurrent emits; only a complete tree publishes.
   const stagingDir = join(cwd, `dist.staging.${process.pid}`);
   await rm(stagingDir, RM_OPTIONS);
+  await rm(`${stagingDir}.previous`, RM_OPTIONS);
   await compileToStaging(cwd, stagingDir, compiler);
   await publishStaging(stagingDir, join(cwd, "dist"));
 }
