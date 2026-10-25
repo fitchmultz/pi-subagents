@@ -56,4 +56,5 @@ persistent supervisor question/approval workflow.
 Old agent-directory brokers may coexist during migration; updated sessions use
 the same-user broker. Do not kill another broker or change runtime configuration
 to force discovery. Only intercom-connected eligible sessions appear, not all
-open Pi processes. See `docs/intercom.md` for broker and persistence contracts.
+open Pi processes. See [local messaging](../../docs/intercom.md) for broker and
+persistence contracts.

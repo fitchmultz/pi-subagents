@@ -76,3 +76,5 @@ proof; a child-reported pass is evidence to inspect, not automatic sign-off.
 Normal child completion returns through the run, not a redundant intercom
 message. Use direct `send` for guidance, corrections, or blockers that affect live
 work. Ordinary `ask` is bounded request/reply, not durable supervisor revival.
+The [pi-intercom skill](../pi-intercom/SKILL.md) covers messaging operations.
+See [tools and lifecycle](../../docs/reference.md) for the owning contracts.
