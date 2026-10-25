@@ -56,6 +56,14 @@ A main and its children form one group:
 These are coordination rules, not an OS sandbox against same-user code. A peer
 list contains connected, eligible sessions, not every Pi process on the machine.
 
+## Bundled skills
+
+The package ships two skills that match tool availability.
+[`pi-subagents`](skills/pi-subagents/SKILL.md) covers `delegate` and `agent_runs`,
+which only main sessions receive. [`pi-intercom`](skills/pi-intercom/SKILL.md)
+covers `intercom`, which every session has, including children and mains that
+never delegate. Load either with `/skill:pi-subagents` or `/skill:pi-intercom`.
+
 ## Watch agents without prompting them
 
 In interactive Pi, an above-editor widget names individual children with circle
