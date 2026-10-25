@@ -116,6 +116,7 @@ for (const phase of [
   "receipt",
   "model-selection",
   "continuation",
+  "lineage",
   "queue-drop",
   "queue-drop-two",
   "queue-retain",
