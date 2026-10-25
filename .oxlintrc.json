@@ -318,7 +318,7 @@
           {
             "patterns": [
               {
-                "group": ["@earendil-works/*"],
+                "group": ["@earendil-works/**"],
                 "allowTypeImports": true,
                 "message": "Resolve lazy viewer values through the selected host in observe-layout.ts."
               }
