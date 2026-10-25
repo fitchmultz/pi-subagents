@@ -63,9 +63,11 @@ function startSmoke(
       scenario === "success" ? "--llm-full" : "--llm",
       ...(keepTemp ? ["--keep-temp"] : []),
       "--timeout-ms",
+      // Includes cold RPC startup plus broker, launcher, runner and child starts.
+      // parent-ready is still mandatory; timeout parents never settle afterward.
       scenario === "success" || scenario === "startup-failure" || scenario.startsWith("SIG")
         ? "10000"
-        : "1000",
+        : "5000",
     ],
     {
       cwd: repo,
@@ -148,15 +150,16 @@ function assertSmokeResult(
   } else {
     assert.notEqual(code, 0, "failure/cancellation must not report success");
     if (scenario === "timeout" || scenario === "startup-timeout") {
-      assert.match(output, /timed out after 1000ms/);
+      assert.match(output, /real Pi intercom prompt timed out after 5000ms/);
     }
   }
 }
 
 // The same test runs unchanged against the original and repaired scripts via PI_REAL_SMOKE_TEST_SCRIPT.
+// Eight negative cases each retain the ten-second post-launch orphan-write observation.
 test(
   "real smoke stops its owned detached processes before deleting credentials and artifacts",
-  { skip: process.platform === "win32", timeout: 100_000 },
+  { skip: process.platform === "win32", timeout: 150_000 },
   async (t) => {
     for (const name of [
       "timeout",
@@ -237,6 +240,20 @@ test(
           assert.ok(
             ready.auth === true && ready.models === true,
             "dummy credentials were copied before the failure",
+          );
+          assert.equal(ready.artifacts, true, "run artifacts must exist before cleanup");
+          assert.deepEqual(
+            eventsAt(root)
+              .filter((event) => event.event === "started")
+              .map((event) => event.role)
+              .sort(),
+            ["broker", "child", "launcher", "runner"],
+            "all detached owners must start before the failure",
+          );
+          assert.equal(
+            ready.brokerPublished,
+            !scenario.startsWith("startup-"),
+            "startup cleanup must discover the detached broker before PID publication",
           );
           if (scenario === "SIGINT" || scenario === "SIGTERM") {
             controller.kill(scenario);

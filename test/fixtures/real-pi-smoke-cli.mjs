@@ -92,7 +92,9 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       process.exit(0);
     }
   } else if (role === "child") {
-    const writeAt = Date.now() + 6000;
+    // Beyond the 5-second command deadline and 3-second SIGKILL escalation.
+    const writeDelayMs = 10_000;
+    const writeAt = Date.now() + writeDelayMs;
     save(join(evidence, "child-ready"), { writeAt });
     if (scenario === "success") {
       setTimeout(() => process.exit(0), 200);
@@ -103,16 +105,17 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
           join(evidence, "delayed-child-write"),
           "orphan wrote after the smoke ended\n",
         );
-      }, 6000);
+      }, writeDelayMs);
     }
   } else {
     const { brokerPidRecord } = await import("../../src/pi-intercom/broker/pid.ts");
+    if (!scenario.startsWith("startup-")) {
+      mkdirSync(process.env.PI_INTERCOM_RUNTIME_DIR, { recursive: true });
+      writeFileSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid"), brokerPidRecord());
+    }
+    // Startup cases stay detached without publishing broker.pid for the whole cleanup,
+    // rather than racing a second timer against the controller's command deadline.
     save(join(evidence, "broker-ready"), { pid: process.pid });
-    if (scenario.startsWith("startup-")) {
-      await delay(10000);
-    } // Detached before publishing broker.pid, like slow module startup.
-    mkdirSync(process.env.PI_INTERCOM_RUNTIME_DIR, { recursive: true });
-    writeFileSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid"), brokerPidRecord());
   }
   setInterval(() => {
     // Keep the controlled process alive so smoke cleanup must signal and reap it.
@@ -175,7 +178,10 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
         // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
-      save(join(evidence, "parent-ready"), resourcesPresent());
+      save(join(evidence, "parent-ready"), {
+        ...resourcesPresent(),
+        brokerPublished: existsSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid")),
+      });
       if (scenario === "startup-failure") {
         await delay(600);
       } // Parent's broker startup wait fails before PID publication.
