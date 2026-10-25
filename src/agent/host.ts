@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type * as SDK from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { readIntercomLineage } from "../pi-intercom/identity.ts";
 
 export { errorMessage as errorText } from "../shared/unknown.ts";
 
@@ -76,19 +77,5 @@ export function runtimeEntry(): string {
   );
 }
 export function isChild(): boolean {
-  const root = process.env.PI_INTERCOM_ROOT_SESSION_ID;
-  const parent = process.env.PI_INTERCOM_PARENT_SESSION_ID;
-  if (root === undefined && parent === undefined) {
-    return false;
-  }
-  if (
-    root === undefined ||
-    parent === undefined ||
-    root.length === 0 ||
-    parent.length === 0 ||
-    root !== parent
-  ) {
-    throw new Error("Malformed child identity; delegation is disabled.");
-  }
-  return true;
+  return readIntercomLineage() !== undefined;
 }

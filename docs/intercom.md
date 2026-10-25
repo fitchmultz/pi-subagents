@@ -30,6 +30,13 @@ a parent. A child uses its main's ID for both. An offline parent does not erase
 sibling membership. Presence updates cannot change the registered group. Legacy
 or remote peers without lineage are standalone mains.
 
+Pi launches a child with both `PI_INTERCOM_ROOT_SESSION_ID` and
+`PI_INTERCOM_PARENT_SESSION_ID` set to its main's exact native ID. With neither
+set, the session is a main. Any other combination (one missing, empty, padded
+with whitespace, or different values) stops the package from loading, so that
+session gets neither delegation nor Intercom. Values are never trimmed into a
+different identity.
+
 ### Identity and targeting
 
 Use a target returned by `list`. Native peer IDs are `pi-` plus the first 32
