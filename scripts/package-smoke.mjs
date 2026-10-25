@@ -138,6 +138,12 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
     root,
   );
   assert.match(help, /Usage: node scripts\/intercom-bridge-credentials.mjs/);
+  const maintenanceHelp = run(
+    process.execPath,
+    [join(packageRoot, "scripts/archive-retired-history.mjs"), "--help"],
+    root,
+  );
+  assert.match(maintenanceHelp, /Offline-only opt-in maintenance/);
   process.stdout.write(
     run(
       process.execPath,
@@ -178,6 +184,8 @@ try {
     "scripts/build.mjs",
     "scripts/real-pi-smoke.mjs",
     "scripts/intercom-remote.mjs",
+    "scripts/archive-retired-history.mjs",
+    "docs/retired-history-maintenance.md",
     "skills/pi-subagents/SKILL.md",
     "skills/pi-intercom/SKILL.md",
   ]) {
