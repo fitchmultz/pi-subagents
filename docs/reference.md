@@ -139,6 +139,9 @@ of those external processes.
 
 Stop and shutdown skip a saved PID only when it has exited or replacement is
 proven; uncertain ownership still reports a diagnostic without signaling it.
+A PID now owned by another user (permission denied) needs the same proof; it is
+never treated as exited. Linux cannot read another user's namespace identity,
+so such a PID stays uncertain there.
 On macOS, a UTC-observed process birth strictly after its record's write time
 disproves ownership even when the reused PID is no longer a group leader. This
 assumes native record timestamps have not been backdated and the clock did not

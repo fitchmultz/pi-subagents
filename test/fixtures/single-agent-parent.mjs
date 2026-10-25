@@ -1304,6 +1304,32 @@ try {
     const recordFile = path.join(ledger, publishedFiles(ledger)[0]);
     const shell = readJSON(recordFile);
     const publishedAt = fs.statSync(recordFile).mtime;
+    // Another user's live PID answers the non-signaling probe with EPERM. PID 1 is excluded.
+    const deniedProbe = (pid) => {
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        return error.code;
+      }
+    };
+    const deniedPid = spawnSync("ps", ["-A", "-o", "pid=", "-o", "uid="], { encoding: "utf8" })
+      .stdout.trim()
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/).map(Number))
+      .find(([pid, uid]) => pid > 1 && uid !== process.getuid() && deniedProbe(pid) === "EPERM")
+      ?.at(0);
+    if (deniedPid === undefined) {
+      const superuser = process.getuid() === 0;
+      assert.ok(superuser || process.platform !== "darwin", "macOS users always see root daemons");
+      console.error(
+        `Skipped permission-denied shell claims: ${superuser ? "root may signal every PID" : "no live PID owned by another user is visible"}.`,
+      );
+    } else if (process.platform !== "darwin") {
+      console.error(
+        `Skipped permission-denied birth proof on ${process.platform}: replacement is proven from native identity or clock, not the claim's write time; only the unverified refusal is checked.`,
+      );
+    }
+    const birthProof = deniedPid !== undefined && process.platform === "darwin";
     const prompt = "RECOVER_QUEUED_SHELL_CONTINUATION";
     const blocked = await call(
       "agent_runs",
@@ -1339,6 +1365,7 @@ try {
       { stdio: "ignore" },
     );
     const stale = path.join(ledger, "reused-pid.json");
+    const foreign = path.join(ledger, "permission-denied-pid.json");
     try {
       await until(() => fs.existsSync(path.join(root, "bystander-heartbeat")), "bystander ready");
       const beat = path.join(root, "bystander-heartbeat");
@@ -1386,6 +1413,9 @@ try {
           : []),
         // This live nonleader predates the rewritten claim, so macOS cannot disprove it.
         ...(process.platform === "darwin" ? [{ ...shell, pid: process.pid }] : []),
+        // Another user's PID stays unproven when unverified, or when written after it was seen live.
+        ...(deniedPid === undefined ? [] : [{ ...shell, pid: deniedPid, identity: "unverified" }]),
+        ...(birthProof ? [{ ...shell, pid: deniedPid }] : []),
       ].entries()) {
         fs.writeFileSync(recordFile, JSON.stringify(mutation));
         // Every denial follows the actual controller processing the corrupted ledger.
@@ -1396,11 +1426,13 @@ try {
           `bad-shell-${index}`,
         );
         assert.equal(denied.isError, true, JSON.stringify(denied));
+        const unproven =
+          mutation.pid === deniedPid
+            ? /Actor liveness is ambiguous; no stop was sent/
+            : /Cannot verify actor process identity/;
         assert.match(
           JSON.stringify(denied.content),
-          mutation.token === shell.token
-            ? /Cannot verify actor process identity/
-            : /Foreign or missing native shell identity/,
+          mutation.token === shell.token ? unproven : /Foreign or missing native shell identity/,
         );
         process.kill(seed.family.pid, 0);
         process.kill(seed.family.descendant, 0);
@@ -1412,6 +1444,21 @@ try {
       // The stale claim keeps the shell's publication time, which precedes the bystander's birth.
       fs.utimesSync(stale, publishedAt, publishedAt);
       const staleBytes = fs.readFileSync(stale);
+      if (birthProof) {
+        // ps elapsed age, not the controller's lstart reader, dates the foreign PID's birth.
+        const age = spawnSync("ps", ["-p", String(deniedPid), "-o", "etime="], {
+          encoding: "utf8",
+        }).stdout.trim();
+        assert.match(age, /^(\d+-)?(\d+:)?\d+:\d+$/);
+        const [days, clock] = age.includes("-") ? age.split("-") : ["0", age];
+        const [seconds = 0, minutes = 0, hours = 0] = clock.split(":").map(Number).reverse();
+        const born =
+          Date.now() - ((Number(days) * 24 + hours) * 3600 + minutes * 60 + seconds) * 1000;
+        // The claim was published a minute before that birth, as one written before a reboot.
+        fs.writeFileSync(foreign, JSON.stringify({ ...shell, pid: deniedPid }));
+        fs.utimesSync(foreign, new Date(born - 60_000), new Date(born - 60_000));
+      }
+      const foreignBytes = birthProof ? fs.readFileSync(foreign) : undefined;
       fs.writeFileSync(recordFile, JSON.stringify(shell));
       const stopped = await call("agent_runs", { action: "stop", id: runId }, "orphan-stop");
       assert.equal(stopped.isError, false, JSON.stringify(stopped));
@@ -1431,6 +1478,9 @@ try {
         () => [shell.pid, seed.family.pid, seed.family.descendant].every(dead),
         "cold Stop kills actual orphan shell group",
       );
+      if (birthProof) {
+        assert.equal(deniedProbe(deniedPid), "EPERM", "birth proof, not exit, released the claim");
+      }
       assert.equal(commands(), beforeCommands);
       assert.equal(fs.existsSync(path.join(directory, "stop-acknowledged.json")), false);
       assert.equal(fs.existsSync(path.join(directory, "result.json")), false);
@@ -1518,9 +1568,14 @@ try {
         staleBytes,
         "stale claim did not block continuation",
       );
+      if (birthProof) {
+        assert.deepEqual(fs.readFileSync(foreign), foreignBytes, "foreign claim did not block");
+        assert.equal(deniedProbe(deniedPid), "EPERM", "the permission-denied PID stayed live");
+      }
       await survives("reused PID survives the continuation");
     } finally {
       fs.rmSync(stale, { force: true });
+      fs.rmSync(foreign, { force: true });
       fs.writeFileSync(recordFile, JSON.stringify(shell));
       process.kill(bystander.pid, "SIGKILL");
     }
