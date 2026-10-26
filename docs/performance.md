@@ -147,8 +147,9 @@ increment is a one-shot pair of V8 memory-reducer collections about 8 s after
 128,968-byte C++ heap reading at `session_start`, followed by the same pair of
 collections. That is consistent with Pi's bundled Jiti 2.7.0 loader compiling it
 through `vm.runInThisContext`, which allocates on the C++ heap. Jiti
-still tries native ESM first, so this is not a rule for every extension or host
-import. That two-line package added 38–41 ms in the same campaign. Against it,
+can try a native ESM import first when no transformation is needed, so this is
+not a rule for every extension or host import. That two-line package added
+38–41 ms in the same campaign. Against it,
 the measured `bb38f682` artifact (build `fc084c36`) added 20.7 ms on official
 Pi and 15.0 ms on the fork. Most of that difference is one-shot work right
 after `session_start`, chiefly the intercom broker and owner attachment. In two
