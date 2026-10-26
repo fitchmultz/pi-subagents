@@ -44,6 +44,27 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+if (phase === "invalid-temp-root") {
+  process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "not-a-dedicated-root");
+}
+// Every native change notification is lost: only bounded recovery can observe publication.
+const lostHints = { watches: 0 };
+if (phase === "dropped-hints") {
+  process.env.SINGLE_AGENT_DROP_HINTS = "1";
+  const watch = fs.watch;
+  // A real watcher whose change listener never runs.
+  fs.watch = (target, options) => {
+    lostHints.watches++;
+    return watch(target, options);
+  };
+  syncBuiltinESMExports();
+}
+if (phase.startsWith("legacy-")) {
+  // Retired releases created their result directory when their session started.
+  fs.mkdirSync(path.join(root, "pi-subagents-runtime/async-subagent-results"), {
+    recursive: true,
+  });
+}
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const aiRoot = path.dirname(
   findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))),
@@ -502,16 +523,47 @@ try {
     );
     assert.ok(receipts.every((file) => readJSON(file).state === "stale"));
     const frozen = receipts.map((file) => fs.readFileSync(file));
-    const polls = () =>
-      fs
-        .readFileSync(path.join(root, "command-polls.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map(JSON.parse);
+    const records = (name) =>
+      fs.readFileSync(path.join(root, name), "utf8").trim().split("\n").map(JSON.parse);
+    const polls = () => records("command-polls.jsonl");
+    const pid = requests()[0].pid;
+    const ticks = () => records("actor-ticks.jsonl").filter((tick) => tick.pid === pid).length;
+    const actorScans = () => polls().filter((poll) => poll.pid === pid).length;
+    const ownerScans = { count: 0 };
+    const readdir = fs.readdirSync;
+    fs.readdirSync = (listed, ...args) => {
+      ownerScans.count += listed === base ? 1 : 0;
+      return readdir(listed, ...args);
+    };
+    syncBuiltinESMExports();
+    // Idle reconciliation is change-driven: the actor keeps only its liveness tick.
+    const settledTick = ticks();
+    await until(() => ticks() > settledTick, "real actor liveness tick after admissions");
+    const idle = { ticks: ticks(), actor: actorScans(), owner: ownerScans.count };
+    await until(() => ticks() >= idle.ticks + 3, "three more real actor liveness ticks");
+    const idleScans = {
+      actorCommandScans: actorScans() - idle.actor,
+      parentCompletionScans: ownerScans.count - idle.owner,
+    };
+    fs.readdirSync = readdir;
+    syncBuiltinESMExports();
+    console.log("idle reconciliation scans:", JSON.stringify(idleScans));
+    assert.deepEqual(idleScans, { actorCommandScans: 0, parentCompletionScans: 0 });
+    // Each new durable command must wake at least one real actor scan before its admission.
+    const rescan = async (count) => {
+      for (let index = 0; index < count; index++) {
+        const probe = enqueue(base, launch, "steer", { prompt: "PROBE" });
+        // oxlint-disable-next-line no-await-in-loop
+        await until(
+          () => fs.existsSync(path.join(directory, "admissions", `${probe}.json`)),
+          "a new command wakes a real actor scan",
+        );
+      }
+    };
     const start = polls().length;
-    await until(() => polls().length >= start + 9, "nine actual later command polls complete");
+    await rescan(2);
     const measured = polls()
-      .slice(start, start + 9)
+      .slice(start)
       .flatMap((poll) => poll.reads)
       .filter((read) => ids.some((command) => read.file === `${command}.json`));
     const counters = measured.reduce(
@@ -531,21 +583,18 @@ try {
     );
     // Same-actor receipt loss must resume validation without reapplying a started command.
     const changed = path.join(directory, "commands", `${ids[0]}.json`);
-    const fileReads = (from, file, pid) =>
+    const fileReads = (from, file, reader) =>
       polls()
         .slice(from)
-        .filter((poll) => pid === undefined || poll.pid === pid)
+        .filter((poll) => reader === undefined || poll.pid === reader)
         .flatMap((poll) => poll.reads)
         .filter((read) => read.file === path.basename(file));
     let from = polls().length;
     fs.unlinkSync(receipts[0]);
-    await until(
-      () => fileReads(from, changed).length >= 2,
-      "missing receipt resumes body reads on later polls",
-    );
+    await rescan(2);
+    assert.ok(fileReads(from, changed).length >= 2, "missing receipt resumes body reads");
     assert.equal(fs.existsSync(receipts[0]), false, "started set still suppresses readmission");
     fs.writeFileSync(receipts[0], frozen[0]);
-    const pid = requests()[0].pid;
     const mutate = async (change) => {
       process.kill(pid, "SIGSTOP");
       await until(
@@ -566,10 +615,7 @@ try {
         "changed admitted body is revalidated",
       );
       const next = polls().length;
-      await until(
-        () => polls().length >= next + 2,
-        "two subsequent scans witness unchanged replacement",
-      );
+      await rescan(2);
       assert.deepEqual(
         fileReads(next, changed),
         [],
@@ -655,6 +701,45 @@ try {
       "schema-invalid admitted replacement fails the real actor",
     );
     assert.equal(readJSON(path.join(directory, `exit-${coldActor.token}.json`)).code, 1);
+  } else if (phase === "invalid-temp-root") {
+    const receipt = await settled(
+      await call(
+        "delegate",
+        { prompt: "INVALID_ROOT_LITERAL", model: "single-agent-fixture/literal-model" },
+        "invalid-root-launch",
+      ),
+      "an invalid legacy result root does not stop native completion delivery",
+    );
+    assert.equal(receipt.details.output.text, "CHILD_LITERAL_RESULT:INVALID_ROOT_LITERAL");
+  } else if (phase === "dropped-hints") {
+    const first = await settled(
+      await call(
+        "delegate",
+        { prompt: "DROPPED_HINT_LITERAL", model: "single-agent-fixture/literal-model" },
+        "dropped-launch",
+      ),
+      "a completion whose change notification was lost still reaches the idle parent",
+    );
+    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:DROPPED_HINT_LITERAL");
+    const next = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: first.details.id, prompt: "DROPPED_CONTINUE_LITERAL" },
+        "dropped-continue",
+      ),
+      "the live actor admits a command whose change notification was lost",
+    );
+    assert.equal(next.details.output.text, "CHILD_LITERAL_RESULT:DROPPED_CONTINUE_LITERAL");
+    assert.deepEqual(
+      requests().map((request) => request.prompt),
+      ["DROPPED_HINT_LITERAL", "DROPPED_CONTINUE_LITERAL"],
+    );
+    assert.equal(new Set(requests().map((request) => request.pid)).size, 1, "same live actor");
+    assert.ok(lostHints.watches > 0, "the parent actually armed watches that lost hints");
+    assert.ok(
+      fs.readFileSync(path.join(root, "lost-hint-watches.jsonl"), "utf8").length > 0,
+      "the actor actually armed a watch that lost hints",
+    );
   } else if (phase === "inventory") {
     const saved = [];
     for (let index = 0; index < 51; index++) {
