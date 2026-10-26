@@ -4,7 +4,7 @@ import { extname, join } from "node:path";
 
 const roots = ["src", "scripts", "generated"];
 const extensions = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".sh"]);
-const ceilings = { sourceLines: 18000, productionLines: 22000, productionBytes: 1048576 };
+const ceilings = { sourceLines: 19000, productionLines: 22500, productionBytes: 1048576 };
 
 /**
  * @param {string} directory

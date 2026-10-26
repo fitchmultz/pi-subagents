@@ -1,6 +1,6 @@
 import type net from "net";
 import { randomUUID } from "crypto";
-import type { Message, SendResult, SessionInfo } from "../types.ts";
+import type { Message, SessionInfo } from "../types.ts";
 import { nativePeerId } from "../session-targets.ts";
 import { writeMessage } from "./framing.ts";
 
@@ -59,9 +59,15 @@ export class ParkedSessions<T extends ParkablePeer> {
   }
   /** Flushes a restored child's input and re-sends wakes owed to a (re)registered main. */
   registered(id: string, previous?: T): void {
-    previous?.parked?.retained.forEach(({ from, message }) => {
-      this.deliver(id, from, message);
-    });
+    const retained = previous?.parked?.retained ?? [];
+    const refused = retained.findIndex(
+      ({ from, message }) => this.deliver(id, from, message) !== null,
+    );
+    const session = this.sessions.get(id);
+    if (session && refused >= 0) {
+      // A refused flush keeps ownership, in order, for the next transport generation.
+      session.parked = { retained: retained.slice(refused), closed: false };
+    }
     for (const child of this.sessions.values()) {
       if (nativePeerId(child.info.rootSessionId ?? "") === id) {
         this.wake(child);
@@ -80,11 +86,6 @@ export class ParkedSessions<T extends ParkablePeer> {
   /** Exited parked children keep identities only while some live session remains. */
   get exited(): boolean {
     return [...this.sessions.values()].every((session) => session.parked?.closed === true);
-  }
-  queue(target: T, from: SessionInfo, message: Message): SendResult | undefined {
-    return this.retain(target, from, message)
-      ? { id: message.id, accepted: true, delivered: false, queued: true }
-      : undefined;
   }
   retain(target: T | undefined, from: SessionInfo, message: Message): boolean {
     target?.parked?.retained.push({ from, message });

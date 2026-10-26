@@ -14,7 +14,12 @@ import {
 } from "../../src/pi-intercom/broker/framing.ts";
 import { prepareBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { array, assertDefined, json, record, text } from "../support/assertions.ts";
-import type { LastMessageQuery, SessionInfo, TopicUpdate } from "../../src/pi-intercom/types.ts";
+import type {
+  LastMessageQuery,
+  Message,
+  SessionInfo,
+  TopicUpdate,
+} from "../../src/pi-intercom/types.ts";
 import { nativePeerId } from "../../src/pi-intercom/session-targets.ts";
 
 function isolatedAgent(t: TestContext): void {
@@ -651,6 +656,106 @@ test("collaboration lineage restricts discovery and all delivery paths at the br
     await parentLeft;
     assert.deepEqual(await ids(child), new Set([child.sessionId, sibling.sessionId]));
     await sibling.listSessions();
+  } finally {
+    await Promise.all(clients.map((client) => client.disconnect()));
+  }
+});
+
+test("a parked child keeps its identity, topics and admitted input until one genuine wake", async (t) => {
+  isolatedAgent(t);
+  await startBroker(t);
+  const clients: IntercomClient[] = [];
+  const connect = async (native: string, root = "main-p") => {
+    const client = new IntercomClient();
+    client.on("error", (error: Error) => assert.fail(error.message));
+    clients.push(client);
+    const parent = native === root ? undefined : root;
+    await client.connect(
+      {
+        name: native,
+        cwd: `/p/${native}`,
+        model: "fixture",
+        rootSessionId: root,
+        parentSessionId: parent,
+      },
+      nativePeerId(native),
+    );
+    return client;
+  };
+  try {
+    const main = await connect("main-p");
+    const child = await connect("child-p");
+    const sender = await connect("sibling-p");
+    const childId = text(child.sessionId);
+    for (const client of [main, sender]) {
+      client.on("session_left", (id: string) =>
+        assert.notEqual(id, childId, "parking is no departure"),
+      );
+    }
+    const wakes: string[] = [];
+    main.on("wake", (id: string) => {
+      wakes.push(id);
+    });
+    await child.updateTopics({ action: "publish", topic: topic("status") });
+    assert.equal(await child.park(), true);
+    const crumb = await sender.send(childId, { text: "breadcrumb", passive: true });
+    assert.deepEqual([crumb.accepted, crumb.delivered, crumb.queued], [true, false, true]);
+    // Parked input passes the same final-envelope admission as resident delivery: this send
+    // frame fits exactly, but the delivered envelope adds sender metadata.
+    const probe = await sender.send(childId, { text: "x".repeat(MAX_FRAME_SIZE_BYTES) }).then(
+      () => "",
+      (error: unknown) => (error instanceof Error ? error.message : ""),
+    );
+    const frame = Number(/\((\d+) bytes/.exec(probe)?.[1]);
+    const fits = "x".repeat(2 * MAX_FRAME_SIZE_BYTES - frame);
+    const oversized = await sender.send(childId, { text: fits });
+    assert.equal(oversized.accepted, false, JSON.stringify({ ...oversized, frame }));
+    await child.disconnect();
+    const woke = once(main, "wake");
+    assert.equal((await sender.send(childId, { text: "work" })).queued, true);
+    await woke;
+    await main.listSessions(); // Socket barrier: any second wake would precede this reply.
+    assert.deepEqual(wakes, [childId], "passive input and exit alone never wake the child");
+    main.on("last_request", (request: { requestId: string; parked?: SessionInfo }) => {
+      assert.equal(request.parked?.id, childId);
+      main.respondLast(request.requestId, {
+        session: request.parked,
+        entryId: "captured",
+        text: "from captured history",
+        offset: 0,
+        totalLength: 21,
+      });
+    });
+    assert.equal(record(await sender.last(childId)).text, "from captured history");
+    const restored = new IntercomClient();
+    clients.push(restored);
+    const received: string[] = [];
+    const flushed = new Promise<void>((resolve) => {
+      restored.on("message", (_from: SessionInfo, message: Message) => {
+        received.push(message.content.text);
+        if (received.length === 2) {
+          resolve();
+        }
+      });
+    });
+    await restored.connect(
+      {
+        name: "child-p",
+        cwd: "/p/child-p",
+        model: "fixture",
+        rootSessionId: "main-p",
+        parentSessionId: "main-p",
+      },
+      nativePeerId("child-p"),
+    );
+    assert.equal(restored.sessionId, childId);
+    await flushed;
+    assert.deepEqual(received, ["breadcrumb", "work"]);
+    const row = (await sender.listSessions()).find((info) => info.id === childId);
+    assert.deepEqual(
+      array(row?.topics).map((entry) => record(entry).topic),
+      ["status"],
+    );
   } finally {
     await Promise.all(clients.map((client) => client.disconnect()));
   }

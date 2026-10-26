@@ -170,7 +170,8 @@ class IntercomBroker {
     this.sessions.set(id, {
       socket,
       info: messageSender(info),
-      topics: new TopicSnapshot(info),
+      // A woken generation registers no topics; the parked identity's owner keeps them.
+      topics: resumed?.topics ?? new TopicSnapshot(info),
       topicFrames,
       lastMessages: msg.lastMessages === true,
       parking: msg.parking === true,
@@ -219,7 +220,7 @@ class IntercomBroker {
         continue;
       }
       const message = publicationMessage(publication, subscription.awaitRelease === true);
-      const error = this.validateDeliveryPayload(from, message, target.topicFrames);
+      const error = this.validateDeliveryPayload(from, message, target);
       if (error !== null) {
         throw new Error(error);
       }
@@ -380,18 +381,16 @@ class IntercomBroker {
         reason: "Recipient disconnected before delivery",
       };
     }
-    const queued = this.parking.queue(target, from, message);
-    if (queued) {
-      return queued;
-    }
-    if (shouldReplaceDelivery(message, target.info)) {
+    if (target.parked === undefined && shouldReplaceDelivery(message, target.info)) {
       return this.queueReplaceDelivery(fromId, toId, from, message);
     }
     const reason = this.deliverMessage(toId, from, message);
+    const queued = reason === null && target.parked !== undefined;
     return {
       id: message.id,
       accepted: reason === null,
-      delivered: reason === null,
+      delivered: reason === null && !queued,
+      ...(queued ? { queued } : {}),
       ...(reason !== null ? { reason } : {}),
     };
   }
@@ -420,11 +419,7 @@ class IntercomBroker {
     from: SessionInfo,
     message: Message,
   ): SendResult {
-    const validationError = this.validateDeliveryPayload(
-      from,
-      message,
-      this.sessions.get(toId)?.topicFrames === true,
-    );
+    const validationError = this.validateDeliveryPayload(from, message, this.sessions.get(toId));
     if (validationError !== null) {
       return { id: message.id, accepted: false, delivered: false, reason: validationError };
     }
@@ -460,31 +455,34 @@ class IntercomBroker {
     }
   }
 
+  /** One admission rule; retained input is checked as the uncompacted envelope any later
+   * transport generation accepts. */
   private validateDeliveryPayload(
     from: SessionInfo,
     message: Message,
-    topicFrames: boolean,
+    target: ConnectedSession | undefined,
   ): string | null {
+    const compact = target?.parked === undefined && target?.topicFrames === true;
     return (
       validateIntercomMessageSize({
         type: "message",
         from: messageSender(from),
-        message: topicFrames ? compactTopicMessage(message) : message,
+        message: compact ? compactTopicMessage(message) : message,
       })?.message ?? null
     );
   }
 
   private deliverMessage(toId: string, from: SessionInfo, message: Message): string | null {
     const target = this.sessions.get(toId);
+    const invalid = this.validateDeliveryPayload(from, message, target);
+    if (invalid !== null) {
+      return invalid;
+    }
     if (this.parking.retain(target, from, message)) {
       return null;
     }
     if (target?.socket.writable !== true || target.socket.writableEnded) {
       return "Recipient disconnected before delivery";
-    }
-    const validationError = this.validateDeliveryPayload(from, message, target.topicFrames);
-    if (validationError !== null) {
-      return validationError;
     }
     this.touchActivity(toId, true);
     try {

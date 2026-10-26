@@ -395,9 +395,12 @@ class Actor {
         this.parking = await parked.park(runtime, {
           pi: this.context?.pi,
           busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
+          // Commands and viewers that raced the fence or save keep this actor resident.
           admit: () => {
             this.pending().forEach((command) => this.accept(command));
-            return this.active === undefined && !this.stopping;
+            return (
+              this.active === undefined && !this.stopping && this.observation?.watched !== true
+            );
           },
           errors: this.errors,
         });

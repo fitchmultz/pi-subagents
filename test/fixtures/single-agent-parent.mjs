@@ -44,6 +44,9 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+if (phase === "park" || phase === "park-failed") {
+  process.env.SINGLE_AGENT_PARK_CLOCK = phase;
+}
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const aiRoot = path.dirname(
   findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))),
@@ -976,6 +979,91 @@ try {
         assert.equal(rejected.isError, true, JSON.stringify(rejected));
         assert.match(rejected.content[0].text, new RegExp(`^Validation failed for tool "${tool}"`));
         assert.equal(effects(), before, "native validation rejects retired input before effects");
+      }
+    }
+  } else if (phase === "park" || phase === "park-failed") {
+    const model = "single-agent-fixture/literal-model";
+    const receipt = await call("delegate", { prompt: "PARK_FIRST", model }, "park-launch");
+    runId = receipt.details.id;
+    faux.setResponses([fauxAssistantMessage("PARK_NOTICE")]);
+    await until(() => notices().length === 1, "first child completion publishes");
+    await session.waitForIdle();
+    const first = requests().find((request) => request.prompt === "PARK_FIRST");
+    fs.writeFileSync(path.join(root, "advance-clock"), "");
+    const parked = path.join(runDir(runId), "parked.json");
+    if (typeof sdk.writeWorkingSession !== "function") {
+      // Official Pi cannot capture exact working state, so the actor stays resident.
+      await until(() => fs.existsSync(path.join(root, "clock-advanced")), "idle period passes");
+      faux.setResponses([fauxAssistantMessage("RESIDENT_NOTICE")]);
+      await call("agent_runs", { action: "continue", id: runId, prompt: "PARK_SECOND" }, "stay");
+      await until(() => requests().some((request) => request.prompt === "PARK_SECOND"), "turn");
+      const second = requests().find((request) => request.prompt === "PARK_SECOND");
+      assert.equal(second.pid, first.pid);
+      assert.deepEqual(
+        ["parked.json", "park-failed.json"].filter((name) =>
+          fs.existsSync(path.join(runDir(runId), name)),
+        ),
+        [],
+      );
+    } else {
+      const outcome = path.join(
+        runDir(runId),
+        phase === "park" ? "parked.json" : "park-failed.json",
+      );
+      await until(() => fs.existsSync(outcome), "idle actor exits with a truthful park outcome");
+      await until(() => {
+        try {
+          process.kill(first.pid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      }, "parked actor process exits");
+      // The exited actor keeps its broker identity; no departure is announced.
+      await childRegistered(runId);
+      if (phase === "park-failed") {
+        // A failed final capture never falls back to a journal-only reopen.
+        const refused = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt: "PARK_SECOND" },
+          "park-refused",
+        );
+        assert.equal(refused.isError, true, JSON.stringify(refused));
+        assert.match(refused.content[0].text, /without saving its exact working state/);
+        assert.equal(fs.existsSync(parked), false);
+        assert.equal(
+          requests().some((request) => request.prompt === "PARK_SECOND"),
+          false,
+        );
+        assert.equal(
+          fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n")
+            .length,
+          1,
+        );
+      } else {
+        faux.setResponses([fauxAssistantMessage("PARK_SECOND_NOTICE")]);
+        const resumed = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt: "PARK_SECOND" },
+          "park-continue",
+        );
+        assert.equal(resumed.isError, false, JSON.stringify(resumed));
+        await until(
+          () => requests().some((request) => request.prompt === "PARK_SECOND"),
+          "restored actor runs the next turn",
+        );
+        const second = requests().find((request) => request.prompt === "PARK_SECOND");
+        assert.notEqual(second.pid, first.pid);
+        assert.match(JSON.stringify(second.context), /CHILD_LITERAL_RESULT:PARK_FIRST/);
+        assert.equal(requests().filter((request) => request.prompt === "PARK_FIRST").length, 1);
+        assert.equal(fs.existsSync(parked), false);
+        const journal = fs.readdirSync(runDir(runId)).find((name) => name.endsWith(".jsonl"));
+        const saved = fs.readFileSync(path.join(runDir(runId), journal), "utf8");
+        assert.match(
+          saved,
+          /"customType":"park-fixture-save"/,
+          "save-handler entries survive restore",
+        );
       }
     }
   } else if (phase.startsWith("crash-")) {

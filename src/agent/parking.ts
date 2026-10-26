@@ -1,13 +1,15 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parkedSchema, type Launch } from "./contracts.ts";
+import { parkedSchema, type Launch, type Parked } from "./contracts.ts";
 import { errorText, type loadSDK, type WorkingState } from "./host.ts";
 import { read, runDirectory, write } from "./storage.ts";
 import { alive, shells } from "./process.ts";
 import { PARK, type ParkRequest } from "../shared/parking.ts";
 
 type SDK = Awaited<ReturnType<typeof loadSDK>>;
+type Restore = NonNullable<SDK["readWorkingSession"]>;
 export type Runtime = Awaited<ReturnType<SDK["createAgentSessionRuntime"]>>;
 type SessionManager = Parameters<SDK["createAgentSessionRuntime"]>[1]["sessionManager"];
 interface WorkingHold {
@@ -58,6 +60,7 @@ async function cut(
   errors: string[],
 ): Promise<WorkingHold | undefined> {
   try {
+    // Save handlers may legitimately append entries; only the pre-cut leaf proves idleness.
     if ((await fence(pi, true)) && admit() && session.isIdle) {
       return await session.acquireWorkingSession({ boundary: "settled" });
     }
@@ -69,7 +72,53 @@ async function cut(
 // Wake costs one cold actor start (measured p50 1.2 s, p90 4.8 s); parking frees the whole
 // process (measured median 73 MB). Most completed actors stay idle far longer than this.
 const PARK_AFTER_MS = 5 * 60_000;
+const digest = (file: string): string =>
+  createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
+/** Parked authority names this session and exactly the saved generation's state bytes. */
+function exact(
+  restore: Restore,
+  parked: Parked,
+  state: string,
+  launch: Launch,
+): WorkingState | undefined {
+  if (
+    parked.sessionId !== launch.sessionId ||
+    parked.state !== state ||
+    digest(state) !== parked.digest
+  ) {
+    return undefined;
+  }
+  const saved = restore(state);
+  return saved.sessionFile === launch.sessionFile &&
+    saved.header.id === launch.sessionId &&
+    saved.leafId === parked.leafId
+    ? saved
+    : undefined;
+}
+/** This child's exact parked generation, if any; mismatched authority restores nothing. */
+export function parkedState(
+  dir: string,
+  launch: Launch,
+  restore: Restore | undefined,
+): { readonly state: string; readonly saved: WorkingState } | undefined {
+  const parked = read(path.join(dir, "parked.json"), parkedSchema);
+  if (!parked) {
+    return undefined;
+  }
+  if (!restore) {
+    throw new Error("Parked working state needs the Pi fork that saved it; nothing was reopened.");
+  }
+  // Native working state requires a canonical parent, not a symlinked alias like macOS /var.
+  const state = path.join(fs.realpathSync(dir), `working-${parked.token}.json`);
+  const saved = exact(restore, parked, state, launch);
+  if (!saved) {
+    throw new Error(
+      "Parked working state is not this child's saved generation; nothing was reopened.",
+    );
+  }
+  return { state, saved };
+}
 /** One actor generation's idle parking and exact restore; commands stay with the runner. */
 export class Parking {
   saved?: WorkingState;
@@ -95,21 +144,14 @@ export class Parking {
   /** Parked authority is exact state or nothing; never a journal-only reopen. */
   open(): SessionManager {
     const { sdk, launch } = this;
-    const parked = read(this.file, parkedSchema);
-    if (!parked) {
+    const { openWorkingSession: restore } = sdk;
+    const parked = parkedState(this.dir, launch, restore && sdk.readWorkingSession);
+    if (!parked || !restore) {
       return sdk.SessionManager.open(launch.sessionFile, undefined, launch.cwd);
     }
-    if (!sdk.readWorkingSession || !sdk.openWorkingSession) {
-      throw new Error(
-        "Parked working state needs the Pi fork that saved it; nothing was reopened.",
-      );
-    }
-    this.saved = sdk.readWorkingSession(parked.state);
+    this.saved = parked.saved;
     this.restored = parked.state;
-    if (this.saved.sessionFile !== launch.sessionFile) {
-      throw new Error("Parked working state names another session.");
-    }
-    return sdk.openWorkingSession(this.saved);
+    return restore(parked.saved);
   }
   /** The ready restored generation owns this state now; a later park writes a new cut. */
   adopt(): void {
@@ -161,8 +203,14 @@ export class Parking {
     // A launcher that enqueues after this marker waits for exit, then wakes the saved state.
     const marker = path.join(this.dir, "actor.lock", "parking.json");
     write(marker, { at: Date.now() });
-    const hold = await cut(pi, session, admit, errors);
-    if (hold?.sleepReady === true && hold.state.leafId === this.leaf) {
+    const hold = await cut(
+      pi,
+      session,
+      () => admit() && session.sessionManager.getLeafId() === this.leaf,
+      errors,
+    );
+    // Revalidate after the awaited fence and save, immediately before the irreversible commit.
+    if (hold?.sleepReady === true && admit()) {
       return hold;
     }
     await hold?.release();
@@ -201,10 +249,16 @@ export class Parking {
       if (!hold.sleepReady) {
         throw new Error(`Final working state is not sleep-ready: ${hold.blockers.join("; ")}`);
       }
-      const state = path.join(this.dir, `working-${this.token}.json`);
+      const state = path.join(fs.realpathSync(this.dir), `working-${this.token}.json`);
       save(state, hold.state);
       hold.assertHeld();
-      write(this.file, { token: this.token, state });
+      write(this.file, {
+        token: this.token,
+        state,
+        digest: digest(state),
+        sessionId: this.launch.sessionId,
+        leafId: hold.state.leafId,
+      });
     } finally {
       await hold.release();
     }

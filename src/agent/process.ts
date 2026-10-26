@@ -12,7 +12,7 @@ import {
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
-import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
+import { parkedSchema, processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 
@@ -149,7 +149,7 @@ export async function ensureActor(
   if (existing && alive(existing)) {
     return;
   }
-  parkFailure(base, launch);
+  parkFailure(base, launch, existing);
   if (existing) {
     if (shells(base, launch, existing.token).some(alive)) {
       throw new Error("Owned native shell work remains live; stop it before continuing.");
@@ -172,8 +172,16 @@ export async function ensureActor(
   spawnActor(base, launch, token);
 }
 /** A failed park keeps its input queued; exact state is lost, so nothing restarts it implicitly. */
-export function parkFailure(base: string, launch: Launch): void {
-  const file = path.join(conversation(base, launch), "park-failed.json");
+export function parkFailure(base: string, launch: Launch, exited?: OwnedProcess): void {
+  const dir = conversation(base, launch);
+  const parked = read(path.join(dir, "parked.json"), parkedSchema);
+  if (exited && parked && parked.token !== exited.token) {
+    // Only the exited claim that saved this state may hand it to the next generation.
+    throw new Error(
+      "Parked working state belongs to another actor generation; nothing was reopened.",
+    );
+  }
+  const file = path.join(dir, "park-failed.json");
   if (fs.existsSync(file)) {
     throw new Error(
       `This idle child exited without saving its exact working state (${file}). Nothing was restarted or admitted; messages for it stay queued. Inspect it, then delegate new work.`,

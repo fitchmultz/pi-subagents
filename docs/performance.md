@@ -35,7 +35,10 @@ than the baseline's observed first-run spread: this small sample is not a genera
 speedup claim. The long-lived costs remain explicit: a main reconciles receipts
 on a 200 ms timer, native actors poll their durable command/attachment state, and
 the broker maintains connections/presence. Completed actors stay messageable
-while attached; observed owner detachment ends their lifetime. Native lifecycle
+while attached; observed owner detachment ends their lifetime. On the fork, a
+child idle for five minutes parks its exact working state and exits (measured
+median 73 MB released per actor), and a genuine message or continuation restores
+it (one cold actor start, measured p50 1.2 s). Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
 from a timer or package size.
 

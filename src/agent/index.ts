@@ -19,6 +19,7 @@ import {
 } from "./process.ts";
 import { isChild, errorText, loadSDK } from "./host.ts";
 import { isHistoryRequest, PARKED_HISTORY, WAKE } from "../shared/parking.ts";
+import { parkedState } from "./parking.ts";
 import { nativePeerId } from "../pi-intercom/session-targets.ts";
 import type { NativeHistory } from "../pi-intercom/last-message.ts";
 import {
@@ -26,7 +27,6 @@ import {
   attachmentSchema,
   admissionSchema,
   commandSchema,
-  parkedSchema,
   type Attachment,
   type Launch,
   type ProcessIdentity,
@@ -404,12 +404,8 @@ class AgentRuntime {
   }
   private async parkedHistory(peer: string): Promise<NativeHistory | undefined> {
     const launch = this.child || !this.ctx ? undefined : this.parked(peer);
-    const parked =
-      launch && read(path.join(conversation(this.base, launch), "parked.json"), parkedSchema);
-    if (!launch || !parked) {
-      return undefined;
-    }
-    const state = (await loadSDK(launch.sdk)).readWorkingSession?.(parked.state);
+    const restore = launch && (await loadSDK(launch.sdk)).readWorkingSession;
+    const state = launch && parkedState(conversation(this.base, launch), launch, restore)?.saved;
     const entries = new Map(state?.entries.map((entry) => [entry.id, entry]));
     return state && { getLeafId: () => state.leafId, getEntry: (id) => entries.get(id) };
   }
