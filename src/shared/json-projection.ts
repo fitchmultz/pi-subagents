@@ -10,12 +10,6 @@ export type StringChunk = (
   text: string,
   root?: UnknownRecord,
 ) => void;
-export interface ProjectionLimits {
-  readonly depth: number;
-  readonly nodes: number;
-  readonly arrayLength: number;
-  readonly keyLength: number;
-}
 interface Container {
   readonly path: readonly (string | number)[];
   readonly value?: Record<string, unknown> | unknown[];
@@ -100,45 +94,24 @@ export class JsonProjection {
   private textCap = 0;
   private text = "";
   private numberState = 0;
-  private keyBudget?: number;
-  private nodes = 0;
   private readonly select: Projection;
   private readonly stringChunk?: StringChunk;
   private readonly keys: KeyLimit;
-  private readonly limits?: ProjectionLimits;
   value: unknown;
-  constructor(
-    select: Projection,
-    stringChunk?: StringChunk,
-    keys: KeyLimit = () => 4096,
-    limits?: ProjectionLimits,
-  ) {
+  constructor(select: Projection, stringChunk?: StringChunk, keys: KeyLimit = () => 4096) {
     this.select = select;
     this.stringChunk = stringChunk;
     this.keys = keys;
-    this.limits = limits;
   }
   private root(): UnknownRecord | undefined {
     return isRecord(this.value) ? this.value : undefined;
   }
   private selected(): boolean | number {
-    const keep = this.select(this.path, this.root());
-    if (retained(keep) && this.limits && ++this.nodes > this.limits.nodes) {
-      throw new RangeError("JSON projection exceeds its assembled-node budget.");
-    }
-    return keep;
+    return this.select(this.path, this.root());
   }
   /** Paths inside skipped containers are only built for string observers, never selected. */
   private start(): boolean | number {
     const parent = this.stack.at(-1);
-    const limits = this.limits;
-    if (
-      limits &&
-      (this.stack.length > limits.depth ||
-        (parent?.array === true && parent.index >= limits.arrayLength))
-    ) {
-      throw new RangeError("JSON projection exceeds its depth or array-position budget.");
-    }
     if (!parent) {
       this.path = [];
       return this.selected();
@@ -173,12 +146,11 @@ export class JsonProjection {
     this.ended();
     return index + 1;
   }
-  private scalar(state: number, key: boolean, keep: boolean | number, keyBudget?: number): void {
+  private scalar(state: number, key: boolean, keep: boolean | number): void {
     const cap = keep === true ? Infinity : Number(keep);
     this.state = state;
     this.key = key;
     this.textCap = Number.isNaN(cap) ? 0 : cap;
-    this.keyBudget = keyBudget;
     this.text = "";
     this.numberState = 0;
   }
@@ -238,13 +210,7 @@ export class JsonProjection {
     if (code !== 34 || !parent) {
       throw unexpected();
     }
-    const skipped = parent.value === undefined;
-    this.scalar(
-      STRING,
-      true,
-      skipped ? 0 : this.keys(parent.path, this.root()),
-      skipped ? undefined : this.limits?.keyLength,
-    );
+    this.scalar(STRING, true, parent.value === undefined ? 0 : this.keys(parent.path, this.root()));
     return index + 1;
   }
   private after(index: number, code: number): number {
@@ -286,9 +252,6 @@ export class JsonProjection {
     if (this.stringChunk && !this.key) {
       this.stringChunk(this.path, decoded, this.root());
     }
-    if (this.keyBudget !== undefined && this.text.length + decoded.length > this.keyBudget) {
-      throw new RangeError("JSON projection exceeds its property-key budget.");
-    }
     this.append(decoded);
   }
   private closeString(): void {
@@ -303,13 +266,9 @@ export class JsonProjection {
       this.ended();
     }
   }
-  /** Observed values, unfinished selections and budgeted keys need text; others are only validated. */
+  /** Observed values and unfinished selections need text; others are only validated. */
   private decoding(): boolean {
-    return (
-      (this.stringChunk !== undefined && !this.key) ||
-      this.text.length < this.textCap ||
-      this.keyBudget !== undefined
-    );
+    return (this.stringChunk !== undefined && !this.key) || this.text.length < this.textCap;
   }
   private string(text: string, start: number): number {
     for (let index = start; ;) {

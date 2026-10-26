@@ -1,11 +1,5 @@
 import * as fs from "node:fs";
-import {
-  JsonProjection,
-  type Projection,
-  type ProjectionLimits,
-  type StringChunk,
-  type KeyLimit,
-} from "./json-projection.ts";
+import { JsonProjection, type Projection, type StringChunk } from "./json-projection.ts";
 import { errorDescription, isRecord, type UnknownRecord } from "./unknown.ts";
 
 export interface JournalRecord {
@@ -19,10 +13,7 @@ export interface JournalOptions {
   readonly requireNewline?: boolean;
   readonly start?: number;
   readonly end?: number;
-  readonly malformed?: (start: number, end: number, error: unknown) => void;
   readonly stringChunk?: StringChunk;
-  readonly keys?: KeyLimit;
-  readonly limits?: ProjectionLimits;
 }
 
 /** Byte-framed JSONL. Publication framing is independent of malformed-record tolerance. */
@@ -54,12 +45,7 @@ export class JournalFrames {
     this.projection = this.newProjection();
   }
   private newProjection(): JsonProjection {
-    return new JsonProjection(
-      this.select,
-      this.options.stringChunk,
-      this.options.keys,
-      this.options.limits,
-    );
+    return new JsonProjection(this.select, this.options.stringChunk);
   }
   private part(bytes: Buffer): void {
     if (!this.nonblank && bytes.some((byte) => ![9, 10, 13, 32].includes(byte))) {
@@ -107,9 +93,7 @@ export class JournalFrames {
     this.error = undefined;
     this.failed = false;
     this.nonblank = false;
-    if (failed) {
-      this.options.malformed?.(start, end, error);
-    } else if (record) {
+    if (!failed && record) {
       this.record(record);
     }
   }
