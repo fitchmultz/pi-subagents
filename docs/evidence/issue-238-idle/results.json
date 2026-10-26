@@ -1,0 +1,191 @@
+{
+  "campaign": {
+    "tool": {
+      "profile-managed.py": "e5a67e38f5fa18d263edee69b1c381c44c9cee56b857a6e6a23c931e186a73f4",
+      "managed-observer.mjs": "6911737d238bde592df924b5c83828ba71193dc52508b39ed5a3f7f8a7fca927"
+    },
+    "arguments": "--rounds 7 --idle-rounds 3 --duration-ms 10000 --max-idle-delta-ms 30 --max-startup-delta-ms 150",
+    "exit": 1,
+    "node": "v24.22.1",
+    "hosts": {
+      "official": {
+        "version": "1.4.0",
+        "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+        "sdkSha256": "4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff"
+      },
+      "fork": {
+        "version": "1.4.0",
+        "cliSha256": "f3960fd2e951ac0a47725af534f55b28122553aa56d143ad546dace094fc1d77",
+        "sdkSha256": "8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554"
+      }
+    },
+    "cases": {
+      "typebox": "two-line package: import \"typebox\"; export default function () {}",
+      "main0b6": "immutable merged 0b6da9b artifact, build 8778ee1a",
+      "mainbb38": "npm pack of bb38f682, build fc084c36"
+    },
+    "idleCpuMs": {
+      "official/floor": {
+        "samples": [16.659, 15.885, 15.568],
+        "median": 15.885
+      },
+      "official/typebox": {
+        "samples": [53.4, 54.032, 55.173],
+        "median": 54.032
+      },
+      "official/main0b6": {
+        "samples": [75.98, 71.835, 79.423],
+        "median": 75.98
+      },
+      "official/mainbb38": {
+        "samples": [74.053, 74.752, 77.218],
+        "median": 74.752
+      },
+      "fork/floor": {
+        "samples": [18.792, 18.87, 18.73],
+        "median": 18.792
+      },
+      "fork/typebox": {
+        "samples": [58.578, 59.545, 60.433],
+        "median": 59.545
+      },
+      "fork/main0b6": {
+        "samples": [74.056, 70.08, 76.086],
+        "median": 74.056
+      },
+      "fork/mainbb38": {
+        "samples": [74.532, 75.088, 70.416],
+        "median": 74.532
+      }
+    },
+    "startupWallMs": {
+      "official/floor": {
+        "samples": [185.678, 169.965, 175.214, 179.191, 180.133, 171.53, 168.776],
+        "median": 175.214
+      },
+      "official/typebox": {
+        "samples": [219.135, 184.706, 169.35, 189.406, 173.819, 165.649, 172.849],
+        "median": 173.819
+      },
+      "official/main0b6": {
+        "samples": [450.975, 259.989, 922.793, 326.859, 219.675, 208.965, 218.44],
+        "median": 259.989
+      },
+      "official/mainbb38": {
+        "samples": [556.676, 220.518, 423.939, 638.326, 224.9, 212.376, 217.682],
+        "median": 224.9
+      },
+      "fork/floor": {
+        "samples": [274.989, 278.42, 322.8, 233.303, 245.371, 258.992, 253.301],
+        "median": 258.992
+      },
+      "fork/typebox": {
+        "samples": [277.982, 274.777, 266.46, 260.531, 230.805, 287.858, 234.247],
+        "median": 266.46
+      },
+      "fork/main0b6": {
+        "samples": [327.954, 442.054, 354.385, 308.531, 270.333, 312.523, 259.182],
+        "median": 312.523
+      },
+      "fork/mainbb38": {
+        "samples": [305.0, 319.068, 290.947, 271.654, 320.461, 292.218, 258.023],
+        "median": 292.218
+      }
+    }
+  },
+  "diagnostic": {
+    "observer": "per-process user+system CPU timeline every 250 ms after session_start, no event-loop monitor",
+    "groups": {
+      "official floor": {
+        "cpu10sMs": [3.628, 3.851, 3.676],
+        "first1sMs": [0.883, 1.001, 0.887],
+        "reduceGCs": [0, 0, 0]
+      },
+      "official 0b6": {
+        "cpu10sMs": [63.701, 60.752, 59.948],
+        "first1sMs": [14.621, 13.992, 4.653],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 --no-memory-reducer": {
+        "cpu10sMs": [17.557, 19.869, 17.551],
+        "first1sMs": [14.194, 15.991, 13.972],
+        "reduceGCs": [0, 0, 0]
+      },
+      "official empty package": {
+        "cpu10sMs": [3.45, 3.378, 3.564],
+        "first1sMs": [0.776, 0.766, 0.722],
+        "reduceGCs": [0, 0, 0]
+      },
+      "official typebox-only package": {
+        "cpu10sMs": [44.044, 42.529, 42.447],
+        "first1sMs": [0.748, 1.227, 0.727],
+        "reduceGCs": [2, 2, 2]
+      },
+      "fork floor": {
+        "cpu10sMs": [5.931, 5.657, 5.537],
+        "first1sMs": [2.055, 1.868, 1.865],
+        "reduceGCs": [0, 0, 0]
+      },
+      "fork 0b6": {
+        "cpu10sMs": [61.585, 64.36, 61.035],
+        "first1sMs": [14.455, 13.578, 13.025],
+        "reduceGCs": [2, 2, 2]
+      },
+      "fork 0b6 --no-memory-reducer": {
+        "cpu10sMs": [17.473, 17.592, 17.024],
+        "first1sMs": [13.746, 13.477, 13.054],
+        "reduceGCs": [0, 0, 0]
+      },
+      "fork empty package": {
+        "cpu10sMs": [5.244, 5.284, 4.835],
+        "first1sMs": [1.465, 1.787, 1.405],
+        "reduceGCs": [0, 0, 0]
+      },
+      "fork typebox-only package": {
+        "cpu10sMs": [46.587, 45.812, 43.476],
+        "first1sMs": [1.752, 1.884, 1.414],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 modules imported, factory does nothing": {
+        "cpu10sMs": [73.118, 45.821, 47.613],
+        "first1sMs": [0.822, 0.907, 0.835],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 agents only": {
+        "cpu10sMs": [72.636, 54.599, 56.834],
+        "first1sMs": [5.341, 5.482, 5.512],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 intercom only": {
+        "cpu10sMs": [108.834, 51.569, 54.007],
+        "first1sMs": [39.863, 8.469, 7.831],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 observer only": {
+        "cpu10sMs": [68.578, 46.44, 45.401],
+        "first1sMs": [1.037, 0.95, 0.799],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 control": {
+        "cpu10sMs": [62.512, 64.78, 58.378],
+        "first1sMs": [14.147, 15.112, 12.87],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 without the 1 s probe": {
+        "cpu10sMs": [15.857, 60.529, 61.512],
+        "first1sMs": [12.905, 13.459, 13.066],
+        "reduceGCs": [0, 2, 2]
+      },
+      "official 0b6 without the owner ps identity": {
+        "cpu10sMs": [85.301, 61.201, 63.077],
+        "first1sMs": [12.429, 11.911, 11.859],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 without intercom": {
+        "cpu10sMs": [85.335, 54.19, 51.431],
+        "first1sMs": [17.276, 6.011, 7.032],
+        "reduceGCs": [2, 2, 2]
+      }
+    }
+  }
+}

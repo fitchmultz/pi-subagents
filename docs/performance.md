@@ -137,6 +137,21 @@ The [issue 248 evidence](evidence/issue-248/README.md) includes both waits,
 switch-to-first-tool measurements, ranges, profiler results, exact runtime and
 build identities, reproducible commands, and retained synthetic RPC transcripts.
 
+### Empty-owner idle CPU (#238)
+
+The issue 238 idle ceiling of 30 ms CPU per 10 s still fails against the
+observer-only floor on official Pi 1.4.0 and the maintained fork. Most of the
+increment is a one-shot pair of V8 memory-reducer collections about 8 s after
+startup. Pi's bundled loader evaluates any module that imports a host package
+through `vm.runInThisContext`. That puts the first object on V8's C++ heap, and
+V8 then treats the process as idle enough to reduce memory. A two-line package
+that only imports `typebox` adds 38–41 ms in the same campaign. Against that
+package, current main adds 20.7 ms on official Pi and 15.0 ms on the fork. Most
+of that is one-shot intercom broker and owner attachment work in the first
+second. Later 10 s windows stay within about 1 ms of the floor. The
+[issue 238 evidence](evidence/issue-238-idle/README.md) has the samples, host
+hashes, native causal chain and limits.
+
 ## Necessary costs
 
 - Native Pi owns context loading and model execution. The extension cannot remove
