@@ -95,15 +95,38 @@ export default async function fixture(pi) {
       { id: "nested/model", reasoning: true },
     ],
   });
+  const publishRequest = async (request, signal) => {
+    const body = JSON.stringify(request);
+    if (request.prompt === "HOLD:second") {
+      const split = Math.floor(body.length / 2);
+      for (const [stage, chunk] of [
+        ["prefix", body.slice(0, split)],
+        ["body", body.slice(split)],
+      ]) {
+        fs.appendFileSync(path.join(root, "requests.jsonl"), chunk);
+        fs.writeFileSync(path.join(root, `request-${stage}`), "written");
+        while (!fs.existsSync(path.join(root, `release-request-${stage}`))) {
+          if (signal?.aborted) {
+            return;
+          }
+          // Hold actual request bytes on disk until the parent observes this publication stage.
+          // oxlint-disable-next-line no-await-in-loop
+          await delay(15);
+        }
+      }
+      fs.appendFileSync(path.join(root, "requests.jsonl"), "\n");
+    } else {
+      fs.appendFileSync(path.join(root, "requests.jsonl"), body + "\n");
+    }
+  };
   const respond = async (context, options, state, model) => {
     const user = context.messages.findLast((message) => message.role === "user");
     const prompt =
       typeof user?.content === "string"
         ? user.content
         : user?.content?.map((block) => block.text ?? "").join("");
-    fs.appendFileSync(
-      path.join(root, "requests.jsonl"),
-      JSON.stringify({
+    await publishRequest(
+      {
         pid: process.pid,
         cwd: process.cwd(),
         sessionId: process.env.PI_SESSION_ID,
@@ -113,7 +136,8 @@ export default async function fixture(pi) {
         context: context.messages,
         thinking: options?.reasoning,
         model: model.id,
-      }) + "\n",
+      },
+      options?.signal,
     );
     const hold = /^HOLD:([a-z]+)/.exec(prompt ?? "");
     if (prompt === "DELAYED_LF_LITERAL") {
