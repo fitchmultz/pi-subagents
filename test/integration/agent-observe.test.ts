@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   Container,
@@ -219,6 +219,7 @@ async function firstPageNavigation(
 }
 
 async function exerciseReading(options: {
+  t: TestContext;
   terminal: CaptureTerminal;
   screen: TuiAltScreen;
   mode: sdk.InteractiveMode;
@@ -243,10 +244,21 @@ async function exerciseReading(options: {
   other.appendMessage({ role: "user", content: "SECOND_READING_FIXTURE", timestamp: 1 });
   other.appendMessage(fauxAssistantMessage("OTHER_CHILD_ONLY"));
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
+  const overlays = spy(screen, "showOverlay");
+  options.t.after(() => overlays.restore());
   let sent = 0;
   const keyUntil = (key: string, text: string, repeats = 1) =>
     until(
       () => {
+        const overlay = overlays.lastCall;
+        assertDefined(overlay);
+        const transcript = components(overlay.args[0]).find(observesNativeProgress);
+        assertDefined(transcript);
+        // Paging placeholders can skip the target before its native journal read publishes.
+        if (transcript.children.some((card) => "ready" in card && card.ready !== true)) {
+          return false;
+        }
+        screen.renderNow();
         if (shown().includes(text)) {
           return true;
         }
@@ -1424,6 +1436,6 @@ test(
     const b = { ...publish("reader-b", false), name: "reader-b" };
     write(path.join(base, a.id, "launch.json"), a);
     write(path.join(base, b.id, "launch.json"), b);
-    await exerciseReading({ terminal, screen, mode, session: runtime.session, a, b });
+    await exerciseReading({ t, terminal, screen, mode, session: runtime.session, a, b });
   },
 );
