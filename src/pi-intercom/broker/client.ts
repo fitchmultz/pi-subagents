@@ -4,8 +4,8 @@ import { randomUUID } from "crypto";
 import { writeMessage } from "./framing.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
-import { LastMessageRequests } from "./client-last.ts";
-import { isLastMessageQuery, isLastMessageResult } from "./last.ts";
+import { LastMessageRequests, lastRequest } from "./client-last.ts";
+import { isLastMessageResult } from "./last.ts";
 import {
   errorMessage,
   isRecord,
@@ -18,16 +18,14 @@ import {
   normalizeSessionInfo,
   type SessionInfo,
   type Message,
-  type Attachment,
   type MessageDelivery,
-  type QueueMode,
-  type HumanMessageOrigin,
   type TopicUpdate,
   type TopicChange,
   type SessionSnapshot,
   type SendResult,
   type LastMessageQuery,
   type LastMessageResult,
+  type SendOptions,
 } from "../types.ts";
 export type { SendResult } from "../types.ts";
 
@@ -41,20 +39,6 @@ export interface IntercomClientOptions {
   readonly sendTimeoutMs?: number;
   /** Timeout (ms) for a session list response. */
   readonly listTimeoutMs?: number;
-}
-
-interface SendOptions {
-  readonly text: string;
-  readonly attachments?: readonly Attachment[];
-  readonly replyTo?: string;
-  readonly expectsReply?: boolean;
-  readonly delivery?: MessageDelivery;
-  readonly queueMode?: QueueMode;
-  readonly threadId?: string;
-  readonly passive?: boolean;
-  readonly messageId?: string;
-  readonly human?: HumanMessageOrigin;
-  readonly topic?: TopicUpdate;
 }
 
 function toError(error: unknown): Error {
@@ -81,6 +65,7 @@ export class IntercomClient extends EventEmitter {
   private lastMessagesSupported = false;
   private parkingSupported = false;
   private parkAcknowledged?: (parked: boolean) => void;
+  private guardedDeliverySupported = false;
   private readonly lastRequests = new LastMessageRequests();
   private readonly pendingSends = new Map<
     string,
@@ -123,6 +108,9 @@ export class IntercomClient extends EventEmitter {
 
   get supportsTopics(): boolean {
     return this.isConnected() && this._topicsSupported;
+  }
+  get supportsGuardedDelivery(): boolean {
+    return this.isConnected() && this.guardedDeliverySupported;
   }
   isConnected(): boolean {
     return (
@@ -168,6 +156,7 @@ export class IntercomClient extends EventEmitter {
           this._topicsSupported = false;
           this.lastMessagesSupported = false;
           this.parkAcknowledged?.(false);
+          this.guardedDeliverySupported = false;
           this.disconnecting = false;
           this.failPending(error);
           if (established && !expected) {
@@ -185,6 +174,7 @@ export class IntercomClient extends EventEmitter {
           topicFrames: true,
           lastMessages: true,
           parking: true,
+          guardedDelivery: 1,
         });
       } catch (error) {
         if (this.connection === connection) {
@@ -275,18 +265,15 @@ export class IntercomClient extends EventEmitter {
     this._topicsSupported = msg.topicsSupported === true && msg.topicFrames === true;
     this.lastMessagesSupported = msg.lastMessages === true;
     this.parkingSupported = msg.parking === true;
+    this.guardedDeliverySupported = msg.guardedDelivery === 1;
     this.connection?.confirmRegistration();
     this.emit("_registered", { type: "registered", sessionId: msg.sessionId });
   }
 
   private receiveLastRequest(msg: UnknownRecord): void {
-    const from = normalizeSessionInfo(msg.from);
-    if (typeof msg.requestId !== "string" || !from || !isLastMessageQuery(msg.query)) {
-      throw new Error("Invalid last-message request");
-    }
-    const request = { requestId: msg.requestId, from, query: msg.query };
-    if (!this.emit("last_request", { ...request, parked: normalizeSessionInfo(msg.parked) })) {
-      this.respondLast(msg.requestId, { error: "Recipient has no last-message reader." });
+    const request = lastRequest(msg);
+    if (!this.emit("last_request", request)) {
+      this.respondLast(request.requestId, { error: "Recipient has no last-message reader." });
     }
   }
 
@@ -459,20 +446,30 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
+  private requireSendSocket(options: SendOptions): net.Socket {
+    const socket = this.requireActiveSocket();
+    if (options.guard && !this.guardedDeliverySupported) {
+      throw new Error("This broker does not support guarded delivery; no message sent.");
+    }
+    return socket;
+  }
+
   send(to: string, options: SendOptions): Promise<SendResult> {
     let socket: net.Socket;
     try {
-      socket = this.requireActiveSocket();
+      socket = this.requireSendSocket(options);
     } catch (error) {
       return Promise.reject(toError(error));
     }
 
-    const messageId = options.messageId ?? randomUUID();
+    const messageId = options.messageId ?? (options.guard ? "" : randomUUID());
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
+      guard: options.guard,
+      replyHint: options.replyHint,
       ...(options.human ? { human: options.human } : {}),
       ...(options.topic ? { topic: options.topic } : {}),
       delivery: messageDelivery(options),
@@ -485,6 +482,9 @@ export class IntercomClient extends EventEmitter {
       },
     };
 
+    if ((options.guard || options.replyHint) && normalizeMessage(message) === null) {
+      return Promise.reject(new Error("Invalid message format"));
+    }
     return new Promise((resolve, reject) => {
       const wrappedResolve = (result: SendResult) => {
         clearTimeout(timeout);
@@ -518,6 +518,7 @@ export class IntercomClient extends EventEmitter {
   }
 
   updatePresence(updates: {
+    readonly applicationGuard?: string | null;
     readonly name?: string;
     readonly status?: string;
     readonly model?: string;

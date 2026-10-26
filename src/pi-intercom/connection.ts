@@ -10,12 +10,11 @@ import { asError } from "./validation.ts";
 import { RecoveryError } from "./tool-results.ts";
 import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
 
-type Lifecycle = Readonly<
-  Pick<
-    IntercomLifecycle,
-    "currentSessionId" | "generation" | "health" | "identity" | "live" | "registration" | "status"
-  >
->;
+type Lifecycle = Pick<
+  Readonly<IntercomLifecycle>,
+  "currentSessionId" | "generation" | "health" | "identity" | "live" | "registration" | "status"
+> &
+  Pick<Readonly<IntercomLifecycle>, "snapshot" | "transport">;
 
 interface ConnectionHooks {
   readonly restoring: () => Promise<void> | undefined;
@@ -140,6 +139,7 @@ export class IntercomConnection {
       this.client.updatePresence({
         status: this.lifecycle.status(),
         ...this.lifecycle.health(this.hooks.pendingAsks()),
+        applicationGuard: this.lifecycle.snapshot().applicationGuard ?? null,
       });
     }
   }
@@ -222,6 +222,7 @@ export class IntercomConnection {
       }
       this.hooks.disconnected(error);
       this.client = null;
+      this.lifecycle.transport(null);
       this.clearReconnect();
       this.scheduleReconnect();
     });
@@ -247,6 +248,7 @@ export class IntercomConnection {
         throw new Error("Intercom runtime no longer active");
       }
       this.client = next;
+      this.lifecycle.transport(next.sessionId, next.supportsGuardedDelivery);
       this.syncIdentity(ctx.sessionManager.getSessionId());
       this.attempt = 0;
       return next;

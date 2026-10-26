@@ -7,12 +7,12 @@ import { getBrokerRuntimeDir, prepareBrokerSocketPath } from "./paths.ts";
 import { brokerPidRecord } from "./pid.ts";
 import { assertBrokerCanStart } from "./spawn.ts";
 import { LastMessageRelay } from "./last.ts";
-import { assertMainParent, canSeeSession, findSessions } from "./targets.ts";
+import { canSeeSession, findSessions } from "./targets.ts";
 import { ParkedSessions, type ParkablePeer } from "./parked.ts";
-import { acceptBrokerConnection } from "./server-connection.ts";
+import { acceptBrokerConnection, registeredSessionInfo } from "./server-connection.ts";
+import { guardedDeliveryError } from "./guard.ts";
 import {
   compactTopicMessage,
-  isSessionRegistration,
   normalizeMessage,
   normalizeSessionInfo,
   type SessionInfo,
@@ -41,6 +41,10 @@ interface ConnectedSession extends ParkablePeer {
   topics: TopicSnapshot;
   readonly topicFrames: boolean;
   readonly lastMessages: boolean;
+}
+function reachable(target?: ConnectedSession): target is ConnectedSession {
+  const socket = target?.socket;
+  return socket !== undefined && !socket.destroyed && socket.writable && !socket.writableEnded;
 }
 
 interface PendingReplaceDelivery {
@@ -159,12 +163,9 @@ class IntercomBroker {
   }
 
   private register(socket: net.Socket, msg: UnknownRecord, setId: (id: string) => void): void {
-    if (!isSessionRegistration(msg.session)) {
-      throw new Error("Invalid register message");
-    }
-    assertMainParent(msg.session, this.sessions);
-    const { id, resumed } = this.parking.claim(msg.requestedId, msg.session);
-    const info: SessionInfo = { ...msg.session, id, lastSeen: msg.session.lastSeen ?? Date.now() };
+    const registered = registeredSessionInfo(msg, this.sessions);
+    const { id, resumed } = this.parking.claim(msg.requestedId, registered);
+    const info: SessionInfo = { ...registered, id };
     snapshotFrames(randomUUID(), [info], true);
     const topicFrames = msg.topicFrames === true;
     this.sessions.set(id, {
@@ -186,6 +187,7 @@ class IntercomBroker {
       sessionId: id,
       lastMessages: true,
       parking: msg.parking === true,
+      ...(msg.guardedDelivery === 1 ? { guardedDelivery: 1 } : {}),
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
     });
     this.parking.registered(id, resumed);
@@ -303,6 +305,15 @@ class IntercomBroker {
     const targets = findSessions(this.sessions, msg.to, currentId);
     const target = targets[0];
     if (targets.length === 1) {
+      const guardError = guardedDeliveryError(this.sessions, msg.to, message);
+      if (guardError !== null) {
+        writeMessage(socket, {
+          type: "delivery_failed",
+          messageId: message.id,
+          reason: guardError,
+        });
+        return;
+      }
       const fromSession = this.sessions.get(currentId);
       if (!fromSession) {
         writeMessage(socket, {
@@ -350,10 +361,14 @@ class IntercomBroker {
       "lastIntercomActivity",
       "subscriptions",
       "topics",
+      "applicationGuard",
     ]) {
       if (msg[key] !== undefined) {
         update[key] = msg[key];
       }
+    }
+    if (msg.applicationGuard === null) {
+      delete update.applicationGuard;
     }
     const nextInfo = normalizeSessionInfo(update);
     if (!nextInfo) {
@@ -373,19 +388,11 @@ class IntercomBroker {
     message: Message,
   ): SendResult {
     const target = this.sessions.get(toId);
-    if (!target) {
-      return {
-        id: message.id,
-        accepted: false,
-        delivered: false,
-        reason: "Recipient disconnected before delivery",
-      };
-    }
-    if (target.parked === undefined && shouldReplaceDelivery(message, target.info)) {
+    if (target && target.parked === undefined && shouldReplaceDelivery(message, target.info)) {
       return this.queueReplaceDelivery(fromId, toId, from, message);
     }
     const reason = this.deliverMessage(toId, from, message);
-    const queued = reason === null && target.parked !== undefined;
+    const queued = reason === null && target?.parked !== undefined;
     return {
       id: message.id,
       accepted: reason === null,
@@ -474,14 +481,13 @@ class IntercomBroker {
 
   private deliverMessage(toId: string, from: SessionInfo, message: Message): string | null {
     const target = this.sessions.get(toId);
-    const invalid = this.validateDeliveryPayload(from, message, target);
-    if (invalid !== null) {
-      return invalid;
+    const refused =
+      guardedDeliveryError(this.sessions, toId, message) ??
+      this.validateDeliveryPayload(from, message, target);
+    if (refused !== null || this.parking.retain(target, from, message)) {
+      return refused;
     }
-    if (this.parking.retain(target, from, message)) {
-      return null;
-    }
-    if (target?.socket.writable !== true || target.socket.writableEnded) {
+    if (!reachable(target)) {
       return "Recipient disconnected before delivery";
     }
     this.touchActivity(toId, true);

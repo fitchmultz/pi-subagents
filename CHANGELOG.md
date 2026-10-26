@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Park children that stay idle for five minutes on a Pi fork with native working-session capture. The child saves its exact working state and its process exits, freeing its memory. Its Intercom identity stays listed with no departure. Passive messages, topic updates and `last` reads do not wake it; its main answers `last` from the saved history. A normal message, ask or continuation restores the exact saved state into a new process, which then receives retained messages in order. A failed final save records `park-failed.json` and restarts nothing; continuing reports it. Official Pi keeps idle children resident.
+- Negotiate conditional Intercom commands bound to one exact native main, peer, context incarnation and companion-owned application revision. Check the binding at broker routing and native admission, expose the original lifecycle snapshot through a versioned process-local event handshake, and render generic correlated-publication hints without creating ordinary asks. Startup, reload and session replacement invalidate old handles; transport reconnect preserves the context. Ordinary local names, asks and main/child topology are unchanged. This does not install an external client, export native work or strengthen broker acceptance into a recipient receipt.
+
 ### Breaking
 
 - Make child execution asynchronous-only. `delegate` and `agent_runs` no longer accept `async`, and `agent_runs` no longer has `wait`; launches, continuations and guidance return honest receipts, and existing completion notifications resume the parent. A blocking wait held the parent's tool batch open, so admitted Intercom steering could not reach it until the child finished. Aborting a parent turn no longer stops children; use `stop`. New calls no longer attribute child usage to the parent; child results keep exactly-once native contributions, and historical parent charges remain unchanged. The opt-in `smoke:real-pi -- --llm`/`--llm-full` prompts now keep a persistent RPC main open until each launch or continuation receipt's completion notification resumes it, then close it and confirm the delegated actor exits.

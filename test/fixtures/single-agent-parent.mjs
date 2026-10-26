@@ -1173,7 +1173,7 @@ try {
     }
     fs.writeFileSync(
       path.join(root, "ticker.mjs"),
-      `import fs from 'node:fs'; import {spawn} from 'node:child_process';\nconst root=${JSON.stringify(root)}; if(!process.argv.includes('--descendant')) { const child=spawn(process.execPath,[process.argv[1],'--descendant'],{stdio:'ignore'}); fs.writeFileSync(root+'/shell-family.json',JSON.stringify({pid:process.pid,descendant:child.pid})); }\nfs.writeFileSync(root+'/heartbeat-'+process.pid,'ready'); setInterval(()=>fs.appendFileSync(root+'/heartbeat-'+process.pid,'tick\\n'),20);`,
+      `import fs from 'node:fs'; import {spawn} from 'node:child_process';\nconst root=${JSON.stringify(root)}; if(!process.argv.includes('--descendant')) { const child=spawn(process.execPath,[process.argv[1],'--descendant'],{stdio:'ignore'}); fs.writeFileSync(root+'/shell-family.json.tmp',JSON.stringify({pid:process.pid,descendant:child.pid})); fs.renameSync(root+'/shell-family.json.tmp',root+'/shell-family.json'); }\nfs.writeFileSync(root+'/heartbeat-'+process.pid,'ready'); setInterval(()=>fs.appendFileSync(root+'/heartbeat-'+process.pid,'tick\\n'),20);`,
     );
     const receipt = await call(
       "delegate",

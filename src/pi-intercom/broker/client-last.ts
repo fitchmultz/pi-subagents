@@ -1,9 +1,33 @@
 import type net from "node:net";
 import { randomUUID } from "node:crypto";
 import { errorMessage, type UnknownRecord } from "../../shared/unknown.ts";
-import type { LastMessageResult } from "../types.ts";
+import {
+  normalizeSessionInfo,
+  type LastMessageQuery,
+  type LastMessageResult,
+  type SessionInfo,
+} from "../types.ts";
 import { isLastMessageQuery, isLastMessageResult } from "./last.ts";
 import { writeMessage } from "./framing.ts";
+
+/** A peer's read of this session or, for a main, of its exited `parked` child. */
+export function lastRequest(msg: UnknownRecord): {
+  readonly requestId: string;
+  readonly from: SessionInfo;
+  readonly query: LastMessageQuery;
+  readonly parked?: SessionInfo;
+} {
+  const from = normalizeSessionInfo(msg.from);
+  if (typeof msg.requestId !== "string" || !from || !isLastMessageQuery(msg.query)) {
+    throw new Error("Invalid last-message request");
+  }
+  return {
+    requestId: msg.requestId,
+    from,
+    query: msg.query,
+    parked: normalizeSessionInfo(msg.parked) ?? undefined,
+  };
+}
 
 export class LastMessageRequests {
   private readonly pending = new Map<

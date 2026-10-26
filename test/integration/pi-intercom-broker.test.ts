@@ -278,6 +278,20 @@ for (const outcome of [
     await client.connect({ cwd: "/client", model: "synthetic" });
     if (outcome === "complete") {
       await assert.rejects(client.last("old-peer"), /does not support last-message reads/);
+      await assert.rejects(
+        client.send("old-peer", {
+          messageId: "guarded-on-old-broker",
+          text: "must not be sent without negotiation",
+          expectsReply: false,
+          guard: {
+            peerId: "old-peer",
+            rootSessionId: "old-root",
+            incarnation: "old-context",
+            applicationGuard: "consent-1",
+          },
+        }),
+        /does not support guarded delivery/,
+      );
     }
     const barrier = once(client, "message");
     let settled = false;
@@ -499,6 +513,133 @@ test("last-message frames correlate concurrent pages without using direct-messag
     assert.deepEqual(await disconnected, { error: "Peer disconnected during last-message read" });
   } finally {
     await Promise.all([requester.disconnect(), owner.disconnect(), other.disconnect()]);
+  }
+});
+
+test("guarded broker sends bind one exact main context while ordinary names remain usable", async (t) => {
+  isolatedAgent(t);
+  await startBroker(t);
+  const clients: IntercomClient[] = [];
+  const connect = async (incarnation?: string, rootSessionId = "original-root") => {
+    const client = new IntercomClient();
+    clients.push(client);
+    client.on("error", (error: Error) => assert.fail(error.message));
+    await client.connect(
+      {
+        name: rootSessionId === "original-root" ? "ordinary-name" : rootSessionId,
+        cwd: "/fixture",
+        model: "fixture",
+        rootSessionId,
+        ...(incarnation !== undefined
+          ? ({ incarnation, guardedDelivery: 1, applicationGuard: "consent-1" } as const)
+          : {}),
+      },
+      nativePeerId(rootSessionId),
+    );
+    return client;
+  };
+  try {
+    const sender = await connect(undefined, "sender-root");
+    const owner = await connect("context-1");
+    const peerId = text(owner.sessionId);
+    const guard = {
+      rootSessionId: "original-root",
+      peerId,
+      incarnation: "context-1",
+      applicationGuard: "consent-1",
+    };
+    const options = {
+      text: "original command",
+      expectsReply: false,
+      delivery: "passive",
+      guard,
+    } as const;
+    const messages: Message[] = [];
+    owner.on("message", (_from: SessionInfo, message: Message) => {
+      messages.push(message);
+    });
+    const accepted = await sender.send(peerId, { ...options, messageId: "original-command" });
+    assert.equal(accepted.delivered, true);
+    await owner.listSessions();
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].id, "original-command");
+    for (const changed of [
+      { ...guard, rootSessionId: "wrong-root" },
+      { ...guard, incarnation: "stale-context" },
+      { ...guard, applicationGuard: "stale-consent" },
+      { ...guard, peerId: "wrong-peer" },
+    ]) {
+      // Each response is the real broker's negative admission, not a client predicate.
+      // oxlint-disable-next-line no-await-in-loop
+      const denied = await sender.send(peerId, {
+        ...options,
+        guard: changed,
+        messageId: JSON.stringify(changed),
+      });
+      assert.equal(denied.accepted, false);
+    }
+    assert.equal(
+      (await sender.send("ordinary-name", { ...options, messageId: "guarded-name" })).accepted,
+      false,
+    );
+    const duplicate = await connect("duplicate-context");
+    assert.notEqual(duplicate.sessionId, peerId);
+    assert.equal(
+      (await sender.send(peerId, { ...options, messageId: "ambiguous-root" })).reason,
+      "Guarded root is ambiguous",
+    );
+    await duplicate.disconnect();
+    await owner.disconnect();
+    const replacement = await connect("context-2");
+    assert.equal(replacement.sessionId, peerId, "a later context can reuse a requested peer ID");
+    const replacementMessages: unknown[] = [];
+    replacement.on("message", (...message: unknown[]) => {
+      replacementMessages.push(message);
+    });
+    assert.equal(
+      (await sender.send(peerId, { ...options, messageId: "old-handle" })).reason,
+      "Guarded target changed",
+    );
+    assert.equal(
+      (await sender.send("ordinary-name", { text: "ordinary local send", messageId: "ordinary" }))
+        .delivered,
+      true,
+      "ordinary convenience names still work",
+    );
+    await sender.disconnect();
+    const ordinary = once(replacement, "message");
+    const legacy = await connect(undefined, "legacy-root");
+    assert.equal((await legacy.send(peerId, { text: "ordinary local send" })).delivered, true);
+    await ordinary;
+    await replacement.listSessions();
+    assert.equal(replacementMessages.length, 2, "no stale guarded command reached the replacement");
+    assert.equal(
+      (
+        await legacy.send(peerId, {
+          ...options,
+          guard: { ...guard, incarnation: "context-2" },
+          messageId: "fresh-handle",
+        })
+      ).accepted,
+      true,
+    );
+    assert.equal(
+      (
+        await replacement.send(text(legacy.sessionId), {
+          ...options,
+          guard: {
+            rootSessionId: "legacy-root",
+            peerId: text(legacy.sessionId),
+            incarnation: "missing",
+            applicationGuard: "consent-1",
+          },
+          messageId: "legacy-recipient",
+        })
+      ).reason,
+      "Recipient does not support guarded delivery",
+    );
+  } finally {
+    await Promise.all(clients.map((client) => client.disconnect()));
   }
 });
 
