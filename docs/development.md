@@ -46,6 +46,12 @@ hosted CI; do not substitute a weakened checker or incompatible Linux executable
 
 ## Runtime qualification
 
+The official development SDK 1.4.0 pins Undici 8.10.2 exactly. A parent-scoped
+override selects 8.12.3 for that development graph to fix GHSA-4qv8-2p9j-2685,
+GHSA-f72v-6w45-q472 and GHSA-xjj6-f33q-929c. Remove the override when an official
+SDK release supplies a fixed version. It does not replace a consumer's host SDK
+or Node's built-in fetch.
+
 Qualify the latest stable official Pi and the intended fork revision separately.
 Record the exact package root, revision/build, Node binary, and executed test
 commands. Matching versions do not establish matching runtime behavior.
