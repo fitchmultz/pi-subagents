@@ -34,10 +34,8 @@ tests. CI separately qualifies the latest official Pi on GitHub-hosted Linux and
 the maintained fork on Linux and macOS. There is no custom checker build, probe
 suite or self-hosted runner requirement.
 
-CI's lint job also enforces the production line/byte shrink budget before
-qualification substitutes the selected host graph. The retired workflow schema
-generator and its patching dependency are not part of the new runtime.
-The active-child viewer, change-driven wakeups, idle-child parking and the
-concurrent efficiency units have an approved aggregate budget of 19,750 source
-lines and 23,500 production lines. The 1 MiB byte ceiling and all lint limits
-stay unchanged.
+CI's lint job also enforces the production byte ceiling before qualification
+substitutes the selected host graph. The retired workflow schema generator and
+its patching dependency are not part of the new runtime. `npm run check:size`
+still reports source and production line counts for visibility; no line count
+is mandated. The 1 MiB byte ceiling and all lint limits stay unchanged.
