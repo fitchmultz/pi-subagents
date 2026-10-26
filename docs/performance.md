@@ -36,9 +36,11 @@ speedup claim. The long-lived costs remain explicit: a main reconciles receipts
 when watched completion inputs change and stats those inputs each second, native
 actors check their parent each second and scan durable commands on change, and the
 broker maintains connections/presence. Completed actors stay messageable
-while attached; observed owner detachment ends their lifetime. On the fork, a
-child idle for five minutes parks its exact working state and exits, releasing
-its process and heap. A genuine message or continuation restores that exact
+while attached; observed owner detachment ends their lifetime. On the fork, when native
+working-session capture and broker parking support are both available, a child
+idle for five minutes parks its exact working state and exits, releasing its
+process and heap. On official Pi, or with an older broker that lacks parking
+support, idle children stay resident. A genuine message or continuation restores that exact
 state at the cost of one cold actor start. No retained measurement quantifies
 the memory released or the wake latency. Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
