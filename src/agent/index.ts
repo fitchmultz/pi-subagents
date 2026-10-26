@@ -15,13 +15,9 @@ import {
   requestStop,
   signalProcess,
   stopChildren,
-  wakeActor,
 } from "./process.ts";
-import { isChild, errorText, loadSDK } from "./host.ts";
-import { isHistoryRequest, PARKED_HISTORY, WAKE } from "../shared/parking.ts";
-import { parkedState } from "./parking.ts";
-import { nativePeerId } from "../pi-intercom/session-targets.ts";
-import type { NativeHistory } from "../pi-intercom/last-message.ts";
+import { isChild, errorText } from "./host.ts";
+import { serveParked } from "./parking.ts";
 import {
   resultSchema,
   attachmentSchema,
@@ -42,12 +38,14 @@ import {
   runDirectory,
   ownerDirectory,
   conversation,
+  successor,
   write,
 } from "./storage.ts";
 import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
-import { legacyNotifications } from "./legacy.ts";
+import { legacyDirectory, legacyNotifications } from "./legacy.ts";
+import { DirectoryWatch, pathStamp, type WatchState } from "./wake.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
@@ -77,6 +75,14 @@ function managedHost(context: ExtensionContext): ManagedHost | undefined {
     : undefined;
 }
 
+/** Legacy results are optional; their reconciliation reports an invalid configured root. */
+function legacyInput(): string[] {
+  try {
+    return [legacyDirectory()];
+  } catch {
+    return [];
+  }
+}
 class AgentRuntime {
   private ctx?: ExtensionContext;
   // A managed launcher owns children across worker replacement; otherwise this process does.
@@ -85,7 +91,15 @@ class AgentRuntime {
   private base = "";
   private owner = "";
   private generation = "";
+  // Polling remains only while change hints are unavailable or a reconciliation failed.
   private timer?: NodeJS.Timeout;
+  private woken?: NodeJS.Immediate;
+  // Change hints for the owner directory, legacy results and every awaited canonical file.
+  private readonly watches = new Map<string, DirectoryWatch>();
+  private awaited: ReadonlySet<string> = new Set();
+  // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
+  private observed = new Map<string, string>();
+  private probe?: NodeJS.Timeout;
   private closing = false;
   private reset: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
@@ -103,12 +117,31 @@ class AgentRuntime {
       throw new Error("Agent runtime is not attached.");
     }
   }
+  private readonly wake = (): void => {
+    this.woken ??= setImmediate(() => {
+      this.woken = undefined;
+      this.scan();
+    }).unref();
+  };
+  private readonly recover = (): void => {
+    for (const [file, seen] of this.observed) {
+      if (pathStamp(file) !== seen) {
+        this.wake();
+        return;
+      }
+    }
+  };
   private readonly scan = (): void => {
+    clearTimeout(this.timer);
     if (this.closing || !this.ctx || this.child) {
       return;
     }
+    const inputs = () => [this.base, ...legacyInput(), ...this.awaited];
+    const before = new Map(inputs().map((file) => [file, pathStamp(file)]));
+    let reconciled = true;
     try {
-      const notices = notifications(this.ctx, this.base, this.owner);
+      const { notices, awaited } = notifications(this.ctx, this.base, this.owner);
+      this.awaited = awaited;
       try {
         notices.unshift(...legacyNotifications(this.ctx));
       } catch (error) {
@@ -116,9 +149,61 @@ class AgentRuntime {
       }
       deliver(this.pi, this.ctx, notices);
     } catch (error) {
+      reconciled = false;
       console.error(`Agent completion reconciliation: ${errorText(error)}`);
     }
+    // Newly awaited files were absent when read, or are rechecked once by the probe.
+    this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
+    const next = this.watch();
+    if (!reconciled || next === "poll") {
+      this.timer = setTimeout(this.scan, 200).unref();
+    } else if (next === "rescan") {
+      // Publications before arming had no hint; reconcile once more after it.
+      this.wake();
+    }
   };
+  /** Watches every directory that can publish an awaited input; legacy results may never exist. */
+  private watch(): "poll" | "rescan" | "hints" {
+    const legacy = legacyInput();
+    const directories = [
+      ...new Set([this.base, ...legacy, ...[...this.awaited].map((file) => path.dirname(file))]),
+    ];
+    for (const [directory, watch] of this.watches) {
+      if (!directories.includes(directory)) {
+        watch.close();
+        this.watches.delete(directory);
+      }
+    }
+    const states = directories.map((directory): [string, WatchState] => {
+      let watch = this.watches.get(directory);
+      if (watch === undefined) {
+        const every = directory === this.base || legacy.includes(directory);
+        watch = new DirectoryWatch(
+          directory,
+          (file) => every || file === null || this.awaited.has(path.join(directory, file)),
+          this.wake,
+        );
+        this.watches.set(directory, watch);
+      }
+      return [directory, watch.ensure()];
+    });
+    if (states.some(([directory, state]) => state === "unwatched" && !legacy.includes(directory))) {
+      return "poll";
+    }
+    return states.some(([, state]) => state === "armed") ? "rescan" : "hints";
+  }
+  private unwatch(): void {
+    clearTimeout(this.timer);
+    clearInterval(this.probe);
+    this.observed.clear();
+    clearImmediate(this.woken);
+    this.woken = undefined;
+    for (const watch of this.watches.values()) {
+      watch.close();
+    }
+    this.watches.clear();
+    this.awaited = new Set();
+  }
   private start(context: ExtensionContext): Promise<void> | undefined {
     this.host = managedHost(context);
     if (this.host === undefined || this.accepted || this.child) {
@@ -146,7 +231,7 @@ class AgentRuntime {
     return ownIdentity(this.host?.owner.pid);
   }
   private async attach(context: ExtensionContext): Promise<void> {
-    clearInterval(this.timer);
+    this.unwatch();
     this.ctx = context;
     if (this.child) {
       return;
@@ -163,12 +248,13 @@ class AgentRuntime {
     if (this.closing) {
       return;
     }
-    this.timer = setInterval(this.scan, 200);
-    this.timer.unref();
+    // Recovery and watch setup stay off the awaited startup path.
+    this.timer = setTimeout(this.scan, 200).unref();
+    this.probe = setInterval(this.recover, 1000).unref();
   }
   private async dispose(retain: boolean): Promise<void> {
     this.closing = true;
-    clearInterval(this.timer);
+    this.unwatch();
     this.shutdown.abort();
     await this.reset;
     if (!retain && this.base.length > 0) {
@@ -252,22 +338,6 @@ class AgentRuntime {
       .sort((a, b) => a.createdAt - b.createdAt);
     return renderInventory(this.base, all, this.ctx, input);
   }
-  private successor(launch: Launch, prompt: string): Launch | undefined {
-    const id = randomUUID();
-    const next: Launch = { ...launch, id, predecessor: launch.id, prompt, createdAt: Date.now() };
-    fs.mkdirSync(runDirectory(this.base, id), { mode: 0o700 });
-    write(path.join(runDirectory(this.base, id), "launch.json"), next, true);
-    try {
-      write(path.join(runDirectory(this.base, launch.id), "successor.json"), { id }, true);
-    } catch (error) {
-      fs.rmSync(runDirectory(this.base, id), { recursive: true });
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
-        throw error;
-      }
-      return undefined;
-    }
-    return next;
-  }
   private continuationResult(launch: Launch): Result | "pending" | undefined {
     const result = read(path.join(runDirectory(this.base, launch.id), "result.json"), resultSchema);
     if (result) {
@@ -324,7 +394,7 @@ class AgentRuntime {
       });
     }
     parkFailure(this.base, launch);
-    const next = this.successor(launch, input.prompt);
+    const next = successor(this.base, launch, input.prompt);
     if (!next) {
       return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
         receipt: "existing-successor",
@@ -381,48 +451,22 @@ class AgentRuntime {
     }
     return this.continue(launch, input);
   }
-  /** The broker names a parked child by native peer ID; only this owner's conversations match. */
-  private parked(peer: string): Launch | undefined {
-    const launch = list(this.base)
-      .map((id) => launchAt(this.base, id, this.owner))
-      .find((candidate) => nativePeerId(candidate.sessionId) === peer);
-    return launch && latest(this.base, launch);
-  }
-  private wake(peer: unknown): void {
-    // On failure, retained input stays queued at the broker until the next main registration.
-    (async () => {
-      const launch =
-        typeof peer === "string" && !this.child && this.ctx !== undefined
-          ? this.parked(peer)
-          : undefined;
-      if (launch) {
-        await wakeActor(this.base, launch, this.shutdown.signal);
-      }
-    })().catch((error: unknown) => {
-      console.error(`Agent wake: ${errorText(error)}`);
-    });
-  }
-  private async parkedHistory(peer: string): Promise<NativeHistory | undefined> {
-    const launch = this.child || !this.ctx ? undefined : this.parked(peer);
-    const restore = launch && (await loadSDK(launch.sdk)).readWorkingSession;
-    const state = launch && parkedState(conversation(this.base, launch), launch, restore)?.saved;
-    const entries = new Map(state?.entries.map((entry) => [entry.id, entry]));
-    return state && { getLeafId: () => state.leafId, getEntry: (id) => entries.get(id) };
-  }
   register(): void {
     registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
-    this.pi.events.on(WAKE, (peer) => {
-      this.wake(peer);
-    });
-    this.pi.events.on(PARKED_HISTORY, (request) => {
-      if (isHistoryRequest(request)) {
-        request.reply(this.parkedHistory(request.peer));
-      }
-    });
+    serveParked(
+      this.pi,
+      () => (this.child || !this.ctx ? undefined : { base: this.base, owner: this.owner }),
+      this.shutdown.signal,
+    );
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.
-      settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0);
+      if (
+        settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0)
+      ) {
+        // Released admissions may have been dropped from the queue rather than published.
+        this.wake();
+      }
     });
     this.pi.on("agent_settled", () => {
       this.scan();

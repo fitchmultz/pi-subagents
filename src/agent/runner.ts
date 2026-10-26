@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -18,6 +17,7 @@ import { childUsage } from "./usage.ts";
 import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
+import { DirectoryWatch, Wake } from "./wake.ts";
 
 function commandIdentity(file: string): string | undefined {
   try {
@@ -49,6 +49,10 @@ class Actor {
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
   private parking = false;
+  // Raised when durable commands may need admission: change hints and stop.
+  private readonly wake = new Wake();
+  // A deferred run waits for an idle session, which has no command-file event.
+  private retry = false;
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -135,6 +139,7 @@ class Actor {
       return;
     }
     this.stopping = true;
+    this.wake.raise();
     write(path.join(this.dir, `stopping-${this.token}.json`), { at: Date.now() });
     write(path.join(this.dir, "stop-acknowledged.json"), { at: Date.now(), id: this.current?.id });
     this.session?.abort().catch((error: unknown) => {
@@ -222,6 +227,7 @@ class Actor {
       command.action === "run" &&
       (this.stopping || this.active !== undefined || !session.isIdle)
     ) {
+      this.retry = true;
       return;
     }
     this.started.add(command.id);
@@ -314,6 +320,57 @@ class Actor {
     }
     return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
   }
+  /** Durable command readiness, not elapsed time, defines admission. */
+  private async admitCommands(runtime: Runtime, parked: Parking): Promise<void> {
+    // Queued commands create this directory; otherwise pending() does and the next pass arms.
+    const directory = path.join(this.dir, "commands");
+    const commands = new DirectoryWatch(directory, () => true, this.wake.raise);
+    try {
+      while (!this.shouldExit()) {
+        // Each liveness tick also rechecks the directory for change hints the OS dropped.
+        const watch = commands.ensure();
+        if ((this.wake.take() || this.retry || watch !== "watching") && !this.stopping) {
+          this.retry = false;
+          this.pending().forEach((command) => this.accept(command));
+        }
+        // oxlint-disable-next-line no-await-in-loop
+        if (await this.park(runtime, parked)) {
+          return;
+        }
+        const polling = this.retry || this.stopping || watch === "unwatched";
+        const tick = Math.max(1, this.nextParentCheck - performance.now());
+        // oxlint-disable-next-line no-await-in-loop
+        await this.wake.sleep(polling ? 100 : tick);
+      }
+    } finally {
+      commands.close();
+    }
+  }
+  /** Parks a final-idle actor; the parent/stop owner stays live while preparation awaits. */
+  private async park(runtime: Runtime, parked: Parking): Promise<boolean> {
+    const owner = new AbortController();
+    const watch = setInterval(() => {
+      if (this.shouldExit() || this.stopping) {
+        owner.abort();
+      }
+    }, 100);
+    try {
+      this.parking = await parked.park(runtime, {
+        signal: owner.signal,
+        pi: this.context?.pi,
+        busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
+        // Commands and viewers that raced the fence or save keep this actor resident.
+        admit: () => {
+          this.pending().forEach((command) => this.accept(command));
+          return this.active === undefined && !this.stopping && this.observation?.watched !== true;
+        },
+        errors: this.errors,
+      });
+    } finally {
+      clearInterval(watch);
+    }
+    return this.parking;
+  }
   private failure(error: unknown): void {
     const launch = this.current ?? this.initial;
     const result: Result = {
@@ -387,39 +444,7 @@ class Actor {
       runtime = await this.start(sdk, parked);
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
-      while (!this.shouldExit()) {
-        if (!this.stopping) {
-          this.pending().forEach((command) => this.accept(command));
-        }
-        // The parent/stop owner stays live while parking awaits the fence and native save.
-        const owner = new AbortController();
-        const watch = setInterval(() => {
-          if (this.shouldExit() || this.stopping) {
-            owner.abort();
-          }
-        }, 100);
-        // oxlint-disable-next-line no-await-in-loop
-        this.parking = await parked.park(runtime, {
-          signal: owner.signal,
-          pi: this.context?.pi,
-          busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
-          // Commands and viewers that raced the fence or save keep this actor resident.
-          admit: () => {
-            this.pending().forEach((command) => this.accept(command));
-            return (
-              this.active === undefined && !this.stopping && this.observation?.watched !== true
-            );
-          },
-          errors: this.errors,
-        });
-        clearInterval(watch);
-        if (this.parking) {
-          break;
-        }
-        // Durable command readiness, not elapsed time, defines admission.
-        // oxlint-disable-next-line no-await-in-loop
-        await delay(100);
-      }
+      await this.admitCommands(runtime, parked);
       await this.active;
     } catch (error) {
       this.failure(error);

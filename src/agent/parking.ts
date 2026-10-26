@@ -3,10 +3,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { parkedSchema, type Launch, type Parked } from "./contracts.ts";
-import { errorText, type loadSDK, type WorkingState } from "./host.ts";
-import { read, runDirectory, write } from "./storage.ts";
-import { alive, shells } from "./process.ts";
-import { PARK, type ParkRequest } from "../shared/parking.ts";
+import { errorText, loadSDK, type WorkingState } from "./host.ts";
+import { conversation, latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
+import { alive, shells, wakeActor } from "./process.ts";
+import {
+  isHistoryRequest,
+  PARK,
+  PARKED_HISTORY,
+  WAKE,
+  type ParkRequest,
+} from "../shared/parking.ts";
+import { nativePeerId } from "../pi-intercom/session-targets.ts";
+import type { NativeHistory } from "../pi-intercom/last-message.ts";
 
 type SDK = Awaited<ReturnType<typeof loadSDK>>;
 type Restore = NonNullable<SDK["readWorkingSession"]>;
@@ -265,4 +273,56 @@ export class Parking {
       await hold.release();
     }
   }
+}
+interface Runs {
+  readonly base: string;
+  readonly owner: string;
+}
+
+/** The broker names a parked child by native peer ID; only this owner's conversations match. */
+function ownedRun(runs: Runs | undefined, peer: unknown): Launch | undefined {
+  const launch =
+    runs && typeof peer === "string"
+      ? list(runs.base)
+          .map((id) => launchAt(runs.base, id, runs.owner))
+          .find((candidate) => nativePeerId(candidate.sessionId) === peer)
+      : undefined;
+  return launch && runs && latest(runs.base, launch);
+}
+
+async function history(runs: Runs | undefined, peer: string): Promise<NativeHistory | undefined> {
+  const launch = ownedRun(runs, peer);
+  const restore = launch && (await loadSDK(launch.sdk)).readWorkingSession;
+  const state =
+    runs && launch && parkedState(conversation(runs.base, launch), launch, restore)?.saved;
+  const entries = new Map(state?.entries.map((entry) => [entry.id, entry]));
+  return state && { getLeafId: () => state.leafId, getEntry: (id) => entries.get(id) };
+}
+
+/**
+ * Wakes this owner's parked children for broker input and reads their saved history.
+ * `runs` is undefined while this session owns no children.
+ */
+export function serveParked(
+  pi: ExtensionAPI,
+  runs: () => Runs | undefined,
+  signal: AbortSignal,
+): void {
+  pi.events.on(WAKE, (peer) => {
+    // On failure, retained input stays queued at the broker until the next main registration.
+    (async () => {
+      const current = runs();
+      const launch = ownedRun(current, peer);
+      if (current && launch) {
+        await wakeActor(current.base, launch, signal);
+      }
+    })().catch((error: unknown) => {
+      console.error(`Agent wake: ${errorText(error)}`);
+    });
+  });
+  pi.events.on(PARKED_HISTORY, (request) => {
+    if (isHistoryRequest(request)) {
+      request.reply(history(runs(), request.peer));
+    }
+  });
 }
