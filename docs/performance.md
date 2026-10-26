@@ -36,10 +36,13 @@ speedup claim. The long-lived costs remain explicit: a main reconciles receipts
 when watched completion inputs change and stats those inputs each second, native
 actors check their parent each second and scan durable commands on change, and the
 broker maintains connections/presence. Completed actors stay messageable
-while attached; observed owner detachment ends their lifetime. On the fork, a
-child idle for five minutes parks its exact working state and exits (measured
-median 73 MB released per actor), and a genuine message or continuation restores
-it (one cold actor start, measured p50 1.2 s). Native lifecycle
+while attached; observed owner detachment ends their lifetime. On the fork, when native
+working-session capture and broker parking support are both available, a child
+idle for five minutes parks its exact working state and exits, releasing its
+process and heap. On official Pi, or with an older broker that lacks parking
+support, idle children stay resident. A genuine message or continuation restores that exact
+state at the cost of one cold actor start. No retained measurement quantifies
+the memory released or the wake latency. Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
 from a timer or package size.
 
@@ -139,6 +142,28 @@ runs, not an installed macOS or general delegation-latency claim.
 The [issue 248 evidence](evidence/issue-248/README.md) includes both waits,
 switch-to-first-tool measurements, ranges, profiler results, exact runtime and
 build identities, reproducible commands, and retained synthetic RPC transcripts.
+
+### Empty-owner idle CPU (#238)
+
+The issue 238 idle ceiling of 30 ms CPU per 10 s still fails against the
+observer-only floor on official Pi 1.4.0 and the maintained fork. No runtime
+change or waiver is claimed. In the sampled configurations, most of the
+increment is a one-shot pair of V8 memory-reducer collections about 8 s after
+`session_start`. An isolated package that only imports `typebox` showed a
+128,968-byte C++ heap reading at `session_start`, followed by the same pair of
+collections. That is consistent with Pi's bundled Jiti 2.7.0 loader compiling it
+through `vm.runInThisContext`, which allocates on the C++ heap. Jiti
+can try a native ESM import first when no transformation is needed, so this is
+not a rule for every extension or host import. That two-line package added
+38–41 ms in the same campaign. Against it,
+the measured `bb38f682` artifact (build `fc084c36`) added 20.7 ms on official
+Pi and 15.0 ms on the fork. Most of that difference is one-shot work right
+after `session_start`, chiefly the intercom broker and owner attachment. In two
+official-host 40 s floor/`0b6da9b` pairs, the later windows of about 10 s each
+stayed within 1.1 ms of the paired floor. There is no fork long run, and this
+is not an indefinite-idle bound. The
+[issue 238 evidence](evidence/issue-238-idle/README.md) has the samples, host
+hashes, native causal chain and limits.
 
 ## Necessary costs
 

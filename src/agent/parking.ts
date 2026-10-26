@@ -84,8 +84,6 @@ async function cut(
   }
   return undefined;
 }
-// Wake costs one cold actor start (measured p50 1.2 s, p90 4.8 s); parking frees the whole
-// process (measured median 73 MB). Most completed actors stay idle far longer than this.
 const PARK_AFTER_MS = 5 * 60_000;
 const digest = (file: string): string =>
   createHash("sha256").update(fs.readFileSync(file)).digest("hex");

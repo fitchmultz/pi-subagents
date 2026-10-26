@@ -1,0 +1,229 @@
+{
+  "campaign": {
+    "tool": {
+      "profile-managed.py": "e5a67e38f5fa18d263edee69b1c381c44c9cee56b857a6e6a23c931e186a73f4",
+      "managed-observer.mjs": "6911737d238bde592df924b5c83828ba71193dc52508b39ed5a3f7f8a7fca927"
+    },
+    "arguments": "--rounds 7 --idle-rounds 3 --duration-ms 10000 --max-idle-delta-ms 30 --max-startup-delta-ms 150",
+    "exit": 1,
+    "node": "v24.22.1",
+    "hosts": {
+      "official": {
+        "version": "1.4.0",
+        "cliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+        "sdkSha256": "4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff"
+      },
+      "fork": {
+        "version": "1.4.0",
+        "cliSha256": "f3960fd2e951ac0a47725af534f55b28122553aa56d143ad546dace094fc1d77",
+        "sdkSha256": "8571698d27d098f224e684565fdf7bbcba72c0172b875adf59f0b7c088a94554"
+      }
+    },
+    "cases": {
+      "typebox": "two-line package: import \"typebox\"; export default function () {}",
+      "main0b6": "immutable merged 0b6da9b artifact, build 8778ee1a",
+      "mainbb38": "npm pack of commit bb38f68297ea8a56999aa685eb1b9516a94ec578, tree bfa34d6019d7e884af092a5db15ae36cfccb9a1e, build fc084c36d416e6ea9947600b7d1fdef98c84a82f3408dea2ea028a9c485ac31e; a measured artifact, not any later main"
+    },
+    "idleCpuMs": {
+      "official/floor": {
+        "samples": [16.659, 15.885, 15.568],
+        "median": 15.885
+      },
+      "official/typebox": {
+        "samples": [53.4, 54.032, 55.173],
+        "median": 54.032
+      },
+      "official/main0b6": {
+        "samples": [75.98, 71.835, 79.423],
+        "median": 75.98
+      },
+      "official/mainbb38": {
+        "samples": [74.053, 74.752, 77.218],
+        "median": 74.752
+      },
+      "fork/floor": {
+        "samples": [18.792, 18.87, 18.73],
+        "median": 18.792
+      },
+      "fork/typebox": {
+        "samples": [58.578, 59.545, 60.433],
+        "median": 59.545
+      },
+      "fork/main0b6": {
+        "samples": [74.056, 70.08, 76.086],
+        "median": 74.056
+      },
+      "fork/mainbb38": {
+        "samples": [74.532, 75.088, 70.416],
+        "median": 74.532
+      }
+    },
+    "startupWallMs": {
+      "official/floor": {
+        "samples": [185.678, 169.965, 175.214, 179.191, 180.133, 171.53, 168.776],
+        "median": 175.214
+      },
+      "official/typebox": {
+        "samples": [219.135, 184.706, 169.35, 189.406, 173.819, 165.649, 172.849],
+        "median": 173.819
+      },
+      "official/main0b6": {
+        "samples": [450.975, 259.989, 922.793, 326.859, 219.675, 208.965, 218.44],
+        "median": 259.989
+      },
+      "official/mainbb38": {
+        "samples": [556.676, 220.518, 423.939, 638.326, 224.9, 212.376, 217.682],
+        "median": 224.9
+      },
+      "fork/floor": {
+        "samples": [274.989, 278.42, 322.8, 233.303, 245.371, 258.992, 253.301],
+        "median": 258.992
+      },
+      "fork/typebox": {
+        "samples": [277.982, 274.777, 266.46, 260.531, 230.805, 287.858, 234.247],
+        "median": 266.46
+      },
+      "fork/main0b6": {
+        "samples": [327.954, 442.054, 354.385, 308.531, 270.333, 312.523, 259.182],
+        "median": 312.523
+      },
+      "fork/mainbb38": {
+        "samples": [305.0, 319.068, 290.947, 271.654, 320.461, 292.218, 258.023],
+        "median": 292.218
+      }
+    }
+  },
+  "diagnostic": {
+    "observer": "Separate diagnostic observer, not the campaign observer: cumulative whole-process user+system CPU since session_start, sampled every 250 ms, no event-loop monitor. Each value is the cumulative CPU at the last sample at or before the bound; sampleTime fields give that sample's time after session_start.",
+    "reduceGCs": "Count of 'Mark-Compact (reduce)' lines in --trace-gc output. Every run listed here was traced; the --no-memory-reducer runs disable the reducer.",
+    "componentGroups": "The agents/intercom/observer/probe/identity groups disable or keep one part at a time; differences between their medians are estimates, not measured function self-times.",
+    "groups": {
+      "official floor": {
+        "cpuAtLastSampleBy10sMs": [3.628, 3.851, 3.676],
+        "sampleTimeBy10sMs": [9789, 9779, 9778],
+        "cpuAtLastSampleBy1sMs": [0.883, 1.001, 0.887],
+        "sampleTimeBy1sMs": [754, 751, 751],
+        "reduceGCs": [0, 0, 0]
+      },
+      "official 0b6": {
+        "cpuAtLastSampleBy10sMs": [63.701, 60.752, 59.948],
+        "sampleTimeBy10sMs": [9784, 9795, 9868],
+        "cpuAtLastSampleBy1sMs": [14.621, 13.992, 4.653],
+        "sampleTimeBy1sMs": [753, 753, 841],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 --no-memory-reducer": {
+        "cpuAtLastSampleBy10sMs": [17.557, 19.869, 17.551],
+        "sampleTimeBy10sMs": [9796, 9776, 9779],
+        "cpuAtLastSampleBy1sMs": [14.194, 15.991, 13.972],
+        "sampleTimeBy1sMs": [759, 753, 753],
+        "reduceGCs": [0, 0, 0]
+      },
+      "official empty package": {
+        "cpuAtLastSampleBy10sMs": [3.45, 3.378, 3.564],
+        "sampleTimeBy10sMs": [9814, 9807, 9823],
+        "cpuAtLastSampleBy1sMs": [0.776, 0.766, 0.722],
+        "sampleTimeBy1sMs": [755, 755, 754],
+        "reduceGCs": [0, 0, 0]
+      },
+      "official typebox-only package": {
+        "cpuAtLastSampleBy10sMs": [44.044, 42.529, 42.447],
+        "sampleTimeBy10sMs": [9804, 9808, 9808],
+        "cpuAtLastSampleBy1sMs": [0.748, 1.227, 0.727],
+        "sampleTimeBy1sMs": [755, 754, 755],
+        "reduceGCs": [2, 2, 2]
+      },
+      "fork floor": {
+        "cpuAtLastSampleBy10sMs": [5.931, 5.657, 5.537],
+        "sampleTimeBy10sMs": [9780, 9781, 9775],
+        "cpuAtLastSampleBy1sMs": [2.055, 1.868, 1.865],
+        "sampleTimeBy1sMs": [753, 753, 751],
+        "reduceGCs": [0, 0, 0]
+      },
+      "fork 0b6": {
+        "cpuAtLastSampleBy10sMs": [61.585, 64.36, 61.035],
+        "sampleTimeBy10sMs": [9781, 9787, 9776],
+        "cpuAtLastSampleBy1sMs": [14.455, 13.578, 13.025],
+        "sampleTimeBy1sMs": [753, 752, 752],
+        "reduceGCs": [2, 2, 2]
+      },
+      "fork 0b6 --no-memory-reducer": {
+        "cpuAtLastSampleBy10sMs": [17.473, 17.592, 17.024],
+        "sampleTimeBy10sMs": [9787, 9779, 9777],
+        "cpuAtLastSampleBy1sMs": [13.746, 13.477, 13.054],
+        "sampleTimeBy1sMs": [753, 752, 752],
+        "reduceGCs": [0, 0, 0]
+      },
+      "fork empty package": {
+        "cpuAtLastSampleBy10sMs": [5.244, 5.284, 4.835],
+        "sampleTimeBy10sMs": [9804, 9806, 9807],
+        "cpuAtLastSampleBy1sMs": [1.465, 1.787, 1.405],
+        "sampleTimeBy1sMs": [753, 754, 753],
+        "reduceGCs": [0, 0, 0]
+      },
+      "fork typebox-only package": {
+        "cpuAtLastSampleBy10sMs": [46.587, 45.812, 43.476],
+        "sampleTimeBy10sMs": [9800, 9822, 9814],
+        "cpuAtLastSampleBy1sMs": [1.752, 1.884, 1.414],
+        "sampleTimeBy1sMs": [751, 756, 756],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 modules imported, factory does nothing": {
+        "cpuAtLastSampleBy10sMs": [73.118, 45.821, 47.613],
+        "sampleTimeBy10sMs": [9783, 9802, 9794],
+        "cpuAtLastSampleBy1sMs": [0.822, 0.907, 0.835],
+        "sampleTimeBy1sMs": [752, 758, 753],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 agents only": {
+        "cpuAtLastSampleBy10sMs": [72.636, 54.599, 56.834],
+        "sampleTimeBy10sMs": [9792, 9796, 9781],
+        "cpuAtLastSampleBy1sMs": [5.341, 5.482, 5.512],
+        "sampleTimeBy1sMs": [753, 753, 754],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 intercom only": {
+        "cpuAtLastSampleBy10sMs": [108.834, 51.569, 54.007],
+        "sampleTimeBy10sMs": [9794, 9794, 9802],
+        "cpuAtLastSampleBy1sMs": [39.863, 8.469, 7.831],
+        "sampleTimeBy1sMs": [753, 759, 752],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 observer only": {
+        "cpuAtLastSampleBy10sMs": [68.578, 46.44, 45.401],
+        "sampleTimeBy10sMs": [9781, 9805, 9785],
+        "cpuAtLastSampleBy1sMs": [1.037, 0.95, 0.799],
+        "sampleTimeBy1sMs": [755, 755, 753],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 control": {
+        "cpuAtLastSampleBy10sMs": [62.512, 64.78, 58.378],
+        "sampleTimeBy10sMs": [9797, 9794, 9786],
+        "cpuAtLastSampleBy1sMs": [14.147, 15.112, 12.87],
+        "sampleTimeBy1sMs": [754, 755, 752],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 without the 1 s probe": {
+        "cpuAtLastSampleBy10sMs": [15.857, 60.529, 61.512],
+        "sampleTimeBy10sMs": [9793, 9796, 9991],
+        "cpuAtLastSampleBy1sMs": [12.905, 13.459, 13.066],
+        "sampleTimeBy1sMs": [755, 752, 752],
+        "reduceGCs": [0, 2, 2]
+      },
+      "official 0b6 without the owner ps identity": {
+        "cpuAtLastSampleBy10sMs": [85.301, 61.201, 63.077],
+        "sampleTimeBy10sMs": [9780, 9781, 9794],
+        "cpuAtLastSampleBy1sMs": [12.429, 11.911, 11.859],
+        "sampleTimeBy1sMs": [752, 751, 755],
+        "reduceGCs": [2, 2, 2]
+      },
+      "official 0b6 without intercom": {
+        "cpuAtLastSampleBy10sMs": [85.335, 54.19, 51.431],
+        "sampleTimeBy10sMs": [9786, 9786, 9781],
+        "cpuAtLastSampleBy1sMs": [17.276, 6.011, 7.032],
+        "sampleTimeBy1sMs": [754, 753, 752],
+        "reduceGCs": [2, 2, 2]
+      }
+    }
+  }
+}
