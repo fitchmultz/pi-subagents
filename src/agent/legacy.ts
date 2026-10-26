@@ -184,10 +184,14 @@ function startScan(ctx: ExtensionContext, directory: string): LegacyScan {
   ignoredInputs.set(manager, { directory, owner, ignored: scan.ignored });
   return scan;
 }
+/** Retired releases created this directory at session start, before any of their runners. */
+export function legacyDirectory(): string {
+  return path.join(resolveTempRootDir(), "async-subagent-results");
+}
 export function legacyNotifications(ctx: ExtensionContext): Completion[] {
   const notices: Completion[] = [];
-  const root = resolveTempRootDir();
-  const directory = path.join(root, "async-subagent-results");
+  const directory = legacyDirectory();
+  const root = path.dirname(directory);
   const scan = startScan(ctx, directory);
   let names: string[];
   try {

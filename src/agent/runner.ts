@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import type {
   AgentSession,
   CreateAgentSessionRuntimeFactory,
@@ -8,28 +7,15 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import {
-  attachmentSchema,
-  commandSchema,
-  type Command,
-  type Attachment,
-  type Launch,
-  type Result,
-} from "./contracts.ts";
+import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
 import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
-import {
-  observeAlive,
-  ownIdentity,
-  published,
-  shellCommand,
-  shells,
-  signalProcess,
-} from "./process.ts";
+import { ownIdentity, ParentCheck, shellCommand, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
 import type { ToolEvent } from "./observation-state.ts";
+import { DirectoryWatch, Wake } from "./wake.ts";
 
 function commandIdentity(file: string): string | undefined {
   try {
@@ -79,7 +65,11 @@ class Actor {
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
-  private detached = false;
+  private readonly parent = new ParentCheck();
+  // Raised when durable commands may need admission: change hints and stop.
+  private readonly wake = new Wake();
+  // A deferred run waits for an idle session, which has no command-file event.
+  private retry = false;
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -227,6 +217,7 @@ class Actor {
       return;
     }
     this.stopping = true;
+    this.wake.raise();
     write(path.join(this.dir, `stopping-${this.token}.json`), { at: Date.now() });
     write(path.join(this.dir, "stop-acknowledged.json"), { at: Date.now(), id: this.current?.id });
     this.session?.abort().catch((error: unknown) => {
@@ -314,6 +305,7 @@ class Actor {
       command.action === "run" &&
       (this.stopping || this.active !== undefined || !session.isIdle)
     ) {
+      this.retry = true;
       return;
     }
     this.started.add(command.id);
@@ -395,25 +387,39 @@ class Actor {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
   private shouldExit(): boolean {
-    if (!this.stopping && performance.now() >= this.nextParentCheck) {
-      // One observation at a time; it schedules the next check when it settles.
-      this.nextParentCheck = Infinity;
+    const now = performance.now();
+    if (!this.stopping && now >= this.nextParentCheck) {
+      this.nextParentCheck = now + 1000;
+      // One observation at a time; a slow one keeps the regular schedule.
       const file = path.join(this.base, "attachment.json");
-      const attachment = published(file, read(file, attachmentSchema));
-      this.observeParent(attachment).catch((error: unknown) => this.errors.push(errorText(error)));
-    }
-    if (this.detached) {
-      this.stop();
+      this.parent.check(file, this.stop).catch((error: unknown) => {
+        this.errors.push(errorText(error));
+      });
     }
     return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
   }
-  /** Only the serve loop acts on this verdict, so a late observation cannot stop a finished actor. */
-  private async observeParent(attachment: ReturnType<typeof published<Attachment>>): Promise<void> {
+  /** Durable command readiness, not elapsed time, defines admission. */
+  private async admitCommands(): Promise<void> {
+    // Queued commands create this directory; otherwise pending() does and the next pass arms.
+    const directory = path.join(this.dir, "commands");
+    const commands = new DirectoryWatch(directory, () => true, this.wake.raise);
     try {
-      this.detached =
-        attachment === undefined || !attachment.attached || !(await observeAlive([attachment]))[0];
+      while (!this.shouldExit()) {
+        // Each liveness tick also rechecks the directory for change hints the OS dropped.
+        const watch = commands.ensure();
+        if ((this.wake.take() || this.retry || watch !== "watching") && !this.stopping) {
+          this.retry = false;
+          this.pending().forEach((command) => this.accept(command));
+        }
+        const polling = this.retry || this.stopping || watch === "unwatched";
+        const tick = Math.max(1, this.nextParentCheck - performance.now());
+        // oxlint-disable-next-line no-await-in-loop
+        await this.wake.sleep(polling ? 100 : tick);
+      }
     } finally {
-      this.nextParentCheck = performance.now() + 1000;
+      // A verdict settling after the loop ends must not act.
+      this.parent.cancel();
+      commands.close();
     }
   }
   private failure(error: unknown): void {
@@ -477,14 +483,7 @@ class Actor {
       });
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
-      while (!this.shouldExit()) {
-        if (!this.stopping) {
-          this.pending().forEach((command) => this.accept(command));
-        }
-        // Durable command readiness, not elapsed time, defines admission.
-        // oxlint-disable-next-line no-await-in-loop
-        await delay(100);
-      }
+      await this.admitCommands();
       await this.active;
     } catch (error) {
       this.failure(error);

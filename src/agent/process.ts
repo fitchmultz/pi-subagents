@@ -13,7 +13,7 @@ import {
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
-import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
+import { attachmentSchema, processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 
@@ -62,6 +62,51 @@ export async function observeAlive(identities: readonly ClaimedProcess[]): Promi
     );
   }
   return verdicts;
+}
+/**
+ * A child's routine parent check, one observation at a time. A dead parent detaches the child
+ * only while its check is current and the attachment generation is unchanged: a newer parent
+ * may adopt the child meanwhile.
+ */
+export class ParentCheck {
+  private current?: object;
+  /**
+   * Reads the attachment synchronously, so an unreadable one still fails the caller at once.
+   * Missing or released attachments detach immediately; a check in flight makes this a no-op.
+   */
+  check(file: string, detached: () => void): Promise<void> {
+    if (this.current !== undefined) {
+      return Promise.resolve();
+    }
+    const attachment = published(file, read(file, attachmentSchema));
+    if (attachment === undefined || !attachment.attached) {
+      detached();
+      return Promise.resolve();
+    }
+    const check = {};
+    this.current = check;
+    const settle = async () => {
+      try {
+        const [live] = await observeAlive([attachment]);
+        if (
+          this.current === check &&
+          !live &&
+          read(file, attachmentSchema)?.generation === attachment.generation
+        ) {
+          detached();
+        }
+      } finally {
+        if (this.current === check) {
+          this.current = undefined;
+        }
+      }
+    };
+    return settle();
+  }
+  /** A check settling later no longer acts. */
+  cancel(): void {
+    this.current = undefined;
+  }
 }
 function replaced(identity: ClaimedProcess): boolean {
   return (
