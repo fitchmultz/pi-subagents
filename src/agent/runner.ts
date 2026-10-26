@@ -7,15 +7,9 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import {
-  attachmentSchema,
-  commandSchema,
-  type Command,
-  type Launch,
-  type Result,
-} from "./contracts.ts";
+import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
 import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
-import { alive, ownIdentity, published, shellCommand, shells, signalProcess } from "./process.ts";
+import { ownIdentity, ParentCheck, shellCommand, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
@@ -71,6 +65,7 @@ class Actor {
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
+  private readonly parent = new ParentCheck();
   // Raised when durable commands may need admission: change hints and stop.
   private readonly wake = new Wake();
   // A deferred run waits for an idle session, which has no command-file event.
@@ -395,11 +390,11 @@ class Actor {
     const now = performance.now();
     if (!this.stopping && now >= this.nextParentCheck) {
       this.nextParentCheck = now + 1000;
+      // One observation at a time; a slow one keeps the regular schedule.
       const file = path.join(this.base, "attachment.json");
-      const attachment = published(file, read(file, attachmentSchema));
-      if (attachment === undefined || !attachment.attached || !alive(attachment)) {
-        this.stop();
-      }
+      this.parent.check(file, this.stop).catch((error: unknown) => {
+        this.errors.push(errorText(error));
+      });
     }
     return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
   }
@@ -422,6 +417,8 @@ class Actor {
         await this.wake.sleep(polling ? 100 : tick);
       }
     } finally {
+      // A verdict settling after the loop ends must not act.
+      this.parent.cancel();
       commands.close();
     }
   }
