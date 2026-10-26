@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
   existsSync,
 } from "node:fs";
@@ -25,7 +26,6 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 
 const packageRoot = realpathSync(resolve(process.argv[2] ?? "."));
 const root = mkdtempSync(join(tmpdir(), "ps-native-"));
-console.log(`[native-package-smoke] native journals and fixtures stay in ${root}`);
 const agentDir = join(root, "agent");
 mkdirSync(join(agentDir, "extensions"), { recursive: true });
 for (const key of Object.keys(process.env)) {
@@ -403,5 +403,6 @@ export default function(pi) {
   } finally {
     await processes.stop();
     await brokerRun;
+    rmSync(root, { recursive: true, force: true });
   }
 }
