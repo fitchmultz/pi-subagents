@@ -22,3 +22,5 @@ process.env.HOME = root;
 process.env.PI_INTERCOM_RUNTIME_DIR =
   suiteRoot === undefined ? join(root, "ic") : join(suiteRoot, `i${root.slice(-6)}`);
 delete process.env.PI_CODING_AGENT_DIR;
+delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
+delete process.env.PI_INTERCOM_PARENT_SESSION_ID;
