@@ -12,6 +12,7 @@ import {
   ensureActor,
   observeAlive,
   ownIdentity,
+  ParentCheck,
   shells,
   signalProcess,
 } from "../../src/agent/process.ts";
@@ -141,5 +142,83 @@ test(
       verdicts,
       "the synchronous owner reaches the same verdicts",
     );
+  },
+);
+
+test(
+  "a parent check acts once, only while current and for the attachment generation it observed",
+  { skip: process.platform === "android" && "Android replacement needs a native clock bound" },
+  async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "parent-check-"));
+    const file = path.join(root, "attachment.json");
+    const parents = [0, 1].map(() =>
+      spawn("/bin/sleep", ["600"], { detached: true, stdio: "ignore" }),
+    );
+    t.after(() => {
+      for (const { pid } of parents) {
+        // A failed spawn has no PID; never signal the runner's own group.
+        if (pid !== undefined && pid > 0) {
+          try {
+            process.kill(-pid, "SIGKILL");
+          } catch {
+            // Already reaped.
+          }
+        }
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    await Promise.all(parents.map((child) => once(child, "spawn")));
+    const [goneChild, adopterChild] = parents;
+    assert.ok(goneChild.pid !== undefined && adopterChild.pid !== undefined);
+    const gone = ownIdentity(goneChild.pid);
+    const adopter = ownIdentity(adopterChild.pid);
+    const attach = (parent: typeof gone, generation: string, attached = true) => {
+      write(file, { ...parent, generation, attached });
+    };
+    const exited = once(goneChild, "exit");
+    process.kill(-gone.pid, "SIGKILL");
+    await exited;
+    const check = new ParentCheck();
+    let stops = 0;
+    const stop = () => {
+      stops += 1;
+    };
+
+    attach(gone, "old");
+    const first = check.check(file, stop);
+    // A check in flight absorbs later ticks instead of starting another observation.
+    await Promise.all([first, check.check(file, stop)]);
+    assert.equal(stops, 1, "a dead parent detaches the child once");
+
+    attach(adopter, "new");
+    const observed = t.mock.method(childProcess, "execFile");
+    syncBuiltinESMExports();
+    await Promise.all([check.check(file, stop), check.check(file, stop)]);
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    assert.equal(
+      observed.mock.calls.filter((call) => call.arguments[0] === "ps").length,
+      process.platform === "linux" ? 0 : 1,
+      "overlapping ticks share one observation of a live parent",
+    );
+    assert.equal(stops, 1, "a live parent keeps the child");
+
+    attach(gone, "old");
+    const stale = check.check(file, stop);
+    // A newer parent adopts the child before the old parent's death is settled.
+    attach(adopter, "new");
+    await stale;
+    assert.equal(stops, 1, "a verdict about a replaced attachment never stops the child");
+
+    attach(gone, "new");
+    const abandoned = check.check(file, stop);
+    check.cancel();
+    await abandoned;
+    assert.equal(stops, 1, "a check settling after its loop ended no longer acts");
+
+    attach(adopter, "new", false);
+    const released = check.check(file, stop);
+    assert.equal(stops, 2, "a released attachment detaches at once");
+    await released;
   },
 );
