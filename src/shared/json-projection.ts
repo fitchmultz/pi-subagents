@@ -1,5 +1,3 @@
-import { jsonParser, type Token } from "stream-json/core/parser.js";
-import { none } from "stream-chain/defs.js";
 import { isRecord, type UnknownRecord } from "./unknown.ts";
 
 export type Projection = (
@@ -13,23 +11,89 @@ export type StringChunk = (
   root?: UnknownRecord,
 ) => void;
 interface Container {
-  path: (string | number)[];
-  value?: Record<string, unknown> | unknown[];
+  readonly path: readonly (string | number)[];
+  readonly value?: Record<string, unknown> | unknown[];
+  readonly array: boolean;
   key: string;
   index: number;
 }
 
+// Grammar positions between tokens, then the two scalar states that can span chunks.
+const VALUE = 0;
+const FIRST_VALUE = 1;
+const KEY = 2;
+const FIRST_KEY = 3;
+const COLON = 4;
+const AFTER = 5;
+const DONE = 6;
+const STRING = 7;
+const NUMBER = 8;
+// Unescaped units exclude quote, backslash and C0 controls. Native regexp code skips a bounded
+// run of them and valid escapes, so JavaScript handles only the unit that stopped it.
+const BODY = /[ !#-[\]-\uffff]*(?:\\(?:["\\/bfnrt]|u[\da-fA-F]{4})[ !#-[\]-\uffff]*){0,1024}/y;
+const LITERALS = new Map<number, readonly [string, boolean | null]>([
+  [102, ["false", false]],
+  [110, ["null", null]],
+  [116, ["true", true]],
+]);
+// Number states: start, sign, zero, integer, point, fraction, e, exponent sign, exponent.
+// Columns: "0", "1"-"9", ".", "e"/"E", "+"/"-". A missing transition ends the number;
+// only "-" reaches the start state's sign column because values dispatch on their first unit.
+const NUMBER_NEXT = [
+  [2, 3, -1, -1, 1],
+  [2, 3],
+  [-1, -1, 4, 6],
+  [3, 3, 4, 6],
+  [5, 5],
+  [5, 5, -1, 6],
+  [8, 8, -1, -1, 7],
+  [8, 8],
+  [8, 8],
+];
+const NUMBER_END = new Set([2, 3, 5, 8]);
+const NUMBER_COLUMN = new Int8Array(128).fill(-1);
+for (const [column, units] of ["0", "123456789", ".", "eE", "+-"].entries()) {
+  for (const unit of units) {
+    NUMBER_COLUMN[unit.charCodeAt(0)] = column;
+  }
+}
+/**
+ * Classify where BODY stopped short of a closing quote. True means the chunk ends at or inside an
+ * escape, so the rest carries; false means a bounded run ended at a valid escape. Controls throw,
+ * and so does a complete escape BODY made no progress at, because BODY consumes any valid one.
+ */
+function chunkEnds(text: string, end: number, progressed: boolean): boolean {
+  if (end === text.length) {
+    return true;
+  }
+  if (text.charCodeAt(end) !== 92) {
+    throw new SyntaxError("Bad control character in JSON string");
+  }
+  if (end + (text.charCodeAt(end + 1) === 117 ? 6 : 2) > text.length) {
+    return true;
+  }
+  if (!progressed) {
+    throw new SyntaxError("Bad escaped character in JSON string");
+  }
+  return false;
+}
+function unexpected(): SyntaxError {
+  return new SyntaxError("Unexpected character in JSON");
+}
 function retained(keep: boolean | number): boolean {
   return keep === true || (typeof keep === "number" && keep !== 0 && !Number.isNaN(keep));
 }
 
-/** Validate all tokens, assembling selected values only. Skipped strings remain unpacked. */
+/** Validate all JSON text, assembling selected values only. Skipped strings are never decoded. */
 export class JsonProjection {
-  private readonly parse = jsonParser({ packValues: false });
   private readonly stack: Container[] = [];
-  private scalar?: { path: (string | number)[]; text: string; limit: number; number: boolean };
+  private state = VALUE;
+  private carry = "";
+  private path: readonly (string | number)[] = [];
   private key = false;
-  private keyLimit = 4096;
+  private textCap = 0;
+  private text = "";
+  private numberState = 0;
   private readonly select: Projection;
   private readonly stringChunk?: StringChunk;
   private readonly keys: KeyLimit;
@@ -42,32 +106,30 @@ export class JsonProjection {
   private root(): UnknownRecord | undefined {
     return isRecord(this.value) ? this.value : undefined;
   }
-  private parent(): Container {
+  private selected(): boolean | number {
+    return this.select(this.path, this.root());
+  }
+  /** Paths inside skipped containers are only built for string observers, never selected. */
+  private start(): boolean | number {
     const parent = this.stack.at(-1);
     if (!parent) {
-      throw new SyntaxError("JSON token requires a containing object");
+      this.path = [];
+      return this.selected();
     }
-    return parent;
-  }
-  private selected(path: readonly (string | number)[]): boolean | number {
-    const parent = this.stack.at(-1);
-    return parent && parent.value === undefined ? false : this.select(path, this.root());
-  }
-  private nextPath(): (string | number)[] {
-    const parent = this.stack.at(-1);
-    if (!parent) {
-      return [];
+    const step = parent.array ? parent.index++ : parent.key;
+    if (parent.value !== undefined) {
+      this.path = [...parent.path, step];
+      return this.selected();
     }
-    return [...parent.path, parent.index >= 0 ? parent.index++ : parent.key];
+    this.path = this.stringChunk ? [...parent.path, step] : parent.path;
+    return false;
   }
-  private put(path: readonly (string | number)[], value: unknown): void {
+  private put(value: unknown): void {
     const parent = this.stack.at(-1);
+    const key = this.path.at(-1);
     if (!parent) {
       this.value = value;
-      return;
-    }
-    const key = path.at(-1);
-    if (parent.value !== undefined && key !== undefined) {
+    } else if (parent.value !== undefined && key !== undefined) {
       Object.defineProperty(parent.value, key, {
         value,
         enumerable: true,
@@ -76,118 +138,207 @@ export class JsonProjection {
       });
     }
   }
-  private startContainer(array: boolean): void {
-    const path = this.nextPath();
-    const keep = this.selected(path);
+  private ended(): void {
+    this.state = this.stack.length === 0 ? DONE : AFTER;
+  }
+  private close(index: number): number {
+    this.stack.pop();
+    this.ended();
+    return index + 1;
+  }
+  private scalar(state: number, key: boolean, keep: boolean | number): void {
+    const cap = keep === true ? Infinity : Number(keep);
+    this.state = state;
+    this.key = key;
+    this.textCap = Number.isNaN(cap) ? 0 : cap;
+    this.text = "";
+    this.numberState = 0;
+  }
+  private append(text: string): void {
+    if (this.text.length < this.textCap) {
+      this.text += text.slice(0, this.textCap - this.text.length);
+    }
+  }
+  private container(array: boolean): void {
     let value: Container["value"];
-    if (retained(keep)) {
+    if (retained(this.start())) {
       value = array ? [] : {};
-      this.put(path, value);
+      this.put(value);
     }
-    this.stack.push({ path, value, key: "", index: array ? 0 : -1 });
+    this.stack.push({ path: this.path, value, array, key: "", index: 0 });
+    this.state = array ? FIRST_VALUE : FIRST_KEY;
   }
-  private startScalar(number: boolean): void {
-    const path = this.nextPath();
-    const keep = this.selected(path);
-    const selectedLimit = keep === true ? Infinity : Number(keep);
-    const limit = Number.isNaN(selectedLimit) ? 0 : selectedLimit;
-    this.scalar = { path, text: "", limit, number };
+  private literal(text: string, index: number, code: number): number {
+    const literal = LITERALS.get(code);
+    if (!literal) {
+      throw unexpected();
+    }
+    const [word, value] = literal;
+    if (text.startsWith(word, index)) {
+      if (retained(this.start())) {
+        this.put(value);
+      }
+      this.ended();
+      return index + word.length;
+    }
+    if (text.length - index < word.length && word.startsWith(text.slice(index))) {
+      this.carry = text.slice(index);
+      return text.length;
+    }
+    throw unexpected();
   }
-  private appendKey(text: string): void {
-    const parent = this.parent();
-    if (parent.key.length < this.keyLimit) {
-      parent.key += text.slice(0, this.keyLimit - parent.key.length);
+  private startValue(text: string, index: number, code: number): number {
+    if (code === 34) {
+      this.scalar(STRING, false, this.start());
+      return index + 1;
+    }
+    if (code === 45 || (code >= 48 && code <= 57)) {
+      this.scalar(NUMBER, false, this.start());
+      return index;
+    }
+    if (code === 123 || code === 91) {
+      this.container(code === 91);
+      return index + 1;
+    }
+    return this.literal(text, index, code);
+  }
+  private member(index: number, code: number): number {
+    const parent = this.stack.at(-1);
+    if (code === 125 && this.state === FIRST_KEY) {
+      return this.close(index);
+    }
+    if (code !== 34 || !parent) {
+      throw unexpected();
+    }
+    this.scalar(STRING, true, parent.value === undefined ? 0 : this.keys(parent.path, this.root()));
+    return index + 1;
+  }
+  private after(index: number, code: number): number {
+    const parent = this.stack.at(-1);
+    if (parent && code === 44) {
+      this.state = parent.array ? VALUE : KEY;
+      return index + 1;
+    }
+    if (parent && code === (parent.array ? 93 : 125)) {
+      return this.close(index);
+    }
+    throw unexpected();
+  }
+  private structure(text: string, index: number, code: number): number {
+    switch (this.state) {
+      case VALUE:
+        return this.startValue(text, index, code);
+      case FIRST_VALUE:
+        return code === 93 ? this.close(index) : this.startValue(text, index, code);
+      case KEY:
+      case FIRST_KEY:
+        return this.member(index, code);
+      case COLON:
+        if (code !== 58) {
+          throw unexpected();
+        }
+        this.state = VALUE;
+        return index + 1;
+      case AFTER:
+        return this.after(index, code);
+      default:
+        throw unexpected();
     }
   }
-  private appendScalar(text: string, string: boolean): void {
-    const scalar = this.scalar;
-    if (!scalar) {
+  private observed(decoded: string): void {
+    if (decoded === "") {
       return;
     }
-    if (string) {
-      this.stringChunk?.(scalar.path, text, this.root());
+    if (this.stringChunk && !this.key) {
+      this.stringChunk(this.path, decoded, this.root());
     }
-    if (scalar.text.length < scalar.limit) {
-      scalar.text += text.slice(0, scalar.limit - scalar.text.length);
+    this.append(decoded);
+  }
+  private closeString(): void {
+    const parent = this.stack.at(-1);
+    if (this.key && parent) {
+      parent.key = this.text;
+      this.state = COLON;
+    } else {
+      if (this.textCap !== 0) {
+        this.put(this.text);
+      }
+      this.ended();
     }
   }
-  private finishScalar(): void {
-    const scalar = this.scalar;
-    if (scalar && scalar.limit !== 0) {
-      this.put(scalar.path, scalar.number ? Number(scalar.text) : scalar.text);
-    }
-    this.scalar = undefined;
+  /** Observed values and unfinished selections need text; others are only validated. */
+  private decoding(): boolean {
+    return (this.stringChunk !== undefined && !this.key) || this.text.length < this.textCap;
   }
-  private token(token: Readonly<Token>): void {
-    switch (token.name) {
-      case "startKey": {
-        const parent = this.parent();
-        this.key = true;
-        parent.key = "";
-        this.keyLimit = parent.value === undefined ? 0 : this.keys(parent.path, this.root());
+  private string(text: string, start: number): number {
+    for (let index = start; ;) {
+      BODY.lastIndex = index;
+      BODY.test(text);
+      const end = BODY.lastIndex;
+      if (end > index && this.decoding()) {
+        const raw = text.slice(index, end);
+        // A matched run is a complete valid string body no longer than this chunk.
+        this.observed(raw.includes("\\") ? String(JSON.parse(`"${raw}"`)) : raw);
+      }
+      if (text.charCodeAt(end) === 34) {
+        this.closeString();
+        return end + 1;
+      }
+      if (chunkEnds(text, end, end > index)) {
+        this.carry = text.slice(end);
+        return text.length;
+      }
+      index = end;
+    }
+  }
+  private number(text: string, start: number, final: boolean): number {
+    let state = this.numberState;
+    let index = start;
+    for (; index < text.length; index++) {
+      const next = NUMBER_NEXT[state]?.[NUMBER_COLUMN[text.charCodeAt(index)] ?? -1] ?? -1;
+      if (next < 0) {
         break;
       }
-      case "endKey":
-        this.key = false;
-        break;
-      case "startObject":
-        this.startContainer(false);
-        break;
-      case "startArray":
-        this.startContainer(true);
-        break;
-      case "endObject":
-      case "endArray":
-        this.stack.pop();
-        break;
-      case "startString":
-        this.startScalar(false);
-        break;
-      case "startNumber":
-        this.startScalar(true);
-        break;
-      case "stringChunk":
-      case "numberChunk":
-        if (this.key) {
-          this.appendKey(token.value);
-        } else {
-          this.appendScalar(token.value, token.name === "stringChunk");
-        }
-        break;
-      case "endString":
-      case "endNumber":
-        this.finishScalar();
-        break;
-      case "trueValue":
-      case "falseValue":
-      case "nullValue": {
-        const path = this.nextPath();
-        const keep = this.selected(path);
-        if (retained(keep)) {
-          this.put(path, token.value);
-        }
-        break;
-      }
-      case "keyValue":
-      case "stringValue":
-      case "numberValue":
-      case "whitespace":
-        break; // Packing is disabled; whitespace carries no projected value.
+      state = next;
     }
+    this.numberState = state;
+    this.append(text.slice(start, index));
+    if (index === text.length && !final) {
+      return index;
+    }
+    if (!NUMBER_END.has(state)) {
+      throw new SyntaxError("Incomplete number in JSON");
+    }
+    if (this.textCap !== 0) {
+      this.put(Number(this.text));
+    }
+    this.ended();
+    return index;
   }
-  write(chunk: string | symbol): void {
-    if (typeof chunk === "symbol" && chunk !== none) {
-      throw new TypeError("Unknown JSON tokenizer sentinel");
-    }
-    const output = this.parse(typeof chunk === "symbol" ? none : chunk);
-    if (typeof output !== "symbol") {
-      for (const token of output.values) {
-        this.token(token);
+  write(chunk: string): void {
+    const text = this.carry + chunk;
+    this.carry = "";
+    let index = 0;
+    while (index < text.length) {
+      const code = text.charCodeAt(index);
+      if (this.state === STRING) {
+        index = this.string(text, index);
+      } else if (this.state === NUMBER) {
+        index = this.number(text, index, false);
+      } else if (code === 32 || code === 10 || code === 13 || code === 9) {
+        index++;
+      } else {
+        index = this.structure(text, index, code);
       }
     }
   }
   finish(): unknown {
-    this.write(none);
+    if (this.state === NUMBER) {
+      this.number("", 0, true);
+    }
+    if (this.state !== DONE || this.carry !== "") {
+      throw new SyntaxError("Unexpected end of JSON input");
+    }
     return this.value;
   }
 }
