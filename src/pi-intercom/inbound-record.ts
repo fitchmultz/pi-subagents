@@ -31,6 +31,8 @@ function isLocalJournalMessage(value: unknown): value is Message {
       "queueMode",
       "threadId",
       "passive",
+      "guard",
+      "replyHint",
     ].every((key) => value[key] === undefined)
   );
 }

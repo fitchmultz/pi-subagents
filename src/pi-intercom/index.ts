@@ -38,6 +38,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     replies,
     syncStatus: () => connection.syncStatus(),
   });
+  lifecycle.registerContextEvents(() => connection.syncStatus());
   const inbound = new IntercomInbound(lifecycle, config, {
     delivery,
     journal,

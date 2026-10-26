@@ -10,7 +10,7 @@ import type {
 import { requestedDelivery } from "./inbound-record.ts";
 import { runCooperatively } from "../shared/cooperative.ts";
 
-type Lifecycle = Readonly<Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "toolCount">>;
+type Lifecycle = Pick<Readonly<IntercomLifecycle>, "generation" | "isIdle" | "live" | "toolCount">;
 type Journal = Readonly<
   Pick<
     InboundJournal,
@@ -288,15 +288,16 @@ export class InboundDeliveryOwner {
     }
   }
   private nativeMessage(entry: InboundMessageEntry): Parameters<ExtensionAPI["sendMessage"]>[0] {
-    const sender =
-      entry.from.name === undefined || entry.from.name === ""
-        ? entry.from.id.slice(0, 8)
-        : entry.from.name;
+    const sender = entry.from.name ?? entry.from.id.slice(0, 8);
     const command = entry.replyCommand ?? "";
     const reply = command === "" ? "" : `\n\nTo reply, use the intercom tool: ${command}`;
+    const hint = entry.message.replyHint;
+    const publication = hint
+      ? `\n\nTo publish a correlated reply, use ${hint.tool} with commandId ${hint.commandId}. This is not an intercom ask.`
+      : "";
     return {
       customType: "intercom_message",
-      content: `**📨 From ${sender}** (Native session cwd: ${entry.from.cwd})${reply}\n\n${entry.bodyText}`,
+      content: `**📨 From ${sender}** (Native session cwd: ${entry.from.cwd})${reply}${publication}\n\n${entry.bodyText}`,
       display: true,
       details: { ...entry, bodyText: entry.bodyText },
     };
