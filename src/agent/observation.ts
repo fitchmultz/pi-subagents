@@ -168,6 +168,10 @@ export class ActorObservation {
     const { session } = this;
     return this.running || session.isStreaming || session.isCompacting || session.isRetrying;
   }
+  /** A live viewer keeps its actor resident; parking would end the native stream it reads. */
+  get watched(): boolean {
+    return this.viewers.size + this.greeting.size > 0;
+  }
   private details(): number {
     return [...this.viewers].filter((viewer) => viewer.level === "detail").length;
   }

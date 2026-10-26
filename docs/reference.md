@@ -96,7 +96,18 @@ acceptance is not admission, and admission is not model consumption. Inspect the
 if guidance became stale; do not infer acceptance from the old completed output.
 
 A completed child can remain alive and messageable while its main remains
-attached. Parent exit or session replacement stops its actors and verified owned
+attached. On a Pi fork with native working-session capture, a child that stays
+idle for five minutes (no run, turn, journal change, live viewer or owned shell)
+parks: it saves its exact working state and its process exits, while its intercom
+identity stays listed with no departure. Passive messages, topic updates and
+`last` reads do not wake it; the main answers `last` from the saved history, and
+without its main the read reports that history unavailable. Receipt reads also do
+not wake it and report `publication_unavailable`. A
+normal message, ask or continuation restores the exact saved state into a new
+process, which then receives retained messages in order. If the final save
+fails, the child records `park-failed.json` and nothing restarts implicitly;
+retained messages stay queued and continuing reports the failure. Official Pi
+keeps idle children resident. Parent exit or session replacement stops its actors and verified owned
 native shells, allowing native abort a short grace period before escalation.
 Actors also watch for parent death, including a hard kill. Ordinary extension
 reload keeps children alive because the parent has not exited.

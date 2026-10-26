@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Park children that stay idle for five minutes on a Pi fork with native working-session capture. The child saves its exact working state and its process exits, freeing its memory. Its Intercom identity stays listed with no departure. Passive messages, topic updates and `last` reads do not wake it; its main answers `last` from the saved history. A normal message, ask or continuation restores the exact saved state into a new process, which then receives retained messages in order. A failed final save records `park-failed.json` and restarts nothing; continuing reports it. Official Pi keeps idle children resident.
+
 ## [0.51.0] - 2026-10-26
 
 ### Added

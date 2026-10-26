@@ -9,8 +9,28 @@ import { readIntercomLineage } from "../pi-intercom/identity.ts";
 
 export { errorMessage as errorText } from "../shared/unknown.ts";
 
-// The native resolver is optional until official Pi exports it at the package root.
-type HostSDK = typeof SDK & {
+/** Fork-only exact native working state; official Pi lacks it, so its children stay resident. */
+interface LocalWorkingState {
+  readonly header: { readonly id: string };
+  readonly sessionFile?: string;
+  readonly leafId: string | null;
+  readonly entries: readonly SDK.SessionEntry[];
+}
+type NativeWorkingState = typeof SDK extends { readWorkingSession: (file: string) => infer S }
+  ? S
+  : never;
+export type WorkingState = [NativeWorkingState] extends [never]
+  ? LocalWorkingState
+  : NativeWorkingState;
+// Working sessions stay optional even when the selected graph declares them, so both hosts
+// keep one checked path. The native resolver is optional until official Pi exports it.
+type HostSDK = Omit<
+  typeof SDK,
+  "readWorkingSession" | "writeWorkingSession" | "openWorkingSession"
+> & {
+  readWorkingSession?: (file: string) => WorkingState;
+  writeWorkingSession?: (file: string, state: WorkingState) => void;
+  openWorkingSession?: (state: WorkingState) => SDK.SessionManager;
   resolveModelReference?: (
     request: { text: string; provider: string; thinkingSuffix: "strict"; fuzzy: false },
     models: readonly Model<Api>[],

@@ -37,7 +37,7 @@ type ClientMessageHandler = (
 export function acceptBrokerConnection(
   socket: net.Socket,
   handleMessage: ClientMessageHandler,
-  disconnected: (sessionId: string) => void,
+  disconnected: (sessionId: string, socket: net.Socket) => void,
 ): void {
   let sessionId: string | null = null;
   socket.on(
@@ -54,7 +54,7 @@ export function acceptBrokerConnection(
   );
   socket.on("close", () => {
     if (sessionId !== null) {
-      disconnected(sessionId);
+      disconnected(sessionId, socket);
     }
   });
   socket.on("error", (error: Error) => {

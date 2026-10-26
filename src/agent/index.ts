@@ -11,11 +11,13 @@ import {
   alive,
   ensureActor,
   ownIdentity,
+  parkFailure,
   requestStop,
   signalProcess,
   stopChildren,
 } from "./process.ts";
 import { isChild, errorText } from "./host.ts";
+import { serveParked } from "./parking.ts";
 import {
   resultSchema,
   attachmentSchema,
@@ -36,6 +38,7 @@ import {
   runDirectory,
   ownerDirectory,
   conversation,
+  successor,
   write,
 } from "./storage.ts";
 import { notifications, deliver, settle } from "./notifications.ts";
@@ -335,22 +338,6 @@ class AgentRuntime {
       .sort((a, b) => a.createdAt - b.createdAt);
     return renderInventory(this.base, all, this.ctx, input);
   }
-  private successor(launch: Launch, prompt: string): Launch | undefined {
-    const id = randomUUID();
-    const next: Launch = { ...launch, id, predecessor: launch.id, prompt, createdAt: Date.now() };
-    fs.mkdirSync(runDirectory(this.base, id), { mode: 0o700 });
-    write(path.join(runDirectory(this.base, id), "launch.json"), next, true);
-    try {
-      write(path.join(runDirectory(this.base, launch.id), "successor.json"), { id }, true);
-    } catch (error) {
-      fs.rmSync(runDirectory(this.base, id), { recursive: true });
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
-        throw error;
-      }
-      return undefined;
-    }
-    return next;
-  }
   private continuationResult(launch: Launch): Result | "pending" | undefined {
     const result = read(path.join(runDirectory(this.base, launch.id), "result.json"), resultSchema);
     if (result) {
@@ -406,7 +393,8 @@ class AgentRuntime {
         note: "Guidance queued, not actual completion or model consumption.",
       });
     }
-    const next = this.successor(launch, input.prompt);
+    parkFailure(this.base, launch);
+    const next = successor(this.base, launch, input.prompt);
     if (!next) {
       return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
         receipt: "existing-successor",
@@ -465,6 +453,11 @@ class AgentRuntime {
   }
   register(): void {
     registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
+    serveParked(
+      this.pi,
+      () => (this.child || !this.ctx ? undefined : { base: this.base, owner: this.owner }),
+      this.shutdown.signal,
+    );
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.

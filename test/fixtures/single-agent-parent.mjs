@@ -44,6 +44,9 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+if (phase.startsWith("park")) {
+  process.env.SINGLE_AGENT_PARK_CLOCK = phase;
+}
 if (phase === "invalid-temp-root") {
   process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "not-a-dedicated-root");
 }
@@ -273,8 +276,8 @@ const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? fs
         .readFileSync(path.join(root, "requests.jsonl"), "utf8")
-        .trim()
         .split("\n")
+        .slice(0, -1) // The child may still be appending the final, unpublished frame.
         .filter(Boolean)
         .map(JSON.parse)
     : [];
@@ -1061,6 +1064,135 @@ try {
         assert.equal(rejected.isError, true, JSON.stringify(rejected));
         assert.match(rejected.content[0].text, new RegExp(`^Validation failed for tool "${tool}"`));
         assert.equal(effects(), before, "native validation rejects retired input before effects");
+      }
+    }
+  } else if (phase.startsWith("park")) {
+    const model = "single-agent-fixture/literal-model";
+    const receipt = await call("delegate", { prompt: "PARK_FIRST", model }, "park-launch");
+    runId = receipt.details.id;
+    faux.setResponses([fauxAssistantMessage("PARK_NOTICE")]);
+    await until(() => notices().length === 1, "first child completion publishes");
+    await session.waitForIdle();
+    const first = requests().find((request) => request.prompt === "PARK_FIRST");
+    fs.writeFileSync(path.join(root, "advance-clock"), "");
+    const parked = path.join(runDir(runId), "parked.json");
+    if (phase === "park-orphan") {
+      // This owner dies while the child's native save is blocked (official Pi stays resident).
+      const forked = typeof sdk.writeWorkingSession === "function";
+      await until(
+        () => fs.existsSync(path.join(root, forked ? "save-held" : "clock-advanced")),
+        "parking preparation blocks",
+      );
+      fs.writeFileSync(
+        seedFile,
+        JSON.stringify({
+          runId,
+          sessionId: manager.getSessionId(),
+          sessionFile: manager.getSessionFile(),
+          childPid: first.pid,
+        }),
+      );
+      process.kill(process.pid, "SIGKILL");
+    }
+    if (phase === "park-command") {
+      // A continuation enqueued while the native save is held runs only after its release.
+      const forked = typeof sdk.writeWorkingSession === "function";
+      await until(
+        () => fs.existsSync(path.join(root, forked ? "save-held" : "clock-advanced")),
+        "parking preparation blocks",
+      );
+      faux.setResponses([fauxAssistantMessage("PARK_RACED_NOTICE")]);
+      const commands = path.join(runDir(runId), "commands");
+      const earlier = fs.readdirSync(commands).length;
+      const continued = call(
+        "agent_runs",
+        { action: "continue", id: runId, prompt: "PARK_RACED" },
+        "park-raced",
+      );
+      await until(
+        () => fs.readdirSync(commands).length > earlier,
+        "continuation is enqueued during the held save",
+      );
+      fs.writeFileSync(path.join(root, "release-save"), "");
+      const accepted = await continued;
+      assert.equal(accepted.isError, false, JSON.stringify(accepted));
+      const raced = await settled(accepted.details.id, "raced continuation completes");
+      assert.equal(raced.details.result.status, "completed");
+      const second = requests().find((request) => request.prompt === "PARK_RACED");
+      assert.equal(second?.pid, first.pid, "the resident actor runs it");
+    } else if (typeof sdk.writeWorkingSession !== "function") {
+      // Official Pi cannot capture exact working state, so the actor stays resident.
+      await until(() => fs.existsSync(path.join(root, "clock-advanced")), "idle period passes");
+      faux.setResponses([fauxAssistantMessage("RESIDENT_NOTICE")]);
+      await call("agent_runs", { action: "continue", id: runId, prompt: "PARK_SECOND" }, "stay");
+      await until(() => requests().some((request) => request.prompt === "PARK_SECOND"), "turn");
+      const second = requests().find((request) => request.prompt === "PARK_SECOND");
+      assert.equal(second.pid, first.pid);
+      assert.deepEqual(
+        ["parked.json", "park-failed.json"].filter((name) =>
+          fs.existsSync(path.join(runDir(runId), name)),
+        ),
+        [],
+      );
+    } else {
+      const outcome = path.join(
+        runDir(runId),
+        phase === "park" ? "parked.json" : "park-failed.json",
+      );
+      await until(() => fs.existsSync(outcome), "idle actor exits with a truthful park outcome");
+      await until(() => {
+        try {
+          process.kill(first.pid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      }, "parked actor process exits");
+      // The exited actor keeps its broker identity; no departure is announced.
+      await childRegistered(runId);
+      if (phase === "park-failed") {
+        // A failed final capture never falls back to a journal-only reopen.
+        const refused = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt: "PARK_SECOND" },
+          "park-refused",
+        );
+        assert.equal(refused.isError, true, JSON.stringify(refused));
+        assert.match(refused.content[0].text, /without saving its exact working state/);
+        assert.equal(fs.existsSync(parked), false);
+        assert.equal(
+          requests().some((request) => request.prompt === "PARK_SECOND"),
+          false,
+        );
+        assert.equal(
+          fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n")
+            .length,
+          1,
+        );
+      } else {
+        faux.setResponses([fauxAssistantMessage("PARK_SECOND_NOTICE")]);
+        const resumed = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt: "PARK_SECOND" },
+          "park-continue",
+        );
+        assert.equal(resumed.isError, false, JSON.stringify(resumed));
+        await until(
+          () => requests().some((request) => request.prompt === "PARK_SECOND"),
+          "restored actor runs the next turn",
+        );
+        const second = requests().find((request) => request.prompt === "PARK_SECOND");
+        assert.notEqual(second.pid, first.pid);
+        assert.match(JSON.stringify(second.context), /CHILD_LITERAL_RESULT:PARK_FIRST/);
+        assert.equal(requests().filter((request) => request.prompt === "PARK_FIRST").length, 1);
+        assert.equal(fs.existsSync(parked), false);
+        const journal = fs.readdirSync(runDir(runId)).find((name) => name.endsWith(".jsonl"));
+        const saved = fs.readFileSync(path.join(runDir(runId), journal), "utf8");
+        assert.match(
+          saved,
+          /"customType":"park-fixture-save"/,
+          "save-handler entries survive restore",
+        );
       }
     }
   } else if (phase.startsWith("crash-")) {
@@ -3728,11 +3860,39 @@ try {
       "continue-one",
     );
     assert.notEqual(second.details.id, first.details.id);
+    const requestFile = path.join(root, "requests.jsonl");
+    for (const stage of ["prefix", "body"]) {
+      // oxlint-disable-next-line no-await-in-loop
+      await until(
+        () => fs.existsSync(path.join(root, `request-${stage}`)),
+        `native provider has written the request ${stage} without LF`,
+      );
+      const bytes = fs.readFileSync(requestFile, "utf8");
+      const tail = bytes.slice(bytes.lastIndexOf("\n") + 1);
+      if (stage === "prefix") {
+        assert.throws(() => JSON.parse(tail), SyntaxError);
+      } else {
+        assert.equal(JSON.parse(tail).prompt, "HOLD:second");
+      }
+      assert.deepEqual(
+        requests().map((request) => request.prompt),
+        ["RECALL_LITERAL"],
+        "neither a partial nor a complete request body is published without LF",
+      );
+      fs.writeFileSync(path.join(root, `release-request-${stage}`), "release");
+    }
     await until(
       () => requests().some((request) => request.prompt === "HOLD:second"),
       "continuation is in native provider",
     );
     const childPid = requests().find((request) => request.prompt === "HOLD:second").pid;
+    const requestSize = fs.statSync(requestFile).size;
+    fs.appendFileSync(requestFile, '{"invalid":\n');
+    try {
+      assert.throws(requests, SyntaxError, "malformed LF-published JSON is never hidden");
+    } finally {
+      fs.truncateSync(requestFile, requestSize);
+    }
     process.kill(childPid, "SIGSTOP");
     let guidance;
     try {

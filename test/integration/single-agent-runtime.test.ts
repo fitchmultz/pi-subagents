@@ -150,6 +150,9 @@ for (const phase of [
   "launch-preparation-fork-failure",
   "inventory",
   "command-polling",
+  "park",
+  "park-failed",
+  "park-command",
   "dropped-hints",
   "invalid-temp-root",
 ]) {
@@ -212,6 +215,26 @@ test(
         "valid sibling publishes its interrupted result and exits after parent death",
       );
       run(root, "launch-preparation-reopen");
+    } finally {
+      await cleanup(root);
+    }
+  },
+);
+test(
+  "single-agent native parking keeps parent-death shutdown while its native save is blocked",
+  { timeout: 60000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-park-orphan-"));
+    try {
+      run(root, "park-orphan", true);
+      const saved = seed(root);
+      await until(() => dead(saved.childPid), "parking actor exits after its parent dies");
+      const dir = path.join(root, "agent/sessions/agent-runs", saved.sessionId, saved.runId);
+      assert.equal(fs.existsSync(path.join(dir, "parked.json")), false);
+      assert.ok(
+        fs.readdirSync(dir).some((name) => name.endsWith(".jsonl")),
+        "journal kept",
+      );
     } finally {
       await cleanup(root);
     }
