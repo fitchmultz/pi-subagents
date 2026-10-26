@@ -7,11 +7,11 @@ import { getBrokerRuntimeDir, prepareBrokerSocketPath } from "./paths.ts";
 import { brokerPidRecord } from "./pid.ts";
 import { assertBrokerCanStart } from "./spawn.ts";
 import { LastMessageRelay } from "./last.ts";
-import { assertMainParent, canSeeSession, findSessions } from "./targets.ts";
-import { acceptBrokerConnection } from "./server-connection.ts";
+import { canSeeSession, findSessions } from "./targets.ts";
+import { acceptBrokerConnection, registeredSessionInfo } from "./server-connection.ts";
+import { guardedDeliveryError } from "./guard.ts";
 import {
   compactTopicMessage,
-  isSessionRegistration,
   normalizeMessage,
   normalizeSessionInfo,
   type SessionInfo,
@@ -153,17 +153,8 @@ class IntercomBroker {
   }
 
   private register(socket: net.Socket, msg: UnknownRecord, setId: (id: string) => void): void {
-    if (!isSessionRegistration(msg.session)) {
-      throw new Error("Invalid register message");
-    }
-    assertMainParent(msg.session, this.sessions);
-    const requestedId =
-      typeof msg.requestedId === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(msg.requestedId)
-        ? msg.requestedId
-        : undefined;
-    const id =
-      requestedId !== undefined && !this.sessions.has(requestedId) ? requestedId : randomUUID();
-    const info: SessionInfo = { ...msg.session, id, lastSeen: msg.session.lastSeen ?? Date.now() };
+    const info = registeredSessionInfo(msg, this.sessions);
+    const id = info.id;
     snapshotFrames(randomUUID(), [info], true);
     const topicFrames = msg.topicFrames === true;
     this.sessions.set(id, {
@@ -182,6 +173,7 @@ class IntercomBroker {
       type: "registered",
       sessionId: id,
       lastMessages: true,
+      ...(msg.guardedDelivery === 1 ? { guardedDelivery: 1 } : {}),
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
     });
   }
@@ -296,6 +288,15 @@ class IntercomBroker {
     const targets = findSessions(this.sessions, msg.to, currentId);
     const target = targets[0];
     if (targets.length === 1) {
+      const guardError = guardedDeliveryError(this.sessions, msg.to, message);
+      if (guardError !== null) {
+        writeMessage(socket, {
+          type: "delivery_failed",
+          messageId: message.id,
+          reason: guardError,
+        });
+        return;
+      }
       const fromSession = this.sessions.get(currentId);
       if (!fromSession) {
         writeMessage(socket, {
@@ -343,10 +344,14 @@ class IntercomBroker {
       "lastIntercomActivity",
       "subscriptions",
       "topics",
+      "applicationGuard",
     ]) {
       if (msg[key] !== undefined) {
         update[key] = msg[key];
       }
+    }
+    if (msg.applicationGuard === null) {
+      delete update.applicationGuard;
     }
     const nextInfo = normalizeSessionInfo(update);
     if (!nextInfo) {
@@ -366,15 +371,7 @@ class IntercomBroker {
     message: Message,
   ): SendResult {
     const target = this.sessions.get(toId);
-    if (!target) {
-      return {
-        id: message.id,
-        accepted: false,
-        delivered: false,
-        reason: "Recipient disconnected before delivery",
-      };
-    }
-    if (shouldReplaceDelivery(message, target.info)) {
+    if (target && shouldReplaceDelivery(message, target.info)) {
       return this.queueReplaceDelivery(fromId, toId, from, message);
     }
     const reason = this.deliverMessage(toId, from, message);
@@ -465,6 +462,10 @@ class IntercomBroker {
   }
 
   private deliverMessage(toId: string, from: SessionInfo, message: Message): string | null {
+    const guardError = guardedDeliveryError(this.sessions, toId, message);
+    if (guardError !== null) {
+      return guardError;
+    }
     const target = this.sessions.get(toId);
     if (
       !target ||

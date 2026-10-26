@@ -18,6 +18,9 @@ export interface SessionInfo {
   readonly projectId?: string;
   readonly rootSessionId?: string;
   readonly parentSessionId?: string;
+  readonly incarnation?: string;
+  readonly guardedDelivery?: 1;
+  readonly applicationGuard?: string;
   readonly status?: string;
   readonly lastSeen?: number;
   readonly lastIntercomActivity?: number;
@@ -83,6 +86,38 @@ export function isTopicUpdate(value: unknown): value is TopicUpdate {
 
 export type MessageDelivery = "queue" | "steer" | "passive";
 export type QueueMode = "stack" | "replace";
+export interface ContextTarget {
+  readonly rootSessionId: string;
+  readonly peerId: string;
+  readonly incarnation: string;
+}
+export interface DeliveryGuard extends ContextTarget {
+  readonly applicationGuard: string;
+}
+export interface PublicationReplyHint {
+  readonly tool: string;
+  readonly commandId: string;
+}
+export type SendOptions = Omit<Message, "id" | "timestamp" | "content"> &
+  Message["content"] & { readonly messageId?: string };
+export function isContextTarget(value: unknown): value is ContextTarget {
+  return (
+    isRecord(value) &&
+    ["rootSessionId", "peerId", "incarnation"].every((key) => safeLabel(value[key]))
+  );
+}
+export function isDeliveryGuard(value: unknown): value is DeliveryGuard {
+  return isContextTarget(value) && "applicationGuard" in value && safeLabel(value.applicationGuard);
+}
+function isPublicationReplyHint(value: unknown): value is PublicationReplyHint {
+  return (
+    isRecord(value) &&
+    typeof value.tool === "string" &&
+    /^[a-zA-Z_][a-zA-Z0-9_]{0,79}$/.test(value.tool) &&
+    typeof value.commandId === "string" &&
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.commandId)
+  );
+}
 export interface HumanMessageOrigin {
   readonly ownerSessionId: string;
   readonly runId: string;
@@ -115,6 +150,8 @@ export interface Message {
   readonly queueMode?: QueueMode;
   readonly threadId?: string;
   readonly passive?: boolean;
+  readonly guard?: DeliveryGuard;
+  readonly replyHint?: PublicationReplyHint;
   readonly content: {
     readonly text: string;
     readonly attachments?: readonly Attachment[];
@@ -137,6 +174,9 @@ export function isAttachment(value: unknown): value is Attachment {
 }
 
 function validMessageOrigin(message: Readonly<Record<string, unknown>>): boolean {
+  if (!validMessageGuard(message)) {
+    return false;
+  }
   if (message.human !== undefined && !isHumanMessageOrigin(message.human)) {
     return false;
   }
@@ -148,6 +188,20 @@ function validMessageOrigin(message: Readonly<Record<string, unknown>>): boolean
     message.human === undefined &&
     (message.expectsReply === undefined || message.expectsReply === false) &&
     message.replyTo === undefined
+  );
+}
+
+function validMessageGuard(message: Readonly<Record<string, unknown>>): boolean {
+  if (message.guard === undefined) {
+    return message.replyHint === undefined;
+  }
+  return (
+    isDeliveryGuard(message.guard) &&
+    message.expectsReply === false &&
+    message.replyTo === undefined &&
+    message.human === undefined &&
+    message.topic === undefined &&
+    (message.replyHint === undefined || isPublicationReplyHint(message.replyHint))
   );
 }
 
@@ -254,8 +308,13 @@ function validSessionTopics(session: Readonly<Record<string, unknown>>): boolean
 
 function validSessionLineage(value: Readonly<Record<string, unknown>>): boolean {
   return (
-    optionalLabel(value.rootSessionId) &&
-    optionalLabel(value.parentSessionId) &&
+    ["rootSessionId", "parentSessionId", "incarnation", "applicationGuard"].every((key) =>
+      optionalLabel(value[key]),
+    ) &&
+    (value.guardedDelivery === undefined ||
+      (value.guardedDelivery === 1 &&
+        safeLabel(value.incarnation) &&
+        safeLabel(value.rootSessionId))) &&
     (value.parentSessionId === undefined || value.rootSessionId === value.parentSessionId)
   );
 }
@@ -379,6 +438,7 @@ export type BrokerMessage =
       readonly topicsSupported?: true;
       readonly topicFrames?: true;
       readonly lastMessages?: true;
+      readonly guardedDelivery?: 1;
     }
   | {
       readonly type: "sessions";
