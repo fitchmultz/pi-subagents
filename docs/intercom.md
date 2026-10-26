@@ -207,7 +207,8 @@ the same runtime-root policy.
 
 The runtime directory is owned by the OS user, nonsymlink, and mode 0700; the
 socket is mode 0600. The broker starts on first use and exits after five seconds
-without connected sessions. Concurrent startup uses the shared spawn lock.
+without connected sessions, unless a parked child still holds admitted input; that
+input waits for its main to return and wake the child. Concurrent startup uses the shared spawn lock.
 
 `PI_INTERCOM_RUNTIME_DIR` explicitly selects an isolated deployment. It must be
 an absolute private directory with a socket path within 100 UTF-8 bytes. Invalid

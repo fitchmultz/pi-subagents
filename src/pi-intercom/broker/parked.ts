@@ -87,9 +87,14 @@ export class ParkedSessions<T extends ParkablePeer> {
     }
     return parked !== undefined;
   }
-  /** Exited parked children keep identities only while some live session remains. */
+  /**
+   * Exited parked children keep identities while some live session remains. Input already
+   * admitted for one keeps the broker until a returning main wakes it.
+   */
   get exited(): boolean {
-    return [...this.sessions.values()].every((session) => session.parked?.closed === true);
+    return [...this.sessions.values()].every(
+      ({ parked }) => parked?.closed === true && parked.retained.length === 0,
+    );
   }
   retain(target: T | undefined, from: SessionInfo, message: Message): boolean {
     target?.parked?.retained.push({ from, message });

@@ -1,10 +1,11 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import {
@@ -40,7 +41,7 @@ function topic(name: string, body = "current state", revision = 1): TopicUpdate 
   return { topic: name, text: body, event: "update", revision, updatedAt: 1 };
 }
 
-async function startBroker(t: TestContext): Promise<void> {
+async function startBroker(t: TestContext): Promise<ChildProcess> {
   const broker = spawn(process.execPath, ["src/pi-intercom/broker/broker.ts"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -58,6 +59,7 @@ async function startBroker(t: TestContext): Promise<void> {
     });
     broker.once("exit", () => reject(new Error("Broker exited before readiness")));
   });
+  return broker;
 }
 
 test("broker restores transactionally with exact cached frame limits and ordered records", async (t) => {
@@ -804,10 +806,9 @@ test("collaboration lineage restricts discovery and all delivery paths at the br
 
 test("a parked child keeps its identity, topics and admitted input until one genuine wake", async (t) => {
   isolatedAgent(t);
-  await startBroker(t);
+  const broker = await startBroker(t);
   const clients: IntercomClient[] = [];
-  const connect = async (native: string, root = "main-p") => {
-    const client = new IntercomClient();
+  const connect = async (native: string, root = "main-p", client = new IntercomClient()) => {
     client.on("error", (error: Error) => assert.fail(error.message));
     clients.push(client);
     const parent = native === root ? undefined : root;
@@ -868,6 +869,14 @@ test("a parked child keeps its identity, topics and admitted input until one gen
       });
     });
     assert.equal(record(await sender.last(childId)).text, "from captured history");
+    // No live session remains, yet the broker still owes the admitted input.
+    await Promise.all([main.disconnect(), sender.disconnect()]);
+    await delay(6000); // Past the broker's five-second idle shutdown check.
+    assert.equal(broker.exitCode, null, "owed parked input keeps the broker alive");
+    const returned = new IntercomClient();
+    const owed = once(returned, "wake");
+    await connect("main-p", "main-p", returned);
+    assert.deepEqual(await owed, [childId], "a returning main is woken for the owed input");
     const restored = new IntercomClient();
     clients.push(restored);
     const received: string[] = [];
@@ -892,7 +901,7 @@ test("a parked child keeps its identity, topics and admitted input until one gen
     assert.equal(restored.sessionId, childId);
     await flushed;
     assert.deepEqual(received, ["breadcrumb", "work"]);
-    const row = (await sender.listSessions()).find((info) => info.id === childId);
+    const row = (await returned.listSessions()).find((info) => info.id === childId);
     assert.deepEqual(
       array(row?.topics).map((entry) => record(entry).topic),
       ["status"],
