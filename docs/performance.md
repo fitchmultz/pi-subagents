@@ -33,8 +33,9 @@ These measure extension factory loading, not interactive startup, completion
 latency, or steady-state memory. The minimum decreased, but the delta is smaller
 than the baseline's observed first-run spread: this small sample is not a general
 speedup claim. The long-lived costs remain explicit: a main reconciles receipts
-on a 200 ms timer, native actors poll their durable command/attachment state, and
-the broker maintains connections/presence. Completed actors stay messageable
+when watched completion inputs change, native actors check their parent each
+second and scan durable commands on change, and the broker maintains
+connections/presence. Completed actors stay messageable
 while attached; observed owner detachment ends their lifetime. Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
 from a timer or package size.
@@ -120,7 +121,7 @@ this production-only measurement; the full checkout functional smoke still runs.
 
 Session attachment no longer scans retained completions before returning. It still
 publishes the same durable process identity and generation before ordinary SDK or
-RPC startup completes. The existing completion scanner and explicit reconciliation
+RPC startup completes. A one-shot recovery scan and explicit reconciliation
 paths perform recovery afterward. Managed launcher attachment remains gated on
 accepted host readiness.
 

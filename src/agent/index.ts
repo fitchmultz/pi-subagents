@@ -41,7 +41,8 @@ import {
 import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
-import { legacyNotifications } from "./legacy.ts";
+import { legacyDirectory, legacyNotifications } from "./legacy.ts";
+import { DirectoryWatch, type WatchState } from "./wake.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
@@ -79,7 +80,12 @@ class AgentRuntime {
   private base = "";
   private owner = "";
   private generation = "";
+  // Polling remains only while change hints are unavailable or a reconciliation failed.
   private timer?: NodeJS.Timeout;
+  private woken?: NodeJS.Immediate;
+  // Change hints for the owner directory, legacy results and every awaited canonical file.
+  private readonly watches = new Map<string, DirectoryWatch>();
+  private awaited: ReadonlySet<string> = new Set();
   private closing = false;
   private reset: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
@@ -97,12 +103,21 @@ class AgentRuntime {
       throw new Error("Agent runtime is not attached.");
     }
   }
+  private readonly wake = (): void => {
+    this.woken ??= setImmediate(() => {
+      this.woken = undefined;
+      this.scan();
+    }).unref();
+  };
   private readonly scan = (): void => {
+    clearTimeout(this.timer);
     if (this.closing || !this.ctx || this.child) {
       return;
     }
+    let reconciled = true;
     try {
-      const notices = notifications(this.ctx, this.base, this.owner);
+      const { notices, awaited } = notifications(this.ctx, this.base, this.owner);
+      this.awaited = awaited;
       try {
         notices.unshift(...legacyNotifications(this.ctx));
       } catch (error) {
@@ -110,9 +125,57 @@ class AgentRuntime {
       }
       deliver(this.pi, this.ctx, notices);
     } catch (error) {
+      reconciled = false;
       console.error(`Agent completion reconciliation: ${errorText(error)}`);
     }
+    const next = this.watch();
+    if (!reconciled || next === "poll") {
+      this.timer = setTimeout(this.scan, 200).unref();
+    } else if (next === "rescan") {
+      // Publications before arming had no hint; reconcile once more after it.
+      this.wake();
+    }
   };
+  /** Watches every directory that can publish an awaited input; legacy results may never exist. */
+  private watch(): "poll" | "rescan" | "hints" {
+    const legacy = legacyDirectory();
+    const directories = [
+      ...new Set([this.base, legacy, ...[...this.awaited].map((file) => path.dirname(file))]),
+    ];
+    for (const [directory, watch] of this.watches) {
+      if (!directories.includes(directory)) {
+        watch.close();
+        this.watches.delete(directory);
+      }
+    }
+    const states = directories.map((directory): [string, WatchState] => {
+      let watch = this.watches.get(directory);
+      if (watch === undefined) {
+        const every = directory === this.base || directory === legacy;
+        watch = new DirectoryWatch(
+          directory,
+          (file) => every || file === null || this.awaited.has(path.join(directory, file)),
+          this.wake,
+        );
+        this.watches.set(directory, watch);
+      }
+      return [directory, watch.ensure()];
+    });
+    if (states.some(([directory, state]) => state === "unwatched" && directory !== legacy)) {
+      return "poll";
+    }
+    return states.some(([, state]) => state === "armed") ? "rescan" : "hints";
+  }
+  private unwatch(): void {
+    clearTimeout(this.timer);
+    clearImmediate(this.woken);
+    this.woken = undefined;
+    for (const watch of this.watches.values()) {
+      watch.close();
+    }
+    this.watches.clear();
+    this.awaited = new Set();
+  }
   private start(context: ExtensionContext): Promise<void> | undefined {
     this.host = managedHost(context);
     if (this.host === undefined || this.accepted || this.child) {
@@ -140,7 +203,7 @@ class AgentRuntime {
     return ownIdentity(this.host?.owner.pid);
   }
   private async attach(context: ExtensionContext): Promise<void> {
-    clearInterval(this.timer);
+    this.unwatch();
     this.ctx = context;
     if (this.child) {
       return;
@@ -157,12 +220,12 @@ class AgentRuntime {
     if (this.closing) {
       return;
     }
-    this.timer = setInterval(this.scan, 200);
-    this.timer.unref();
+    // Recovery and watch setup stay off the awaited startup path.
+    this.timer = setTimeout(this.scan, 200).unref();
   }
   private async dispose(retain: boolean): Promise<void> {
     this.closing = true;
-    clearInterval(this.timer);
+    this.unwatch();
     this.shutdown.abort();
     await this.reset;
     if (!retain && this.base.length > 0) {
@@ -379,7 +442,12 @@ class AgentRuntime {
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.
-      settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0);
+      if (
+        settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0)
+      ) {
+        // Released admissions may have been dropped from the queue rather than published.
+        this.wake();
+      }
     });
     this.pi.on("agent_settled", () => {
       this.scan();

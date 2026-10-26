@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import type {
   AgentSession,
   CreateAgentSessionRuntimeFactory,
@@ -22,6 +21,7 @@ import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
 import type { ToolEvent } from "./observation-state.ts";
+import { DirectoryWatch, Wake } from "./wake.ts";
 
 function commandIdentity(file: string): string | undefined {
   try {
@@ -71,6 +71,8 @@ class Actor {
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
+  // Raised when durable commands may need admission: change hints, stop, deferred runs.
+  private readonly wake = new Wake();
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -218,6 +220,7 @@ class Actor {
       return;
     }
     this.stopping = true;
+    this.wake.raise();
     write(path.join(this.dir, `stopping-${this.token}.json`), { at: Date.now() });
     write(path.join(this.dir, "stop-acknowledged.json"), { at: Date.now(), id: this.current?.id });
     this.session?.abort().catch((error: unknown) => {
@@ -305,6 +308,8 @@ class Actor {
       command.action === "run" &&
       (this.stopping || this.active !== undefined || !session.isIdle)
     ) {
+      // Session idleness has no command-file event; retry at the polling cadence.
+      this.wake.raise();
       return;
     }
     this.started.add(command.id);
@@ -397,6 +402,27 @@ class Actor {
     }
     return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
   }
+  /** Durable command readiness, not elapsed time, defines admission. */
+  private async admitCommands(): Promise<void> {
+    const directory = path.join(this.dir, "commands");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const commands = new DirectoryWatch(directory, () => true, this.wake.raise);
+    try {
+      while (!this.shouldExit()) {
+        // Each liveness tick also rechecks the directory for change hints the OS dropped.
+        const watch = commands.ensure();
+        if ((this.wake.take() || watch !== "watching") && !this.stopping) {
+          this.pending().forEach((command) => this.accept(command));
+        }
+        const polling = this.wake.pending || this.stopping || watch === "unwatched";
+        const tick = Math.max(1, this.nextParentCheck - performance.now());
+        // oxlint-disable-next-line no-await-in-loop
+        await this.wake.sleep(polling ? 100 : tick);
+      }
+    } finally {
+      commands.close();
+    }
+  }
   private failure(error: unknown): void {
     const launch = this.current ?? this.initial;
     const result: Result = {
@@ -458,14 +484,7 @@ class Actor {
       });
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
-      while (!this.shouldExit()) {
-        if (!this.stopping) {
-          this.pending().forEach((command) => this.accept(command));
-        }
-        // Durable command readiness, not elapsed time, defines admission.
-        // oxlint-disable-next-line no-await-in-loop
-        await delay(100);
-      }
+      await this.admitCommands();
       await this.active;
     } catch (error) {
       this.failure(error);

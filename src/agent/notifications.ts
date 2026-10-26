@@ -39,15 +39,19 @@ export function release(owner: string, id: string): void {
 export function isHeld(owner: string, id: string): boolean {
   return admissions.has(`${owner}/${id}`);
 }
-export function settle(owner: string, pending: boolean): void {
+/** Returns whether any admission was released for reconciliation. */
+export function settle(owner: string, pending: boolean): boolean {
   if (pending) {
-    return;
+    return false;
   }
+  let released = false;
   for (const key of admissions) {
     if (key.startsWith(`${owner}/`)) {
       admissions.delete(key);
+      released = true;
     }
   }
+  return released;
 }
 export function published(ctx: ExtensionContext, launch: Launch): string | undefined {
   return completionReceipts(ctx.sessionManager.getSessionFile(), launch.owner).get(launch.id);
@@ -197,7 +201,7 @@ function completedRun({ base, owner, known, settled }: Scan, id: string): Comple
   }
   return { id, ...order, loaded };
 }
-function completed(base: string, owner: string): Completed[] {
+function completed(base: string, owner: string, awaited: Set<string>): Completed[] {
   const key = JSON.stringify([base, owner]);
   const scan = {
     base,
@@ -205,7 +209,15 @@ function completed(base: string, owner: string): Completed[] {
     known: settledRuns.get(key) ?? new Map<string, Settled>(),
     settled: new Map<string, Settled>(),
   };
-  const runs = list(base).flatMap((id) => completedRun(scan, id) ?? []);
+  const runs = list(base).flatMap((id) => {
+    const run = completedRun(scan, id);
+    if (run === undefined) {
+      awaited.add(path.join(runDirectory(base, id), "result.json"));
+    } else if (run.loaded?.result?.accountingPending !== undefined) {
+      awaited.add(run.loaded.launch.sessionFile);
+    }
+    return run ?? [];
+  });
   settledRuns.delete(key);
   settledRuns.set(key, scan.settled);
   if (settledRuns.size > 8) {
@@ -218,9 +230,15 @@ function completed(base: string, owner: string): Completed[] {
     return a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : a.id.localeCompare(b.id);
   });
 }
-export function notifications(ctx: ExtensionContext, base: string, owner: string): Completion[] {
+export interface Reconciliation {
+  readonly notices: Completion[];
+  /** Canonical files whose publication can change what this owner must deliver. */
+  readonly awaited: ReadonlySet<string>;
+}
+export function notifications(ctx: ExtensionContext, base: string, owner: string): Reconciliation {
   const notices: Completion[] = [];
-  const runs = completed(base, owner);
+  const awaited = new Set<string>();
+  const runs = completed(base, owner, awaited);
   const receipts =
     runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager.getSessionFile(), owner);
   for (const run of runs) {
@@ -234,5 +252,5 @@ export function notifications(ctx: ExtensionContext, base: string, owner: string
       notices.push(notification(base, loaded.launch, loaded.result));
     }
   }
-  return notices;
+  return { notices, awaited };
 }

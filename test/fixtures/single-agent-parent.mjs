@@ -44,6 +44,12 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+if (phase.startsWith("legacy-")) {
+  // Retired releases created their result directory when their session started.
+  fs.mkdirSync(path.join(root, "pi-subagents-runtime/async-subagent-results"), {
+    recursive: true,
+  });
+}
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const aiRoot = path.dirname(
   findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))),
@@ -502,16 +508,47 @@ try {
     );
     assert.ok(receipts.every((file) => readJSON(file).state === "stale"));
     const frozen = receipts.map((file) => fs.readFileSync(file));
-    const polls = () =>
-      fs
-        .readFileSync(path.join(root, "command-polls.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map(JSON.parse);
+    const records = (name) =>
+      fs.readFileSync(path.join(root, name), "utf8").trim().split("\n").map(JSON.parse);
+    const polls = () => records("command-polls.jsonl");
+    const pid = requests()[0].pid;
+    const ticks = () => records("actor-ticks.jsonl").filter((tick) => tick.pid === pid).length;
+    const actorScans = () => polls().filter((poll) => poll.pid === pid).length;
+    const ownerScans = { count: 0 };
+    const readdir = fs.readdirSync;
+    fs.readdirSync = (listed, ...args) => {
+      ownerScans.count += listed === base ? 1 : 0;
+      return readdir(listed, ...args);
+    };
+    syncBuiltinESMExports();
+    // Idle reconciliation is change-driven: the actor keeps only its liveness tick.
+    const settledTick = ticks();
+    await until(() => ticks() > settledTick, "real actor liveness tick after admissions");
+    const idle = { ticks: ticks(), actor: actorScans(), owner: ownerScans.count };
+    await until(() => ticks() >= idle.ticks + 3, "three more real actor liveness ticks");
+    const idleScans = {
+      actorCommandScans: actorScans() - idle.actor,
+      parentCompletionScans: ownerScans.count - idle.owner,
+    };
+    fs.readdirSync = readdir;
+    syncBuiltinESMExports();
+    console.log("idle reconciliation scans:", JSON.stringify(idleScans));
+    assert.deepEqual(idleScans, { actorCommandScans: 0, parentCompletionScans: 0 });
+    // Each new durable command must wake at least one real actor scan before its admission.
+    const rescan = async (count) => {
+      for (let index = 0; index < count; index++) {
+        const probe = enqueue(base, launch, "steer", { prompt: "PROBE" });
+        // oxlint-disable-next-line no-await-in-loop
+        await until(
+          () => fs.existsSync(path.join(directory, "admissions", `${probe}.json`)),
+          "a new command wakes a real actor scan",
+        );
+      }
+    };
     const start = polls().length;
-    await until(() => polls().length >= start + 9, "nine actual later command polls complete");
+    await rescan(2);
     const measured = polls()
-      .slice(start, start + 9)
+      .slice(start)
       .flatMap((poll) => poll.reads)
       .filter((read) => ids.some((command) => read.file === `${command}.json`));
     const counters = measured.reduce(
@@ -531,21 +568,18 @@ try {
     );
     // Same-actor receipt loss must resume validation without reapplying a started command.
     const changed = path.join(directory, "commands", `${ids[0]}.json`);
-    const fileReads = (from, file, pid) =>
+    const fileReads = (from, file, reader) =>
       polls()
         .slice(from)
-        .filter((poll) => pid === undefined || poll.pid === pid)
+        .filter((poll) => reader === undefined || poll.pid === reader)
         .flatMap((poll) => poll.reads)
         .filter((read) => read.file === path.basename(file));
     let from = polls().length;
     fs.unlinkSync(receipts[0]);
-    await until(
-      () => fileReads(from, changed).length >= 2,
-      "missing receipt resumes body reads on later polls",
-    );
+    await rescan(2);
+    assert.ok(fileReads(from, changed).length >= 2, "missing receipt resumes body reads");
     assert.equal(fs.existsSync(receipts[0]), false, "started set still suppresses readmission");
     fs.writeFileSync(receipts[0], frozen[0]);
-    const pid = requests()[0].pid;
     const mutate = async (change) => {
       process.kill(pid, "SIGSTOP");
       await until(
@@ -566,10 +600,7 @@ try {
         "changed admitted body is revalidated",
       );
       const next = polls().length;
-      await until(
-        () => polls().length >= next + 2,
-        "two subsequent scans witness unchanged replacement",
-      );
+      await rescan(2);
       assert.deepEqual(
         fileReads(next, changed),
         [],
