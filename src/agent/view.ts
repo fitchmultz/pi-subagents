@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readOutputPage } from "../shared/output-page.ts";
-import { actor, alive } from "./process.ts";
+import { actor, alive, observeAlive } from "./process.ts";
 import {
   admissionSchema,
   commandSchema,
@@ -79,13 +79,14 @@ function receiptResult(result: Result | undefined) {
         accountingPending: result.accountingPending,
       };
 }
-function processView(base: string, launch: Launch) {
+/** `observed` holds batched liveness by actor token; any other actor gets a fresh check. */
+function processView(base: string, launch: Launch, observed?: ReadonlyMap<string, boolean>) {
   const identity = actor(base, launch);
   const exit = identity
     ? read(path.join(conversation(base, launch), `exit-${identity.token}.json`), exitSchema)
     : undefined;
   return {
-    live: identity !== undefined && alive(identity),
+    live: identity !== undefined && (observed?.get(identity.token) ?? alive(identity)),
     exit: exit ?? null,
     exitKnown: exit !== undefined,
   };
@@ -140,10 +141,14 @@ function metadata(
   base: string,
   launch: Launch,
   result: Result | undefined,
-  options: { ctx?: ExtensionContext; guidance: Guidance[] },
+  options: {
+    ctx?: ExtensionContext;
+    guidance: Guidance[];
+    observed?: ReadonlyMap<string, boolean>;
+  },
 ): Omit<RunView, "output"> {
   const directory = runDirectory(base, launch.id);
-  const process = processView(base, launch);
+  const process = processView(base, launch, options.observed);
   const outputFile = path.join(directory, "output.txt");
   const admission = read(
     path.join(conversation(base, launch), "admissions", `${launch.id}.json`),
@@ -176,16 +181,22 @@ function metadata(
     guidance: options.guidance,
   };
 }
-function summaries(
+async function summaries(
   base: string,
   launches: readonly Launch[],
   ctx?: ExtensionContext,
-): RunSummary[] {
+): Promise<RunSummary[]> {
   const guidance = guidanceView(base, launches);
+  const identities = [
+    ...new Map(launches.map((launch) => [launch.rootId, actor(base, launch)])).values(),
+  ].filter((identity) => identity !== undefined);
+  const verdicts = await observeAlive(identities);
+  const observed = new Map(identities.map((identity, index) => [identity.token, verdicts[index]]));
   return launches.map((launch) => {
     const view = metadata(base, launch, readCanonicalResult(base, launch), {
       ctx,
       guidance: guidance.get(launch.id) ?? [],
+      observed,
     });
     return {
       ...view,
@@ -225,14 +236,14 @@ export function renderReceipt(
   const model = { ...details, result: receiptResult(details.result) };
   return toolResult(details, JSON.stringify(model, null, 2));
 }
-export function renderInventory(
+export async function renderInventory(
   base: string,
   launches: readonly Launch[],
   ctx: ExtensionContext | undefined,
   input: Pick<RunsInput, "offset">,
-): ToolReply {
+): Promise<ToolReply> {
   const offset = input.offset ?? 0;
-  const runs = summaries(base, launches.slice(offset, offset + 50), ctx);
+  const runs = await summaries(base, launches.slice(offset, offset + 50), ctx);
   const details = {
     runs,
     offset,

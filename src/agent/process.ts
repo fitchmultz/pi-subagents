@@ -6,13 +6,14 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   isChildProcessReplaced,
+  observeChildProcessReplaced,
   readChildProcessIdentity,
   readProcessClock,
   trySignalChildTree,
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
-import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
+import { attachmentSchema, processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 
@@ -29,7 +30,8 @@ export function published<T extends object>(
 ): (T & Published) | undefined {
   return record && { ...record, published: fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs };
 }
-export function alive(identity: ClaimedProcess): boolean {
+/** Settles liveness without a birth lookup; undefined means compare the recorded birth. */
+function probe(identity: ClaimedProcess): boolean | undefined {
   try {
     process.kill(identity.pid, 0);
   } catch (error) {
@@ -38,11 +40,73 @@ export function alive(identity: ClaimedProcess): boolean {
       return !hasErrorCode(error, "ESRCH");
     }
   }
-  if (identity.identity === "unverified") {
-    return true;
-  }
+  return identity.identity === "unverified" ? true : undefined;
+}
+export function alive(identity: ClaimedProcess): boolean {
   // Only a proven different birth disproves a live PID; ambiguous identities stay possibly owned.
-  return readChildProcessIdentity(identity.pid) === identity.identity || !replaced(identity);
+  return (
+    probe(identity) ??
+    (readChildProcessIdentity(identity.pid) === identity.identity || !replaced(identity))
+  );
+}
+/** Routine `alive` without waiting on `ps`; signals still use the synchronous proof. */
+export async function observeAlive(identities: readonly ClaimedProcess[]): Promise<boolean[]> {
+  const verdicts: boolean[] = [];
+  for (const claim of identities) {
+    // One `ps` at a time: each spawn briefly holds the event loop, so concurrent spawns add up.
+    const { pid, identity, clock } = claim;
+    verdicts.push(
+      probe(claim) ??
+        // oxlint-disable-next-line no-await-in-loop
+        !(await observeChildProcessReplaced(pid, identity, claim.published, clock)),
+    );
+  }
+  return verdicts;
+}
+/**
+ * A child's routine parent check, one observation at a time. A dead parent detaches the child
+ * only while its check is current and the attachment generation is unchanged: a newer parent
+ * may adopt the child meanwhile.
+ */
+export class ParentCheck {
+  private current?: object;
+  /**
+   * Reads the attachment synchronously, so an unreadable one still fails the caller at once.
+   * Missing or released attachments detach immediately; a check in flight makes this a no-op.
+   */
+  check(file: string, detached: () => void): Promise<void> {
+    if (this.current !== undefined) {
+      return Promise.resolve();
+    }
+    const attachment = published(file, read(file, attachmentSchema));
+    if (attachment === undefined || !attachment.attached) {
+      detached();
+      return Promise.resolve();
+    }
+    const check = {};
+    this.current = check;
+    const settle = async () => {
+      try {
+        const [live] = await observeAlive([attachment]);
+        if (
+          this.current === check &&
+          !live &&
+          read(file, attachmentSchema)?.generation === attachment.generation
+        ) {
+          detached();
+        }
+      } finally {
+        if (this.current === check) {
+          this.current = undefined;
+        }
+      }
+    };
+    return settle();
+  }
+  /** A check settling later no longer acts. */
+  cancel(): void {
+    this.current = undefined;
+  }
 }
 function replaced(identity: ClaimedProcess): boolean {
   return (
