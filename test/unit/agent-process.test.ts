@@ -1,11 +1,19 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import childProcess, { spawn } from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { ensureActor, ownIdentity, shells, signalProcess } from "../../src/agent/process.ts";
+import {
+  alive,
+  ensureActor,
+  observeAlive,
+  ownIdentity,
+  shells,
+  signalProcess,
+} from "../../src/agent/process.ts";
 import { write } from "../../src/agent/storage.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 
@@ -60,3 +68,72 @@ test("ambiguous actor liveness cannot reclaim its claim or authorize a stop sign
   assert.throws(() => signalProcess(identity, "SIGTERM"), /liveness is ambiguous/);
   assert.deepEqual(signals, [0, 0], "only liveness probes, never termination signals");
 });
+
+test(
+  "routine liveness reads births without blocking and reaches signal-time verdicts",
+  { skip: process.platform === "android" && "Android replacement needs a native clock bound" },
+  async (t) => {
+    const sleeper = () => spawn("/bin/sleep", ["600"], { detached: true, stdio: "ignore" });
+    const children = Array.from({ length: 5 }, sleeper);
+    t.after(() => {
+      for (const child of children) {
+        try {
+          process.kill(-(child.pid ?? 0), "SIGKILL");
+        } catch {
+          // Already reaped.
+        }
+      }
+    });
+    const claims = children.map((child) => {
+      assert.ok(child.pid !== undefined);
+      const claim = { ...ownIdentity(child.pid), published: Date.now() };
+      assert.notEqual(claim.identity, "unverified", "detached sleepers lead their groups");
+      return claim;
+    });
+    const [first, second, third, dead, reused] = claims;
+    const exited = new Promise((resolve) => {
+      children[3]?.once("exit", resolve);
+    });
+    process.kill(-dead.pid, "SIGKILL");
+    await exited;
+    const earlier =
+      process.platform === "linux"
+        ? reused.identity.replace(/\d+$/, (ticks) => String(BigInt(ticks) + 1n))
+        : reused.identity.replace(/\d{4} (\d+)$/, "2000 $1");
+    const cases = [
+      [first, true],
+      [second, true],
+      [third, true],
+      [dead, false],
+      // A different birth recorded before this PID's birth proves replacement.
+      [{ ...reused, identity: earlier, published: 0 }, false],
+      // An incomparable legacy birth stays possibly owned.
+      [{ ...reused, identity: "legacy-birth" }, true],
+    ] as const;
+    const blocking = t.mock.method(childProcess, "execFileSync");
+    const batched = t.mock.method(childProcess, "execFile");
+    syncBuiltinESMExports();
+    t.after(() => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    });
+    const ps = (calls: ReadonlyArray<{ arguments: readonly unknown[] }>) =>
+      calls.filter((call) => call.arguments[0] === "ps").length;
+    const verdicts = await observeAlive(cases.map(([claim]) => claim));
+    assert.deepEqual(
+      verdicts,
+      cases.map(([, expected]) => expected),
+    );
+    assert.equal(ps(blocking.mock.calls), 0, "routine observation never waits on a sync ps");
+    assert.equal(
+      ps(batched.mock.calls),
+      process.platform === "linux" ? 0 : 5,
+      "one single-PID birth read per comparable live claim, plus one UTC read for the changed birth",
+    );
+    assert.deepEqual(
+      cases.map(([claim]) => alive(claim)),
+      verdicts,
+      "the synchronous owner reaches the same verdicts",
+    );
+  },
+);

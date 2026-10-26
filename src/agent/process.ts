@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   isChildProcessReplaced,
+  observeChildProcessReplaced,
   readChildProcessIdentity,
   readProcessClock,
   trySignalChildTree,
@@ -29,7 +30,8 @@ export function published<T extends object>(
 ): (T & Published) | undefined {
   return record && { ...record, published: fs.statSync(file, { throwIfNoEntry: false })?.mtimeMs };
 }
-export function alive(identity: ClaimedProcess): boolean {
+/** Settles liveness without a birth lookup; undefined means compare the recorded birth. */
+function probe(identity: ClaimedProcess): boolean | undefined {
   try {
     process.kill(identity.pid, 0);
   } catch (error) {
@@ -38,11 +40,28 @@ export function alive(identity: ClaimedProcess): boolean {
       return !hasErrorCode(error, "ESRCH");
     }
   }
-  if (identity.identity === "unverified") {
-    return true;
-  }
+  return identity.identity === "unverified" ? true : undefined;
+}
+export function alive(identity: ClaimedProcess): boolean {
   // Only a proven different birth disproves a live PID; ambiguous identities stay possibly owned.
-  return readChildProcessIdentity(identity.pid) === identity.identity || !replaced(identity);
+  return (
+    probe(identity) ??
+    (readChildProcessIdentity(identity.pid) === identity.identity || !replaced(identity))
+  );
+}
+/** Routine `alive` without waiting on `ps`; signals still use the synchronous proof. */
+export async function observeAlive(identities: readonly ClaimedProcess[]): Promise<boolean[]> {
+  const verdicts: boolean[] = [];
+  for (const claim of identities) {
+    // One `ps` at a time: each spawn briefly holds the event loop, so concurrent spawns add up.
+    const { pid, identity, clock } = claim;
+    verdicts.push(
+      probe(claim) ??
+        // oxlint-disable-next-line no-await-in-loop
+        !(await observeChildProcessReplaced(pid, identity, claim.published, clock)),
+    );
+  }
+  return verdicts;
 }
 function replaced(identity: ClaimedProcess): boolean {
   return (

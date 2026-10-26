@@ -12,11 +12,19 @@ import {
   attachmentSchema,
   commandSchema,
   type Command,
+  type Attachment,
   type Launch,
   type Result,
 } from "./contracts.ts";
 import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
-import { alive, ownIdentity, published, shellCommand, shells, signalProcess } from "./process.ts";
+import {
+  observeAlive,
+  ownIdentity,
+  published,
+  shellCommand,
+  shells,
+  signalProcess,
+} from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { childUsage } from "./usage.ts";
 import { initializeCwd, localCwdOwner } from "./cwd.ts";
@@ -71,6 +79,7 @@ class Actor {
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
+  private detached = false;
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -386,16 +395,26 @@ class Actor {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
   private shouldExit(): boolean {
-    const now = performance.now();
-    if (!this.stopping && now >= this.nextParentCheck) {
-      this.nextParentCheck = now + 1000;
+    if (!this.stopping && performance.now() >= this.nextParentCheck) {
+      // One observation at a time; it schedules the next check when it settles.
+      this.nextParentCheck = Infinity;
       const file = path.join(this.base, "attachment.json");
       const attachment = published(file, read(file, attachmentSchema));
-      if (attachment === undefined || !attachment.attached || !alive(attachment)) {
-        this.stop();
-      }
+      this.observeParent(attachment).catch((error: unknown) => this.errors.push(errorText(error)));
+    }
+    if (this.detached) {
+      this.stop();
     }
     return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
+  }
+  /** Only the serve loop acts on this verdict, so a late observation cannot stop a finished actor. */
+  private async observeParent(attachment: ReturnType<typeof published<Attachment>>): Promise<void> {
+    try {
+      this.detached =
+        attachment === undefined || !attachment.attached || !(await observeAlive([attachment]))[0];
+    } finally {
+      this.nextParentCheck = performance.now() + 1000;
+    }
   }
   private failure(error: unknown): void {
     const launch = this.current ?? this.initial;
