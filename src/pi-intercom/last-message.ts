@@ -7,7 +7,7 @@ import {
   type SessionInfo,
 } from "./types.ts";
 
-type NativeHistory = ExtensionContext["sessionManager"];
+export type NativeHistory = Pick<ExtensionContext["sessionManager"], "getBranch">;
 function completedResponse(
   manager: NativeHistory,
   entryId?: string,

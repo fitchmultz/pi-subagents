@@ -13,6 +13,20 @@ import { IntercomInspection } from "./inspection.ts";
 import { IntercomTools } from "./tools.ts";
 import { IntercomSessionEvents } from "./session-events.ts";
 import { registerIntercomTools } from "./tool-registration.ts";
+import { isParkRequest, PARK, PARKED_HISTORY, WAKE } from "../shared/parking.ts";
+import type { NativeHistory } from "./last-message.ts";
+
+/** The agent runtime answers for its exited parked child from the captured native session. */
+function parkedHistory(pi: ExtensionAPI, peer: string): Promise<NativeHistory | undefined> {
+  let history: Promise<NativeHistory | undefined> | undefined;
+  pi.events.emit(PARKED_HISTORY, {
+    peer,
+    reply: (found: Promise<NativeHistory | undefined>) => {
+      history = found;
+    },
+  });
+  return history ?? Promise.reject(new Error("No agent runtime owns parked history."));
+}
 
 export default function piIntercomExtension(pi: ExtensionAPI): void {
   const config = loadConfig();
@@ -33,6 +47,10 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
       wait.reject(
         new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }),
       );
+    },
+    parkedHistory: (peer) => parkedHistory(pi, peer.id),
+    wake: (peer) => {
+      pi.events.emit(WAKE, peer);
     },
   });
   const delivery = new InboundDeliveryOwner(pi, lifecycle, journal, {
@@ -59,4 +77,27 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     wait,
   }).register();
   registerIntercomTools(pi, tools);
+  pi.events.on(PARK, (request) => {
+    if (isParkRequest(request)) {
+      request.reply(request.park ? connection.park() : connection.unpark());
+    }
+  });
+  // Native fork sleep readiness; it vetoes only this package's own parking, never other saves.
+  Reflect.apply(pi.on.bind(pi), undefined, [
+    "working_session_save",
+    () =>
+      !connection.parking
+        ? undefined
+        : {
+            blockers: [
+              inbound.receiving > 0 && "intercom is receiving a message",
+              journal.size > 0 && "intercom inbound messages await delivery",
+              replies.listPending().length > 0 && "intercom asks await replies",
+              wait.waiting && "intercom is waiting for a reply",
+              (delivery.restoring !== undefined || delivery.batching) &&
+                "intercom delivery is restoring",
+              connection.reconnected && "intercom reconnected while parking",
+            ].filter((blocker) => typeof blocker === "string"),
+          },
+  ]);
 }

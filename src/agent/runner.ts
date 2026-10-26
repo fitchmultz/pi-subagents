@@ -1,20 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type {
-  AgentSession,
-  CreateAgentSessionRuntimeFactory,
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
 import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
-import { ownIdentity, ParentCheck, shellCommand, shells, signalProcess } from "./process.ts";
+import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
+import { Parking, type Runtime } from "./parking.ts";
 import { childUsage } from "./usage.ts";
-import { initializeCwd, localCwdOwner } from "./cwd.ts";
+import { initializeCwd } from "./cwd.ts";
+import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
-import type { ToolEvent } from "./observation-state.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 
 function commandIdentity(file: string): string | undefined {
@@ -41,30 +37,12 @@ function completionStatus(
   }
   return "completed";
 }
-function guard(pi: ExtensionAPI, directory: string, token: string): void {
-  pi.on("tool_call", (event) => {
-    if (event.toolName === "delegate" || event.toolName === "agent_runs") {
-      return { block: true, reason: "Only a main session may delegate or control children." };
-    }
-    const owner = pi.getAllTools().find((tool) => tool.name === "bash")?.sourceInfo;
-    if (
-      event.toolName === "bash" &&
-      typeof event.input.command === "string" &&
-      owner &&
-      (owner.source === "builtin" || localCwdOwner(owner))
-    ) {
-      // Preserve the selected local owner's cwd/env and leave remote/custom tools alone.
-      const input = event.input;
-      input.command = shellCommand(event.input.command, directory, token);
-    }
-    return;
-  });
-}
 class Actor {
   private active?: Promise<void>;
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
+  private parking = false;
   private readonly parent = new ParentCheck();
   // Raised when durable commands may need admission: change hints and stop.
   private readonly wake = new Wake();
@@ -150,67 +128,6 @@ class Actor {
         .map((block) => block.text)
         .join("\n") ?? ""
     );
-  }
-  private createRuntime(
-    sdk: Awaited<ReturnType<typeof loadSDK>>,
-  ): CreateAgentSessionRuntimeFactory {
-    return async ({ sessionManager }) => {
-      const launch = this.initial;
-      if (!fs.existsSync(launch.sessionFile)) {
-        throw new Error("Missing saved native session; refusing to create another.");
-      }
-      const settingsManager = sdk.SettingsManager.create(launch.cwd, launch.agentDir, {
-        projectTrusted: launch.trusted,
-      });
-      const services = await sdk.createAgentSessionServices({
-        cwd: launch.cwd,
-        agentDir: launch.agentDir,
-        settingsManager,
-        resourceLoaderOptions: {
-          additionalExtensionPaths: [launch.entry],
-          extensionFactories: [
-            {
-              name: "codemode",
-              builtin: true,
-              factory: sdk.createCodemodeExtension({ mode: "on" }),
-            },
-            { name: "tool_search", builtin: true, factory: sdk.createToolSearchExtension() },
-            { name: "mcp", builtin: true, factory: sdk.createMcpExtension() },
-            (pi) => {
-              guard(pi, this.dir, this.token);
-              pi.on("session_start", (_event, ctx) => {
-                this.context = { pi, ctx };
-              });
-              // Sparse tool lifecycle keeps the live view's tools even while nobody watches.
-              const tool = (event: ToolEvent): void => this.observation?.tool(event);
-              pi.on("tool_execution_start", tool);
-              pi.on("tool_execution_update", tool);
-              pi.on("tool_execution_end", tool);
-            },
-          ],
-        },
-      });
-      const diagnostics = services.resourceLoader.getExtensions().errors;
-      if (diagnostics.length > 0) {
-        throw new Error(`Child extension load failed: ${JSON.stringify(diagnostics)}`);
-      }
-      const model = services.modelRuntime.getModel(launch.provider, launch.model);
-      if (!model) {
-        throw new Error(
-          `Saved model ${launch.provider}/${launch.model} is unavailable; no fallback was used.`,
-        );
-      }
-      return {
-        ...(await sdk.createAgentSessionFromServices({
-          services,
-          sessionManager,
-          model,
-          thinkingLevel: launch.thinking,
-        })),
-        services,
-        diagnostics: services.diagnostics,
-      };
-    };
   }
   private readonly stop = (): void => {
     if (this.stopping) {
@@ -399,7 +316,7 @@ class Actor {
     return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
   }
   /** Durable command readiness, not elapsed time, defines admission. */
-  private async admitCommands(): Promise<void> {
+  private async admitCommands(runtime: Runtime, parked: Parking): Promise<void> {
     // Queued commands create this directory; otherwise pending() does and the next pass arms.
     const directory = path.join(this.dir, "commands");
     const commands = new DirectoryWatch(directory, () => true, this.wake.raise);
@@ -411,6 +328,10 @@ class Actor {
           this.retry = false;
           this.pending().forEach((command) => this.accept(command));
         }
+        // oxlint-disable-next-line no-await-in-loop
+        if (await this.park(runtime, parked)) {
+          return;
+        }
         const polling = this.retry || this.stopping || watch === "unwatched";
         const tick = Math.max(1, this.nextParentCheck - performance.now());
         // oxlint-disable-next-line no-await-in-loop
@@ -421,6 +342,35 @@ class Actor {
       this.parent.cancel();
       commands.close();
     }
+  }
+  /** Parks a final-idle actor; the parent/stop owner stays live while preparation awaits. */
+  private async park(runtime: Runtime, parked: Parking): Promise<boolean> {
+    const owner = new AbortController();
+    const watch = setInterval(() => {
+      if (this.shouldExit() || this.stopping) {
+        owner.abort();
+      }
+    }, 100);
+    try {
+      this.parking = await parked.park(runtime, {
+        signal: owner.signal,
+        pi: this.context?.pi,
+        busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
+        // Raced commands and viewers keep this actor resident; the loop admits after release.
+        quiet: () => {
+          const queued = this.pending().some((command) => this.commandLaunch(command));
+          if (queued) {
+            this.wake.raise();
+          }
+          const idle = this.active === undefined && !this.stopping;
+          return !queued && idle && this.observation?.watched !== true;
+        },
+        errors: this.errors,
+      });
+    } finally {
+      clearInterval(watch);
+    }
+    return this.parking;
   }
   private failure(error: unknown): void {
     const launch = this.current ?? this.initial;
@@ -438,71 +388,101 @@ class Actor {
     }
     process.exitCode = 1;
   }
+  private async start(sdk: Awaited<ReturnType<typeof loadSDK>>, parked: Parking): Promise<Runtime> {
+    const sessionManager = parked.open();
+    const factory = childRuntime(sdk, this.initial, {
+      directory: this.dir,
+      token: this.token,
+      saved: parked.saved,
+      started: (pi, ctx) => {
+        this.context = { pi, ctx };
+      },
+      tool: (event) => this.observation?.tool(event),
+    });
+    const runtime = await sdk.createAgentSessionRuntime(factory, {
+      cwd: this.initial.cwd,
+      agentDir: this.initial.agentDir,
+      sessionManager,
+    });
+    try {
+      await this.ready(runtime, parked);
+    } catch (error) {
+      // A runtime that never became ready is still disposed, so the failed actor exits.
+      await runtime.dispose();
+      throw error;
+    }
+    return runtime;
+  }
+  private async ready(runtime: Runtime, parked: Parking): Promise<void> {
+    this.session = runtime.session;
+    await this.session.bindExtensions({
+      mode: "print",
+      onError: (error) => {
+        this.errors.push(error.error);
+      },
+    });
+    if (!this.context) {
+      throw new Error("Child extension context is unavailable.");
+    }
+    initializeCwd(this.context.pi, this.context.ctx, this.initial.cwd, this.dir);
+    if (this.initial.name !== undefined && !parked.saved) {
+      this.session.sessionManager.appendSessionInfo(this.initial.name);
+    }
+    // Optional live view, bound before readiness; its faults never change native execution.
+    this.observation = await ActorObservation.open(this.session, {
+      token: this.token,
+      rootId: this.initial.rootId,
+      sessionId: this.session.sessionManager.getSessionId(),
+    });
+    write(path.join(this.dir, "actor.lock", "process.json"), {
+      ...ownIdentity(),
+      token: this.token,
+    });
+    write(path.join(this.dir, "ready.json"), {
+      pid: process.pid,
+      token: this.token,
+      sessionId: this.session.sessionManager.getSessionId(),
+      at: Date.now(),
+    });
+    parked.adopt();
+  }
   async serve(): Promise<void> {
     const sdk = await loadSDK(this.initial.sdk);
-    let runtime: Awaited<ReturnType<typeof sdk.createAgentSessionRuntime>> | undefined;
+    const parked = new Parking(this.base, this.initial, this.token, sdk);
+    let runtime: Runtime | undefined;
     try {
-      runtime = await sdk.createAgentSessionRuntime(this.createRuntime(sdk), {
-        cwd: this.initial.cwd,
-        agentDir: this.initial.agentDir,
-        sessionManager: sdk.SessionManager.open(
-          this.initial.sessionFile,
-          undefined,
-          this.initial.cwd,
-        ),
-      });
-      this.session = runtime.session;
-      await this.session.bindExtensions({
-        mode: "print",
-        onError: (error) => {
-          this.errors.push(error.error);
-        },
-      });
-      if (!this.context) {
-        throw new Error("Child extension context is unavailable.");
-      }
-      initializeCwd(this.context.pi, this.context.ctx, this.initial.cwd, this.dir);
-      if (this.initial.name !== undefined) {
-        this.session.sessionManager.appendSessionInfo(this.initial.name);
-      }
-      // Optional live view, bound before readiness; its faults never change native execution.
-      this.observation = await ActorObservation.open(this.session, {
-        token: this.token,
-        rootId: this.initial.rootId,
-        sessionId: this.session.sessionManager.getSessionId(),
-      });
-      write(path.join(this.dir, "actor.lock", "process.json"), {
-        ...ownIdentity(),
-        token: this.token,
-      });
-      write(path.join(this.dir, "ready.json"), {
-        pid: process.pid,
-        token: this.token,
-        sessionId: this.session.sessionManager.getSessionId(),
-        at: Date.now(),
-      });
+      runtime = await this.start(sdk, parked);
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
-      await this.admitCommands();
+      await this.admitCommands(runtime, parked);
       await this.active;
     } catch (error) {
       this.failure(error);
     } finally {
-      process.off("SIGTERM", this.stop);
-      process.off("SIGINT", this.stop);
-      const observation: ObservationStats | undefined = this.observation?.close();
-      await runtime?.dispose();
-      if (this.stopping) {
-        this.stopShells("SIGKILL");
-      }
-      clearTimeout(this.stopDeadline);
-      write(path.join(this.dir, `shutdown-${this.token}.json`), {
-        at: Date.now(),
-        errors: this.errors,
-        ...(observation === undefined ? {} : { observation }),
-      });
-      // Keep the process claim until a launcher proves this exact actor is gone.
+      await this.finish(runtime);
     }
+  }
+  private async finish(runtime: Runtime | undefined): Promise<void> {
+    process.off("SIGTERM", this.stop);
+    process.off("SIGINT", this.stop);
+    const observation: ObservationStats | undefined = this.observation?.close();
+    if (!this.parking) {
+      await runtime?.dispose();
+    }
+    if (this.stopping) {
+      this.stopShells("SIGKILL");
+    }
+    clearTimeout(this.stopDeadline);
+    write(path.join(this.dir, `shutdown-${this.token}.json`), {
+      at: Date.now(),
+      errors: this.errors,
+      ...(observation === undefined ? {} : { observation }),
+    });
+    if (this.parking) {
+      // Parked authority requires actual exit; no leftover extension handle may keep it alive.
+      process.exit();
+    }
+    // Keep the process claim until a launcher proves this exact actor is gone.
   }
 }
 const base = process.argv.at(2);

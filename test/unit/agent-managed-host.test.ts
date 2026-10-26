@@ -25,6 +25,8 @@ function worker(
     registerTool: (tool: unknown) => registered.push(tool),
     registerMessageRenderer: (type: string) => registered.push(type),
     sendMessage: (message: unknown) => registered.push(message),
+    // Cross-extension parking events have no publisher in this unit.
+    events: { on: (name: string) => registered.push(name) },
   };
   // Only the members the agent runtime touches for these events are provided.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion

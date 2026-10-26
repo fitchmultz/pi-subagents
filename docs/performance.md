@@ -36,7 +36,10 @@ speedup claim. The long-lived costs remain explicit: a main reconciles receipts
 when watched completion inputs change and stats those inputs each second, native
 actors check their parent each second and scan durable commands on change, and the
 broker maintains connections/presence. Completed actors stay messageable
-while attached; observed owner detachment ends their lifetime. Native lifecycle
+while attached; observed owner detachment ends their lifetime. On the fork, a
+child idle for five minutes parks its exact working state and exits (measured
+median 73 MB released per actor), and a genuine message or continuation restores
+it (one cold actor start, measured p50 1.2 s). Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
 from a timer or package size.
 

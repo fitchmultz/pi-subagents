@@ -84,6 +84,23 @@ export function launchAt(base: string, id: string, owner: string): Launch {
   }
   return launch;
 }
+/** Claims the single successor of a saved run; undefined when another caller already has. */
+export function successor(base: string, launch: Launch, prompt: string): Launch | undefined {
+  const id = randomUUID();
+  const next: Launch = { ...launch, id, predecessor: launch.id, prompt, createdAt: Date.now() };
+  fs.mkdirSync(runDirectory(base, id), { mode: 0o700 });
+  write(path.join(runDirectory(base, id), "launch.json"), next, true);
+  try {
+    write(path.join(runDirectory(base, launch.id), "successor.json"), { id }, true);
+  } catch (error) {
+    fs.rmSync(runDirectory(base, id), { recursive: true });
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+      throw error;
+    }
+    return undefined;
+  }
+  return next;
+}
 export function latest(base: string, initial: Launch): Launch {
   const seen = new Set<string>();
   let launch = initial;

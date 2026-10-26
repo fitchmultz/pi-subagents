@@ -13,7 +13,13 @@ import {
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
-import { attachmentSchema, processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
+import {
+  attachmentSchema,
+  parkedSchema,
+  processSchema,
+  type Launch,
+  type ProcessIdentity,
+} from "./contracts.ts";
 import { conversation, enqueue, launchAt, list, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 
@@ -183,9 +189,12 @@ async function awaitStopping(
   existing: OwnedProcess | undefined,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (existing && fs.existsSync(path.join(dir, `stopping-${existing.token}.json`))) {
-    const deadline = Date.now() + 5000;
-    while (alive(existing)) {
+  if (existing) {
+    const stopping = path.join(dir, `stopping-${existing.token}.json`);
+    // Parking ends in exit or a removed marker, after native shutdown persistence.
+    const parking = path.join(dir, "actor.lock", "parking.json");
+    const deadline = Date.now() + (fs.existsSync(stopping) ? 5000 : 30_000);
+    while ((fs.existsSync(stopping) || fs.existsSync(parking)) && alive(existing)) {
       signal?.throwIfAborted();
       if (Date.now() > deadline) {
         throw new Error("Previous actor is still stopping; no replacement was launched.");
@@ -210,6 +219,7 @@ export async function ensureActor(
   if (existing && alive(existing)) {
     return;
   }
+  parkFailure(base, launch, existing);
   if (existing) {
     if (shells(base, launch, existing.token).some(alive)) {
       throw new Error("Owned native shell work remains live; stop it before continuing.");
@@ -230,6 +240,33 @@ export async function ensureActor(
   const token = randomUUID();
   write(path.join(lock, "claim.json"), { ...ownIdentity(), token });
   spawnActor(base, launch, token);
+}
+/** A failed park keeps its input queued; exact state is lost, so nothing restarts it implicitly. */
+export function parkFailure(base: string, launch: Launch, exited?: OwnedProcess): void {
+  const dir = conversation(base, launch);
+  const parked = read(path.join(dir, "parked.json"), parkedSchema);
+  if (exited && parked && parked.token !== exited.token) {
+    // Only the exited claim that saved this state may hand it to the next generation.
+    throw new Error(
+      "Parked working state belongs to another actor generation; nothing was reopened.",
+    );
+  }
+  const file = path.join(dir, "park-failed.json");
+  if (fs.existsSync(file)) {
+    throw new Error(
+      `This idle child exited without saving its exact working state (${file}). Nothing was restarted or admitted; messages for it stay queued. Inspect it, then delegate new work.`,
+    );
+  }
+}
+/** A broker wake may only restore exact parked state, never reopen the journal alone. */
+export async function wakeActor(base: string, launch: Launch, signal?: AbortSignal): Promise<void> {
+  const dir = conversation(base, launch);
+  await awaitStopping(dir, actor(base, launch), signal);
+  parkFailure(base, launch);
+  if (!fs.existsSync(path.join(dir, "parked.json"))) {
+    throw new Error("No parked working state; the child was not woken.");
+  }
+  await ensureActor(base, launch, signal);
 }
 /** A crashed generation cannot unlink its endpoint; its exact token names the leftover. */
 function removeObservationEndpoint(token: string): void {

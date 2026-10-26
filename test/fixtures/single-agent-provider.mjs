@@ -69,6 +69,43 @@ export default async function fixture(pi) {
   if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
     commandIO(root);
   }
+  if (
+    process.env.SINGLE_AGENT_PARK_CLOCK?.startsWith("park") === true &&
+    /runner\.[jt]s$/.test(process.argv[1] ?? "")
+  ) {
+    // Once the test asks, the actual runner's clock runs 1000x faster, so its idle period
+    // elapses after whatever settling the runner still does.
+    const now = performance.now.bind(performance);
+    const advanced = path.join(root, "advance-clock");
+    let from;
+    // A real save participant appends during preparation, changing the leaf being captured.
+    let saves = 0;
+    pi.on("working_session_save", async (event) => {
+      saves += 1;
+      if (saves === 1 && /^park-(orphan|command)$/.test(process.env.SINGLE_AGENT_PARK_CLOCK)) {
+        // The first save blocks until the test releases it or the acquisition is cancelled.
+        fs.writeFileSync(path.join(root, "save-held"), "");
+        while (!event.signal.aborted && !fs.existsSync(path.join(root, "release-save"))) {
+          // oxlint-disable-next-line no-await-in-loop
+          await delay(20);
+        }
+        return;
+      }
+      if (saves > 1 && process.env.SINGLE_AGENT_PARK_CLOCK === "park-failed") {
+        // Fail only the final capture, after the actor committed to exit.
+        event.invalidate("fixture final capture refused");
+      }
+      event.appendEntry("park-fixture-save", { boundary: event.boundary });
+    });
+    performance.now = () => {
+      from ??= fs.existsSync(advanced) ? now() : undefined;
+      if (from !== undefined && now() - from > 1200) {
+        // The runner itself has now read a clock 20 accelerated minutes past the request.
+        fs.writeFileSync(path.join(root, "clock-advanced"), "");
+      }
+      return from === undefined ? now() : from + (now() - from) * 1000;
+    };
+  }
   if (process.env.SINGLE_AGENT_DROP_HINTS === "1") {
     const watch = fs.watch;
     fs.watch = (target, options) => {

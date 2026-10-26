@@ -106,7 +106,21 @@ export class IntercomInbound {
     }
     this.owners.delivery.queue(entry, "passive");
   }
+  /** Counted synchronously so a parking fence observes frames received before its ack. */
+  receiving = 0;
   async receive(ctx: ExtensionContext, from: SessionInfo, input: Message): Promise<void> {
+    this.receiving++;
+    try {
+      await this.receiveCounted(ctx, from, input);
+    } finally {
+      this.receiving--;
+    }
+  }
+  private async receiveCounted(
+    ctx: ExtensionContext,
+    from: SessionInfo,
+    input: Message,
+  ): Promise<void> {
     const generation = this.lifecycle.generation;
     const restore = this.owners.delivery.restoring;
     if (restore) {

@@ -6,12 +6,42 @@ import {
   isNativeReadResult,
   isLastMessageResult,
   isReceiptResult,
+  type NativeReadQuery,
   type NativeReadResult,
 } from "./last.ts";
-import type { LastMessageQuery, LastMessageResult, ReceiptQuery, ReceiptResult } from "../types.ts";
+import {
+  normalizeSessionInfo,
+  type LastMessageQuery,
+  type LastMessageResult,
+  type ReceiptQuery,
+  type ReceiptResult,
+  type SessionInfo,
+} from "../types.ts";
 import { writeMessage } from "./framing.ts";
 
+/** A peer's read of this session or, for a main, of its exited `parked` child. */
+export function lastRequest(msg: UnknownRecord): {
+  readonly requestId: string;
+  readonly from: SessionInfo;
+  readonly query: NativeReadQuery;
+  readonly parked?: SessionInfo;
+} {
+  const from = normalizeSessionInfo(msg.from);
+  if (typeof msg.requestId !== "string" || !from || !isNativeReadQuery(msg.query)) {
+    throw new Error("Invalid last-message request");
+  }
+  return {
+    requestId: msg.requestId,
+    from,
+    query: msg.query,
+    parked: normalizeSessionInfo(msg.parked) ?? undefined,
+  };
+}
+
 export class LastMessageRequests {
+  /** Negotiated at registration; a failed connection supports neither. */
+  lastMessages = false;
+  receiptReads = false;
   private readonly timeoutMs: number;
   constructor(timeoutMs: number) {
     this.timeoutMs = timeoutMs;
@@ -26,6 +56,8 @@ export class LastMessageRequests {
   >();
 
   fail(error: Readonly<Error>): void {
+    this.lastMessages = false;
+    this.receiptReads = false;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -55,8 +87,16 @@ export class LastMessageRequests {
     return isReceiptResult(result) ? result : { error: "Invalid receipt response" };
   }
   private request(socket: net.Socket, to: string, query: unknown): Promise<NativeReadResult> {
+    if (!this.lastMessages) {
+      return Promise.reject(
+        new Error("This broker does not support last-message reads; reload after it exits."),
+      );
+    }
     if (!isNativeReadQuery(query)) {
       return Promise.reject(new Error("Invalid last-message query"));
+    }
+    if ("messageId" in query && !this.receiptReads) {
+      return Promise.reject(new Error("publication_unavailable"));
     }
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
