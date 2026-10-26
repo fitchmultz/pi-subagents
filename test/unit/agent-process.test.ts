@@ -1,6 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import childProcess, { spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
@@ -76,14 +77,19 @@ test(
     const sleeper = () => spawn("/bin/sleep", ["600"], { detached: true, stdio: "ignore" });
     const children = Array.from({ length: 5 }, sleeper);
     t.after(() => {
-      for (const child of children) {
+      for (const { pid } of children) {
+        // A failed spawn has no PID; never signal the runner's own group.
+        if (pid === undefined || pid <= 0) {
+          continue;
+        }
         try {
-          process.kill(-(child.pid ?? 0), "SIGKILL");
+          process.kill(-pid, "SIGKILL");
         } catch {
           // Already reaped.
         }
       }
     });
+    await Promise.all(children.map((child) => once(child, "spawn")));
     const claims = children.map((child) => {
       assert.ok(child.pid !== undefined);
       const claim = { ...ownIdentity(child.pid), published: Date.now() };
