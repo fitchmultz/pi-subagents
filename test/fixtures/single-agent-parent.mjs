@@ -1094,7 +1094,33 @@ try {
       );
       process.kill(process.pid, "SIGKILL");
     }
-    if (typeof sdk.writeWorkingSession !== "function") {
+    if (phase === "park-command") {
+      // A continuation enqueued while the native save is held runs only after its release.
+      const forked = typeof sdk.writeWorkingSession === "function";
+      await until(
+        () => fs.existsSync(path.join(root, forked ? "save-held" : "clock-advanced")),
+        "parking preparation blocks",
+      );
+      faux.setResponses([fauxAssistantMessage("PARK_RACED_NOTICE")]);
+      const commands = path.join(runDir(runId), "commands");
+      const earlier = fs.readdirSync(commands).length;
+      const continued = call(
+        "agent_runs",
+        { action: "continue", id: runId, prompt: "PARK_RACED" },
+        "park-raced",
+      );
+      await until(
+        () => fs.readdirSync(commands).length > earlier,
+        "continuation is enqueued during the held save",
+      );
+      fs.writeFileSync(path.join(root, "release-save"), "");
+      const accepted = await continued;
+      assert.equal(accepted.isError, false, JSON.stringify(accepted));
+      const raced = await settled(accepted.details.id, "raced continuation completes");
+      assert.equal(raced.details.result.status, "completed");
+      const second = requests().find((request) => request.prompt === "PARK_RACED");
+      assert.equal(second?.pid, first.pid, "the resident actor runs it");
+    } else if (typeof sdk.writeWorkingSession !== "function") {
       // Official Pi cannot capture exact working state, so the actor stays resident.
       await until(() => fs.existsSync(path.join(root, "clock-advanced")), "idle period passes");
       faux.setResponses([fauxAssistantMessage("RESIDENT_NOTICE")]);

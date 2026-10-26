@@ -152,6 +152,7 @@ for (const phase of [
   "command-polling",
   "park",
   "park-failed",
+  "park-command",
   "dropped-hints",
   "invalid-temp-root",
 ]) {

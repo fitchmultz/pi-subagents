@@ -38,8 +38,11 @@ type Parkable = AgentSession & {
 interface Resident {
   readonly pi: ExtensionAPI | undefined;
   readonly busy: boolean;
-  /** Admits commands that raced the marker; false once work, stopping or a viewer began. */
-  readonly admit: () => boolean;
+  /**
+   * False once queued commands, work, stopping or a viewer appeared. Never admits: a prompt
+   * started under the native hold fails, so the runner admits only after release.
+   */
+  readonly quiet: () => boolean;
   readonly errors: string[];
   /** Aborts preparation once the owner stops or dies. */
   readonly signal: AbortSignal;
@@ -69,11 +72,11 @@ function fence(pi: ExtensionAPI, park: boolean): Promise<boolean> {
 async function cut(
   pi: ExtensionAPI,
   session: Parkable,
-  { admit, errors, signal }: Omit<Resident, "pi" | "busy">,
+  { quiet, errors, signal }: Omit<Resident, "pi" | "busy">,
 ): Promise<WorkingHold | undefined> {
   try {
     // Save handlers may legitimately append entries; only the pre-cut leaf proves idleness.
-    if ((await fence(pi, true)) && admit() && session.isIdle) {
+    if ((await fence(pi, true)) && quiet() && session.isIdle) {
       return await session.acquireWorkingSession({ boundary: "settled", signal });
     }
   } catch (error) {
@@ -198,13 +201,13 @@ export class Parking {
     return performance.now() - this.since >= PARK_AFTER_MS;
   }
   /**
-   * Fence broker input, let `admit` take commands that raced the marker, then hold a settled
-   * sleep-ready cut of the same idle leaf. Any failure unfences and keeps this actor resident.
+   * Fence broker input, then hold a settled sleep-ready cut of the same quiet idle leaf. Any
+   * failure or raced command releases, unfences and keeps this actor resident.
    */
   private async prepare(
     runtime: Runtime,
     pi: ExtensionAPI,
-    { admit, errors, signal }: Resident,
+    { quiet, errors, signal }: Resident,
   ): Promise<WorkingHold | undefined> {
     const { session } = runtime;
     this.since = performance.now();
@@ -215,12 +218,12 @@ export class Parking {
     const marker = path.join(this.dir, "actor.lock", "parking.json");
     write(marker, { at: Date.now() });
     const hold = await cut(pi, session, {
-      admit: () => admit() && session.sessionManager.getLeafId() === this.leaf,
+      quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
       errors,
       signal,
     });
     // Revalidate after the awaited fence and save, immediately before the irreversible commit.
-    if (hold?.sleepReady === true && admit()) {
+    if (hold?.sleepReady === true && quiet()) {
       return hold;
     }
     await hold?.release();

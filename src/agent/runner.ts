@@ -359,10 +359,14 @@ class Actor {
         signal: owner.signal,
         pi: this.context?.pi,
         busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
-        // Commands and viewers that raced the fence or save keep this actor resident.
-        admit: () => {
-          this.pending().forEach((command) => this.accept(command));
-          return this.active === undefined && !this.stopping && this.observation?.watched !== true;
+        // Raced commands and viewers keep this actor resident; the loop admits after release.
+        quiet: () => {
+          const queued = this.pending().some((command) => this.commandLaunch(command));
+          if (queued) {
+            this.wake.raise();
+          }
+          const idle = this.active === undefined && !this.stopping;
+          return !queued && idle && this.observation?.watched !== true;
         },
         errors: this.errors,
       });
@@ -403,6 +407,16 @@ class Actor {
       agentDir: this.initial.agentDir,
       sessionManager,
     });
+    try {
+      await this.ready(runtime, parked);
+    } catch (error) {
+      // A runtime that never became ready is still disposed, so the failed actor exits.
+      await runtime.dispose();
+      throw error;
+    }
+    return runtime;
+  }
+  private async ready(runtime: Runtime, parked: Parking): Promise<void> {
     this.session = runtime.session;
     await this.session.bindExtensions({
       mode: "print",
@@ -434,7 +448,6 @@ class Actor {
       at: Date.now(),
     });
     parked.adopt();
-    return runtime;
   }
   async serve(): Promise<void> {
     const sdk = await loadSDK(this.initial.sdk);

@@ -82,10 +82,10 @@ export default async function fixture(pi) {
     let saves = 0;
     pi.on("working_session_save", async (event) => {
       saves += 1;
-      if (process.env.SINGLE_AGENT_PARK_CLOCK === "park-orphan") {
-        // Persistence stays blocked until the native acquisition itself is cancelled.
+      if (saves === 1 && /^park-(orphan|command)$/.test(process.env.SINGLE_AGENT_PARK_CLOCK)) {
+        // The first save blocks until the test releases it or the acquisition is cancelled.
         fs.writeFileSync(path.join(root, "save-held"), "");
-        while (!event.signal.aborted) {
+        while (!event.signal.aborted && !fs.existsSync(path.join(root, "release-save"))) {
           // oxlint-disable-next-line no-await-in-loop
           await delay(20);
         }
