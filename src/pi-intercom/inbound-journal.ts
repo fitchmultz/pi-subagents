@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { IntercomLifecycle } from "./lifecycle.ts";
+import { createHash } from "node:crypto";
+import { isContextRequest, type IntercomLifecycle } from "./lifecycle.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import {
   INBOUND_CHECKPOINT_TYPE,
@@ -7,7 +8,13 @@ import {
   type InboundMessageEntry,
   type PendingInboundMessage,
 } from "./runtime-types.ts";
-import { isInboundCheckpoint } from "./inbound-record.ts";
+import { isInboundCheckpoint, publicationMetadata, requestedDelivery } from "./inbound-record.ts";
+import {
+  isReceiptQuery,
+  type NativeReceipt,
+  type ReceiptQuery,
+  type ReceiptResult,
+} from "./types.ts";
 import { inboundIdFromCustomMessage } from "./message-format.ts";
 import { isRecord } from "./validation.ts";
 
@@ -29,6 +36,85 @@ export class InboundJournal {
     this.pi = pi;
     this.lifecycle = lifecycle;
     this.replies = replies;
+    pi.events.on("pi-intercom:provenance-query", (request) => {
+      if (!isContextRequest(request)) {
+        return;
+      }
+      request.respond(
+        request.version === 1 && isReceiptQuery(request)
+          ? this.receipt(request)
+          : { error: "publication_unavailable" },
+      );
+    });
+  }
+  receipt(query: ReceiptQuery): ReceiptResult {
+    const ctx = this.lifecycle.live();
+    if (!ctx || ctx.sessionManager.getSessionId() !== query.rootSessionId) {
+      return { error: "publication_unavailable" };
+    }
+    let receipt: NativeReceipt | undefined;
+    for (const item of ctx.sessionManager.getEntries()) {
+      receipt = this.receiptEntry(receipt, query, item);
+    }
+    return receipt ? { receipt } : { error: "receipt_not_found" };
+  }
+  private receiptEntry(
+    receipt: NativeReceipt | undefined,
+    query: ReceiptQuery,
+    item: SessionEntry,
+  ): NativeReceipt | undefined {
+    if (
+      item.type === "custom" &&
+      item.customType === INBOUND_CHECKPOINT_TYPE &&
+      isInboundCheckpoint(item.data) &&
+      item.data.sessionId === query.rootSessionId
+    ) {
+      return this.receiptCheckpoint(receipt, query, item.id, item.data);
+    }
+    return receipt && inboundIdFromCustomMessage(item) === query.messageId
+      ? { ...receipt, placementEntryId: item.id }
+      : receipt;
+  }
+  private receiptCheckpoint(
+    receipt: NativeReceipt | undefined,
+    query: ReceiptQuery,
+    entryId: string,
+    data: InboundCheckpoint,
+  ): NativeReceipt | undefined {
+    if ("entry" in data) {
+      if (receipt || data.entry.message.id !== query.messageId) {
+        return receipt;
+      }
+      const { from, message, stage, receivedAt } = data.entry;
+      return {
+        version: 1,
+        rootSessionId: query.rootSessionId,
+        messageId: query.messageId,
+        sender: {
+          peerId: from.id,
+          rootSessionId: from.rootSessionId,
+          incarnation: from.incarnation,
+        },
+        textSha256: createHash("sha256").update(message.content.text, "utf8").digest("hex"),
+        delivery: requestedDelivery(message),
+        ...publicationMetadata(message),
+        checkpointEntryId: entryId,
+        receivedAt,
+        queued: stage === "queued",
+        nativeHandoff: stage === "native",
+        placementEntryId: null,
+        discarded: false,
+      };
+    }
+    if (!receipt || data.messageId !== query.messageId) {
+      return receipt;
+    }
+    return {
+      ...receipt,
+      queued: receipt.queued || data.stage === "queued",
+      nativeHandoff: receipt.nativeHandoff || data.stage === "native",
+      discarded: receipt.discarded || data.stage === "discarded",
+    };
   }
   peerLeft(id: string): void {
     for (const pending of this.replies.listPending()) {

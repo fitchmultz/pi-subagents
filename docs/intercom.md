@@ -68,8 +68,8 @@ are not guarded command targets. Missing capability, stale context, changed
 consent or an ambiguous root fails closed for new admission, never selecting a
 similarly named main. A broker acceptance still does not prove
 recipient admission. Lost responses remain uncertain; no automatic replay is added.
-The supported external client and receipt lookup are separate work, not exports
-introduced here.
+The supported external client is separate work, not a public export introduced
+by these private native protocols.
 
 Withdrawing the guard stops new admission; it does not cancel already-admitted
 input. The original native session remains the recovery owner after a checkpoint,
@@ -99,8 +99,10 @@ sending. Old ordinary clients and recipients continue using ordinary messages;
 they are not advertised as conditional targets.
 
 Guarded nonblocking messages may include
-`replyHint:{tool,commandId}`. Tool names are validated identifiers and command IDs
-are immutable UUIDs supplied by the sender. The native message renders a generic
+`replyHint:{tool,commandId,commandFingerprint?}`. Tool names are validated identifiers and command IDs
+are immutable UUIDs supplied by the sender. An optional lowercase SHA-256
+`commandFingerprint` is opaque to Intercom; its caller owns the fingerprint
+contract. The native message renders a generic
 publication hint separately from an ordinary ask. No product-specific tool is
 hard-coded, no pending ask is created, and a hint does not prove a reply exists.
 
@@ -164,6 +166,56 @@ The broker assigns request tokens and verifies the answering peer and page
 identity. Reads settle on response, disconnect, or timeout. Old peers/brokers
 without the capability report unsupported reads instead of receiving unknown
 message frames. Broker correlation does not grant access to another group.
+
+## Native-owned receipts and publication provenance
+
+Receipt reads are non-waking and distinct from `last`. The private client
+negotiates `receiptReads:1` with the broker, which also checks the recipient's
+capability before forwarding `{rootSessionId,messageId}`. Old brokers or owners
+are unavailable, not a reason to send an unknown frame or parse their journals.
+Receipt and last reads share the broker's private token, answering-peer,
+timeout and disconnect owner. A receipt response must match the exact requested
+native root and message ID. No model-facing receipt action or public package
+client is added here.
+
+A companion in the original main emits `pi-intercom:provenance-query` on
+`pi.events` with `{version:1,rootSessionId,messageId,respond(result)}`. The loaded
+Intercom owner reads its own readonly native SessionManager and responds
+synchronously with `{receipt}` or `{error}`. Unknown versions, an inactive owner
+or a different root return `publication_unavailable`. An absent checkpoint
+returns `receipt_not_found`, which proves neither no effect nor task success.
+Missing handlers are unsupported; there is no packaged parser fallback.
+
+The version-1 receipt contains the exact root and message ID, original sender
+peer/root/incarnation where recorded, requested delivery, received timestamp,
+checkpoint entry ID, selected guard and publication-hint fields, and
+`textSha256`. That hash is lowercase SHA-256 of the exact raw sender text encoded
+as UTF-8, before banners, hints, or newline/Unicode normalization. It is computed
+independently of the caller's opaque `commandFingerprint`. No input text,
+attachments, thoughts, cwd, model settings or native journal path is returned.
+
+Facts remain separate:
+
+- `checkpointEntryId` observes the original owner's appended delivery record.
+  It is not a per-entry fsync or power-loss durability receipt.
+- `queued` records an observed extension staging checkpoint.
+- `nativeHandoff` records the native-handoff checkpoint, written before calling
+  Pi's send API. It does not prove that call succeeded or the provider accepted
+  input.
+- `placementEntryId` identifies the actual native custom-message entry, or null
+  when no placement was observed. Placement is not semantic model consumption.
+- `discarded` records an explicit discard checkpoint when one exists.
+
+These are historical positive observations, not a claim that an input is still
+queued. Provider-input admission and model consumption remain unknown. Finals,
+settlement and ordinary replies are not fabricated command publications.
+
+Receipt reads inspect the exact original session's journal, including its other
+branches. They retain the immutable original sender after ordinary departure,
+reload, compaction and cold reopen. They never depend on a live pending ask.
+Copied history in a fork/new root cannot attest the original root's checkpoint.
+This is separate from `last`, which remains active-branch-only and keeps pinned
+entry paging semantics.
 
 ## Persistence and lifecycle
 

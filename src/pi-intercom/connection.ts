@@ -4,7 +4,8 @@ import type { IntercomTransport } from "./transport.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
-import type { LastMessageQuery, Message, SessionInfo } from "./types.ts";
+import type { Message, SessionInfo, ReceiptQuery, ReceiptResult } from "./types.ts";
+import type { NativeReadQuery } from "./broker/last.ts";
 import { readLastMessage } from "./last-message.ts";
 import { asError } from "./validation.ts";
 import { RecoveryError } from "./tool-results.ts";
@@ -19,6 +20,7 @@ type Lifecycle = Pick<
 interface ConnectionHooks {
   readonly restoring: () => Promise<void> | undefined;
   readonly pendingAsks: () => number;
+  readonly receipt: (query: ReceiptQuery) => ReceiptResult;
   readonly incoming: (ctx: ExtensionContext, from: SessionInfo, message: Message) => Promise<void>;
   readonly peerLeft: (id: string) => void;
   readonly disconnected: (error: Readonly<Error>) => void;
@@ -125,7 +127,7 @@ export class IntercomConnection {
     this.client = next;
     next.on(
       "last_request",
-      (request: { readonly requestId: string; readonly query: LastMessageQuery }) => {
+      (request: { readonly requestId: string; readonly query: NativeReadQuery }) => {
         const ctx = this.lifecycle.live();
         const id = next.sessionId;
         if (this.client !== next || !ctx || id === null) {
@@ -133,6 +135,10 @@ export class IntercomConnection {
           return;
         }
         try {
+          if ("messageId" in request.query) {
+            next.respondLast(request.requestId, this.hooks.receipt(request.query));
+            return;
+          }
           next.respondLast(
             request.requestId,
             readLastMessage(

@@ -199,6 +199,24 @@ function executeIntercom(
   );
 }
 
+function provenance(
+  receiver: {
+    readonly contextRequest: (
+      channel: string,
+      request: Readonly<Record<string, unknown>>,
+    ) => Record<string, unknown>;
+    readonly context: () => ExtensionContext;
+  },
+  messageId: string,
+  rootSessionId = receiver.context().sessionManager.getSessionId(),
+) {
+  return receiver.contextRequest("pi-intercom:provenance-query", {
+    version: 1,
+    rootSessionId,
+    messageId,
+  });
+}
+
 function observedSession(
   sessions: readonly ReadonlyInput<SessionInfo>[],
   match: (session: ReadonlyInput<SessionInfo>) => boolean,
@@ -222,6 +240,7 @@ async function receiveResume(child: ChildProcess) {
       status: text(frame.status),
       visibleIds: strings(frame.visibleIds),
       checkpointOwners: strings(frame.checkpointOwners),
+      provenance: record(frame.provenance),
       errors: array(frame.errors),
     },
   ];
@@ -487,7 +506,9 @@ test("native guarded admission rejects withdrawn input without cancelling admitt
   const socketPath = prepareBrokerSocketPath();
   const sockets: net.Socket[] = [];
   const held: Array<{ socket: net.Socket; frame: unknown }> = [];
+  const heldReads: Array<{ socket: net.Socket; frame: unknown }> = [];
   let hold = false;
+  let holdReads = false;
   const proxy = net.createServer((socket) => {
     const upstream = net.connect(actualSocket);
     sockets.push(socket, upstream);
@@ -496,7 +517,9 @@ test("native guarded admission rejects withdrawn input without cancelling admitt
       "data",
       createMessageReader(
         (frame) => {
-          if (hold && at(frame, "type") === "message") {
+          if (holdReads && at(frame, "type") === "last_request") {
+            heldReads.push({ socket, frame });
+          } else if (hold && at(frame, "type") === "message") {
             held.push({ socket, frame });
           } else {
             writeMessage(socket, frame);
@@ -593,6 +616,8 @@ test("native guarded admission rejects withdrawn input without cancelling admitt
     writeMessage(pending.socket, pending.frame);
   }
   const commandId = "12345678-1234-1234-1234-123456789abc";
+  const commandText = "  Original sender 日本語 😀 e\u0301 é\n\tKeep spacing.  ";
+  const commandFingerprint = "9".repeat(64);
   await waitFor(
     async () =>
       (await receiver.sender.listSessions()).some(
@@ -602,11 +627,11 @@ test("native guarded admission rejects withdrawn input without cancelling admitt
   );
   await receiver.sender.send(guard.peerId, {
     messageId: "fresh-guard",
-    text: "accepted once",
+    text: commandText,
     expectsReply: false,
     delivery: "passive",
     guard: { ...guard, applicationGuard: "consent-2" },
-    replyHint: { tool: "publish_reply", commandId },
+    replyHint: { tool: "publish_reply", commandId, commandFingerprint },
   });
   await waitFor(
     () => receiver.visible("fresh-guard").length === 1,
@@ -674,6 +699,51 @@ test("native guarded admission rejects withdrawn input without cancelling admitt
   );
   assert.equal(receiver.visible("new-after-withdrawal").length, 0);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
+  assert.deepEqual(provenance(receiver, "in-flight-old-consent"), { error: "receipt_not_found" });
+  const received = record(provenance(receiver, "fresh-guard").receipt);
+  assert.equal(received.version, 1);
+  assert.equal(received.rootSessionId, guard.rootSessionId);
+  assert.equal(received.messageId, "fresh-guard");
+  assert.equal(record(received.sender).peerId, receiver.sender.sessionId);
+  assert.equal(
+    received.textSha256,
+    "d3ab0909aef5d0126534b0b8aa180f8de20568930bdd76d5d46aa77b570d93c8",
+  );
+  assert.deepEqual(received.guard, { ...guard, applicationGuard: "consent-2" });
+  assert.deepEqual(received.replyHint, { tool: "publish_reply", commandId, commandFingerprint });
+  assert.equal(received.nativeHandoff, true);
+  assert.equal(received.placementEntryId, receiver.visible("fresh-guard")[0].id);
+  assert.equal(received.discarded, false);
+  assert.equal(received.text, undefined);
+  assert.equal(received.bodyText, undefined);
+  holdReads = true;
+  const relayed = receiver.sender.receipt(guard.peerId, {
+    rootSessionId: guard.rootSessionId,
+    messageId: "fresh-guard",
+  });
+  await waitFor(() => heldReads.length === 1, "broker receipt query token");
+  const token = text(at(heldReads[0].frame, "requestId"));
+  fixtureClient.respondLast(token, { error: "forged receipt from a different peer" });
+  await fixtureClient.listSessions(); // Same-socket response proves the forgery was processed.
+  holdReads = false;
+  writeMessage(heldReads[0].socket, heldReads[0].frame);
+  const relayedReceipt = record(record(await relayed).receipt);
+  assert.equal(relayedReceipt.messageId, "fresh-guard");
+  assert.equal(
+    relayedReceipt.textSha256,
+    "d3ab0909aef5d0126534b0b8aa180f8de20568930bdd76d5d46aa77b570d93c8",
+  );
+  assert.deepEqual(
+    receiver.contextRequest("pi-intercom:provenance-query", {
+      version: 99,
+      rootSessionId: guard.rootSessionId,
+      messageId: "fresh-guard",
+    }),
+    { error: "publication_unavailable" },
+  );
+  assert.deepEqual(provenance(receiver, "fresh-guard", "another-root"), {
+    error: "publication_unavailable",
+  });
   assert.deepEqual(receiver.contextRequest("pi-intercom:context-query", { version: 99 }), {
     error: "unsupported_version",
   });
@@ -856,6 +926,14 @@ test("native steady passive receipts do not rescan old history and still survive
 
   assertDefined(branchPoint);
   await receiver.session.navigateTree(branchPoint, { summarize: false });
+  const priorBranchReceipt = record(provenance(receiver, "new-0").receipt);
+  assert.equal(priorBranchReceipt.rootSessionId, manager.getSessionId());
+  assert.equal(priorBranchReceipt.placementEntryId, receiver.visible("new-0")[0].id);
+  assert.equal(
+    receiver.faux.state.callCount,
+    0,
+    "original-root receipt reads survive branch navigation",
+  );
   await receiver.send("after-branch", { text: "passive on another branch", delivery: "passive" });
   await waitFor(() => receiver.visible("after-branch").length === 1, "branched passive receipt");
   await receiver.session.reload();
@@ -885,6 +963,31 @@ test("native idle send is visible once and passive delivery does not start a tur
   assert.equal(receiver.visible("only").length, 1);
   assert.equal(receiver.faux.state.callCount, 1);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
+  const rootSessionId = receiver.session.sessionManager.getSessionId();
+  const originalSender = receiver.sender.sessionId;
+  await receiver.sender.disconnect();
+  await waitFor(
+    async () => !(await fixtureClient.listSessions()).some((peer) => peer.id === originalSender),
+    "original sender departure",
+  );
+  const lookup = async () => {
+    const peer = await registeredSession(fixtureClient, rootSessionId);
+    const result = await fixtureClient.receipt(peer.id, { rootSessionId, messageId: "passive" });
+    const receipt = record(record(result).receipt);
+    assert.equal(receipt.rootSessionId, rootSessionId);
+    assert.equal(receipt.messageId, "passive");
+    assert.equal(record(receipt.sender).peerId, originalSender);
+    assert.equal(receipt.placementEntryId, receiver.visible("passive")[0].id);
+    assert.equal(receipt.nativeHandoff, true);
+    assert.equal(receipt.queued, false);
+    assert.equal(receipt.discarded, false);
+    assert.equal(receipt.text, undefined);
+  };
+  await lookup();
+  await receiver.session.reload();
+  await lookup();
+  assert.deepEqual(provenance(receiver, "missing-command"), { error: "receipt_not_found" });
+  assert.equal(receiver.faux.state.callCount, 1, "receipt reads and reload create no model turns");
   assert.deepEqual(receiver.errors, []);
   t.diagnostic("2 one-time sends; 2 visible messages; 1 provider call; no passive wakeup.");
 });
@@ -942,9 +1045,21 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
     async () => (await receiver.status()).includes("Pending inbound messages: 3"),
     "all inbound messages",
   );
+  const queued = record(provenance(receiver, "passive").receipt);
+  assert.equal(queued.queued, true);
+  assert.equal(queued.nativeHandoff, false);
+  assert.equal(queued.placementEntryId, null);
+  const handoff = record(provenance(receiver, "steer").receipt);
+  assert.equal(handoff.nativeHandoff, true);
+  assert.equal(handoff.placementEntryId, null, "native handoff is not a placement receipt");
+  assert.equal(receiver.faux.state.callCount, 1);
   toolGate.resolve();
   await running;
   await waitFor(() => receiver.visible("passive").length === 1, "idle passive flush");
+  const placed = record(provenance(receiver, "passive").receipt);
+  assert.equal(placed.queued, true, "the earlier queue observation is retained");
+  assert.equal(placed.placementEntryId, receiver.visible("passive")[0].id);
+  assert.equal(placed.nativeHandoff, true);
   assert.match(seen[0], /message:steer/);
   assert.doesNotMatch(seen[0], /duplicate steer must not appear/);
   assert.doesNotMatch(seen[0], /message:queued|message:passive/);
@@ -2338,6 +2453,8 @@ for (const stopReason of ["stop", "length"] as const) {
       },
     ]);
     await target.session.prompt("Publish an older response");
+    const olderEntryId = target.session.sessionManager.getLeafId();
+    assertDefined(olderEntryId);
     await target.session.prompt("Publish the latest response");
     const completedEntryId = target.session.sessionManager.getLeafId();
     const held = target.session.prompt("Hold another provider request");
@@ -2362,14 +2479,21 @@ for (const stopReason of ["stop", "length"] as const) {
       assert.equal(page.entryId, entryId);
       assert.equal(page.offset, offset);
       assert.equal(page.totalLength, body.length);
-      assert.equal(text(record(page.session).status), "thinking");
+      const expectedStatus = pages.length === 0 ? "thinking" : "idle";
+      assert.equal(text(record(page.session).status), expectedStatus);
       assert.equal(text(record(page.session).name), targetName);
       pages.push(text(page.text));
       assert.equal(text(result.content[0].text), page.text);
       assert.match(text(result.content[1].text), /Session: last-target/);
-      assert.match(text(result.content[1].text), /Status: thinking/);
+      assert.ok(text(result.content[1].text).includes(`Status: ${expectedStatus}`));
       if (page.nextOffset !== undefined) {
         assert.match(text(result.content[1].text), /Next page: intercom\(/);
+      }
+      if (pages.length === 1) {
+        release.resolve();
+        // The newer native final must publish before the next pinned read.
+        // oxlint-disable-next-line no-await-in-loop
+        await held;
       }
       if (page.nextOffset === undefined) {
         break;
@@ -2379,7 +2503,7 @@ for (const stopReason of ["stop", "length"] as const) {
     assert.equal(pages.join(""), body);
     assert.ok(pages.length > 1);
     assert.equal(target.faux.state.callCount, 3);
-    assert.equal(target.session.isStreaming, true);
+    assert.equal(target.session.isStreaming, false);
     assert.equal(reader.faux.state.callCount, 0);
     assert.equal(
       target.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message")
@@ -2388,8 +2512,12 @@ for (const stopReason of ["stop", "length"] as const) {
     );
     const invalid = await reader.sender.last(targetName, { entryId: "foreign-entry" });
     assert.ok("error" in invalid);
-    release.resolve();
-    await held;
+    assertDefined(entryId);
+    await target.session.navigateTree(olderEntryId, { summarize: false });
+    const offBranch = await reader.sender.last(targetName, { entryId, offset: 8192 });
+    assert.ok("error" in offBranch);
+    assert.match(offBranch.error, /active session branch/);
+    assert.equal(target.faux.state.callCount, 3);
     assert.deepEqual([...reader.errors, ...target.errors], []);
   });
 }
@@ -2487,6 +2615,10 @@ test("fresh native processes resume pending messages once without fork/new-sessi
   assert.equal(snapshot.nativeQueued, true);
   assert.match(snapshot.status, /Pending inbound messages: 4/);
   assert.deepEqual(snapshot.visibleIds, []);
+  const beforePlacement = record(record(record(snapshot.provenance.passive).current).receipt);
+  assert.equal(beforePlacement.queued, true);
+  assert.equal(beforePlacement.placementEntryId, null);
+  assert.equal(record(beforePlacement.sender).peerId, sender.sessionId);
   const saved = parseSessionEntries(readFileSync(ready.sessionFile, "utf8"));
   seed.child.kill("SIGKILL");
   await seed.exited;
@@ -2506,6 +2638,10 @@ test("fresh native processes resume pending messages once without fork/new-sessi
     assert.match(result.status, /Pending inbound messages: 0/);
     if (mode === "fork") {
       forkCheckpointOwners = [...result.checkpointOwners];
+      assert.deepEqual(record(result.provenance.passive).current, { error: "receipt_not_found" });
+      assert.deepEqual(record(result.provenance.passive).original, {
+        error: "publication_unavailable",
+      });
     }
     assert.deepEqual(result.errors, []);
   }
@@ -2524,6 +2660,12 @@ test("fresh native processes resume pending messages once without fork/new-sessi
     // oxlint-disable-next-line no-await-in-loop
     await resumed.exited;
     assert.equal(result.sessionId, ready.sessionId);
+    const recoveredReceipt = record(record(record(result.provenance.passive).current).receipt);
+    assert.equal(recoveredReceipt.rootSessionId, ready.sessionId);
+    assert.equal(record(recoveredReceipt.sender).peerId, sender.sessionId);
+    assert.equal(recoveredReceipt.checkpointEntryId, beforePlacement.checkpointEntryId);
+    assert.equal(recoveredReceipt.textSha256, beforePlacement.textSha256);
+    assert.equal(typeof recoveredReceipt.placementEntryId, "string");
     assert.equal(
       result.modelCalls,
       attempt === 1 ? 1 : 0,

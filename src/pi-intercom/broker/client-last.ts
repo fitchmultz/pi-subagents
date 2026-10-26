@@ -1,15 +1,25 @@
 import type net from "node:net";
 import { randomUUID } from "node:crypto";
 import { errorMessage, type UnknownRecord } from "../../shared/unknown.ts";
-import type { LastMessageResult } from "../types.ts";
-import { isLastMessageQuery, isLastMessageResult } from "./last.ts";
+import {
+  isNativeReadQuery,
+  isNativeReadResult,
+  isLastMessageResult,
+  isReceiptResult,
+  type NativeReadResult,
+} from "./last.ts";
+import type { LastMessageQuery, LastMessageResult, ReceiptQuery, ReceiptResult } from "../types.ts";
 import { writeMessage } from "./framing.ts";
 
 export class LastMessageRequests {
+  private readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    this.timeoutMs = timeoutMs;
+  }
   private readonly pending = new Map<
     string,
     {
-      readonly resolve: (result: LastMessageResult) => void;
+      readonly resolve: (result: NativeReadResult) => void;
       readonly reject: (error: Readonly<Error>) => void;
       readonly timer: NodeJS.Timeout;
     }
@@ -24,7 +34,7 @@ export class LastMessageRequests {
   }
 
   receive(message: UnknownRecord): void {
-    if (typeof message.requestId !== "string" || !isLastMessageResult(message.result)) {
+    if (typeof message.requestId !== "string" || !isNativeReadResult(message.result)) {
       throw new Error("Invalid last-message response");
     }
     const pending = this.pending.get(message.requestId);
@@ -36,13 +46,16 @@ export class LastMessageRequests {
     pending.resolve(message.result);
   }
 
-  request(
-    socket: net.Socket,
-    to: string,
-    query: unknown,
-    timeoutMs: number,
-  ): Promise<LastMessageResult> {
-    if (!isLastMessageQuery(query)) {
+  async last(socket: net.Socket, to: string, query: LastMessageQuery): Promise<LastMessageResult> {
+    const result = await this.request(socket, to, query);
+    return isLastMessageResult(result) ? result : { error: "Invalid last-message response" };
+  }
+  async receipt(socket: net.Socket, to: string, query: ReceiptQuery): Promise<ReceiptResult> {
+    const result = await this.request(socket, to, query);
+    return isReceiptResult(result) ? result : { error: "Invalid receipt response" };
+  }
+  private request(socket: net.Socket, to: string, query: unknown): Promise<NativeReadResult> {
+    if (!isNativeReadQuery(query)) {
       return Promise.reject(new Error("Invalid last-message query"));
     }
     return new Promise((resolve, reject) => {
@@ -50,7 +63,7 @@ export class LastMessageRequests {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error("Last-message read timeout"));
-      }, timeoutMs);
+      }, this.timeoutMs);
       timer.unref();
       this.pending.set(requestId, { resolve, reject, timer });
       try {

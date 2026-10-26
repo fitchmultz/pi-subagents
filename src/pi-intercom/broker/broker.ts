@@ -41,6 +41,7 @@ interface ConnectedSession {
   topics: TopicSnapshot;
   readonly topicFrames: boolean;
   readonly lastMessages: boolean;
+  readonly receiptReads: boolean;
 }
 
 interface PendingReplaceDelivery {
@@ -163,6 +164,7 @@ class IntercomBroker {
       topics: new TopicSnapshot(info),
       topicFrames,
       lastMessages: msg.lastMessages === true,
+      receiptReads: msg.receiptReads === 1,
     });
     setId(id);
     if (this.shutdownTimer) {
@@ -173,6 +175,7 @@ class IntercomBroker {
       type: "registered",
       sessionId: id,
       lastMessages: true,
+      receiptReads: 1,
       ...(msg.guardedDelivery === 1 ? { guardedDelivery: 1 } : {}),
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
     });

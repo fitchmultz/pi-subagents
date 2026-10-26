@@ -5,6 +5,22 @@ import type {
   PendingInboundMessage,
 } from "./runtime-types.ts";
 import { finiteNumber, isRecord } from "./validation.ts";
+
+export function publicationMetadata(message: Message): Pick<Message, "guard" | "replyHint"> {
+  return {
+    guard: message.guard && {
+      rootSessionId: message.guard.rootSessionId,
+      peerId: message.guard.peerId,
+      incarnation: message.guard.incarnation,
+      applicationGuard: message.guard.applicationGuard,
+    },
+    replyHint: message.replyHint && {
+      tool: message.replyHint.tool,
+      commandId: message.replyHint.commandId,
+      commandFingerprint: message.replyHint.commandFingerprint,
+    },
+  };
+}
 export function requestedDelivery(message: Message): MessageDelivery {
   if (message.passive === true || message.delivery === "passive") {
     return "passive";
