@@ -3323,8 +3323,16 @@ test("native lifecycle presence follows parallel tools, selected model and final
   const receiver = await makeSession(t, "lifecycle-presence", {
     configure(pi) {
       pi.on("agent_end", async () => {
-        const peers = await receiver.sender.listSessions();
-        lowLevelEnds.push(observedSession(peers, (peer) => peer.name === "lifecycle-presence"));
+        // Presence and observation use different sockets. Observe the last tool's
+        // retirement in the broker while this handler still blocks final settlement.
+        await waitFor(async () => {
+          const peer = await presence();
+          if (peer.status === "tool:second") {
+            return false;
+          }
+          lowLevelEnds.push(peer);
+          return true;
+        }, "last tool completion presence before settlement");
       });
       for (const [name, release] of [
         ["first", first],
