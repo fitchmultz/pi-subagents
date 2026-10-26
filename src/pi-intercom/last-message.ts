@@ -15,12 +15,7 @@ function completedResponse(
   manager: NativeHistory,
   entryId?: string,
 ): { readonly id: string; readonly text: string } | undefined {
-  let id = manager.getLeafId();
-  while (id !== null) {
-    const entry = manager.getEntry(id);
-    if (!entry) {
-      throw new Error("Native session history is unavailable.");
-    }
+  for (const entry of manager.getBranch().reverse()) {
     if (
       entry.type === "message" &&
       entry.message.role === "assistant" &&
@@ -35,7 +30,6 @@ function completedResponse(
           .join("\n"),
       };
     }
-    id = entry.parentId;
   }
   return;
 }

@@ -11,7 +11,7 @@ import {
 } from "./types.ts";
 import { isRecord, safeLabel } from "./validation.ts";
 
-function isContextRequest(value: unknown): value is Readonly<Record<string, unknown>> & {
+export function isContextRequest(value: unknown): value is Readonly<Record<string, unknown>> & {
   readonly respond: (response: unknown) => void;
 } {
   return isRecord(value) && typeof value.respond === "function";

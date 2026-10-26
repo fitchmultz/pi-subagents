@@ -23,6 +23,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
   const connection = new IntercomConnection(lifecycle, config, {
     restoring: () => delivery.restoring,
     pendingAsks: () => replies.listPending().length,
+    receipt: (query) => journal.receipt(query),
     incoming: (ctx, from, message) => inbound.receive(ctx, from, message),
     peerLeft: (id) => {
       wait.peerDisconnected(id);

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Read non-waking native receipts by original message ID and expose version-1 process-local provenance from the loaded journal owner. Preserve exact root and departed-sender binding, independently hash the raw sender text, and return selected publication metadata without input text or a public parser. Keep append, staging, handoff and actual placement observations separate from fsync and provider/model consumption. Ordinary active-branch `last` paging is unchanged.
 - Negotiate conditional Intercom commands bound to one exact native main, peer, context incarnation and companion-owned application revision. Check the binding at broker routing and native admission, expose the original lifecycle snapshot through a versioned process-local event handshake, and render generic correlated-publication hints without creating ordinary asks. Startup, reload and session replacement invalidate old handles; transport reconnect preserves the context. Ordinary local names, asks and main/child topology are unchanged. This does not install an external client, export native work or strengthen broker acceptance into a recipient receipt.
 
 ### Breaking

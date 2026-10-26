@@ -31,6 +31,7 @@ const settingsManager = SettingsManager.inMemory({
   retry: { enabled: false },
 });
 let context;
+let intercomEvents;
 const errors = [];
 const loader = new DefaultResourceLoader({
   cwd: directory,
@@ -46,11 +47,13 @@ const loader = new DefaultResourceLoader({
     process.env.PI_INTERCOM_TEST_EXTENSION ?? path.join(repo, "src/pi-intercom/index.ts"),
   ],
   extensionFactories: [
-    (pi) =>
+    (pi) => {
+      intercomEvents = pi.events;
       pi.on("session_start", (_event, ctx) => {
         context = ctx;
         pi.setSessionName("restart-parent");
-      }),
+      });
+    },
   ],
 });
 await loader.reload();
@@ -93,6 +96,35 @@ const summary = async () => {
     visibleIds: entries
       .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
       .map((entry) => entry.details.message.id),
+    provenance: Object.fromEntries(
+      entries
+        .filter(
+          (entry) =>
+            entry.type === "custom" && entry.customType === "intercom_delivery" && entry.data.entry,
+        )
+        .map((entry) => {
+          const messageId = entry.data.entry.message.id;
+          const query = (rootSessionId) => {
+            let response;
+            intercomEvents.emit("pi-intercom:provenance-query", {
+              version: 1,
+              rootSessionId,
+              messageId,
+              respond: (value) => {
+                response = value;
+              },
+            });
+            return response;
+          };
+          return [
+            messageId,
+            {
+              current: query(sessionManager.getSessionId()),
+              original: query(entry.data.sessionId),
+            },
+          ];
+        }),
+    ),
     checkpointOwners: [
       ...new Set(
         entries

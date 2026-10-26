@@ -97,6 +97,7 @@ export interface DeliveryGuard extends ContextTarget {
 export interface PublicationReplyHint {
   readonly tool: string;
   readonly commandId: string;
+  readonly commandFingerprint?: string;
 }
 export type SendOptions = Omit<Message, "id" | "timestamp" | "content"> &
   Message["content"] & { readonly messageId?: string };
@@ -109,13 +110,16 @@ export function isContextTarget(value: unknown): value is ContextTarget {
 export function isDeliveryGuard(value: unknown): value is DeliveryGuard {
   return isContextTarget(value) && "applicationGuard" in value && safeLabel(value.applicationGuard);
 }
-function isPublicationReplyHint(value: unknown): value is PublicationReplyHint {
+export function isPublicationReplyHint(value: unknown): value is PublicationReplyHint {
   return (
     isRecord(value) &&
     typeof value.tool === "string" &&
     /^[a-zA-Z_][a-zA-Z0-9_]{0,79}$/.test(value.tool) &&
     typeof value.commandId === "string" &&
-    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.commandId)
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.commandId) &&
+    (value.commandFingerprint === undefined ||
+      (typeof value.commandFingerprint === "string" &&
+        /^[a-f0-9]{64}$/.test(value.commandFingerprint)))
   );
 }
 export interface HumanMessageOrigin {
@@ -431,6 +435,31 @@ export type LastMessageResult =
     }
   | { readonly error: string };
 
+export interface ReceiptQuery {
+  readonly rootSessionId: string;
+  readonly messageId: string;
+}
+export interface NativeReceipt extends ReceiptQuery {
+  readonly version: 1;
+  readonly sender: {
+    readonly peerId: string;
+    readonly rootSessionId?: string;
+    readonly incarnation?: string;
+  };
+  readonly textSha256: string;
+  readonly delivery: MessageDelivery;
+  readonly guard?: DeliveryGuard;
+  readonly replyHint?: PublicationReplyHint;
+  readonly checkpointEntryId: string;
+  readonly receivedAt: number;
+  /** Historical observations, not a promise that an input is still queued. */
+  readonly queued: boolean;
+  readonly nativeHandoff: boolean;
+  readonly placementEntryId: string | null;
+  readonly discarded: boolean;
+}
+export type ReceiptResult = { readonly receipt: NativeReceipt } | { readonly error: string };
+
 export type BrokerMessage =
   | {
       readonly type: "registered";
@@ -438,6 +467,7 @@ export type BrokerMessage =
       readonly topicsSupported?: true;
       readonly topicFrames?: true;
       readonly lastMessages?: true;
+      readonly receiptReads?: 1;
       readonly guardedDelivery?: 1;
     }
   | {
@@ -457,12 +487,12 @@ export type BrokerMessage =
       readonly type: "last_request";
       readonly requestId: string;
       readonly from: SessionInfo;
-      readonly query: LastMessageQuery;
+      readonly query: LastMessageQuery | ReceiptQuery;
     }
   | {
       readonly type: "last_response";
       readonly requestId: string;
-      readonly result: LastMessageResult;
+      readonly result: LastMessageResult | ReceiptResult;
     }
   | { readonly type: "session_left"; readonly sessionId: string }
   | { readonly type: "delivered"; readonly messageId: string }
