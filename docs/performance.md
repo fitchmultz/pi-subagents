@@ -140,15 +140,21 @@ build identities, reproducible commands, and retained synthetic RPC transcripts.
 ### Empty-owner idle CPU (#238)
 
 The issue 238 idle ceiling of 30 ms CPU per 10 s still fails against the
-observer-only floor on official Pi 1.4.0 and the maintained fork. Most of the
+observer-only floor on official Pi 1.4.0 and the maintained fork. No runtime
+change or waiver is claimed. In the sampled configurations, most of the
 increment is a one-shot pair of V8 memory-reducer collections about 8 s after
-startup. Pi's bundled loader evaluates any module that imports a host package
-through `vm.runInThisContext`. That puts the first object on V8's C++ heap, and
-V8 then treats the process as idle enough to reduce memory. A two-line package
-that only imports `typebox` adds 38–41 ms in the same campaign. Against that
-package, current main adds 20.7 ms on official Pi and 15.0 ms on the fork. Most
-of that is one-shot intercom broker and owner attachment work in the first
-second. Later 10 s windows stay within about 1 ms of the floor. The
+`session_start`. An isolated package that only imports `typebox` showed a
+128,968-byte C++ heap reading at `session_start`, followed by the same pair of
+collections. That is consistent with Pi's bundled Jiti 2.7.0 loader compiling it
+through `vm.runInThisContext`, which allocates on the C++ heap. Jiti
+still tries native ESM first, so this is not a rule for every extension or host
+import. That two-line package added 38–41 ms in the same campaign. Against it,
+the measured `bb38f682` artifact (build `fc084c36`) added 20.7 ms on official
+Pi and 15.0 ms on the fork. Most of that difference is one-shot work right
+after `session_start`, chiefly the intercom broker and owner attachment. In two
+official-host 40 s floor/`0b6da9b` pairs, the later windows of about 10 s each
+stayed within 1.1 ms of the paired floor. There is no fork long run, and this
+is not an indefinite-idle bound. The
 [issue 238 evidence](evidence/issue-238-idle/README.md) has the samples, host
 hashes, native causal chain and limits.
 
