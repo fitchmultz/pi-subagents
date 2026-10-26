@@ -63,12 +63,18 @@ A guarded send requires an exact peer ID, a caller-recorded original message ID,
 `expectsReply:false`, and
 `guard:{rootSessionId,peerId,incarnation,applicationGuard}`. The broker checks
 the complete binding before routing; the native recipient checks again before
-any checkpoint or placement. Children are not guarded command targets. Missing
-capability, stale context, changed consent or an ambiguous root fails closed,
-never selecting a similarly named main. A broker acceptance still does not prove
+initial admission, before its first checkpoint or immediate placement. Children
+are not guarded command targets. Missing capability, stale context, changed
+consent or an ambiguous root fails closed for new admission, never selecting a
+similarly named main. A broker acceptance still does not prove
 recipient admission. Lost responses remain uncertain; no automatic replay is added.
 The supported external client and receipt lookup are separate work, not exports
 introduced here.
+
+Withdrawing the guard stops new admission; it does not cancel already-admitted
+input. The original native session remains the recovery owner after a checkpoint,
+including across reload or process recovery. A fork or new root cannot adopt its
+pending inputs. Native queueing or placement is not proof of model consumption.
 
 An original-main companion uses the existing process-local `pi.events` bus:
 

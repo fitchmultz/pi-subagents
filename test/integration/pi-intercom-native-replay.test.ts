@@ -477,7 +477,9 @@ async function makeSession(
   };
 }
 
-test("native guarded admission rejects an in-flight withdrawn context before checkpointing", async (t) => {
+test("native guarded admission rejects withdrawn input without cancelling admitted work", async (t) => {
+  const toolGate = gate(t);
+  let toolStarted = false;
   const actualNamespace = text(process.env.PI_INTERCOM_RUNTIME_DIR);
   const actualSocket = getBrokerSocketPath();
   const proxyNamespace = path.join(actualNamespace, "p");
@@ -531,7 +533,22 @@ test("native guarded admission rejects an in-flight withdrawn context before che
   });
   let receiver: Awaited<ReturnType<typeof makeSession>>;
   try {
-    receiver = await makeSession(t, "guarded-recipient", { waitForRegistration: false });
+    receiver = await makeSession(t, "guarded-recipient", {
+      waitForRegistration: false,
+      configure(pi) {
+        pi.registerTool({
+          name: "hold_guard",
+          label: "Hold guard",
+          description: "Fixture gate",
+          parameters: Type.Object({}),
+          async execute() {
+            toolStarted = true;
+            await toolGate.promise;
+            return { content: [{ type: "text", text: "released" }], details: {} };
+          },
+        });
+      },
+    });
     const connected = await executeIntercom(receiver, { action: "list" });
     assert.notEqual(connected.isError, true, JSON.stringify(connected));
     await registeredSession(receiver.sender, receiver.session.sessionManager.getSessionId());
@@ -606,6 +623,57 @@ test("native guarded admission rejects an in-flight withdrawn context before che
     /publish_reply with commandId 12345678-1234-1234-1234-123456789abc/,
   );
   assert.doesNotMatch(await receiver.status(), /pending_asks:1/);
+  assert.equal(receiver.faux.state.callCount, 0);
+  receiver.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("hold_guard", {}), { stopReason: "toolUse" }),
+    fauxAssistantMessage("Current work done"),
+  ]);
+  const running = receiver.session.prompt("Start fixture work");
+  await waitFor(() => toolStarted, "native tool execution before admission");
+  assert.equal(
+    (
+      await receiver.sender.send(guard.peerId, {
+        messageId: "admitted-before-withdrawal",
+        text: "owned before withdrawal",
+        expectsReply: false,
+        delivery: "passive",
+        guard: { ...guard, applicationGuard: "consent-2" },
+      })
+    ).delivered,
+    true,
+  );
+  await waitFor(
+    async () => (await receiver.status()).includes("Pending inbound messages: 1"),
+    "original owner admission checkpoint",
+  );
+  assert.equal(consent(null).applicationGuard, undefined);
+  await waitFor(
+    async () =>
+      (await receiver.sender.listSessions()).some(
+        (info) => info.id === guard.peerId && info.applicationGuard === undefined,
+      ),
+    "withdrawal advertised after admission",
+  );
+  assert.equal(
+    (
+      await receiver.sender.send(guard.peerId, {
+        messageId: "new-after-withdrawal",
+        text: "not newly admitted",
+        expectsReply: false,
+        delivery: "passive",
+        guard: { ...guard, applicationGuard: "consent-2" },
+      })
+    ).accepted,
+    false,
+  );
+  toolGate.resolve();
+  await running;
+  await waitFor(
+    () => receiver.visible("admitted-before-withdrawal").length === 1,
+    "original owner places its admitted input once",
+  );
+  assert.equal(receiver.visible("new-after-withdrawal").length, 0);
+  assert.match(await receiver.status(), /Pending inbound messages: 0/);
   assert.deepEqual(receiver.contextRequest("pi-intercom:context-query", { version: 99 }), {
     error: "unsupported_version",
   });
@@ -644,7 +712,8 @@ test("native guarded admission rejects an in-flight withdrawn context before che
     ).accepted,
     false,
   );
-  assert.equal(receiver.faux.state.callCount, 0);
+  assert.equal(receiver.faux.state.callCount, 2, "only the explicit fixture turn runs");
+  assert.equal(receiver.visible("admitted-before-withdrawal").length, 1);
   assert.deepEqual(receiver.errors, []);
   await receiver.dispose();
 });
