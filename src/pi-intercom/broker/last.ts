@@ -4,6 +4,9 @@ import { isRecord, type UnknownRecord } from "../../shared/unknown.ts";
 import {
   isDeliveryGuard,
   isPublicationReplyHint,
+  isLastMessageQuery,
+  isReceiptQuery,
+  LAST_MESSAGE_PAGE_LIMIT,
   normalizeSessionInfo,
   type LastMessageQuery,
   type LastMessageResult,
@@ -12,36 +15,14 @@ import {
   type ReceiptQuery,
   type ReceiptResult,
 } from "../types.ts";
-import { finiteNumber, optionalLabel, safeLabel } from "../validation.ts";
+import { finiteNumber, nonNegativeInteger, optionalLabel, safeLabel } from "../validation.ts";
 import { validateIntercomMessageSize, writeMessage } from "./framing.ts";
 import { messageSender } from "./snapshots.ts";
 import { findSessions } from "./targets.ts";
 
-export const LAST_MESSAGE_PAGE_LIMIT = 16384;
 export type NativeReadQuery = LastMessageQuery | ReceiptQuery;
 export type NativeReadResult = LastMessageResult | ReceiptResult;
 
-function nonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-function optionalEntryId(value: unknown): boolean {
-  return value === undefined || (typeof value === "string" && value.length > 0);
-}
-export function isLastMessageQuery(value: unknown): value is LastMessageQuery {
-  return (
-    isRecord(value) &&
-    value.messageId === undefined &&
-    optionalEntryId(value.entryId) &&
-    (value.offset === undefined || nonNegativeInteger(value.offset)) &&
-    (value.limit === undefined ||
-      (nonNegativeInteger(value.limit) &&
-        value.limit > 0 &&
-        value.limit <= LAST_MESSAGE_PAGE_LIMIT))
-  );
-}
-export function isReceiptQuery(value: unknown): value is ReceiptQuery {
-  return isRecord(value) && [value.rootSessionId, value.messageId].every(safeLabel);
-}
 export function isNativeReadQuery(value: unknown): value is NativeReadQuery {
   return isReceiptQuery(value) || isLastMessageQuery(value);
 }
@@ -205,15 +186,6 @@ export class LastMessageRelay {
     if (!from) {
       return;
     }
-    const error = unavailable(targets, message.to, this.pending.size, message.query);
-    if (error !== undefined) {
-      writeMessage(from.socket, {
-        type: "last_response",
-        requestId: message.requestId,
-        result: { error },
-      });
-      return;
-    }
     const token = randomUUID();
     const frame = {
       type: "last_request" as const,
@@ -221,12 +193,14 @@ export class LastMessageRelay {
       from: messageSender(from.info),
       query: message.query,
     };
-    const invalid = validateIntercomMessageSize(frame);
-    if (invalid) {
+    const error =
+      unavailable(targets, message.to, this.pending.size, message.query) ??
+      validateIntercomMessageSize(frame)?.message;
+    if (error !== undefined) {
       writeMessage(from.socket, {
         type: "last_response",
         requestId: message.requestId,
-        result: { error: invalid.message },
+        result: { error },
       });
       return;
     }

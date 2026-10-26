@@ -64,6 +64,10 @@ export function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+export function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 export function optionalFiniteNumber(value: unknown): boolean {
   return value === undefined || finiteNumber(value);
 }

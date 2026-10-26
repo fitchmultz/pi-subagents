@@ -9,8 +9,12 @@ import {
   type PendingInboundMessage,
 } from "./runtime-types.ts";
 import { isInboundCheckpoint, publicationMetadata, requestedDelivery } from "./inbound-record.ts";
-import type { NativeReceipt, ReceiptQuery, ReceiptResult } from "./types.ts";
-import { isReceiptQuery } from "./broker/last.ts";
+import {
+  isReceiptQuery,
+  type NativeReceipt,
+  type ReceiptQuery,
+  type ReceiptResult,
+} from "./types.ts";
 import { inboundIdFromCustomMessage } from "./message-format.ts";
 import { isRecord } from "./validation.ts";
 

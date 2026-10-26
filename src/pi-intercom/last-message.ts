@@ -1,16 +1,13 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { LastMessageQuery, LastMessageResult, SessionInfo } from "./types.ts";
+import {
+  isLastMessageQuery,
+  LAST_MESSAGE_PAGE_LIMIT,
+  type LastMessageQuery,
+  type LastMessageResult,
+  type SessionInfo,
+} from "./types.ts";
 
 type NativeHistory = ExtensionContext["sessionManager"];
-function validPage(offset: number, limit: number): boolean {
-  return (
-    Number.isSafeInteger(offset) &&
-    offset >= 0 &&
-    Number.isSafeInteger(limit) &&
-    limit >= 1 &&
-    limit <= 16384
-  );
-}
 function completedResponse(
   manager: NativeHistory,
   entryId?: string,
@@ -40,8 +37,8 @@ export function readLastMessage(
   query: LastMessageQuery,
 ): LastMessageResult {
   const offset = query.offset ?? 0;
-  const limit = query.limit ?? 16384;
-  if (!validPage(offset, limit)) {
+  const limit = query.limit ?? LAST_MESSAGE_PAGE_LIMIT;
+  if (!isLastMessageQuery({ offset, limit })) {
     return {
       error: "Invalid last response page: offset must be non-negative and limit must be 1–16384.",
     };

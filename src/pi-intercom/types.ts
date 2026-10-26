@@ -2,6 +2,7 @@ import {
   finiteNumber,
   isRecord,
   isUnknownArray,
+  nonNegativeInteger,
   optionalBoolean,
   optionalFiniteNumber,
   optionalLabel,
@@ -424,6 +425,23 @@ export interface LastMessageQuery {
   readonly limit?: number;
 }
 
+export const LAST_MESSAGE_PAGE_LIMIT = 16384;
+function optionalEntryId(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0);
+}
+export function isLastMessageQuery(value: unknown): value is LastMessageQuery {
+  return (
+    isRecord(value) &&
+    value.messageId === undefined &&
+    optionalEntryId(value.entryId) &&
+    (value.offset === undefined || nonNegativeInteger(value.offset)) &&
+    (value.limit === undefined ||
+      (nonNegativeInteger(value.limit) &&
+        value.limit > 0 &&
+        value.limit <= LAST_MESSAGE_PAGE_LIMIT))
+  );
+}
+
 export type LastMessageResult =
   | {
       readonly session: SessionInfo;
@@ -438,6 +456,9 @@ export type LastMessageResult =
 export interface ReceiptQuery {
   readonly rootSessionId: string;
   readonly messageId: string;
+}
+export function isReceiptQuery(value: unknown): value is ReceiptQuery {
+  return isRecord(value) && [value.rootSessionId, value.messageId].every(safeLabel);
 }
 export interface NativeReceipt extends ReceiptQuery {
   readonly version: 1;
