@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostRoot } from "./compat-host.mjs";
+import { compilerInvocation } from "./typescript.mjs";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -94,11 +95,42 @@ function installProduction(pack) {
       );
     }
   }
-  return [installed, standalone];
+  return [
+    { packageRoot: installed, consumerDir: installDir },
+    { packageRoot: standalone, consumerDir: standalone },
+  ];
 }
 
-async function verifyRuntime(packageRoot) {
+function verifyDeclarations(consumerDir) {
+  const contract = join(consumerDir, "public-client.test-d.ts");
+  cpSync(new URL("../test/fixtures/intercom-client-contract.test-d.ts", import.meta.url), contract);
+  const compiler = compilerInvocation();
+  run(
+    compiler.command,
+    [
+      ...compiler.args,
+      "--ignoreConfig",
+      "--noEmit",
+      "--strict",
+      "--target",
+      "ES2025",
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--types",
+      "node",
+      "--typeRoots",
+      fileURLToPath(new URL("../node_modules/@types", import.meta.url)),
+      contract,
+    ],
+    consumerDir,
+  );
+}
+
+async function verifyRuntime({ packageRoot, consumerDir }) {
   verifyManifest(JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")));
+  verifyDeclarations(consumerDir);
   const sdk = await import(pathToFileURL(join(hostRoot, "dist/index.js")).href);
   const nativeHost = await import(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href);
   assert.equal(
@@ -147,7 +179,12 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
   process.stdout.write(
     run(
       process.execPath,
-      [fileURLToPath(new URL("./native-package-smoke.mjs", import.meta.url)), packageRoot],
+      [
+        fileURLToPath(new URL("./native-package-smoke.mjs", import.meta.url)),
+        packageRoot,
+        consumerDir,
+        fileURLToPath(new URL("../test/fixtures/intercom-client-consumer.mjs", import.meta.url)),
+      ],
       root,
       {
         ...process.env,
@@ -174,6 +211,8 @@ try {
     "LICENSE",
     "README.md",
     "dist/index.js",
+    "dist/intercom-client.js",
+    "dist/intercom-client.d.ts",
     "dist/build-info.js",
     "dist/agent/runner.js",
     "dist/pi-intercom/broker/broker.js",

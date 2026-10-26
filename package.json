@@ -1,9 +1,19 @@
 {
   "name": "@fitchmultz/pi-subagents",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "license": "MIT",
   "type": "module",
+  "exports": {
+    "./intercom-client": {
+      "types": {
+        "development": "./src/intercom-client.ts",
+        "default": "./dist/intercom-client.d.ts"
+      },
+      "import": "./dist/intercom-client.js"
+    },
+    "./package.json": "./package.json"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fitchmultz/pi-subagents.git"
@@ -27,6 +37,7 @@
     "dist",
     "src/**/*.ts",
     "tsconfig.build.json",
+    "tsconfig.client.json",
     "tsconfig.json",
     "scripts/",
     "skills/**/*",

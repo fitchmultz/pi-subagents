@@ -456,6 +456,9 @@ export class IntercomClient extends EventEmitter {
     }
 
     const messageId = options.messageId ?? (options.guard ? "" : randomUUID());
+    if (this.pendingSends.has(messageId)) {
+      return Promise.reject(new Error("Message ID already has a pending send"));
+    }
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),

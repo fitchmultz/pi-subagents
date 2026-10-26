@@ -53,7 +53,7 @@ does not leak through duplicate-name ambiguity or disconnect notifications.
 ### Conditional native context targeting
 
 Ordinary `intercom` names and asks are unchanged. Integrations can negotiate
-guarded-delivery version 1 with the private broker client. Discovery then exposes
+guarded-delivery version 1 with the native broker client. Discovery then exposes
 `rootSessionId`, `incarnation`, `guardedDelivery:1` and the optional opaque
 `applicationGuard`. The lifecycle mints the incarnation on native startup, reload
 or session replacement, not on transport reconnect. Peer IDs still belong to
@@ -68,8 +68,7 @@ are not guarded command targets. Missing capability, stale context, changed
 consent or an ambiguous root fails closed for new admission, never selecting a
 similarly named main. A broker acceptance still does not prove
 recipient admission. Lost responses remain uncertain; no automatic replay is added.
-The supported external client is separate work, not a public export introduced
-by these private native protocols.
+The supported non-model package client below uses these same native protocols.
 
 Withdrawing the guard stops new admission; it does not cancel already-admitted
 input. The original native session remains the recovery owner after a checkpoint,
@@ -169,14 +168,13 @@ message frames. Broker correlation does not grant access to another group.
 
 ## Native-owned receipts and publication provenance
 
-Receipt reads are non-waking and distinct from `last`. The private client
+Receipt reads are non-waking and distinct from `last`. The native client
 negotiates `receiptReads:1` with the broker, which also checks the recipient's
 capability before forwarding `{rootSessionId,messageId}`. Old brokers or owners
 are unavailable, not a reason to send an unknown frame or parse their journals.
 Receipt and last reads share the broker's private token, answering-peer,
 timeout and disconnect owner. A receipt response must match the exact requested
-native root and message ID. No model-facing receipt action or public package
-client is added here.
+native root and message ID. No model-facing receipt action is added.
 
 A companion in the original main emits `pi-intercom:provenance-query` on
 `pi.events` with `{version:1,rootSessionId,messageId,respond(result)}`. The loaded
@@ -216,6 +214,91 @@ reload, compaction and cold reopen. They never depend on a live pending ask.
 Copied history in a fork/new root cannot attest the original root's checkpoint.
 This is separate from `last`, which remains active-branch-only and keeps pinned
 entry paging semantics.
+
+## Supported non-model client
+
+Install this package as a normal Node.js dependency and import its supported
+subpath. Pi and TypeBox peers are optional; a companion needs neither them nor
+provider credentials. Importing this entry does not load the extension, CLI,
+TUI, session manager, journal parser or model SDK.
+
+```js
+import { connectIntercom } from "@fitchmultz/pi-subagents/intercom-client";
+
+const client = await connectIntercom({
+  spawn: false,
+  session: {
+    name: "my-companion",
+    cwd: process.cwd(),
+    model: "non-model-client", // A registration label, not a model to initialize.
+    rootSessionId: savedSenderRoot,
+    incarnation: savedSenderIncarnation,
+  },
+});
+try {
+  const peers = await client.listSessions();
+  // Join selected consent to one exact advertised main; do not select by name.
+  const target = peers.find((peer) => peer.id === savedTarget.peerId);
+  if (!target) throw new Error("Original target unavailable");
+  const result = await client.send(savedTarget.peerId, {
+    messageId: savedMessageId,
+    text: savedText,
+    expectsReply: false,
+    delivery: "steer",
+    guard: savedTarget, // rootSessionId, peerId, incarnation, applicationGuard
+    replyHint: {
+      tool: "my_publication_tool",
+      commandId: savedCommandId,
+      commandFingerprint: savedCommandFingerprint,
+    },
+  });
+  // result describes broker acceptance, not native or provider admission.
+  const receipt = await client.receipt(savedTarget.peerId, {
+    rootSessionId: savedTarget.rootSessionId,
+    messageId: savedMessageId,
+  });
+  const page = await client.last(savedTarget.peerId, { limit: 16384 });
+  // Keep page.entryId and page.nextOffset for subsequent pages.
+} finally {
+  await client.disconnect();
+}
+```
+
+The example's saved values belong to the caller's immutable command record, not
+to this client. Persist that record and the actual `client.sessionId` before the
+attempt. `requestedId` is optional and can collide; only the returned current
+identity attests this connection. The client creates no ledger, consent, second
+session or model loop. Registration does not grant human-origin authority.
+
+`connectIntercom` requires literal `spawn:false` and never starts a missing or
+old broker. It uses the normal same-user namespace or the caller's explicit
+`PI_INTERCOM_RUNTIME_DIR`; it does not change global Pi configuration or infer a
+fallback namespace. Connection failure rejects. `sendTimeoutMs` and
+`listTimeoutMs` bound native requests; optional `onError(error)` observes socket
+errors. Outstanding operations reject on loss. `isConnected()` and `sessionId`
+report current transport state, not recipient activity or successful work.
+`disconnect()` closes this socket and joins its cleanup; reconnect explicitly
+with a new `connectIntercom` call. There are no reconnect or resend timers.
+
+Public sends require an original message ID, explicit delivery, `expectsReply:false`
+and the complete exact guard. Concurrent sends with one pending ID reject rather
+than replacing its acknowledgement waiter. Invalid inputs, old capability
+negotiation, stale consent/context and ambiguous roots never downgrade to an
+ordinary send. The generic hint and opaque fingerprint are optional native
+metadata, not an ordinary ask or a guaranteed reply.
+
+After any unconfirmed send, keep the original ID and target. Reconcile only with
+`receipt`; never generate another UUID, reroute or assume that missing means
+unsent. A later explicit new operation is the caller's decision, not an automatic
+retry. Receipt facts retain the original sender after departure. Unsupported old
+brokers or owners fail closed; `publication_unavailable` and `receipt_not_found`
+do not establish no effects. `last` is separately non-waking and pinned by entry
+ID; it is not a correlated command reply. Ordinary local Intercom name resolution,
+asks and topology are unchanged.
+
+Only `./intercom-client` and `./package.json` are public package subpaths.
+Private transport, broker, extension and parser paths are not supported imports.
+The Pi resource manifest still loads its compiled extension independently.
 
 ## Persistence and lifecycle
 

@@ -1,5 +1,10 @@
 # Development
 
+The supported Intercom client's package export uses emitted declarations for consumers.
+The repository's native `development` type condition points at its TypeScript source so
+cold lint and type checks do not require a prior build. Packed-consumer checks compile
+against the default declaration export without that condition or private path aliases.
+
 Use a dedicated worktree, the committed npm lockfile, and a ready-for-review PR.
 Never edit source or tests while checks run in that checkout. Do not modify an
 active installed copy or reload the user's sessions to test a candidate.
