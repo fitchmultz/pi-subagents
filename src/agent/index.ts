@@ -72,6 +72,14 @@ function managedHost(context: ExtensionContext): ManagedHost | undefined {
     : undefined;
 }
 
+/** Legacy results are optional; their reconciliation reports an invalid configured root. */
+function legacyInput(): string[] {
+  try {
+    return [legacyDirectory()];
+  } catch {
+    return [];
+  }
+}
 class AgentRuntime {
   private ctx?: ExtensionContext;
   // A managed launcher owns children across worker replacement; otherwise this process does.
@@ -125,7 +133,7 @@ class AgentRuntime {
     if (this.closing || !this.ctx || this.child) {
       return;
     }
-    const inputs = () => [this.base, legacyDirectory(), ...this.awaited];
+    const inputs = () => [this.base, ...legacyInput(), ...this.awaited];
     const before = new Map(inputs().map((file) => [file, pathStamp(file)]));
     let reconciled = true;
     try {
@@ -153,9 +161,9 @@ class AgentRuntime {
   };
   /** Watches every directory that can publish an awaited input; legacy results may never exist. */
   private watch(): "poll" | "rescan" | "hints" {
-    const legacy = legacyDirectory();
+    const legacy = legacyInput();
     const directories = [
-      ...new Set([this.base, legacy, ...[...this.awaited].map((file) => path.dirname(file))]),
+      ...new Set([this.base, ...legacy, ...[...this.awaited].map((file) => path.dirname(file))]),
     ];
     for (const [directory, watch] of this.watches) {
       if (!directories.includes(directory)) {
@@ -166,7 +174,7 @@ class AgentRuntime {
     const states = directories.map((directory): [string, WatchState] => {
       let watch = this.watches.get(directory);
       if (watch === undefined) {
-        const every = directory === this.base || directory === legacy;
+        const every = directory === this.base || legacy.includes(directory);
         watch = new DirectoryWatch(
           directory,
           (file) => every || file === null || this.awaited.has(path.join(directory, file)),
@@ -176,7 +184,7 @@ class AgentRuntime {
       }
       return [directory, watch.ensure()];
     });
-    if (states.some(([directory, state]) => state === "unwatched" && directory !== legacy)) {
+    if (states.some(([directory, state]) => state === "unwatched" && !legacy.includes(directory))) {
       return "poll";
     }
     return states.some(([, state]) => state === "armed") ? "rescan" : "hints";

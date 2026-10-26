@@ -44,6 +44,9 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+if (phase === "invalid-temp-root") {
+  process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "not-a-dedicated-root");
+}
 // Every native change notification is lost: only bounded recovery can observe publication.
 const lostHints = { watches: 0 };
 if (phase === "dropped-hints") {
@@ -698,6 +701,16 @@ try {
       "schema-invalid admitted replacement fails the real actor",
     );
     assert.equal(readJSON(path.join(directory, `exit-${coldActor.token}.json`)).code, 1);
+  } else if (phase === "invalid-temp-root") {
+    const receipt = await settled(
+      await call(
+        "delegate",
+        { prompt: "INVALID_ROOT_LITERAL", model: "single-agent-fixture/literal-model" },
+        "invalid-root-launch",
+      ),
+      "an invalid legacy result root does not stop native completion delivery",
+    );
+    assert.equal(receipt.details.output.text, "CHILD_LITERAL_RESULT:INVALID_ROOT_LITERAL");
   } else if (phase === "dropped-hints") {
     const first = await settled(
       await call(

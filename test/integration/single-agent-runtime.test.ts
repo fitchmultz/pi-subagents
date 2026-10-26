@@ -151,6 +151,7 @@ for (const phase of [
   "inventory",
   "command-polling",
   "dropped-hints",
+  "invalid-temp-root",
 ]) {
   test(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));

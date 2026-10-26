@@ -88,10 +88,11 @@ export class Wake {
     this.raised = false;
     return raised;
   }
-  get pending(): boolean {
-    return this.raised;
-  }
+  /** Returns at once for a wake raised since the last take. */
   async sleep(ms: number): Promise<void> {
+    if (this.raised) {
+      return;
+    }
     const { promise, resolve } = Promise.withResolvers<"woken" | "elapsed">();
     const timer = setTimeout(() => {
       resolve("elapsed");

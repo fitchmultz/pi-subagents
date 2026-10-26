@@ -71,8 +71,10 @@ class Actor {
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
-  // Raised when durable commands may need admission: change hints, stop, deferred runs.
+  // Raised when durable commands may need admission: change hints and stop.
   private readonly wake = new Wake();
+  // A deferred run waits for an idle session, which has no command-file event.
+  private retry = false;
   private current?: Launch;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
@@ -308,8 +310,7 @@ class Actor {
       command.action === "run" &&
       (this.stopping || this.active !== undefined || !session.isIdle)
     ) {
-      // Session idleness has no command-file event; retry at the polling cadence.
-      this.wake.raise();
+      this.retry = true;
       return;
     }
     this.started.add(command.id);
@@ -404,17 +405,18 @@ class Actor {
   }
   /** Durable command readiness, not elapsed time, defines admission. */
   private async admitCommands(): Promise<void> {
+    // Queued commands create this directory; otherwise pending() does and the next pass arms.
     const directory = path.join(this.dir, "commands");
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const commands = new DirectoryWatch(directory, () => true, this.wake.raise);
     try {
       while (!this.shouldExit()) {
         // Each liveness tick also rechecks the directory for change hints the OS dropped.
         const watch = commands.ensure();
-        if ((this.wake.take() || watch !== "watching") && !this.stopping) {
+        if ((this.wake.take() || this.retry || watch !== "watching") && !this.stopping) {
+          this.retry = false;
           this.pending().forEach((command) => this.accept(command));
         }
-        const polling = this.wake.pending || this.stopping || watch === "unwatched";
+        const polling = this.retry || this.stopping || watch === "unwatched";
         const tick = Math.max(1, this.nextParentCheck - performance.now());
         // oxlint-disable-next-line no-await-in-loop
         await this.wake.sleep(polling ? 100 : tick);
