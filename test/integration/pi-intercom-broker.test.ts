@@ -875,8 +875,20 @@ test("a parked child keeps its identity, topics and admitted input until one gen
     });
     await main.listSessions();
     assert.deepEqual(wakes, [childId], "a receipt read never wakes the parked child");
+    // Without its main, the exited child's reads are refused at once, never sent to its closed
+    // transport to time out.
+    const mainId = text(main.sessionId);
+    const left = once(sender, "session_left");
+    await main.disconnect();
+    assert.deepEqual(await left, [mainId]);
+    assert.deepEqual(await sender.receipt(childId, { rootSessionId: "main-p", messageId: "m-1" }), {
+      error: "publication_unavailable",
+    });
+    assert.deepEqual(await sender.last(childId), {
+      error: "Parked session history is unavailable.",
+    });
     // No live session remains, yet the broker still owes the admitted input.
-    await Promise.all([main.disconnect(), sender.disconnect()]);
+    await sender.disconnect();
     await delay(6000); // Past the broker's five-second idle shutdown check.
     assert.equal(broker.exitCode, null, "owed parked input keeps the broker alive");
     const returned = new IntercomClient();

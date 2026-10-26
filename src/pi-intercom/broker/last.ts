@@ -100,6 +100,7 @@ interface LastPeer {
   readonly info: SessionInfo;
   readonly lastMessages: boolean;
   readonly receiptReads: boolean;
+  readonly parked?: { readonly closed: boolean };
 }
 interface PendingLast {
   readonly fromId: string;
@@ -110,21 +111,36 @@ interface PendingLast {
   readonly query: NativeReadQuery;
   readonly timer: NodeJS.Timeout;
 }
+/** An exited parked child answers nothing itself; only its main holds the captured history. */
+function exitedRefusal(
+  target: LastPeer,
+  query: NativeReadQuery,
+  via?: LastPeer,
+): string | undefined {
+  if (target.parked?.closed !== true) {
+    return undefined;
+  }
+  // No loaded journal owner answers receipts, with or without its main.
+  if ("messageId" in query) {
+    return "publication_unavailable";
+  }
+  return via === undefined ? "Parked session history is unavailable." : undefined;
+}
 function unavailable(
   targets: readonly LastPeer[],
   name: string,
   pending: number,
   { query, via }: { readonly query: NativeReadQuery; readonly via?: LastPeer },
 ): string | undefined {
-  // An exited parked child has no loaded journal owner to answer receipt reads.
-  if (via !== undefined && "messageId" in query) {
-    return "publication_unavailable";
-  }
   if (targets.length === 0) {
     return "Session not found";
   }
   if (targets.length > 1) {
     return `Multiple sessions named "${name}" are connected. Use the session ID instead.`;
+  }
+  const exited = exitedRefusal(targets[0], query, via);
+  if (exited !== undefined) {
+    return exited;
   }
   if (!targets[0].lastMessages) {
     return "Recipient does not support last-message reads; reload its extension.";
