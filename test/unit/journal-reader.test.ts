@@ -80,6 +80,99 @@ test("JSONL cursors commit complete validated records across one-byte Unicode ch
   assert.deepEqual(projection.finish(), { text: "abc" });
 });
 
+test("JSON projection matches JSON.parse acceptance, values and observed strings for its grammar corpus at every two-chunk split and one UTF-16 unit at a time", () => {
+  const valid = [
+    '{"a":"\\uD83E\\uDD84é日\\u00e9\\/\\b\\f\\n\\r\\t\\"\\\\","b":[true,false,null,-0,0.5e-3,1E+2,-12.75,0],"c":{},"d":[]}',
+    ' { "__proto__" : {"x":"\\uDD84"}, "a":1, "a":[2,{"k\\u0041":""}] } ',
+    `{"long":"${"plain text ".repeat(4)}","after":"${"日本".repeat(9)}\\n"}`,
+    `{"escapes":"${"\\n".repeat(1030)}"}`,
+    '"top"',
+    "-1.5e9",
+    "null",
+    "[[[]]]",
+  ];
+  const invalid = [
+    '{"a":"\\u12"}',
+    '{"a":"\\x"}',
+    '{"a":"\u0001"}',
+    `{"a":"${"plain text ".repeat(4)}\u0001"}`,
+    '{"a":01}',
+    '{"a":1.}',
+    '{"a":-}',
+    '{"a":.5}',
+    '{"a":1e}',
+    '{"a":1e+}',
+    '{"a":1e-}',
+    '{"a":+1}',
+    '{"a":tru}',
+    '{"a":nulll}',
+    '{"a":1,}',
+    "[1,]",
+    '{"o":{"k\\x":1}}',
+    '{"o":{"k\u0001":1}}',
+    '{"a" 1}',
+    '{"a",1}',
+    "{a:1}",
+    '{"a":1}}',
+    '{"a":1} x',
+    "",
+    '{"a":"x',
+    '{"a":[1}}',
+    "[NaN]",
+    "\uFEFF{}",
+  ];
+  const stringsAt = (value: unknown, at: (string | number)[] = []): [string, string][] => {
+    if (typeof value === "string") {
+      return value === "" ? [] : [[JSON.stringify(at), value]];
+    }
+    return value !== null && typeof value === "object"
+      ? Object.entries(value).flatMap(([key, item]) =>
+          stringsAt(item, [...at, Array.isArray(value) ? Number(key) : key]),
+        )
+      : [];
+  };
+  const feeds = (json: string): [string, string[]][] => [
+    ...Array.from({ length: json.length + 1 }, (_, split): [string, string[]] => [
+      `split at ${split}`,
+      [json.slice(0, split), json.slice(split)],
+    ]),
+    ["one unit at a time", json.split("").flatMap((unit) => [unit, ""])],
+  ];
+  const project = (chunks: readonly string[], all: boolean) => {
+    const strings = new Map<string, string>();
+    const projection = new JsonProjection(
+      (keys) => all || keys.length === 0,
+      (keys, chunk) => {
+        strings.set(JSON.stringify(keys), (strings.get(JSON.stringify(keys)) ?? "") + chunk);
+      },
+      () => Infinity,
+    );
+    for (const chunk of chunks) {
+      projection.write(chunk);
+    }
+    return { value: projection.finish(), strings: [...strings] };
+  };
+  for (const json of invalid) {
+    assert.throws(() => JSON.parse(json), `${JSON.stringify(json)} is invalid JSON`);
+    for (const [feed, chunks] of feeds(json)) {
+      for (const all of [true, false]) {
+        assert.throws(() => project(chunks, all), `${JSON.stringify(json)} ${feed}`);
+      }
+    }
+  }
+  for (const json of valid) {
+    const expected: unknown = JSON.parse(json);
+    const skipped = Array.isArray(expected) ? [] : {};
+    const root = expected !== null && typeof expected === "object" ? skipped : expected;
+    for (const [feed, chunks] of feeds(json)) {
+      const all = project(chunks, true);
+      assert.deepEqual(all.value, expected, `${json} ${feed}`);
+      assert.deepEqual(all.strings, stringsAt(expected), `${json} ${feed}`);
+      assert.deepEqual(project(chunks, false).value, root, `${json} ${feed}`);
+    }
+  }
+});
+
 test("sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records", (t) => {
   const root = temporary(t),
     file = path.join(root, "native.jsonl");
@@ -108,7 +201,8 @@ test("sealed inspection accepts a valid unterminated record without repair; stri
   observeReads(t, ({ count }) => {
     bytesRead += count;
   });
-  assert.equal(new NativeJournal(file).configuration().model, "p/m");
+  const model = new NativeJournal(file).byId.get("m")?.value;
+  assert.deepEqual([model?.provider, model?.modelId], ["p", "m"]);
   assert.equal(
     bytesRead,
     Buffer.byteLength(original),
@@ -146,13 +240,13 @@ test("sealed inspection and LF-published native bodies never weaken strict accou
   assert.ok(sealedTerminal);
   assert.equal(firstText(record(sealed.body(sealedTerminal).message).content), text);
   assert.equal(unpublished.byId.has("terminal"), false);
-  assert.equal(unpublished.configuration().model, undefined);
   assert.equal(fs.readFileSync(file, "utf8"), original);
   fs.appendFileSync(file, "\n");
   const published = new NativeJournal(file, "inspect", true);
-  assert.equal(published.configuration().model, "fixture/faux");
   const publishedTerminal = published.byId.get("terminal");
   assert.ok(publishedTerminal);
+  const message = record(publishedTerminal.value.message);
+  assert.deepEqual([message.provider, message.model], ["fixture", "faux"]);
   assert.equal(firstText(record(published.body(publishedTerminal).message).content), text);
   assert.throws(
     () => childUsage(launch(file), new Set()),
@@ -227,7 +321,7 @@ test("output pages preserve Unicode at byte boundaries and do not read the prece
 });
 
 test(
-  "a valid ignored individual value larger than Node's string ceiling preserves billing, configuration, baselines and source bytes under a 96 MiB heap",
+  "a valid ignored individual value larger than Node's string ceiling preserves billing, selected model metadata, baselines and source bytes under a 96 MiB heap",
   { timeout: 180_000 },
   (t) => {
     const root = temporary(t),
@@ -323,7 +417,8 @@ test(
 		assert.deepEqual(contributions.map(c=>c.id),['child:paid','child:abandoned','child:terminal']);
 		assert.deepEqual(contributions.map(c=>[c.provider,c.model]),[['p','actual'],['p','selected'],['p','actual']]);
 		const journal=new NativeJournal(file);
-		assert.equal(journal.configuration().model,'p/selected');
+		const message=journal.byId.get('terminal').value.message;
+		assert.deepEqual([message.provider,message.model],['p','selected']);
 		assert.equal(journal.body(journal.byId.get('terminal')).message.content[0].text,'Final 🦄 answer');
 		assert.equal(receiptId(file,'child',entry=>entry.customType==='agent-completion'&&entry.details?.owner==='child'&&entry.details?.completed===true),'completion');
 		const hash=createHash('sha256'); for await(const bytes of createReadStream(file)) hash.update(bytes);

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { JournalFrames, type JournalPolicy, type JournalRecord } from "./journal-frames.ts";
 import type { Projection, StringChunk } from "./json-projection.ts";
 import { nativeProjection } from "./journal-projections.ts";
-import { isRecord, recordAt, type UnknownRecord } from "./unknown.ts";
+import { isRecord, type UnknownRecord } from "./unknown.ts";
 
 /** A selected journal entry is not a complete SDK SessionEntry or Message. */
 export interface NativePreview extends UnknownRecord {
@@ -33,14 +33,6 @@ function preview(
     timestamp: typeof entry.timestamp === "string" ? entry.timestamp : undefined,
   };
   return { value, start: record.start, end: record.end };
-}
-function configurationModel(value: NativePreview): string | undefined {
-  const message = recordAt(value, "message");
-  const provider = value.type === "model_change" ? value.provider : message?.provider;
-  const model = value.type === "model_change" ? value.modelId : message?.model;
-  return typeof provider === "string" && typeof model === "string"
-    ? `${provider}/${model}`
-    : undefined;
 }
 export class NativeJournal {
   readonly records: NativeRecord[] = [];
@@ -194,26 +186,17 @@ export class NativeJournal {
       }
     }
   }
-  branch(leaf?: string | null, endedAt?: number): NativeRecord[] {
+  branch(leaf?: string | null): NativeRecord[] {
     if (leaf === null) {
       return [];
     }
-    const eligible =
-      endedAt === undefined
-        ? this.records
-        : this.records.filter(
-            (record) =>
-              record.value.type === "session" ||
-              Date.parse(record.value.timestamp ?? "") <= endedAt,
-          );
     let current =
       leaf !== undefined && leaf !== ""
         ? this.byId.get(leaf)
-        : eligible.findLast((record) => record.value.type !== "session");
+        : this.records.findLast((record) => record.value.type !== "session");
     const path: NativeRecord[] = [];
     const seen = new Set<string>();
-    const allowed = new Set(eligible.map((record) => record.value.id));
-    while (current && current.value.type !== "session" && allowed.has(current.value.id)) {
+    while (current && current.value.type !== "session") {
       if (seen.has(current.value.id)) {
         throw new Error("Cyclic journal ancestry");
       }
@@ -248,33 +231,6 @@ export class NativeJournal {
     } finally {
       fs.closeSync(fd);
     }
-  }
-  configuration(
-    endedAt?: number,
-    leaf?: string | null,
-  ): {
-    model?: string;
-    thinking?: string;
-    modelRecordedAt?: number;
-  } {
-    const result: ReturnType<NativeJournal["configuration"]> = {};
-    let model: NativePreview | undefined;
-    for (const { value } of this.branch(leaf, endedAt)) {
-      if (value.type === "thinking_level_change" && typeof value.thinkingLevel === "string") {
-        result.thinking = value.thinkingLevel;
-      }
-      if (
-        value.type === "model_change" ||
-        (value.type === "message" && recordAt(value, "message")?.role === "assistant")
-      ) {
-        model = value;
-      }
-    }
-    if (model) {
-      result.model = configurationModel(model);
-      result.modelRecordedAt = Date.parse(model.timestamp ?? "");
-    }
-    return result;
   }
 }
 /** Native v3 writers append after attachment; loading older formats can rewrite in place.
