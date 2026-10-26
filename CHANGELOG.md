@@ -5,6 +5,13 @@
 ### Added
 
 - Park children that stay idle for five minutes on a Pi fork with native working-session capture. The child saves its exact working state and its process exits, freeing its memory. Its Intercom identity stays listed with no departure. Passive messages, topic updates and `last` reads do not wake it; its main answers `last` from the saved history. A normal message, ask or continuation restores the exact saved state into a new process, which then receives retained messages in order. A failed final save records `park-failed.json` and restarts nothing; continuing reports it. Official Pi keeps idle children resident.
+
+## [0.51.0] - 2026-10-26
+
+### Added
+
+- Publish `@fitchmultz/pi-subagents/intercom-client`, a typed non-model client for the existing native broker. Require `spawn:false`, preserve caller-recorded guarded message IDs, and expose discovery, non-waking pinned last pages, original-ID receipts and explicit socket cleanup without loading Pi, a model or another journal. Reject overlapping sends with one pending ID instead of replacing its acknowledgement waiter.
+
 - Read non-waking native receipts by original message ID and expose version-1 process-local provenance from the loaded journal owner. Preserve exact root and departed-sender binding, independently hash the raw sender text, and return selected publication metadata without input text or a public parser. Keep append, staging, handoff and actual placement observations separate from fsync and provider/model consumption. Ordinary active-branch `last` paging is unchanged.
 - Negotiate conditional Intercom commands bound to one exact native main, peer, context incarnation and companion-owned application revision. Check the binding at broker routing and native admission, expose the original lifecycle snapshot through a versioned process-local event handshake, and render generic correlated-publication hints without creating ordinary asks. Startup, reload and session replacement invalidate old handles; transport reconnect preserves the context. Ordinary local names, asks and main/child topology are unchanged. This does not install an external client, export native work or strengthen broker acceptance into a recipient receipt.
 
@@ -48,7 +55,7 @@
 - Shorten the `delegate`, `agent_runs` and `intercom` tool descriptions and use Pi's `StringEnum` for `delegate.context` and `agent_runs.action`. Their added active-declaration JSON drops from 4,363 to 2,984 bytes on official Pi 1.4.0 and the fork. Accepted and rejected arguments, actions and results are unchanged; an invalid `context` or `action` now gets Pi's single "allowed values" error instead of one line per union member.
 - Update development tooling to oxlint 1.89.0 with tsgolint 7.0.2005, oxfmt 0.74.0, TypeBox 1.4.3, and Node 24.19.2 and Sinon 22.0.2 typings, with a regenerated lockfile. Runtime dependencies, optional host-provided Pi and TypeBox peers, and the Node 24.21 floor are unchanged.
 
-## [0.50.0] - Unreleased
+## [0.50.0] - 2026-10-21
 
 ### Breaking
 
@@ -70,7 +77,7 @@
 - Require a concrete resolved recipient for asks before sending; retain exact reply-sender identity checks across peer registration races.
 - Include length-ended completed responses in `last`; ignore unpublished launch directories during listing/reconciliation while retaining their native session evidence. Preserve published uncertain launch claims, visible corruption errors and conservative cold-Stop process identity checks.
 
-This is an unpublished breaking-release candidate. Merge, publication, installation and paired bridge cutover remain separate approval gates; no live runtime is changed by this PR.
+Package publication, local installation and paired bridge cutover are separate operations.
 
 ## [0.49.1] - 2026-10-15
 

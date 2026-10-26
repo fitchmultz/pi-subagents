@@ -5,6 +5,7 @@ import { writeMessage } from "./framing.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
 import { LastMessageRequests, lastRequest } from "./client-last.ts";
+import { ParkRequests } from "./client-park.ts";
 import { isNativeReadResult } from "./last.ts";
 import {
   errorMessage,
@@ -64,8 +65,7 @@ export class IntercomClient extends EventEmitter {
   private connection: BrokerConnection | null = null;
   private _sessionId: string | null = null;
   private _topicsSupported = false;
-  private parkingSupported = false;
-  private parkAcknowledged?: (parked: boolean) => void;
+  private readonly parking = new ParkRequests();
   private guardedDeliverySupported = false;
   private readonly lastRequests: LastMessageRequests;
   private readonly pendingSends = new Map<
@@ -156,7 +156,7 @@ export class IntercomClient extends EventEmitter {
           this.connection = null;
           this._sessionId = null;
           this._topicsSupported = false;
-          this.parkAcknowledged?.(false);
+          this.parking.settle(false);
           this.guardedDeliverySupported = false;
           this.disconnecting = false;
           this.failPending(error);
@@ -242,7 +242,7 @@ export class IntercomClient extends EventEmitter {
         this.receiveDelivery(brokerMessage);
         break;
       case "parked":
-        this.parkAcknowledged?.(true);
+        this.parking.settle(true);
         break;
       case "wake":
       case "session_left":
@@ -266,7 +266,7 @@ export class IntercomClient extends EventEmitter {
     this._sessionId = msg.sessionId;
     this._topicsSupported = msg.topicsSupported === true && msg.topicFrames === true;
     this.lastRequests.lastMessages = msg.lastMessages === true;
-    this.parkingSupported = msg.parking === true;
+    this.parking.supported = msg.parking === true;
     this.lastRequests.receiptReads = msg.receiptReads === 1;
     this.guardedDeliverySupported = msg.guardedDelivery === 1;
     this.connection?.confirmRegistration();
@@ -337,17 +337,8 @@ export class IntercomClient extends EventEmitter {
     }
   }
 
-  /** True once the broker retains later input; false when it cannot or the socket closed. */
   park(on = true): Promise<boolean> {
-    return new Promise((resolve) => {
-      this.parkAcknowledged = on && this.parkingSupported ? resolve : undefined;
-      if (this.parkingSupported) {
-        writeMessage(this.requireActiveSocket(), { type: on ? "park" : "unpark" });
-      }
-      if (this.parkAcknowledged === undefined) {
-        resolve(false);
-      }
-    });
+    return this.parking.request(() => this.requireActiveSocket(), on);
   }
 
   async disconnect(): Promise<void> {
@@ -461,6 +452,9 @@ export class IntercomClient extends EventEmitter {
     }
 
     const messageId = options.messageId ?? (options.guard ? "" : randomUUID());
+    if (this.pendingSends.has(messageId)) {
+      return Promise.reject(new Error("Message ID already has a pending send"));
+    }
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),

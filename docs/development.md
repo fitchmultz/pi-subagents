@@ -1,5 +1,10 @@
 # Development
 
+The supported Intercom client's package export uses emitted declarations for consumers.
+The repository's native `development` type condition points at its TypeScript source so
+cold lint and type checks do not require a prior build. Packed-consumer checks compile
+against the default declaration export without that condition or private path aliases.
+
 Use a dedicated worktree, the committed npm lockfile, and a ready-for-review PR.
 Never edit source or tests while checks run in that checkout. Do not modify an
 active installed copy or reload the user's sessions to test a candidate.
@@ -86,7 +91,7 @@ negative assertions. A sleep does not prove an owner processed its input.
 
 `scripts/measure-size.mjs` counts source, production scripts, generated code and
 schemas, including new untracked files. `--report` prints without enforcing.
-The ceilings are 19,750 source TypeScript lines, 23,000 total production lines,
+The ceilings are 19,750 source TypeScript lines, 23,500 total production lines,
 and 1 MiB total production bytes. Tests have no deletion quota. Moving machinery
 into generated/minified output does not evade the gate.
 

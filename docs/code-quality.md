@@ -39,5 +39,5 @@ qualification substitutes the selected host graph. The retired workflow schema
 generator and its patching dependency are not part of the new runtime.
 The active-child viewer, change-driven wakeups, idle-child parking and the
 concurrent efficiency units have an approved aggregate budget of 19,750 source
-lines and 23,000 production lines. The 1 MiB byte ceiling and all lint limits
+lines and 23,500 production lines. The 1 MiB byte ceiling and all lint limits
 stay unchanged.

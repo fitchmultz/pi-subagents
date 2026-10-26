@@ -77,19 +77,24 @@ async function reapStrandedStaging(cwd) {
   }
 }
 
+async function compileProject(cwd, stagingDir, compiler, project) {
+  const { stderr, stdout } = await execFile(
+    compiler.command,
+    [...compiler.args, "-p", project, "--outDir", stagingDir],
+    { cwd, maxBuffer: 10 * 1024 * 1024 },
+  );
+  if (stdout) {
+    process.stdout.write(stdout);
+  }
+  if (stderr) {
+    process.stderr.write(stderr);
+  }
+}
+
 async function compileToStaging(cwd, stagingDir, compiler) {
   try {
-    const { stderr, stdout } = await execFile(
-      compiler.command,
-      [...compiler.args, "-p", "tsconfig.build.json", "--outDir", stagingDir],
-      { cwd, maxBuffer: 10 * 1024 * 1024 },
-    );
-    if (stdout) {
-      process.stdout.write(stdout);
-    }
-    if (stderr) {
-      process.stderr.write(stderr);
-    }
+    await compileProject(cwd, stagingDir, compiler, "tsconfig.build.json");
+    await compileProject(cwd, stagingDir, compiler, "tsconfig.client.json");
     await stampBuild(cwd, stagingDir);
   } catch (error) {
     if (error?.stdout) {

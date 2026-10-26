@@ -1,5 +1,7 @@
 // Runtime-only package probe: selected native SDK/CLI, real packed actor and private broker.
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import {
   mkdtempSync,
   mkdirSync,
@@ -17,6 +19,8 @@ import { createRequire } from "node:module";
 import { hostCli, hostIndex, hostRoot } from "./compat-host.mjs";
 import { SmokeProcesses } from "./real-pi-processes.mjs";
 
+const execFile = promisify(execFileCallback);
+
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
     "Usage: node scripts/native-package-smoke.mjs [package-root]\n\nLoad the single compiled entry using the selected native host. Exercise all three eager package tools and a real actor prompt/toolResult/completion with a credential-free provider, then verify bundled CLI startup and shutdown. No paid model calls.\nExit codes: 0 passed; 1 native execution or cleanup failed.",
@@ -25,6 +29,8 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 }
 
 const packageRoot = realpathSync(resolve(process.argv[2] ?? "."));
+const consumerDir = process.argv[3];
+const consumerScript = process.argv[4];
 const root = mkdtempSync(join(tmpdir(), "ps-native-"));
 const agentDir = join(root, "agent");
 mkdirSync(join(agentDir, "extensions"), { recursive: true });
@@ -149,6 +155,7 @@ const processes = new SmokeProcesses({
 let session;
 let watchdog;
 let brokerError;
+let intercomEvents;
 const brokerRun = processes
   .run("private broker", process.execPath, [join(packageRoot, "dist/pi-intercom/broker/broker.js")])
   .catch((error) => {
@@ -174,14 +181,21 @@ try {
     noContextFiles: true,
     noPromptTemplates: true,
     noThemes: true,
+    extensionFactories: consumerScript
+      ? [
+          (pi) => {
+            intercomEvents = pi.events;
+          },
+        ]
+      : [],
   });
   await loader.reload();
   assert.deepEqual(loader.getExtensions().errors, []);
   assert.deepEqual(loader.getExtensions().warnings ?? [], []);
   assert.equal(
     loader.getExtensions().extensions.length,
-    2,
-    "one package entry plus credential-free provider fixture",
+    consumerScript ? 3 : 2,
+    "one package entry plus credential-free provider and optional client observer fixtures",
   );
   const modelRuntime = await sdk.ModelRuntime.create({
     credentials: new ai.InMemoryCredentialStore(),
@@ -324,6 +338,75 @@ try {
     false,
   );
   assert.deepEqual(errors, []);
+
+  if (consumerScript) {
+    let target;
+    intercomEvents.emit("pi-intercom:context-query", {
+      version: 1,
+      respond: (snapshot) => {
+        target = snapshot;
+      },
+    });
+    assert.ok(target?.connected && target.peerId && target.rootSessionId && target.incarnation);
+    const guard = {
+      rootSessionId: target.rootSessionId,
+      peerId: target.peerId,
+      incarnation: target.incarnation,
+      applicationGuard: "package-consent-1",
+    };
+    let consent;
+    intercomEvents.emit("pi-intercom:application-guard", {
+      version: 1,
+      target: guard,
+      revision: guard.applicationGuard,
+      respond: (result) => {
+        consent = result;
+      },
+    });
+    assert.equal(consent.applicationGuard, guard.applicationGuard);
+    const consumerHome = join(root, "consumer-home");
+    mkdirSync(consumerHome);
+    const brokerPid = Number(
+      readFileSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid"), "utf8").split("\n")[0],
+    );
+    const consumerOptions = {
+      cwd: consumerDir,
+      env: {
+        HOME: consumerHome,
+        PATH: process.env.PATH,
+        PI_CODING_AGENT_DIR: join(consumerHome, "agent"),
+        PI_INTERCOM_RUNTIME_DIR: process.env.PI_INTERCOM_RUNTIME_DIR,
+        S3_ROOT: guard.rootSessionId,
+        S3_PEER: guard.peerId,
+        S3_INCARNATION: guard.incarnation,
+        S3_GUARD: guard.applicationGuard,
+        S3_BROKER_PID: String(brokerPid),
+      },
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    };
+    const turns = events.filter((event) => event.type === "turn_start").length;
+    try {
+      const { stdout, stderr } = await execFile(
+        process.execPath,
+        [
+          "--permission",
+          "--allow-fs-read=*",
+          "--allow-fs-write=*",
+          "--input-type=module",
+          "-e",
+          readFileSync(consumerScript, "utf8"),
+        ],
+        consumerOptions,
+      );
+      process.stdout.write(stdout);
+      process.stderr.write(stderr);
+      assert.equal(events.filter((event) => event.type === "turn_start").length, turns);
+    } finally {
+      // The consumer's failure/timeout must never leave this fixture's broker stopped.
+      process.kill(brokerPid, "SIGCONT");
+    }
+  }
 
   const marker = join(root, "cli.json");
   const observer = join(root, "observer.mjs");
