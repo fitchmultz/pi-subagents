@@ -273,8 +273,8 @@ const requests = () =>
   fs.existsSync(path.join(root, "requests.jsonl"))
     ? fs
         .readFileSync(path.join(root, "requests.jsonl"), "utf8")
-        .trim()
         .split("\n")
+        .slice(0, -1) // The child may still be appending the final, unpublished frame.
         .filter(Boolean)
         .map(JSON.parse)
     : [];
@@ -3728,11 +3728,39 @@ try {
       "continue-one",
     );
     assert.notEqual(second.details.id, first.details.id);
+    const requestFile = path.join(root, "requests.jsonl");
+    for (const stage of ["prefix", "body"]) {
+      // oxlint-disable-next-line no-await-in-loop
+      await until(
+        () => fs.existsSync(path.join(root, `request-${stage}`)),
+        `native provider has written the request ${stage} without LF`,
+      );
+      const bytes = fs.readFileSync(requestFile, "utf8");
+      const tail = bytes.slice(bytes.lastIndexOf("\n") + 1);
+      if (stage === "prefix") {
+        assert.throws(() => JSON.parse(tail), SyntaxError);
+      } else {
+        assert.equal(JSON.parse(tail).prompt, "HOLD:second");
+      }
+      assert.deepEqual(
+        requests().map((request) => request.prompt),
+        ["RECALL_LITERAL"],
+        "neither a partial nor a complete request body is published without LF",
+      );
+      fs.writeFileSync(path.join(root, `release-request-${stage}`), "release");
+    }
     await until(
       () => requests().some((request) => request.prompt === "HOLD:second"),
       "continuation is in native provider",
     );
     const childPid = requests().find((request) => request.prompt === "HOLD:second").pid;
+    const requestSize = fs.statSync(requestFile).size;
+    fs.appendFileSync(requestFile, '{"invalid":\n');
+    try {
+      assert.throws(requests, SyntaxError, "malformed LF-published JSON is never hidden");
+    } finally {
+      fs.truncateSync(requestFile, requestSize);
+    }
     process.kill(childPid, "SIGSTOP");
     let guidance;
     try {
