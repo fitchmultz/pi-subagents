@@ -220,6 +220,26 @@ test(
   },
 );
 test(
+  "single-agent native parking keeps parent-death shutdown while its native save is blocked",
+  { timeout: 60000 },
+  async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-park-orphan-"));
+    try {
+      run(root, "park-orphan", true);
+      const saved = seed(root);
+      await until(() => dead(saved.childPid), "parking actor exits after its parent dies");
+      const dir = path.join(root, "agent/sessions/agent-runs", saved.sessionId, saved.runId);
+      assert.equal(fs.existsSync(path.join(dir, "parked.json")), false);
+      assert.ok(
+        fs.readdirSync(dir).some((name) => name.endsWith(".jsonl")),
+        "journal kept",
+      );
+    } finally {
+      await cleanup(root);
+    }
+  },
+);
+test(
   "single-agent native cwd captures active parent B, initializes fork C once and restores child-selected D on cold continuation",
   { timeout: 60000 },
   async () => {

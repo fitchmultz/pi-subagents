@@ -44,7 +44,7 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
-if (phase === "park" || phase === "park-failed") {
+if (phase.startsWith("park")) {
   process.env.SINGLE_AGENT_PARK_CLOCK = phase;
 }
 if (phase === "invalid-temp-root") {
@@ -1066,7 +1066,7 @@ try {
         assert.equal(effects(), before, "native validation rejects retired input before effects");
       }
     }
-  } else if (phase === "park" || phase === "park-failed") {
+  } else if (phase.startsWith("park")) {
     const model = "single-agent-fixture/literal-model";
     const receipt = await call("delegate", { prompt: "PARK_FIRST", model }, "park-launch");
     runId = receipt.details.id;
@@ -1076,6 +1076,24 @@ try {
     const first = requests().find((request) => request.prompt === "PARK_FIRST");
     fs.writeFileSync(path.join(root, "advance-clock"), "");
     const parked = path.join(runDir(runId), "parked.json");
+    if (phase === "park-orphan") {
+      // This owner dies while the child's native save is blocked (official Pi stays resident).
+      const forked = typeof sdk.writeWorkingSession === "function";
+      await until(
+        () => fs.existsSync(path.join(root, forked ? "save-held" : "clock-advanced")),
+        "parking preparation blocks",
+      );
+      fs.writeFileSync(
+        seedFile,
+        JSON.stringify({
+          runId,
+          sessionId: manager.getSessionId(),
+          sessionFile: manager.getSessionFile(),
+          childPid: first.pid,
+        }),
+      );
+      process.kill(process.pid, "SIGKILL");
+    }
     if (typeof sdk.writeWorkingSession !== "function") {
       // Official Pi cannot capture exact working state, so the actor stays resident.
       await until(() => fs.existsSync(path.join(root, "clock-advanced")), "idle period passes");

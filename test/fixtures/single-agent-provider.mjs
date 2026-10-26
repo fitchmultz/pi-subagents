@@ -80,8 +80,17 @@ export default async function fixture(pi) {
     let from;
     // A real save participant appends during preparation, changing the leaf being captured.
     let saves = 0;
-    pi.on("working_session_save", (event) => {
+    pi.on("working_session_save", async (event) => {
       saves += 1;
+      if (process.env.SINGLE_AGENT_PARK_CLOCK === "park-orphan") {
+        // Persistence stays blocked until the native acquisition itself is cancelled.
+        fs.writeFileSync(path.join(root, "save-held"), "");
+        while (!event.signal.aborted) {
+          // oxlint-disable-next-line no-await-in-loop
+          await delay(20);
+        }
+        return;
+      }
       if (saves > 1 && process.env.SINGLE_AGENT_PARK_CLOCK === "park-failed") {
         // Fail only the final capture, after the actor committed to exit.
         event.invalidate("fixture final capture refused");
