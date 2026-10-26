@@ -21,7 +21,10 @@ interface WorkingHold {
 }
 /** Fork-only native cut and strict final exit; official Pi children stay resident. */
 type Parkable = AgentSession & {
-  readonly acquireWorkingSession: (options: { boundary: "settled" }) => Promise<WorkingHold>;
+  readonly acquireWorkingSession: (options: {
+    boundary: "settled";
+    signal?: AbortSignal;
+  }) => Promise<WorkingHold>;
 };
 /** The runner's view of its own work; parking never admits or runs commands itself. */
 interface Resident {
@@ -30,6 +33,8 @@ interface Resident {
   /** Admits commands that raced the marker; false once work, stopping or a viewer began. */
   readonly admit: () => boolean;
   readonly errors: string[];
+  /** Aborts preparation once the owner stops or dies. */
+  readonly signal: AbortSignal;
 }
 interface Finalizing {
   readonly setFinalization: (
@@ -56,13 +61,12 @@ function fence(pi: ExtensionAPI, park: boolean): Promise<boolean> {
 async function cut(
   pi: ExtensionAPI,
   session: Parkable,
-  admit: () => boolean,
-  errors: string[],
+  { admit, errors, signal }: Omit<Resident, "pi" | "busy">,
 ): Promise<WorkingHold | undefined> {
   try {
     // Save handlers may legitimately append entries; only the pre-cut leaf proves idleness.
     if ((await fence(pi, true)) && admit() && session.isIdle) {
-      return await session.acquireWorkingSession({ boundary: "settled" });
+      return await session.acquireWorkingSession({ boundary: "settled", signal });
     }
   } catch (error) {
     errors.push(errorText(error));
@@ -169,7 +173,7 @@ export class Parking {
     ) {
       return false;
     }
-    const hold = await this.prepare(runtime, actor.pi, actor.admit, actor.errors);
+    const hold = await this.prepare(runtime, actor.pi, actor);
     if (hold) {
       await this.commit(runtime, hold, actor.errors);
     }
@@ -192,8 +196,7 @@ export class Parking {
   private async prepare(
     runtime: Runtime,
     pi: ExtensionAPI,
-    admit: () => boolean,
-    errors: string[],
+    { admit, errors, signal }: Resident,
   ): Promise<WorkingHold | undefined> {
     const { session } = runtime;
     this.since = performance.now();
@@ -203,12 +206,11 @@ export class Parking {
     // A launcher that enqueues after this marker waits for exit, then wakes the saved state.
     const marker = path.join(this.dir, "actor.lock", "parking.json");
     write(marker, { at: Date.now() });
-    const hold = await cut(
-      pi,
-      session,
-      () => admit() && session.sessionManager.getLeafId() === this.leaf,
+    const hold = await cut(pi, session, {
+      admit: () => admit() && session.sessionManager.getLeafId() === this.leaf,
       errors,
-    );
+      signal,
+    });
     // Revalidate after the awaited fence and save, immediately before the irreversible commit.
     if (hold?.sleepReady === true && admit()) {
       return hold;

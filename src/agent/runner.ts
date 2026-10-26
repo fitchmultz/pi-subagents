@@ -391,8 +391,16 @@ class Actor {
         if (!this.stopping) {
           this.pending().forEach((command) => this.accept(command));
         }
+        // The parent/stop owner stays live while parking awaits the fence and native save.
+        const owner = new AbortController();
+        const watch = setInterval(() => {
+          if (this.shouldExit() || this.stopping) {
+            owner.abort();
+          }
+        }, 100);
         // oxlint-disable-next-line no-await-in-loop
         this.parking = await parked.park(runtime, {
+          signal: owner.signal,
           pi: this.context?.pi,
           busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
           // Commands and viewers that raced the fence or save keep this actor resident.
@@ -404,6 +412,7 @@ class Actor {
           },
           errors: this.errors,
         });
+        clearInterval(watch);
         if (this.parking) {
           break;
         }
