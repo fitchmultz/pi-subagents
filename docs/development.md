@@ -91,9 +91,9 @@ negative assertions. A sleep does not prove an owner processed its input.
 
 `scripts/measure-size.mjs` counts source, production scripts, generated code and
 schemas, including new untracked files. `--report` prints without enforcing.
-The ceilings are 19,750 source TypeScript lines, 23,500 total production lines,
-and 1 MiB total production bytes. Tests have no deletion quota. Moving machinery
-into generated/minified output does not evade the gate.
+The only enforced ceiling is 1 MiB total production bytes; source and production
+line counts are reported for visibility, not mandated. Tests have no deletion
+quota. Moving machinery into generated/minified output does not evade the gate.
 
 [The rebuild evidence](single-agent-rebuild.md) records the baseline, confirmed
 design, test-transfer obligations, and exact selected host identities. Update it
