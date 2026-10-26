@@ -5,6 +5,7 @@
 ### Added
 
 - Park children that stay idle for five minutes on a Pi fork with native working-session capture. The child saves its exact working state and its process exits, freeing its memory. Its Intercom identity stays listed with no departure. Passive messages, topic updates and `last` reads do not wake it; its main answers `last` from the saved history. A normal message, ask or continuation restores the exact saved state into a new process, which then receives retained messages in order. A failed final save records `park-failed.json` and restarts nothing; continuing reports it. Official Pi keeps idle children resident.
+- Read non-waking native receipts by original message ID and expose version-1 process-local provenance from the loaded journal owner. Preserve exact root and departed-sender binding, independently hash the raw sender text, and return selected publication metadata without input text or a public parser. Keep append, staging, handoff and actual placement observations separate from fsync and provider/model consumption. Ordinary active-branch `last` paging is unchanged.
 - Negotiate conditional Intercom commands bound to one exact native main, peer, context incarnation and companion-owned application revision. Check the binding at broker routing and native admission, expose the original lifecycle snapshot through a versioned process-local event handshake, and render generic correlated-publication hints without creating ordinary asks. Startup, reload and session replacement invalidate old handles; transport reconnect preserves the context. Ordinary local names, asks and main/child topology are unchanged. This does not install an external client, export native work or strengthen broker acceptance into a recipient receipt.
 
 ### Breaking
@@ -15,6 +16,7 @@
 
 ### Fixed
 
+- Keep the parent and child event loops responsive while they check whether children and parents are still alive. On macOS each check waited on a `ps` run; `/agents`, `agent_runs` lists and each child's parent check now wait on it in the background, and a list checks each saved conversation once instead of once per run. Stop and continuation still prove the process birth synchronously right before signaling.
 - Validate large child journals with an incremental scanner that decodes selected or observed string chunks, replacing stream-json's tokenizer. The package no longer depends on stream-json or stream-chain.
 - Let Stop and continuation release a saved actor or native-shell PID that another user's process now holds, when its native birth proves replacement. Permission-denied probes previously blocked that existing proof, stranding children after a reboot. Unverified identities, unreadable births and claims written after the current process still refuse without signaling.
 - Keep `/agents` working after a live install refresh removes package-local development copies of Pi. Lazy-only viewer modules now resolve UI and SDK values through the selected host. Sessions already using the current viewer API recover on their next `/agents` after installing the fix. Sessions started from the published v0.50.0 package need to restart Pi.

@@ -2,33 +2,67 @@ import type net from "node:net";
 import { randomUUID } from "node:crypto";
 import { isRecord, type UnknownRecord } from "../../shared/unknown.ts";
 import {
+  isDeliveryGuard,
+  isPublicationReplyHint,
+  isLastMessageQuery,
+  isReceiptQuery,
+  LAST_MESSAGE_PAGE_LIMIT,
   normalizeSessionInfo,
   type LastMessageQuery,
   type LastMessageResult,
   type SessionInfo,
+  type NativeReceipt,
+  type ReceiptQuery,
+  type ReceiptResult,
 } from "../types.ts";
+import { finiteNumber, nonNegativeInteger, optionalLabel, safeLabel } from "../validation.ts";
 import { validateIntercomMessageSize, writeMessage } from "./framing.ts";
 import { messageSender } from "./snapshots.ts";
 import { findSessions } from "./targets.ts";
 
-export const LAST_MESSAGE_PAGE_LIMIT = 16384;
+export type NativeReadQuery = LastMessageQuery | ReceiptQuery;
+export type NativeReadResult = LastMessageResult | ReceiptResult;
 
-function nonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+export function isNativeReadQuery(value: unknown): value is NativeReadQuery {
+  return isReceiptQuery(value) || isLastMessageQuery(value);
 }
-function optionalEntryId(value: unknown): boolean {
-  return value === undefined || (typeof value === "string" && value.length > 0);
-}
-export function isLastMessageQuery(value: unknown): value is LastMessageQuery {
+function isNativeReceipt(value: unknown): value is NativeReceipt {
+  if (!isReceiptQuery(value) || !isRecord(value) || !isRecord(value.sender)) {
+    return false;
+  }
   return (
-    isRecord(value) &&
-    optionalEntryId(value.entryId) &&
-    (value.offset === undefined || nonNegativeInteger(value.offset)) &&
-    (value.limit === undefined ||
-      (nonNegativeInteger(value.limit) &&
-        value.limit > 0 &&
-        value.limit <= LAST_MESSAGE_PAGE_LIMIT))
+    value.version === 1 &&
+    safeLabel(value.sender.peerId) &&
+    [value.sender.rootSessionId, value.sender.incarnation].every(optionalLabel) &&
+    typeof value.textSha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(value.textSha256) &&
+    receiptPublication(value) &&
+    receiptFacts(value)
   );
+}
+function receiptPublication(value: UnknownRecord): boolean {
+  return (
+    typeof value.delivery === "string" &&
+    ["queue", "steer", "passive"].includes(value.delivery) &&
+    (value.guard === undefined || isDeliveryGuard(value.guard)) &&
+    (value.replyHint === undefined || isPublicationReplyHint(value.replyHint))
+  );
+}
+function receiptFacts(value: UnknownRecord): boolean {
+  return (
+    safeLabel(value.checkpointEntryId) &&
+    finiteNumber(value.receivedAt) &&
+    [value.queued, value.nativeHandoff, value.discarded].every(
+      (field) => typeof field === "boolean",
+    ) &&
+    (value.placementEntryId === null || safeLabel(value.placementEntryId))
+  );
+}
+export function isReceiptResult(value: unknown): value is ReceiptResult {
+  return isRecord(value) && (typeof value.error === "string" || isNativeReceipt(value.receipt));
+}
+export function isNativeReadResult(value: unknown): value is NativeReadResult {
+  return isReceiptResult(value) || isLastMessageResult(value);
 }
 function pageIdentity(value: UnknownRecord): boolean {
   return (
@@ -65,6 +99,7 @@ interface LastPeer {
   readonly socket: net.Socket;
   readonly info: SessionInfo;
   readonly lastMessages: boolean;
+  readonly receiptReads: boolean;
 }
 interface PendingLast {
   readonly fromId: string;
@@ -72,14 +107,19 @@ interface PendingLast {
   /** A parked child's main answers from the child's captured native history. */
   readonly via?: string;
   readonly requestId: string;
-  readonly query: LastMessageQuery;
+  readonly query: NativeReadQuery;
   readonly timer: NodeJS.Timeout;
 }
 function unavailable(
   targets: readonly LastPeer[],
   name: string,
   pending: number,
+  { query, via }: { readonly query: NativeReadQuery; readonly via?: LastPeer },
 ): string | undefined {
+  // An exited parked child has no loaded journal owner to answer receipt reads.
+  if (via !== undefined && "messageId" in query) {
+    return "publication_unavailable";
+  }
   if (targets.length === 0) {
     return "Session not found";
   }
@@ -89,30 +129,54 @@ function unavailable(
   if (!targets[0].lastMessages) {
     return "Recipient does not support last-message reads; reload its extension.";
   }
+  if (
+    "messageId" in query &&
+    (!targets[0].receiptReads || targets[0].info.rootSessionId !== query.rootSessionId)
+  ) {
+    return "publication_unavailable";
+  }
   if (pending >= 128) {
     return "Too many pending last-message reads; retry after they settle.";
   }
   return undefined;
 }
-function matchesPage(result: LastMessageResult, pending: PendingLast, fromId: string): boolean {
+function matchesPage(result: NativeReadResult, pending: PendingLast, fromId: string): boolean {
   if ("error" in result) {
     return true;
   }
+  if ("messageId" in pending.query) {
+    return (
+      "receipt" in result &&
+      result.receipt.messageId === pending.query.messageId &&
+      result.receipt.rootSessionId === pending.query.rootSessionId
+    );
+  }
+  if ("receipt" in result) {
+    return false;
+  }
+  return matchesLastPage(result, pending.query, fromId);
+}
+
+function matchesLastPage(
+  result: Exclude<LastMessageResult, { readonly error: string }>,
+  query: LastMessageQuery,
+  fromId: string,
+): boolean {
   return (
     result.session.id === fromId &&
-    result.offset === (pending.query.offset ?? 0) &&
-    (pending.query.entryId === undefined || result.entryId === pending.query.entryId) &&
-    result.text.length <= (pending.query.limit ?? LAST_MESSAGE_PAGE_LIMIT)
+    result.offset === (query.offset ?? 0) &&
+    (query.entryId === undefined || result.entryId === query.entryId) &&
+    result.text.length <= (query.limit ?? LAST_MESSAGE_PAGE_LIMIT)
   );
 }
 
 function lastRequest(message: UnknownRecord): {
   readonly requestId: string;
   readonly to: string;
-  readonly query: LastMessageQuery;
+  readonly query: NativeReadQuery;
 } {
   const { requestId, to, query } = message;
-  if (typeof requestId !== "string" || typeof to !== "string" || !isLastMessageQuery(query)) {
+  if (typeof requestId !== "string" || typeof to !== "string" || !isNativeReadQuery(query)) {
     throw new Error("Invalid last message request");
   }
   return { requestId, to, query };
@@ -138,17 +202,8 @@ export class LastMessageRelay {
     if (!from) {
       return;
     }
-    const error = unavailable(targets, message.to, this.pending.size);
-    if (error !== undefined) {
-      writeMessage(from.socket, {
-        type: "last_response",
-        requestId: message.requestId,
-        result: { error },
-      });
-      return;
-    }
     const token = randomUUID();
-    const via = reader(target.info.id);
+    const via = targets.length === 1 ? reader(target.info.id) : undefined;
     const frame = {
       type: "last_request" as const,
       requestId: token,
@@ -156,12 +211,14 @@ export class LastMessageRelay {
       query: message.query,
       parked: via && messageSender(target.info),
     };
-    const invalid = validateIntercomMessageSize(frame);
-    if (invalid) {
+    const error =
+      unavailable(targets, message.to, this.pending.size, { query: message.query, via }) ??
+      validateIntercomMessageSize(frame)?.message;
+    if (error !== undefined) {
       writeMessage(from.socket, {
         type: "last_response",
         requestId: message.requestId,
-        result: { error: invalid.message },
+        result: { error },
       });
       return;
     }
@@ -196,7 +253,7 @@ export class LastMessageRelay {
     const result = message.result;
     this.finish(
       message.requestId,
-      isLastMessageResult(result) && matchesPage(result, pending, pending.toId)
+      isNativeReadResult(result) && matchesPage(result, pending, pending.toId)
         ? result
         : { error: "Recipient returned an invalid last-message page" },
     );
@@ -210,7 +267,7 @@ export class LastMessageRelay {
     }
   }
 
-  private finish(token: string, result: LastMessageResult): void {
+  private finish(token: string, result: NativeReadResult): void {
     const pending = this.pending.get(token);
     if (!pending) {
       return;

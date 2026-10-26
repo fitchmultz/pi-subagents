@@ -17,6 +17,10 @@ export interface ParkablePeer {
   readonly parking: boolean;
   parked?: Parked;
 }
+export function reachable<T extends ParkablePeer>(target?: T): target is T {
+  const socket = target?.socket;
+  return socket !== undefined && !socket.destroyed && socket.writable && !socket.writableEnded;
+}
 type Deliver = (id: string, from: SessionInfo, message: Message) => string | null;
 function requested(id: unknown): string | undefined {
   return typeof id === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(id) ? id : undefined;

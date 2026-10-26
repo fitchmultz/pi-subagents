@@ -8,7 +8,7 @@ import { brokerPidRecord } from "./pid.ts";
 import { assertBrokerCanStart } from "./spawn.ts";
 import { LastMessageRelay } from "./last.ts";
 import { canSeeSession, findSessions } from "./targets.ts";
-import { ParkedSessions, type ParkablePeer } from "./parked.ts";
+import { ParkedSessions, reachable, type ParkablePeer } from "./parked.ts";
 import { acceptBrokerConnection, registeredSessionInfo } from "./server-connection.ts";
 import { guardedDeliveryError } from "./guard.ts";
 import {
@@ -41,10 +41,7 @@ interface ConnectedSession extends ParkablePeer {
   topics: TopicSnapshot;
   readonly topicFrames: boolean;
   readonly lastMessages: boolean;
-}
-function reachable(target?: ConnectedSession): target is ConnectedSession {
-  const socket = target?.socket;
-  return socket !== undefined && !socket.destroyed && socket.writable && !socket.writableEnded;
+  readonly receiptReads: boolean;
 }
 
 interface PendingReplaceDelivery {
@@ -176,6 +173,7 @@ class IntercomBroker {
       topicFrames,
       lastMessages: msg.lastMessages === true,
       parking: msg.parking === true,
+      receiptReads: msg.receiptReads === 1,
     });
     setId(id);
     if (this.shutdownTimer) {
@@ -187,6 +185,7 @@ class IntercomBroker {
       sessionId: id,
       lastMessages: true,
       parking: msg.parking === true,
+      receiptReads: 1,
       ...(msg.guardedDelivery === 1 ? { guardedDelivery: 1 } : {}),
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
     });

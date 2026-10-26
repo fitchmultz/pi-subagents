@@ -869,6 +869,12 @@ test("a parked child keeps its identity, topics and admitted input until one gen
       });
     });
     assert.equal(record(await sender.last(childId)).text, "from captured history");
+    // Only the exited child's own runtime owns its receipts: the broker refuses, never relays.
+    assert.deepEqual(await sender.receipt(childId, { rootSessionId: "main-p", messageId: "m-1" }), {
+      error: "publication_unavailable",
+    });
+    await main.listSessions();
+    assert.deepEqual(wakes, [childId], "a receipt read never wakes the parked child");
     // No live session remains, yet the broker still owes the admitted input.
     await Promise.all([main.disconnect(), sender.disconnect()]);
     await delay(6000); // Past the broker's five-second idle shutdown check.

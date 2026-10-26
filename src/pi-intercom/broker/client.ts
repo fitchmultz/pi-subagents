@@ -5,7 +5,7 @@ import { writeMessage } from "./framing.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
 import { LastMessageRequests, lastRequest } from "./client-last.ts";
-import { isLastMessageResult } from "./last.ts";
+import { isNativeReadResult } from "./last.ts";
 import {
   errorMessage,
   isRecord,
@@ -26,6 +26,8 @@ import {
   type LastMessageQuery,
   type LastMessageResult,
   type SendOptions,
+  type ReceiptQuery,
+  type ReceiptResult,
 } from "../types.ts";
 export type { SendResult } from "../types.ts";
 
@@ -62,11 +64,10 @@ export class IntercomClient extends EventEmitter {
   private connection: BrokerConnection | null = null;
   private _sessionId: string | null = null;
   private _topicsSupported = false;
-  private lastMessagesSupported = false;
   private parkingSupported = false;
   private parkAcknowledged?: (parked: boolean) => void;
   private guardedDeliverySupported = false;
-  private readonly lastRequests = new LastMessageRequests();
+  private readonly lastRequests: LastMessageRequests;
   private readonly pendingSends = new Map<
     string,
     { readonly resolve: (r: SendResult) => void; readonly reject: (e: Readonly<Error>) => void }
@@ -88,6 +89,7 @@ export class IntercomClient extends EventEmitter {
     super();
     this.sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
     this.listTimeoutMs = options.listTimeoutMs ?? DEFAULT_LIST_TIMEOUT_MS;
+    this.lastRequests = new LastMessageRequests(this.listTimeoutMs);
   }
 
   private failPending(error: Readonly<Error>): void {
@@ -154,7 +156,6 @@ export class IntercomClient extends EventEmitter {
           this.connection = null;
           this._sessionId = null;
           this._topicsSupported = false;
-          this.lastMessagesSupported = false;
           this.parkAcknowledged?.(false);
           this.guardedDeliverySupported = false;
           this.disconnecting = false;
@@ -174,6 +175,7 @@ export class IntercomClient extends EventEmitter {
           topicFrames: true,
           lastMessages: true,
           parking: true,
+          receiptReads: 1,
           guardedDelivery: 1,
         });
       } catch (error) {
@@ -263,8 +265,9 @@ export class IntercomClient extends EventEmitter {
     }
     this._sessionId = msg.sessionId;
     this._topicsSupported = msg.topicsSupported === true && msg.topicFrames === true;
-    this.lastMessagesSupported = msg.lastMessages === true;
+    this.lastRequests.lastMessages = msg.lastMessages === true;
     this.parkingSupported = msg.parking === true;
+    this.lastRequests.receiptReads = msg.receiptReads === 1;
     this.guardedDeliverySupported = msg.guardedDelivery === 1;
     this.connection?.confirmRegistration();
     this.emit("_registered", { type: "registered", sessionId: msg.sessionId });
@@ -361,20 +364,15 @@ export class IntercomClient extends EventEmitter {
     return this.requestSessions().then((snapshot) => [...snapshot.sessions]);
   }
 
-  last(to: string, query: LastMessageQuery = {}): Promise<LastMessageResult> {
-    try {
-      const socket = this.requireActiveSocket();
-      if (!this.lastMessagesSupported) {
-        throw new Error("This broker does not support last-message reads; reload after it exits.");
-      }
-      return this.lastRequests.request(socket, to, query, this.listTimeoutMs);
-    } catch (error) {
-      return Promise.reject(toError(error));
-    }
+  async last(to: string, query: LastMessageQuery = {}): Promise<LastMessageResult> {
+    return await this.lastRequests.last(this.requireActiveSocket(), to, query);
+  }
+  async receipt(to: string, query: ReceiptQuery): Promise<ReceiptResult> {
+    return await this.lastRequests.receipt(this.requireActiveSocket(), to, query);
   }
 
   respondLast(requestId: string, result: unknown): void {
-    if (!isLastMessageResult(result)) {
+    if (!isNativeReadResult(result)) {
       throw new Error("Invalid last-message result");
     }
     writeMessage(this.requireActiveSocket(), { type: "last_response", requestId, result });

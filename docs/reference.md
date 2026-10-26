@@ -100,7 +100,8 @@ attached. On a Pi fork with native working-session capture, a child that stays
 idle for five minutes (no run, turn, journal change, live viewer or owned shell)
 parks: it saves its exact working state and its process exits, while its intercom
 identity stays listed with no departure. Passive messages, topic updates and
-`last` reads do not wake it; the main answers `last` from the saved history. A
+`last` reads do not wake it; the main answers `last` from the saved history.
+Receipt reads also do not wake it and report `publication_unavailable`. A
 normal message, ask or continuation restores the exact saved state into a new
 process, which then receives retained messages in order. If the final save
 fails, the child records `park-failed.json` and nothing restarts implicitly;

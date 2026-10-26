@@ -1,7 +1,9 @@
-import { execFileSync, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { isLinuxProcessReplaced, readLinuxProcess } from "../pi-intercom/broker/pid.ts";
 import { hasErrorCode } from "./unknown.ts";
+
+const BIRTH_FIELDS = ["lstart=", "pgid="];
 
 interface AgentProcessExit {
   readonly pid?: number;
@@ -54,17 +56,28 @@ export function readChildProcessIdentity(pid: number): string | undefined {
   if (process.platform === "linux") {
     return readLinuxProcess(pid)?.identity;
   }
-  const identity = readPsFields(pid, ["lstart=", "pgid="]);
-  return Number(identity?.split(" ").at(-1)) === pid ? identity : undefined;
+  return groupLeader(pid, readPsFields(pid, BIRTH_FIELDS));
+}
+
+function groupLeader(pid: number, birth: string | undefined): string | undefined {
+  return Number(birth?.split(" ").at(-1)) === pid ? birth : undefined;
+}
+
+// Always one PID: Darwin ps given several PIDs scans every process at many times the cost.
+function psArguments(pid: number, fields: readonly string[]): string[] {
+  return ["-p", String(pid), ...fields.flatMap((field) => ["-o", field])];
+}
+
+function psOptions(zone: string | undefined) {
+  const env = { ...process.env, LC_ALL: "C", ...(zone === undefined ? {} : { TZ: zone }) };
+  return { encoding: "utf8" as const, timeout: 1000, env };
 }
 
 function readPsFields(pid: number, fields: readonly string[], zone?: string): string | undefined {
   try {
-    return execFileSync("ps", ["-p", String(pid), ...fields.flatMap((field) => ["-o", field])], {
-      encoding: "utf8",
-      timeout: 1000,
+    return execFileSync("ps", psArguments(pid, fields), {
+      ...psOptions(zone),
       stdio: ["ignore", "pipe", "ignore"],
-      env: { ...process.env, LC_ALL: "C", ...(zone === undefined ? {} : { TZ: zone }) },
     })
       .trim()
       .replace(/\s+/g, " ");
@@ -73,13 +86,26 @@ function readPsFields(pid: number, fields: readonly string[], zone?: string): st
   }
 }
 
+/** Nonblocking `readPsFields`; a failed run likewise observes nothing. */
+function observePsFields(
+  pid: number,
+  fields: readonly string[],
+  zone?: string,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile("ps", psArguments(pid, fields), psOptions(zone), (error, stdout) => {
+      resolve(error ? undefined : stdout.trim().replace(/\s+/g, " "));
+    });
+  });
+}
+
 // C-locale ps lstart (whole-second birth, in the reader's zone), then the process group.
 const PS_IDENTITY = /^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4}) \d+$/;
 const MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
-function readUtcBirth(pid: number): number {
-  const [, month = "", day, hours, minutes, seconds, year] =
-    PS_IDENTITY.exec(readPsFields(pid, ["lstart=", "pgid="], "UTC0") ?? "") ?? [];
+/** Parses a birth observed with TZ=UTC0. */
+function utcBirth(birth: string | undefined): number {
+  const [, month = "", day, hours, minutes, seconds, year] = PS_IDENTITY.exec(birth ?? "") ?? [];
   const index = MONTHS.indexOf(month);
   // Unreadable or malformed observations yield NaN, which never proves a later birth.
   return month.length === 3 && index % 3 === 0
@@ -99,12 +125,18 @@ function sameClock(left: ProcessClock, right: ProcessClock): boolean {
 }
 
 /** Android's elapsed age bounds birth in the saved monotonic clock, never wall time. */
-function bornAfterClock(pid: number, clock: ProcessClock | undefined): boolean {
+function clockBound(clock: ProcessClock | undefined) {
   const before = readProcessClock();
-  if (clock === undefined || before === undefined || !sameClock(clock, before)) {
-    return false;
-  }
-  const elapsed = readPsFields(pid, ["etimes="]) ?? "";
+  return clock !== undefined && before !== undefined && sameClock(clock, before)
+    ? { clock, before }
+    : undefined;
+}
+
+/** `elapsed` is observed after the bound's `before` read; the closing clock read follows both. */
+function bornAfter(
+  { clock, before }: { clock: ProcessClock; before: ProcessClock },
+  elapsed = "",
+): boolean {
   const after = readProcessClock();
   if (after === undefined || !sameClock(before, after) || !/^\d+$/.test(elapsed)) {
     return false;
@@ -134,9 +166,39 @@ export function isChildProcessReplaced(
     return false;
   }
   if (process.platform === "android") {
-    return bornAfterClock(pid, clock);
+    const bound = clockBound(clock);
+    return bound !== undefined && bornAfter(bound, readPsFields(pid, ["etimes="]));
   }
-  return published !== undefined && readUtcBirth(pid) > published;
+  return published !== undefined && utcBirth(readPsFields(pid, BIRTH_FIELDS, "UTC0")) > published;
+}
+
+/**
+ * Nonblocking `readChildProcessIdentity(pid) !== recorded && isChildProcessReplaced(...)` for
+ * routine liveness. Signals still need the fresh synchronous proof.
+ */
+export async function observeChildProcessReplaced(
+  pid: number,
+  recorded: string,
+  published?: number,
+  clock?: ProcessClock,
+): Promise<boolean> {
+  if (process.platform === "linux") {
+    return readChildProcessIdentity(pid) !== recorded && isLinuxProcessReplaced(pid, recorded);
+  }
+  if (
+    !PS_IDENTITY.test(recorded) ||
+    groupLeader(pid, await observePsFields(pid, BIRTH_FIELDS)) === recorded
+  ) {
+    return false;
+  }
+  if (process.platform === "android") {
+    const bound = clockBound(clock);
+    return bound !== undefined && bornAfter(bound, await observePsFields(pid, ["etimes="]));
+  }
+  if (published === undefined) {
+    return false;
+  }
+  return utcBirth(await observePsFields(pid, BIRTH_FIELDS, "UTC0")) > published;
 }
 
 function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {

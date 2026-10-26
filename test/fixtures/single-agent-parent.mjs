@@ -2822,9 +2822,9 @@ try {
     };
     syncBuiltinESMExports();
     try {
-      fs.appendFileSync(source, "\n");
-      // Stay in this turn's microtasks: the periodic completion owner must not
-      // repair billing between metadata observation and its byte/read assertions.
+      // List while the journal still withholds its LF. Listing waits on live-actor `ps` checks,
+      // and once the LF lands the completion owner may legitimately repair billing meanwhile.
+      // Any inventory read of the journal still counts here, LF or not.
       const raw = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
       const listed = await raw.execute(
         "pending-accounting-list",
@@ -2841,6 +2841,7 @@ try {
         "native metadata inventory cannot repair pending accounting",
       );
       assert.equal(usageReads, 0, "metadata-only reads never open the child usage journal");
+      fs.appendFileSync(source, "\n");
       const inspected = await raw.execute(
         "pending-accounting-inspect",
         { action: "inspect", id: runId },

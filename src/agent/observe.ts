@@ -12,19 +12,23 @@ import { isChild, errorText } from "./host.ts";
 import { launchAt, list, ownerDirectory, runDirectory, read } from "./storage.ts";
 import { successorSchema, type Launch } from "./contracts.ts";
 import { readCanonicalResult } from "./usage.ts";
-import { actor, alive } from "./process.ts";
+import { actor, observeAlive } from "./process.ts";
 import { plainText } from "./journal-tail.ts";
 import { ObservationClient, type Watch } from "./observe-client.ts";
 import { adoptedJournal } from "./saved.ts";
 import type { ObserverRow } from "./observe-chrome.ts";
 
 const STATUS_KEY = "agent-observer";
+type Roots = Map<string, ReturnType<typeof actor>>;
+type Commit = (live: ReadonlyMap<string, boolean>) => void;
 
 class Observer {
   private ctx?: ExtensionContext;
   private owner = "";
   private base = "";
   private timer?: NodeJS.Timeout;
+  private scanning?: Promise<void>;
+  private rescan = false;
   private close?: () => void;
   private refresh?: () => void;
   private readonly rows = new Map<string, ObserverRow>();
@@ -45,6 +49,8 @@ class Observer {
   private dispose(): void {
     clearInterval(this.timer);
     this.timer = undefined;
+    this.scanning = undefined;
+    this.rescan = false;
     this.watcher?.close();
     this.watcher = undefined;
     for (const peer of this.peers.values()) {
@@ -106,50 +112,46 @@ class Observer {
     this.launches.set(id, launch);
     return launch;
   }
-  private live(launch: Launch, roots: Map<string, boolean>): boolean {
-    const cached = roots.get(launch.rootId);
-    if (cached !== undefined) {
-      return cached;
-    }
-    const identity = actor(this.base, launch);
-    const live = identity !== undefined && alive(identity);
-    roots.set(launch.rootId, live);
-    return live;
-  }
-  private load(id: string, roots: Map<string, boolean>): void {
+  /** Reads durable metadata now; unfinished rows commit after their root's batched liveness. */
+  private load(id: string, roots: Roots): Commit | undefined {
     if (this.finished.has(id)) {
-      return;
+      return undefined;
     }
     const launch = this.launch(id);
     const result = readCanonicalResult(this.base, launch);
     const finished = result !== undefined || this.hasSuccessor(id);
-    const live = !finished && this.live(launch, roots);
     if (finished) {
       this.finished.add(id);
+    } else if (!roots.has(launch.rootId)) {
+      roots.set(launch.rootId, actor(this.base, launch));
     }
-    this.rows.set(id, {
-      id,
-      name: plainText(launch.name ?? id, 120),
-      status: result?.status ?? (live ? "running" : "interrupted"),
-      live,
-      createdAt: launch.createdAt,
-      activity: this.peers.get(id)?.client.activity,
-    });
+    return (live) => {
+      const running = !finished && live.get(launch.rootId) === true;
+      this.rows.set(id, {
+        id,
+        name: plainText(launch.name ?? id, 120),
+        status: result?.status ?? (running ? "running" : "interrupted"),
+        live: running,
+        createdAt: launch.createdAt,
+        activity: this.peers.get(id)?.client.activity,
+      });
+    };
   }
   private hasSuccessor(id: string): boolean {
     return (
       read(path.join(runDirectory(this.base, id), "successor.json"), successorSchema) !== undefined
     );
   }
-  private loadVisible(id: string, roots: Map<string, boolean>): void {
+  private loadVisible(id: string, roots: Roots): Commit | undefined {
     try {
-      this.load(id, roots);
+      return this.load(id, roots);
     } catch (error) {
       this.rows.set(id, { id, name: id, status: "unavailable", live: false, createdAt: 0 });
       this.error = plainText(errorText(error));
+      return undefined;
     }
   }
-  private scan(): void {
+  private loadBatch(roots: Roots): Commit[] {
     try {
       const ids = list(this.base);
       const present = new Set(ids);
@@ -168,10 +170,46 @@ class Observer {
         this.pending = ids.filter((id) => !this.finished.has(id));
       }
       this.error = "";
-      const roots = new Map<string, boolean>();
-      this.pending.splice(0, 50).forEach((id) => this.loadVisible(id, roots));
+      return this.pending.splice(0, 50).flatMap((id) => this.loadVisible(id, roots) ?? []);
     } catch (error) {
       this.error = plainText(errorText(error));
+      return [];
+    }
+  }
+  /** One scan at a time; triggers during a scan coalesce into one follow-up. */
+  private scan(): void {
+    if (this.scanning !== undefined) {
+      this.rescan = true;
+      return;
+    }
+    const scanning = this.update()
+      .catch((error: unknown) => {
+        this.error = plainText(errorText(error));
+      })
+      .finally(() => {
+        if (this.scanning !== scanning) {
+          return;
+        }
+        this.scanning = undefined;
+        if (this.rescan) {
+          this.rescan = false;
+          this.scan();
+        }
+      });
+    this.scanning = scanning;
+  }
+  private async update(): Promise<void> {
+    const ctx = this.ctx;
+    const roots: Roots = new Map();
+    const commits = this.loadBatch(roots);
+    const claims = [...roots].flatMap(([root, identity]) => (identity ? [{ root, identity }] : []));
+    const verdicts = await observeAlive(claims.map(({ identity }) => identity));
+    if (this.ctx !== ctx) {
+      return;
+    }
+    const live = new Map(claims.map(({ root }, index) => [root, verdicts[index]]));
+    for (const commit of commits) {
+      commit(live);
     }
     this.activity();
     this.widget();

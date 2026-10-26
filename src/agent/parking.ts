@@ -293,13 +293,25 @@ function ownedRun(runs: Runs | undefined, peer: unknown): Launch | undefined {
   return launch && runs && latest(runs.base, launch);
 }
 
+/** The captured leaf's root-to-leaf path, as a live session manager reports it. */
+function branchOf(state: WorkingState): ReturnType<NativeHistory["getBranch"]> {
+  const entries = new Map(state.entries.map((entry) => [entry.id, entry]));
+  const branch = [];
+  for (
+    let entry = entries.get(state.leafId ?? "");
+    entry !== undefined;
+    entry = entries.get(entry.parentId ?? "")
+  ) {
+    branch.unshift(entry);
+  }
+  return branch;
+}
 async function history(runs: Runs | undefined, peer: string): Promise<NativeHistory | undefined> {
   const launch = ownedRun(runs, peer);
   const restore = launch && (await loadSDK(launch.sdk)).readWorkingSession;
   const state =
     runs && launch && parkedState(conversation(runs.base, launch), launch, restore)?.saved;
-  const entries = new Map(state?.entries.map((entry) => [entry.id, entry]));
-  return state && { getLeafId: () => state.leafId, getEntry: (id) => entries.get(id) };
+  return state && { getBranch: () => branchOf(state) };
 }
 
 /**

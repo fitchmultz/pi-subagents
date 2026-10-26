@@ -4,7 +4,8 @@ import type { IntercomTransport } from "./transport.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
-import type { LastMessageQuery, Message, SessionInfo } from "./types.ts";
+import type { Message, SessionInfo, ReceiptQuery, ReceiptResult } from "./types.ts";
+import type { NativeReadQuery } from "./broker/last.ts";
 import { readLastMessage, type NativeHistory } from "./last-message.ts";
 import { asError } from "./validation.ts";
 import { RecoveryError } from "./tool-results.ts";
@@ -19,6 +20,7 @@ type Lifecycle = Pick<
 interface ConnectionHooks {
   readonly restoring: () => Promise<void> | undefined;
   readonly pendingAsks: () => number;
+  readonly receipt: (query: ReceiptQuery) => ReceiptResult;
   readonly incoming: (ctx: ExtensionContext, from: SessionInfo, message: Message) => Promise<void>;
   readonly peerLeft: (id: string) => void;
   readonly disconnected: (error: Readonly<Error>) => void;
@@ -28,7 +30,7 @@ interface ConnectionHooks {
 }
 interface LastRequest {
   readonly requestId: string;
-  readonly query: LastMessageQuery;
+  readonly query: NativeReadQuery;
   readonly parked?: SessionInfo;
 }
 /** Owns socket registration, coalesced connects and the reconnect/startup timers. */
@@ -150,13 +152,21 @@ export class IntercomConnection {
       next.respondLast(request.requestId, { error: "Intercom runtime no longer active" });
       return;
     }
-    const { parked } = request;
+    const { parked, query } = request;
+    if ("messageId" in query) {
+      // The broker refuses receipt reads of an exited parked child before relaying them.
+      next.respondLast(
+        request.requestId,
+        parked ? { error: "publication_unavailable" } : this.hooks.receipt(query),
+      );
+      return;
+    }
     if (parked) {
       this.hooks
         .parkedHistory(parked)
         .then((history) =>
           history
-            ? readLastMessage(history, parked, request.query)
+            ? readLastMessage(history, parked, query)
             : { error: "Parked session history is unavailable." },
         )
         .catch((error: unknown) => ({ error: asError(error).message }))
@@ -180,7 +190,7 @@ export class IntercomConnection {
             model: ctx.model?.id ?? "unknown",
             status: this.lifecycle.status(),
           },
-          request.query,
+          query,
         ),
       );
     } catch (error) {

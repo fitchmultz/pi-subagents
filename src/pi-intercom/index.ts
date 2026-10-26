@@ -16,6 +16,18 @@ import { registerIntercomTools } from "./tool-registration.ts";
 import { isParkRequest, PARK, PARKED_HISTORY, WAKE } from "../shared/parking.ts";
 import type { NativeHistory } from "./last-message.ts";
 
+/** The agent runtime answers for its exited parked child from the captured native session. */
+function parkedHistory(pi: ExtensionAPI, peer: string): Promise<NativeHistory | undefined> {
+  let history: Promise<NativeHistory | undefined> | undefined;
+  pi.events.emit(PARKED_HISTORY, {
+    peer,
+    reply: (found: Promise<NativeHistory | undefined>) => {
+      history = found;
+    },
+  });
+  return history ?? Promise.reject(new Error("No agent runtime owns parked history."));
+}
+
 export default function piIntercomExtension(pi: ExtensionAPI): void {
   const config = loadConfig();
   const lifecycle = new IntercomLifecycle(pi, config, readIntercomLineage());
@@ -25,6 +37,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
   const connection = new IntercomConnection(lifecycle, config, {
     restoring: () => delivery.restoring,
     pendingAsks: () => replies.listPending().length,
+    receipt: (query) => journal.receipt(query),
     incoming: (ctx, from, message) => inbound.receive(ctx, from, message),
     peerLeft: (id) => {
       wait.peerDisconnected(id);
@@ -35,16 +48,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
         new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }),
       );
     },
-    parkedHistory: (peer) => {
-      let history: Promise<NativeHistory | undefined> | undefined;
-      pi.events.emit(PARKED_HISTORY, {
-        peer: peer.id,
-        reply: (found: Promise<NativeHistory | undefined>) => {
-          history = found;
-        },
-      });
-      return history ?? Promise.reject(new Error("No agent runtime owns parked history."));
-    },
+    parkedHistory: (peer) => parkedHistory(pi, peer.id),
     wake: (peer) => {
       pi.events.emit(WAKE, peer);
     },
