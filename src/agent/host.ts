@@ -9,8 +9,18 @@ import { readIntercomLineage } from "../pi-intercom/identity.ts";
 
 export { errorMessage as errorText } from "../shared/unknown.ts";
 
+/** Fork-only exact native working state; official Pi lacks it, so its children stay resident. */
+export interface WorkingState {
+  readonly header: { readonly id: string };
+  readonly sessionFile?: string;
+  readonly leafId: string | null;
+  readonly entries: readonly SDK.SessionEntry[];
+}
 // The native resolver is optional until official Pi exports it at the package root.
 type HostSDK = typeof SDK & {
+  readWorkingSession?: (file: string) => WorkingState;
+  writeWorkingSession?: (file: string, state: WorkingState) => void;
+  openWorkingSession?: (state: WorkingState) => SDK.SessionManager;
   resolveModelReference?: (
     request: { text: string; provider: string; thinkingSuffix: "strict"; fuzzy: false },
     models: readonly Model<Api>[],

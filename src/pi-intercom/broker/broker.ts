@@ -8,6 +8,7 @@ import { brokerPidRecord } from "./pid.ts";
 import { assertBrokerCanStart } from "./spawn.ts";
 import { LastMessageRelay } from "./last.ts";
 import { assertMainParent, canSeeSession, findSessions } from "./targets.ts";
+import { ParkedSessions, type ParkablePeer } from "./parked.ts";
 import { acceptBrokerConnection } from "./server-connection.ts";
 import {
   compactTopicMessage,
@@ -35,8 +36,7 @@ import {
 const PID_PATH = join(getBrokerRuntimeDir(), "broker.pid");
 const REPLACE_DELIVERY_DELAY_MS = 1500;
 
-interface ConnectedSession {
-  readonly socket: net.Socket;
+interface ConnectedSession extends ParkablePeer {
   info: SessionInfo;
   topics: TopicSnapshot;
   readonly topicFrames: boolean;
@@ -53,6 +53,7 @@ interface PendingReplaceDelivery {
 class IntercomBroker {
   private readonly sessions = new Map<string, ConnectedSession>();
   private readonly lastMessages = new LastMessageRelay(this.sessions);
+  private readonly parking = new ParkedSessions(this.sessions, this.deliverMessage.bind(this));
   private readonly pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
   private readonly server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
@@ -95,7 +96,7 @@ class IntercomBroker {
 
     this.shutdownTimer = setTimeout(() => {
       this.shutdownTimer = null;
-      if (this.sessions.size === 0) {
+      if (this.parking.exited) {
         console.log("No sessions connected, shutting down");
         this.shutdown();
       }
@@ -129,7 +130,7 @@ class IntercomBroker {
     }
     switch (msg.type) {
       case "unregister":
-        this.removeSession(currentId);
+        this.removeSession(currentId, socket);
         setId(null);
         break;
       case "list":
@@ -139,13 +140,18 @@ class IntercomBroker {
         this.send(socket, msg, currentId);
         break;
       case "last_request":
-        this.lastMessages.request(currentId, msg);
+        // Reads never spawn a parked child.
+        this.lastMessages.request(currentId, msg, (id) => this.parking.reader(id));
         break;
       case "last_response":
         this.lastMessages.respond(currentId, msg);
         break;
       case "presence":
         this.presence(msg, currentId);
+        break;
+      case "park":
+      case "unpark":
+        this.parking.park(socket, currentId, msg.type === "park");
         break;
       default:
         throw new Error(`Unknown client message type: ${msg.type}`);
@@ -157,12 +163,7 @@ class IntercomBroker {
       throw new Error("Invalid register message");
     }
     assertMainParent(msg.session, this.sessions);
-    const requestedId =
-      typeof msg.requestedId === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(msg.requestedId)
-        ? msg.requestedId
-        : undefined;
-    const id =
-      requestedId !== undefined && !this.sessions.has(requestedId) ? requestedId : randomUUID();
+    const { id, resumed } = this.parking.claim(msg.requestedId, msg.session);
     const info: SessionInfo = { ...msg.session, id, lastSeen: msg.session.lastSeen ?? Date.now() };
     snapshotFrames(randomUUID(), [info], true);
     const topicFrames = msg.topicFrames === true;
@@ -172,6 +173,7 @@ class IntercomBroker {
       topics: new TopicSnapshot(info),
       topicFrames,
       lastMessages: msg.lastMessages === true,
+      parking: msg.parking === true,
     });
     setId(id);
     if (this.shutdownTimer) {
@@ -182,19 +184,23 @@ class IntercomBroker {
       type: "registered",
       sessionId: id,
       lastMessages: true,
+      parking: msg.parking === true,
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
     });
+    this.parking.registered(id, resumed);
   }
 
-  private removeSession(sessionId: string): void {
+  private removeSession(sessionId: string, socket: net.Socket): void {
     const session = this.sessions.get(sessionId);
-    if (!session) {
+    if (session?.socket !== socket) {
       return;
     }
-    this.sessions.delete(sessionId);
     this.lastMessages.disconnected(sessionId);
-    this.clearPendingReplaceDeliveries(sessionId);
-    this.broadcast({ type: "session_left", sessionId }, session.info);
+    if (!this.parking.closed(session)) {
+      this.sessions.delete(sessionId);
+      this.clearPendingReplaceDeliveries(sessionId);
+      this.broadcast({ type: "session_left", sessionId }, session.info);
+    }
     this.scheduleShutdownCheck();
   }
 
@@ -374,6 +380,10 @@ class IntercomBroker {
         reason: "Recipient disconnected before delivery",
       };
     }
+    const queued = this.parking.queue(target, from, message);
+    if (queued) {
+      return queued;
+    }
     if (shouldReplaceDelivery(message, target.info)) {
       return this.queueReplaceDelivery(fromId, toId, from, message);
     }
@@ -466,12 +476,10 @@ class IntercomBroker {
 
   private deliverMessage(toId: string, from: SessionInfo, message: Message): string | null {
     const target = this.sessions.get(toId);
-    if (
-      !target ||
-      target.socket.destroyed ||
-      target.socket.writableEnded ||
-      !target.socket.writable
-    ) {
+    if (this.parking.retain(target, from, message)) {
+      return null;
+    }
+    if (target?.socket.writable !== true || target.socket.writableEnded) {
       return "Recipient disconnected before delivery";
     }
     const validationError = this.validateDeliveryPayload(from, message, target.topicFrames);

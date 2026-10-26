@@ -5,7 +5,7 @@ import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { LastMessageQuery, Message, SessionInfo } from "./types.ts";
-import { readLastMessage } from "./last-message.ts";
+import { readLastMessage, type NativeHistory } from "./last-message.ts";
 import { asError } from "./validation.ts";
 import { RecoveryError } from "./tool-results.ts";
 import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
@@ -23,10 +23,20 @@ interface ConnectionHooks {
   readonly incoming: (ctx: ExtensionContext, from: SessionInfo, message: Message) => Promise<void>;
   readonly peerLeft: (id: string) => void;
   readonly disconnected: (error: Readonly<Error>) => void;
+  /** A main answers for and wakes its exited parked children. */
+  readonly parkedHistory: (peer: SessionInfo) => Promise<NativeHistory | undefined>;
+  readonly wake: (peer: string) => void;
+}
+interface LastRequest {
+  readonly requestId: string;
+  readonly query: LastMessageQuery;
+  readonly parked?: SessionInfo;
 }
 /** Owns socket registration, coalesced connects and the reconnect/startup timers. */
 export class IntercomConnection {
   private client: IntercomClient | null = null;
+  /** The transport whose broker retains this actor's input while it parks. */
+  private parked: IntercomClient | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
   private connecting: Promise<IntercomTransport> | null = null;
@@ -42,6 +52,22 @@ export class IntercomConnection {
   }
   get active(): IntercomTransport | null {
     return this.client;
+  }
+  async park(): Promise<boolean> {
+    const client = this.client;
+    this.parked = client !== null && (await client.park().catch(() => false)) ? client : null;
+    return this.parked !== null && this.parked === this.client;
+  }
+  get parking(): boolean {
+    return this.parked !== null;
+  }
+  get reconnected(): boolean {
+    return this.client !== null && this.client !== this.parked;
+  }
+  unpark(): Promise<boolean> {
+    const client = this.parked === this.client ? this.client : null;
+    this.parked = null;
+    return client?.park(false).catch(() => false) ?? Promise.resolve(false);
   }
   start(ctx: ExtensionContext, generation: number): void {
     this.attempt = 0;
@@ -117,41 +143,59 @@ export class IntercomConnection {
       });
     }
   }
+  private answerLast(next: IntercomClient, request: LastRequest): void {
+    const ctx = this.lifecycle.live();
+    const id = next.sessionId;
+    if (this.client !== next || !ctx || id === null) {
+      next.respondLast(request.requestId, { error: "Intercom runtime no longer active" });
+      return;
+    }
+    const { parked } = request;
+    if (parked) {
+      this.hooks
+        .parkedHistory(parked)
+        .then((history) =>
+          history
+            ? readLastMessage(history, parked, request.query)
+            : { error: "Parked session history is unavailable." },
+        )
+        .catch((error: unknown) => ({ error: asError(error).message }))
+        .then((result) => {
+          next.respondLast(request.requestId, result);
+        })
+        .catch(() => {
+          /* The requester's broker timeout reports a lost transport. */
+        });
+      return;
+    }
+    try {
+      next.respondLast(
+        request.requestId,
+        readLastMessage(
+          ctx.sessionManager,
+          {
+            id,
+            ...this.lifecycle.identity(ctx.sessionManager.getSessionId()),
+            cwd: ctx.cwd,
+            model: ctx.model?.id ?? "unknown",
+            status: this.lifecycle.status(),
+          },
+          request.query,
+        ),
+      );
+    } catch (error) {
+      next.respondLast(request.requestId, { error: asError(error).message });
+    }
+  }
   private createClient(): IntercomClient {
     const next = new IntercomClient({
       sendTimeoutMs: this.config.sendTimeoutMs,
       listTimeoutMs: this.config.listTimeoutMs,
     });
     this.client = next;
-    next.on(
-      "last_request",
-      (request: { readonly requestId: string; readonly query: LastMessageQuery }) => {
-        const ctx = this.lifecycle.live();
-        const id = next.sessionId;
-        if (this.client !== next || !ctx || id === null) {
-          next.respondLast(request.requestId, { error: "Intercom runtime no longer active" });
-          return;
-        }
-        try {
-          next.respondLast(
-            request.requestId,
-            readLastMessage(
-              ctx.sessionManager,
-              {
-                id,
-                ...this.lifecycle.identity(ctx.sessionManager.getSessionId()),
-                cwd: ctx.cwd,
-                model: ctx.model?.id ?? "unknown",
-                status: this.lifecycle.status(),
-              },
-              request.query,
-            ),
-          );
-        } catch (error) {
-          next.respondLast(request.requestId, { error: asError(error).message });
-        }
-      },
-    );
+    next.on("last_request", (request: LastRequest) => {
+      this.answerLast(next, request);
+    });
     next.on("message", (from: SessionInfo, message: Message) => {
       const ctx = this.lifecycle.live();
       if (this.client !== next || !ctx) {
@@ -160,6 +204,11 @@ export class IntercomConnection {
       this.hooks.incoming(ctx, from, message).catch((error: unknown) => {
         console.error("Intercom inbound delivery failed:", error);
       });
+    });
+    next.on("wake", (peer: string) => {
+      if (this.client === next) {
+        this.hooks.wake(peer);
+      }
     });
     next.on("session_left", (id: string) => {
       if (this.client !== next) {

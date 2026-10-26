@@ -103,6 +103,8 @@ export const commandSchema = Type.Object({
 });
 export type Command = Static<typeof commandSchema>;
 export const successorSchema = Type.Object({ id: Type.String() });
+/** Authority to restore exact working state, valid only after the named actor has exited. */
+export const parkedSchema = Type.Object({ token: Type.String(), state: Type.String() });
 export const exitSchema = Type.Object({
   pid: Type.Integer(),
   code: Type.Union([Type.Integer(), Type.Null()]),

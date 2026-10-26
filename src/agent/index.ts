@@ -11,16 +11,22 @@ import {
   alive,
   ensureActor,
   ownIdentity,
+  parkFailure,
   requestStop,
   signalProcess,
   stopChildren,
+  wakeActor,
 } from "./process.ts";
-import { isChild, errorText } from "./host.ts";
+import { isChild, errorText, loadSDK } from "./host.ts";
+import { isHistoryRequest, PARKED_HISTORY, WAKE } from "../shared/parking.ts";
+import { nativePeerId } from "../pi-intercom/session-targets.ts";
+import type { NativeHistory } from "../pi-intercom/last-message.ts";
 import {
   resultSchema,
   attachmentSchema,
   admissionSchema,
   commandSchema,
+  parkedSchema,
   type Attachment,
   type Launch,
   type ProcessIdentity,
@@ -317,6 +323,7 @@ class AgentRuntime {
         note: "Guidance queued, not actual completion or model consumption.",
       });
     }
+    parkFailure(this.base, launch);
     const next = this.successor(launch, input.prompt);
     if (!next) {
       return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
@@ -374,8 +381,48 @@ class AgentRuntime {
     }
     return this.continue(launch, input);
   }
+  /** The broker names a parked child by native peer ID; only this owner's conversations match. */
+  private parked(peer: string): Launch | undefined {
+    const launch = list(this.base)
+      .map((id) => launchAt(this.base, id, this.owner))
+      .find((candidate) => nativePeerId(candidate.sessionId) === peer);
+    return launch && latest(this.base, launch);
+  }
+  private wake(peer: unknown): void {
+    // On failure, retained input stays queued at the broker until the next main registration.
+    (async () => {
+      const launch =
+        typeof peer === "string" && !this.child && this.ctx !== undefined
+          ? this.parked(peer)
+          : undefined;
+      if (launch) {
+        await wakeActor(this.base, launch, this.shutdown.signal);
+      }
+    })().catch((error: unknown) => {
+      console.error(`Agent wake: ${errorText(error)}`);
+    });
+  }
+  private async parkedHistory(peer: string): Promise<NativeHistory | undefined> {
+    const launch = this.child || !this.ctx ? undefined : this.parked(peer);
+    const parked =
+      launch && read(path.join(conversation(this.base, launch), "parked.json"), parkedSchema);
+    if (!launch || !parked) {
+      return undefined;
+    }
+    const state = (await loadSDK(launch.sdk)).readWorkingSession?.(parked.state);
+    const entries = new Map(state?.entries.map((entry) => [entry.id, entry]));
+    return state && { getLeafId: () => state.leafId, getEntry: (id) => entries.get(id) };
+  }
   register(): void {
     registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
+    this.pi.events.on(WAKE, (peer) => {
+      this.wake(peer);
+    });
+    this.pi.events.on(PARKED_HISTORY, (request) => {
+      if (isHistoryRequest(request)) {
+        request.reply(this.parkedHistory(request.peer));
+      }
+    });
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.

@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LastMessageQuery, LastMessageResult, SessionInfo } from "./types.ts";
 
-type NativeHistory = ExtensionContext["sessionManager"];
+export type NativeHistory = Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntry">;
 function validPage(offset: number, limit: number): boolean {
   return (
     Number.isSafeInteger(offset) &&

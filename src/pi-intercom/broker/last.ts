@@ -69,6 +69,8 @@ interface LastPeer {
 interface PendingLast {
   readonly fromId: string;
   readonly toId: string;
+  /** A parked child's main answers from the child's captured native history. */
+  readonly via?: string;
   readonly requestId: string;
   readonly query: LastMessageQuery;
   readonly timer: NodeJS.Timeout;
@@ -104,6 +106,17 @@ function matchesPage(result: LastMessageResult, pending: PendingLast, fromId: st
   );
 }
 
+function lastRequest(message: UnknownRecord): {
+  readonly requestId: string;
+  readonly to: string;
+  readonly query: LastMessageQuery;
+} {
+  const { requestId, to, query } = message;
+  if (typeof requestId !== "string" || typeof to !== "string" || !isLastMessageQuery(query)) {
+    throw new Error("Invalid last message request");
+  }
+  return { requestId, to, query };
+}
 /** Correlation belongs to the broker, not the requester or the recipient's model queue. */
 export class LastMessageRelay {
   private readonly pending = new Map<string, PendingLast>();
@@ -112,14 +125,13 @@ export class LastMessageRelay {
     this.sessions = sessions;
   }
 
-  request(fromId: string, message: UnknownRecord): void {
-    if (
-      typeof message.requestId !== "string" ||
-      typeof message.to !== "string" ||
-      !isLastMessageQuery(message.query)
-    ) {
-      throw new Error("Invalid last message request");
-    }
+  /** `reader` names another peer that answers for an exited target from its captured history. */
+  request(
+    fromId: string,
+    input: UnknownRecord,
+    reader: (id: string) => LastPeer | undefined,
+  ): void {
+    const message = lastRequest(input);
     const targets = findSessions(this.sessions, message.to, fromId);
     const target = targets[0];
     const from = this.sessions.get(fromId);
@@ -136,11 +148,13 @@ export class LastMessageRelay {
       return;
     }
     const token = randomUUID();
+    const via = reader(target.info.id);
     const frame = {
       type: "last_request" as const,
       requestId: token,
       from: messageSender(from.info),
       query: message.query,
+      parked: via && messageSender(target.info),
     };
     const invalid = validateIntercomMessageSize(frame);
     if (invalid) {
@@ -159,12 +173,13 @@ export class LastMessageRelay {
     this.pending.set(token, {
       fromId,
       toId: target.info.id,
+      via: via?.info.id,
       requestId: message.requestId,
       query: message.query,
       timer,
     });
     try {
-      writeMessage(target.socket, frame);
+      writeMessage((via ?? target).socket, frame);
     } catch {
       this.finish(token, { error: "Recipient disconnected before last-message read" });
     }
@@ -175,13 +190,13 @@ export class LastMessageRelay {
       throw new Error("Invalid last message response");
     }
     const pending = this.pending.get(message.requestId);
-    if (!pending || pending.toId !== fromId) {
+    if (!pending || (pending.via ?? pending.toId) !== fromId) {
       return;
     }
     const result = message.result;
     this.finish(
       message.requestId,
-      isLastMessageResult(result) && matchesPage(result, pending, fromId)
+      isLastMessageResult(result) && matchesPage(result, pending, pending.toId)
         ? result
         : { error: "Recipient returned an invalid last-message page" },
     );
@@ -189,7 +204,7 @@ export class LastMessageRelay {
 
   disconnected(sessionId: string): void {
     for (const [token, pending] of this.pending) {
-      if (pending.fromId === sessionId || pending.toId === sessionId) {
+      if ([pending.fromId, pending.toId, pending.via].includes(sessionId)) {
         this.finish(token, { error: "Peer disconnected during last-message read" });
       }
     }

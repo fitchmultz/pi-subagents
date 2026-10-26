@@ -79,6 +79,8 @@ export class IntercomClient extends EventEmitter {
   private _sessionId: string | null = null;
   private _topicsSupported = false;
   private lastMessagesSupported = false;
+  private parkingSupported = false;
+  private parkAcknowledged?: (parked: boolean) => void;
   private readonly lastRequests = new LastMessageRequests();
   private readonly pendingSends = new Map<
     string,
@@ -165,6 +167,7 @@ export class IntercomClient extends EventEmitter {
           this._sessionId = null;
           this._topicsSupported = false;
           this.lastMessagesSupported = false;
+          this.parkAcknowledged?.(false);
           this.disconnecting = false;
           this.failPending(error);
           if (established && !expected) {
@@ -181,6 +184,7 @@ export class IntercomClient extends EventEmitter {
           requestedId,
           topicFrames: true,
           lastMessages: true,
+          parking: true,
         });
       } catch (error) {
         if (this.connection === connection) {
@@ -245,11 +249,15 @@ export class IntercomClient extends EventEmitter {
       case "delivery_failed":
         this.receiveDelivery(brokerMessage);
         break;
+      case "parked":
+        this.parkAcknowledged?.(true);
+        break;
+      case "wake":
       case "session_left":
         if (typeof brokerMessage.sessionId !== "string") {
-          throw new Error("Invalid session_left message");
+          throw new Error(`Invalid ${type} message`);
         }
-        this.emit("session_left", brokerMessage.sessionId);
+        this.emit(type, brokerMessage.sessionId);
         break;
       default:
         throw new Error(`Unknown broker message type: ${type}`);
@@ -266,6 +274,7 @@ export class IntercomClient extends EventEmitter {
     this._sessionId = msg.sessionId;
     this._topicsSupported = msg.topicsSupported === true && msg.topicFrames === true;
     this.lastMessagesSupported = msg.lastMessages === true;
+    this.parkingSupported = msg.parking === true;
     this.connection?.confirmRegistration();
     this.emit("_registered", { type: "registered", sessionId: msg.sessionId });
   }
@@ -275,7 +284,8 @@ export class IntercomClient extends EventEmitter {
     if (typeof msg.requestId !== "string" || !from || !isLastMessageQuery(msg.query)) {
       throw new Error("Invalid last-message request");
     }
-    if (!this.emit("last_request", { requestId: msg.requestId, from, query: msg.query })) {
+    const request = { requestId: msg.requestId, from, query: msg.query };
+    if (!this.emit("last_request", { ...request, parked: normalizeSessionInfo(msg.parked) })) {
       this.respondLast(msg.requestId, { error: "Recipient has no last-message reader." });
     }
   }
@@ -335,6 +345,19 @@ export class IntercomClient extends EventEmitter {
       this.pendingLists.delete(requestId);
       pending.resolve(pending.reader.finish());
     }
+  }
+
+  /** True once the broker retains later input; false when it cannot or the socket closed. */
+  park(on = true): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.parkAcknowledged = on && this.parkingSupported ? resolve : undefined;
+      if (this.parkingSupported) {
+        writeMessage(this.requireActiveSocket(), { type: on ? "park" : "unpark" });
+      }
+      if (this.parkAcknowledged === undefined) {
+        resolve(false);
+      }
+    });
   }
 
   async disconnect(): Promise<void> {
