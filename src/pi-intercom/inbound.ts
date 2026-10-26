@@ -12,7 +12,7 @@ import { requestedDelivery } from "./inbound-record.ts";
 import { formatAttachments } from "./message-format.ts";
 
 type Lifecycle = Readonly<
-  Pick<IntercomLifecycle, "generation" | "isIdle" | "live" | "markActivity">
+  Pick<IntercomLifecycle, "accepts" | "generation" | "isIdle" | "live" | "markActivity">
 >;
 type InboundDeliveryHandle = Readonly<
   Pick<InboundDeliveryOwner, "batching" | "queue" | "restoring" | "send">
@@ -114,6 +114,9 @@ export class IntercomInbound {
     }
     const live = this.lifecycle.live(ctx, generation);
     if (!live) {
+      return;
+    }
+    if (input.guard && !this.lifecycle.accepts(input.guard)) {
       return;
     }
     // Peer metadata never grants user authority.

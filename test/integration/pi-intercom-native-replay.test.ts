@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,7 +23,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import type { ReadonlyDeep as ReadonlyInput } from "type-fest";
-import { createMessageReader } from "../../src/pi-intercom/broker/framing.ts";
+import { createMessageReader, writeMessage } from "../../src/pi-intercom/broker/framing.ts";
+import {
+  getBrokerSocketPath,
+  prepareBrokerSocketPath,
+} from "../../src/pi-intercom/broker/paths.ts";
 import { importSelectedNative } from "../support/native-import.ts";
 import { registeredSession, waitFor } from "../support/native-readiness.ts";
 import {
@@ -254,6 +259,7 @@ async function makeSession(
   const events: Array<Record<string, unknown>> = [];
   const errors: Array<{ event: string; error: string }> = [];
   let ctx: ExtensionContext | undefined;
+  let intercomEvents: ExtensionAPI["events"] | undefined;
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -269,6 +275,7 @@ async function makeSession(
     ],
     extensionFactories: [
       (pi: ExtensionAPI) => {
+        intercomEvents = pi.events;
         pi.on("session_start", (event, context) => {
           ctx = context;
           pi.setSessionName(name);
@@ -332,10 +339,41 @@ async function makeSession(
   const runtime = new AgentSessionRuntime(
     session,
     { cwd, agentDir, modelRuntime, settingsManager, resourceLoader: loader, diagnostics: [] },
-    async () => {
-      throw new Error("This fixture does not replace sessions");
+    async ({ sessionManager, sessionStartEvent }) => {
+      await loader.reload();
+      const next = await createAgentSession({
+        cwd,
+        agentDir,
+        modelRuntime,
+        settingsManager,
+        resourceLoader: loader,
+        model: faux.getModel(),
+        noTools: "builtin",
+        sessionManager,
+        sessionStartEvent,
+      });
+      return {
+        ...next,
+        services: {
+          cwd,
+          agentDir,
+          modelRuntime,
+          settingsManager,
+          resourceLoader: loader,
+          diagnostics: [],
+        },
+        diagnostics: [],
+      };
     },
   );
+  runtime.setRebindSession(async (next) => {
+    await next.bindExtensions({
+      mode: "print",
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+  });
   let disposal: Promise<void> | undefined;
   const dispose = () => {
     disposal ??= runtime.dispose();
@@ -395,6 +433,17 @@ async function makeSession(
     errors,
     sender,
     sends,
+    contextRequest: (channel: string, request: Readonly<Record<string, unknown>>) => {
+      assertDefined(intercomEvents);
+      let response: unknown;
+      intercomEvents.emit(channel, {
+        ...request,
+        respond: (value: unknown) => {
+          response = value;
+        },
+      });
+      return record(response);
+    },
     context: () => {
       assertDefined(ctx);
       return ctx;
@@ -427,6 +476,178 @@ async function makeSession(
     },
   };
 }
+
+test("native guarded admission rejects an in-flight withdrawn context before checkpointing", async (t) => {
+  const actualNamespace = text(process.env.PI_INTERCOM_RUNTIME_DIR);
+  const actualSocket = getBrokerSocketPath();
+  const proxyNamespace = path.join(actualNamespace, "p");
+  process.env.PI_INTERCOM_RUNTIME_DIR = proxyNamespace;
+  const socketPath = prepareBrokerSocketPath();
+  const sockets: net.Socket[] = [];
+  const held: Array<{ socket: net.Socket; frame: unknown }> = [];
+  let hold = false;
+  const proxy = net.createServer((socket) => {
+    const upstream = net.connect(actualSocket);
+    sockets.push(socket, upstream);
+    socket.pipe(upstream);
+    upstream.on(
+      "data",
+      createMessageReader(
+        (frame) => {
+          if (hold && at(frame, "type") === "message") {
+            held.push({ socket, frame });
+          } else {
+            writeMessage(socket, frame);
+          }
+        },
+        (error) => {
+          socket.destroy(error);
+        },
+      ),
+    );
+    socket.on("error", () => {
+      upstream.destroy();
+    });
+    upstream.on("error", () => {
+      socket.destroy();
+    });
+    socket.on("close", () => {
+      upstream.destroy();
+    });
+  });
+  await new Promise<void>((resolve) => {
+    proxy.listen(socketPath, resolve);
+  });
+  chmodSync(socketPath, 0o600);
+  t.after(async () => {
+    await receiver.dispose();
+    await receiver.sender.disconnect();
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => {
+      proxy.close(() => resolve());
+    });
+  });
+  let receiver: Awaited<ReturnType<typeof makeSession>>;
+  try {
+    receiver = await makeSession(t, "guarded-recipient", { waitForRegistration: false });
+    const connected = await executeIntercom(receiver, { action: "list" });
+    assert.notEqual(connected.isError, true, JSON.stringify(connected));
+    await registeredSession(receiver.sender, receiver.session.sessionManager.getSessionId());
+  } finally {
+    process.env.PI_INTERCOM_RUNTIME_DIR = actualNamespace;
+  }
+  const query = () => receiver.contextRequest("pi-intercom:context-query", { version: 1 });
+  const original = query();
+  assert.equal(original.rootSessionId, receiver.session.sessionManager.getSessionId());
+  assert.equal(original.guardedDelivery, 1);
+  const consent = (revision: string | null, target = query()) =>
+    receiver.contextRequest("pi-intercom:application-guard", { version: 1, target, revision });
+  const snapshot = consent("consent-1");
+  assert.equal(snapshot.applicationGuard, "consent-1");
+  await waitFor(
+    async () =>
+      (await receiver.sender.listSessions()).some(
+        (info) => info.id === snapshot.peerId && info.applicationGuard === "consent-1",
+      ),
+    "consent advertised",
+  );
+  const guard = {
+    rootSessionId: text(snapshot.rootSessionId),
+    peerId: text(snapshot.peerId),
+    incarnation: text(snapshot.incarnation),
+    applicationGuard: "consent-1",
+  };
+  hold = true;
+  const receipt = await receiver.sender.send(guard.peerId, {
+    messageId: "in-flight-old-consent",
+    text: "not admitted",
+    expectsReply: false,
+    delivery: "passive",
+    guard,
+  });
+  assert.equal(receipt.delivered, true, "broker acceptance precedes recipient admission");
+  await waitFor(() => held.length > 0, "real forwarded broker frame");
+  assert.equal(consent(null).applicationGuard, undefined);
+  assert.equal(consent("consent-2").applicationGuard, "consent-2");
+  hold = false;
+  for (const pending of held) {
+    writeMessage(pending.socket, pending.frame);
+  }
+  const commandId = "12345678-1234-1234-1234-123456789abc";
+  await waitFor(
+    async () =>
+      (await receiver.sender.listSessions()).some(
+        (info) => info.id === guard.peerId && info.applicationGuard === "consent-2",
+      ),
+    "new consent advertised",
+  );
+  await receiver.sender.send(guard.peerId, {
+    messageId: "fresh-guard",
+    text: "accepted once",
+    expectsReply: false,
+    delivery: "passive",
+    guard: { ...guard, applicationGuard: "consent-2" },
+    replyHint: { tool: "publish_reply", commandId },
+  });
+  await waitFor(
+    () => receiver.visible("fresh-guard").length === 1,
+    "recipient publication barrier",
+  );
+  assert.equal(receiver.visible("in-flight-old-consent").length, 0);
+  assert.ok(
+    !receiver.session.sessionManager
+      .getEntries()
+      .some((entry) => at(entry, "data", "entry", "message", "id") === "in-flight-old-consent"),
+  );
+  assert.match(
+    text(at(receiver.visible("fresh-guard")[0], "content")),
+    /publish_reply with commandId 12345678-1234-1234-1234-123456789abc/,
+  );
+  assert.doesNotMatch(await receiver.status(), /pending_asks:1/);
+  assert.deepEqual(receiver.contextRequest("pi-intercom:context-query", { version: 99 }), {
+    error: "unsupported_version",
+  });
+  await receiver.session.reload();
+  await waitFor(() => query().connected === true, "reloaded context registration");
+  const reloaded = query();
+  assert.equal(reloaded.rootSessionId, original.rootSessionId);
+  assert.notEqual(reloaded.incarnation, original.incarnation);
+  assert.equal(consent("stale-consent", snapshot).error, "context_changed");
+  assert.equal(
+    (
+      await receiver.sender.send(text(reloaded.peerId), {
+        messageId: "stale-after-reload",
+        text: "not rerouted",
+        expectsReply: false,
+        delivery: "passive",
+        guard,
+      })
+    ).accepted,
+    false,
+  );
+  await receiver.runtime.newSession();
+  await waitFor(() => query().connected === true, "new native session registration");
+  assert.notEqual(query().rootSessionId, reloaded.rootSessionId);
+  assert.notEqual(query().incarnation, reloaded.incarnation);
+  assert.equal(consent("stale-root", reloaded).error, "context_changed");
+  assert.equal(
+    (
+      await receiver.sender.send(guard.peerId, {
+        messageId: "stale-after-switch",
+        text: "must not follow the name",
+        expectsReply: false,
+        delivery: "passive",
+        guard,
+      })
+    ).accepted,
+    false,
+  );
+  assert.equal(receiver.faux.state.callCount, 0);
+  assert.deepEqual(receiver.errors, []);
+  await receiver.dispose();
+});
 
 test("native session renaming after startup updates its broker target without a model turn", async (t) => {
   const receiver = await makeSession(t, "rename-before");
@@ -3417,6 +3638,13 @@ for (const foreground of [false, true]) {
           ],
         },
       });
+      const before = receiver.contextRequest("pi-intercom:context-query", { version: 1 });
+      const consent = receiver.contextRequest("pi-intercom:application-guard", {
+        version: 1,
+        target: before,
+        revision: "reconnect-consent",
+      });
+      assert.equal(consent.applicationGuard, "reconnect-consent");
       const attempts = () => (existsSync(attemptFile) ? readFileSync(attemptFile).length : 0);
       // Observing failed real launcher processes proves a retry happened; no owner timer injection.
       const disconnected = once(receiver.sender, "disconnected");
@@ -3465,10 +3693,26 @@ for (const foreground of [false, true]) {
           // oxlint-disable-next-line no-await-in-loop
           await sleep(25);
         }
-        await receiver.send("after-reconnect", {
+        const after = receiver.contextRequest("pi-intercom:context-query", { version: 1 });
+        assert.equal(
+          after.incarnation,
+          before.incarnation,
+          "transport reconnect preserves the native context",
+        );
+        assert.equal(after.peerId, before.peerId);
+        const receipt = await receiver.sender.send(text(before.peerId), {
+          messageId: "after-reconnect",
           text: "Real post-reconnect input",
           delivery: "passive",
+          expectsReply: false,
+          guard: {
+            peerId: text(before.peerId),
+            rootSessionId: text(before.rootSessionId),
+            incarnation: text(before.incarnation),
+            applicationGuard: "reconnect-consent",
+          },
         });
+        assert.equal(receipt.accepted, true);
         await waitFor(
           () => receiver.visible("after-reconnect").length === 1,
           "reconnected native delivery",

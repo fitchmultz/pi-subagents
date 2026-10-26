@@ -50,6 +50,54 @@ when needed to distinguish collisions. A project-filtered peer can still be
 addressed by its known target; a topology-forbidden peer cannot. A hidden peer
 does not leak through duplicate-name ambiguity or disconnect notifications.
 
+### Conditional native context targeting
+
+Ordinary `intercom` names and asks are unchanged. Integrations can negotiate
+guarded-delivery version 1 with the private broker client. Discovery then exposes
+`rootSessionId`, `incarnation`, `guardedDelivery:1` and the optional opaque
+`applicationGuard`. The lifecycle mints the incarnation on native startup, reload
+or session replacement, not on transport reconnect. Peer IDs still belong to
+the broker. Two current mains for one root make guarded sends ambiguous.
+
+A guarded send requires an exact peer ID, a caller-recorded original message ID,
+`expectsReply:false`, and
+`guard:{rootSessionId,peerId,incarnation,applicationGuard}`. The broker checks
+the complete binding before routing; the native recipient checks again before
+any checkpoint or placement. Children are not guarded command targets. Missing
+capability, stale context, changed consent or an ambiguous root fails closed,
+never selecting a similarly named main. A broker acceptance still does not prove
+recipient admission. Lost responses remain uncertain; no automatic replay is added.
+The supported external client and receipt lookup are separate work, not exports
+introduced here.
+
+An original-main companion uses the existing process-local `pi.events` bus:
+
+- Emit `pi-intercom:context-query` with `{version:1,respond(snapshot)}` for late
+  attachment. Unknown versions return `{error:"unsupported_version"}`.
+- Observe `pi-intercom:context-state` for subsequent lifecycle, connection and
+  application-guard changes. Snapshots contain `version:1`, exact root, optional
+  parent, actual `peerId`, `incarnation`, `connected`, negotiated
+  `guardedDelivery:1|null`, and optional `applicationGuard`. Unavailable identities
+  are null. Query after subscribing; state events are not replayed.
+- Emit `pi-intercom:application-guard` with
+  `{version:1,target:{rootSessionId,peerId,incarnation},revision,respond(result)}`.
+  The companion owns this opaque nonempty string revision; null withdraws it.
+  A stale target returns `{error:"context_changed"}`. It is cleared on context
+  replacement and retained on transport reconnect. This handshake is not consent
+  itself, does not persist a policy, and grants no human-origin authority.
+
+Callbacks are process-local, synchronous observations. They are not socket frames
+or a generic registry. Old owners have no handshake; treat them as unsupported.
+Old brokers do not acknowledge guarded delivery, so updated clients refuse before
+sending. Old ordinary clients and recipients continue using ordinary messages;
+they are not advertised as conditional targets.
+
+Guarded nonblocking messages may include
+`replyHint:{tool,commandId}`. Tool names are validated identifiers and command IDs
+are immutable UUIDs supplied by the sender. The native message renders a generic
+publication hint separately from an ordinary ask. No product-specific tool is
+hard-coded, no pending ask is created, and a hint does not prove a reply exists.
+
 ## Send, ask, and reply
 
 ```js
