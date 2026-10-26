@@ -224,10 +224,10 @@ test("native recovery publishes a completion backlog chronologically once, then 
     });
     fs.writeFileSync(path.join(base, id, "output.txt"), `Result ${id}`);
   }
-  deliver(h.pi, h.context, notifications(h.context, base, h.launch.owner));
+  deliver(h.pi, h.context, notifications(h.context, base, h.launch.owner).notices);
   await h.session.waitForIdle();
   settle(h.launch.owner, h.context.hasPendingMessages());
-  deliver(h.pi, h.context, notifications(h.context, base, h.launch.owner));
+  deliver(h.pi, h.context, notifications(h.context, base, h.launch.owner).notices);
   await h.session.waitForIdle();
   const ids = h.manager
     .getEntries()
@@ -238,7 +238,7 @@ test("native recovery publishes a completion backlog chronologically once, then 
     );
   assert.deepEqual(ids, ["z-original", "a-continuation"]);
 
-  const scan = () => notifications(h.context, base, h.launch.owner);
+  const scan = () => notifications(h.context, base, h.launch.owner).notices;
   assert.deepEqual(scan(), [], "settled history is observed after native publication");
   const opened = spy(fs, "openSync");
   const reads = spy(fs, "readSync");

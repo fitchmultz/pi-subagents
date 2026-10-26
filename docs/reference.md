@@ -185,11 +185,28 @@ tool result already includes them.
 ## Completion delivery
 
 Attachment publishes durable ownership before ordinary session startup returns.
-Retained completion recovery runs on the existing 200 ms scanner or an explicit
-reconciliation, not on the awaited startup path. The interval is not a delivery
+Retained completion recovery runs about 200 ms later or on an explicit
+reconciliation, not on the awaited startup path. That delay is not a delivery
 deadline. A short-lived main may exit before recovery, and a prompt started
 immediately after startup may receive the recovered backlog as steering input.
 Managed launchers still gate attachment on accepted host readiness.
+
+After that, the main reconciles when its owner directory, an unfinished run's
+`result.json`, a pending-accounting child journal or the retired legacy result
+directory changes, and after settlement or `agent_runs` controls. A change only
+starts reconciliation; canonical results, admissions and journal receipts still
+decide delivery. Directories the platform cannot watch, and failed reconciliations,
+fall back to the previous 200 ms polling. An idle main does no recurring scan.
+Instead, once a second it stats the inputs the last reconciliation read (the owner
+and legacy directories and each awaited file) and reconciles if any changed. A
+change notification the OS drops, or a legacy directory created after attachment,
+therefore delays delivery by at most about a second.
+
+Actors admit durable commands the same way: a change to their `commands`
+directory, a stop or a deferred run starts a scan. Their one-second parent
+liveness check also rechecks the directory for changes, so a dropped notification
+delays admission by at most that check. Without a watch, actors poll every 100 ms
+as before.
 
 Completion notices use steering, not follow-up delivery. A busy parent receives
 results at the next native tool boundary; it need not finish its task first.

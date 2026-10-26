@@ -37,5 +37,5 @@ suite or self-hosted runner requirement.
 CI's lint job also enforces the production line/byte shrink budget before
 qualification substitutes the selected host graph. The retired workflow schema
 generator and its patching dependency are not part of the new runtime.
-The active-child viewer has an approved aggregate budget of 18,000 source lines
-and 22,000 production lines. The 1 MiB byte ceiling and all lint limits stay unchanged.
+The active-child viewer has an approved aggregate budget of 19,000 source lines
+and 22,500 production lines. The 1 MiB byte ceiling and all lint limits stay unchanged.

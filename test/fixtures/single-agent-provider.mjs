@@ -16,6 +16,13 @@ function commandIO(root) {
   let reads = [];
   fs.openSync = (file, ...args) => {
     const fd = original.open(file, ...args);
+    if (typeof file === "string" && file.endsWith("/attachment.json") && args[0] === "r") {
+      // The actor's parent liveness check witnesses elapsed loop iterations.
+      fs.appendFileSync(
+        path.join(root, "actor-ticks.jsonl"),
+        JSON.stringify({ pid: process.pid }) + "\n",
+      );
+    }
     if (typeof file === "string" && file.includes("/commands/") && args[0] === "r") {
       const count = { file: path.basename(file), opens: 1, bytes: 0 };
       reads.push(count);
@@ -61,6 +68,14 @@ export default async function fixture(pi) {
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
   if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
     commandIO(root);
+  }
+  if (process.env.SINGLE_AGENT_DROP_HINTS === "1") {
+    const watch = fs.watch;
+    fs.watch = (target, options) => {
+      fs.appendFileSync(path.join(root, "lost-hint-watches.jsonl"), `${process.pid}\n`);
+      return watch(target, options);
+    };
+    syncBuiltinESMExports();
   }
   pi.on("session_start", (_event, ctx) => {
     fs.appendFileSync(
