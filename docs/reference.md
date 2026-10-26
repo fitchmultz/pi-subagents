@@ -196,10 +196,11 @@ After that, the main reconciles when its owner directory, an unfinished run's
 directory changes, and after settlement or `agent_runs` controls. A change only
 starts reconciliation; canonical results, admissions and journal receipts still
 decide delivery. Directories the platform cannot watch, and failed reconciliations,
-fall back to the previous 200 ms polling. An idle main otherwise does no recurring
-scan. A change notification the OS drops is recovered at the next reconciliation
-or resume. A legacy result directory created after attachment is first read at the
-next reconciliation.
+fall back to the previous 200 ms polling. An idle main does no recurring scan.
+Instead, once a second it stats the inputs the last reconciliation read (the owner
+and legacy directories and each awaited file) and reconciles if any changed. A
+change notification the OS drops, or a legacy directory created after attachment,
+therefore delays delivery by at most about a second.
 
 Actors admit durable commands the same way: a change to their `commands`
 directory, a stop or a deferred run starts a scan. Their one-second parent

@@ -69,6 +69,14 @@ export default async function fixture(pi) {
   if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
     commandIO(root);
   }
+  if (process.env.SINGLE_AGENT_DROP_HINTS === "1") {
+    const watch = fs.watch;
+    fs.watch = (target, options) => {
+      fs.appendFileSync(path.join(root, "lost-hint-watches.jsonl"), `${process.pid}\n`);
+      return watch(target, options);
+    };
+    syncBuiltinESMExports();
+  }
   pi.on("session_start", (_event, ctx) => {
     fs.appendFileSync(
       path.join(root, "native-actor-starts.jsonl"),

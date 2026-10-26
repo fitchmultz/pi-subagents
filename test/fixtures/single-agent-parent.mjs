@@ -44,6 +44,18 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+// Every native change notification is lost: only bounded recovery can observe publication.
+const lostHints = { watches: 0 };
+if (phase === "dropped-hints") {
+  process.env.SINGLE_AGENT_DROP_HINTS = "1";
+  const watch = fs.watch;
+  // A real watcher whose change listener never runs.
+  fs.watch = (target, options) => {
+    lostHints.watches++;
+    return watch(target, options);
+  };
+  syncBuiltinESMExports();
+}
 if (phase.startsWith("legacy-")) {
   // Retired releases created their result directory when their session started.
   fs.mkdirSync(path.join(root, "pi-subagents-runtime/async-subagent-results"), {
@@ -686,6 +698,35 @@ try {
       "schema-invalid admitted replacement fails the real actor",
     );
     assert.equal(readJSON(path.join(directory, `exit-${coldActor.token}.json`)).code, 1);
+  } else if (phase === "dropped-hints") {
+    const first = await settled(
+      await call(
+        "delegate",
+        { prompt: "DROPPED_HINT_LITERAL", model: "single-agent-fixture/literal-model" },
+        "dropped-launch",
+      ),
+      "a completion whose change notification was lost still reaches the idle parent",
+    );
+    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:DROPPED_HINT_LITERAL");
+    const next = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: first.details.id, prompt: "DROPPED_CONTINUE_LITERAL" },
+        "dropped-continue",
+      ),
+      "the live actor admits a command whose change notification was lost",
+    );
+    assert.equal(next.details.output.text, "CHILD_LITERAL_RESULT:DROPPED_CONTINUE_LITERAL");
+    assert.deepEqual(
+      requests().map((request) => request.prompt),
+      ["DROPPED_HINT_LITERAL", "DROPPED_CONTINUE_LITERAL"],
+    );
+    assert.equal(new Set(requests().map((request) => request.pid)).size, 1, "same live actor");
+    assert.ok(lostHints.watches > 0, "the parent actually armed watches that lost hints");
+    assert.ok(
+      fs.readFileSync(path.join(root, "lost-hint-watches.jsonl"), "utf8").length > 0,
+      "the actor actually armed a watch that lost hints",
+    );
   } else if (phase === "inventory") {
     const saved = [];
     for (let index = 0; index < 51; index++) {

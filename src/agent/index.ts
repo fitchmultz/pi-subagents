@@ -42,7 +42,7 @@ import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
 import { legacyDirectory, legacyNotifications } from "./legacy.ts";
-import { DirectoryWatch, type WatchState } from "./wake.ts";
+import { DirectoryWatch, pathStamp, type WatchState } from "./wake.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
@@ -86,6 +86,9 @@ class AgentRuntime {
   // Change hints for the owner directory, legacy results and every awaited canonical file.
   private readonly watches = new Map<string, DirectoryWatch>();
   private awaited: ReadonlySet<string> = new Set();
+  // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
+  private observed = new Map<string, string>();
+  private probe?: NodeJS.Timeout;
   private closing = false;
   private reset: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
@@ -109,11 +112,21 @@ class AgentRuntime {
       this.scan();
     }).unref();
   };
+  private readonly recover = (): void => {
+    for (const [file, seen] of this.observed) {
+      if (pathStamp(file) !== seen) {
+        this.wake();
+        return;
+      }
+    }
+  };
   private readonly scan = (): void => {
     clearTimeout(this.timer);
     if (this.closing || !this.ctx || this.child) {
       return;
     }
+    const inputs = () => [this.base, legacyDirectory(), ...this.awaited];
+    const before = new Map(inputs().map((file) => [file, pathStamp(file)]));
     let reconciled = true;
     try {
       const { notices, awaited } = notifications(this.ctx, this.base, this.owner);
@@ -128,6 +141,8 @@ class AgentRuntime {
       reconciled = false;
       console.error(`Agent completion reconciliation: ${errorText(error)}`);
     }
+    // Newly awaited files were absent when read, or are rechecked once by the probe.
+    this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
     const next = this.watch();
     if (!reconciled || next === "poll") {
       this.timer = setTimeout(this.scan, 200).unref();
@@ -168,6 +183,8 @@ class AgentRuntime {
   }
   private unwatch(): void {
     clearTimeout(this.timer);
+    clearInterval(this.probe);
+    this.observed.clear();
     clearImmediate(this.woken);
     this.woken = undefined;
     for (const watch of this.watches.values()) {
@@ -222,6 +239,7 @@ class AgentRuntime {
     }
     // Recovery and watch setup stay off the awaited startup path.
     this.timer = setTimeout(this.scan, 200).unref();
+    this.probe = setInterval(this.recover, 1000).unref();
   }
   private async dispose(retain: boolean): Promise<void> {
     this.closing = true;

@@ -1,5 +1,16 @@
 import * as fs from "node:fs";
+import { journalStamp } from "../shared/native-journal.ts";
 import { missing } from "./storage.ts";
+
+/** Identity and change stamp of a path; "" when absent. */
+export function pathStamp(file: string): string {
+  try {
+    const stat = fs.statSync(file, { bigint: true, throwIfNoEntry: false });
+    return stat === undefined ? "" : journalStamp(stat);
+  } catch {
+    return "unreadable";
+  }
+}
 
 /**
  * `armed`: hints start now, so reconcile anything published earlier.

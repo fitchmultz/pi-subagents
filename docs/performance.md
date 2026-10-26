@@ -33,9 +33,9 @@ These measure extension factory loading, not interactive startup, completion
 latency, or steady-state memory. The minimum decreased, but the delta is smaller
 than the baseline's observed first-run spread: this small sample is not a general
 speedup claim. The long-lived costs remain explicit: a main reconciles receipts
-when watched completion inputs change, native actors check their parent each
-second and scan durable commands on change, and the broker maintains
-connections/presence. Completed actors stay messageable
+when watched completion inputs change and stats those inputs each second, native
+actors check their parent each second and scan durable commands on change, and the
+broker maintains connections/presence. Completed actors stay messageable
 while attached; observed owner detachment ends their lifetime. Native lifecycle
 and live acceptance checks verify disposal/exit, rather than inferring cleanup
 from a timer or package size.
