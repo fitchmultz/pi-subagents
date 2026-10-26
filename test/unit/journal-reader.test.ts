@@ -201,7 +201,8 @@ test("sealed inspection accepts a valid unterminated record without repair; stri
   observeReads(t, ({ count }) => {
     bytesRead += count;
   });
-  assert.equal(new NativeJournal(file).configuration().model, "p/m");
+  const model = new NativeJournal(file).byId.get("m")?.value;
+  assert.deepEqual([model?.provider, model?.modelId], ["p", "m"]);
   assert.equal(
     bytesRead,
     Buffer.byteLength(original),
@@ -239,13 +240,13 @@ test("sealed inspection and LF-published native bodies never weaken strict accou
   assert.ok(sealedTerminal);
   assert.equal(firstText(record(sealed.body(sealedTerminal).message).content), text);
   assert.equal(unpublished.byId.has("terminal"), false);
-  assert.equal(unpublished.configuration().model, undefined);
   assert.equal(fs.readFileSync(file, "utf8"), original);
   fs.appendFileSync(file, "\n");
   const published = new NativeJournal(file, "inspect", true);
-  assert.equal(published.configuration().model, "fixture/faux");
   const publishedTerminal = published.byId.get("terminal");
   assert.ok(publishedTerminal);
+  const message = record(publishedTerminal.value.message);
+  assert.deepEqual([message.provider, message.model], ["fixture", "faux"]);
   assert.equal(firstText(record(published.body(publishedTerminal).message).content), text);
   assert.throws(
     () => childUsage(launch(file), new Set()),
@@ -320,7 +321,7 @@ test("output pages preserve Unicode at byte boundaries and do not read the prece
 });
 
 test(
-  "a valid ignored individual value larger than Node's string ceiling preserves billing, configuration, baselines and source bytes under a 96 MiB heap",
+  "a valid ignored individual value larger than Node's string ceiling preserves billing, selected model metadata, baselines and source bytes under a 96 MiB heap",
   { timeout: 180_000 },
   (t) => {
     const root = temporary(t),
@@ -416,7 +417,8 @@ test(
 		assert.deepEqual(contributions.map(c=>c.id),['child:paid','child:abandoned','child:terminal']);
 		assert.deepEqual(contributions.map(c=>[c.provider,c.model]),[['p','actual'],['p','selected'],['p','actual']]);
 		const journal=new NativeJournal(file);
-		assert.equal(journal.configuration().model,'p/selected');
+		const message=journal.byId.get('terminal').value.message;
+		assert.deepEqual([message.provider,message.model],['p','selected']);
 		assert.equal(journal.body(journal.byId.get('terminal')).message.content[0].text,'Final 🦄 answer');
 		assert.equal(receiptId(file,'child',entry=>entry.customType==='agent-completion'&&entry.details?.owner==='child'&&entry.details?.completed===true),'completion');
 		const hash=createHash('sha256'); for await(const bytes of createReadStream(file)) hash.update(bytes);
