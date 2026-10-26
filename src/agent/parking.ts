@@ -27,7 +27,7 @@ type Parkable = AgentSession & {
 interface Resident {
   readonly pi: ExtensionAPI | undefined;
   readonly busy: boolean;
-  /** Admits commands that raced the parking marker; false when work or stopping began. */
+  /** Admits commands that raced the marker; false once work, stopping or a viewer began. */
   readonly admit: () => boolean;
   readonly errors: string[];
 }

@@ -4,8 +4,9 @@ import type { Message, SessionInfo } from "../types.ts";
 import { nativePeerId } from "../session-targets.ts";
 import { writeMessage } from "./framing.ts";
 
+type Retained = Array<{ readonly from: SessionInfo; readonly message: Message }>;
 interface Parked {
-  readonly retained: Array<{ readonly from: SessionInfo; readonly message: Message }>;
+  readonly retained: Retained;
   /** The fenced actor's socket closed: input waits for its restored replacement. */
   closed: boolean;
 }
@@ -38,9 +39,20 @@ export class ParkedSessions<T extends ParkablePeer> {
     } else if (!on && session?.parked?.closed === false) {
       const { retained } = session.parked;
       session.parked = undefined;
-      retained.forEach(({ from, message }) => {
-        this.deliver(id, from, message);
-      });
+      this.flush(id, retained);
+    }
+  }
+  /**
+   * Delivers retained input in order. A transport that fails mid-flush keeps the rest for its
+   * next generation; delivery refusals on a live transport follow resident delivery.
+   */
+  private flush(id: string, retained: Retained): void {
+    for (const [index, { from, message }] of retained.entries()) {
+      const session = this.sessions.get(id);
+      if (this.deliver(id, from, message) !== null && session?.socket.writable === false) {
+        session.parked = { retained: retained.slice(index), closed: false };
+        return;
+      }
     }
   }
   /** A free requested identity, or a parked one resumed by the same child lineage. */
@@ -59,15 +71,7 @@ export class ParkedSessions<T extends ParkablePeer> {
   }
   /** Flushes a restored child's input and re-sends wakes owed to a (re)registered main. */
   registered(id: string, previous?: T): void {
-    const retained = previous?.parked?.retained ?? [];
-    const refused = retained.findIndex(
-      ({ from, message }) => this.deliver(id, from, message) !== null,
-    );
-    const session = this.sessions.get(id);
-    if (session && refused >= 0) {
-      // A refused flush keeps ownership, in order, for the next transport generation.
-      session.parked = { retained: retained.slice(refused), closed: false };
-    }
+    this.flush(id, previous?.parked?.retained ?? []);
     for (const child of this.sessions.values()) {
       if (nativePeerId(child.info.rootSessionId ?? "") === id) {
         this.wake(child);
