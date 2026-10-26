@@ -56,6 +56,12 @@ A main and its children form one group:
 These are coordination rules, not an OS sandbox against same-user code. A peer
 list contains connected, eligible sessions, not every Pi process on the machine.
 
+Non-model Node.js companions can import
+`@fitchmultz/pi-subagents/intercom-client` for discovery, exact guarded sends,
+pinned last-response pages and original-message receipts. The
+[supported client API](docs/intercom.md#supported-non-model-client) connects only
+to an existing broker; it loads no Pi SDK, model, TUI or conversation journal.
+
 ## Bundled skills
 
 The package ships two skills that match tool availability.
