@@ -85,8 +85,20 @@ async function cut(
   return undefined;
 }
 const PARK_AFTER_MS = 5 * 60_000;
-const digest = (file: string): string =>
-  createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+/** SHA-256 of every state byte through one reused chunk, like the native state reader. */
+function digest(file: string): string {
+  const hash = createHash("sha256");
+  const fd = fs.openSync(file, "r");
+  try {
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    for (let count = fs.readSync(fd, chunk); count > 0; count = fs.readSync(fd, chunk)) {
+      hash.update(chunk.subarray(0, count));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
+}
 
 /** Parked authority names this session and exactly the saved generation's state bytes. */
 function exact(
