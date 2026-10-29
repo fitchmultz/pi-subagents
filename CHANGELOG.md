@@ -5,6 +5,7 @@
 ### Fixed
 
 - Stop the live child viewer from rebuilding native renderers after each streamed update. Assistant and tool cards now keep the native component's own update result and only refresh the card's outer layout. On the maintained fork, unchanged thinking or prose is no longer re-parsed while a later block streams. On both hosts, tool-argument and progress updates run native tool rendering once per update instead of twice. Visible output, theme changes, resize, selection and expansion are unchanged.
+- Reuse the running Pi's SDK for the first delegation, `/agents` and parked-history restore in production-only installs, instead of importing a second copy of the same SDK from disk. In five alternating pairs per host on a busy macOS machine, the parent no longer grew by 66–85 MiB during its first `delegate` call. The median time to that call's receipt fell from 1.4 s to 0.1 s on the maintained fork. Official Pi's median fell from 1.9 s to 0.1 s, but the size of that gain is inconclusive under the measured load: one run with the change took 2.3 s. Installs with their own SDK copy, a set `PI_PACKAGE_DIR` and detached children still load the selected Pi package directly.
 
 ## [0.52.2] - 2026-10-29
 

@@ -416,7 +416,9 @@ try {
 import { writeFileSync } from "node:fs";
 import { Type } from "typebox";
 import { Assert } from "typebox/value";
+import * as PiSDK from "@earendil-works/pi-coding-agent";
 import { Type as AgentType, Assert as AgentAssert } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/typebox.js")).href)};
+import { loadSDK, packageRoot as selectedRoot } from ${JSON.stringify(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href)};
 export default function(pi) {
   // Native development graphs can resolve local peers before Jiti runs.
   // Production-only installs must instead reuse the bundled host's virtual modules.
@@ -424,8 +426,11 @@ export default function(pi) {
     assert.equal(AgentType, Type, "extension schemas reuse Pi's TypeBox instance");
     assert.equal(AgentAssert, Assert, "extension validation reuses Pi's TypeBox instance");
   }
-  pi.on("session_start", (_event, ctx) => {
-    writeFileSync(${JSON.stringify(marker)}, JSON.stringify(pi.getActiveTools()));
+  pi.on("session_start", async (_event, ctx) => {
+    // Delegation, /agents and parked history load the SDK through this adapter. Jiti wraps
+    // each importer's namespace, so compare the session class delegation constructs.
+    const sdkReused = (await loadSDK(selectedRoot())).SessionManager === PiSDK.SessionManager;
+    writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ tools: pi.getActiveTools(), sdkReused }));
     ctx.shutdown();
   });
 }`,
@@ -468,7 +473,11 @@ export default function(pi) {
       "",
     );
     assert.doesNotMatch(output, /Failed to load extension|ERR_INTERNAL_ASSERTION|Extension error/);
-    assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")).sort(), expectedTools);
+    const cli = JSON.parse(readFileSync(marker, "utf8"));
+    assert.deepEqual(cli.tools.sort(), expectedTools);
+    if (!existsSync(join(packageRoot, "node_modules/@earendil-works/pi-coding-agent"))) {
+      assert.equal(cli.sdkReused, true, "production-only installs reuse Pi's loaded SDK");
+    }
   } finally {
     await cliProcesses.stop();
   }
