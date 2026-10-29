@@ -15,13 +15,11 @@ function guard(pi: ExtensionAPI, directory: string, token: string): void {
     if (event.toolName === "delegate" || event.toolName === "agent_runs") {
       return { block: true, reason: "Only a main session may delegate or control children." };
     }
+    if (event.toolName !== "bash" || typeof event.input.command !== "string") {
+      return;
+    }
     const owner = pi.getAllTools().find((tool) => tool.name === "bash")?.sourceInfo;
-    if (
-      event.toolName === "bash" &&
-      typeof event.input.command === "string" &&
-      owner &&
-      (owner.source === "builtin" || localCwdOwner(owner))
-    ) {
+    if (owner && (owner.source === "builtin" || localCwdOwner(owner))) {
       // Preserve the selected local owner's cwd/env and leave remote/custom tools alone.
       const input = event.input;
       input.command = shellCommand(event.input.command, directory, token);
