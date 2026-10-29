@@ -6,6 +6,7 @@
 
 - Report `certificate_expired` (403), not `lease_expired` (410), when a bridge client's certificate expires during its session. Node can run the session timer just before the wall-clock certificate deadline; the bridge then closed the session as an idle-lease expiry and logged the wrong cause. The timer now rechecks the deadline, as connection expiry already did. Idle-lease timing and certificate precedence are unchanged.
 - Stop the live child viewer from rebuilding native renderers after each streamed update. Assistant and tool cards now keep the native component's own update result and only refresh the card's outer layout. On the maintained fork, unchanged thinking or prose is no longer re-parsed while a later block streams. On both hosts, tool-argument and progress updates run native tool rendering once per update instead of twice. Visible output, theme changes, resize, selection and expansion are unchanged.
+- Stop each child continuation from rereading its whole native journal to record usage. A resident child keeps the IDs and billing fields of records it already validated and parses only records appended after its previous LF boundary. Unchanged journals are not reread; same-size edits, shrink, inode replacement, non-v3 headers and failed reads rebuild from the start. Inherited baselines, terminal stop, required usage and attribution still apply to every run. A restarted or restored child and the parent's pending-accounting repair still read the journal once from the start.
 
 ## [0.52.2] - 2026-10-29
 

@@ -8,7 +8,12 @@ import {
   type InboundMessageEntry,
   type PendingInboundMessage,
 } from "./runtime-types.ts";
-import { isInboundCheckpoint, publicationMetadata, requestedDelivery } from "./inbound-record.ts";
+import {
+  checkpointMessageId,
+  isInboundCheckpoint,
+  publicationMetadata,
+  requestedDelivery,
+} from "./inbound-record.ts";
 import {
   isReceiptQuery,
   type NativeReceipt,
@@ -66,6 +71,7 @@ export class InboundJournal {
     if (
       item.type === "custom" &&
       item.customType === INBOUND_CHECKPOINT_TYPE &&
+      checkpointMessageId(item.data) === query.messageId &&
       isInboundCheckpoint(item.data) &&
       item.data.sessionId === query.rootSessionId
     ) {
@@ -82,7 +88,7 @@ export class InboundJournal {
     data: InboundCheckpoint,
   ): NativeReceipt | undefined {
     if ("entry" in data) {
-      if (receipt || data.entry.message.id !== query.messageId) {
+      if (receipt) {
         return receipt;
       }
       const { from, message, stage, receivedAt } = data.entry;
@@ -106,7 +112,7 @@ export class InboundJournal {
         discarded: false,
       };
     }
-    if (!receipt || data.messageId !== query.messageId) {
+    if (!receipt) {
       return receipt;
     }
     return {

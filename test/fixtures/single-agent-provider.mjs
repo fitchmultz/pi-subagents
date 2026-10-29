@@ -59,6 +59,36 @@ function commandIO(root) {
   syncBuiltinESMExports();
 }
 
+// Observe the byte ranges the actual actor reads from its native child journal.
+function journalIO(root) {
+  const original = { open: fs.openSync, read: fs.readSync, close: fs.closeSync };
+  const journals = new Map();
+  fs.openSync = (file, ...args) => {
+    const fd = original.open(file, ...args);
+    if (typeof file === "string" && file.includes("/agent-runs/") && file.endsWith(".jsonl")) {
+      journals.set(fd, file);
+    }
+    return fd;
+  };
+  fs.readSync = (fd, ...args) => {
+    const count = original.read(fd, ...args);
+    const file = journals.get(fd);
+    if (file !== undefined) {
+      const position = typeof args[1] === "object" ? args[1]?.position : args[3];
+      fs.appendFileSync(
+        path.join(root, "journal-reads.jsonl"),
+        JSON.stringify({ pid: process.pid, file, position: position ?? null, count }) + "\n",
+      );
+    }
+    return count;
+  };
+  fs.closeSync = (fd) => {
+    journals.delete(fd);
+    return original.close(fd);
+  };
+  syncBuiltinESMExports();
+}
+
 function shellIO(root) {
   const open = fs.openSync;
   const readdir = fs.readdirSync;
@@ -99,6 +129,9 @@ export default async function fixture(pi) {
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
   if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
     commandIO(root);
+  }
+  if (process.env.SINGLE_AGENT_JOURNAL_IO === "1") {
+    journalIO(root);
   }
   if (
     process.env.SINGLE_AGENT_PARK_CLOCK === "park-shells" &&

@@ -1,9 +1,9 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { journalStamp } from "../shared/native-journal.ts";
+import { journalStamp, nativeAppend } from "../shared/native-journal.ts";
 import { nativeProjection } from "../shared/journal-projections.ts";
 import { scanJournal } from "../shared/journal-frames.ts";
-import { isRecord } from "../shared/unknown.ts";
+import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 import { Assert } from "./typebox.ts";
 import {
   contributionsSchema,
@@ -14,7 +14,8 @@ import {
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
 
-function billing(entry: Record<string, unknown>) {
+/** Billing evidence of one native entry. Missing required usage is an error only outside a baseline. */
+function billing(entry: UnknownRecord): UnknownRecord | "missing" | undefined {
   if (entry.checkpoint === true) {
     return;
   }
@@ -25,13 +26,13 @@ function billing(entry: Record<string, unknown>) {
   ) {
     return;
   }
-  const required = entry.type === "usage" || message.role === "assistant";
-  if (required && message.usage === undefined) {
-    throw new Error("Required native usage is unavailable.");
+  if (message.usage === undefined) {
+    return entry.type === "usage" || message.role === "assistant" ? "missing" : undefined;
   }
-  return message.usage === undefined ? undefined : message;
+  const { role, provider, model, responseModel, usage } = message;
+  return { role, provider, model, responseModel, usage };
 }
-function attribution(message: Record<string, unknown>, launch: Launch) {
+function attribution(message: UnknownRecord, launch: Launch) {
   if (message.role === "toolResult") {
     return { provider: launch.provider, model: launch.model };
   }
@@ -44,63 +45,118 @@ function attribution(message: Record<string, unknown>, launch: Launch) {
     model: typeof model === "string" ? model : launch.model,
   };
 }
+interface Entry {
+  readonly id: string;
+  readonly billing: UnknownRecord | "missing" | undefined;
+}
+/** Accounting metadata of the validated LF-published journal records before `end`. */
+interface Prefix {
+  stat: fs.BigIntStats;
+  end: number;
+  header?: UnknownRecord;
+  readonly entries: Entry[];
+}
+function identify(header: UnknownRecord, launch: Launch): void {
+  if (header.type !== "session" || header.id !== launch.sessionId) {
+    throw new Error("Foreign native usage journal identity.");
+  }
+}
+/** An unchanged or native v3 appended journal keeps its prefix; any other change rebuilds it. */
+function reusable(cached: Prefix | undefined, stat: fs.BigIntStats): Prefix {
+  return cached !== undefined &&
+    (journalStamp(cached.stat) === journalStamp(stat) ||
+      nativeAppend(cached.stat, stat, cached.header))
+    ? cached
+    : { stat, end: 0, entries: [] };
+}
+/**
+ * Child usage of one physical native journal. A retained index parses only records after its last
+ * accepted LF boundary. Baselines, required usage and attribution apply to each read.
+ */
+export class UsageIndex {
+  private prefix?: Prefix;
+  read(launch: Launch, baseline: ReadonlySet<string>, terminal?: string): Contribution[] {
+    const values: unknown[] = [];
+    const reachedTerminal = new Error("Native terminal boundary reached.");
+    const charge = (entry: Entry): void => {
+      const billed = baseline.has(entry.id) ? undefined : entry.billing;
+      if (billed === "missing") {
+        throw new Error("Required native usage is unavailable.");
+      }
+      if (billed !== undefined) {
+        values.push({
+          id: `${launch.sessionId}:${entry.id}`,
+          ...attribution(billed, launch),
+          usage: billed.usage,
+        });
+      }
+      if (entry.id === terminal) {
+        throw reachedTerminal;
+      }
+    };
+    const cached = this.prefix;
+    // Only a completed read is retained.
+    this.prefix = undefined;
+    const fd = fs.openSync(launch.sessionFile, "r");
+    try {
+      const stat = fs.fstatSync(fd, { bigint: true });
+      const prefix = reusable(cached, stat);
+      let ended = false;
+      try {
+        if (prefix.header !== undefined) {
+          identify(prefix.header, launch);
+        }
+        for (const entry of prefix.entries) {
+          charge(entry);
+        }
+        scanJournal(
+          fd,
+          nativeProjection,
+          ({ value, end }) => {
+            if (prefix.header === undefined) {
+              identify(value, launch);
+              prefix.header = value;
+              prefix.end = end;
+              return;
+            }
+            if (typeof value.id !== "string" || typeof value.type !== "string") {
+              throw new Error("Missing native usage entry identity.");
+            }
+            const entry = { id: value.id, billing: billing(value) };
+            prefix.entries.push(entry);
+            prefix.end = end;
+            charge(entry);
+          },
+          { policy: "live", requireNewline: true, start: prefix.end },
+        );
+      } catch (error) {
+        if (error !== reachedTerminal) {
+          throw error;
+        }
+        ended = true;
+      }
+      if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== journalStamp(stat)) {
+        throw new Error("Native usage journal changed while reading.");
+      }
+      if (prefix.header === undefined || (terminal !== undefined && !ended)) {
+        throw new Error("Native terminal or session identity is not LF-published.");
+      }
+      Assert(contributionsSchema, values);
+      prefix.stat = stat;
+      this.prefix = prefix;
+      return values;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+}
+/** A fresh read for callers without an owner lifetime. */
 export function childUsage(
   launch: Launch,
   baseline: ReadonlySet<string>,
   terminal?: string,
 ): Contribution[] {
-  const values: unknown[] = [];
-  const observed = { header: false, ended: false };
-  const reachedTerminal = new Error("Native terminal boundary reached.");
-  const fd = fs.openSync(launch.sessionFile, "r");
-  try {
-    const stamp = journalStamp(fs.fstatSync(fd, { bigint: true }));
-    try {
-      scanJournal(
-        fd,
-        nativeProjection,
-        ({ value }) => {
-          if (!observed.header) {
-            if (value.type !== "session" || value.id !== launch.sessionId) {
-              throw new Error("Foreign native usage journal identity.");
-            }
-            observed.header = true;
-            return;
-          }
-          if (typeof value.id !== "string" || typeof value.type !== "string") {
-            throw new Error("Missing native usage entry identity.");
-          }
-          const message = baseline.has(value.id) ? undefined : billing(value);
-          if (message) {
-            values.push({
-              id: `${launch.sessionId}:${value.id}`,
-              ...attribution(message, launch),
-              usage: message.usage,
-            });
-          }
-          if (value.id === terminal) {
-            observed.ended = true;
-            throw reachedTerminal;
-          }
-        },
-        { policy: "live", requireNewline: true },
-      );
-    } catch (error) {
-      if (error !== reachedTerminal) {
-        throw error;
-      }
-    }
-    if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== stamp) {
-      throw new Error("Native usage journal changed while reading.");
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  if (!observed.header || (terminal !== undefined && !observed.ended)) {
-    throw new Error("Native terminal or session identity is not LF-published.");
-  }
-  Assert(contributionsSchema, values);
-  return values;
+  return new UsageIndex().read(launch, baseline, terminal);
 }
 export function readCanonicalResult(base: string, launch: Launch): Result | undefined {
   const file = path.join(runDirectory(base, launch.id), "result.json");
