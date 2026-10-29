@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-29
+
+### Fixed
+
+- On macOS, use the system `ps` directly for process-birth and shell-group checks instead of searching every PATH entry. This reduces the process events and synchronous spawn work caused by frequent parent-liveness checks without changing PID-reuse proof, cancellation, or non-macOS behavior.
+
 ## [0.52.0] - 2026-10-26
 
 ### Added
