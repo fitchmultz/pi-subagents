@@ -4,9 +4,21 @@
 
 ### Fixed
 
-- Report `certificate_expired` (403), not `lease_expired` (410), when a bridge client's certificate expires during its session. Node can run the session timer just before the wall-clock certificate deadline; the bridge then closed the session as an idle-lease expiry and logged the wrong cause. The timer now rechecks the deadline, as connection expiry already did. Idle-lease timing and certificate precedence are unchanged.
+- Classify a certificate-selected bridge session deadline as `certificate_expired`, rather than idle-lease expiry, if the timer fires just before the wall-clock deadline. The timer rechecks without renewing the idle lease; depending on the connection-expiry race, a client can still see a connection reset.
+
+## [0.52.3] - 2026-10-29
+
+### Fixed
+
+- Build Intercom's duplicate-name set once per session list instead of once per row. Session names, duplicate labels and target resolution are unchanged.
+- Hash parked child state in bounded chunks when answering history requests or restoring a child. The digest and native state validation are unchanged.
+- Skip the bash-owner inventory lookup for child tool calls that are not bash commands. Bash ownership checks and child delegation restrictions are unchanged.
+- Avoid revalidating unrelated incoming messages when looking up an Intercom receipt. Receipt contents and branch-wide history remain unchanged.
+- Reuse the child-status widget's display between inventory updates instead of rebuilding it on every parent frame. Theme changes, activity, errors and click targets remain visible.
+- Batch optional bridge acknowledgements in one SQLite transaction and stop reading wake notifications once the next actionable message is known. A failed acknowledgement leaves the group pending. Later non-wake cleanup can wait behind a pending wake.
 - Stop the live child viewer from rebuilding native renderers after each streamed update. Assistant and tool cards now keep the native component's own update result and only refresh the card's outer layout. On the maintained fork, unchanged thinking or prose is no longer re-parsed while a later block streams. On both hosts, tool-argument and progress updates run native tool rendering once per update instead of twice. Visible output, theme changes, resize, selection and expansion are unchanged.
 - Stop each child continuation from rereading its whole native journal to record usage. A resident child keeps the IDs and billing fields of records it already validated and parses only records appended after its previous LF boundary. Unchanged journals are not reread; same-size edits, shrink, inode replacement, non-v3 headers and failed reads rebuild from the start. Inherited baselines, terminal stop, required usage and attribution still apply to every run. A restarted or restored child and the parent's pending-accounting repair still read the journal once from the start.
+- Reuse the running Pi's SDK for the first delegation, `/agents` and parked-history restore in production-only installs, instead of importing a second copy of the same SDK from disk. In five alternating pairs per host on a busy macOS machine, the parent no longer grew by 66–85 MiB during its first `delegate` call. The median time to that call's receipt fell from 1.4 s to 0.1 s on the maintained fork. Official Pi's median fell from 1.9 s to 0.1 s, but the size of that gain is inconclusive under the measured load: one run with the change took 2.3 s. Installs with their own SDK copy, a set `PI_PACKAGE_DIR` and detached children still load the selected Pi package directly.
 
 ## [0.52.2] - 2026-10-29
 
