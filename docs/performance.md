@@ -211,6 +211,78 @@ official Pi and the maintained fork. It read 773 bytes of a 41,605-byte official
 journal and 773 bytes of a 42,439-byte fork journal. Release 0.52.2 read the whole
 journal from byte 0 in the same test on both hosts.
 
+### Host SDK reuse on first delegation
+
+In a production-only install, Pi's loader gives the extension the running host's
+SDK. The extension now keeps that module when its factory runs. The SDK adapter
+returns it for the selected Pi package when the module's `getPackageDir()` resolves
+to that package and `PI_PACKAGE_DIR` is unset. The first delegation, `/agents` and
+parked-history restore therefore no longer import a second, unbundled copy of the
+same SDK from disk. Before, each parent process paid that load once, and later
+calls reused the second copy. The adapter still imports the selected package's
+`dist/index.js` everywhere else. That covers a set `PI_PACKAGE_DIR`, which replaces
+every copy's `getPackageDir()` answer, and a package-local SDK copy, such as a full
+development install or one removed by a later refresh. Detached children also keep
+the import.
+
+On macOS arm64 with Node v24.22.1, five alternating before/after pairs per host
+and scenario ran the real bundled print-mode CLI. The package was installed through
+`settings.packages` in a private HOME and agent directory. Each run used offline
+mode, disabled telemetry, `PI_TIMING=1` and a local faux provider, with no network
+or paid model calls. The hosts were the maintained fork at `581b5c18` (bundled CLI
+SHA-256 `f3960fd2e951ac0a47725af534f55b28122553aa56d143ad546dace094fc1d77`) and
+official Pi 1.4.0 (`e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774`).
+Before was the packed 0.52.2 tree at `1a088c6`; after was the same tree plus this
+change. The machine was busy, with load averages of 17–39 at the start and end of
+each set, so ranges are wide.
+
+| Metric (median; observed range)     | Fork before         | Fork after          | Official before     | Official after      |
+| ----------------------------------- | ------------------- | ------------------- | ------------------- | ------------------- |
+| First `delegate` call, ms           | 1410 (672–1682)     | 115 (93–176)        | 1874 (796–6190)     | 104 (48–2339)       |
+| Parent RSS growth in that call, MiB | 66.3 (62.6–67.5)    | 0.4 (0.4–0.5)       | 84.5 (83.5–85.5)    | 0.4 (0.4–0.5)       |
+| `/agents` viewer module load, ms    | 361 (345–439)       | 35 (27–37)          | 523 (510–583)       | 28 (25–30)          |
+| RSS growth in that load, MiB        | 65.5 (65.2–66.0)    | 1.9 (1.5–2.3)       | 82.8 (82.4–84.5)    | 4.5 (4.3–5.2)       |
+| Extension import, `PI_TIMING`, ms   | 370 (217–465)       | 395 (88–556)        | 94 (75–193)         | 100 (85–143)        |
+| RSS at `session_start`, MiB         | 162.5 (145.6–170.4) | 163.3 (153.4–170.2) | 170.2 (169.7–171.2) | 171.4 (168.9–173.0) |
+
+The `delegate` time runs from the parent's tool start to its receipt; RSS growth is
+the parent's `process.memoryUsage().rss` difference across the same window. The
+table combines the startup and `/agents` sets of one campaign (40 runs) with the
+delegate set of a later campaign (20 runs). That delegate harness held the parent's
+turn until Pi's once-per-second completion scan could deliver the child's notice.
+All 60 runs exited 0 with zero errors. Every child finished, its completion resumed
+the parent, and every `/agents` load returned the viewer.
+
+Two earlier delegate sets did not hold the parent's turn, so the print run could end
+before that scan. That happened to one official run with the change in each set. The
+first harness counted it as an error without recording which check failed; its child
+finished. In the second, the completion did not resume the parent before exit. Their
+delegate timings remain valid because the window ends at the receipt. The second set
+gave medians of 554 to 46 ms on the fork and 1735 to 98 ms on official Pi, with the
+same memory pattern. Across it and the table's set, the change was faster in all 10
+fork pairs and in 9 of 10 official pairs. In the exception, during a load spike, the
+after run took 2339 ms against 1874 ms before. Official latency is therefore noisy,
+and its magnitude is inconclusive under this load; the memory result held in every
+pair. Child startup time and RSS showed no consistent change, because children keep
+the absolute import. Startup showed no measurable difference: Jiti's debug log lists
+the same native, transpiled and virtual loads, plus one more lookup in its existing
+virtual SDK table.
+
+A CPU profile of one fork pair splits the 678 ms before window into Node internals
+(336 ms), native work without a script location (203 ms) and second-copy package code
+(115 ms). Node's module-loading code accounts for 251 ms of those internals, led by
+source-text module compilation (109 ms). File opens, stats, reads and closes account
+for 152 ms of the native work. The 93 ms after window contains no second-copy code.
+Single fallback probes still imported from disk with `PI_PACKAGE_DIR` set (69 MiB
+growth during delegation). With a full development install under the fork host, they
+loaded the exact fork package (55 MiB), not the checkout's official copy.
+
+The package smoke's bundled RPC CLI checks both production-only layouts. There, the
+adapter must return the host's `SessionManager`, the class delegation uses to create
+the child session. The baseline adapter returned a separate class on both hosts. This
+is a first-call and memory measurement on one machine. It is not a cold-cache,
+interactive TUI, model-latency or fleet claim.
+
 ## Necessary costs
 
 - Native Pi owns context loading and model execution. The extension cannot remove

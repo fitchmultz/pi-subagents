@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import * as loadedSDK from "@earendil-works/pi-coding-agent";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -16,7 +17,7 @@ import {
   signalProcess,
   stopChildren,
 } from "./process.ts";
-import { isChild, errorText } from "./host.ts";
+import { isChild, errorText, rememberSDK } from "./host.ts";
 import { serveParked } from "./parking.ts";
 import {
   resultSchema,
@@ -509,5 +510,7 @@ class AgentRuntime {
   }
 }
 export default function agents(pi: ExtensionAPI): void {
+  // Delegation, /agents and parked history then avoid importing a second SDK graph.
+  rememberSDK(loadedSDK);
   new AgentRuntime(pi).register();
 }
