@@ -138,21 +138,20 @@ export class WakeDeliveries {
 
   private pending(delivery: Delivery): PendingNotification | undefined {
     let after = 0;
-    let next: PendingNotification | undefined;
     let page;
     do {
-      page = delivery.mailbox.pendingNotifications(after);
+      // Decode only the retired prefix and the oldest actionable entry, not the whole backlog.
+      page = delivery.mailbox.pendingNotifications(after, 1);
       for (const entry of page.messages) {
-        if (!actionable(entry)) {
-          // Retire only notification intent. Payload/reply obligations require actual ACK/reply.
-          delivery.mailbox.notificationAccepted(entry.message.id);
-        } else if (!next) {
-          next = entry;
+        if (actionable(entry)) {
+          return entry;
         }
+        // Retire only notification intent. Payload/reply obligations require actual ACK/reply.
+        delivery.mailbox.notificationAccepted(entry.message.id);
       }
       after = Number(page.nextCursor);
     } while (page.hasMore);
-    return next;
+    return undefined;
   }
 
   private groups(): Map<string, Candidate | undefined> {

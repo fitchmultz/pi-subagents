@@ -70,13 +70,18 @@ The final version loads that module only when a human opens `/agents`, then
 revalidates the current session owner. These small samples overlap the baseline
 ranges and do not establish a generalized speedup or latency guarantee.
 
-Interactive mains scan at most 50 unfinished or newly discovered metadata rows
-per second. Immutable launches and finished rows are cached; finished history
-does not consume the active refresh budget. Liveness is checked once per active
-conversation per scan, not for completed idle actors. The open watch polls at
-250 ms, reading at most 64 KiB plus a 4 KiB identity header and retaining 80 bounded
-display lines. Those are display limits, not truncation of the native journal.
-Children and print/RPC sessions do not install the watcher.
+Interactive mains process at most 50 unfinished or newly discovered metadata rows
+per scan. Immutable launches and finished rows are cached; finished history does
+not consume that budget. Liveness is checked once per active conversation per
+scan, not for completed idle actors. While work is live or rows are pending, a
+one-second interval schedules scans; relevant filesystem and native events can
+also trigger them.
+
+The open viewer indexes its native journal incrementally, reading at most 256 KiB
+per indexing refresh. Ordinary scheduled display updates are spaced by 250 ms.
+The viewer mounts up to 24 history cards and hydrates text in 32,768-code-point
+pages. These are display mechanics, not truncation of the native journal. Children
+and print/RPC sessions do not install the observer.
 
 ### TypeBox host-instance startup (#234)
 
@@ -185,6 +190,26 @@ The initial scan and witness-loss scan still read the full inventory. This is no
 an end-to-end model, TUI or fleet CPU speedup claim. The native `park-shells` test
 separately exercises repeated checks, witness death, missing and replaced
 publications, and continuation on official Pi and the maintained fork.
+
+### Resident child usage accounting
+
+A child records each run's usage from its native journal. A resident child now
+keeps the IDs and billing fields of the records it validated and parses only
+records appended after its previous LF boundary. A cold actor, a restored parked
+child and the parent's pending-accounting repair still parse from byte 0 once.
+
+On macOS arm64 with Node 24.22.1, a read-only replay over one real 152.5 MB child
+journal with 11 saved runs compared release 0.52.2 (`1a088c6`) with this change,
+using the same inherited baseline and terminal for each run. Both returned
+identical contributions (1,129 in total), matching every saved result. The fresh
+reader read 1,068,938,072 bytes across the 11 runs; one resident index read
+152,966,603 bytes. The replay assumes one actor stayed resident for every run; a
+restart or restore between runs pays one full read. No latency change is claimed.
+
+The native `usage` test runs a second continuation in the resident actor on
+official Pi and the maintained fork. It read 773 bytes of a 41,605-byte official
+journal and 773 bytes of a 42,439-byte fork journal. Release 0.52.2 read the whole
+journal from byte 0 in the same test on both hosts.
 
 ### Host SDK reuse on first delegation
 

@@ -273,7 +273,7 @@ test(
   },
 );
 test(
-  "single-agent native child usage is recorded exactly once per native entry and never charged to the parent across notice, concurrent inspection, continuation and a fresh reader",
+  "single-agent native child usage is recorded exactly once per native entry and never charged to the parent across notice, concurrent inspection, cold and resident continuations and a fresh reader; a resident continuation reads only its appended journal records",
   { timeout: 60000 },
   async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-usage-"));

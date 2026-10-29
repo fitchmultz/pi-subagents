@@ -7,7 +7,7 @@ import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { Parking, type Runtime } from "./parking.ts";
-import { childUsage } from "./usage.ts";
+import { UsageIndex } from "./usage.ts";
 import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
@@ -53,6 +53,8 @@ class Actor {
   private readonly started = new Set<string>();
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
   private readonly validated = new Map<string, { identity: string; id: string }>();
+  // Every run of this conversation shares one native journal; later runs read only its suffix.
+  private readonly accounting = new UsageIndex();
   private session?: AgentSession;
   private observation?: ActorObservation;
   private context?: { pi: ExtensionAPI; ctx: ExtensionContext };
@@ -111,7 +113,7 @@ class Actor {
     terminal?: string,
   ): Pick<Result, "contributions" | "accountingError" | "accountingPending"> {
     try {
-      return { contributions: childUsage(launch, baseline, terminal) };
+      return { contributions: this.accounting.read(launch, baseline, terminal) };
     } catch (error) {
       return {
         accountingError: errorText(error),

@@ -21,6 +21,7 @@ import type { ObserverRow } from "./observe-chrome.ts";
 const STATUS_KEY = "agent-observer";
 type Roots = Map<string, ReturnType<typeof actor>>;
 type Commit = (live: ReadonlyMap<string, boolean>) => void;
+type WidgetSnapshot = { status: string; rows: readonly ObserverRow[]; more: number; error: string };
 
 class Observer {
   private ctx?: ExtensionContext;
@@ -36,7 +37,7 @@ class Observer {
   private watcher?: fs.FSWatcher;
   private widgetVisible = false;
   private widgetSignature = "";
-  private widgetRender?: () => void;
+  private widgetRender?: (snapshot: WidgetSnapshot) => void;
   private readonly launches = new Map<string, Launch>();
   private readonly finished = new Set<string>();
   private pending: string[] = [];
@@ -185,6 +186,7 @@ class Observer {
     const scanning = this.update()
       .catch((error: unknown) => {
         this.error = plainText(errorText(error));
+        this.widget();
       })
       .finally(() => {
         if (this.scanning !== scanning) {
@@ -278,23 +280,24 @@ class Observer {
       this.widgetSignature = "";
       return;
     }
-    const signature = JSON.stringify([this.status(), rows.slice(0, 4), rows.length]);
+    const visible = rows.slice(0, 4);
+    const more = rows.length - visible.length;
+    const snapshot = { status: this.status(), rows: visible, more, error: this.error };
+    const signature = JSON.stringify(snapshot);
     if (signature === this.widgetSignature) {
       return;
     }
     this.widgetSignature = signature;
     if (this.widgetVisible) {
-      this.widgetRender?.();
+      this.widgetRender?.(snapshot);
       return;
     }
     this.widgetVisible = true;
     ctx.ui.setWidget(
       STATUS_KEY,
       (tui, theme) => {
-        this.widgetRender = () => {
-          tui.requestRender();
-        };
         const content = new Container();
+        let shown: WidgetSnapshot = snapshot;
         const open = (id: string) => {
           if (ctx !== this.ctx) {
             return;
@@ -303,39 +306,38 @@ class Observer {
             ctx.ui.notify(errorText(error), "error");
           });
         };
+        const build = () => {
+          content.clear();
+          content.addChild(actionText(theme.fg("accent", shown.status), () => open("")));
+          for (const row of shown.rows) {
+            const glyph = row.live ? "●" : "○";
+            const color = row.live ? "accent" : "warning";
+            content.addChild(
+              actionText(
+                `${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${row.activity ?? row.status}`,
+                () => open(row.id),
+              ),
+            );
+          }
+          if (shown.more > 0) {
+            content.addChild(
+              actionText(theme.fg("dim", `+${shown.more} more · /agents`), () => open("")),
+            );
+          }
+          if (shown.error.length > 0) {
+            content.addChild(new TruncatedText(theme.fg("warning", shown.error), 0, 0));
+          }
+        };
+        build();
+        this.widgetRender = (next) => {
+          shown = next;
+          build();
+          tui.requestRender();
+        };
         return {
-          render: (width) => {
-            const strip = this.strip();
-            const visible = strip.slice(0, 4);
-            content.clear();
-            content.addChild(actionText(theme.fg("accent", this.status()), () => open("")));
-            for (const row of visible) {
-              const glyph = row.live ? "●" : "○";
-              const color = row.live ? "accent" : "warning";
-              content.addChild(
-                actionText(
-                  `${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${row.activity ?? row.status}`,
-                  () => open(row.id),
-                ),
-              );
-            }
-            if (strip.length > visible.length) {
-              content.addChild(
-                actionText(
-                  theme.fg("dim", `+${strip.length - visible.length} more · /agents`),
-                  () => open(""),
-                ),
-              );
-            }
-            if (this.error.length > 0) {
-              content.addChild(new TruncatedText(theme.fg("warning", this.error), 0, 0));
-            }
-            return content.render(width);
-          },
+          render: (width) => content.render(width),
           handleMouse: (event) => content.handleMouse(event),
-          invalidate: () => {
-            // Render reads current rows, expansion and theme on every frame.
-          },
+          invalidate: build,
         };
       },
       { placement: "aboveEditor" },
