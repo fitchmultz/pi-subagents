@@ -1151,6 +1151,7 @@ test(
     const faux = fauxProvider({ provider: "observe-fixture", models: [{ id: "native-observe" }] });
     models.registerNativeProvider(faux.provider);
     let view: TUI | undefined;
+    let ui: sdk.ExtensionUIContext | undefined;
     const services = await sdk.createAgentSessionServices({
       cwd: root,
       agentDir,
@@ -1166,6 +1167,7 @@ test(
         extensionFactories: [
           (pi) => {
             pi.on("session_start", (_event, ctx) => {
+              ui = ctx.ui;
               ctx.ui.setWidget("test-observer-screen", (tui) => {
                 view = tui;
                 return new Container();
@@ -1278,6 +1280,19 @@ test(
       shown,
     );
     assert.doesNotMatch(shown(), /stopped-history/, "stopped history stays out of the strip");
+    assertDefined(ui);
+    const status = "Agents: 2 active · 122 runs · /agents";
+    for (const name of ["light", "dark"]) {
+      assert.equal(ui.setTheme(name).success, true);
+      const accent = ui.getTheme(name)?.fg("accent", status);
+      assertDefined(accent);
+      // oxlint-disable-next-line no-await-in-loop
+      await until(
+        () => screen.getScreenLines().some((line) => line.includes(accent)),
+        `native ${name} theme change restyles the visible strip`,
+        shown,
+      );
+    }
     assert.equal(opened().filter((file) => file.endsWith("/launch.json")).length, 122);
     assert.ok(
       identityProbes() >= 1,
