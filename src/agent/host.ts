@@ -85,7 +85,22 @@ export function packageRoot(): string {
   }
   return path.dirname(manifest);
 }
+// Pi's resolution of this extension's SDK import: the running host in production installs,
+// possibly a package-local copy in development checkouts.
+let resolvedSDK: HostSDK | undefined;
+export function rememberSDK(sdk: HostSDK): void {
+  resolvedSDK = sdk;
+}
 export async function loadSDK(root: string): Promise<HostSDK> {
+  // Reuse it only as the selected root. PI_PACKAGE_DIR replaces getPackageDir()'s own
+  // location, so only an unset override proves that identity.
+  if (
+    resolvedSDK !== undefined &&
+    (process.env.PI_PACKAGE_DIR ?? "") === "" &&
+    fs.realpathSync(resolvedSDK.getPackageDir()) === fs.realpathSync(root)
+  ) {
+    return resolvedSDK;
+  }
   // Selected host SDK, not a second package-local runtime hidden behind Jiti aliases.
   // oxlint-disable-next-line typescript/no-unsafe-assignment
   const sdk: HostSDK = await import(pathToFileURL(path.join(root, "dist/index.js")).href);
