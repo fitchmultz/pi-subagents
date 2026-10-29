@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Classify a certificate-selected bridge session deadline as `certificate_expired`, rather than idle-lease expiry, if the timer fires just before the wall-clock deadline. The timer rechecks without renewing the idle lease; depending on the connection-expiry race, a client can still see a connection reset.
+
 ## [0.52.3] - 2026-10-29
 
 ### Fixed
