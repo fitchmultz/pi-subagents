@@ -125,7 +125,10 @@ test(
       syncBuiltinESMExports();
     });
     const ps = (calls: ReadonlyArray<{ arguments: readonly unknown[] }>) =>
-      calls.filter((call) => call.arguments[0] === "ps").length;
+      calls.filter(
+        (call) =>
+          typeof call.arguments[0] === "string" && path.basename(call.arguments[0]) === "ps",
+      ).length;
     const verdicts = await observeAlive(cases.map(([claim]) => claim));
     assert.deepEqual(
       verdicts,
@@ -197,7 +200,10 @@ test(
     t.mock.restoreAll();
     syncBuiltinESMExports();
     assert.equal(
-      observed.mock.calls.filter((call) => call.arguments[0] === "ps").length,
+      observed.mock.calls.filter(
+        (call) =>
+          typeof call.arguments[0] === "string" && path.basename(call.arguments[0]) === "ps",
+      ).length,
       process.platform === "linux" ? 0 : 1,
       "overlapping ticks share one observation of a live parent",
     );
