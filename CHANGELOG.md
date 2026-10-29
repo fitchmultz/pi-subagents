@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop the live child viewer from rebuilding native renderers after each streamed update. Assistant and tool cards now keep the native component's own update result and only refresh the card's outer layout. On the maintained fork, unchanged thinking or prose is no longer re-parsed while a later block streams. On both hosts, tool-argument and progress updates run native tool rendering once per update instead of twice. Visible output, theme changes, resize, selection and expansion are unchanged.
+
 ## [0.52.2] - 2026-10-29
 
 ### Fixed
