@@ -1,10 +1,12 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { createRequire, findPackageJSON, syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+import type * as MarkedModule from "marked";
 import {
   Container,
   ProcessTerminal,
@@ -124,6 +126,45 @@ async function until(
 }
 function requests(root: string): number {
   return fs.readFileSync(path.join(root, "requests.jsonl"), "utf8").trim().split("\n").length;
+}
+
+/** Counts the selected host's Markdown parses, the expensive native work behind each render. */
+async function markdownParses(sdkRoot: string) {
+  const tui = findPackageJSON("@earendil-works/pi-tui", path.join(sdkRoot, "dist/index.js"));
+  assertDefined(tui);
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  const { Marked }: typeof MarkedModule = await import(
+    pathToFileURL(createRequire(tui).resolve("marked")).href
+  );
+  const lexer = spy(Marked.prototype, "lexer");
+  const count = (marker: string) =>
+    lexer.getCalls().filter((call) => call.args[0].includes(marker)).length;
+  // The host's own streaming component decides whether an unchanged run keeps its parse.
+  const probe = new sdk.AssistantMessageComponent(undefined, false);
+  for (const text of ["PROBE_ANSWER", "PROBE_ANSWER grows"]) {
+    probe.updateContent(
+      fauxAssistantMessage([
+        { type: "thinking", thinking: "PROBE_THINKING" },
+        { type: "text", text },
+      ]),
+      true,
+    );
+    probe.render(46);
+  }
+  const reused = count("PROBE_THINKING") === 1;
+  return {
+    lexer,
+    count,
+    assertReused(parses: number) {
+      if (reused) {
+        assert.equal(
+          parses,
+          1,
+          "answer updates reuse the unchanged native thinking parse, as native Pi streaming does",
+        );
+      }
+    },
+  };
 }
 
 function actorExited(pid: number): boolean {
@@ -722,6 +763,8 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.width = 46;
       terminal.resize?.();
       terminal.clear();
+      const parses = await markdownParses(sdkRoot);
+      t.after(() => parses.lexer.restore());
       fs.writeFileSync(path.join(root, "release-child"), "release");
       await until(
         () => terminal.text().includes("CHILD_STREAM_START"),
@@ -733,6 +776,20 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         /CHILD_STREAM_START/,
         "visible assistant text is genuinely live",
       );
+      assert.match(terminal.text(), /CHILD_THINKING_FACT/);
+      await until(
+        () => terminal.text().includes("Child streaming row 20"),
+        "the live answer keeps growing below its completed thinking",
+        visible,
+      );
+      const thinking = parses.count("CHILD_THINKING_FACT");
+      assert.ok(parses.count("CHILD_STREAM_START") > 1, "several answer revisions have rendered");
+      assert.doesNotMatch(
+        fs.readFileSync(journalFile, "utf8"),
+        /CHILD_FINAL_FACT/,
+        "the parse count covers only the live message",
+      );
+      parses.assertReused(thinking);
       await until(
         () =>
           terminal.text().includes("CHILD_TOOL_ERROR_FACT") &&
