@@ -1,6 +1,6 @@
 {
   "name": "@fitchmultz/pi-subagents",
-  "version": "0.52.3",
+  "version": "0.52.4",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "license": "MIT",
   "type": "module",
