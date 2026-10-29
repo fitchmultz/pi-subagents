@@ -14,6 +14,7 @@ import {
   resolveSessionTarget,
   targetDisplayName,
 } from "../../src/pi-intercom/session-targets.ts";
+import { formatSessionListSections } from "../../src/pi-intercom/ui/session-format.ts";
 
 const sessions = [
   { id: "abcdefgh-1111-2222-3333-444444444444", name: "worker" },
@@ -250,4 +251,32 @@ test("resolveSessionTarget rejects exact names that are unsafe too-short id pref
     ambiguous.matches.map((session) => session.id).sort(),
     [unsafe[0].id, unsafe[1].id].sort(),
   );
+});
+
+test("formatSessionListSections tags case-folded duplicates across hidden projects, not unique or empty names", () => {
+  const session = (id: string, name: string, cwd: string, projectId: string) => ({
+    id,
+    name,
+    cwd,
+    projectId,
+    model: "fixture",
+  });
+  const listing = formatSessionListSections(
+    [
+      session("aaaaaaaa-1111", "Worker", "/repo", "project-a"),
+      session("bbbbbbbb-1111", "worker", "/other", "project-b"),
+      session("cccccccc-1111", "solo", "/repo", "project-a"),
+      session("dddddddd-1111", "", "/repo", "project-a"),
+      session("eeeeeeee-1111", "", "/repo", "project-a"),
+    ],
+    "aaaaaaaa-1111",
+    "project",
+  );
+
+  assert.match(listing, /• Worker \(aaaaaaaa\) — .*\[self, target:aaaaaaaa, /);
+  assert.match(listing, /• solo \(cccccccc\) — /);
+  assert.match(listing, /• Unnamed session \(dddddddd\) — /);
+  assert.match(listing, /• Unnamed session \(eeeeeeee\) — /);
+  assert.match(listing, /1 session in other projects hidden/);
+  assert.doesNotMatch(listing, /target:(?:bbbbbbbb|cccccccc|dddddddd|eeeeeeee)/);
 });
