@@ -132,7 +132,11 @@ export default async function fixture(pi) {
         // Fail only the final capture, after the actor committed to exit.
         event.invalidate("fixture final capture refused");
       }
-      event.appendEntry("park-fixture-save", { boundary: event.boundary });
+      // Real saved states span many native 64 KiB read chunks.
+      event.appendEntry("park-fixture-save", {
+        boundary: event.boundary,
+        padding: "x".repeat(96 * 1024),
+      });
     });
     performance.now = () => {
       from ??= fs.existsSync(advanced) ? now() : undefined;
