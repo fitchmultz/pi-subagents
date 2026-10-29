@@ -188,7 +188,7 @@ export class Card implements Component {
     if (this.arguments !== value.args) {
       this.tool.updateArgs(projected(value.args) ?? {});
       this.arguments = value.args;
-      this.invalidate();
+      this.cache = undefined;
     }
   }
   updateTool(value: ViewedTool, options: CardOptions, preparing: boolean): void {
@@ -207,7 +207,7 @@ export class Card implements Component {
       this.phase = phase;
       this.value = source.result;
       this.ended = ended;
-      this.invalidate();
+      this.cache = undefined;
     }
   }
   private preview(value: unknown, isError: boolean, partial: boolean): void {
@@ -245,7 +245,7 @@ export class Card implements Component {
     this.status?.setText(message.ended ? "Awaiting journal publication" : "In progress");
     this.blocks = message.blocks.slice();
     this.ended = message.ended;
-    this.invalidate();
+    this.cache = undefined;
   }
   invalidate(): void {
     this.cache = undefined;

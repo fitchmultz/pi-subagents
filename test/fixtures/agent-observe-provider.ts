@@ -88,7 +88,13 @@ export default function fixture(pi: ExtensionAPI): void {
         return result
           ? fauxAssistantMessage(
               live
-                ? `CHILD_STREAM_START\n${Array.from({ length: 40 }, (_, index) => `Child streaming row ${String(index)} 雪😀`).join("\n")}\nCHILD_FINAL_FACT`
+                ? [
+                    { type: "thinking", thinking: "CHILD_THINKING_FACT settled before answering" },
+                    {
+                      type: "text",
+                      text: `CHILD_STREAM_START\n${Array.from({ length: 40 }, (_, index) => `Child streaming row ${String(index)} 雪😀`).join("\n")}\nCHILD_FINAL_FACT`,
+                    },
+                  ]
                 : "CHILD_FINAL_FACT",
             )
           : fauxAssistantMessage(
