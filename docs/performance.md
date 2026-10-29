@@ -165,6 +165,27 @@ is not an indefinite-idle bound. The
 [issue 238 evidence](evidence/issue-238-idle/README.md) has the samples, host
 hashes, native causal chain and limits.
 
+### Idle parking shell records
+
+An idle child with a live shell now retains one shell publication path. Each
+parking check rereads that record and uses the existing token and process-birth
+validation. A missing or dead witness causes a full inventory read. Stop and cold
+continuation still read the complete inventory.
+
+On macOS arm64 with Node 24.22.1, five alternating before/after pairs exercised
+`Parking.park` against one real actor's 615 shell records. Both versions refused
+to park on every check. After one untimed initial inventory, each recurring check
+opened 615 records before and one record after. Median wall time changed from
+80.96 ms to 4.30 ms. Observed ranges were 73.40 to 84.01 ms before and 4.19 to
+4.43 ms after. The baseline was release 0.52.1 at `3650e11`.
+
+This isolated helper measurement advanced the idle clock and supplied an idle
+session stub. It read the real records without changing them or the active actor.
+The initial scan and witness-loss scan still read the full inventory. This is not
+an end-to-end model, TUI or fleet CPU speedup claim. The native `park-shells` test
+separately exercises repeated checks, witness death, missing and replaced
+publications, and continuation on official Pi and the maintained fork.
+
 ## Necessary costs
 
 - Native Pi owns context loading and model execution. The extension cannot remove
