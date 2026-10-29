@@ -87,15 +87,20 @@ export class Session {
   }
   private touch(): void {
     clearTimeout(this.lease);
-    this.lease = setTimeout(
-      () =>
-        this.close(
-          this.expires <= Date.now()
-            ? new Fault(403, "certificate_expired", "Client certificate expired.")
-            : new Fault(410, "lease_expired", "Bridge session idle lease expired."),
-        ),
-      Math.max(1, Math.min(IDLE_TIMEOUT, this.expires - Date.now())),
-    );
+    this.armLease(IDLE_TIMEOUT);
+  }
+  private armLease(idle: number): void {
+    const due = Math.max(1, Math.min(idle, this.expires - Date.now()));
+    this.lease = setTimeout(() => {
+      if (this.expires <= Date.now()) {
+        this.close(new Fault(403, "certificate_expired", "Client certificate expired."));
+      } else if (due < idle) {
+        // Node can fire before Date.now() reaches the certificate deadline; keep the idle budget.
+        this.armLease(idle - due);
+      } else {
+        this.close(new Fault(410, "lease_expired", "Bridge session idle lease expired."));
+      }
+    }, due);
   }
   begin(): AbortController {
     this.guard();
