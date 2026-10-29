@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { readChildProcessIdentity, readProcessClock } from "../shared/post-exit-stdio-guard.ts";
+import {
+  PS_COMMAND,
+  readChildProcessIdentity,
+  readProcessClock,
+} from "../shared/post-exit-stdio-guard.ts";
 import { read, write } from "./storage.ts";
 import { processSchema } from "./contracts.ts";
 import { verifyProcess } from "./process.ts";
@@ -22,7 +26,7 @@ if (
   throw new Error("Native shell registration requires its actual parent shell.");
 }
 const group = Number(
-  execFileSync("ps", ["-p", String(pid), "-o", "pgid="], {
+  execFileSync(PS_COMMAND, ["-p", String(pid), "-o", "pgid="], {
     encoding: "utf8",
     timeout: 1000,
     stdio: ["ignore", "pipe", "ignore"],

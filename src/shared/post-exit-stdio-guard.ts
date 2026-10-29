@@ -5,6 +5,9 @@ import { hasErrorCode } from "./unknown.ts";
 
 const BIRTH_FIELDS = ["lstart=", "pgid="];
 
+// macOS ships /bin/ps; resolving "ps" through PATH can spawn once per missing entry.
+export const PS_COMMAND = process.platform === "darwin" ? "/bin/ps" : "ps";
+
 interface AgentProcessExit {
   readonly pid?: number;
   readonly code: number | null;
@@ -75,7 +78,7 @@ function psOptions(zone: string | undefined) {
 
 function readPsFields(pid: number, fields: readonly string[], zone?: string): string | undefined {
   try {
-    return execFileSync("ps", psArguments(pid, fields), {
+    return execFileSync(PS_COMMAND, psArguments(pid, fields), {
       ...psOptions(zone),
       stdio: ["ignore", "pipe", "ignore"],
     })
@@ -93,7 +96,7 @@ function observePsFields(
   zone?: string,
 ): Promise<string | undefined> {
   return new Promise((resolve) => {
-    execFile("ps", psArguments(pid, fields), psOptions(zone), (error, stdout) => {
+    execFile(PS_COMMAND, psArguments(pid, fields), psOptions(zone), (error, stdout) => {
       resolve(error ? undefined : stdout.trim().replace(/\s+/g, " "));
     });
   });
