@@ -598,6 +598,9 @@ try {
     assert.ok(fileReads(from, changed).length >= 2, "missing receipt resumes body reads");
     assert.equal(fs.existsSync(receipts[0]), false, "started set still suppresses readmission");
     fs.writeFileSync(receipts[0], frozen[0]);
+    // A scan that read the receipt-less body may not have published yet; admitting a later
+    // probe proves it finished, so it cannot pass for the first mutation's revalidation.
+    await rescan(1);
     const mutate = async (change) => {
       process.kill(pid, "SIGSTOP");
       await until(
