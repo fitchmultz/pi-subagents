@@ -1,14 +1,13 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { createRequire, findPackageJSON, syncBuiltinESMExports } from "node:module";
+import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
-import type * as MarkedModule from "marked";
 import {
   Container,
+  Marked,
   ProcessTerminal,
   stripTerminalSequences,
   TuiAltScreen,
@@ -129,13 +128,7 @@ function requests(root: string): number {
 }
 
 /** Counts the selected host's Markdown parses, the expensive native work behind each render. */
-async function markdownParses(sdkRoot: string) {
-  const tui = findPackageJSON("@earendil-works/pi-tui", path.join(sdkRoot, "dist/index.js"));
-  assertDefined(tui);
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const { Marked }: typeof MarkedModule = await import(
-    pathToFileURL(createRequire(tui).resolve("marked")).href
-  );
+function markdownParses() {
   const lexer = spy(Marked.prototype, "lexer");
   const count = (marker: string) =>
     lexer.getCalls().filter((call) => call.args[0].includes(marker)).length;
@@ -763,7 +756,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.width = 46;
       terminal.resize?.();
       terminal.clear();
-      const parses = await markdownParses(sdkRoot);
+      const parses = markdownParses();
       t.after(() => parses.lexer.restore());
       fs.writeFileSync(path.join(root, "release-child"), "release");
       await until(
