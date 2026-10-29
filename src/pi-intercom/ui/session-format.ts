@@ -11,10 +11,19 @@ function localForkStartCommand(): string {
   return `pi --name worker --extension ${shellQuote(path.join(PACKAGE_ROOT, "src", "index.ts"))}`;
 }
 function duplicateNames(sessions: readonly SessionInfo[]): ReadonlySet<string> {
-  const names = sessions
-    .map((session) => session.name?.toLowerCase())
-    .filter((name): name is string => name !== undefined && name !== "");
-  return new Set(names.filter((name, index) => names.indexOf(name) !== index));
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const session of sessions) {
+    const name = session.name?.toLowerCase();
+    if (name === undefined || name === "") {
+      continue;
+    }
+    if (seen.has(name)) {
+      duplicates.add(name);
+    }
+    seen.add(name);
+  }
+  return duplicates;
 }
 export function formatDuration(seconds: number): string {
   if (seconds < 60) {
@@ -79,7 +88,7 @@ function healthTags(session: SessionInfo, now: number): readonly string[] {
 interface RowOptions {
   readonly currentCwd: string;
   readonly self: boolean;
-  readonly duplicates: (name: string) => boolean;
+  readonly duplicates: ReadonlySet<string>;
   readonly allSessions: readonly SessionInfo[];
   readonly now: number;
 }
@@ -88,7 +97,7 @@ function row(session: SessionInfo, options: RowOptions): string {
   const duplicate =
     session.name !== undefined &&
     session.name !== "" &&
-    options.duplicates(session.name.toLowerCase());
+    options.duplicates.has(session.name.toLowerCase());
   let location: string | undefined;
   if (options.self) {
     location = "self";
@@ -132,7 +141,7 @@ export function formatSessionListSections(
   const others = scoped.filter((session) => session.id !== id);
   const options = {
     currentCwd: current.cwd,
-    duplicates: (name: string) => duplicateNames(allSessions).has(name),
+    duplicates: duplicateNames(allSessions),
     allSessions,
     now: Date.now(),
   };

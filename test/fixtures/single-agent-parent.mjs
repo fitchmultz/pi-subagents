@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -352,6 +353,42 @@ const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSes
 const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const publishedFiles = (directory) =>
   fs.readdirSync(directory).filter((name) => name.endsWith(".json"));
+/** Parked authority is the digest of every saved byte, read without waking the child. */
+async function parkedAuthority(parked) {
+  if (phase !== "park") {
+    return;
+  }
+  const authority = readJSON(parked);
+  const original = fs.readFileSync(authority.state);
+  assert.equal(authority.digest, createHash("sha256").update(original).digest("hex"));
+  const { PARKED_HISTORY } = await import(pathToFileURL(path.join(repo, "dist/shared/parking.js")));
+  const { nativePeerId } = await import(
+    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js"))
+  );
+  const history = () => {
+    let found;
+    agentAPI.events.emit(PARKED_HISTORY, {
+      peer: nativePeerId(authority.sessionId),
+      reply: (reply) => {
+        found = reply;
+      },
+    });
+    return found;
+  };
+  const starts = () =>
+    fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n").length;
+  assert.match(JSON.stringify((await history()).getBranch()), /CHILD_LITERAL_RESULT:PARK_FIRST/);
+  // One changed byte past the first read chunks still parses natively but is not this state.
+  const at = original.lastIndexOf("x".repeat(64));
+  assert.ok(at > 2 * 64 * 1024, "the change is past the first native read chunks");
+  const tampered = Buffer.from(original);
+  tampered[at] = "y".charCodeAt(0);
+  fs.writeFileSync(authority.state, tampered);
+  assert.equal(sdk.readWorkingSession(authority.state).leafId, authority.leafId);
+  await assert.rejects(history(), /not this child's saved generation/);
+  fs.writeFileSync(authority.state, original);
+  assert.equal(starts(), 1, "parked reads never wake the child");
+}
 let runId = seed?.runId;
 try {
   if (phase.startsWith("launch-preparation-")) {
@@ -1252,6 +1289,7 @@ try {
           1,
         );
       } else {
+        await parkedAuthority(parked);
         faux.setResponses([fauxAssistantMessage("PARK_SECOND_NOTICE")]);
         const resumed = await call(
           "agent_runs",
