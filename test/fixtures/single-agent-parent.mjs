@@ -45,6 +45,9 @@ fs.writeFileSync(
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
+if (phase === "usage") {
+  process.env.SINGLE_AGENT_JOURNAL_IO = "1";
+}
 if (phase.startsWith("park")) {
   process.env.SINGLE_AGENT_PARK_CLOCK = phase;
 }
@@ -3336,6 +3339,70 @@ try {
       false,
     );
     assert.equal(session.getSessionStats().cost, 0);
+    const journalReads = () =>
+      fs
+        .readFileSync(path.join(root, "journal-reads.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(JSON.parse)
+        .filter((read) => read.file === first.details.sessionFile);
+    const coldReads = journalReads();
+    const warm = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: next.details.id, prompt: "USAGE_WARM_LITERAL" },
+        "usage-warm-continuation",
+      ),
+    );
+    const actor = requests().find((request) => request.prompt === "USAGE_CONTINUATION_LITERAL").pid;
+    assert.equal(
+      requests().find((request) => request.prompt === "USAGE_WARM_LITERAL").pid,
+      actor,
+      "the second continuation runs in the resident continuation actor",
+    );
+    const journal = fs.readFileSync(first.details.sessionFile);
+    let lineEnd = 0;
+    const published = journal
+      .toString("utf8")
+      .split("\n")
+      .slice(0, -1)
+      .map((line) => {
+        lineEnd += Buffer.byteLength(line) + 1;
+        return { entry: JSON.parse(line), end: lineEnd };
+      });
+    assert.equal(lineEnd, journal.length, "every native record is LF-published");
+    const boundary = published.find(
+      ({ entry }) => entry.id === next.details.result.terminalEntryId,
+    ).end;
+    const appended = published.filter(({ end }) => end > boundary).map(({ entry }) => entry);
+    assert.equal(appended.at(-1).id, warm.details.result.terminalEntryId);
+    assert.deepEqual(
+      warm.details.result.contributions.map((part) => [part.id, part.usage]),
+      appended
+        .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
+        .map((entry) => [`${first.details.sessionId}:${entry.id}`, childTurnUsage]),
+      "the resident continuation records exactly its appended native turns",
+    );
+    const warmReads = journalReads().slice(coldReads.length);
+    const bytes = (reads) =>
+      reads.filter((read) => read.pid === actor).reduce((sum, read) => sum + read.count, 0);
+    console.log(
+      JSON.stringify({
+        projection: "child journal reads",
+        journalBytes: journal.length,
+        coldContinuationActor: bytes(coldReads),
+        residentContinuation: bytes(warmReads),
+      }),
+    );
+    assert.deepEqual(
+      {
+        readers: [...new Set(warmReads.map((read) => read.pid))],
+        from: Math.min(...warmReads.map((read) => read.position)),
+        bytes: bytes(warmReads),
+      },
+      { readers: [actor], from: boundary, bytes: journal.length - boundary },
+      "the resident actor reads only the journal records its run appended",
+    );
     fs.writeFileSync(
       seedFile,
       JSON.stringify({
