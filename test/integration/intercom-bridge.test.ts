@@ -1405,7 +1405,7 @@ test(
   },
 );
 
-test("durable ACK retires wake intents and payloads but preserves replay tombstones", async () => {
+test("durable ACK groups retire wake intents and payloads atomically and keep replay tombstones", async () => {
   const root = mkdtempSync("/tmp/pib-wake-");
   const module = join(repo, "src/pi-intercom/bridge-mailbox.ts");
   const run = async (script: string) =>
@@ -1454,6 +1454,34 @@ test("durable ACK retires wake intents and payloads but preserves replay tombsto
     );
     assert.deepEqual(messages(record(second.inbox)), []);
     assert.deepEqual(record(second.wake).messages, []);
+    const group = ["group-1", "group-2", "group-3"];
+    const db = new DatabaseSync(join(root, `${"A".repeat(64)}.sqlite`));
+    try {
+      // A real SQLite failure on the middle ID's acked write, after earlier IDs were updated.
+      db.exec(
+        "CREATE TRIGGER reject_ack BEFORE UPDATE OF acked ON mailbox WHEN NEW.id='group-2' BEGIN SELECT RAISE(ABORT, 'injected ACK failure'); END",
+      );
+      const failed = await run(`
+        const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
+        for (const id of ${JSON.stringify(group)}) mailbox.add({from,message:{id,timestamp:5,content:{text:id}}});
+        let fault;
+        try { mailbox.ack(${JSON.stringify(group)}); } catch (error) { fault = {status:error.status,code:error.code}; }
+        console.log(JSON.stringify({fault}));
+      `);
+      assert.deepEqual(failed.fault, { status: 507, code: "mailbox_storage_failed" });
+      db.exec("DROP TRIGGER reject_ack");
+    } finally {
+      db.close();
+    }
+    const retried = await run(`
+      const unread = mailbox.page(0,256);
+      const wake = mailbox.pendingNotifications();
+      console.log(JSON.stringify({unread,wake,ack:mailbox.ack(${JSON.stringify(group)})}));
+    `);
+    const ids = (page: unknown) => messages(record(page)).map((item) => item.message.id);
+    assert.deepEqual(ids(retried.unread), group, "a failed ACK group transfers no payload");
+    assert.deepEqual(ids(retried.wake), group, "a failed ACK group retires no wake intent");
+    assert.deepEqual(record(retried.ack).acked, group);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
