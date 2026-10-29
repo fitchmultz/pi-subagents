@@ -97,3 +97,15 @@ export function isInboundCheckpoint(
       value.stage === "reply-retired")
   );
 }
+/** Unvalidated: lets a receipt skip checkpoints for other messages before full validation. */
+export function checkpointMessageId(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return;
+  }
+  if ("entry" in value) {
+    return isRecord(value.entry) && isRecord(value.entry.message)
+      ? value.entry.message.id
+      : undefined;
+  }
+  return value.messageId;
+}
