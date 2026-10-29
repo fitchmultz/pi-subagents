@@ -196,14 +196,24 @@ export class Mailbox {
   }
   ack(ids: readonly string[]): UnknownRecord {
     const acked: string[] = [];
-    for (const id of ids) {
-      const entry = this.get(id);
-      if (entry) {
-        this.notificationAccepted(id);
-        this.remove(id);
-        acked.push(id);
+    this.stored(() => {
+      // One FULL commit per ACK group; a rollback leaves every listed payload and intent pending.
+      this.db?.exec("BEGIN IMMEDIATE");
+      try {
+        for (const id of ids) {
+          const entry = this.get(id);
+          if (entry) {
+            this.notificationAccepted(id);
+            this.remove(id);
+            acked.push(id);
+          }
+        }
+        this.db?.exec("COMMIT");
+      } catch (error) {
+        this.db?.exec("ROLLBACK");
+        throw error;
       }
-    }
+    });
     return { acked };
   }
   page(after: number, limit: number): InboxPage {
