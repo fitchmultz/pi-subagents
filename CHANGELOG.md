@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop each child continuation from rereading its whole native journal to record usage. A resident child keeps the IDs and billing fields of records it already validated and parses only records appended after its previous LF boundary. Unchanged journals are not reread; same-size edits, shrink, inode replacement, non-v3 headers and failed reads rebuild from the start. Inherited baselines, terminal stop, required usage and attribution still apply to every run. A restarted or restored child and the parent's pending-accounting repair still read the journal once from the start.
+
 ## [0.52.2] - 2026-10-29
 
 ### Fixed
