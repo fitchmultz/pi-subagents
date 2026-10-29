@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-10-29
+
+### Fixed
+
+- Avoid rereading historical shell records on every idle parking check while a live shell still blocks parking. Retain one publication path and revalidate its current record, owner token and process birth. Read the full inventory again when that witness disappears or dies. Stop and cold continuation keep their complete inventory checks. No records are pruned and live jobs are not interrupted.
+
 ## [0.52.1] - 2026-10-29
 
 ### Fixed

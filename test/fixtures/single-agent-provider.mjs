@@ -59,6 +59,37 @@ function commandIO(root) {
   syncBuiltinESMExports();
 }
 
+function shellIO(root) {
+  const open = fs.openSync;
+  const readdir = fs.readdirSync;
+  let pending;
+  const observe = () => {
+    if (!pending) {
+      pending = { opens: [], scans: 0 };
+      queueMicrotask(() => {
+        fs.appendFileSync(path.join(root, "shell-polls.jsonl"), JSON.stringify(pending) + "\n");
+        pending = undefined;
+      });
+    }
+    return pending;
+  };
+  fs.openSync = (file, ...args) => {
+    const fd = open(file, ...args);
+    if (typeof file === "string" && file.includes("/shells/") && args[0] === "r") {
+      observe().opens.push(path.basename(file));
+    }
+    return fd;
+  };
+  fs.readdirSync = (directory, ...args) => {
+    const entries = readdir(directory, ...args);
+    if (typeof directory === "string" && directory.includes("/shells/")) {
+      observe().scans++;
+    }
+    return entries;
+  };
+  syncBuiltinESMExports();
+}
+
 export default async function fixture(pi) {
   const sdkEntry = path.join(process.env.PI_PACKAGE_DIR, "dist/index.js");
   const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdkEntry)));
@@ -68,6 +99,12 @@ export default async function fixture(pi) {
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
   if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
     commandIO(root);
+  }
+  if (
+    process.env.SINGLE_AGENT_PARK_CLOCK === "park-shells" &&
+    /runner\.[jt]s$/.test(process.argv[1] ?? "")
+  ) {
+    shellIO(root);
   }
   if (
     process.env.SINGLE_AGENT_PARK_CLOCK?.startsWith("park") === true &&

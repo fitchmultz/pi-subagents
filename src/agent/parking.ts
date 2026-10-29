@@ -5,7 +5,7 @@ import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent
 import { parkedSchema, type Launch, type Parked } from "./contracts.ts";
 import { errorText, loadSDK, type WorkingState } from "./host.ts";
 import { conversation, latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
-import { alive, shells, wakeActor } from "./process.ts";
+import { alive, shell, shells, wakeActor } from "./process.ts";
 import {
   isHistoryRequest,
   PARK,
@@ -138,6 +138,7 @@ export class Parking {
   private restored?: string;
   private since = 0;
   private leaf?: string | null;
+  private shell?: string;
   private readonly base: string;
   private readonly launch: Launch;
   private readonly token: string;
@@ -175,11 +176,7 @@ export class Parking {
   }
   /** True once this generation has exited its runtime with or without parked authority. */
   async park(runtime: Runtime, actor: Resident): Promise<boolean> {
-    if (
-      !actor.pi ||
-      !this.due(runtime.session, actor.busy) ||
-      shells(this.base, this.launch, this.token).some(alive)
-    ) {
+    if (!actor.pi || !this.due(runtime.session, actor.busy) || this.hasShell()) {
       return false;
     }
     const hold = await this.prepare(runtime, actor.pi, actor);
@@ -187,6 +184,13 @@ export class Parking {
       await this.commit(runtime, hold, actor.errors);
     }
     return hold !== undefined;
+  }
+  private hasShell(): boolean {
+    const witness = this.shell === undefined ? undefined : shell(this.shell, this.token);
+    if (!witness || !alive(witness)) {
+      this.shell = shells(this.base, this.launch, this.token).find(alive)?.file;
+    }
+    return this.shell !== undefined;
   }
   /** Final idle: no run, turn, journal change or viewer since the period began. */
   private due(session: AgentSession, busy: boolean): boolean {

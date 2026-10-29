@@ -1074,6 +1074,85 @@ try {
     await until(() => notices().length === 1, "first child completion publishes");
     await session.waitForIdle();
     const first = requests().find((request) => request.prompt === "PARK_FIRST");
+    if (phase === "park-shells") {
+      const { ownIdentity } = await import(pathToFileURL(path.join(repo, "dist/agent/process.js")));
+      const { write } = await import(pathToFileURL(path.join(repo, "dist/agent/storage.js")));
+      const actor = readJSON(path.join(runDir(runId), "actor.lock", "process.json"));
+      const ledger = path.join(runDir(runId), "shells", actor.token);
+      const sleepers = Array.from({ length: 3 }, () =>
+        spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+          detached: true,
+          stdio: "ignore",
+        }),
+      );
+      const stop = async (child) => {
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = new Promise((resolve) => child.once("exit", resolve));
+          child.kill("SIGKILL");
+          await exited;
+        }
+      };
+      try {
+        await Promise.all(
+          sleepers.map((child) => new Promise((resolve) => child.once("spawn", resolve))),
+        );
+        const claims = sleepers.map((child) => ({ ...ownIdentity(child.pid), token: actor.token }));
+        assert.ok(claims.every((claim) => claim.identity !== "unverified"));
+        await stop(sleepers[0]);
+        Array.from({ length: 580 }).forEach((_, index) => {
+          write(path.join(ledger, `history-${index}.json`), claims[0]);
+        });
+        const claim = (name, identity) => write(path.join(ledger, name), identity);
+        claim("live.json", claims[1]);
+        const polls = () => {
+          const file = path.join(root, "shell-polls.jsonl");
+          return fs.existsSync(file)
+            ? fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse)
+            : [];
+        };
+        fs.writeFileSync(path.join(root, "advance-clock"), "");
+        await until(() => polls().length > 0, "the due-idle actor validates its shell set");
+        const from = polls().length;
+        await until(() => polls().length >= from + 3, "three completed live-shell parking checks");
+        assert.ok(
+          polls()
+            .slice(from)
+            .every(
+              (poll) =>
+                poll.scans === 0 && poll.opens.length === 1 && poll.opens[0] === "live.json",
+            ),
+          "a live witness avoids rereading the historical shell set on recurring idle checks",
+        );
+        const rescan = async (change, name) => {
+          const start = polls().length;
+          await change();
+          await until(
+            () =>
+              polls()
+                .slice(start)
+                .some((poll) => poll.scans > 0 && poll.opens.includes(name)),
+            `the actor revalidates the current shell set and discovers ${name}`,
+          );
+          assert.equal(fs.existsSync(path.join(runDir(runId), "parked.json")), false);
+          assert.equal(fs.existsSync(path.join(runDir(runId), "park-failed.json")), false);
+        };
+        await rescan(async () => {
+          claim("new.json", claims[2]);
+          await stop(sleepers[1]);
+        }, "new.json");
+        await rescan(() => {
+          claim("renamed.json", claims[2]);
+          fs.unlinkSync(path.join(ledger, "new.json"));
+        }, "renamed.json");
+        await rescan(() => {
+          claim("replacement.json", claims[2]);
+          claim("renamed.json", claims[0]);
+        }, "replacement.json");
+        await stop(sleepers[2]);
+      } finally {
+        await Promise.all(sleepers.map(stop));
+      }
+    }
     fs.writeFileSync(path.join(root, "advance-clock"), "");
     const parked = path.join(runDir(runId), "parked.json");
     if (phase === "park-orphan") {
@@ -1137,7 +1216,7 @@ try {
     } else {
       const outcome = path.join(
         runDir(runId),
-        phase === "park" ? "parked.json" : "park-failed.json",
+        phase === "park" || phase === "park-shells" ? "parked.json" : "park-failed.json",
       );
       await until(() => fs.existsSync(outcome), "idle actor exits with a truthful park outcome");
       await until(() => {

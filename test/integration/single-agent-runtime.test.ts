@@ -151,6 +151,7 @@ for (const phase of [
   "inventory",
   "command-polling",
   "park",
+  "park-shells",
   "park-failed",
   "park-command",
   "dropped-hints",

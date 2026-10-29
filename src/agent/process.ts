@@ -393,7 +393,18 @@ async function waitForExit(targets: readonly OwnedProcess[], timeout: number): P
     await delay(25);
   }
 }
-export function shells(base: string, launch: Launch, token: string): OwnedProcess[] {
+export function shell(file: string, token: string): OwnedProcess | undefined {
+  const identity = published(file, read(file, processSchema));
+  if (identity && identity.token !== token) {
+    throw new Error("Foreign or missing native shell identity.");
+  }
+  return identity;
+}
+export function shells(
+  base: string,
+  launch: Launch,
+  token: string,
+): (OwnedProcess & { readonly file: string })[] {
   const dir = path.join(conversation(base, launch), "shells", token);
   if (!fs.existsSync(dir)) {
     return [];
@@ -403,11 +414,11 @@ export function shells(base: string, launch: Launch, token: string): OwnedProces
     .filter((name) => name.endsWith(".json"))
     .map((name) => {
       const file = path.join(dir, name);
-      const identity = published(file, read(file, processSchema));
-      if (!identity || identity.token !== token) {
+      const identity = shell(file, token);
+      if (!identity) {
         throw new Error("Foreign or missing native shell identity.");
       }
-      return identity;
+      return Object.assign(identity, { file });
     });
 }
 function quote(value: string): string {
