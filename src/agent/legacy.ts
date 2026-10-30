@@ -124,18 +124,24 @@ function receipt(body: unknown, input: LegacyInput): boolean {
   }
   return body.type === "message" && legacyWait(body.message, input);
 }
-function published(ctx: ExtensionContext, input: LegacyInput): boolean {
-  return (
-    receiptId(ctx.sessionManager.getSessionFile(), input.owner, (body) => receipt(body, input)) !==
-    undefined
-  );
+/** Where Pi recorded this input's receipt: its session file, or memory under `--no-session`. */
+function published(ctx: ExtensionContext, input: LegacyInput): "file" | "memory" | undefined {
+  const file = ctx.sessionManager.getSessionFile();
+  const matches = (body: unknown) => receipt(body, input);
+  if (file === undefined) {
+    return ctx.sessionManager.getEntries().some(matches) ? "memory" : undefined;
+  }
+  return receiptId(file, input.owner, matches) === undefined ? undefined : "file";
 }
 function notification(ctx: ExtensionContext, input: LegacyInput): Completion | undefined {
   const identity = `legacy:${input.id}:${input.key}`;
-  if (published(ctx, input)) {
+  const where = published(ctx, input);
+  if (where !== undefined) {
     release(input.owner, identity);
-    // Retire only the unchanged recovery input whose actual native receipt exists.
+    // Retire only an unchanged recovery input whose receipt is LF-published in the session file.
+    // An in-memory receipt stops redelivery but never removes the saved input.
     if (
+      where === "file" &&
       journalStamp(fs.lstatSync(input.file, { bigint: true })) === input.stamp &&
       fs.readFileSync(input.file, "utf8") === input.raw
     ) {

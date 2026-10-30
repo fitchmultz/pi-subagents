@@ -123,10 +123,13 @@ async function cleanup(root: string): Promise<void> {
 }
 for (const phase of [
   "receipt",
+  "receipt-sessionless",
   "model-selection",
   "continuation",
   "lineage",
   "queue-drop",
+  "queue-drop-sessionless",
+  "legacy-sessionless",
   "queue-drop-two",
   "queue-retain",
   "queue-steer",

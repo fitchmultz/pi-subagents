@@ -54,7 +54,7 @@ export function settle(owner: string, pending: boolean): boolean {
   return released;
 }
 export function published(ctx: ExtensionContext, launch: Launch): string | undefined {
-  return completionReceipts(ctx.sessionManager.getSessionFile(), launch.owner).get(launch.id);
+  return completionReceipts(ctx.sessionManager, launch.owner).get(launch.id);
 }
 export interface Completion {
   readonly owner: string;
@@ -239,8 +239,7 @@ export function notifications(ctx: ExtensionContext, base: string, owner: string
   const notices: Completion[] = [];
   const awaited = new Set<string>();
   const runs = completed(base, owner, awaited);
-  const receipts =
-    runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager.getSessionFile(), owner);
+  const receipts = runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager, owner);
   for (const run of runs) {
     const key = `${owner}/${run.id}`;
     if (receipts?.get(run.id) !== undefined) {

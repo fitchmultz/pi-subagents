@@ -96,7 +96,12 @@ const intercom = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
   : undefined;
 const seedFile = path.join(root, "seed.json");
 const seed = fs.existsSync(seedFile) ? JSON.parse(fs.readFileSync(seedFile, "utf8")) : undefined;
+// `--no-session` parents: Pi keeps the native transcript only in memory and reports no session file.
+const sessionless = phase.endsWith("-sessionless");
 function parentManager() {
+  if (sessionless) {
+    return sdk.SessionManager.inMemory(cwd);
+  }
   if (phase === "foreign") {
     return sdk.SessionManager.create(cwd, path.join(root, "parent-sessions"));
   }
@@ -152,6 +157,35 @@ if (phase.startsWith("crash-")) {
       JSON.stringify({ entries: manager.getEntries() }),
     );
     process.kill(process.pid, "SIGKILL");
+  };
+}
+if (sessionless) {
+  // A redelivered completion repeats without bound; exit at the first native duplicate.
+  const identity = (type, details) => {
+    if (type === "agent-completion") {
+      return details.id;
+    }
+    return type === "subagent-notify" ? details.completion?.key : undefined;
+  };
+  const append = manager.appendCustomMessageEntry.bind(manager);
+  manager.appendCustomMessageEntry = (type, content, display, details) => {
+    const entryId = append(type, content, display, details);
+    const id = identity(type, details);
+    if (
+      id !== undefined &&
+      manager
+        .getEntries()
+        .filter(
+          (entry) =>
+            entry.type === "custom_message" &&
+            entry.customType === type &&
+            identity(type, entry.details) === id,
+        ).length > 1
+    ) {
+      console.error(`Duplicate native ${type} entry ${entryId} for ${id}`);
+      process.exit(1);
+    }
+    return entryId;
   };
 }
 const settings = sdk.SettingsManager.inMemory({
@@ -1188,7 +1222,7 @@ try {
     }
     assert.equal(session.model.id, "parent-model");
     assert.equal(session.thinkingLevel, "high");
-  } else if (phase === "seed" || phase === "receipt") {
+  } else if (phase === "seed" || phase === "receipt" || phase === "receipt-sessionless") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(
       "delegate",
@@ -1220,7 +1254,7 @@ try {
         childPid: observedRequest.pid,
       }),
     );
-    if (phase === "receipt") {
+    if (phase !== "seed") {
       // Inspection observes held work without waiting for, waking or interrupting it.
       const held = await call("agent_runs", { action: "inspect", id: runId }, "inspect-held");
       assert.equal(held.isError, false, JSON.stringify(held));
@@ -2282,9 +2316,14 @@ try {
       fs.renameSync(savedLaunch + ".held", savedLaunch);
     }
   } else if (
-    ["queue-drop", "queue-drop-two", "queue-retain", "queue-retain-one", "queue-steer"].includes(
-      phase,
-    )
+    [
+      "queue-drop",
+      "queue-drop-sessionless",
+      "queue-drop-two",
+      "queue-retain",
+      "queue-retain-one",
+      "queue-steer",
+    ].includes(phase)
   ) {
     const receipt = await call(
       "delegate",
@@ -2298,7 +2337,7 @@ try {
       () => requests().some((request) => request.prompt === "HOLD:queue"),
       "native child provider starts",
     );
-    if (phase !== "queue-drop") {
+    if (phase !== "queue-drop" && phase !== "queue-drop-sessionless") {
       const second = await call(
         "delegate",
         {
@@ -2581,20 +2620,40 @@ try {
         new RegExp(`CHILD_LITERAL_RESULT:${run.prompt}`),
       );
     });
-    const physical = fs
-      .readFileSync(manager.getSessionFile(), "utf8")
-      .trim()
-      .split("\n")
-      .map(JSON.parse)
-      .filter(
-        (entry) => entry.type === "custom_message" && entry.customType === "agent-completion",
+    if (sessionless) {
+      const answered = await call("agent_runs", { action: "list" }, "queue-list-after-receipt");
+      assert.equal(answered.isError, false, JSON.stringify(answered));
+      assert.deepEqual(
+        notices()
+          .map((entry) => entry.details.id)
+          .sort(),
+        expectedIds,
+        "settled user turns after native recovery publish no duplicate",
       );
-    assert.deepEqual(
-      physical.map((entry) => entry.details.id).sort(),
-      expectedIds,
-      "each independent completion is physically published once without duplicates",
-    );
-  } else if (["legacy-queue", "legacy-reopen", "legacy-again", "legacy-mutation"].includes(phase)) {
+    } else {
+      const physical = fs
+        .readFileSync(manager.getSessionFile(), "utf8")
+        .trim()
+        .split("\n")
+        .map(JSON.parse)
+        .filter(
+          (entry) => entry.type === "custom_message" && entry.customType === "agent-completion",
+        );
+      assert.deepEqual(
+        physical.map((entry) => entry.details.id).sort(),
+        expectedIds,
+        "each independent completion is physically published once without duplicates",
+      );
+    }
+  } else if (
+    [
+      "legacy-queue",
+      "legacy-reopen",
+      "legacy-again",
+      "legacy-mutation",
+      "legacy-sessionless",
+    ].includes(phase)
+  ) {
     const hint = path.join(root, "pi-subagents-runtime/async-subagent-results", "legacy-7391.json");
     const result = seed?.legacyResult ?? {
       id: "legacy-7391",
@@ -2603,6 +2662,7 @@ try {
       state: "complete",
       success: true,
       timestamp: 123456789,
+      ...(sessionless ? { completionId: "f07bd49a-fd91-4453-85ab-b60fc43f7391" } : {}),
       summary: "LEGACY_COLD_RESULT",
       results: [
         { agent: "legacy-worker", success: true, output: "LEGACY_COLD_RESULT_FULL_OUTPUT_7391" },
@@ -2628,7 +2688,7 @@ try {
       fs.writeFileSync(file, changed);
       fs.utimesSync(file, stat.atime, stat.mtime);
     }
-    if (phase === "legacy-again" || phase === "legacy-mutation") {
+    if (phase === "legacy-again" || phase === "legacy-mutation" || sessionless) {
       fs.mkdirSync(path.dirname(hint), { recursive: true });
       fs.writeFileSync(hint, JSON.stringify(result));
     }
@@ -2683,14 +2743,34 @@ try {
       );
       process.kill(process.pid, "SIGKILL");
     }
-    await until(
-      () => !fs.existsSync(hint),
-      "only an actual LF-published native notice retires the sole legacy hint",
-    );
-    await session.waitForIdle();
+    if (sessionless) {
+      await until(() => legacyNotices().length === 1, "the legacy input publishes in memory");
+      await session.waitForIdle();
+      const answered = await call("agent_runs", { action: "list" }, "legacy-list-after-receipt");
+      assert.equal(answered.isError, false, JSON.stringify(answered));
+      assert.equal(
+        fs.existsSync(hint),
+        true,
+        "an in-memory receipt never retires the saved legacy input",
+      );
+    } else {
+      await until(
+        () => !fs.existsSync(hint),
+        "only an actual LF-published native notice retires the sole legacy hint",
+      );
+      await session.waitForIdle();
+    }
     assert.equal(legacyNotices().length, phase === "legacy-mutation" ? 2 : 1);
     assert.equal(legacyNotices().at(-1).content, JSON.stringify(result));
-    assert.equal(faux.state.callCount, phase === "legacy-again" ? 0 : 1);
+    if (sessionless) {
+      assert.equal(
+        legacyNotices()[0].details.completion.key,
+        "completion:f07bd49a-fd91-4453-85ab-b60fc43f7391",
+      );
+    }
+    // Legacy-again finds its earlier receipt; sessionless adds one completed user turn.
+    const calls = { "legacy-again": 0, "legacy-sessionless": 3 };
+    assert.equal(faux.state.callCount, calls[phase] ?? 1);
     assert.equal(
       manager
         .getEntries()
