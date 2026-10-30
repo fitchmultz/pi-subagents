@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Stop repeating finished-run completion messages in `--no-session` parents. Pi keeps an unsaved session's transcript only in memory, and the completion check looked only for a session file, so each settled turn delivered the same completion again and started another turn. The check now reads Pi's in-memory transcript when there is no session file. Saved sessions still use the session file.
+- Stop repeating finished-run completion messages in `--no-session` parents. Pi keeps an unsaved session's transcript only in memory, and the completion check looked only for a session file, so each settled turn delivered the same completion again and started another turn. The check now reads Pi's in-memory transcript when there is no session file. Saved sessions still use the session file. This also covers a result from a pre-0.50 background run that finishes after `/reload`; its saved result file is kept, because only a receipt in a session file can remove it.
 - Report parked-child wake failures to waiting asks and run inspection without printing them into the parent TUI. Accepted questions remain queued and may still arrive; a later active message requests another wake.
 - A failed restore can retry when its exact exited actor proves it never entered native open for the same parked generation. Ambiguous or possibly live claims remain protected.
 - Release launch claims when a child process did not start, so later attempts can recover without a false ambiguity. Preserve claims when a process may have started.

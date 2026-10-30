@@ -234,7 +234,8 @@ directory order. A later scan cannot reorder messages already admitted to Pi.
 Admission is still not publication or model consumption. Native physical receipts
 suppress redelivery across reload/resume, and dropped queues can recover. A
 `--no-session` parent has no session file, so Pi's in-memory transcript holds its
-receipts for the life of that process. Receipt polling reuses unchanged verified
+receipts for the life of that process; such a receipt never removes a retained
+legacy result file. Receipt polling reuses unchanged verified
 journal metadata; changed files validate the committed prefix before parsing
 appended records. Replacement, truncation, changed prefixes, malformed records,
 and missing final newlines do not fabricate receipts.

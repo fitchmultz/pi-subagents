@@ -161,14 +161,28 @@ if (phase.startsWith("crash-")) {
 }
 if (sessionless) {
   // A redelivered completion repeats without bound; exit at the first native duplicate.
+  const identity = (type, details) => {
+    if (type === "agent-completion") {
+      return details.id;
+    }
+    return type === "subagent-notify" ? details.completion?.key : undefined;
+  };
   const append = manager.appendCustomMessageEntry.bind(manager);
   manager.appendCustomMessageEntry = (type, content, display, details) => {
     const entryId = append(type, content, display, details);
+    const id = identity(type, details);
     if (
-      type === "agent-completion" &&
-      notices().filter((notice) => notice.details.id === details.id).length > 1
+      id !== undefined &&
+      manager
+        .getEntries()
+        .filter(
+          (entry) =>
+            entry.type === "custom_message" &&
+            entry.customType === type &&
+            identity(type, entry.details) === id,
+        ).length > 1
     ) {
-      console.error(`Duplicate native completion entry ${entryId} for run ${details.id}`);
+      console.error(`Duplicate native ${type} entry ${entryId} for ${id}`);
       process.exit(1);
     }
     return entryId;
@@ -2631,7 +2645,15 @@ try {
         "each independent completion is physically published once without duplicates",
       );
     }
-  } else if (["legacy-queue", "legacy-reopen", "legacy-again", "legacy-mutation"].includes(phase)) {
+  } else if (
+    [
+      "legacy-queue",
+      "legacy-reopen",
+      "legacy-again",
+      "legacy-mutation",
+      "legacy-sessionless",
+    ].includes(phase)
+  ) {
     const hint = path.join(root, "pi-subagents-runtime/async-subagent-results", "legacy-7391.json");
     const result = seed?.legacyResult ?? {
       id: "legacy-7391",
@@ -2665,7 +2687,7 @@ try {
       fs.writeFileSync(file, changed);
       fs.utimesSync(file, stat.atime, stat.mtime);
     }
-    if (phase === "legacy-again" || phase === "legacy-mutation") {
+    if (phase === "legacy-again" || phase === "legacy-mutation" || sessionless) {
       fs.mkdirSync(path.dirname(hint), { recursive: true });
       fs.writeFileSync(hint, JSON.stringify(result));
     }
@@ -2720,14 +2742,28 @@ try {
       );
       process.kill(process.pid, "SIGKILL");
     }
-    await until(
-      () => !fs.existsSync(hint),
-      "only an actual LF-published native notice retires the sole legacy hint",
-    );
-    await session.waitForIdle();
+    if (sessionless) {
+      await until(() => legacyNotices().length === 1, "the legacy input publishes in memory");
+      await session.waitForIdle();
+      const answered = await call("agent_runs", { action: "list" }, "legacy-list-after-receipt");
+      assert.equal(answered.isError, false, JSON.stringify(answered));
+      assert.equal(
+        fs.existsSync(hint),
+        true,
+        "an in-memory receipt never retires the saved legacy input",
+      );
+    } else {
+      await until(
+        () => !fs.existsSync(hint),
+        "only an actual LF-published native notice retires the sole legacy hint",
+      );
+      await session.waitForIdle();
+    }
     assert.equal(legacyNotices().length, phase === "legacy-mutation" ? 2 : 1);
     assert.equal(legacyNotices().at(-1).content, JSON.stringify(result));
-    assert.equal(faux.state.callCount, phase === "legacy-again" ? 0 : 1);
+    // Legacy-again finds its earlier receipt; sessionless adds one completed user turn.
+    const calls = { "legacy-again": 0, "legacy-sessionless": 3 };
+    assert.equal(faux.state.callCount, calls[phase] ?? 1);
     assert.equal(
       manager
         .getEntries()

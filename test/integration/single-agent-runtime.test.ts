@@ -129,6 +129,7 @@ for (const phase of [
   "lineage",
   "queue-drop",
   "queue-drop-sessionless",
+  "legacy-sessionless",
   "queue-drop-two",
   "queue-retain",
   "queue-steer",
