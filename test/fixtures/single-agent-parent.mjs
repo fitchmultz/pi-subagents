@@ -96,7 +96,12 @@ const intercom = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
   : undefined;
 const seedFile = path.join(root, "seed.json");
 const seed = fs.existsSync(seedFile) ? JSON.parse(fs.readFileSync(seedFile, "utf8")) : undefined;
+// `--no-session` parents: Pi keeps the native transcript only in memory and reports no session file.
+const sessionless = phase.endsWith("-sessionless");
 function parentManager() {
+  if (sessionless) {
+    return sdk.SessionManager.inMemory(cwd);
+  }
   if (phase === "foreign") {
     return sdk.SessionManager.create(cwd, path.join(root, "parent-sessions"));
   }
@@ -152,6 +157,21 @@ if (phase.startsWith("crash-")) {
       JSON.stringify({ entries: manager.getEntries() }),
     );
     process.kill(process.pid, "SIGKILL");
+  };
+}
+if (sessionless) {
+  // A redelivered completion repeats without bound; exit at the first native duplicate.
+  const append = manager.appendCustomMessageEntry.bind(manager);
+  manager.appendCustomMessageEntry = (type, content, display, details) => {
+    const entryId = append(type, content, display, details);
+    if (
+      type === "agent-completion" &&
+      notices().filter((notice) => notice.details.id === details.id).length > 1
+    ) {
+      console.error(`Duplicate native completion entry ${entryId} for run ${details.id}`);
+      process.exit(1);
+    }
+    return entryId;
   };
 }
 const settings = sdk.SettingsManager.inMemory({
@@ -1188,7 +1208,7 @@ try {
     }
     assert.equal(session.model.id, "parent-model");
     assert.equal(session.thinkingLevel, "high");
-  } else if (phase === "seed" || phase === "receipt") {
+  } else if (phase === "seed" || phase === "receipt" || phase === "receipt-sessionless") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(
       "delegate",
@@ -1220,7 +1240,7 @@ try {
         childPid: observedRequest.pid,
       }),
     );
-    if (phase === "receipt") {
+    if (phase !== "seed") {
       // Inspection observes held work without waiting for, waking or interrupting it.
       const held = await call("agent_runs", { action: "inspect", id: runId }, "inspect-held");
       assert.equal(held.isError, false, JSON.stringify(held));
@@ -2282,9 +2302,14 @@ try {
       fs.renameSync(savedLaunch + ".held", savedLaunch);
     }
   } else if (
-    ["queue-drop", "queue-drop-two", "queue-retain", "queue-retain-one", "queue-steer"].includes(
-      phase,
-    )
+    [
+      "queue-drop",
+      "queue-drop-sessionless",
+      "queue-drop-two",
+      "queue-retain",
+      "queue-retain-one",
+      "queue-steer",
+    ].includes(phase)
   ) {
     const receipt = await call(
       "delegate",
@@ -2298,7 +2323,7 @@ try {
       () => requests().some((request) => request.prompt === "HOLD:queue"),
       "native child provider starts",
     );
-    if (phase !== "queue-drop") {
+    if (phase !== "queue-drop" && phase !== "queue-drop-sessionless") {
       const second = await call(
         "delegate",
         {
@@ -2581,19 +2606,31 @@ try {
         new RegExp(`CHILD_LITERAL_RESULT:${run.prompt}`),
       );
     });
-    const physical = fs
-      .readFileSync(manager.getSessionFile(), "utf8")
-      .trim()
-      .split("\n")
-      .map(JSON.parse)
-      .filter(
-        (entry) => entry.type === "custom_message" && entry.customType === "agent-completion",
+    if (sessionless) {
+      const answered = await call("agent_runs", { action: "list" }, "queue-list-after-receipt");
+      assert.equal(answered.isError, false, JSON.stringify(answered));
+      assert.deepEqual(
+        notices()
+          .map((entry) => entry.details.id)
+          .sort(),
+        expectedIds,
+        "settled user turns after native recovery publish no duplicate",
       );
-    assert.deepEqual(
-      physical.map((entry) => entry.details.id).sort(),
-      expectedIds,
-      "each independent completion is physically published once without duplicates",
-    );
+    } else {
+      const physical = fs
+        .readFileSync(manager.getSessionFile(), "utf8")
+        .trim()
+        .split("\n")
+        .map(JSON.parse)
+        .filter(
+          (entry) => entry.type === "custom_message" && entry.customType === "agent-completion",
+        );
+      assert.deepEqual(
+        physical.map((entry) => entry.details.id).sort(),
+        expectedIds,
+        "each independent completion is physically published once without duplicates",
+      );
+    }
   } else if (["legacy-queue", "legacy-reopen", "legacy-again", "legacy-mutation"].includes(phase)) {
     const hint = path.join(root, "pi-subagents-runtime/async-subagent-results", "legacy-7391.json");
     const result = seed?.legacyResult ?? {
