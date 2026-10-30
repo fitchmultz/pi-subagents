@@ -99,3 +99,101 @@ test("native session_start publishes ownership without scanning runs, then tools
   await native.session.waitForIdle();
   assert.equal(receipts().length, 2, "explicit reconciliation does not duplicate native receipts");
 });
+
+test("recurring reconciliation errors report once, retry, and report again after recovery", async (t) => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "agent-reporting-"));
+  const manager = SessionManager.create(root, path.join(root, "sessions"));
+  const base = ownerDirectory(getPiAgentDir(), manager.getSessionId());
+  const native = await createNativeSessionFixture({
+    cwd: root,
+    agentDir: getPiAgentDir(),
+    sessionManager: manager,
+    configure: agents,
+  });
+  fs.chmodSync(base, 0);
+  assert.throws(() => fs.readdirSync(base), { code: "EACCES" });
+  const scans = spy(fs, "readdirSync");
+  syncBuiltinESMExports();
+  const errors = spy(console, "error");
+  t.after(async () => {
+    fs.chmodSync(base, 0o700);
+    scans.restore();
+    syncBuiltinESMExports();
+    errors.restore();
+    await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    await native.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  const reports = () =>
+    errors.args.filter(([message]) =>
+      String(message).includes("Agent completion reconciliation: EACCES:"),
+    ).length;
+  await until(
+    () => scans.withArgs(base).callCount >= 3,
+    "reconciliation retries the failed directory",
+    5_000,
+  );
+  assert.equal(reports(), 1);
+  fs.chmodSync(base, 0o700);
+  await until(
+    () =>
+      scans
+        .withArgs(base)
+        .getCalls()
+        .some((call) => call.exception === undefined),
+    "successful reconciliation",
+    5_000,
+  );
+  // Explicit native settlement requests another scan after the recovered pass.
+  fs.chmodSync(base, 0);
+  await native.session.extensionRunner.emit({ type: "agent_settled", aborted: false });
+  await until(() => reports() === 2, "a new failure episode is reported", 5_000);
+});
+
+test("native UI context receives one reconciliation notice instead of terminal output", async (t) => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "agent-ui-reporting-"));
+  const manager = SessionManager.create(root, path.join(root, "sessions"));
+  const base = ownerDirectory(getPiAgentDir(), manager.getSessionId());
+  const native = await createNativeSessionFixture({
+    cwd: root,
+    agentDir: getPiAgentDir(),
+    sessionManager: manager,
+    configure: agents,
+    bindExtensions: false,
+  });
+  const notices: string[] = [];
+  const ui = native.session.extensionRunner.getUIContext();
+  await native.session.bindExtensions({
+    mode: "rpc",
+    uiContext: {
+      ...ui,
+      notify: (message) => {
+        notices.push(message);
+      },
+    },
+  });
+  fs.chmodSync(base, 0);
+  assert.throws(() => fs.readdirSync(base), { code: "EACCES" });
+  const scans = spy(fs, "readdirSync");
+  syncBuiltinESMExports();
+  const errors = spy(console, "error");
+  t.after(async () => {
+    fs.chmodSync(base, 0o700);
+    scans.restore();
+    syncBuiltinESMExports();
+    errors.restore();
+    await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    await native.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  await until(
+    () => scans.withArgs(base).callCount >= 3,
+    "reconciliation retries while UI is attached",
+    5_000,
+  );
+  assert.equal(notices.length, 1);
+  assert.match(notices[0] ?? "", /Agent completion reconciliation: EACCES:/);
+  assert.equal(errors.callCount, 0);
+});
