@@ -146,6 +146,7 @@ for (const phase of [
   "cwd-invalid-wrong-owner",
   "cwd-invalid-wrong-directory",
   "cwd-invalid-error",
+  "launch-pre-spawn",
   "launch-preparation-failure",
   "launch-preparation-fork-failure",
   "inventory",
@@ -454,6 +455,50 @@ for (const [death, phase] of [
     },
   );
 }
+test("failed native actor spawns release only their launch claim and preserve the OS error", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-spawn-failure-"));
+  t.after(() => {
+    fs.chmodSync(path.join(root, "denied"), 0o700);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const base = path.join(root, "owner");
+  const directory = path.join(base, "run");
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(root, "file");
+  fs.writeFileSync(file, "");
+  const denied = path.join(root, "denied");
+  fs.mkdirSync(denied, { mode: 0o000 });
+  const cases = [
+    [path.join(root, "missing"), "ENOENT"],
+    [path.join(file, "child"), "ENOTDIR"],
+    [denied, "EACCES"],
+  ] as const;
+  for (const [cwd, code] of cases) {
+    const probe = spawnSync(process.execPath, ["-e", ""], { cwd });
+    if (code === "EACCES" && probe.error === undefined) {
+      t.diagnostic("EACCES case unavailable: current user can enter mode-000 directory");
+      continue;
+    }
+    assert.ok(probe.error && "code" in probe.error);
+    assert.equal(probe.error.code, code);
+    const launch = { ...usageLaunch(path.join(directory, "child.jsonl")), cwd };
+    // oxlint-disable-next-line no-await-in-loop
+    await Promise.all([
+      assert.rejects(ensureActor(base, launch), { code }),
+      assert.rejects(ensureActor(base, launch), { code }),
+    ]);
+    // oxlint-disable-next-line no-await-in-loop
+    await assert.rejects(ensureActor(base, launch), { code });
+    assert.equal(fs.existsSync(path.join(directory, "actor.lock")), false);
+  }
+  fs.mkdirSync(path.join(directory, "actor.lock"));
+  await assert.rejects(
+    ensureActor(base, usageLaunch(path.join(directory, "child.jsonl"))),
+    /ambiguous/,
+  );
+  assert.equal(fs.existsSync(path.join(directory, "actor.lock")), true);
+});
+
 for (const [name, thrown, error] of [
   ["Error", "new Error('CONTROLLED_SDK_STARTUP_FAILURE')", "CONTROLLED_SDK_STARTUP_FAILURE"],
   ["string", "'CONTROLLED_SDK_STARTUP_TEXT'", "CONTROLLED_SDK_STARTUP_TEXT"],
