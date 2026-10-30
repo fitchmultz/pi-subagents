@@ -191,7 +191,7 @@ class AgentRuntime {
         }
       })
       .catch((error: unknown) => {
-        this.reporter.report("attachment", `Agent runtime attachment: ${errorText(error)}`);
+        this.reporter.report(undefined, `Agent runtime attachment: ${errorText(error)}`);
       });
     return undefined;
   }
