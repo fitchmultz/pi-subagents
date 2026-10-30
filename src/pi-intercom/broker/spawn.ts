@@ -72,9 +72,14 @@ function toError(error: unknown): Error {
 export async function spawnBrokerIfNeeded(
   brokerCommand: string,
   brokerArgs: readonly string[],
+  warning: (message?: string) => void = (message) => {
+    if (message !== undefined) {
+      console.warn(message);
+    }
+  },
 ): Promise<void> {
   prepareBrokerSocketPath();
-  await warnPreviousBroker();
+  warning(await previousBrokerWarning());
 
   if (await isBrokerRunning()) {
     return;
@@ -170,24 +175,20 @@ function readLivePid(pidPath: string): number | null {
   return isBrokerPidReused(pid, raw) ? null : pid;
 }
 
-async function warnPreviousBroker(): Promise<void> {
+async function previousBrokerWarning(): Promise<string | undefined> {
   const previousSockets = getPreviousBrokerSocketPaths();
   for (const socketPath of previousSockets) {
     // Migration probes are sequential and never register or send to old peers.
     // oxlint-disable-next-line no-await-in-loop
     if (isOwnedBrokerSocket(socketPath) && (await checkOneSocket(socketPath))) {
-      console.warn(
-        "An older agent-directory Intercom broker is still running. Its peers are not part of shared same-user discovery until they reload with the updated extension. Existing sessions and accepted work are untouched; no legacy fallback is used.",
-      );
-      return;
+      return "An older agent-directory Intercom broker is still running. Its peers are not part of shared same-user discovery until they reload with the updated extension. Existing sessions and accepted work are untouched; no legacy fallback is used.";
     }
   }
   const previousPid = readLivePid(join(getPiAgentDir(), "intercom", "broker.pid"));
   if (previousPid !== null) {
-    console.warn(
-      `Older Intercom broker PID ${previousPid} may still own accepted work. Its peers need to reload with the updated extension to join shared same-user discovery. Nothing was stopped or replaced; no legacy fallback is used.`,
-    );
+    return `Older Intercom broker PID ${previousPid} may still own accepted work. Its peers need to reload with the updated extension to join shared same-user discovery. Nothing was stopped or replaced; no legacy fallback is used.`;
   }
+  return undefined;
 }
 
 export async function stopUnhealthyBrokerBeforeSpawn(): Promise<void> {

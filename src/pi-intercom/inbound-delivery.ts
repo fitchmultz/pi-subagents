@@ -9,6 +9,8 @@ import type {
 } from "./runtime-types.ts";
 import { requestedDelivery } from "./inbound-record.ts";
 import { runCooperatively } from "../shared/cooperative.ts";
+import { asError } from "./validation.ts";
+import type { BackgroundReporter } from "../shared/background-reporting.ts";
 
 type Lifecycle = Pick<Readonly<IntercomLifecycle>, "generation" | "isIdle" | "live" | "toolCount">;
 type Journal = Readonly<
@@ -33,6 +35,7 @@ type Replies = Readonly<Pick<ReplyTracker, "queueTurnContext" | "reset">>;
 interface DeliveryHooks {
   readonly replies: Replies;
   readonly syncStatus: () => void;
+  readonly reporter: BackgroundReporter;
 }
 /** Owns cooperative inbound batches, restoration and the flush timer. */
 export class InboundDeliveryOwner {
@@ -108,9 +111,14 @@ export class InboundDeliveryOwner {
     this.clearTimer();
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.flush(generation)?.catch((error: unknown) => {
-        console.error("Intercom inbound delivery failed:", error);
-      });
+      this.flush(generation)?.then(
+        () => this.hooks.reporter.recover("inbound-delivery"),
+        (error: unknown) =>
+          this.hooks.reporter.report(
+            "inbound-delivery",
+            `Intercom inbound delivery failed: ${asError(error).message}`,
+          ),
+      );
     }, delayMs);
     this.timer.unref();
   }
@@ -145,9 +153,13 @@ export class InboundDeliveryOwner {
       ) {
         this.schedule(0);
       }
+      this.hooks.reporter.recover("inbound-cleanup");
     };
     task.then(finish, finish).catch((error: unknown) => {
-      console.error("Intercom inbound cleanup failed:", error);
+      this.hooks.reporter.report(
+        "inbound-cleanup",
+        `Intercom inbound cleanup failed: ${asError(error).message}`,
+      );
     });
     return task;
   }

@@ -11,6 +11,7 @@ import { asError } from "./validation.ts";
 import { RecoveryError } from "./tool-results.ts";
 import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
 import type { WakeResult } from "../shared/parking.ts";
+import type { BackgroundReporter } from "../shared/background-reporting.ts";
 
 type Lifecycle = Pick<
   Readonly<IntercomLifecycle>,
@@ -49,10 +50,17 @@ export class IntercomConnection {
   private readonly config: IntercomConfig;
   private readonly hooks: ConnectionHooks;
   private readonly wakes = new Map<string, AbortController>();
-  constructor(lifecycle: Lifecycle, config: IntercomConfig, hooks: ConnectionHooks) {
+  private readonly reporter: BackgroundReporter;
+  constructor(
+    lifecycle: Lifecycle,
+    config: IntercomConfig,
+    hooks: ConnectionHooks,
+    reporter: BackgroundReporter,
+  ) {
     this.lifecycle = lifecycle;
     this.config = config;
     this.hooks = hooks;
+    this.reporter = reporter;
   }
   get active(): IntercomTransport | null {
     return this.client;
@@ -200,6 +208,22 @@ export class IntercomConnection {
       next.respondLast(request.requestId, { error: asError(error).message });
     }
   }
+  private receive(next: IntercomClient, from: SessionInfo, message: Message): void {
+    const ctx = this.lifecycle.live();
+    if (this.client !== next || !ctx) {
+      return;
+    }
+    const owner = `inbound:${from.id}:${message.id}`;
+    this.hooks
+      .incoming(ctx, from, message)
+      .then(() => this.reporter.recover(owner))
+      .catch((error: unknown) =>
+        this.reporter.report(
+          owner,
+          `Intercom inbound ${message.id} from ${from.id} failed: ${asError(error).message}`,
+        ),
+      );
+  }
   private createClient(): IntercomClient {
     const next = new IntercomClient({
       sendTimeoutMs: this.config.sendTimeoutMs,
@@ -210,13 +234,7 @@ export class IntercomConnection {
       this.answerLast(next, request);
     });
     next.on("message", (from: SessionInfo, message: Message) => {
-      const ctx = this.lifecycle.live();
-      if (this.client !== next || !ctx) {
-        return;
-      }
-      this.hooks.incoming(ctx, from, message).catch((error: unknown) => {
-        console.error("Intercom inbound delivery failed:", error);
-      });
+      this.receive(next, from, message);
     });
     next.on("wake", (peer: string) => {
       if (this.client === next) {
@@ -289,7 +307,13 @@ export class IntercomConnection {
   ): Promise<IntercomTransport> {
     const next = this.createClient();
     try {
-      await spawnBrokerIfNeeded(this.config.brokerCommand, this.config.brokerArgs);
+      await spawnBrokerIfNeeded(this.config.brokerCommand, this.config.brokerArgs, (message) => {
+        if (message === undefined) {
+          this.reporter.recover("older-broker");
+        } else {
+          this.reporter.report("older-broker", message, "warning");
+        }
+      });
       await next.connect(
         await this.lifecycle.registration(this.hooks.pendingAsks()),
         nativePeerId(sessionId),
@@ -302,6 +326,7 @@ export class IntercomConnection {
       this.lifecycle.transport(next.sessionId, next.supportsGuardedDelivery);
       this.syncIdentity(ctx.sessionManager.getSessionId());
       this.attempt = 0;
+      this.reporter.recover("connection-cleanup");
       return next;
     } catch (error) {
       if (this.client === next) {
@@ -309,7 +334,10 @@ export class IntercomConnection {
       }
       // A failed registration still owns its socket.
       await next.disconnect().catch((cleanupError: unknown) => {
-        console.error("Intercom failed connection cleanup:", cleanupError);
+        this.reporter.report(
+          "connection-cleanup",
+          `Intercom failed connection cleanup: ${asError(cleanupError).message}`,
+        );
       });
       throw asError(error);
     }

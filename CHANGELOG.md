@@ -7,6 +7,7 @@
 - Report parked-child wake failures to waiting asks and run inspection without printing them into the parent TUI. Accepted questions remain queued and may still arrive; a later active message requests another wake.
 - A failed restore can retry when its exact exited actor proves it never entered native open for the same parked generation. Ambiguous or possibly live claims remain protected.
 - Release launch claims when a child process did not start, so later attempts can recover without a false ambiguity. Preserve claims when a process may have started.
+- Show background errors as native notifications instead of writing over an active terminal. Report repeated failures once until the affected operation recovers; shutdown diagnostics are retained separately.
 
 ## [0.52.4] - 2026-10-29
 

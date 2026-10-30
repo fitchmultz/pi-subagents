@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { errorText } from "./host.ts";
+import { BackgroundReporter } from "../shared/background-reporting.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { journalStamp } from "../shared/native-journal.ts";
 import { receiptId } from "./receipts.ts";
@@ -7,7 +9,6 @@ import { resolveTempRootDir } from "../shared/types.ts";
 import { isRecord } from "../shared/unknown.ts";
 import { release, isHeld, type Completion } from "./notifications.ts";
 import { missing } from "./storage.ts";
-import { errorText } from "./host.ts";
 
 interface LegacyInput {
   file: string;
@@ -161,12 +162,15 @@ function legacyNotice(
   ctx: ExtensionContext,
   file: string,
   scan: LegacyScan,
+  report: (file: string, error?: unknown) => void,
 ): Completion | undefined {
   try {
     const input = legacyInput(file, scan);
-    return input ? notification(ctx, input) : undefined;
+    const result = input ? notification(ctx, input) : undefined;
+    report(file);
+    return result;
   } catch (error) {
-    console.error(`Skipped legacy completion ${file}: ${errorText(error)}`);
+    report(file, error);
     return;
   }
 }
@@ -188,7 +192,18 @@ function startScan(ctx: ExtensionContext, directory: string): LegacyScan {
 export function legacyDirectory(): string {
   return path.join(resolveTempRootDir(), "async-subagent-results");
 }
-export function legacyNotifications(ctx: ExtensionContext): Completion[] {
+export function legacyNotifications(
+  ctx: ExtensionContext,
+  reporter: BackgroundReporter = new BackgroundReporter(() => ctx),
+): Completion[] {
+  const report = (file: string, error?: unknown) => {
+    const owner = `legacy:${file}`;
+    if (error === undefined) {
+      reporter.recover(owner);
+    } else {
+      reporter.report(owner, `Skipped legacy completion ${file}: ${errorText(error)}`);
+    }
+  };
   const notices: Completion[] = [];
   const directory = legacyDirectory();
   const root = path.dirname(directory);
@@ -212,10 +227,21 @@ export function legacyNotifications(ctx: ExtensionContext): Completion[] {
     if (!name.endsWith(".json")) {
       continue;
     }
-    const notice = legacyNotice(ctx, path.join(directory, name), scan);
+    const notice = legacyNotice(ctx, path.join(directory, name), scan, report);
     if (notice) {
       notices.push(notice);
     }
   }
   return notices;
+}
+
+export function reconcileLegacy(ctx: ExtensionContext, reporter: BackgroundReporter): Completion[] {
+  try {
+    const notices = legacyNotifications(ctx, reporter);
+    reporter.recover("legacy-scan");
+    return notices;
+  } catch (error) {
+    reporter.report("legacy-scan", `Legacy completion reconciliation: ${errorText(error)}`);
+    return [];
+  }
 }

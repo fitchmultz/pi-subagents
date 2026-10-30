@@ -15,9 +15,9 @@ import {
   parkFailure,
   requestStop,
   signalProcess,
-  stopChildren,
 } from "./process.ts";
-import { isChild, errorText, rememberSDK } from "./host.ts";
+import { stopChildren } from "./shutdown.ts";
+import { isChild, errorText, rememberSDK, retainsChildren } from "./host.ts";
 import { serveParked } from "./parking.ts";
 import {
   resultSchema,
@@ -45,22 +45,18 @@ import {
 import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
-import { legacyDirectory, legacyNotifications } from "./legacy.ts";
+import { legacyDirectory, reconcileLegacy } from "./legacy.ts";
 import { DirectoryWatch, pathStamp, type WatchState } from "./wake.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
+import { BackgroundReporter } from "../shared/background-reporting.ts";
 
 /** Native fork lifetime owner (`ctx.managedHost`); read structurally so official Pi stays supported. */
 interface ManagedHost {
   readonly owner: { readonly pid: number };
   readonly ready: Promise<boolean>;
-}
-/** `handoff` and `provisional` mean another worker under the same launcher may still own these children. */
-function retainsChildren(event: object): boolean {
-  const disposition: unknown = Reflect.get(event, "disposition");
-  return disposition === "handoff" || disposition === "provisional";
 }
 function managedHost(context: ExtensionContext): ManagedHost | undefined {
   const host: unknown = Reflect.get(context, "managedHost");
@@ -86,6 +82,7 @@ function legacyInput(): string[] {
 }
 class AgentRuntime {
   private ctx?: ExtensionContext;
+  private readonly reporter = new BackgroundReporter(() => this.ctx);
   // A managed launcher owns children across worker replacement; otherwise this process does.
   private host?: ManagedHost;
   private accepted = false;
@@ -143,15 +140,15 @@ class AgentRuntime {
     try {
       const { notices, awaited } = notifications(this.ctx, this.base, this.owner);
       this.awaited = awaited;
-      try {
-        notices.unshift(...legacyNotifications(this.ctx));
-      } catch (error) {
-        console.error(`Legacy completion reconciliation: ${errorText(error)}`);
-      }
+      notices.unshift(...reconcileLegacy(this.ctx, this.reporter));
       deliver(this.pi, this.ctx, notices);
+      this.reporter.recover("completion-scan");
     } catch (error) {
       reconciled = false;
-      console.error(`Agent completion reconciliation: ${errorText(error)}`);
+      this.reporter.report(
+        "completion-scan",
+        `Agent completion reconciliation: ${errorText(error)}`,
+      );
     }
     // Newly awaited files were absent when read, or are rechecked once by the probe.
     this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
@@ -206,6 +203,7 @@ class AgentRuntime {
     this.awaited = new Set();
   }
   private start(context: ExtensionContext): Promise<void> | undefined {
+    this.reporter.start();
     this.host = managedHost(context);
     if (this.host === undefined || this.accepted || this.child) {
       this.reset = this.reset.then(() => this.attach(context));
@@ -224,7 +222,7 @@ class AgentRuntime {
         }
       })
       .catch((error: unknown) => {
-        console.error(`Agent runtime attachment: ${errorText(error)}`);
+        this.reporter.report("attachment", `Agent runtime attachment: ${errorText(error)}`);
       });
     return undefined;
   }
@@ -254,6 +252,7 @@ class AgentRuntime {
     this.probe = setInterval(this.recover, 1000).unref();
   }
   private async dispose(retain: boolean): Promise<void> {
+    this.reporter.shutdown();
     this.closing = true;
     this.unwatch();
     this.shutdown.abort();
@@ -267,7 +266,9 @@ class AgentRuntime {
           generation: attachment.generation,
           attached: false,
         });
-        await stopChildren(this.base, this.owner);
+        await stopChildren(this.base, this.owner, (message) =>
+          this.reporter.report(`shutdown:${message}`, message),
+        );
       }
     }
     this.ctx = undefined;
@@ -296,7 +297,10 @@ class AgentRuntime {
           signalProcess(target, "SIGKILL");
         });
       } catch (error) {
-        console.error(`Agent stop escalation: ${errorText(error)}`);
+        this.reporter.report(
+          `stop:${launch.id}`,
+          `Agent stop escalation ${launch.id}: ${errorText(error)}`,
+        );
       }
     }, 3000);
     escalation.unref();
