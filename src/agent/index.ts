@@ -46,7 +46,8 @@ import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
 import { legacyDirectory, reconcileLegacy } from "./legacy.ts";
-import { DirectoryWatch, pathStamp, type WatchState } from "./wake.ts";
+import { pathStamp } from "./wake.ts";
+import { CompletionWatches } from "./completion-watches.ts";
 import { savedContinuation } from "./saved.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
@@ -93,7 +94,7 @@ class AgentRuntime {
   private timer?: NodeJS.Timeout;
   private woken?: NodeJS.Immediate;
   // Change hints for the owner directory, legacy results and every awaited canonical file.
-  private readonly watches = new Map<string, DirectoryWatch>();
+  private readonly watches: CompletionWatches;
   private awaited: ReadonlySet<string> = new Set();
   // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
   private observed = new Map<string, string>();
@@ -106,6 +107,7 @@ class AgentRuntime {
   private readonly pi: ExtensionAPI;
   constructor(pi: ExtensionAPI) {
     this.pi = pi;
+    this.watches = new CompletionWatches(this.reporter, this.wake);
   }
   private checkMain(): void {
     if (isChild()) {
@@ -152,7 +154,7 @@ class AgentRuntime {
     }
     // Newly awaited files were absent when read, or are rechecked once by the probe.
     this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
-    const next = this.watch();
+    const next = this.watches.update(this.base, legacyInput(), this.awaited);
     if (!reconciled || next === "poll") {
       this.timer = setTimeout(this.scan, 200).unref();
     } else if (next === "rescan") {
@@ -160,46 +162,13 @@ class AgentRuntime {
       this.wake();
     }
   };
-  /** Watches every directory that can publish an awaited input; legacy results may never exist. */
-  private watch(): "poll" | "rescan" | "hints" {
-    const legacy = legacyInput();
-    const directories = [
-      ...new Set([this.base, ...legacy, ...[...this.awaited].map((file) => path.dirname(file))]),
-    ];
-    for (const [directory, watch] of this.watches) {
-      if (!directories.includes(directory)) {
-        watch.close();
-        this.watches.delete(directory);
-      }
-    }
-    const states = directories.map((directory): [string, WatchState] => {
-      let watch = this.watches.get(directory);
-      if (watch === undefined) {
-        const every = directory === this.base || legacy.includes(directory);
-        watch = new DirectoryWatch(
-          directory,
-          (file) => every || file === null || this.awaited.has(path.join(directory, file)),
-          this.wake,
-        );
-        this.watches.set(directory, watch);
-      }
-      return [directory, watch.ensure()];
-    });
-    if (states.some(([directory, state]) => state === "unwatched" && !legacy.includes(directory))) {
-      return "poll";
-    }
-    return states.some(([, state]) => state === "armed") ? "rescan" : "hints";
-  }
   private unwatch(): void {
     clearTimeout(this.timer);
     clearInterval(this.probe);
     this.observed.clear();
     clearImmediate(this.woken);
     this.woken = undefined;
-    for (const watch of this.watches.values()) {
-      watch.close();
-    }
-    this.watches.clear();
+    this.watches.close();
     this.awaited = new Set();
   }
   private start(context: ExtensionContext): Promise<void> | undefined {
@@ -267,7 +236,7 @@ class AgentRuntime {
           attached: false,
         });
         await stopChildren(this.base, this.owner, (message) =>
-          this.reporter.report(`shutdown:${message}`, message),
+          this.reporter.report(undefined, message),
         );
       }
     }
@@ -297,10 +266,7 @@ class AgentRuntime {
           signalProcess(target, "SIGKILL");
         });
       } catch (error) {
-        this.reporter.report(
-          `stop:${launch.id}`,
-          `Agent stop escalation ${launch.id}: ${errorText(error)}`,
-        );
+        this.reporter.report(undefined, `Agent stop escalation ${launch.id}: ${errorText(error)}`);
       }
     }, 3000);
     escalation.unref();

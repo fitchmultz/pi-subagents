@@ -26,13 +26,25 @@ export class BackgroundReporter {
   recover(owner: string): void {
     this.episodes.delete(owner);
   }
-  report(owner: string, message: string, severity: "warning" | "error" = "error"): void {
-    if (this.episodes.get(owner) === message) {
+  private published(owner: string | undefined, message: string): void {
+    if (owner !== undefined) {
+      this.episodes.set(owner, message);
+    }
+  }
+  private repeated(owner: string | undefined, message: string): boolean {
+    return owner !== undefined && this.episodes.get(owner) === message;
+  }
+  report(
+    owner: string | undefined,
+    message: string,
+    severity: "warning" | "error" = "error",
+  ): void {
+    if (this.repeated(owner, message)) {
       return;
     }
     if (this.shuttingDown && this.headless) {
       console.error(message);
-      this.episodes.set(owner, message);
+      this.published(owner, message);
       return;
     }
     try {
@@ -43,7 +55,7 @@ export class BackgroundReporter {
         } else {
           console.error(message);
         }
-        this.episodes.set(owner, message);
+        this.published(owner, message);
         return;
       }
     } catch {
@@ -58,7 +70,7 @@ export class BackgroundReporter {
         `${new Date().toISOString()} ${message}\n`,
         { mode: 0o600 },
       );
-      this.episodes.set(owner, message);
+      this.published(owner, message);
     } catch {
       // No terminal write is safe here; the diagnostic store itself may be unavailable.
     }

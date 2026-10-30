@@ -111,13 +111,11 @@ export class InboundDeliveryOwner {
     this.clearTimer();
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.flush(generation)?.then(
-        () => this.hooks.reporter.recover("inbound-delivery"),
-        (error: unknown) =>
-          this.hooks.reporter.report(
-            "inbound-delivery",
-            `Intercom inbound delivery failed: ${asError(error).message}`,
-          ),
+      this.flush(generation)?.catch((error: unknown) =>
+        this.hooks.reporter.report(
+          "inbound-delivery",
+          `Intercom inbound delivery failed: ${asError(error).message}`,
+        ),
       );
     }, delayMs);
     this.timer.unref();
@@ -155,12 +153,17 @@ export class InboundDeliveryOwner {
       }
       this.hooks.reporter.recover("inbound-cleanup");
     };
-    task.then(finish, finish).catch((error: unknown) => {
-      this.hooks.reporter.report(
-        "inbound-cleanup",
-        `Intercom inbound cleanup failed: ${asError(error).message}`,
-      );
-    });
+    task
+      .then(() => {
+        this.hooks.reporter.recover("inbound-delivery");
+        finish();
+      }, finish)
+      .catch((error: unknown) => {
+        this.hooks.reporter.report(
+          "inbound-cleanup",
+          `Intercom inbound cleanup failed: ${asError(error).message}`,
+        );
+      });
     return task;
   }
   private triggerIndex(entries: readonly PendingInboundMessage[]): number {
