@@ -2,7 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
+import {
+  commandSchema,
+  parkedSchema,
+  type Command,
+  type Launch,
+  type Result,
+} from "./contracts.ts";
 import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
@@ -374,7 +380,7 @@ class Actor {
     }
     return this.parking;
   }
-  private failure(error: unknown): void {
+  private failure(error: unknown, unopened?: string): void {
     const launch = this.current ?? this.initial;
     const result: Result = {
       id: launch.id,
@@ -384,6 +390,16 @@ class Actor {
       error: errorText(error),
     };
     const directory = runDirectory(this.base, launch.id);
+    if (fs.existsSync(path.join(this.dir, "parked.json"))) {
+      const parked = read(path.join(this.dir, "parked.json"), parkedSchema);
+      write(path.join(this.dir, `wake-failure-${this.token}.json`), {
+        at: Date.now(),
+        reason: errorText(error),
+        ...(unopened !== undefined && parked?.token === unopened
+          ? { beforeOpen: { actorToken: this.token, parkedToken: unopened } }
+          : {}),
+      });
+    }
     if (!fs.existsSync(path.join(directory, "result.json"))) {
       fs.writeFileSync(path.join(directory, "output.txt"), "", { mode: 0o600 });
       write(path.join(directory, "result.json"), result);
@@ -449,17 +465,21 @@ class Actor {
     parked.adopt();
   }
   async serve(): Promise<void> {
-    const sdk = await loadSDK(this.initial.sdk);
-    const parked = new Parking(this.base, this.initial, this.token, sdk);
     let runtime: Runtime | undefined;
+    let parked: Parking | undefined;
+    let parkedToken: string | undefined;
     try {
+      // Capture the old generation before SDK import or any native working-state operation.
+      parkedToken = read(path.join(this.dir, "parked.json"), parkedSchema)?.token;
+      const sdk = await loadSDK(this.initial.sdk);
+      parked = new Parking(this.base, this.initial, this.token, sdk);
       runtime = await this.start(sdk, parked);
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
       await this.admitCommands(runtime, parked);
       await this.active;
     } catch (error) {
-      this.failure(error);
+      this.failure(error, parked?.opened === true ? undefined : parkedToken);
     } finally {
       await this.finish(runtime);
     }

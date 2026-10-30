@@ -3,7 +3,7 @@ import type { IntercomClient, SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
 import { asError } from "./validation.ts";
-import { AskDeliveryError, RecoveryError } from "./tool-results.ts";
+import { AskDeliveryError, RecoveryError, WakeFailedError } from "./tool-results.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
 interface ReplyWaiter {
@@ -45,6 +45,11 @@ export class ReplyWait {
   peerDisconnected(id: string): void {
     if (this.waiter?.from === id) {
       this.reject(new Error(`Reply peer disconnected before answering: ${id}`));
+    }
+  }
+  wakeFailed(peer: string, messageId: string, reason: string): void {
+    if (this.waiter?.from === peer && this.waiter.replyTo === messageId) {
+      this.reject(new WakeFailedError(reason));
     }
   }
   receive(

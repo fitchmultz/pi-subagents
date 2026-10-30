@@ -13,7 +13,7 @@ import { IntercomInspection } from "./inspection.ts";
 import { IntercomTools } from "./tools.ts";
 import { IntercomSessionEvents } from "./session-events.ts";
 import { registerIntercomTools } from "./tool-registration.ts";
-import { isParkRequest, PARK, PARKED_HISTORY, WAKE } from "../shared/parking.ts";
+import { isParkRequest, PARK, PARKED_HISTORY, WAKE, type WakeResult } from "../shared/parking.ts";
 import type { NativeHistory } from "./last-message.ts";
 
 /** The agent runtime answers for its exited parked child from the captured native session. */
@@ -26,6 +26,21 @@ function parkedHistory(pi: ExtensionAPI, peer: string): Promise<NativeHistory | 
     },
   });
   return history ?? Promise.reject(new Error("No agent runtime owns parked history."));
+}
+
+function wakeParked(pi: ExtensionAPI, peer: string, signal?: AbortSignal): Promise<WakeResult> {
+  let result: Promise<WakeResult> | undefined;
+  pi.events.emit(WAKE, {
+    peer,
+    signal,
+    reply: (outcome: Promise<WakeResult>) => {
+      result = outcome;
+    },
+  });
+  return (
+    result ??
+    Promise.resolve({ status: "failed", reason: "No agent runtime owns this parked child." })
+  );
 }
 
 export default function piIntercomExtension(pi: ExtensionAPI): void {
@@ -49,9 +64,8 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
       );
     },
     parkedHistory: (peer) => parkedHistory(pi, peer.id),
-    wake: (peer) => {
-      pi.events.emit(WAKE, peer);
-    },
+    wake: (peer, signal) => wakeParked(pi, peer, signal),
+    wakeFailed: (peer, messageId, reason) => wait.wakeFailed(peer, messageId, reason),
   });
   const delivery = new InboundDeliveryOwner(pi, lifecycle, journal, {
     replies,

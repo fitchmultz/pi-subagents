@@ -3849,6 +3849,16 @@ for (const foreground of [false, true]) {
           ],
         },
       });
+      // Broker registration can be visible before the extension processes its
+      // registration response. Guard changes require the extension's own context.
+      await waitFor(() => {
+        const context = receiver.contextRequest("pi-intercom:context-query", { version: 1 });
+        return (
+          context.connected === true &&
+          context.guardedDelivery === 1 &&
+          typeof context.peerId === "string"
+        );
+      }, "reconnect receiver's guarded context");
       const before = receiver.contextRequest("pi-intercom:context-query", { version: 1 });
       const consent = receiver.contextRequest("pi-intercom:application-guard", {
         version: 1,

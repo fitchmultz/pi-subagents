@@ -17,6 +17,7 @@ import {
   attachmentSchema,
   parkedSchema,
   processSchema,
+  wakeFailureSchema,
   type Launch,
   type ProcessIdentity,
 } from "./contracts.ts";
@@ -323,12 +324,32 @@ export async function ensureActor(
   }
   await launchClaimedActor(base, launch, lock);
 }
+/** A failed restore can hand the old cut forward only before native open and after death. */
+function failedBeforeOpenToken(
+  dir: string,
+  exited: OwnedProcess,
+  current: OwnedProcess | undefined,
+): string | undefined {
+  const failure = read(path.join(dir, `wake-failure-${exited.token}.json`), wakeFailureSchema);
+  if (
+    current?.token === exited.token &&
+    !alive(current) &&
+    failure?.beforeOpen?.actorToken === exited.token
+  ) {
+    return failure.beforeOpen.parkedToken;
+  }
+  return undefined;
+}
 /** A failed park keeps its input queued; exact state is lost, so nothing restarts it implicitly. */
 export function parkFailure(base: string, launch: Launch, exited?: OwnedProcess): void {
   const dir = conversation(base, launch);
   const parked = read(path.join(dir, "parked.json"), parkedSchema);
-  if (exited && parked && parked.token !== exited.token) {
-    // Only the exited claim that saved this state may hand it to the next generation.
+  if (
+    exited &&
+    parked &&
+    parked.token !== exited.token &&
+    failedBeforeOpenToken(dir, exited, actor(base, launch)) !== parked.token
+  ) {
     throw new Error(
       "Parked working state belongs to another actor generation; nothing was reopened.",
     );

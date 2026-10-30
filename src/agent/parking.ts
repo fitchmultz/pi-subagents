@@ -2,16 +2,26 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parkedSchema, type Launch, type Parked } from "./contracts.ts";
+import {
+  exitSchema,
+  parkedSchema,
+  readySchema,
+  wakeFailureSchema,
+  type Launch,
+  type Parked,
+} from "./contracts.ts";
 import { errorText, loadSDK, type WorkingState } from "./host.ts";
 import { conversation, latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
-import { alive, shell, shells, wakeActor } from "./process.ts";
+import { actor as claimedActor, alive, shell, shells, wakeActor } from "./process.ts";
+import { DirectoryWatch, Wake } from "./wake.ts";
 import {
   isHistoryRequest,
+  isWakeRequest,
   PARK,
   PARKED_HISTORY,
   WAKE,
   type ParkRequest,
+  type WakeResult,
 } from "../shared/parking.ts";
 import { nativePeerId } from "../pi-intercom/session-targets.ts";
 import type { NativeHistory } from "../pi-intercom/last-message.ts";
@@ -147,6 +157,8 @@ export function parkedState(
 /** One actor generation's idle parking and exact restore; commands stay with the runner. */
 export class Parking {
   saved?: WorkingState;
+  /** Set before entering either native open, whose effects may outlive an exception. */
+  opened = false;
   private restored?: string;
   private since = 0;
   private leaf?: string | null;
@@ -172,6 +184,7 @@ export class Parking {
     const { sdk, launch } = this;
     const { openWorkingSession: restore } = sdk;
     const parked = parkedState(this.dir, launch, restore && sdk.readWorkingSession);
+    this.opened = true;
     if (!parked || !restore) {
       return sdk.SessionManager.open(launch.sessionFile, undefined, launch.cwd);
     }
@@ -328,6 +341,96 @@ async function history(runs: Runs | undefined, peer: string): Promise<NativeHist
   return state && { getBranch: () => branchOf(state) };
 }
 
+function unavailableCwd(cwd: string): string | undefined {
+  try {
+    if (!fs.statSync(cwd).isDirectory()) {
+      return `Saved working directory ${cwd} is unavailable: not a directory.`;
+    }
+    fs.accessSync(cwd, fs.constants.X_OK);
+  } catch (error) {
+    return `Saved working directory ${cwd} is unavailable: ${errorText(error)}.`;
+  }
+  return undefined;
+}
+
+function exitedWake(
+  dir: string,
+  identity: NonNullable<ReturnType<typeof claimedActor>>,
+  legacy: boolean,
+): string | undefined {
+  const exit = read(path.join(dir, `exit-${identity.token}.json`), exitSchema);
+  if (!exit && alive(identity)) {
+    return undefined;
+  }
+  const failure = read(path.join(dir, `wake-failure-${identity.token}.json`), wakeFailureSchema);
+  return (
+    failure?.reason ??
+    `Actor exited before ${legacy ? "readiness" : "intercom registration"} (code ${exit?.code ?? "unknown"}, signal ${exit?.signal ?? "unknown"}). See ${path.join(dir, "runner.log")}.`
+  );
+}
+
+/** A spawned actor is only requested until its own readiness or exit is observed. */
+async function awaitWake(
+  base: string,
+  launch: Launch,
+  signal: AbortSignal,
+  legacy: boolean,
+): Promise<void> {
+  const dir = conversation(base, launch);
+  const identity = claimedActor(base, launch);
+  if (!identity) {
+    throw new Error("The wake returned without an observable actor claim.");
+  }
+  const wake = new Wake();
+  const watch = new DirectoryWatch(dir, () => true, wake.raise);
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      wake.take();
+      watch.ensure();
+      if (
+        legacy &&
+        read(path.join(dir, "ready.json"), readySchema)?.token === identity.token &&
+        !fs.existsSync(path.join(dir, "parked.json"))
+      ) {
+        return;
+      }
+      const failure = exitedWake(dir, identity, legacy);
+      if (failure !== undefined) {
+        throw new Error(failure);
+      }
+      // DirectoryWatch reconciles dropped hints without imposing a deadline on native startup.
+      // oxlint-disable-next-line no-await-in-loop
+      await wake.sleep(200);
+    }
+  } finally {
+    watch.close();
+  }
+}
+
+function wakeFailed(
+  current: Runs | undefined,
+  launch: Launch | undefined,
+  error: unknown,
+): WakeResult {
+  let reason = errorText(error);
+  const unavailable = launch && unavailableCwd(launch.cwd);
+  if (unavailable !== undefined) {
+    reason += ` ${unavailable}`;
+  }
+  if (current && launch) {
+    try {
+      write(path.join(conversation(current.base, launch), "wake-failure.json"), {
+        at: Date.now(),
+        reason,
+      });
+    } catch (recordError) {
+      reason += ` Wake failure could not be recorded: ${errorText(recordError)}.`;
+    }
+  }
+  return { status: "failed", reason };
+}
+
 /**
  * Wakes this owner's parked children for broker input and reads their saved history.
  * `runs` is undefined while this session owns no children.
@@ -337,17 +440,50 @@ export function serveParked(
   runs: () => Runs | undefined,
   signal: AbortSignal,
 ): void {
-  pi.events.on(WAKE, (peer) => {
-    // On failure, retained input stays queued at the broker until the next main registration.
-    (async () => {
-      const current = runs();
-      const launch = ownedRun(current, peer);
-      if (current && launch) {
-        await wakeActor(current.base, launch, signal);
+  const pending = new Map<string, Promise<WakeResult>>();
+  const attempt = async (peer: string, registered?: AbortSignal): Promise<WakeResult> => {
+    let current: Runs | undefined;
+    let launch: Launch | undefined;
+    const cancelled = registered ? AbortSignal.any([signal, registered]) : signal;
+    try {
+      current = runs();
+      launch = ownedRun(current, peer);
+      if (!current || !launch) {
+        throw new Error("No active agent runtime owns this parked child.");
       }
-    })().catch((error: unknown) => {
-      console.error(`Agent wake: ${errorText(error)}`);
-    });
+      await wakeActor(current.base, launch, cancelled);
+      await awaitWake(current.base, launch, cancelled, registered === undefined);
+      return { status: "requested" };
+    } catch (error) {
+      if (registered?.aborted === true) {
+        return { status: "requested" };
+      }
+      return wakeFailed(current, launch, error);
+    }
+  };
+  pi.events.on(WAKE, (request) => {
+    const peer = isWakeRequest(request) ? request.peer : request;
+    if (typeof peer !== "string") {
+      return;
+    }
+    // Serialize wake requests; a successful in-flight wake already serves queued requests.
+    const previous = pending.get(peer);
+    const registered = isWakeRequest(request) ? request.signal : undefined;
+    const result = previous
+      ? previous.then((outcome) =>
+          outcome.status === "requested" ? outcome : attempt(peer, registered),
+        )
+      : attempt(peer, registered);
+    pending.set(peer, result);
+    const clear = () => {
+      if (pending.get(peer) === result) {
+        pending.delete(peer);
+      }
+    };
+    void result.then(clear, clear);
+    if (isWakeRequest(request)) {
+      request.reply(result);
+    }
   });
   pi.events.on(PARKED_HISTORY, (request) => {
     if (isHistoryRequest(request)) {
