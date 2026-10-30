@@ -197,3 +197,75 @@ test("native UI context receives one reconciliation notice instead of terminal o
   assert.match(notices[0] ?? "", /Agent completion reconciliation: EACCES:/);
   assert.equal(errors.callCount, 0);
 });
+
+test("an unreadable watched run reports safely and resumes completion recovery", async (t) => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "agent-watch-reporting-"));
+  const manager = SessionManager.create(root, path.join(root, "sessions"));
+  const owner = manager.getSessionId();
+  const base = ownerDirectory(getPiAgentDir(), owner);
+  const id = "pending-run";
+  const run = path.join(base, id);
+  write(path.join(run, "launch.json"), {
+    ...usageLaunch(path.join(root, "unused-child.jsonl")),
+    owner,
+    id,
+    rootId: id,
+  });
+  const native = await createNativeSessionFixture({
+    cwd: root,
+    agentDir: getPiAgentDir(),
+    sessionManager: manager,
+    configure: agents,
+    bindExtensions: false,
+  });
+  const notices: string[] = [];
+  const ui = native.session.extensionRunner.getUIContext();
+  const watches = spy(fs, "watch");
+  const errors = spy(console, "error");
+  syncBuiltinESMExports();
+  t.after(async () => {
+    fs.chmodSync(base, 0o700);
+    watches.restore();
+    syncBuiltinESMExports();
+    errors.restore();
+    await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    await native.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  await native.session.bindExtensions({
+    mode: "rpc",
+    uiContext: {
+      ...ui,
+      notify: (message) => {
+        notices.push(message);
+      },
+    },
+  });
+  await until(() => watches.withArgs(run).callCount > 0, "pending run watch is armed", 5_000);
+  fs.chmodSync(base, 0);
+  assert.throws(() => fs.statSync(run), { code: "EACCES" });
+  await native.session.extensionRunner.emit({ type: "agent_settled", aborted: false });
+  await until(
+    () => notices.some((message) => message.includes(`Agent directory watch ${run}: EACCES:`)),
+    "the watched-directory failure is reported",
+    5_000,
+  );
+  fs.chmodSync(base, 0o700);
+  write(path.join(run, "result.json"), { owner, id, status: "completed", endedAt: 20 });
+  fs.writeFileSync(path.join(run, "output.txt"), "Recovered output");
+  await until(
+    () =>
+      manager
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.type === "custom_message" &&
+            entry.customType === "agent-completion" &&
+            record(entry.details).id === id,
+        ),
+    "the completed run is published after permissions recover",
+    5_000,
+  );
+  assert.equal(errors.callCount, 0);
+});
