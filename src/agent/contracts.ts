@@ -113,6 +113,17 @@ export const parkedSchema = Type.Object({
   leafId: Type.Union([Type.String(), Type.Null()]),
 });
 export type Parked = Static<typeof parkedSchema>;
+export const wakeFailureSchema = Type.Object({
+  at: Type.Number(),
+  reason: Type.String(),
+  beforeOpen: Type.Optional(
+    Type.Object({
+      actorToken: Type.String(),
+      parkedToken: Type.String(),
+    }),
+  ),
+});
+export const readySchema = Type.Object({ token: Type.String() });
 export const exitSchema = Type.Object({
   pid: Type.Integer(),
   code: Type.Union([Type.Integer(), Type.Null()]),

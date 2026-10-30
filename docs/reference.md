@@ -106,7 +106,12 @@ not wake it and report `publication_unavailable`. A
 normal message, ask or continuation restores the exact saved state into a new
 process, which then receives retained messages in order. If the final save
 fails, the child records `park-failed.json` and nothing restarts implicitly;
-retained messages stay queued and continuing reports the failure. Official Pi
+retained messages stay queued and continuing reports the failure. A failed wake
+is recorded as the run's `lastWakeFailure` in `agent_runs list` and `inspect`.
+This is a historical failure, not a claim about the child's current state. A
+later active message requests another wake. The saved working directory must be
+available; no other directory is substituted. A pre-existing ambiguous actor
+claim still requires inspection and is not removed automatically. Official Pi
 keeps idle children resident. Parent exit or session replacement stops its actors and verified owned
 native shells, allowing native abort a short grace period before escalation.
 Actors also watch for parent death, including a hard kill. Ordinary extension

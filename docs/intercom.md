@@ -139,6 +139,13 @@ active or sole pending ask when unambiguous; otherwise specify `replyTo` and the
 intended sender. Inspect `pending` for the exact correlation rather than guessing
 from text.
 
+Messages accepted for a parked child remain queued until it returns. If its
+owner reports a failed wake, a waiting ask returns the failure and says that the
+accepted question may still arrive later. Check the child before resending to
+avoid a duplicate question. A later active message requests another wake. Inspect
+the child's run for its last recorded wake failure. With older brokers or
+clients that cannot report wake outcomes, a waiting ask keeps its usual timeout.
+
 This ordinary request/reply mechanism does not recreate the retired durable
 supervisor approval/revival workflow. An expired wait is not an answered question
 or a completed delegated run.

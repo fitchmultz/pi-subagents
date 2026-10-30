@@ -46,6 +46,7 @@ export class AskDeliveryError extends Error {
     this.result = result;
   }
 }
+export class WakeFailedError extends Error {}
 export function throwIfToolError(result: ToolResultLike): ToolResultLike {
   if (result.isError !== true) {
     return result;

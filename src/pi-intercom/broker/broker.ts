@@ -116,9 +116,7 @@ class IntercomBroker {
     if (currentId === null && msg.type !== "register") {
       throw new Error(`Received ${msg.type} before register`);
     }
-    if (currentId !== null) {
-      this.touchActivity(currentId, false);
-    }
+    this.touchActivity(currentId, false);
     if (msg.type === "register") {
       if (currentId !== null) {
         throw new Error("Received duplicate register message");
@@ -152,7 +150,8 @@ class IntercomBroker {
         break;
       case "park":
       case "unpark":
-        this.parking.park(socket, currentId, msg.type === "park");
+      case "wake_result":
+        this.parking.handle(socket, currentId, msg);
         break;
       default:
         throw new Error(`Unknown client message type: ${msg.type}`);
@@ -172,7 +171,7 @@ class IntercomBroker {
       topics: resumed?.topics ?? new TopicSnapshot(info),
       topicFrames,
       lastMessages: msg.lastMessages === true,
-      parking: msg.parking === true,
+      ...this.parking.features(msg),
       receiptReads: msg.receiptReads === 1,
     });
     setId(id);
@@ -185,6 +184,7 @@ class IntercomBroker {
       sessionId: id,
       lastMessages: true,
       parking: msg.parking === true,
+      ...this.parking.capabilities(msg),
       receiptReads: 1,
       ...(msg.guardedDelivery === 1 ? { guardedDelivery: 1 } : {}),
       ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}),
@@ -397,13 +397,14 @@ class IntercomBroker {
       accepted: reason === null,
       delivered: reason === null && !queued,
       ...(queued ? { queued } : {}),
+      ...(queued ? { reason: this.parking.queueReason(target, message.id) } : {}),
       ...(reason !== null ? { reason } : {}),
     };
   }
 
   /** Update liveness/intercom-activity timestamps for a connected session. */
-  private touchActivity(sessionId: string, comms: boolean): void {
-    const session = this.sessions.get(sessionId);
+  private touchActivity(sessionId: string | null, comms: boolean): void {
+    const session = sessionId === null ? undefined : this.sessions.get(sessionId);
     if (!session) {
       return;
     }

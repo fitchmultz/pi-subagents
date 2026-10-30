@@ -10,6 +10,7 @@ import { readLastMessage, type NativeHistory } from "./last-message.ts";
 import { asError } from "./validation.ts";
 import { RecoveryError } from "./tool-results.ts";
 import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
+import type { WakeResult } from "../shared/parking.ts";
 
 type Lifecycle = Pick<
   Readonly<IntercomLifecycle>,
@@ -26,7 +27,8 @@ interface ConnectionHooks {
   readonly disconnected: (error: Readonly<Error>) => void;
   /** A main answers for and wakes its exited parked children. */
   readonly parkedHistory: (peer: SessionInfo) => Promise<NativeHistory | undefined>;
-  readonly wake: (peer: string) => void;
+  readonly wake: (peer: string, signal?: AbortSignal) => Promise<WakeResult>;
+  readonly wakeFailed: (peer: string, messageId: string, reason: string) => void;
 }
 interface LastRequest {
   readonly requestId: string;
@@ -46,6 +48,7 @@ export class IntercomConnection {
   private readonly lifecycle: Lifecycle;
   private readonly config: IntercomConfig;
   private readonly hooks: ConnectionHooks;
+  private readonly wakes = new Map<string, AbortController>();
   constructor(lifecycle: Lifecycle, config: IntercomConfig, hooks: ConnectionHooks) {
     this.lifecycle = lifecycle;
     this.config = config;
@@ -217,7 +220,44 @@ export class IntercomConnection {
     });
     next.on("wake", (peer: string) => {
       if (this.client === next) {
-        this.hooks.wake(peer);
+        void this.hooks.wake(peer).catch(() => {
+          // Old brokers cannot receive wake outcomes.
+        });
+      }
+    });
+    next.on("wake_request", (peer: string, requestId: string) => {
+      if (this.client === next) {
+        const registered = new AbortController();
+        this.wakes.set(requestId, registered);
+        void this.hooks
+          .wake(peer, registered.signal)
+          .catch((error: unknown): WakeResult => ({
+            status: "failed",
+            reason: asError(error).message,
+          }))
+          .then((result) => {
+            if (this.client === next && !registered.signal.aborted) {
+              next.wakes.respond(requestId, result);
+            }
+          })
+          .finally(() => {
+            if (this.wakes.get(requestId) === registered) {
+              this.wakes.delete(requestId);
+            }
+          })
+          .catch(() => {
+            // A lost broker transport retains the input for the next registration.
+          });
+      }
+    });
+    next.on("wake_registered", (requestId: string) => {
+      if (this.client === next) {
+        this.wakes.get(requestId)?.abort();
+      }
+    });
+    next.on("wake_failed", (peer: string, messageId: string, reason: string) => {
+      if (this.client === next) {
+        this.hooks.wakeFailed(peer, messageId, reason);
       }
     });
     next.on("session_left", (id: string) => {
@@ -231,6 +271,7 @@ export class IntercomConnection {
         return;
       }
       this.hooks.disconnected(error);
+      this.cancelWakes();
       this.client = null;
       this.lifecycle.transport(null);
       this.clearReconnect();
@@ -323,12 +364,19 @@ export class IntercomConnection {
   }
   async shutdown(): Promise<void> {
     this.clearTimers();
+    this.cancelWakes();
     // The bounded launcher attempt is joined before socket shutdown.
     await Promise.allSettled([this.connecting]);
     if (this.client) {
       await this.client.disconnect();
       this.client = null;
     }
+  }
+  private cancelWakes(): void {
+    for (const wake of this.wakes.values()) {
+      wake.abort();
+    }
+    this.wakes.clear();
   }
 }
 export async function resolveConnectedTarget(

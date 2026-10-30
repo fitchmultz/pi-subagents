@@ -8,6 +8,7 @@ import {
   commandSchema,
   exitSchema,
   successorSchema,
+  wakeFailureSchema,
   type Launch,
   type Result,
 } from "./contracts.ts";
@@ -47,6 +48,7 @@ interface RunSummary {
   result?: Pick<Result, "status" | "endedAt" | "error">;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
+  lastWakeFailure?: { at: number; reason: string };
   sessionId: string;
   sessionFile: string;
   outputFile: string;
@@ -175,6 +177,10 @@ function metadata(
     result,
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
+    lastWakeFailure: read(
+      path.join(conversation(base, launch), "wake-failure.json"),
+      wakeFailureSchema,
+    ),
     sessionId: launch.sessionId,
     sessionFile: launch.sessionFile,
     outputFile,
@@ -275,6 +281,9 @@ function resultText(details: RunView): string {
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     receiptText(details),
     exitText(details),
+    details.lastWakeFailure
+      ? `Last wake failure at ${new Date(details.lastWakeFailure.at).toISOString()}: ${details.lastWakeFailure.reason} Retained intercom messages may still arrive after a later wake.`
+      : "",
     `Guidance (latest 20):\n${guidance.length > 0 ? guidance : "  none"}`,
     "Guidance states: pending = not yet admitted; accepted = native queue admission, not journal publication or model consumption; stale = rejected, no new work was started (retry the entire prompt as a continuation).",
     details.result?.error ?? "",

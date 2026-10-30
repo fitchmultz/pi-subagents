@@ -6,6 +6,7 @@ import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
 import { LastMessageRequests, lastRequest } from "./client-last.ts";
 import { ParkRequests } from "./client-park.ts";
+import { WakeMessages } from "./client-wake.ts";
 import { isNativeReadResult } from "./last.ts";
 import {
   errorMessage,
@@ -66,6 +67,7 @@ export class IntercomClient extends EventEmitter {
   private _sessionId: string | null = null;
   private _topicsSupported = false;
   private readonly parking = new ParkRequests();
+  readonly wakes = new WakeMessages(this, () => this.requireActiveSocket());
   private guardedDeliverySupported = false;
   private readonly lastRequests: LastMessageRequests;
   private readonly pendingSends = new Map<
@@ -158,6 +160,7 @@ export class IntercomClient extends EventEmitter {
           this._topicsSupported = false;
           this.parking.settle(false);
           this.guardedDeliverySupported = false;
+          this.wakes.supported = false;
           this.disconnecting = false;
           this.failPending(error);
           if (established && !expected) {
@@ -177,6 +180,7 @@ export class IntercomClient extends EventEmitter {
           parking: true,
           receiptReads: 1,
           guardedDelivery: 1,
+          ...this.wakes.registration(),
         });
       } catch (error) {
         if (this.connection === connection) {
@@ -213,46 +217,47 @@ export class IntercomClient extends EventEmitter {
       throw new Error("Invalid broker message");
     }
 
-    const brokerMessage = msg;
-    const type = msg.type;
-
-    if (this._sessionId === null && type !== "registered") {
-      throw new Error(`Received ${type} before registered`);
+    if (this._sessionId === null && msg.type !== "registered") {
+      throw new Error(`Received ${msg.type} before registered`);
     }
 
-    switch (type) {
+    switch (msg.type) {
       case "registered":
-        this.receiveRegistration(brokerMessage);
+        this.receiveRegistration(msg);
         break;
       case "sessions":
-        this.receiveSessions(brokerMessage);
+        this.receiveSessions(msg);
         break;
       case "last_request":
-        this.receiveLastRequest(brokerMessage);
+        this.receiveLastRequest(msg);
         break;
       case "last_response":
-        this.lastRequests.receive(brokerMessage);
+        this.lastRequests.receive(msg);
         break;
       case "message":
-        this.receiveMessage(brokerMessage);
+        this.receiveMessage(msg);
         break;
       case "delivered":
       case "delivery_queued":
       case "delivery_failed":
-        this.receiveDelivery(brokerMessage);
+        this.receiveDelivery(msg);
         break;
       case "parked":
         this.parking.settle(true);
         break;
-      case "wake":
       case "session_left":
-        if (typeof brokerMessage.sessionId !== "string") {
-          throw new Error(`Invalid ${type} message`);
+        if (typeof msg.sessionId !== "string") {
+          throw new Error(`Invalid ${msg.type} message`);
         }
-        this.emit(type, brokerMessage.sessionId);
+        this.emit(msg.type, msg.sessionId);
+        break;
+      case "wake":
+      case "wake_failed":
+      case "wake_registered":
+        this.wakes.receive(msg);
         break;
       default:
-        throw new Error(`Unknown broker message type: ${type}`);
+        throw new Error(`Unknown broker message type: ${msg.type}`);
     }
   }
 
@@ -269,6 +274,7 @@ export class IntercomClient extends EventEmitter {
     this.parking.supported = msg.parking === true;
     this.lastRequests.receiptReads = msg.receiptReads === 1;
     this.guardedDeliverySupported = msg.guardedDelivery === 1;
+    this.wakes.supported = msg.wakeResults === 1;
     this.connection?.confirmRegistration();
     this.emit("_registered", { type: "registered", sessionId: msg.sessionId });
   }

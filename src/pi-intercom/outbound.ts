@@ -23,6 +23,7 @@ import {
   AskDeliveryError,
   failureDetails,
   RecoveryError,
+  WakeFailedError,
   type RecoveryAction,
 } from "./tool-results.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
@@ -220,6 +221,18 @@ export class IntercomOutbound {
     );
   }
   private askFailure(error: unknown, to: string, questionId: string | undefined): ToolResultLike {
+    if (error instanceof WakeFailedError) {
+      return toolError(
+        `The parked child could not be woken: ${error.message} Your ask is still queued and may arrive after a later wake. Check the recipient before sending it again.`,
+        failureDetails("wake_failed", [{ action: "list" }, { action: "status" }], {
+          error: true,
+          messageId: questionId,
+          accepted: true,
+          delivered: false,
+          queued: true,
+        }),
+      );
+    }
     if (error instanceof AskDeliveryError) {
       const result = this.deliveryFailure(to, error.result);
       return { ...result, details: { ...result.details, error: true } };
@@ -390,15 +403,26 @@ export class IntercomOutbound {
       this.owners.replies.markReplied(target.message.id);
       this.markActivity();
       this.recordSent(sender, { text: body, replyTo: target.message.id }, result);
-      return toolText(`Reply sent to ${sender}`, {
-        messageId: result.id,
-        delivered: true,
-        replyTo: target.message.id,
-        reasonCode: "reply_sent",
-      });
+      return this.replySent(sender, target.message.id, result);
     } catch (error) {
       return this.replyFailure(error, replyTo);
     }
+  }
+  private replySent(sender: string, replyTo: string, result: SendResult): ToolResultLike {
+    const queued = result.queued === true;
+    return toolText(
+      queued
+        ? `Reply queued for ${sender} (${result.reason ?? "queued"})`
+        : `Reply sent to ${sender}`,
+      {
+        messageId: result.id,
+        accepted: result.accepted,
+        delivered: result.delivered,
+        queued,
+        replyTo,
+        reasonCode: queued ? "message_queued" : "reply_sent",
+      },
+    );
   }
   private replyFailure(error: unknown, replyTo: string | undefined): ToolResultLike {
     const reason = error instanceof RecoveryError ? error.code : "reply_failed";
