@@ -2664,6 +2664,88 @@ try {
         assert.deepEqual(fs.readFileSync(path.join(runDir(orphan.id), name)), originalBytes[index]),
       );
     }
+  } else if (phase === "launch-pre-spawn") {
+    const model = "single-agent-fixture/literal-model";
+    const target = path.join(root, "launch-cwd");
+    const moved = `${target}.moved`;
+    fs.mkdirSync(target);
+    const first = await settled(
+      await call("delegate", { prompt: "PRE_SPAWN_FIRST", cwd: target, model }, "pre-spawn-first"),
+    );
+    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:PRE_SPAWN_FIRST");
+    const id = first.details.id;
+    const actorPid = requests().find((request) => request.prompt === "PRE_SPAWN_FIRST").pid;
+    await call("agent_runs", { action: "stop", id }, "pre-spawn-stop");
+    await until(() => {
+      try {
+        process.kill(actorPid, 0);
+        return false;
+      } catch (error) {
+        return error.code === "ESRCH";
+      }
+    }, "the resident actor actually exits before its cwd changes");
+    const prompt = "PRE_SPAWN_RECOVERED";
+    // Each OS refusal happens before any process exists; the next attempt must reach the OS again.
+    const refusals = [
+      ["ENOENT", () => fs.renameSync(target, moved)],
+      ["ENOTDIR", () => fs.writeFileSync(target, "")],
+      [
+        "EACCES",
+        () => {
+          fs.rmSync(target);
+          fs.mkdirSync(target, { mode: 0o000 });
+        },
+      ],
+    ];
+    if (process.getuid() === 0) {
+      refusals.pop();
+      console.error("Skipped the EACCES cwd refusal: root may enter a mode-000 directory.");
+    }
+    try {
+      for (const [code, refuse] of refusals) {
+        refuse();
+        // oxlint-disable-next-line no-await-in-loop
+        const refused = await call(
+          "agent_runs",
+          { action: "continue", id, prompt },
+          `pre-spawn-${code}`,
+        );
+        assert.equal(refused.isError, true, JSON.stringify(refused));
+        assert.match(refused.content[0].text, new RegExp(`\\b${code}\\b`), "native OS diagnostic");
+      }
+      // ENOTDIR throws synchronously; Node reports the other refusals as child errors.
+      const saved = refusals.map(([code]) => code).findLast((code) => code !== "ENOTDIR");
+      assert.match(
+        readJSON(path.join(runDir(id), "spawn-error.json")).error,
+        new RegExp(`\\b${saved}\\b`),
+        "asynchronous spawn failures keep their saved native record",
+      );
+    } finally {
+      if (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
+        fs.chmodSync(target, 0o700);
+        fs.rmdirSync(target);
+      } else {
+        fs.rmSync(target, { force: true });
+      }
+      fs.renameSync(moved, target);
+    }
+    const recovered = await settled(
+      await call("agent_runs", { action: "continue", id, prompt }, "pre-spawn-recovered"),
+    );
+    assert.equal(recovered.isError, false, JSON.stringify(recovered));
+    assert.equal(recovered.details.output.text, `CHILD_LITERAL_RESULT:${prompt}`);
+    assert.equal(fs.realpathSync(recovered.details.cwd), fs.realpathSync(target));
+    assert.deepEqual(
+      requests().map((request) => request.prompt),
+      ["PRE_SPAWN_FIRST", prompt],
+      "refused launches dispatched nothing and the restored launch runs the queued prompt once",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n")
+        .length,
+      2,
+      "only the first actor and the restored relaunch started",
+    );
   } else if (phase === "cwd" || phase === "cwd-reopen") {
     const active = path.join(root, "active"),
       child = path.join(active, "child");
