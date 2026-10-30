@@ -5,11 +5,11 @@ child-only supervisor tool, peer overlay, topic registry, or separate extension
 to install. Ordinary and delegated sessions use the same messaging tool.
 
 Background failures appear as native notifications when a UI is active and on
-stderr in print or JSON mode. Failures during shutdown or after the UI context
-is unavailable are recorded in `intercom/background-errors.log` under
-`PI_CODING_AGENT_DIR` (normally `~/.pi/agent`). If that directory is not writable,
-the fallback cannot record them. Repeated identical failures are reported once
-until the affected operation recovers.
+stderr in print or JSON mode, including during headless shutdown. In UI sessions,
+failures during shutdown or after the UI context is unavailable are recorded in
+`intercom/background-errors.log` under `PI_CODING_AGENT_DIR` (normally `~/.pi/agent`).
+If that directory is not writable, the fallback cannot record them. Repeated
+identical failures are reported once until the affected operation recovers.
 
 ## Discovery and groups
 
