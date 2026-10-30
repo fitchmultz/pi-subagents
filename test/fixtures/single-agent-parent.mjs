@@ -2662,6 +2662,7 @@ try {
       state: "complete",
       success: true,
       timestamp: 123456789,
+      ...(sessionless ? { completionId: "f07bd49a-fd91-4453-85ab-b60fc43f7391" } : {}),
       summary: "LEGACY_COLD_RESULT",
       results: [
         { agent: "legacy-worker", success: true, output: "LEGACY_COLD_RESULT_FULL_OUTPUT_7391" },
@@ -2761,6 +2762,12 @@ try {
     }
     assert.equal(legacyNotices().length, phase === "legacy-mutation" ? 2 : 1);
     assert.equal(legacyNotices().at(-1).content, JSON.stringify(result));
+    if (sessionless) {
+      assert.equal(
+        legacyNotices()[0].details.completion.key,
+        "completion:f07bd49a-fd91-4453-85ab-b60fc43f7391",
+      );
+    }
     // Legacy-again finds its earlier receipt; sessionless adds one completed user turn.
     const calls = { "legacy-again": 0, "legacy-sessionless": 3 };
     assert.equal(faux.state.callCount, calls[phase] ?? 1);
