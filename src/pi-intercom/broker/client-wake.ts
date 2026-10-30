@@ -1,6 +1,6 @@
 import type net from "node:net";
 import type { EventEmitter } from "node:events";
-import type { WakeResult } from "../../shared/parking.ts";
+import type { WakeResult } from "../types.ts";
 import type { UnknownRecord } from "../../shared/unknown.ts";
 import { validateIntercomMessageSize, writeMessage } from "./framing.ts";
 

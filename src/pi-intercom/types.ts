@@ -10,6 +10,10 @@ import {
   safeText,
 } from "./validation.ts";
 
+export type WakeResult =
+  | { readonly status: "requested" }
+  | { readonly status: "failed"; readonly reason: string };
+
 export interface SessionInfo {
   readonly id: string;
   readonly name?: string;

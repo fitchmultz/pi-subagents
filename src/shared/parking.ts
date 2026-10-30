@@ -1,5 +1,8 @@
 import type { NativeHistory } from "../pi-intercom/last-message.ts";
+import type { WakeResult } from "../pi-intercom/types.ts";
 import { isRecord } from "./unknown.ts";
+
+export type { WakeResult } from "../pi-intercom/types.ts";
 
 /** A child actor asks its intercom to fence broker input before parking, or to release it. */
 export const PARK = "pi-subagents:park";
@@ -10,9 +13,6 @@ export interface ParkRequest {
 /** A main intercom wakes or reads an exited parked child through the agent runtime. */
 export const WAKE = "pi-subagents:wake";
 export const PARKED_HISTORY = "pi-subagents:parked-history";
-export type WakeResult =
-  | { readonly status: "requested" }
-  | { readonly status: "failed"; readonly reason: string };
 export interface WakeRequest {
   readonly peer: string;
   readonly signal?: AbortSignal;
