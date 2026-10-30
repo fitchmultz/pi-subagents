@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { errorText } from "./host.ts";
-import { BackgroundReporter } from "../shared/background-reporting.ts";
+import type { BackgroundReporter } from "../shared/background-reporting.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { journalStamp } from "../shared/native-journal.ts";
 import { receiptId } from "./receipts.ts";
@@ -194,7 +194,7 @@ export function legacyDirectory(): string {
 }
 export function legacyNotifications(
   ctx: ExtensionContext,
-  reporter: BackgroundReporter = new BackgroundReporter(() => ctx),
+  reporter: BackgroundReporter,
 ): Completion[] {
   const report = (file: string, error?: unknown) => {
     const owner = `legacy:${file}`;
