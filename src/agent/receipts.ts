@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { scanJournal } from "../shared/journal-frames.ts";
 import { journalStamp, nativeAppend } from "../shared/native-journal.ts";
 import type { Projection } from "../shared/json-projection.ts";
@@ -157,6 +158,24 @@ function owned(file: string | undefined, owner: string): ReceiptIndex | undefine
   const header = journal.entries.at(0);
   return header?.type === "session" && header.id === owner ? journal : undefined;
 }
+/** Without a session file (`--no-session`), Pi's append-only memory is the whole native transcript. */
+function remembered(
+  manager: ExtensionContext["sessionManager"],
+  owner: string,
+): Prefix | undefined {
+  const header = manager.getHeader();
+  if (header?.id !== owner) {
+    return;
+  }
+  const journal: Prefix = { end: 0, entries: [], completions: new Map() };
+  // Index the same record frames the physical journal scan accepts.
+  for (const entry of [header, ...manager.getEntries()]) {
+    if (isRecord(entry)) {
+      addEntry(journal, entry);
+    }
+  }
+  return journal;
+}
 export function receiptId(
   file: string | undefined,
   owner: string,
@@ -167,12 +186,14 @@ export function receiptId(
   );
   return typeof found?.id === "string" ? found.id : undefined;
 }
-/** Live read-only completion IDs by run; later appends extend this view.
- * A matching entry without an ID is unpublished. Invalidations replace the view.
+/** Completion IDs by run from the native transcript: the session file when Pi persists one,
+ * otherwise Pi's in-memory entries. A matching entry without an ID is unpublished.
  */
 export function completionReceipts(
-  file: string | undefined,
+  manager: ExtensionContext["sessionManager"],
   owner: string,
 ): ReadonlyMap<string, string | undefined> {
-  return owned(file, owner)?.completions ?? new Map<string, string>();
+  const file = manager.getSessionFile();
+  const journal = file === undefined ? remembered(manager, owner) : owned(file, owner);
+  return journal?.completions ?? new Map<string, string>();
 }
