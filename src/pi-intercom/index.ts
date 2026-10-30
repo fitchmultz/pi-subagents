@@ -15,6 +15,7 @@ import { IntercomSessionEvents } from "./session-events.ts";
 import { registerIntercomTools } from "./tool-registration.ts";
 import { isParkRequest, PARK, PARKED_HISTORY, WAKE, type WakeResult } from "../shared/parking.ts";
 import type { NativeHistory } from "./last-message.ts";
+import { BackgroundReporter } from "../shared/background-reporting.ts";
 
 /** The agent runtime answers for its exited parked child from the captured native session. */
 function parkedHistory(pi: ExtensionAPI, peer: string): Promise<NativeHistory | undefined> {
@@ -43,33 +44,61 @@ function wakeParked(pi: ExtensionAPI, peer: string, signal?: AbortSignal): Promi
   );
 }
 
-export default function piIntercomExtension(pi: ExtensionAPI): void {
-  const config = loadConfig();
+function setupReporting(pi: ExtensionAPI) {
+  let configError: string | undefined;
+  const config = loadConfig((message) => {
+    configError = message;
+  });
   const lifecycle = new IntercomLifecycle(pi, config, readIntercomLineage());
+  const reporter = new BackgroundReporter(() => lifecycle.live());
+  let pendingConfigError = configError;
+  pi.on("session_start", (_event, ctx) => {
+    reporter.start();
+    if (pendingConfigError !== undefined) {
+      if (ctx.hasUI) {
+        ctx.ui.notify(pendingConfigError, "warning");
+      } else {
+        console.error(pendingConfigError);
+      }
+      pendingConfigError = undefined;
+    }
+  });
+  pi.on("session_shutdown", () => reporter.shutdown());
+  return { config, lifecycle, reporter };
+}
+
+export default function piIntercomExtension(pi: ExtensionAPI): void {
+  const { config, lifecycle, reporter } = setupReporting(pi);
   const replies = new ReplyTracker(config.askTimeoutMs);
   const journal = new InboundJournal(pi, lifecycle, replies);
   const wait = new ReplyWait(lifecycle, config.askTimeoutMs);
-  const connection = new IntercomConnection(lifecycle, config, {
-    restoring: () => delivery.restoring,
-    pendingAsks: () => replies.listPending().length,
-    receipt: (query) => journal.receipt(query),
-    incoming: (ctx, from, message) => inbound.receive(ctx, from, message),
-    peerLeft: (id) => {
-      wait.peerDisconnected(id);
-      journal.peerLeft(id);
+  const connection = new IntercomConnection(
+    lifecycle,
+    config,
+    {
+      restoring: () => delivery.restoring,
+      pendingAsks: () => replies.listPending().length,
+      receipt: (query) => journal.receipt(query),
+      incoming: (ctx, from, message) => inbound.receive(ctx, from, message),
+      peerLeft: (id) => {
+        wait.peerDisconnected(id);
+        journal.peerLeft(id);
+      },
+      disconnected: (error) => {
+        wait.reject(
+          new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }),
+        );
+      },
+      parkedHistory: (peer) => parkedHistory(pi, peer.id),
+      wake: (peer, signal) => wakeParked(pi, peer, signal),
+      wakeFailed: (peer, messageId, reason) => wait.wakeFailed(peer, messageId, reason),
     },
-    disconnected: (error) => {
-      wait.reject(
-        new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }),
-      );
-    },
-    parkedHistory: (peer) => parkedHistory(pi, peer.id),
-    wake: (peer, signal) => wakeParked(pi, peer, signal),
-    wakeFailed: (peer, messageId, reason) => wait.wakeFailed(peer, messageId, reason),
-  });
+    reporter,
+  );
   const delivery = new InboundDeliveryOwner(pi, lifecycle, journal, {
     replies,
     syncStatus: () => connection.syncStatus(),
+    reporter,
   });
   lifecycle.registerContextEvents(() => connection.syncStatus());
   const inbound = new IntercomInbound(lifecycle, config, {

@@ -9,6 +9,12 @@ import { readIntercomLineage } from "../pi-intercom/identity.ts";
 
 export { errorMessage as errorText } from "../shared/unknown.ts";
 
+/** A launcher may still own children while handing off or replacing a worker. */
+export function retainsChildren(event: object): boolean {
+  const disposition: unknown = Reflect.get(event, "disposition");
+  return disposition === "handoff" || disposition === "provisional";
+}
+
 /** Fork-only exact native working state; official Pi lacks it, so its children stay resident. */
 interface LocalWorkingState {
   readonly header: { readonly id: string };

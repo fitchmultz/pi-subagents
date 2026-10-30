@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPiAgentDir } from "./agent-dir.ts";
 import { isRecord, isUnknownArray } from "./validation.ts";
+import { errorMessage } from "../shared/unknown.ts";
 
 export interface IntercomConfig {
   /** Broker command used to spawn the broker process (for example, Node or Bun). */
@@ -93,7 +94,7 @@ function configuredTimeout(
   }
   return value;
 }
-export function loadConfig(): IntercomConfig {
+export function loadConfig(report: (message: string) => void = console.error): IntercomConfig {
   const configPath = join(getPiAgentDir(), "intercom", "config.json");
   if (!existsSync(configPath)) {
     return { ...defaults };
@@ -114,7 +115,9 @@ export function loadConfig(): IntercomConfig {
       listTimeoutMs: configuredTimeout(parsed, "listTimeoutMs"),
     };
   } catch (error) {
-    console.error(`Failed to load intercom config at ${configPath}:`, error);
+    report(
+      `Failed to load intercom config at ${configPath}: ${errorMessage(error)}. Using defaults.`,
+    );
     return { ...defaults };
   }
 }

@@ -11,6 +11,7 @@ import { deliver, notifications, published, settle } from "../../src/agent/notif
 import { write } from "../../src/agent/storage.ts";
 import { legacyNotifications } from "../../src/agent/legacy.ts";
 import { resolveTempRootDir } from "../../src/shared/types.ts";
+import { BackgroundReporter } from "../../src/shared/background-reporting.ts";
 import { createNativeSessionFixture } from "../support/native-session.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 import { record } from "../support/assertions.ts";
@@ -51,7 +52,8 @@ async function fixture(t: TestContext, content = "Publish native fixture history
     throw new Error("Native fixture did not create a session file");
   }
   const launch = { ...usageLaunch(file), owner: manager.getSessionId() };
-  return { ...native, manager, file, launch };
+  const reporter = new BackgroundReporter(() => native.context);
+  return { ...native, manager, file, launch, reporter };
 }
 
 test("physical parent receipt authority follows LF, prefix replacement, inode, shrink and recovery, not stale memory", async (t) => {
@@ -488,7 +490,11 @@ for (const boundary of ["root", "results"] as const) {
       }
       fs.rmSync(scratch, { recursive: true, force: true });
     });
-    assert.deepEqual(legacyNotifications(h.context), [], "warm the safe directory first");
+    assert.deepEqual(
+      legacyNotifications(h.context, h.reporter),
+      [],
+      "warm the safe directory first",
+    );
     if (boundary === "root") {
       fs.renameSync(configured, path.join(scratch, "previous"));
       fs.mkdirSync(path.join(outside, "async-subagent-results"));
@@ -519,7 +525,7 @@ for (const boundary of ["root", "results"] as const) {
       },
     });
     assert.throws(
-      () => deliver(h.pi, h.context, legacyNotifications(h.context)),
+      () => deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter)),
       /Unsafe legacy recovery directory/,
     );
     assert.equal(
@@ -544,7 +550,7 @@ test("a malformed legacy hint is logged and skipped without dropping valid legac
     output: "Valid literal legacy output",
   });
   fs.writeFileSync(corrupt, JSON.stringify({ sessionId: "foreign", output: "Previously ignored" }));
-  assert.deepEqual(legacyNotifications(h.context), []);
+  assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
   fs.writeFileSync(corrupt, '{"incomplete":');
   fs.writeFileSync(valid, raw);
   const errors = stub(console, "error");
@@ -553,7 +559,7 @@ test("a malformed legacy hint is logged and skipped without dropping valid legac
     fs.rmSync(corrupt, { force: true });
     fs.rmSync(valid, { force: true });
   });
-  deliver(h.pi, h.context, legacyNotifications(h.context));
+  deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
   await h.session.waitForIdle();
   assert.deepEqual(
     h.manager
@@ -566,18 +572,18 @@ test("a malformed legacy hint is logged and skipped without dropping valid legac
     [raw],
     "the valid legacy result is published despite the malformed file",
   );
-  deliver(h.pi, h.context, legacyNotifications(h.context));
+  deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
   assert.equal(fs.existsSync(valid), false, "the published valid hint still retires");
   assert.equal(fs.readFileSync(corrupt, "utf8"), '{"incomplete":');
-  assert.equal(errors.callCount, 2);
-  assert.ok(errors.alwaysCalledWithMatch(corrupt), "each scan names the skipped file");
+  assert.equal(errors.callCount, 1, "the recurring failure is reported once");
+  assert.ok(errors.alwaysCalledWithMatch(corrupt), "the report names the skipped file");
   const repaired = JSON.stringify({
     runId: "corrupt-legacy",
     sessionId: h.launch.owner,
     output: "Repaired",
   });
   fs.writeFileSync(corrupt, repaired);
-  deliver(h.pi, h.context, legacyNotifications(h.context));
+  deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
   assert.equal(
     fs.readFileSync(corrupt, "utf8"),
     repaired,
@@ -595,9 +601,9 @@ test("a malformed legacy hint is logged and skipped without dropping valid legac
     [raw, repaired],
     "changed malformed input recovers through actual native publication",
   );
-  deliver(h.pi, h.context, legacyNotifications(h.context));
+  deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
   assert.equal(fs.existsSync(corrupt), false);
-  assert.equal(errors.callCount, 2, "repair adds no errors");
+  assert.equal(errors.callCount, 1, "repair adds no errors");
 });
 
 for (const change of ["same-size", "replacement", "growth", "shrink"] as const) {
@@ -628,10 +634,10 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
       syncBuiltinESMExports();
       fs.rmSync(hint, { force: true });
     });
-    assert.deepEqual(legacyNotifications(h.context), []);
+    assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
     assert.equal(reads.withArgs(hint).callCount, 1, "classify the real foreign body");
     for (let tick = 0; tick < 25; tick++) {
-      assert.deepEqual(legacyNotifications(h.context), []);
+      assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
     }
     assert.equal(
       reads.withArgs(hint).callCount,
@@ -654,7 +660,7 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
       t.after(() => fs.rmSync(peer, { force: true }));
       const names = fs.readdirSync(directory);
       assert.ok(names.indexOf(path.basename(hint)) < names.indexOf(path.basename(peer)));
-      deliver(h.pi, h.context, legacyNotifications(h.context));
+      deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
       assert.equal(fs.existsSync(peer), true, "peer send acceptance is not retirement");
       await h.session.waitForIdle();
       assert.deepEqual(
@@ -668,7 +674,7 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
         [peerRaw],
         "an ignored cache hit cannot drop the later owned peer's actual native publication",
       );
-      deliver(h.pi, h.context, legacyNotifications(h.context));
+      deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
       assert.equal(fs.existsSync(peer), false, "the published peer retires normally");
       assert.equal(fs.existsSync(hint), true);
       assert.equal(
@@ -701,7 +707,7 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
     } else {
       assert.notEqual(after.ctimeNs, before.ctimeNs, "in-place mutation changes ctime");
     }
-    const notices = legacyNotifications(h.context);
+    const notices = legacyNotifications(h.context, h.reporter);
     assert.equal(notices.length, 1, "changed foreign input is reclassified for its current owner");
     assert.equal(
       notices[0]?.message.content,
@@ -722,7 +728,7 @@ for (const change of ["same-size", "replacement", "growth", "shrink"] as const) 
       [...priorNotices, owned],
       "the actual native SDK publishes each literal completion exactly once",
     );
-    deliver(h.pi, h.context, legacyNotifications(h.context));
+    deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
     assert.equal(fs.existsSync(hint), false, "actual matching receipt retires unchanged input");
     assert.equal(fs.existsSync(path.join(resolveTempRootDir(), "async-subagent-runs", id)), false);
   });
@@ -745,7 +751,7 @@ test("warm ignored legacy files refuse symlinks and retry input changed during c
     output: "Actual",
   });
   fs.writeFileSync(hint, foreign);
-  assert.deepEqual(legacyNotifications(h.context), []);
+  assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
   fs.writeFileSync(outside, raw);
   fs.unlinkSync(hint);
   fs.symlinkSync(outside, hint);
@@ -756,7 +762,7 @@ test("warm ignored legacy files refuse symlinks and retry input changed during c
   const reads = spy(fs, "readFileSync");
   syncBuiltinESMExports();
   try {
-    assert.deepEqual(legacyNotifications(h.context), []);
+    assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
     assert.equal(reads.withArgs(hint).callCount, 0, "never follow the warm file symlink");
     assert.equal(fs.readFileSync(outside, "utf8"), raw);
   } finally {
@@ -776,7 +782,7 @@ test("warm ignored legacy files refuse symlinks and retry input changed during c
   syncBuiltinESMExports();
   try {
     assert.deepEqual(
-      legacyNotifications(h.context),
+      legacyNotifications(h.context, h.reporter),
       [],
       "first classification saw the foreign bytes",
     );
@@ -785,7 +791,7 @@ test("warm ignored legacy files refuse symlinks and retry input changed during c
     changing.restore();
     syncBuiltinESMExports();
   }
-  const notices = legacyNotifications(h.context);
+  const notices = legacyNotifications(h.context, h.reporter);
   assert.equal(
     notices[0]?.message.content,
     raw,
@@ -794,7 +800,7 @@ test("warm ignored legacy files refuse symlinks and retry input changed during c
   deliver(h.pi, h.context, notices);
   assert.equal(fs.readFileSync(hint, "utf8"), raw);
   await h.session.waitForIdle();
-  deliver(h.pi, h.context, legacyNotifications(h.context));
+  deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
   assert.equal(fs.existsSync(hint), false);
   assert.equal(fs.readFileSync(outside, "utf8"), raw, "outside saved bytes are never consumed");
 });
@@ -812,23 +818,23 @@ test("ignored legacy classification follows the actual current session owner", a
   });
   fs.writeFileSync(hint, raw);
   t.after(() => fs.rmSync(hint, { force: true }));
-  assert.deepEqual(legacyNotifications(h.context), []);
-  assert.deepEqual(legacyNotifications(h.context), []);
+  assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
+  assert.deepEqual(legacyNotifications(h.context, h.reporter), []);
   h.manager.setSessionFile(other.file);
   try {
-    assert.equal(legacyNotifications(h.context)[0]?.message.content, raw);
+    assert.equal(legacyNotifications(h.context, h.reporter)[0]?.message.content, raw);
   } finally {
     h.manager.setSessionFile(h.file);
   }
   assert.deepEqual(
-    legacyNotifications(h.context),
+    legacyNotifications(h.context, h.reporter),
     [],
     "the original owner still cannot consume it",
   );
-  deliver(other.pi, other.context, legacyNotifications(other.context));
+  deliver(other.pi, other.context, legacyNotifications(other.context, other.reporter));
   assert.equal(fs.readFileSync(hint, "utf8"), raw);
   await other.session.waitForIdle();
-  deliver(other.pi, other.context, legacyNotifications(other.context));
+  deliver(other.pi, other.context, legacyNotifications(other.context, other.reporter));
   assert.equal(fs.existsSync(hint), false);
 });
 
@@ -883,7 +889,7 @@ for (const scenario of legacyCases) {
       });
     }
     const before = h.manager.getEntries().length;
-    deliver(h.pi, h.context, legacyNotifications(h.context));
+    deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
     if (scenario.received) {
       assert.equal(fs.existsSync(hint), false);
       assert.equal(
@@ -909,7 +915,7 @@ for (const scenario of legacyCases) {
         1,
         "actual SDK publishes the unsuppressed completion exactly once",
       );
-      deliver(h.pi, h.context, legacyNotifications(h.context));
+      deliver(h.pi, h.context, legacyNotifications(h.context, h.reporter));
       assert.equal(fs.existsSync(hint), false);
     }
     assert.equal(
