@@ -11,6 +11,15 @@ import { registeredSession } from "../support/native-readiness.ts";
 const [root, repo, sdkRoot, phase] = process.argv.slice(2);
 const cwd = path.join(root, "project"),
   agentDir = path.join(root, "agent");
+const sdkLink = path.join(root, "selected-sdk");
+if (phase === "park-sdk-outcome") {
+  const typebox = findPackageJSON("typebox", path.join(sdkRoot, "dist/index.js"));
+  assert.ok(typebox);
+  fs.mkdirSync(path.join(root, "node_modules"));
+  fs.symlinkSync(path.dirname(sdkRoot), path.join(root, "node_modules/@earendil-works"), "dir");
+  fs.symlinkSync(path.dirname(typebox), path.join(root, "node_modules/typebox"), "dir");
+  fs.symlinkSync(sdkRoot, sdkLink, "dir");
+}
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PI_") || key === "NODE_OPTIONS") {
     delete process.env[key];
@@ -19,7 +28,7 @@ for (const key of Object.keys(process.env)) {
 Object.assign(process.env, {
   HOME: root,
   PI_CODING_AGENT_DIR: agentDir,
-  PI_PACKAGE_DIR: sdkRoot,
+  PI_PACKAGE_DIR: phase === "park-sdk-outcome" ? sdkLink : sdkRoot,
   SINGLE_AGENT_TEST_ROOT: root,
   PI_OFFLINE: "1",
   PI_INTERCOM_RUNTIME_DIR: path.join(root, "ic"),
@@ -82,6 +91,9 @@ const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await im
 const { default: agents } = await import(
   pathToFileURL(path.join(repo, "dist/agent/index.js")).href
 );
+const intercom = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
+  ? (await import(pathToFileURL(path.join(repo, "dist/pi-intercom/index.js")).href)).default
+  : undefined;
 const seedFile = path.join(root, "seed.json");
 const seed = fs.existsSync(seedFile) ? JSON.parse(fs.readFileSync(seedFile, "utf8")) : undefined;
 function parentManager() {
@@ -218,6 +230,7 @@ const services = await sdk.createAgentSessionServices({
         agentAPI = pi;
         pi.on("agent_settled", () => publishLegacyAtSettlement?.());
         agents(pi);
+        intercom?.(pi);
         pi.on("tool_execution_end", (event) => {
           toolEnds.push(structuredClone(event));
         });
@@ -391,6 +404,156 @@ async function parkedAuthority(parked) {
   await assert.rejects(history(), /not this child's saved generation/);
   fs.writeFileSync(authority.state, original);
   assert.equal(starts(), 1, "parked reads never wake the child");
+}
+function intercomTexts(sessionFile) {
+  return fs
+    .readFileSync(sessionFile, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(JSON.parse)
+    .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
+    .map((entry) => entry.details.message.content.text);
+}
+async function failedWake(parked, childCwd, runId) {
+  const { nativePeerId } = await import(
+    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js"))
+  );
+  const launch = readJSON(path.join(runDir(runId), "launch.json"));
+  const peer = nativePeerId(launch.sessionId);
+  const unavailable = `${childCwd}-unavailable`;
+  fs.renameSync(childCwd, unavailable);
+  try {
+    for (const id of ["first", "second"]) {
+      // Each ask must finish before the next explicit wake.
+      // oxlint-disable-next-line no-await-in-loop
+      const failure = await call(
+        "intercom",
+        { action: "ask", to: peer, message: `wake-outcome-${id}` },
+        `wake-outcome-${id}`,
+      );
+      assert.equal(failure.isError, true, JSON.stringify(failure));
+      assert.match(failure.content[0].text, /saved working directory.*unavailable/i);
+      assert.match(failure.content[0].text, /still queued.*may arrive/i);
+    }
+    const inspection = await runsTool().execute(
+      "wake-inspect",
+      { action: "inspect", id: runId },
+      new AbortController().signal,
+    );
+    assert.match(
+      inspection.details.lastWakeFailure.reason,
+      /saved working directory.*unavailable/i,
+    );
+    assert.match(inspection.content[0].text, /last wake failure/i);
+    assert.equal(fs.existsSync(parked), true, "a failed wake retains the exact saved state");
+  } finally {
+    fs.renameSync(unavailable, childCwd);
+  }
+  fs.rmSync(path.join(root, "advance-clock"), { force: true });
+  const retry = await call(
+    "intercom",
+    { action: "send", to: peer, message: "wake-outcome-retry" },
+    "wake-outcome-retry",
+  );
+  assert.equal(retry.isError, false, JSON.stringify(retry));
+  await until(
+    () => intercomTexts(launch.sessionFile).includes("wake-outcome-retry"),
+    "restored child publishes retained input",
+  );
+  assert.deepEqual(
+    intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-outcome-")),
+    ["wake-outcome-first", "wake-outcome-second", "wake-outcome-retry"],
+  );
+}
+async function failedSdkWake(parked, runId) {
+  const { nativePeerId } = await import(
+    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js"))
+  );
+  const launch = readJSON(path.join(runDir(runId), "launch.json"));
+  const saved = readJSON(parked);
+  const peer = nativePeerId(launch.sessionId);
+  fs.unlinkSync(sdkLink);
+  fs.mkdirSync(sdkLink);
+  fs.writeFileSync(
+    path.join(sdkLink, "package.json"),
+    JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module" }),
+  );
+  try {
+    const failure = await call(
+      "intercom",
+      { action: "ask", to: peer, message: "wake-sdk-original" },
+      "wake-sdk-ask",
+    );
+    assert.equal(failure.isError, true, JSON.stringify(failure));
+    assert.match(failure.content[0].text, /selected-sdk/);
+    assert.match(failure.content[0].text, /still queued.*may arrive/i);
+    const inspection = await runsTool().execute(
+      "wake-sdk-inspect",
+      { action: "inspect", id: runId },
+      new AbortController().signal,
+    );
+    assert.match(inspection.details.lastWakeFailure.reason, /selected-sdk/);
+    assert.equal(fs.existsSync(parked), true);
+
+    const processFile = path.join(runDir(runId), "actor.lock/process.json");
+    const failed = readJSON(processFile);
+    await until(() => {
+      try {
+        process.kill(failed.pid, 0);
+        return false;
+      } catch (error) {
+        return error.code === "ESRCH";
+      }
+    }, "the failed restore's exact process exits");
+    const witnessFile = path.join(runDir(runId), `wake-failure-${failed.token}.json`);
+    const witness = readJSON(witnessFile);
+    assert.deepEqual(witness.beforeOpen, { actorToken: failed.token, parkedToken: saved.token });
+    const originalState = fs.readFileSync(saved.state);
+    const { ensureActor, ownIdentity } = await import(
+      pathToFileURL(path.join(repo, "dist/agent/process.js"))
+    );
+    const base = path.dirname(runDir(runId));
+    for (const beforeOpen of [
+      undefined,
+      { actorToken: "another-actor", parkedToken: saved.token },
+      { actorToken: failed.token, parkedToken: "another-parked-generation" },
+    ]) {
+      fs.writeFileSync(witnessFile, JSON.stringify({ ...witness, beforeOpen }));
+      // oxlint-disable-next-line no-await-in-loop
+      await assert.rejects(ensureActor(base, launch), /another actor generation/);
+      assert.deepEqual(readJSON(processFile), failed, "ambiguous claim remains untouched");
+      assert.deepEqual(fs.readFileSync(saved.state), originalState);
+    }
+    fs.writeFileSync(witnessFile, JSON.stringify(witness));
+    try {
+      // A matching token is not enough while its current process may still be alive.
+      const live = { ...ownIdentity(), token: failed.token };
+      fs.writeFileSync(processFile, JSON.stringify(live));
+      await ensureActor(base, launch);
+      assert.equal(fs.readFileSync(processFile, "utf8"), JSON.stringify(live));
+      assert.deepEqual(fs.readFileSync(saved.state), originalState);
+    } finally {
+      fs.writeFileSync(processFile, JSON.stringify(failed));
+    }
+  } finally {
+    fs.rmSync(sdkLink, { recursive: true });
+    fs.symlinkSync(sdkRoot, sdkLink, "dir");
+  }
+  fs.rmSync(path.join(root, "advance-clock"), { force: true });
+  const retry = await call(
+    "intercom",
+    { action: "send", to: peer, message: "wake-sdk-retry" },
+    "wake-sdk-retry",
+  );
+  assert.equal(retry.isError, false, JSON.stringify(retry));
+  await until(
+    () => intercomTexts(launch.sessionFile).includes("wake-sdk-retry"),
+    "restored child publishes retained input",
+  );
+  assert.deepEqual(
+    intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-sdk-")),
+    ["wake-sdk-original", "wake-sdk-retry"],
+  );
 }
 let runId = seed?.runId;
 try {
@@ -1111,7 +1274,15 @@ try {
     }
   } else if (phase.startsWith("park")) {
     const model = "single-agent-fixture/literal-model";
-    const receipt = await call("delegate", { prompt: "PARK_FIRST", model }, "park-launch");
+    const childCwd = path.join(root, "parked-child-worktree");
+    if (phase === "park-wake-outcome") {
+      fs.mkdirSync(childCwd);
+    }
+    const receipt = await call(
+      "delegate",
+      { prompt: "PARK_FIRST", model, ...(phase === "park-wake-outcome" ? { cwd: childCwd } : {}) },
+      "park-launch",
+    );
     runId = receipt.details.id;
     faux.setResponses([fauxAssistantMessage("PARK_NOTICE")]);
     await until(() => notices().length === 1, "first child completion publishes");
@@ -1259,7 +1430,9 @@ try {
     } else {
       const outcome = path.join(
         runDir(runId),
-        phase === "park" || phase === "park-shells" ? "parked.json" : "park-failed.json",
+        ["park", "park-shells", "park-wake-outcome", "park-sdk-outcome"].includes(phase)
+          ? "parked.json"
+          : "park-failed.json",
       );
       await until(() => fs.existsSync(outcome), "idle actor exits with a truthful park outcome");
       await until(() => {
@@ -1291,6 +1464,10 @@ try {
             .length,
           1,
         );
+      } else if (phase === "park-wake-outcome") {
+        await failedWake(parked, childCwd, runId);
+      } else if (phase === "park-sdk-outcome") {
+        await failedSdkWake(parked, runId);
       } else {
         await parkedAuthority(parked);
         faux.setResponses([fauxAssistantMessage("PARK_SECOND_NOTICE")]);

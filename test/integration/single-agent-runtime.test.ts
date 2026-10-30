@@ -152,6 +152,8 @@ for (const phase of [
   "inventory",
   "command-polling",
   "park",
+  "park-wake-outcome",
+  "park-sdk-outcome",
   "park-shells",
   "park-failed",
   "park-command",
@@ -161,7 +163,14 @@ for (const phase of [
   test(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));
     try {
-      run(root, phase);
+      const stderr = run(root, phase);
+      if (phase === "park-wake-outcome" || phase === "park-sdk-outcome") {
+        assert.doesNotMatch(
+          stderr,
+          /Agent wake:/,
+          "background wake failures do not print into the parent",
+        );
+      }
     } finally {
       await cleanup(root);
     }

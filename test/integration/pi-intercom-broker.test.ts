@@ -928,3 +928,132 @@ test("a parked child keeps its identity, topics and admitted input until one gen
     await Promise.all(clients.map((client) => client.disconnect()));
   }
 });
+
+test(
+  "parked wake failures reach waiting senders without losing input or trusting other peers",
+  { timeout: 30000 },
+  async (t) => {
+    isolatedAgent(t);
+    const clients: IntercomClient[] = [];
+    t.after(() => Promise.all(clients.map((client) => client.disconnect())));
+    await startBroker(t);
+    const main = new IntercomClient();
+    const child = new IntercomClient();
+    const sender = new IntercomClient();
+    const other = new IntercomClient();
+    const legacy = new IntercomClient();
+    const attacker = new IntercomClient();
+    clients.push(main, child, sender, other, legacy, attacker);
+    for (const client of clients) {
+      client.on("error", (error: Error) => assert.fail(error.message));
+    }
+    const wakes: Array<[string, string]> = [];
+    const failures: Array<[string, string, string]> = [];
+    main.on("wake_request", (peer: string, request: string) => {
+      wakes.push([peer, request]);
+    });
+    sender.on("wake_failed", (peer: string, id: string, reason: string) => {
+      failures.push([peer, id, reason]);
+    });
+    other.on("wake_failed", () => {
+      // Opt in to the broker's failure notices.
+    });
+    attacker.on("wake_request", () => {
+      // Negotiate wake responses so the broker can reject a forged outcome.
+    });
+    const connect = (client: IntercomClient, name: string, parent = "wake-owner") =>
+      client.connect(
+        {
+          name,
+          cwd: `/p/${name}`,
+          model: "fixture",
+          rootSessionId: "wake-owner",
+          ...(name === "wake-owner" ? {} : { parentSessionId: parent }),
+        },
+        nativePeerId(name),
+      );
+    await connect(main, "wake-owner");
+    await connect(child, "wake-child");
+    await connect(sender, "wake-sender");
+    await connect(other, "wake-other");
+    await connect(legacy, "wake-legacy");
+    await connect(attacker, "wake-attacker");
+    const childId = text(child.sessionId);
+    assert.equal(await child.park(), true);
+    await child.disconnect();
+
+    const firstWake = once(main, "wake_request");
+    const first = await sender.send(childId, { text: "first ask", expectsReply: true });
+    assert.deepEqual([first.accepted, first.delivered, first.queued], [true, false, true]);
+    assert.match(text(first.reason), /parked child/);
+    const firstRequest = array(await firstWake);
+    assert.equal(firstRequest[0], childId);
+    const request = text(firstRequest[1]);
+    const second = await other.send(childId, { text: "second ask", expectsReply: true });
+    assert.equal(second.queued, true);
+    await main.listSessions();
+    assert.equal(wakes.length, 1, "the second input waits behind the in-flight wake");
+
+    attacker.wakes.respond(text(request), { status: "failed", reason: "forged failure" });
+    await attacker.listSessions();
+    await sender.listSessions();
+    assert.deepEqual(failures, [], "another peer cannot report the owner's wake outcome");
+
+    const firstFailure = once(sender, "wake_failed");
+    const retry = once(main, "wake_request");
+    main.wakes.respond(text(request), { status: "failed", reason: "saved directory unavailable" });
+    assert.deepEqual(await firstFailure, [childId, first.id, "saved directory unavailable"]);
+    const retryRequest = array(await retry);
+    assert.equal(retryRequest[0], childId);
+    const retryId = text(retryRequest[1]);
+    const otherFailure = once(other, "wake_failed");
+    main.wakes.respond(text(retryId), { status: "failed", reason: "saved directory unavailable" });
+    assert.deepEqual(await otherFailure, [childId, second.id, "saved directory unavailable"]);
+    await main.listSessions();
+    assert.equal(wakes.length, 2, "a failed wake does not spin without new input");
+
+    // Adding a listener after registration does not negotiate notices with the broker.
+    const unnegotiated: unknown[] = [];
+    legacy.on("wake_failed", (...notice: unknown[]) => {
+      unnegotiated.push(notice);
+    });
+    const thirdWake = once(main, "wake_request");
+    const third = await legacy.send(childId, { text: "third ask", expectsReply: true });
+    assert.deepEqual([third.accepted, third.delivered, third.queued], [true, false, true]);
+    assert.match(text(third.reason), /last wake failed: saved directory unavailable/);
+    assert.match(text(third.reason), /may still arrive/);
+    const thirdId = text(array(await thirdWake)[1]);
+    main.wakes.respond(thirdId, { status: "failed", reason: "saved directory unavailable" });
+    await main.listSessions();
+    await legacy.listSessions();
+    assert.deepEqual(unnegotiated, [], "a non-negotiating sender receives no unknown notice");
+
+    const fourthWake = once(main, "wake_request");
+    const fourth = await sender.send(childId, { text: "fourth message" });
+    assert.equal(fourth.queued, true);
+    const fourthId = text(array(await fourthWake)[1]);
+
+    const restored = new IntercomClient();
+    clients.push(restored);
+    restored.on("error", (error: Error) => assert.fail(error.message));
+    const received: string[] = [];
+    const flushed = new Promise<void>((resolve) => {
+      restored.on("message", (_from: SessionInfo, message: Message) => {
+        received.push(message.content.text);
+        if (received.length === 4) {
+          resolve();
+        }
+      });
+    });
+    const registration = once(main, "wake_registered");
+    await connect(restored, "wake-child");
+    assert.deepEqual(await registration, [fourthId]);
+    await flushed;
+    assert.deepEqual(received, ["first ask", "second ask", "third ask", "fourth message"]);
+    const prior = failures.length;
+    main.wakes.respond(fourthId, { status: "failed", reason: "stale failure" });
+    await main.listSessions();
+    await sender.listSessions();
+    assert.equal(failures.length, prior, "a late result cannot report failure after registration");
+  },
+);
