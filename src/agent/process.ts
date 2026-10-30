@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -149,34 +149,74 @@ function childEnvironment(launch: Launch): NodeJS.ProcessEnv {
     PI_INTERCOM_PARENT_SESSION_ID: launch.owner,
   });
 }
-function spawnActor(base: string, launch: Launch, token: string): void {
-  const dir = conversation(base, launch);
-  const log = fs.openSync(path.join(dir, "runner.log"), "a", 0o600);
-  const runner = fileURLToPath(
-    new URL(import.meta.url.endsWith(".ts") ? "./runner.ts" : "./runner.js", import.meta.url),
-  );
-  let child;
+interface LaunchClaim {
+  readonly spawned: () => void;
+  readonly release: () => void;
+}
+function saveSpawnFailure(dir: string, error: Error): Error {
   try {
-    child = spawn(process.execPath, [runner, base, launch.rootId, token, launch.id], {
-      cwd: launch.cwd,
-      env: childEnvironment(launch),
-      detached: true,
-      stdio: ["ignore", log, log],
-    });
-  } finally {
-    fs.closeSync(log);
-  }
-  child.on("error", (error) => {
     write(path.join(dir, "spawn-error.json"), { error: error.message });
-  });
+    return error;
+  } catch (failure) {
+    return Object.assign(
+      new Error(`${error.message}; could not save the spawn diagnostic: ${errorText(failure)}`, {
+        cause: error,
+      }),
+      "code" in error ? { code: error.code } : {},
+    );
+  }
+}
+async function spawnActor(
+  base: string,
+  launch: Launch,
+  token: string,
+  claim: LaunchClaim,
+): Promise<void> {
+  const dir = conversation(base, launch);
+  let child: ChildProcess;
+  let spawnError: Promise<Error> | undefined;
+  try {
+    const log = fs.openSync(path.join(dir, "runner.log"), "a", 0o600);
+    try {
+      const runner = fileURLToPath(
+        new URL(import.meta.url.endsWith(".ts") ? "./runner.ts" : "./runner.js", import.meta.url),
+      );
+      child = spawn(process.execPath, [runner, base, launch.rootId, token, launch.id], {
+        cwd: launch.cwd,
+        env: childEnvironment(launch),
+        detached: true,
+        stdio: ["ignore", log, log],
+      });
+      if (child.pid === undefined) {
+        spawnError = new Promise((resolve) => {
+          child.once("error", (error) => resolve(saveSpawnFailure(dir, error)));
+        });
+        claim.release();
+      } else {
+        claim.spawned();
+        child.on("error", (error) => {
+          write(path.join(dir, "spawn-error.json"), { error: error.message });
+        });
+      }
+    } finally {
+      fs.closeSync(log);
+    }
+  } catch (error) {
+    claim.release();
+    throw error;
+  }
+  if (child.pid === undefined && spawnError) {
+    throw await spawnError;
+  }
+  if (child.pid === undefined) {
+    claim.spawned();
+    throw new Error("Actor spawn outcome is ambiguous.");
+  }
   child.on("exit", (code, signal) => {
     write(path.join(dir, `exit-${token}.json`), { pid: child.pid, code, signal, at: Date.now() });
     trySignalChildTree(child, "SIGKILL");
   });
   child.unref();
-  if (child.pid === undefined) {
-    throw new Error("Actor was not spawned; retained launch claim requires inspection.");
-  }
   write(path.join(dir, "actor.lock", "process.json"), {
     pid: child.pid,
     identity: readChildProcessIdentity(child.pid) ?? "unverified",
@@ -203,6 +243,50 @@ async function awaitStopping(
       // oxlint-disable-next-line no-await-in-loop
       await delay(25);
     }
+  }
+}
+function releaseClaim(
+  lock: string,
+  identity: fs.Stats | undefined,
+  token: string | undefined,
+): void {
+  try {
+    const current = fs.lstatSync(lock, { throwIfNoEntry: false });
+    if (current && identity && current.dev === identity.dev && current.ino === identity.ino) {
+      const file = path.join(lock, "claim.json");
+      const claim = read(file, processSchema);
+      if (claim === undefined || claim.token === token) {
+        fs.rmSync(file, { force: true });
+        fs.rmdirSync(lock);
+      }
+    }
+  } catch {
+    // Keep the original failure; an unremovable claim remains safely ambiguous.
+  }
+}
+async function launchClaimedActor(base: string, launch: Launch, lock: string): Promise<void> {
+  let identity: fs.Stats | undefined;
+  let token: string | undefined;
+  let state: "claimed" | "spawned" | "released" = "claimed";
+  const claim: LaunchClaim = {
+    spawned: () => {
+      state = "spawned";
+    },
+    release: () => {
+      if (state === "claimed") {
+        state = "released";
+        releaseClaim(lock, identity, token);
+      }
+    },
+  };
+  try {
+    identity = fs.lstatSync(lock);
+    token = randomUUID();
+    write(path.join(lock, "claim.json"), { ...ownIdentity(), token });
+    await spawnActor(base, launch, token, claim);
+  } catch (error) {
+    claim.release();
+    throw error;
   }
 }
 export async function ensureActor(
@@ -237,9 +321,7 @@ export async function ensureActor(
     }
     throw error;
   }
-  const token = randomUUID();
-  write(path.join(lock, "claim.json"), { ...ownIdentity(), token });
-  spawnActor(base, launch, token);
+  await launchClaimedActor(base, launch, lock);
 }
 /** A failed park keeps its input queued; exact state is lost, so nothing restarts it implicitly. */
 export function parkFailure(base: string, launch: Launch, exited?: OwnedProcess): void {

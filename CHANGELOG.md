@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Release launch claims when a child process did not start, so later attempts can recover without a false ambiguity. Preserve claims when a process may have started.
+
 ## [0.52.4] - 2026-10-29
 
 ### Fixed
