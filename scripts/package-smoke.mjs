@@ -12,19 +12,21 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostRoot } from "./compat-host.mjs";
 import { compilerInvocation } from "./typescript.mjs";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: node scripts/package-smoke.mjs\n\nPack and install the single-entry package without development dependencies. Verify host SDK/TypeBox identity and execute a real native actor using a credential-free local provider. No publication or paid model calls.\nExit codes: 0 passed; 1 packaging, native execution or cleanup failed.",
+    "Usage: node scripts/package-smoke.mjs [tarball]\n\nPack and install the single-entry package without development dependencies, or test an existing tarball unchanged. Verify host SDK/TypeBox identity and execute a real native actor using a credential-free local provider. No publication or paid model calls.\nExit codes: 0 passed; 1 packaging, native execution or cleanup failed.",
   );
   process.exit(0);
 }
+assert.ok(process.argv.length <= 3, "Expected at most one package tarball; use --help");
 
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const candidate = process.argv[2] ? resolve(process.argv[2]) : undefined;
 const root = mkdtempSync(join(tmpdir(), "ps-package-"));
 const packDir = join(root, "pack");
 mkdirSync(packDir);
@@ -202,9 +204,25 @@ try {
   verifyManifest(packageJson);
   process.env.PI_PACKAGE_DIR = hostRoot;
   const pack = Object.values(
-    JSON.parse(run("npm", ["pack", "--json", "--pack-destination", packDir])),
+    JSON.parse(
+      run("npm", [
+        "pack",
+        "--json",
+        "--pack-destination",
+        packDir,
+        ...(candidate ? [candidate] : []),
+      ]),
+    ),
   )[0];
   assert.ok(pack && Array.isArray(pack.files), "npm pack must report files");
+  if (candidate) {
+    assert.equal(pack.name, packageJson.name);
+    assert.equal(pack.version, packageJson.version, "Candidate version differs from source");
+    assert.ok(
+      readFileSync(join(packDir, pack.filename)).equals(readFileSync(candidate)),
+      "npm changed the candidate tarball",
+    );
+  }
   const paths = new Set(pack.files.map((file) => file.path));
   for (const path of [
     "package.json",

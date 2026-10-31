@@ -65,9 +65,11 @@ commands. Matching versions do not establish matching runtime behavior.
 
 Production-only installs must resolve the selected host's SDK and TypeBox, not
 shadow them with this package's development graph. Exercise the packed single
-entry through the real Pi loader and an actual native child session. Native faux
-providers can test tools, receipts, journals, process lifecycle and output without
-paid model calls; they are not live-model evidence.
+entry through the real Pi loader and an actual native child session. When release
+CI receives a prepared candidate, it verifies the candidate and selected host
+identities and exercises that same tarball through the native package smoke.
+Native faux providers can test tools, receipts, journals, process lifecycle and
+output without paid model calls; they are not live-model evidence.
 
 Real-model acceptance additionally checks that full forked history preserves an
 actual earlier delegation result, and that ordinary main/child sessions discover,
