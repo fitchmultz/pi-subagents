@@ -323,15 +323,16 @@ const processView = (pid) => {
 // Android's elapsed-second/tick uncertainty. Actual birth/group observations follow this wait.
 const nextBirthSecond = () =>
   delay((process.platform === "android" ? 3020 : 2020) - (Date.now() % 1000));
+// Child telemetry is append-only; only newline-terminated frames are published.
+const publishedRecords = (name) =>
+  fs
+    .readFileSync(path.join(root, name), "utf8")
+    .split("\n")
+    .slice(0, -1)
+    .filter(Boolean)
+    .map(JSON.parse);
 const requests = () =>
-  fs.existsSync(path.join(root, "requests.jsonl"))
-    ? fs
-        .readFileSync(path.join(root, "requests.jsonl"), "utf8")
-        .split("\n")
-        .slice(0, -1) // The child may still be appending the final, unpublished frame.
-        .filter(Boolean)
-        .map(JSON.parse)
-    : [];
+  fs.existsSync(path.join(root, "requests.jsonl")) ? publishedRecords("requests.jsonl") : [];
 const resultEntries = (id) =>
   manager
     .getEntries()
@@ -425,8 +426,7 @@ async function parkedAuthority(parked) {
     });
     return found;
   };
-  const starts = () =>
-    fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n").length;
+  const starts = () => publishedRecords("native-actor-starts.jsonl").length;
   assert.match(JSON.stringify((await history()).getBranch()), /CHILD_LITERAL_RESULT:PARK_FIRST/);
   // One changed byte past the first read chunks still parses natively but is not this state.
   const at = original.lastIndexOf("x".repeat(64));
@@ -718,11 +718,7 @@ try {
       ["HOLD:first", "PREPARATION_RECOVERY_LITERAL"],
       "actual provider completion establishes that the failed launch dispatched no child",
     );
-    const starts = fs
-      .readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8")
-      .trim()
-      .split("\n")
-      .map(JSON.parse);
+    const starts = publishedRecords("native-actor-starts.jsonl");
     assert.deepEqual(
       starts.map((start) => start.sessionId).sort(),
       [completed.details.runs[0].sessionId, sibling.details.sessionId].sort(),
@@ -763,11 +759,10 @@ try {
     );
     assert.ok(receipts.every((file) => readJSON(file).state === "stale"));
     const frozen = receipts.map((file) => fs.readFileSync(file));
-    const records = (name) =>
-      fs.readFileSync(path.join(root, name), "utf8").trim().split("\n").map(JSON.parse);
-    const polls = () => records("command-polls.jsonl");
+    const polls = () => publishedRecords("command-polls.jsonl");
     const pid = requests()[0].pid;
-    const ticks = () => records("actor-ticks.jsonl").filter((tick) => tick.pid === pid).length;
+    const ticks = () =>
+      publishedRecords("actor-ticks.jsonl").filter((tick) => tick.pid === pid).length;
     const actorScans = () => polls().filter((poll) => poll.pid === pid).length;
     const ownerScans = { count: 0 };
     const readdir = fs.readdirSync;
@@ -1354,9 +1349,7 @@ try {
         claim("live.json", claims[1]);
         const polls = () => {
           const file = path.join(root, "shell-polls.jsonl");
-          return fs.existsSync(file)
-            ? fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse)
-            : [];
+          return fs.existsSync(file) ? publishedRecords("shell-polls.jsonl") : [];
         };
         fs.writeFileSync(path.join(root, "advance-clock"), "");
         await until(() => polls().length > 0, "the due-idle actor validates its shell set");
@@ -1493,11 +1486,7 @@ try {
           requests().some((request) => request.prompt === "PARK_SECOND"),
           false,
         );
-        assert.equal(
-          fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n")
-            .length,
-          1,
-        );
+        assert.equal(publishedRecords("native-actor-starts.jsonl").length, 1);
       } else if (phase === "park-wake-outcome") {
         await failedWake(parked, childCwd, runId);
       } else if (phase === "park-sdk-outcome") {
@@ -2998,8 +2987,7 @@ try {
       "refused launches dispatched nothing and the restored launch runs the queued prompt once",
     );
     assert.equal(
-      fs.readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8").trim().split("\n")
-        .length,
+      publishedRecords("native-actor-starts.jsonl").length,
       2,
       "only the first actor and the restored relaunch started",
     );
@@ -3679,12 +3667,9 @@ try {
     );
     assert.equal(session.getSessionStats().cost, 0);
     const journalReads = () =>
-      fs
-        .readFileSync(path.join(root, "journal-reads.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map(JSON.parse)
-        .filter((read) => read.file === first.details.sessionFile);
+      publishedRecords("journal-reads.jsonl").filter(
+        (read) => read.file === first.details.sessionFile,
+      );
     const coldReads = journalReads();
     const warm = await settled(
       await call(
@@ -3940,12 +3925,7 @@ try {
         "a pending native admission must not accept and discard a distinct prompt",
       );
       assert.match(JSON.stringify(receipts[1].content), /awaiting native admission.*retry/i);
-      const nativeStarts = () =>
-        fs
-          .readFileSync(path.join(root, "native-actor-starts.jsonl"), "utf8")
-          .trim()
-          .split("\n")
-          .map(JSON.parse);
+      const nativeStarts = () => publishedRecords("native-actor-starts.jsonl");
       await until(
         () =>
           replacements.every((child) => nativeStarts().some((entry) => entry.pid === child.pid)),
