@@ -147,6 +147,9 @@ try {
       },
       stdio: "inherit",
     });
+    if (flavor === "fork") {
+      selectDevelopmentHost(development, host, env);
+    }
   }
   const consumer = join(root, "git-consumer");
   stageSource(resolve(sourceArg), consumer);
