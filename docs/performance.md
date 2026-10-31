@@ -144,7 +144,7 @@ switch request through an immediate successful `get_state` response changed from
 it now pays for cold receipt indexing. This is a change to when recovery work
 runs, not an installed macOS or general delegation-latency claim.
 
-The [issue 248 evidence](evidence/issue-248/README.md) includes both waits,
+The [issue 248 evidence](evidence/issue-248/report.md) includes both waits,
 switch-to-first-tool measurements, ranges, profiler results, exact runtime and
 build identities, reproducible commands, and retained synthetic RPC transcripts.
 
@@ -167,7 +167,7 @@ after `session_start`, chiefly the intercom broker and owner attachment. In two
 official-host 40 s floor/`0b6da9b` pairs, the later windows of about 10 s each
 stayed within 1.1 ms of the paired floor. There is no fork long run, and this
 is not an indefinite-idle bound. The
-[issue 238 evidence](evidence/issue-238-idle/README.md) has the samples, host
+[issue 238 evidence](evidence/issue-238-idle/report.md) has the samples, host
 hashes, native causal chain and limits.
 
 ### Idle parking shell records

@@ -128,7 +128,8 @@ It never runs during startup/install, deletes data, or reclaims disk space.
 - [Diagnosis, baseline, and measurable rebuild gates](docs/single-agent-rebuild.md)
 
 Supports official Pi and the maintained `fitchmultz/pi` fork; the two hosts are
-qualified separately, including native Android/Termux. Node.js 24.21 or newer is
-required. Source installs on Android also need an Android-native `tsgo` on PATH;
-the prebuilt npm package does not need a compiler. See
-[development prerequisites](docs/development.md#native-androidtermux). MIT licensed.
+qualified separately, including native Android/Termux. Node.js is required; see
+[development prerequisites](docs/development.md). Source installs on Android also
+need an Android-native `tsgo` on PATH; the prebuilt npm package does not need a
+compiler. See [native Android/Termux](docs/development.md#native-androidtermux).
+MIT licensed.

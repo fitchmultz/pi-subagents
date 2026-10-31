@@ -1,5 +1,7 @@
 # Development
 
+Node.js 24.21 or newer is required.
+
 The supported Intercom client's package export uses emitted declarations for consumers.
 The repository's native `development` type condition points at its TypeScript source so
 cold lint and type checks do not require a prior build. Packed-consumer checks compile
