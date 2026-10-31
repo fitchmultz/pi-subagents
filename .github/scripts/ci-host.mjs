@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [flavor, target, automationArg, sourceArg] = process.argv.slice(2);
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: node .github/scripts/ci-host.mjs official|fork VERSION|FORK_PACKAGE AUTOMATION SOURCE\n\nQualifies the once-resolved host with the full package contract and production Git/native install.\nEnvironment: PI_EDITOR_RECEIPT_TEST_ROOT must select the frozen editor checkout.\nExample: PI_EDITOR_RECEIPT_TEST_ROOT=editor node .github/scripts/ci-host.mjs official 1.0.2 automation extension\nExit codes: 0 passed; 1 invalid input or failed check.",
+    "Usage: node .github/scripts/ci-host.mjs official|fork VERSION|FORK_PACKAGE AUTOMATION SOURCE\n\nQualifies the once-resolved host with the full package contract and production Git/native install.\nEnvironment: PI_EDITOR_RECEIPT_TEST_ROOT selects the frozen editor checkout. PI_RELEASE_CANDIDATE optionally selects the verified candidate artifact directory; fork qualification also requires PI_RELEASE_FORK to select its prepared host artifact.\nExample: PI_EDITOR_RECEIPT_TEST_ROOT=editor node .github/scripts/ci-host.mjs official 1.0.2 automation extension\nExit codes: 0 passed; 1 invalid input or failed check.",
   );
   process.exit(0);
 }
@@ -22,6 +22,17 @@ const { isolatedEnvironment, run, stageSource } = await import(
 const { prepareHost, selectDevelopmentHost } = await import(
   pathToFileURL(join(automation, "scripts/hosts.mjs")).href
 );
+
+function assertOfficialProvenance(host, expected) {
+  for (const key of ["version", "integrity", "tarball", "installer"]) {
+    assert.deepEqual(
+      host.provenance[key],
+      expected.provenance[key],
+      `Official host ${key} differs from the candidate`,
+    );
+  }
+}
+
 const root = mkdtempSync("/tmp/ps-ci-");
 const env = isolatedEnvironment(root);
 try {
@@ -71,6 +82,72 @@ try {
     timeout: 1_650_000,
     stdio: "inherit",
   });
+  if (process.env.PI_RELEASE_CANDIDATE) {
+    const candidate = resolve(process.env.PI_RELEASE_CANDIDATE);
+    const { filename, hosts } = JSON.parse(readFileSync(join(candidate, "release.json"), "utf8"));
+    assert.equal(basename(filename), filename, "Candidate filename must be local to the artifact");
+    const expected = hosts[flavor];
+    assert.ok(expected, `Candidate did not record a ${flavor} host`);
+    let candidateHost = host;
+    let candidateSelected = selected;
+    if (flavor === "fork") {
+      assert.ok(
+        process.env.PI_RELEASE_FORK,
+        "Candidate qualification requires its prepared fork host",
+      );
+      candidateHost = await prepareHost(
+        join(root, "release-host"),
+        "fork",
+        resolve(process.env.PI_RELEASE_FORK),
+        env,
+      );
+      assert.deepEqual(
+        candidateHost.provenance,
+        expected.provenance,
+        "Fork host artifact differs from the candidate",
+      );
+      candidateSelected = selectDevelopmentHost(development, candidateHost, env);
+    } else {
+      assertOfficialProvenance(candidateHost, expected);
+    }
+    for (const key of [
+      "version",
+      "indexSha256",
+      "cliSha256",
+      "cohort",
+      "companions",
+      "runtimeLockSha256",
+    ]) {
+      assert.deepEqual(candidateHost[key], expected[key], `Host ${key} differs from the candidate`);
+    }
+    // npm installs platform-specific optional dependencies; the recorded graph was prepared on Linux.
+    if (process.platform === "linux") {
+      assert.equal(
+        candidateHost.runtimeGraphSha256,
+        expected.runtimeGraphSha256,
+        "Linux host graph differs from the candidate",
+      );
+    }
+    console.log(
+      JSON.stringify({
+        candidateQualification: flavor,
+        platform: process.platform,
+        runtimeGraphSha256: candidateHost.runtimeGraphSha256,
+      }),
+    );
+    run("npm", ["run", "smoke:package", "--", join(candidate, filename)], {
+      cwd: development,
+      env: {
+        ...testEnv,
+        PI_COMPAT_EXPECTED_VERSION: candidateHost.version,
+        PI_COMPAT_EXPECTED_PACKAGE_DIR: candidateSelected.packageDir,
+        PI_HOST_INDEX: candidateSelected.index,
+        PI_HOST_CLI: candidateSelected.cli,
+        PI_PACKAGE_DIR: candidateSelected.packageDir,
+      },
+      stdio: "inherit",
+    });
+  }
   const consumer = join(root, "git-consumer");
   stageSource(resolve(sourceArg), consumer);
   run("npm", ["install", "--omit=dev"], { cwd: consumer, env });

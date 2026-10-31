@@ -13,6 +13,22 @@ on:
         default: ""
   workflow_call:
     inputs:
+      source-ref:
+        description: Exact candidate commit; blank uses the caller commit
+        type: string
+        default: ""
+      candidate-artifact:
+        description: Prepared npm candidate artifact in this workflow run
+        type: string
+        default: ""
+      fork-artifact:
+        description: Prepared fork host artifact in this workflow run
+        type: string
+        default: ""
+      release-source:
+        description: Original main commit covered by the candidate
+        type: string
+        default: ""
       official-version:
         type: string
         default: ""
@@ -21,6 +37,7 @@ on:
         default: ""
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -29,7 +46,7 @@ concurrency:
 
 env:
   CI: "true"
-  PI_AUTOMATION_REF: 54c687228d840506555801b9db038373e697d901 # main
+  PI_AUTOMATION_REF: 1d0ea18ce141ceee410030075120c910a7212a1b # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
@@ -38,7 +55,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.source-ref || github.sha }}
           persist-credentials: false
+      - name: Verify candidate source
+        env:
+          SOURCE_REF: ${{ inputs.source-ref || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_REF"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ">=24.21.0 <25"
@@ -47,9 +69,9 @@ jobs:
       - run: npm run lint && npm run format:check && npm run check:size
 
   resolve:
-    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@54c687228d840506555801b9db038373e697d901 # main
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@1d0ea18ce141ceee410030075120c910a7212a1b # main
     with:
-      automation-ref: 54c687228d840506555801b9db038373e697d901 # main
+      automation-ref: 1d0ea18ce141ceee410030075120c910a7212a1b # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
 
@@ -84,7 +106,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: extension
+          ref: ${{ inputs.source-ref || github.sha }}
           persist-credentials: false
+      - name: Verify candidate source
+        env:
+          SOURCE_REF: ${{ inputs.source-ref || github.sha }}
+        run: test "$(git -C extension rev-parse HEAD)" = "$SOURCE_REF"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fitchmultz/.github
@@ -123,6 +150,33 @@ jobs:
         run: |
           PM="$(node -p 'require("./automation/package.json").packageManager')"
           npm exec --yes --package="$PM" -- npm install --global "$PM"
+      - name: Download the prepared release candidate
+        if: inputs.candidate-artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.candidate-artifact }}
+          path: ${{ runner.temp }}/npm-candidate
+      - name: Download the prepared fork host
+        if: matrix.host == 'fork' && inputs.candidate-artifact != '' && inputs.fork-artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.fork-artifact }}
+          path: ${{ runner.temp }}/npm-fork-host
+      - name: Select the prepared fork host
+        if: matrix.host == 'fork' && inputs.candidate-artifact != '' && inputs.fork-artifact != ''
+        run: printf 'PI_RELEASE_FORK=%s/npm-fork-host\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Verify the candidate before host qualification
+        if: inputs.candidate-artifact != ''
+        env:
+          SOURCE_REF: ${{ inputs.source-ref || github.sha }}
+          RELEASE_SOURCE: ${{ inputs.release-source }}
+          OFFICIAL_VERSION: ${{ needs.resolve.outputs.official-version }}
+          FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
+        run: |
+          node automation/scripts/npm-release.mjs verify \
+            --artifact "$RUNNER_TEMP/npm-candidate" --source-ref "$SOURCE_REF" \
+            --release-source "$RELEASE_SOURCE" --official-version "$OFFICIAL_VERSION" --fork-ref "$FORK_REF"
+          printf 'PI_RELEASE_CANDIDATE=%s/npm-candidate\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Build the resolved fork on this platform
         if: matrix.host == 'fork'
         working-directory: fork
