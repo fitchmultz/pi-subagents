@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.7 - 2026-11-01
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Use direct Flash for automatic release remediation (#317) ([c40ec40](https://github.com/fitchmultz/pi-subagents/commit/c40ec402782234618194585316431fa339fe9b8e))
+
+### What's Changed
+
+- Use direct Flash for necessary release remediation by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/317
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.6...v0.52.7
+
 ## 0.52.6 - 2026-11-01
 
 <!-- npm-release:unreleased:start -->
