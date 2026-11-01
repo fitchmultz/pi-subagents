@@ -76,6 +76,14 @@ actual earlier delegation result, and that ordinary main/child sessions discover
 message, and read last responses across agent directories under the confirmed
 two-level topology. Never publish credentials or private transcripts as evidence.
 
+## npm releases
+
+Main-branch changes are reconciled into a reviewed patch-version PR. After that PR
+merges, release CI prepares one npm candidate and runs the complete host CI and
+native package smoke against it. The qualification receipt binds the candidate,
+source, host identities and workflow run before the same archive is published to
+npm and attached to the matching GitHub release.
+
 ## Isolation and safety
 
 Every test/smoke broker uses a short, explicit `PI_INTERCOM_RUNTIME_DIR` owned by
