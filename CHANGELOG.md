@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Qualify a retained npm candidate through the native child and package-install smoke on the selected Pi hosts.
+- Reconcile main-branch changes into reviewed patch releases and publish the qualified archive to npm and GitHub.
 
 ## [0.52.5] - 2026-10-31
 

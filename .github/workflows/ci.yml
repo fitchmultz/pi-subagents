@@ -46,7 +46,7 @@ concurrency:
 
 env:
   CI: "true"
-  PI_AUTOMATION_REF: 1d0ea18ce141ceee410030075120c910a7212a1b # main
+  PI_AUTOMATION_REF: c832dd07c016914db40bb98e5bdbb9c623cd6303 # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
@@ -69,9 +69,9 @@ jobs:
       - run: npm run lint && npm run format:check && npm run check:size
 
   resolve:
-    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@1d0ea18ce141ceee410030075120c910a7212a1b # main
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@c832dd07c016914db40bb98e5bdbb9c623cd6303 # main
     with:
-      automation-ref: 1d0ea18ce141ceee410030075120c910a7212a1b # main
+      automation-ref: c832dd07c016914db40bb98e5bdbb9c623cd6303 # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
 
