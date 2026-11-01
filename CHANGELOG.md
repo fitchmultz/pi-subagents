@@ -2,8 +2,23 @@
 
 ## [Unreleased]
 
+## 0.52.6 - 2026-11-01
+
+<!-- npm-release:unreleased:start -->
+
 - Qualify a retained npm candidate through the native child and package-install smoke on the selected Pi hosts.
 - Reconcile main-branch changes into reviewed patch releases and publish the qualified archive to npm and GitHub.
+
+<!-- npm-release:unreleased:end -->
+
+- Automate qualified npm releases (#315) ([e769f2d](https://github.com/fitchmultz/pi-subagents/commit/e769f2d62f4b731f56e301160b57929a3a0cec6b))
+
+### What's Changed
+
+- Qualify retained Subagents candidates on native hosts (1/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/314
+- Automate qualified Subagents releases (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/315
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.5...v0.52.6
 
 ## [0.52.5] - 2026-10-31
 
