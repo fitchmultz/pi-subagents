@@ -1339,10 +1339,11 @@ try {
       };
       try {
         await Promise.all(
-          sleepers.map((child) =>
-            new Promise((resolve) => {
-              child.once("spawn", resolve);
-            }),
+          sleepers.map(
+            (child) =>
+              new Promise((resolve) => {
+                child.once("spawn", resolve);
+              }),
           ),
         );
         const claims = sleepers.map((child) => ({ ...ownIdentity(child.pid), token: actor.token }));
