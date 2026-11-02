@@ -211,14 +211,17 @@ export class ObserverTranscript extends Container {
     }
     const { entry, card, request, controller } = job;
     const options = { signal: controller.signal, hideThinking: this.display.hideThinking };
-    let page = await this.journal.page(entry, Math.max(0, request.requested), options);
-    if (request.requested < 0 && page.pages > 1) {
-      page = await this.journal.page(entry, page.pages - 1, options);
-    }
-    const call =
-      typeof page.message.toolCallId === "string" && !card.tool
-        ? await this.journal.call(page.message.toolCallId, card.id, controller.signal)
-        : undefined;
+    const toolCallId = recordAt(entry.value, "message")?.toolCallId;
+    const [firstPage, call] = await Promise.all([
+      this.journal.page(entry, Math.max(0, request.requested), options),
+      typeof toolCallId === "string" && !card.tool
+        ? this.journal.call(toolCallId, card.id, controller.signal)
+        : undefined,
+    ]);
+    const page =
+      request.requested < 0 && firstPage.pages > 1
+        ? await this.journal.page(entry, firstPage.pages - 1, options)
+        : firstPage;
     if (!this.current(job)) {
       return;
     }
