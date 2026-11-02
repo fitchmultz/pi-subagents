@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 0.52.10 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #321 from fitchmultz/chore/oxlint-v512-strict-ts ([600fcaa](https://github.com/fitchmultz/pi-subagents/commit/600fcaa9b22d59d4111179a8563332ff0420f9d0))
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.9...v0.52.10
+
 ## 0.52.9 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
