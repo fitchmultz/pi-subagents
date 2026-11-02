@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.11 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #325 from fitchmultz/chore/oxlint-v512-checkjs ([f55599c](https://github.com/fitchmultz/pi-subagents/commit/f55599cbf8c23c6ee1f9b5e55e7b963bc7140d58))
+
+### What's Changed
+
+- Enable checkJs and clear every strict-lint error in scripts and fixtures (4/5) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/325
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.10...v0.52.11
+
 ## 0.52.10 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
