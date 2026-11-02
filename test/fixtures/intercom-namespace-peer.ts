@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { spawnBrokerIfNeeded } from "../../src/pi-intercom/broker/spawn.ts";
 import { nativePeerId } from "../../src/pi-intercom/session-targets.ts";
@@ -35,8 +36,10 @@ process.on("message", (message) => {
   );
 });
 await spawnBrokerIfNeeded(process.execPath, []);
+const peerArgument = process.argv[2];
+assert.ok(peerArgument !== undefined, "expected a native peer id argument");
 await client.connect(
   { name: "duplicate-worker", cwd: process.cwd(), model: "fixture", status: "idle" },
-  nativePeerId(process.argv[2]),
+  nativePeerId(peerArgument),
 );
 process.send?.({ event: "ready", id: client.sessionId });

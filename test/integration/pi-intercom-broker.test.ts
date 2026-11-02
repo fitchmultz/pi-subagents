@@ -371,7 +371,8 @@ for (const outcome of [
     }
     if (outcome === "complete") {
       const snapshot = await result;
-      const session = snapshot.sessions[0];
+      const [session] = snapshot.sessions;
+      assert.ok(session !== undefined, "expected one session row");
       assert.equal(Object.getPrototypeOf(session), Object.prototype);
       assert.equal(Object.hasOwn(session, "__proto__"), true);
       assert.deepEqual(Object.getOwnPropertyDescriptor(session, "__proto__")?.value, {
@@ -444,17 +445,22 @@ nodeTest(
         requester.last(owner.sessionId, { entryId: "entry-a", offset: 4, limit: 4 }),
       ];
       await bothForwarded;
+      const [firstForward, secondForward] = requests;
+      assert.ok(
+        firstForward !== undefined && secondForward !== undefined,
+        "expected two forwarded reads",
+      );
       // An observed response on the forger's socket proves the broker processed its earlier forgery.
-      other.respondLast(requests[1].requestId, { error: "forged response" });
+      other.respondLast(secondForward.requestId, { error: "forged response" });
       await other.listSessions();
-      owner.respondLast(requests[1].requestId, {
+      owner.respondLast(secondForward.requestId, {
         session,
         entryId: "entry-a",
         text: "tail",
         offset: 4,
         totalLength: 8,
       });
-      owner.respondLast(requests[0].requestId, {
+      owner.respondLast(firstForward.requestId, {
         session,
         entryId: "entry-a",
         text: "head",
@@ -479,8 +485,8 @@ nodeTest(
         totalLength: 8,
       });
       assert.equal(requests.length, 2);
-      assert.equal(requests[0].from.id, requester.sessionId);
-      assert.notEqual(requests[0].requestId, requests[1].requestId);
+      assert.equal(firstForward.from.id, requester.sessionId);
+      assert.notEqual(firstForward.requestId, secondForward.requestId);
       assert.deepEqual(await requester.last("missing"), { error: "Session not found" });
       assert.deepEqual(await requester.last(other.sessionId ?? ""), {
         error: "Recipient has no last-message reader.",
@@ -582,7 +588,9 @@ nodeTest(
       assert.equal(accepted.delivered, true);
       await owner.listSessions();
       assert.equal(messages.length, 1);
-      assert.equal(messages[0].id, "original-command");
+      const [command] = messages;
+      assert.ok(command !== undefined, "expected one command message");
+      assert.equal(command.id, "original-command");
       for (const changed of [
         { ...guard, rootSessionId: "wrong-root" },
         { ...guard, incarnation: "stale-context" },

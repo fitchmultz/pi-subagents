@@ -76,7 +76,7 @@ export async function observeAlive(identities: readonly ClaimedProcess[]): Promi
  * may adopt the child meanwhile.
  */
 export class ParentCheck {
-  private current?: object;
+  private current?: object | undefined;
   /**
    * Reads the attachment synchronously, so an unreadable one still fails the caller at once.
    * Missing or released attachments detach immediately; a check in flight makes this a no-op.
@@ -97,7 +97,7 @@ export class ParentCheck {
         const [live] = await observeAlive([attachment]);
         if (
           this.current === check &&
-          !live &&
+          live !== true &&
           read(file, attachmentSchema)?.generation === attachment.generation
         ) {
           detached();
@@ -123,10 +123,11 @@ function replaced(identity: ClaimedProcess): boolean {
 }
 export function ownIdentity(pid = process.pid): Omit<ProcessIdentity, "token"> {
   // An ordinary main or managed launcher need not be a group leader. Ambiguous live PIDs fail closed.
+  const clock = readProcessClock();
   return {
     pid,
     identity: readChildProcessIdentity(pid) ?? "unverified",
-    clock: readProcessClock(),
+    ...(clock !== undefined ? { clock } : {}),
   };
 }
 export function actor(base: string, launch: Launch): OwnedProcess | undefined {
@@ -218,11 +219,12 @@ async function spawnActor(
     trySignalChildTree(child, "SIGKILL");
   });
   child.unref();
+  const clock = readProcessClock();
   write(path.join(dir, "actor.lock", "process.json"), {
     pid: child.pid,
     identity: readChildProcessIdentity(child.pid) ?? "unverified",
     token,
-    clock: readProcessClock(),
+    ...(clock !== undefined ? { clock } : {}),
   });
 }
 async function awaitStopping(

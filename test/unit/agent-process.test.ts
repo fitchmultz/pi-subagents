@@ -104,6 +104,14 @@ nodeTest(
       return claim;
     });
     const [first, second, third, dead, reused] = claims;
+    assert.ok(
+      first !== undefined &&
+        second !== undefined &&
+        third !== undefined &&
+        dead !== undefined &&
+        reused !== undefined,
+      "expected five distinct ownership claims",
+    );
     const exited = new Promise((resolve) => {
       children[3]?.once("exit", resolve);
     });
@@ -178,6 +186,7 @@ nodeTest(
     });
     await Promise.all(parents.map((child) => once(child, "spawn")));
     const [goneChild, adopterChild] = parents;
+    assert.ok(goneChild !== undefined && adopterChild !== undefined, "expected two parents");
     assert.ok(goneChild.pid !== undefined && adopterChild.pid !== undefined);
     const gone = ownIdentity(goneChild.pid);
     const adopter = ownIdentity(adopterChild.pid);

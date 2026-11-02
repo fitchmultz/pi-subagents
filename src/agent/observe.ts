@@ -24,20 +24,20 @@ type Commit = (live: ReadonlyMap<string, boolean>) => void;
 type WidgetSnapshot = { status: string; rows: readonly ObserverRow[]; more: number; error: string };
 
 class Observer {
-  private ctx?: ExtensionContext;
+  private ctx?: ExtensionContext | undefined;
   private owner = "";
   private base = "";
-  private timer?: NodeJS.Timeout;
-  private scanning?: Promise<void>;
+  private timer?: NodeJS.Timeout | undefined;
+  private scanning?: Promise<void> | undefined;
   private rescan = false;
-  private close?: () => void;
-  private refresh?: () => void;
+  private close?: (() => void) | undefined;
+  private refresh?: (() => void) | undefined;
   private readonly rows = new Map<string, ObserverRow>();
   private readonly peers = new Map<string, { token: string; client: ObservationClient }>();
-  private watcher?: fs.FSWatcher;
+  private watcher?: fs.FSWatcher | undefined;
   private widgetVisible = false;
   private widgetSignature = "";
-  private widgetRender?: (snapshot: WidgetSnapshot) => void;
+  private widgetRender?: ((snapshot: WidgetSnapshot) => void) | undefined;
   private readonly launches = new Map<string, Launch>();
   private readonly finished = new Set<string>();
   private pending: string[] = [];
@@ -209,7 +209,12 @@ class Observer {
     if (this.ctx !== ctx) {
       return;
     }
-    const live = new Map(claims.map(({ root }, index) => [root, verdicts[index]]));
+    const live = new Map(
+      claims.flatMap(({ root }, index) => {
+        const verdict = verdicts[index];
+        return verdict === undefined ? [] : ([[root, verdict]] as const);
+      }),
+    );
     for (const commit of commits) {
       commit(live);
     }

@@ -71,9 +71,14 @@ nodeTest(
         "child:review",
       ],
     );
-    assert.equal(contributions[0].model, "actual");
+    const [nativeContribution, toolContribution] = contributions;
+    assert.ok(
+      nativeContribution !== undefined && toolContribution !== undefined,
+      "expected native and tool contributions",
+    );
+    assert.equal(nativeContribution.model, "actual");
     assert.deepEqual(
-      [contributions[1].provider, contributions[1].model],
+      [toolContribution.provider, toolContribution.model],
       ["p", "selected"],
       "tool usage has the frozen launch attribution",
     );
@@ -282,6 +287,7 @@ nodeTest(
     assert.deepEqual(read([], "legacy").inputs, [["child:legacy", 1]], "warm the legacy prefix");
     const migrated = SessionManager.open(file);
     const [paid] = migrated.getEntries();
+    assert.ok(paid !== undefined, "expected the migrated paid entry");
     assert.notEqual(paid.id, "legacy", "native migration publishes new entry IDs");
     const next = migrated.appendMessage({
       role: "assistant",

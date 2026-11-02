@@ -89,7 +89,16 @@ nodeTest(
       const record = brokerPidRecord();
       assert.equal(Number.parseInt(record, 10), process.pid, "legacy reader compatibility");
       const [pid, line] = record.trim().split("\n");
+      assert.ok(pid !== undefined && line !== undefined, "expected a pid line and identity line");
       const [version, boot, namespace, clock, start] = line.split(" ");
+      assert.ok(
+        version !== undefined &&
+          boot !== undefined &&
+          namespace !== undefined &&
+          clock !== undefined &&
+          start !== undefined,
+        "expected a complete identity line",
+      );
       assert.equal(version, "linux-v1");
       assert.equal(boot, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim());
       assert.equal(namespace, fs.readlinkSync("/proc/self/ns/pid"));

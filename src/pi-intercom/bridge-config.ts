@@ -39,10 +39,10 @@ export interface Identity {
   readonly fingerprint256: string;
   readonly name: string;
   readonly cwd: string;
-  readonly wake?: WakePolicy;
+  readonly wake?: WakePolicy | undefined;
 }
 export interface Config {
-  readonly stateDir?: string;
+  readonly stateDir?: string | undefined;
   readonly port: number;
   readonly ca: string;
   readonly cert: string;

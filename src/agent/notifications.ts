@@ -114,12 +114,12 @@ interface PendingJournal {
 interface Loaded {
   readonly launch: Launch;
   readonly result: Result | undefined;
-  readonly journal?: PendingJournal;
+  readonly journal?: PendingJournal | undefined;
 }
 interface Settled {
   readonly launch: string;
   readonly result: string;
-  readonly pending?: Loaded;
+  readonly pending?: Loaded | undefined;
   readonly endedAt: number;
   readonly createdAt: number;
 }
@@ -127,7 +127,7 @@ interface Completed {
   readonly id: string;
   readonly endedAt: number;
   readonly createdAt: number;
-  readonly loaded?: Loaded;
+  readonly loaded?: Loaded | undefined;
 }
 // Validated settled runs by file stamp, so polling does not reparse unchanged history.
 const settledRuns = new Map<string, Map<string, Settled>>();

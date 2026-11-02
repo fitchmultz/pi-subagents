@@ -76,7 +76,7 @@ function decode(value: unknown): Envelope {
 
 /** Persistent payloads leave only ID tombstones after acknowledgement, preventing replay resurrection. */
 export class Mailbox {
-  private readonly db?: DatabaseSync;
+  private readonly db?: DatabaseSync | undefined;
   private readonly entries = new Map<string, Entry>();
   private bytes = 0;
   private sequence = 0;

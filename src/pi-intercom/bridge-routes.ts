@@ -16,10 +16,10 @@ export type Operation =
       readonly route: "POST /v1/send";
       readonly to: string;
       readonly message: string;
-      readonly passive?: boolean;
-      readonly messageId?: string;
-      readonly replyTo?: string;
-      readonly expectsReply?: boolean;
+      readonly passive?: boolean | undefined;
+      readonly messageId?: string | undefined;
+      readonly replyTo?: string | undefined;
+      readonly expectsReply?: boolean | undefined;
     };
 type Route = Operation["route"];
 const fields = {
@@ -39,7 +39,7 @@ export function routeFor(req: IncomingMessage): Route {
   ) {
     throw new Fault(403, "browser_forbidden", "Browser access is not supported.");
   }
-  const route = `${req.method ?? ""} ${(req.url ?? "").split("?")[0]}`;
+  const route = `${req.method ?? ""} ${(req.url ?? "").split("?")[0] ?? ""}`;
   if (!isRoute(route)) {
     throw new Fault(404, "not_found", "Unknown method or path.");
   }

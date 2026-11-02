@@ -125,7 +125,7 @@ export class Card implements Component {
   ready = false;
   page = 0;
   pages = 1;
-  private cache?: { width: number; lines: string[] };
+  private cache?: { width: number; lines: string[] } | undefined;
   private arguments?: unknown;
   private phase = "";
   constructor(id: string) {
@@ -168,7 +168,9 @@ export class Card implements Component {
     this.tool.updateResult({
       content: blocks(message.content)
         .filter((part) => part.type === "text")
-        .map((part) => ({ type: "text", text: part.text })),
+        .map((part) =>
+          part.text === undefined ? { type: "text" } : { type: "text", text: part.text },
+        ),
       isError: message.isError === true,
     });
     this.tool.setExpanded(this.expanded);
@@ -221,7 +223,9 @@ export class Card implements Component {
         {
           content: blocks(result.content)
             .filter((part) => part.type === "text")
-            .map((part) => ({ type: "text", text: part.text })),
+            .map((part) =>
+              part.text === undefined ? { type: "text" } : { type: "text", text: part.text },
+            ),
           isError,
         },
         partial,

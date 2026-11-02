@@ -417,19 +417,20 @@ class Bridge {
 
 function main(): void {
   const args = process.argv.slice(2);
-  if (args.length === 1 && (args[0] === "-h" || args[0] === "--help")) {
+  const [flag, configPath] = args;
+  if (args.length === 1 && (flag === "-h" || flag === "--help")) {
     process.stdout.write(
       "Usage: node dist/pi-intercom/bridge.js --config PATH\n\nOptional loopback HTTPS/mTLS bridge for the local pi-intercom broker.\nConfig and TLS key must be owned by you with mode 0600.\nWithout stateDir, messaging never starts the broker. Durable presence safely starts\none only when none is running; it never restarts or replaces a live broker.\nSIGHUP reloads the client allowlist (invalid reload denies all clients).\nRestart this helper for TLS/listener rotation. SIGINT/SIGTERM disconnect peers.\n\nExample: node dist/pi-intercom/bridge.js --config ~/.pi/agent/intercom/bridge.json\n",
     );
     return;
   }
-  if (args.length !== 2 || args[0] !== "--config" || args[1] === "") {
+  if (args.length !== 2 || flag !== "--config" || configPath === undefined || configPath === "") {
     process.stderr.write("Usage: node dist/pi-intercom/bridge.js --config PATH (or --help)\n");
     process.exitCode = 2;
     return;
   }
   try {
-    const path = resolve(args[1]);
+    const path = resolve(configPath);
     new Bridge(loadConfig(path), path).start();
   } catch (error) {
     if (error instanceof Fault) {

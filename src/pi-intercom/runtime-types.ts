@@ -3,7 +3,7 @@ import type { Attachment, Message, MessageDelivery, QueueMode, SessionInfo } fro
 export interface InboundMessageEntry {
   readonly from: SessionInfo;
   readonly message: Message;
-  readonly replyCommand?: string;
+  readonly replyCommand?: string | undefined;
   readonly bodyText: string;
 }
 export interface PendingInboundMessage extends InboundMessageEntry {

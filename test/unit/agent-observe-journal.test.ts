@@ -41,7 +41,9 @@ nodeTest(
         journal.entries().map((record) => record.value.id),
         ["a"],
       );
-      assert.deepEqual((await journal.page(journal.entries()[0])).message.content, [
+      const [firstEntry] = journal.entries();
+      assert.ok(firstEntry !== undefined, "expected the first journal entry");
+      assert.deepEqual((await journal.page(firstEntry)).message.content, [
         { type: "text", text: "first\nsecond 雪😀" },
       ]);
       fs.appendFileSync(file, "\n");
@@ -98,6 +100,7 @@ nodeTest(
         journal.native.refresh();
       }
       const record = journal.entries()[0];
+      assert.ok(record !== undefined, "expected the first journal entry");
       const first = await journal.page(record);
       assert.ok(first.pages > 1);
       const parts: string[] = [];
@@ -165,6 +168,7 @@ nodeTest("hidden thinking does not consume visible message pages", async () => {
     );
     const journal = new ConversationJournal(file, "child-session");
     const record = journal.entries()[0];
+    assert.ok(record !== undefined, "expected the first journal entry");
     const hidden = await journal.page(record, 0, { hideThinking: true });
     assert.equal(hidden.pages, 1);
     assert.deepEqual(hidden.message.content, [
@@ -191,7 +195,8 @@ nodeTest(
         /identity does not match/,
       );
       const journal = new ConversationJournal(file, "child-session");
-      const old = journal.entries()[0];
+      const [old] = journal.entries();
+      assert.ok(old !== undefined, "expected the original journal entry");
       fs.renameSync(file, file + ".old");
       fs.copyFileSync(file + ".old", file);
       await assert.rejects(journal.page(old), /replaced or truncated/);

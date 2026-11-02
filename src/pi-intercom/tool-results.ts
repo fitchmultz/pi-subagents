@@ -33,7 +33,7 @@ export function firstTextContent(result: {
   );
 }
 export class ToolExecutionFailure extends Error {
-  readonly details?: Readonly<Record<string, unknown>>;
+  readonly details?: Readonly<Record<string, unknown>> | undefined;
   constructor(message: string, details?: Readonly<Record<string, unknown>>) {
     super(message);
     this.details = details;

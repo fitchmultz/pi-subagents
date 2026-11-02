@@ -8,8 +8,8 @@ import { isRecord, type UnknownRecord } from "./unknown.ts";
 export interface NativePreview extends UnknownRecord {
   readonly id: string;
   readonly type: string;
-  readonly parentId?: string | null;
-  readonly timestamp?: string;
+  readonly parentId?: string | null | undefined;
+  readonly timestamp?: string | undefined;
 }
 export interface NativeRecord extends JournalRecord {
   readonly value: NativePreview;

@@ -161,13 +161,20 @@ nodeTest("node:test registration allowance passes all six qualification controls
 
   const findings = new Map<string, { line: number; plugin: string; rule: string }[]>();
   for (const outputLine of run.stdout.split("\n")) {
-    const match = /^(\S+):(\d+):\d+: error ([\w-]+)\(([\w/-]+)\)/.exec(outputLine);
-    if (match) {
-      const file = match[1].replaceAll("\\", "/").split("/").pop() ?? "";
-      const entry = findings.get(file) ?? [];
-      entry.push({ line: Number(match[2]), plugin: match[3], rule: match[4] });
-      findings.set(file, entry);
+    const [, path, lineText, plugin, rule] =
+      /^(\S+):(\d+):\d+: error ([\w-]+)\(([\w/-]+)\)/.exec(outputLine) ?? [];
+    if (
+      path === undefined ||
+      lineText === undefined ||
+      plugin === undefined ||
+      rule === undefined
+    ) {
+      continue;
     }
+    const file = path.replaceAll("\\", "/").split("/").pop() ?? "";
+    const entry = findings.get(file) ?? [];
+    entry.push({ line: Number(lineText), plugin, rule });
+    findings.set(file, entry);
   }
 
   // Control 1: intended unawaited top-level and suite-body registrations pass

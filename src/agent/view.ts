@@ -36,8 +36,8 @@ interface RunSummary {
   id: string;
   owner: string;
   rootId: string;
-  predecessor?: string;
-  name?: string;
+  predecessor?: string | undefined;
+  name?: string | undefined;
   cwd: string;
   model: string;
   thinking: string;
@@ -45,24 +45,28 @@ interface RunSummary {
   admission: string;
   status: string;
   completed: boolean;
-  result?: Pick<Result, "status" | "endedAt" | "error">;
+  result?: Pick<Result, "status" | "endedAt" | "error"> | undefined;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
-  lastWakeFailure?: { at: number; reason: string };
+  lastWakeFailure?: { at: number; reason: string } | undefined;
   sessionId: string;
   sessionFile: string;
   outputFile: string;
   guidance: Guidance[];
 }
 interface RunView extends Omit<RunSummary, "result"> {
-  result?: Result;
+  result?: Result | undefined;
   output: ReturnType<typeof outputView>;
 }
 type Receipt =
   | { readonly receipt: "launch"; readonly note: string }
   | { readonly receipt: "continuation" | "existing-successor" }
   | { readonly receipt: "guidance"; readonly command: string; readonly note: string }
-  | { readonly stopRequest?: string; readonly stopAcknowledged: false; readonly note: string };
+  | {
+      readonly stopRequest?: string | undefined;
+      readonly stopAcknowledged: false;
+      readonly note: string;
+    };
 
 function toolResult(value: unknown, text: string): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
@@ -144,7 +148,7 @@ function metadata(
   launch: Launch,
   result: Result | undefined,
   options: {
-    ctx?: ExtensionContext;
+    ctx?: ExtensionContext | undefined;
     guidance: Guidance[];
     observed?: ReadonlyMap<string, boolean>;
   },
@@ -197,7 +201,12 @@ async function summaries(
     ...new Map(launches.map((launch) => [launch.rootId, actor(base, launch)])).values(),
   ].filter((identity) => identity !== undefined);
   const verdicts = await observeAlive(identities);
-  const observed = new Map(identities.map((identity, index) => [identity.token, verdicts[index]]));
+  const observed = new Map(
+    identities.flatMap((identity, index) => {
+      const verdict = verdicts[index];
+      return verdict === undefined ? [] : ([[identity.token, verdict]] as const);
+    }),
+  );
   return launches.map((launch) => {
     const view = metadata(base, launch, readCanonicalResult(base, launch), {
       ctx,
@@ -211,7 +220,7 @@ async function summaries(
         ? {
             status: view.result.status,
             endedAt: view.result.endedAt,
-            error: view.result.error?.slice(0, 2048),
+            ...(view.result.error !== undefined ? { error: view.result.error.slice(0, 2048) } : {}),
           }
         : undefined,
     };

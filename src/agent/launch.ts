@@ -126,7 +126,7 @@ export async function prepareLaunch(options: {
     model: selection.model.id,
     thinking: selection.thinking,
     trusted,
-    name: input.name,
+    ...(input.name !== undefined ? { name: input.name } : {}),
     createdAt: Date.now(),
   };
   // Retain even unpublished native journals on failure, including full fork evidence.

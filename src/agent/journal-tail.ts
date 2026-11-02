@@ -37,7 +37,7 @@ function contentIndex(keys: readonly (string | number)[]): number | undefined {
 }
 class TextPage {
   private chars = 0;
-  private carry?: { index: number; text: string };
+  private carry?: { index: number; text: string } | undefined;
   private readonly text = new Map<number, string>();
   private readonly start: number;
   constructor(page: number) {
@@ -147,7 +147,7 @@ export class ConversationJournal {
   async page(
     entry: NativeRecord,
     page = 0,
-    options: { signal?: AbortSignal; hideThinking?: boolean } = {},
+    options: { signal?: AbortSignal | undefined; hideThinking?: boolean } = {},
   ): Promise<ConversationPage> {
     const text = new TextPage(page);
     const value = await this.native.project(

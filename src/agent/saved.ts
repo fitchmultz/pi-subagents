@@ -47,10 +47,20 @@ function ownedRun(context: ExtensionContext, id: string) {
     throw new Error("Legacy continuation requires a published native owner.");
   }
   const journal = new NativeJournal(file, "live");
-  if (journal.records[0].value.id !== context.sessionManager.getSessionId()) {
+  const [opening] = journal.records;
+  if (opening === undefined || opening.value.id !== context.sessionManager.getSessionId()) {
     throw new Error("Native owner journal identity changed; nothing was launched.");
   }
-  let owned;
+  const owned = findOwnedRun(journal, id);
+  if (owned?.ownerSessionId !== context.sessionManager.getSessionId()) {
+    throw new Error("Missing saved native owner or foreign legacy run; nothing was launched.");
+  }
+  Assert(singleSchema, owned);
+  return owned;
+}
+/** The most recent saved subagent-run record for this run id, if one exists. */
+function findOwnedRun(journal: NativeJournal, id: string): Record<string, unknown> | undefined {
+  let owned: Record<string, unknown> | undefined;
   for (const record of journal.records) {
     if (record.value.type === "custom" && record.value.customType === "subagent-run") {
       const { data } = journal.body(record);
@@ -59,10 +69,6 @@ function ownedRun(context: ExtensionContext, id: string) {
       }
     }
   }
-  if (owned?.ownerSessionId !== context.sessionManager.getSessionId()) {
-    throw new Error("Missing saved native owner or foreign legacy run; nothing was launched.");
-  }
-  Assert(singleSchema, owned);
   return owned;
 }
 function requireExited(pid: unknown): void {
@@ -101,7 +107,11 @@ function nativeSession(contract: Contract) {
     throw new Error("Legacy continuation requires the exact saved native journal.");
   }
   const journal = new NativeJournal(contract.sessionFile, "live");
-  const sessionId = journal.body(journal.records[0]).id;
+  const [opening] = journal.records;
+  if (opening === undefined) {
+    throw new Error("Not a readable native Pi session.");
+  }
+  const sessionId = journal.body(opening).id;
   if (
     typeof sessionId !== "string" ||
     sessionId.length === 0 ||

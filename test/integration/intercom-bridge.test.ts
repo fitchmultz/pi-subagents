@@ -36,6 +36,11 @@ function envelope(value: unknown) {
 function messages(body: UnknownRecord) {
   return records(body.messages).map(envelope);
 }
+function firstMessage(body: UnknownRecord) {
+  const [first] = messages(body);
+  assert.ok(first !== undefined, "expected one inbox message");
+  return first;
+}
 const repo = resolve(import.meta.dirname, "../..");
 
 function nextMessage(client: Readonly<IntercomClient>) {
@@ -96,7 +101,9 @@ nodeTest(
       const configPath = join(credentials, "config.json");
       const config = record(readJson(configPath));
       config.clients = records(config.clients).filter((client) => client.name === "grok-bot");
-      records(config.clients)[0].launch = {
+      const [grokClient] = records(config.clients);
+      assert.ok(grokClient !== undefined, "expected the grok-bot client");
+      grokClient.launch = {
         packageRoot: "/retired/pi",
         workspaceRoots: ["/retired/project"],
         context: "LEGACY_LAUNCH_SENTINEL_NOT_FOR_LOGS",
@@ -448,7 +455,7 @@ nodeTest(
             signal: AbortSignal.timeout(3000),
           });
           await activeBridge.wait(/"event":"inbox_wait"/, offset);
-          const duplicateId = messages(full.body)[0].message.id;
+          const duplicateId = firstMessage(full.body).message.id;
           await peer.send(remoteId, {
             text: "volatile duplicate records a loss",
             messageId: duplicateId,
@@ -702,7 +709,8 @@ nodeTest(
             notice.id,
             question.id,
           ]);
-          const saved = received[1];
+          const [, saved] = received;
+          assert.ok(saved !== undefined, "expected the saved-sender message");
           const senderId = saved.from.id;
           await peer.disconnect();
           const offline = await api("send", {
@@ -747,7 +755,7 @@ nodeTest(
             replyTo: outgoing.message.id,
           });
           await bridge?.wait(new RegExp(`"messageId":"${reply.id}"`));
-          assert.equal(messages((await api("inbox")).body)[0].message.id, reply.id);
+          assert.equal(firstMessage((await api("inbox")).body).message.id, reply.id);
           await api("ack", { ids: [reply.id] });
         },
       );
@@ -778,7 +786,7 @@ nodeTest(
             messages(released.body).map((item) => item.message.id),
             [passive.id],
           );
-          assert.equal(messages(released.body)[0].message.delivery, "passive");
+          assert.equal(firstMessage(released.body).message.delivery, "passive");
           const db = new DatabaseSync(mailboxPath);
           try {
             const row = db.prepare("SELECT envelope,acked FROM mailbox WHERE id=?").get(passive.id);
@@ -840,8 +848,9 @@ nodeTest(
             messages(page).map((item) => item.message.id),
             [activeNotice.id],
           );
-          assert.equal(messages(page)[0].message.content.text, "active cursor release");
-          assert.equal(messages(page)[0].message.delivery, "steer");
+          const releasedNotice = firstMessage(page);
+          assert.equal(releasedNotice.message.content.text, "active cursor release");
+          assert.equal(releasedNotice.message.delivery, "steer");
           const unmatched = (await future).body;
           assert.deepEqual(messages(unmatched), []);
           assert.equal(unmatched.nextCursor, futureCursor, "notifications never advance a cursor");
@@ -909,7 +918,7 @@ nodeTest(
             replyTo: outgoing.message.id,
           });
           await bridge.wait(new RegExp(`"messageId":"${reply.id}"`));
-          assert.equal(messages((await api("inbox")).body)[0].message.id, reply.id);
+          assert.equal(firstMessage((await api("inbox")).body).message.id, reply.id);
           assert.deepEqual((await api("ack", { ids: [reply.id] })).body.acked, [reply.id]);
         },
       );
@@ -970,9 +979,13 @@ nodeTest(
             text: "duplicate must not replace original",
             messageId: expected[0],
           });
-          await bridge?.wait(new RegExp(`"messageId":"${expected[0]}".*"result":"duplicate"`));
+          const [expectedDuplicate] = expected;
+          assert.ok(expectedDuplicate !== undefined, "expected the duplicate message id");
+          await bridge?.wait(
+            new RegExp(`"messageId":"${expectedDuplicate}".*"result":"duplicate"`),
+          );
           assert.equal(
-            messages((await api("inbox?limit=1")).body)[0].message.content.text,
+            firstMessage((await api("inbox?limit=1")).body).message.content.text,
             "durable notice 0",
           );
           const observed: string[] = [];
@@ -1033,7 +1046,7 @@ nodeTest(
               )
             ).stdout,
           );
-          assert.equal(messages(result)[0].message.id, expected[256]);
+          assert.equal(firstMessage(result).message.id, expected[256]);
           for (const value of ["", "-1", "10001", "1.5", "1e3", "01", "+1", " 1", "Infinity"]) {
             // Validation must fail before TLS/file loading, with the maintained CLI's argument exit.
             // oxlint-disable-next-line no-await-in-loop
@@ -1112,16 +1125,18 @@ nodeTest(
           );
           broker = start("src/pi-intercom/broker/broker.ts", [], env);
           await broker.wait(/Intercom broker started/);
+          const [, leaseHolder] = beforeLease;
+          assert.ok(leaseHolder !== undefined, "expected the saved-sender lease entry");
           await peer.connect(
             { name: "saved-sender", cwd: root, model: "fixture" },
-            beforeLease[1].from.id,
+            leaseHolder.from.id,
           );
           await api("register", {});
           const receiving = nextMessage(peer);
           assert.equal(
             (
               await api("send", {
-                to: beforeLease[1].from.id,
+                to: leaseHolder.from.id,
                 replyTo: obligation.id,
                 message: "obligation settled",
               })
