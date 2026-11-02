@@ -20,7 +20,12 @@ Use the committed npm lockfile. Obtain passing `npm run lint`, `npm run format:c
 and `npm run typecheck` evidence before delivery. `npm run ci` includes these checks and the
 package/install smokes and complete test suites. Keep the strict rules in
 `.oxlintrc.json` and formatting in `.oxfmtrc.json`; use the published tools directly.
-See [Code quality](docs/code-quality.md) for the rules and commands.
+The lint and exception policy follows the repository copy of the
+[strict Oxlint/Oxfmt standard](docs/strict-oxlint-oxfmt-standard.md); relax an applicable
+rule only with an evidence-backed record in
+[Quality exceptions](docs/quality-exceptions.md). `test/unit/strict-oxlint-policy.test.ts`
+keeps the effective configuration, override inventory and directive inventory honest.
+See [Code quality](docs/code-quality.md) for the rules, commands and adoption record.
 
 # Rule enforcement
 

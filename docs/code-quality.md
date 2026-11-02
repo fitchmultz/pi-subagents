@@ -39,3 +39,47 @@ substitutes the selected host graph. The retired workflow schema generator and
 its patching dependency are not part of the new runtime. `npm run check:size`
 still reports source and production line counts for visibility; no line count
 is mandated. The 1 MiB byte ceiling and all lint limits stay unchanged.
+
+## Adoption record
+
+Repository: `fitchmultz/pi-subagents`. Adopted standard: strict Oxlint/Oxfmt
+engineering standard v5.1.2, kept as the repository copy at
+`docs/strict-oxlint-oxfmt-standard.md`. Exception records live in
+[Quality exceptions](quality-exceptions.md) and follow the standard's Appendix B.
+
+Supported runtime and package manager: Node `>=24.21.0` with npm and the
+committed lockfile. Installed tool versions (devDependencies): oxlint 1.90.0,
+oxlint-tsgolint 7.0.2005, oxfmt 0.75.0, `@types/node` 24.19.2, typebox 1.4.3.
+
+Configuration and acceptance paths: lint `.oxlintrc.json`, formatting
+`.oxfmtrc.json`, compiler `tsconfig.json`. Local acceptance commands are
+`npm run lint`, `npm run format:check` and `npm run typecheck`; the aggregate
+acceptance command is hosted `npm run ci` (lint, formatting, TypeScript, byte
+ceiling, package/install smokes and the complete test suites, plus separate
+official-Pi and fork qualification jobs).
+
+Compiler projects and source profiles: one `tsc --noEmit` project covers all
+maintained TypeScript and checked-JavaScript (`src`, `scripts`, `test`,
+`.github`) with `strict`, `checkJs`, `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes` and the full strict flag set. Lint profiles:
+production limits (complexity 10, depth 3, parameters 4, statements 40,
+function lines 80, file lines 500), test/fixture limits (complexity 15, depth
+4, parameters 6, no size limits) and declaration files with size limits off.
+
+Formatter and generator ownership: oxfmt formats all maintained source at
+width 100; npm owns lockfile formatting; build outputs keep their own bytes.
+
+Migration status: complete. The toolchain, baseline configuration, strict
+TypeScript compiler options, checked-JavaScript coverage and this records
+policy landed as PRs #319, #320, #321, #325 and the records PR; the policy
+integrity keeper `test/unit/strict-oxlint-policy.test.ts` pins the effective
+configuration, the four-entry overrides inventory and the directive rule-name
+inventory against drift.
+
+Integrated verification: hosted `npm run ci` on the merge of each part, with
+the single-agent-runtime, agent-receipts, pi-intercom-native-replay and
+retired-history-archive keepers exercising the native contracts. Locally
+verified state for the checked-JavaScript part is recorded in PR #325; the
+retired-history-archive suite requires passwordless `sudo` and
+`scripts/package-smoke.mjs` requires a short Unix socket directory, so hosted
+CI is the authoritative gate for both.
