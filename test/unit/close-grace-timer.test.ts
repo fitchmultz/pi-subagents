@@ -2,7 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
-import { describe, it, type TestContext } from "node:test";
+import { describe as nodeDescribe, it as nodeIt, type TestContext } from "node:test";
 import {
   attachChildProcessLifecycle,
   trySignalChildTree,
@@ -20,8 +20,8 @@ function enableTimers(t: TestContext): void {
   t.mock.timers.enable({ apis: ["setTimeout"] });
 }
 
-describe("child process lifecycle", () => {
-  it("reports whether a termination signal was actually delivered", () => {
+nodeDescribe("child process lifecycle", () => {
+  nodeIt("reports whether a termination signal was actually delivered", () => {
     assert.equal(trySignalChildTree({ kill: () => true }, "SIGTERM"), true);
     assert.equal(trySignalChildTree({ kill: () => false }, "SIGTERM"), false);
     assert.equal(
@@ -37,7 +37,7 @@ describe("child process lifecycle", () => {
     );
   });
 
-  it("falls back to signaling the child when no process group exists", () => {
+  nodeIt("falls back to signaling the child when no process group exists", () => {
     const signals: Array<NodeJS.Signals | number | undefined> = [];
     assert.equal(
       trySignalChildTree(
@@ -55,7 +55,7 @@ describe("child process lifecycle", () => {
     assert.deepEqual(signals, ["SIGTERM"]);
   });
 
-  it("cancels cleanup after a clean close", (t) => {
+  nodeIt("cancels cleanup after a clean close", (t) => {
     enableTimers(t);
     const child = makeChild();
     attachChildProcessLifecycle(child);
@@ -68,7 +68,7 @@ describe("child process lifecycle", () => {
     assert.equal(child.stderr.destroyed, false);
   });
 
-  it("destroys silent stdio at the idle deadline", (t) => {
+  nodeIt("destroys silent stdio at the idle deadline", (t) => {
     enableTimers(t);
     const child = makeChild();
     attachChildProcessLifecycle(child);
@@ -83,7 +83,7 @@ describe("child process lifecycle", () => {
     assert.equal(child.stderr.destroyed, true);
   });
 
-  it("destroys chatty stdio at the hard deadline", (t) => {
+  nodeIt("destroys chatty stdio at the hard deadline", (t) => {
     enableTimers(t);
     const child = makeChild();
     attachChildProcessLifecycle(child);

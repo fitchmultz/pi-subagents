@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, it, mock } from "node:test";
+import { afterEach, beforeEach, describe as nodeDescribe, it as nodeIt, mock } from "node:test";
 import { resolveTempRootDir, resolveTempScopeId } from "../../src/shared/types.ts";
 
-describe("resolveTempScopeId", () => {
+nodeDescribe("resolveTempScopeId", () => {
   let saved: NodeJS.ProcessEnv;
   beforeEach(() => {
     saved = { ...process.env };
@@ -26,26 +26,26 @@ describe("resolveTempScopeId", () => {
     }
   });
 
-  it("prefers uid when available", () => {
+  nodeIt("prefers uid when available", () => {
     mock.property(process, "getuid", () => 501);
     process.env.USER = "alice";
     assert.equal(resolveTempScopeId(), "uid-501");
   });
 
-  it("falls back to environment usernames when uid is unavailable", () => {
+  nodeIt("falls back to environment usernames when uid is unavailable", () => {
     mock.property(process, "getuid", undefined);
     process.env.USERNAME = "Alice Example";
     assert.equal(resolveTempScopeId(), "user-Alice-Example");
   });
 
-  it("falls back to os.userInfo when environment is missing", () => {
+  nodeIt("falls back to os.userInfo when environment is missing", () => {
     mock.property(process, "getuid", undefined);
     mock.method(os, "userInfo", () => ({ username: "svc_account" }));
     syncBuiltinESMExports();
     assert.equal(resolveTempScopeId(), "user-svc_account");
   });
 
-  it("falls back to home path when os.userInfo throws", () => {
+  nodeIt("falls back to home path when os.userInfo throws", () => {
     mock.property(process, "getuid", undefined);
     mock.method(os, "userInfo", () => {
       throw new Error("uv_os_get_passwd returned ENOENT");
@@ -56,8 +56,8 @@ describe("resolveTempScopeId", () => {
   });
 });
 
-describe("resolveTempRootDir", () => {
-  it("accepts only dedicated pi-subagents directories", () => {
+nodeDescribe("resolveTempRootDir", () => {
+  nodeIt("accepts only dedicated pi-subagents directories", () => {
     assert.equal(resolveTempRootDir(), process.env.PI_SUBAGENT_TEMP_ROOT);
     assert.equal(
       resolveTempRootDir("/tmp/pi-subagents-isolated"),

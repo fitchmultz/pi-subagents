@@ -2,10 +2,10 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as os from "node:os";
 import * as path from "node:path";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
-test("native agent directory follows dynamic environment overrides and home expansion", (t) => {
+nodeTest("native agent directory follows dynamic environment overrides and home expansion", (t) => {
   const original = process.env.PI_CODING_AGENT_DIR;
   t.after(() => {
     if (original === undefined) {

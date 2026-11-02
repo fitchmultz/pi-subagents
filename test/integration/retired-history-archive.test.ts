@@ -18,7 +18,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
 import { until } from "../support/observation-child.ts";
 import { fixture, crashedWriter, generation, inventory } from "../support/retired-history.ts";
@@ -73,21 +73,23 @@ function stopped(result: ReturnType<typeof invoke>, reason: RegExp) {
 }
 
 for (const target of ["archive", "record"] as const) {
-  test(`shipped prepare rejects a physical source alias as ${target} parent before writing`, (t) => {
-    if (process.platform !== "linux") {
-      t.skip("Linux bind-mount fixture");
-      return;
-    }
-    using cleanup = new DisposableStack();
-    const root = realpathSync(fixture(cleanup, `alias-${target}`));
-    const source = join(root, "agent", "history-index");
-    crashedWriter(source, true);
-    const before = inventory(source);
-    const alias = join(root, "alias");
-    mkdirSync(alias, { mode: 0o700 });
-    const archive = join(target === "archive" ? alias : root, "container");
-    const record = join(target === "record" ? alias : root, "plan.json");
-    const bound = `import assert from "node:assert/strict";
+  nodeTest(
+    `shipped prepare rejects a physical source alias as ${target} parent before writing`,
+    (t) => {
+      if (process.platform !== "linux") {
+        t.skip("Linux bind-mount fixture");
+        return;
+      }
+      using cleanup = new DisposableStack();
+      const root = realpathSync(fixture(cleanup, `alias-${target}`));
+      const source = join(root, "agent", "history-index");
+      crashedWriter(source, true);
+      const before = inventory(source);
+      const alias = join(root, "alias");
+      mkdirSync(alias, { mode: 0o700 });
+      const archive = join(target === "archive" ? alias : root, "container");
+      const record = join(target === "record" ? alias : root, "plan.json");
+      const bound = `import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 const [source, alias, ...args] = process.argv.slice(1);
@@ -103,102 +105,106 @@ try {
 } finally {
   execFileSync("/usr/bin/umount", [alias]);
 }`;
-    const isolated = `import { spawnSync } from "node:child_process";
+      const isolated = `import { spawnSync } from "node:child_process";
 const result = spawnSync("/usr/bin/unshare", ["--mount", "--propagation", "private", process.execPath, "--input-type=module", "-e", ${JSON.stringify(bound)}, ...process.argv.slice(1)], { stdio: "inherit" });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;`;
-    const result = elevated([
-      "--input-type=module",
-      "-e",
-      isolated,
-      source,
-      alias,
-      command,
-      "prepare",
-      "--source",
-      source,
-      "--archive",
-      archive,
-      "--record",
-      record,
-      "--owner-uid",
-      String(uid),
-      "--quiesced",
-    ]);
-    stopped(result, /E_OVERLAPPING_PATHS/);
-    assert.deepEqual(inventory(source), before);
-    assert.equal(existsSync(archive), false);
-    assert.equal(existsSync(record), false);
-  });
+      const result = elevated([
+        "--input-type=module",
+        "-e",
+        isolated,
+        source,
+        alias,
+        command,
+        "prepare",
+        "--source",
+        source,
+        "--archive",
+        archive,
+        "--record",
+        record,
+        "--owner-uid",
+        String(uid),
+        "--quiesced",
+      ]);
+      stopped(result, /E_OVERLAPPING_PATHS/);
+      assert.deepEqual(inventory(source), before);
+      assert.equal(existsSync(archive), false);
+      assert.equal(existsSync(record), false);
+    },
+  );
 }
 
 for (const committed of [false, true]) {
-  test(`shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=${committed}`, () => {
-    using cleanup = new DisposableStack();
-    const root = realpathSync(fixture(cleanup, "route"));
-    const source = join(root, "agent", "history-index");
-    const archive = join(root, "archive", "history-index");
-    crashedWriter(source, committed);
-    const before = inventory(source);
-    const identity = lstatSync(source).ino;
-    const sentinel = readFileSync(join(root, "sessions", "sentinel.jsonl"));
-    success(prepare(root));
-    assert.deepEqual(inventory(source), before, "preparation cannot recover or alter originals");
-    assert.equal(
-      existsSync(archive),
-      false,
-      "preparation is an interruption boundary before the move",
-    );
-    const record = readFileSync(join(root, "record.json"));
-    success(prepare(root));
-    success(invoke(root, "inspect"));
-    success(invoke(root, "archive", ["--quiesced"]));
-    assert.equal(existsSync(source), false);
-    assert.equal(lstatSync(archive).ino, identity);
-    assert.deepEqual(
-      inventory(archive),
-      before,
-      "the command preserves all file identities and bytes",
-    );
-    success(invoke(root, "archive", ["--quiesced"]));
-    assert.equal(existsSync(source), false, "completed retry must not recreate the source");
-    assert.equal(
-      lstatSync(archive).ino,
-      identity,
-      "completed retry must not move the archive again",
-    );
-    assert.deepEqual(inventory(archive), before);
-    assert.deepEqual(
-      readFileSync(join(root, "record.json")),
-      record,
-      "there is no mutable success marker",
-    );
-    const working = join(root, "disposable-recovery");
-    cpSync(archive, working, { recursive: true });
-    for (const name of [generation, `${generation}.ingest.sqlite`, "run-timing.sqlite"]) {
-      const db = new DatabaseSync(join(working, name));
-      try {
-        assert.equal(db.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
-        assert.deepEqual(
-          db
-            .prepare("SELECT value FROM fixture ORDER BY rowid")
-            .all()
-            .map((row) => row.value),
-          committed ? ["committed", "pending"] : ["committed"],
-        );
-      } finally {
-        db.close();
+  nodeTest(
+    `shipped archive CLI preserves the recovery set and reconciles interrupted/rerun states, committed=${committed}`,
+    () => {
+      using cleanup = new DisposableStack();
+      const root = realpathSync(fixture(cleanup, "route"));
+      const source = join(root, "agent", "history-index");
+      const archive = join(root, "archive", "history-index");
+      crashedWriter(source, committed);
+      const before = inventory(source);
+      const identity = lstatSync(source).ino;
+      const sentinel = readFileSync(join(root, "sessions", "sentinel.jsonl"));
+      success(prepare(root));
+      assert.deepEqual(inventory(source), before, "preparation cannot recover or alter originals");
+      assert.equal(
+        existsSync(archive),
+        false,
+        "preparation is an interruption boundary before the move",
+      );
+      const record = readFileSync(join(root, "record.json"));
+      success(prepare(root));
+      success(invoke(root, "inspect"));
+      success(invoke(root, "archive", ["--quiesced"]));
+      assert.equal(existsSync(source), false);
+      assert.equal(lstatSync(archive).ino, identity);
+      assert.deepEqual(
+        inventory(archive),
+        before,
+        "the command preserves all file identities and bytes",
+      );
+      success(invoke(root, "archive", ["--quiesced"]));
+      assert.equal(existsSync(source), false, "completed retry must not recreate the source");
+      assert.equal(
+        lstatSync(archive).ino,
+        identity,
+        "completed retry must not move the archive again",
+      );
+      assert.deepEqual(inventory(archive), before);
+      assert.deepEqual(
+        readFileSync(join(root, "record.json")),
+        record,
+        "there is no mutable success marker",
+      );
+      const working = join(root, "disposable-recovery");
+      cpSync(archive, working, { recursive: true });
+      for (const name of [generation, `${generation}.ingest.sqlite`, "run-timing.sqlite"]) {
+        const db = new DatabaseSync(join(working, name));
+        try {
+          assert.equal(db.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
+          assert.deepEqual(
+            db
+              .prepare("SELECT value FROM fixture ORDER BY rowid")
+              .all()
+              .map((row) => row.value),
+            committed ? ["committed", "pending"] : ["committed"],
+          );
+        } finally {
+          db.close();
+        }
       }
-    }
-    assert.deepEqual(inventory(archive), before, "only a disposable complete copy is recovered");
-    assert.deepEqual(readFileSync(join(root, "sessions", "sentinel.jsonl")), sentinel);
-    mkdirSync(source);
-    writeFileSync(join(source, "run-timing.sqlite"), "synthetic relaunched old writer");
-    const recreated = inventory(source);
-    stopped(invoke(root, "archive", ["--quiesced"]), /E_AMBIGUOUS_PATHS/);
-    assert.deepEqual(inventory(source), recreated);
-    assert.deepEqual(inventory(archive), before, "ambiguous retry preserves both trees");
-  });
+      assert.deepEqual(inventory(archive), before, "only a disposable complete copy is recovered");
+      assert.deepEqual(readFileSync(join(root, "sessions", "sentinel.jsonl")), sentinel);
+      mkdirSync(source);
+      writeFileSync(join(source, "run-timing.sqlite"), "synthetic relaunched old writer");
+      const recreated = inventory(source);
+      stopped(invoke(root, "archive", ["--quiesced"]), /E_AMBIGUOUS_PATHS/);
+      assert.deepEqual(inventory(source), recreated);
+      assert.deepEqual(inventory(archive), before, "ambiguous retry preserves both trees");
+    },
+  );
 }
 
 const unsafe = [
@@ -256,7 +262,7 @@ const unsafe = [
   },
 ];
 for (const scenario of unsafe) {
-  test(`shipped archive CLI refuses ${scenario.name} before reservation`, () => {
+  nodeTest(`shipped archive CLI refuses ${scenario.name} before reservation`, () => {
     using cleanup = new DisposableStack();
     const root = realpathSync(fixture(cleanup, "refused"));
     const source = join(root, "agent", "history-index");
@@ -333,7 +339,7 @@ const drift = [
   },
 ];
 for (const scenario of drift) {
-  test(`shipped archive CLI stops on ${scenario.name} after preparation`, () => {
+  nodeTest(`shipped archive CLI stops on ${scenario.name} after preparation`, () => {
     using cleanup = new DisposableStack();
     const root = realpathSync(fixture(cleanup, "drift"));
     const source = join(root, "agent", "history-index");
@@ -347,7 +353,7 @@ for (const scenario of drift) {
   });
 }
 
-test(
+nodeTest(
   "shipped archive CLI requires explicit operator acknowledgment and refuses a different filesystem",
   { skip: process.platform !== "linux" },
   () => {
@@ -421,89 +427,95 @@ process.stdin.resume(); process.stdin.once('end', () => {${writable ? "db.close(
   };
 }
 
-test("shipped archive CLI refuses actual SQLite writers and later raw database readers despite operator acknowledgment", async (t) => {
-  const cleanup = new AsyncDisposableStack();
-  t.after(() => cleanup.disposeAsync());
-  const root = realpathSync(fixture(cleanup, "handles"));
-  const source = join(root, "agent", "history-index");
-  crashedWriter(source, true);
-  const releaseWriter = await hold(cleanup, root, true);
-  const active = inventory(source);
-  stopped(prepare(root), /E_OPEN_HANDLES/);
-  assert.deepEqual(inventory(source), active);
-  assert.equal(existsSync(join(root, "archive")), false);
-  assert.equal(existsSync(join(root, "record.json")), false);
-  await releaseWriter();
-  success(prepare(root));
-  const record = readFileSync(join(root, "record.json"));
-  const releaseReader = await hold(cleanup, root, false);
-  const reading = inventory(source);
-  stopped(invoke(root, "archive", ["--quiesced"]), /E_OPEN_HANDLES/);
-  assert.deepEqual(inventory(source), reading);
-  assert.deepEqual(readFileSync(join(root, "record.json")), record);
-  await releaseReader();
-  success(invoke(root, "archive", ["--quiesced"]));
-  assert.equal(existsSync(source), false);
-});
-
-for (const foreignOwner of [false, true]) {
-  test(`shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=${foreignOwner}`, () => {
-    using cleanup = new DisposableStack();
-    const root = realpathSync(fixture(cleanup, "ancestors"));
+nodeTest(
+  "shipped archive CLI refuses actual SQLite writers and later raw database readers despite operator acknowledgment",
+  async (t) => {
+    const cleanup = new AsyncDisposableStack();
+    t.after(() => cleanup.disposeAsync());
+    const root = realpathSync(fixture(cleanup, "handles"));
     const source = join(root, "agent", "history-index");
     crashedWriter(source, true);
-    chmodSync(root, 0o755);
-    mkdirSync(join(root, "records"), { mode: 0o700 });
-    mkdirSync(join(root, "untrusted"), { mode: 0o755 });
-    mkdirSync(join(root, "untrusted", "private"), { mode: 0o700 });
-    const ancestor = join(root, "untrusted");
-    const original = lstatSync(ancestor);
-    try {
-      if (foreignOwner) {
+    const releaseWriter = await hold(cleanup, root, true);
+    const active = inventory(source);
+    stopped(prepare(root), /E_OPEN_HANDLES/);
+    assert.deepEqual(inventory(source), active);
+    assert.equal(existsSync(join(root, "archive")), false);
+    assert.equal(existsSync(join(root, "record.json")), false);
+    await releaseWriter();
+    success(prepare(root));
+    const record = readFileSync(join(root, "record.json"));
+    const releaseReader = await hold(cleanup, root, false);
+    const reading = inventory(source);
+    stopped(invoke(root, "archive", ["--quiesced"]), /E_OPEN_HANDLES/);
+    assert.deepEqual(inventory(source), reading);
+    assert.deepEqual(readFileSync(join(root, "record.json")), record);
+    await releaseReader();
+    success(invoke(root, "archive", ["--quiesced"]));
+    assert.equal(existsSync(source), false);
+  },
+);
+
+for (const foreignOwner of [false, true]) {
+  nodeTest(
+    `shipped archive CLI refuses an unsafe ancestor chain, foreignOwner=${foreignOwner}`,
+    () => {
+      using cleanup = new DisposableStack();
+      const root = realpathSync(fixture(cleanup, "ancestors"));
+      const source = join(root, "agent", "history-index");
+      crashedWriter(source, true);
+      chmodSync(root, 0o755);
+      mkdirSync(join(root, "records"), { mode: 0o700 });
+      mkdirSync(join(root, "untrusted"), { mode: 0o755 });
+      mkdirSync(join(root, "untrusted", "private"), { mode: 0o700 });
+      const ancestor = join(root, "untrusted");
+      const original = lstatSync(ancestor);
+      try {
+        if (foreignOwner) {
+          success(
+            elevated([
+              "--input-type=module",
+              "-e",
+              "import {chownSync} from 'node:fs'; chownSync(process.argv[1], Number(process.argv[2]), -1);",
+              join(root, "untrusted"),
+              String(uid + 1),
+            ]),
+          );
+        } else {
+          chmodSync(join(root, "untrusted"), 0o777);
+        }
+        const before = inventory(source);
+        stopped(
+          elevated([
+            command,
+            "prepare",
+            "--record",
+            join(root, "records", "plan.json"),
+            "--owner-uid",
+            String(uid),
+            "--source",
+            source,
+            "--archive",
+            join(root, "untrusted", "private", "archive"),
+            "--quiesced",
+          ]),
+          foreignOwner ? /E_ANCESTOR_OWNER/ : /E_ANCESTOR_WRITABLE/,
+        );
+        assert.deepEqual(inventory(source), before);
+        assert.equal(existsSync(join(root, "untrusted", "private", "archive")), false);
+        assert.equal(existsSync(join(root, "records", "plan.json")), false);
+      } finally {
         success(
           elevated([
             "--input-type=module",
             "-e",
-            "import {chownSync} from 'node:fs'; chownSync(process.argv[1], Number(process.argv[2]), -1);",
-            join(root, "untrusted"),
-            String(uid + 1),
+            "import {chownSync, chmodSync} from 'node:fs'; chownSync(process.argv[1], Number(process.argv[2]), Number(process.argv[3])); chmodSync(process.argv[1], Number(process.argv[4]));",
+            ancestor,
+            String(original.uid),
+            String(original.gid),
+            String(original.mode & 0o7777),
           ]),
         );
-      } else {
-        chmodSync(join(root, "untrusted"), 0o777);
       }
-      const before = inventory(source);
-      stopped(
-        elevated([
-          command,
-          "prepare",
-          "--record",
-          join(root, "records", "plan.json"),
-          "--owner-uid",
-          String(uid),
-          "--source",
-          source,
-          "--archive",
-          join(root, "untrusted", "private", "archive"),
-          "--quiesced",
-        ]),
-        foreignOwner ? /E_ANCESTOR_OWNER/ : /E_ANCESTOR_WRITABLE/,
-      );
-      assert.deepEqual(inventory(source), before);
-      assert.equal(existsSync(join(root, "untrusted", "private", "archive")), false);
-      assert.equal(existsSync(join(root, "records", "plan.json")), false);
-    } finally {
-      success(
-        elevated([
-          "--input-type=module",
-          "-e",
-          "import {chownSync, chmodSync} from 'node:fs'; chownSync(process.argv[1], Number(process.argv[2]), Number(process.argv[3])); chmodSync(process.argv[1], Number(process.argv[4]));",
-          ancestor,
-          String(original.uid),
-          String(original.gid),
-          String(original.mode & 0o7777),
-        ]),
-      );
-    }
-  });
+    },
+  );
 }

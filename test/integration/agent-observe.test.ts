@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
-import { test, type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   Container,
@@ -424,7 +424,7 @@ async function exerciseReading(options: {
 }
 
 for (const tuiMode of ["fullscreen", "regular"] as const) {
-  test(
+  nodeTest(
     `native ${tuiMode} observer watches an actual child without waking or aborting either agent and clears on replacement`,
     { timeout: 45000 },
     async (t) => {
@@ -1113,7 +1113,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
   );
 }
 
-test(
+nodeTest(
   "native observer caches completed metadata, probes each active root once per tick, strips only active work and resolves ambiguity beyond its row cache",
   { timeout: 30000 },
   async (t) => {

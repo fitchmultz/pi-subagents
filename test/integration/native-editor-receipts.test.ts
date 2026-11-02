@@ -12,10 +12,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 
 const editor = process.env.PI_EDITOR_RECEIPT_TEST_ROOT;
-test(
+nodeTest(
   "actual editor receipts survive the single extension through native publication",
   { skip: editor === undefined || editor === "", timeout: 30_000 },
   async (t) => {

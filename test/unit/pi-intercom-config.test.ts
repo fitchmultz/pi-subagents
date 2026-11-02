@@ -1,12 +1,12 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../../src/pi-intercom/config.ts";
 
-test("retired UI and enabled settings do not disable ordinary messaging", () => {
+nodeTest("retired UI and enabled settings do not disable ordinary messaging", () => {
   const previous = process.env.PI_CODING_AGENT_DIR;
   const agentDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-config-"));
   process.env.PI_CODING_AGENT_DIR = agentDir;

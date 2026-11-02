@@ -6,14 +6,14 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as os from "node:os";
 import * as path from "node:path";
-import { it } from "node:test";
+import { it as nodeIt } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { read, runDirectory, write } from "../../src/agent/storage.ts";
 import { Type } from "../../src/agent/typebox.ts";
 import { observeReads } from "../support/runtime-fs.ts";
 
-it("native agent storage creates private files", () => {
+nodeIt("native agent storage creates private files", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-atomic-json-"));
   try {
     const file = path.join(dir, "status.json");
@@ -25,33 +25,36 @@ it("native agent storage creates private files", () => {
   }
 });
 
-it("exclusive records remain complete and cannot be replaced when hard links are denied", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-atomic-exclusive-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  t.mock.method(fs, "linkSync", () => {
-    throw Object.assign(new Error("Hard links are denied"), { code: "EACCES" });
-  });
-  syncBuiltinESMExports();
-  t.after(() => {
-    t.mock.restoreAll();
+nodeIt(
+  "exclusive records remain complete and cannot be replaced when hard links are denied",
+  (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-atomic-exclusive-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    t.mock.method(fs, "linkSync", () => {
+      throw Object.assign(new Error("Hard links are denied"), { code: "EACCES" });
+    });
     syncBuiltinESMExports();
-  });
-  const file = path.join(dir, "launch.json");
-  const value = { prompt: "雪🦄".repeat(20_000) };
-  write(file, value, true);
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), value);
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-  const publishedFiles = fs.readdirSync(dir).sort();
-  assert.throws(() => write(file, { prompt: "loser" }, true), { code: "EEXIST" });
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), value);
-  assert.deepEqual(
-    fs.readdirSync(dir).sort(),
-    publishedFiles,
-    "failed publication leaves no orphan files",
-  );
-});
+    t.after(() => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    });
+    const file = path.join(dir, "launch.json");
+    const value = { prompt: "雪🦄".repeat(20_000) };
+    write(file, value, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), value);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    const publishedFiles = fs.readdirSync(dir).sort();
+    assert.throws(() => write(file, { prompt: "loser" }, true), { code: "EEXIST" });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), value);
+    assert.deepEqual(
+      fs.readdirSync(dir).sort(),
+      publishedFiles,
+      "failed publication leaves no orphan files",
+    );
+  },
+);
 
-it("exclusive record failures do not publish data or hide unrelated filesystem errors", (t) => {
+nodeIt("exclusive record failures do not publish data or hide unrelated filesystem errors", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-atomic-failure-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const failure = Object.assign(new Error("I/O failure"), { code: "EIO" });
@@ -81,7 +84,7 @@ function writer(file: string, id: number, gate?: string) {
   };
 }
 
-it(
+nodeIt(
   "exclusive fallback admits one complete winner across independent writer processes",
   { timeout: 15_000 },
   async (t) => {
@@ -129,7 +132,7 @@ it(
   },
 );
 
-it(
+nodeIt(
   "a writer killed after fsync cannot expose or reserve an unpublished exclusive record",
   { timeout: 15_000 },
   async (t) => {
@@ -159,7 +162,7 @@ it(
   },
 );
 
-it("native run paths reject traversal and separators before accessing storage", () => {
+nodeIt("native run paths reject traversal and separators before accessing storage", () => {
   for (const id of [
     "",
     ".",
@@ -175,7 +178,7 @@ it("native run paths reject traversal and separators before accessing storage", 
   assert.equal(runDirectory("/owned", "run_12-abc"), path.join("/owned", "run_12-abc"));
 });
 
-it("saved owner reads preserve values with snapshot-sized reads and a 64 KiB ceiling", (t) => {
+nodeIt("saved owner reads preserve values with snapshot-sized reads and a 64 KiB ceiling", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-owner-read-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "question-owner.json");

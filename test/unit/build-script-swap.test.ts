@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { record, json } from "../support/assertions.ts";
 const projectRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -75,46 +75,52 @@ async function withFixture(run: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-test("build.mjs: loaded provenance fingerprints emitted code and stays fixed until a fresh import", () =>
-  withFixture(async (dir) => {
-    assert.equal((await runBuild(dir)).code, 0);
-    const stamp = pathToFileURL(join(dir, "dist", "build-info.js")).href;
-    assert.ok(
-      existsSync(fileURLToPath(stamp)),
-      "a built runtime must carry its own provenance, not reread package.json after loading",
-    );
-    const initialModule: unknown = await import(stamp);
-    const loaded = record(record(initialModule).EXTENSION_BUILD);
-    const expectedHash = createHash("sha256")
-      .update("index.js\0")
-      .update(readFileSync(join(dir, "dist", "index.js")))
-      .update("\0")
-      .digest("hex");
-    assert.deepEqual(loaded, { version: "1.2.3", sha256: expectedHash });
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module", version: "2.0.0" }));
-    assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "changed compiled code" })).code, 0);
-    const reimported: unknown = await import(stamp);
-    assert.equal(
-      record(reimported).EXTENSION_BUILD,
-      loaded,
-      "a loaded module must not impersonate the rebuilt files on disk",
-    );
-    const fresh = spawnSync(
-      process.execPath,
-      [
-        "--input-type=module",
-        "-e",
-        `console.log(JSON.stringify((await import(${JSON.stringify(stamp)})).EXTENSION_BUILD))`,
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(fresh.status, 0, fresh.stderr);
-    const next = json(fresh.stdout);
-    assert.equal(next.version, "2.0.0");
-    assert.notEqual(next.sha256, loaded.sha256);
-  }));
+nodeTest(
+  "build.mjs: loaded provenance fingerprints emitted code and stays fixed until a fresh import",
+  () =>
+    withFixture(async (dir) => {
+      assert.equal((await runBuild(dir)).code, 0);
+      const stamp = pathToFileURL(join(dir, "dist", "build-info.js")).href;
+      assert.ok(
+        existsSync(fileURLToPath(stamp)),
+        "a built runtime must carry its own provenance, not reread package.json after loading",
+      );
+      const initialModule: unknown = await import(stamp);
+      const loaded = record(record(initialModule).EXTENSION_BUILD);
+      const expectedHash = createHash("sha256")
+        .update("index.js\0")
+        .update(readFileSync(join(dir, "dist", "index.js")))
+        .update("\0")
+        .digest("hex");
+      assert.deepEqual(loaded, { version: "1.2.3", sha256: expectedHash });
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({ type: "module", version: "2.0.0" }),
+      );
+      assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "changed compiled code" })).code, 0);
+      const reimported: unknown = await import(stamp);
+      assert.equal(
+        record(reimported).EXTENSION_BUILD,
+        loaded,
+        "a loaded module must not impersonate the rebuilt files on disk",
+      );
+      const fresh = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `console.log(JSON.stringify((await import(${JSON.stringify(stamp)})).EXTENSION_BUILD))`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(fresh.status, 0, fresh.stderr);
+      const next = json(fresh.stdout);
+      assert.equal(next.version, "2.0.0");
+      assert.notEqual(next.sha256, loaded.sha256);
+    }),
+);
 
-test("build.mjs: Android uses a native tsgo on PATH without an npm platform compiler", () =>
+nodeTest("build.mjs: Android uses a native tsgo on PATH without an npm platform compiler", () =>
   withFixture(async (dir) => {
     const bin = join(dir, "bin");
     mkdirSync(bin);
@@ -140,9 +146,10 @@ test("build.mjs: Android uses a native tsgo on PATH without an npm platform comp
       readFileSync(join(dir, "dist/index.js"), "utf8"),
       'export const built = "native Android compiler";\n',
     );
-  }));
+  }),
+);
 
-test("build.mjs: failed compile preserves the previous dist and cleans staging", () =>
+nodeTest("build.mjs: failed compile preserves the previous dist and cleans staging", () =>
   withFixture(async (dir) => {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist", "sentinel.txt"), "previous build");
@@ -150,9 +157,10 @@ test("build.mjs: failed compile preserves the previous dist and cleans staging",
     assert.notEqual(code, 0);
     assert.ok(existsSync(join(dir, "dist", "sentinel.txt")));
     assert.deepEqual(stagingDirs(dir), []);
-  }));
+  }),
+);
 
-test("build.mjs: successful build replaces dist, purging stale files", () =>
+nodeTest("build.mjs: successful build replaces dist, purging stale files", () =>
   withFixture(async (dir) => {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist", "stale.txt"), "old output");
@@ -160,9 +168,10 @@ test("build.mjs: successful build replaces dist, purging stale files", () =>
     assert.ok(existsSync(join(dir, "dist", "index.js")));
     assert.ok(!existsSync(join(dir, "dist", "stale.txt")));
     assert.deepEqual(stagingDirs(dir), []);
-  }));
+  }),
+);
 
-test("build.mjs: reaps dead-pid staging and keeps live-pid staging", () =>
+nodeTest("build.mjs: reaps dead-pid staging and keeps live-pid staging", () =>
   withFixture(async (dir) => {
     const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
     assert.equal(typeof deadPid, "number");
@@ -173,9 +182,10 @@ test("build.mjs: reaps dead-pid staging and keeps live-pid staging", () =>
     assert.ok(!existsSync(join(dir, `dist.staging.${deadPid}`)));
     assert.ok(!existsSync(join(dir, `dist.staging.${deadPid}.previous`)));
     assert.ok(existsSync(join(dir, `dist.staging.${process.pid}`)));
-  }));
+  }),
+);
 
-test("build.mjs: warns and continues when stranded staging cannot be removed", () =>
+nodeTest("build.mjs: warns and continues when stranded staging cannot be removed", () =>
   withFixture(async (dir) => {
     const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
     assert.equal(typeof deadPid, "number");
@@ -190,9 +200,10 @@ test("build.mjs: warns and continues when stranded staging cannot be removed", (
     assert.match(result.stderr, /could not remove staging/);
     assert.ok(existsSync(join(dir, lockedName)));
     assert.ok(existsSync(join(dir, "dist", "index.js")));
-  }));
+  }),
+);
 
-test("build.mjs: fails loudly when the previous dist cannot be retired", () =>
+nodeTest("build.mjs: fails loudly when the previous dist cannot be retired", () =>
   withFixture(async (dir) => {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist", "sentinel.txt"), "previous build");
@@ -205,9 +216,10 @@ test("build.mjs: fails loudly when the previous dist cannot be retired", () =>
     assert.match(result.stderr, /synthetic stale-staging lock/);
     assert.ok(existsSync(join(dir, "dist", "sentinel.txt")));
     assert.deepEqual(stagingDirs(dir), []);
-  }));
+  }),
+);
 
-test("build.mjs: concurrent build storms succeed with valid dist", { timeout: 30_000 }, () =>
+nodeTest("build.mjs: concurrent build storms succeed with valid dist", { timeout: 30_000 }, () =>
   withFixture(async (dir) => {
     mkdirSync(join(dir, "dist"));
     writeFileSync(join(dir, "dist", "stale.txt"), "old output");
@@ -221,7 +233,7 @@ test("build.mjs: concurrent build storms succeed with valid dist", { timeout: 30
   }),
 );
 
-test(
+nodeTest(
   "build.mjs: publishes retained staging instead of timing out on a slow winner",
   { timeout: 10_000 },
   () =>
@@ -234,24 +246,26 @@ test(
     }),
 );
 
-test("build.mjs: deterministically discards staging after a concurrent winner", () =>
+nodeTest("build.mjs: deterministically discards staging after a concurrent winner", () =>
   withFixture(async (dir) => {
     const result = await runBuild(dir, { BUILD_SWAP_FAULT: "race-loss" }, faultArgs());
     assert.equal(result.code, 0);
     assert.match(result.stderr, /dist\/ was published by a concurrent build/);
     assert.ok(existsSync(join(dir, "dist", "winner.txt")));
     assert.deepEqual(stagingDirs(dir), []);
-  }));
+  }),
+);
 
-test("build.mjs: does not accept an empty dist as a published winner", () =>
+nodeTest("build.mjs: does not accept an empty dist as a published winner", () =>
   withFixture(async (dir) => {
     const result = await runBuild(dir, { BUILD_SWAP_FAULT: "empty-dist" }, faultArgs());
     assert.deepEqual(result, { code: 0, stderr: "" });
     assert.ok(existsSync(join(dir, "dist", "index.js")));
     assert.deepEqual(stagingDirs(dir), []);
-  }));
+  }),
+);
 
-test(
+nodeTest(
   "build.mjs: restores the exact previous dist after persistent publication failure",
   { timeout: 10_000 },
   () =>
@@ -267,7 +281,7 @@ test(
     }),
 );
 
-test(
+nodeTest(
   "build.mjs: rethrows when the staged emit disappears before publication",
   { timeout: 10_000 },
   () =>
