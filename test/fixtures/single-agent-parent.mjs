@@ -1330,14 +1330,21 @@ try {
       );
       const stop = async (child) => {
         if (child.exitCode === null && child.signalCode === null) {
-          const exited = new Promise((resolve) => child.once("exit", resolve));
+          const exited = new Promise((resolve) => {
+            child.once("exit", resolve);
+          });
           child.kill("SIGKILL");
           await exited;
         }
       };
       try {
         await Promise.all(
-          sleepers.map((child) => new Promise((resolve) => child.once("spawn", resolve))),
+          sleepers.map(
+            (child) =>
+              new Promise((resolve) => {
+                child.once("spawn", resolve);
+              }),
+          ),
         );
         const claims = sleepers.map((child) => ({ ...ownIdentity(child.pid), token: actor.token }));
         assert.ok(claims.every((claim) => claim.identity !== "unverified"));
@@ -2686,9 +2693,9 @@ try {
       faux.setResponses([
         async (_context, options) => {
           entered.resolve();
-          await new Promise((resolve) =>
-            options.signal.addEventListener("abort", resolve, { once: true }),
-          );
+          await new Promise((resolve) => {
+            options.signal.addEventListener("abort", resolve, { once: true });
+          });
           return fauxAssistantMessage("PARENT_ABORTED");
         },
       ]);

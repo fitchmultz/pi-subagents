@@ -141,9 +141,9 @@ if (mode === "seed") {
     fauxAssistantMessage("Saved conversation ready"),
     async (_context, options) => {
       process.send({ type: "ready", ...(await summary()) });
-      await new Promise((resolve) =>
-        options.signal.addEventListener("abort", resolve, { once: true }),
-      );
+      await new Promise((resolve) => {
+        options.signal.addEventListener("abort", resolve, { once: true });
+      });
       return fauxAssistantMessage("Aborted");
     },
   ]);
