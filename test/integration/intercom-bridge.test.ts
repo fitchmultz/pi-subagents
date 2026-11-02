@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import {
@@ -44,7 +44,7 @@ function nextMessage(client: Readonly<IntercomClient>) {
   );
 }
 
-test(
+nodeTest(
   "real mTLS bridge admits only messaging, preserves peer identity and cancels waits",
   { timeout: 90000 },
   async (t) => {
@@ -620,7 +620,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "persistent mailbox survives restart, lease, broker outage and bounded paging",
   { timeout: 60000 },
   async (t) => {
@@ -1405,36 +1405,38 @@ test(
   },
 );
 
-test("durable ACK groups retire wake intents and payloads atomically and keep replay tombstones", async () => {
-  const root = mkdtempSync("/tmp/pib-wake-");
-  const module = join(repo, "src/pi-intercom/bridge-mailbox.ts");
-  const run = async (script: string) =>
-    json(
-      (
-        await exec(process.execPath, [
-          "--input-type=module",
-          "-e",
-          `
+nodeTest(
+  "durable ACK groups retire wake intents and payloads atomically and keep replay tombstones",
+  async () => {
+    const root = mkdtempSync("/tmp/pib-wake-");
+    const module = join(repo, "src/pi-intercom/bridge-mailbox.ts");
+    const run = async (script: string) =>
+      json(
+        (
+          await exec(process.execPath, [
+            "--input-type=module",
+            "-e",
+            `
       import { Mailbox } from ${JSON.stringify(module)};
       const mailbox = new Mailbox(${JSON.stringify(root)}, ${JSON.stringify("A".repeat(64))}, true);
       ${script}
       mailbox.close();
     `,
-        ])
-      ).stdout,
-    );
-  try {
-    const first = await run(`
+          ])
+        ).stdout,
+      );
+    try {
+      const first = await run(`
       const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
       mailbox.add({from,message:{id:"notice",timestamp:1,content:{text:"notice payload"}}});
       mailbox.add({from,message:{id:"ask",timestamp:2,expectsReply:true,content:{text:"ask payload"}}});
       const ack = mailbox.ack(["notice","ask"]);
       console.log(JSON.stringify({ack,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
     `);
-    assert.deepEqual(record(first.ack).acked, ["notice", "ask"]);
-    assert.deepEqual(messages(record(first.inbox)), []);
-    assert.deepEqual(record(first.wake).messages, []);
-    const second = await run(`
+      assert.deepEqual(record(first.ack).acked, ["notice", "ask"]);
+      assert.deepEqual(messages(record(first.inbox)), []);
+      assert.deepEqual(record(first.wake).messages, []);
+      const second = await run(`
       const restored = mailbox.pendingNotifications();
       mailbox.notificationAccepted("notice");
       mailbox.notificationAccepted("ask");
@@ -1446,63 +1448,67 @@ test("durable ACK groups retire wake intents and payloads atomically and keep re
       mailbox.ack(["notify-first"]);
       console.log(JSON.stringify({restored,replay,stillUnread,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
     `);
-    assert.deepEqual(record(second.restored), record(first.wake));
-    assert.equal(second.replay, "duplicate");
-    assert.deepEqual(
-      messages(record(second.stillUnread)).map((item) => item.message.id),
-      ["notify-first"],
-    );
-    assert.deepEqual(messages(record(second.inbox)), []);
-    assert.deepEqual(record(second.wake).messages, []);
-    const group = ["group-1", "group-2", "group-3"];
-    const db = new DatabaseSync(join(root, `${"A".repeat(64)}.sqlite`));
-    try {
-      // A real SQLite failure on the middle ID's acked write, after earlier IDs were updated.
-      db.exec(
-        "CREATE TRIGGER reject_ack BEFORE UPDATE OF acked ON mailbox WHEN NEW.id='group-2' BEGIN SELECT RAISE(ABORT, 'injected ACK failure'); END",
+      assert.deepEqual(record(second.restored), record(first.wake));
+      assert.equal(second.replay, "duplicate");
+      assert.deepEqual(
+        messages(record(second.stillUnread)).map((item) => item.message.id),
+        ["notify-first"],
       );
-      const failed = await run(`
+      assert.deepEqual(messages(record(second.inbox)), []);
+      assert.deepEqual(record(second.wake).messages, []);
+      const group = ["group-1", "group-2", "group-3"];
+      const db = new DatabaseSync(join(root, `${"A".repeat(64)}.sqlite`));
+      try {
+        // A real SQLite failure on the middle ID's acked write, after earlier IDs were updated.
+        db.exec(
+          "CREATE TRIGGER reject_ack BEFORE UPDATE OF acked ON mailbox WHEN NEW.id='group-2' BEGIN SELECT RAISE(ABORT, 'injected ACK failure'); END",
+        );
+        const failed = await run(`
         const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
         for (const id of ${JSON.stringify(group)}) mailbox.add({from,message:{id,timestamp:5,content:{text:id}}});
         let fault;
         try { mailbox.ack(${JSON.stringify(group)}); } catch (error) { fault = {status:error.status,code:error.code}; }
         console.log(JSON.stringify({fault}));
       `);
-      assert.deepEqual(failed.fault, { status: 507, code: "mailbox_storage_failed" });
-      db.exec("DROP TRIGGER reject_ack");
-    } finally {
-      db.close();
-    }
-    const retried = await run(`
+        assert.deepEqual(failed.fault, { status: 507, code: "mailbox_storage_failed" });
+        db.exec("DROP TRIGGER reject_ack");
+      } finally {
+        db.close();
+      }
+      const retried = await run(`
       const unread = mailbox.page(0,256);
       const wake = mailbox.pendingNotifications();
       console.log(JSON.stringify({unread,wake,ack:mailbox.ack(${JSON.stringify(group)})}));
     `);
-    const ids = (page: unknown) => messages(record(page)).map((item) => item.message.id);
-    assert.deepEqual(ids(retried.unread), group, "a failed ACK group transfers no payload");
-    assert.deepEqual(ids(retried.wake), group, "a failed ACK group retires no wake intent");
-    assert.deepEqual(record(retried.ack).acked, group);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      const ids = (page: unknown) => messages(record(page)).map((item) => item.message.id);
+      assert.deepEqual(ids(retried.unread), group, "a failed ACK group transfers no payload");
+      assert.deepEqual(ids(retried.wake), group, "a failed ACK group retires no wake intent");
+      assert.deepEqual(record(retried.ack).acked, group);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
-test("credential issue cannot overwrite a concurrent revocation", { timeout: 30000 }, async () => {
-  const root = mkdtempSync("/tmp/pib-lock-");
-  const dir = join(root, "credentials");
-  const tool = join(repo, "scripts/intercom-bridge-credentials.mjs");
-  let signingPid: number | undefined;
-  let issuing: Promise<unknown> | undefined;
-  let cleanupError: Error | undefined;
-  try {
-    const original = parseCredential(
-      json((await exec(process.execPath, [tool, "init", dir, "--cwd", root])).stdout),
-    );
-    const ready = join(root, "signing-ready");
-    const wrapper = join(root, "pause-openssl");
-    writeFileSync(
-      wrapper,
-      `#!/usr/bin/env node
+nodeTest(
+  "credential issue cannot overwrite a concurrent revocation",
+  { timeout: 30000 },
+  async () => {
+    const root = mkdtempSync("/tmp/pib-lock-");
+    const dir = join(root, "credentials");
+    const tool = join(repo, "scripts/intercom-bridge-credentials.mjs");
+    let signingPid: number | undefined;
+    let issuing: Promise<unknown> | undefined;
+    let cleanupError: Error | undefined;
+    try {
+      const original = parseCredential(
+        json((await exec(process.execPath, [tool, "init", dir, "--cwd", root])).stdout),
+      );
+      const ready = join(root, "signing-ready");
+      const wrapper = join(root, "pause-openssl");
+      writeFileSync(
+        wrapper,
+        `#!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { writeFileSync, renameSync } from "node:fs";
 if (process.argv[2] === "ecparam") {
@@ -1518,85 +1524,86 @@ if (process.argv[2] === "ecparam") {
   execFileSync("openssl", process.argv.slice(2));
 }
 `,
-      { mode: 0o700 },
-    );
-    const signing = new Promise<void>((resolveReady, reject) => {
-      const watcher = watch(root, (_event, name) => {
-        if (name?.toString() !== "signing-ready") {
-          return;
-        }
-        signingPid = Number(readFileSync(ready, "utf8"));
-        clearTimeout(timer);
-        watcher.close();
-        resolveReady();
+        { mode: 0o700 },
+      );
+      const signing = new Promise<void>((resolveReady, reject) => {
+        const watcher = watch(root, (_event, name) => {
+          if (name?.toString() !== "signing-ready") {
+            return;
+          }
+          signingPid = Number(readFileSync(ready, "utf8"));
+          clearTimeout(timer);
+          watcher.close();
+          resolveReady();
+        });
+        const timer = setTimeout(() => {
+          watcher.close();
+          reject(new Error("Signer never reached key creation."));
+        }, 10000);
       });
-      const timer = setTimeout(() => {
-        watcher.close();
-        reject(new Error("Signer never reached key creation."));
-      }, 10000);
-    });
-    issuing = exec(process.execPath, [tool, "issue", dir, "maintenance"], {
-      env: { ...process.env, OPENSSL: wrapper },
-    });
-    issuing.catch(() => {
-      /* The same original promise is awaited after signer release and in teardown. */
-    });
-    await signing; // Actual issue owns its read/modify/write window before testing the conflicting command.
-    await assert.rejects(
-      exec(process.execPath, [tool, "revoke", dir, "grok-bot"]),
-      /Another credential command holds/,
-    );
-    assertDefined(signingPid);
-    process.kill(signingPid, "SIGUSR1");
-    await issuing;
-    const configPath = join(dir, "config.json");
-    const clients = records(record(readJson(configPath)).clients);
-    assert.equal(
-      clients.find((client) => client.name === "grok-bot")?.fingerprint256,
-      original.fingerprint256,
-    );
-    const rotationConfig = record(readJson(configPath));
-    const identity = records(rotationConfig.clients).find((client) => client.name === "grok-bot");
-    assertDefined(identity);
-    identity.wake = { envFile: join(root, "private-wake.env") };
-    writeFileSync(configPath, JSON.stringify(rotationConfig), { mode: 0o600 });
-    const rotated = parseCredential(
-      json((await exec(process.execPath, [tool, "issue", dir, "grok-bot"])).stdout),
-    );
-    assert.notEqual(rotated.fingerprint256, original.fingerprint256);
-    assert.deepEqual(
-      records(record(readJson(configPath)).clients).find((client) => client.name === "grok-bot")
-        ?.wake,
-      identity.wake,
-      "certificate rotation preserves the local wake policy",
-    );
-    await exec(process.execPath, [tool, "revoke", dir, "grok-bot"]);
-    assert.ok(
-      !records(record(readJson(configPath)).clients).some((client) => client.name === "grok-bot"),
-    );
-  } finally {
-    if (signingPid !== undefined) {
-      try {
-        process.kill(signingPid, "SIGKILL");
-      } catch (error) {
-        if (!hasErrorCode(error, "ESRCH")) {
-          cleanupError = error instanceof Error ? error : new Error(errorMessage(error));
+      issuing = exec(process.execPath, [tool, "issue", dir, "maintenance"], {
+        env: { ...process.env, OPENSSL: wrapper },
+      });
+      issuing.catch(() => {
+        /* The same original promise is awaited after signer release and in teardown. */
+      });
+      await signing; // Actual issue owns its read/modify/write window before testing the conflicting command.
+      await assert.rejects(
+        exec(process.execPath, [tool, "revoke", dir, "grok-bot"]),
+        /Another credential command holds/,
+      );
+      assertDefined(signingPid);
+      process.kill(signingPid, "SIGUSR1");
+      await issuing;
+      const configPath = join(dir, "config.json");
+      const clients = records(record(readJson(configPath)).clients);
+      assert.equal(
+        clients.find((client) => client.name === "grok-bot")?.fingerprint256,
+        original.fingerprint256,
+      );
+      const rotationConfig = record(readJson(configPath));
+      const identity = records(rotationConfig.clients).find((client) => client.name === "grok-bot");
+      assertDefined(identity);
+      identity.wake = { envFile: join(root, "private-wake.env") };
+      writeFileSync(configPath, JSON.stringify(rotationConfig), { mode: 0o600 });
+      const rotated = parseCredential(
+        json((await exec(process.execPath, [tool, "issue", dir, "grok-bot"])).stdout),
+      );
+      assert.notEqual(rotated.fingerprint256, original.fingerprint256);
+      assert.deepEqual(
+        records(record(readJson(configPath)).clients).find((client) => client.name === "grok-bot")
+          ?.wake,
+        identity.wake,
+        "certificate rotation preserves the local wake policy",
+      );
+      await exec(process.execPath, [tool, "revoke", dir, "grok-bot"]);
+      assert.ok(
+        !records(record(readJson(configPath)).clients).some((client) => client.name === "grok-bot"),
+      );
+    } finally {
+      if (signingPid !== undefined) {
+        try {
+          process.kill(signingPid, "SIGKILL");
+        } catch (error) {
+          if (!hasErrorCode(error, "ESRCH")) {
+            cleanupError = error instanceof Error ? error : new Error(errorMessage(error));
+          }
         }
       }
+      if (issuing) {
+        await issuing.catch(() => {
+          /* Expected if teardown killed the paused signer. */
+        });
+      }
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch (error) {
+        cleanupError ??= error instanceof Error ? error : new Error(errorMessage(error));
+      }
     }
-    if (issuing) {
-      await issuing.catch(() => {
-        /* Expected if teardown killed the paused signer. */
-      });
+    // A primary failure propagates through finally; report cleanup failure only after primary success.
+    if (cleanupError) {
+      throw cleanupError;
     }
-    try {
-      rmSync(root, { recursive: true, force: true });
-    } catch (error) {
-      cleanupError ??= error instanceof Error ? error : new Error(errorMessage(error));
-    }
-  }
-  // A primary failure propagates through finally; report cleanup failure only after primary success.
-  if (cleanupError) {
-    throw cleanupError;
-  }
-});
+  },
+);

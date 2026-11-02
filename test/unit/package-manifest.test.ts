@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { record as objectValue, json as parseJsonObject } from "../support/assertions.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -35,7 +35,7 @@ function rootPackageName(specifier: string): string {
   return specifier.split("/").slice(0, 2).join("/");
 }
 
-test("direct @earendil-works runtime imports are declared for local installs", () => {
+nodeTest("direct @earendil-works runtime imports are declared for local installs", () => {
   const packageJson = readPackageJson();
   const dependencies = objectValue(packageJson.dependencies ?? {});
   const devDependencies = objectValue(packageJson.devDependencies ?? {});
@@ -59,7 +59,7 @@ test("direct @earendil-works runtime imports are declared for local installs", (
   assert.deepEqual(missing, []);
 });
 
-test("Pi development dependencies use one exact baseline with optional wildcard peers", () => {
+nodeTest("Pi development dependencies use one exact baseline with optional wildcard peers", () => {
   const packageJson = readPackageJson();
   const devDependencies = objectValue(packageJson.devDependencies);
   const peerDependencies = objectValue(packageJson.peerDependencies);
@@ -79,7 +79,7 @@ test("Pi development dependencies use one exact baseline with optional wildcard 
   }
 });
 
-test("package lock uses the public npm registry", () => {
+nodeTest("package lock uses the public npm registry", () => {
   const lockfile = parseJsonObject(
     fs.readFileSync(path.join(projectRoot, "package-lock.json"), "utf-8"),
   );
@@ -94,7 +94,7 @@ test("package lock uses the public npm registry", () => {
   }
 });
 
-test("old pi package scope is not used by source or tests", () => {
+nodeTest("old pi package scope is not used by source or tests", () => {
   for (const file of [
     ...collectTsFiles(path.join(projectRoot, "src")),
     ...collectTsFiles(path.join(projectRoot, "test")),
@@ -104,7 +104,7 @@ test("old pi package scope is not used by source or tests", () => {
   }
 });
 
-test("Pi package resolution stays export-map safe", () => {
+nodeTest("Pi package resolution stays export-map safe", () => {
   for (const file of [
     ...collectTsFiles(path.join(projectRoot, "src")),
     ...collectTsFiles(path.join(projectRoot, "test")),

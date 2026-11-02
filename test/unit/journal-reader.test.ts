@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { test, type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { observeReads } from "../support/runtime-fs.ts";
 import { record, textAt as firstText } from "../support/assertions.ts";
 import { JournalFrames, readJsonProjection, scanJournal } from "../../src/shared/journal-frames.ts";
@@ -45,282 +45,300 @@ function temporary(t: TestContext) {
   return root;
 }
 
-test("JSONL cursors commit complete validated records across one-byte Unicode chunks and keep torn tails", () => {
-  const values: unknown[] = [],
-    frames = new JournalFrames(
-      () => true,
-      ({ value }) => {
-        values.push(value);
-      },
-      { policy: "live" },
-    );
-  const complete = Buffer.from('{"id":"🦄","ignored":{"text":"\\uD83E\\uDD84"}}\r\n');
-  for (const byte of complete) {
-    frames.write(Buffer.from([byte]));
-  }
-  frames.write(Buffer.from('{"id":"later"'));
-  assert.equal(frames.finish(), complete.length);
-  assert.deepEqual(values, [{ id: "🦄", ignored: { text: "🦄" } }]);
-  frames.write(Buffer.from("}\n"));
-  assert.equal(frames.finish(), complete.length + Buffer.byteLength('{"id":"later"}\n'));
-  assert.deepEqual(values[1], { id: "later" });
-  const skipped = new JournalFrames(
-    (keys) => keys.length === 0 || keys[0] === "id",
-    () => assert.fail("malformed skipped data cannot commit"),
-  );
-  skipped.write(Buffer.from('{"id":"x","ignored":{"bad":truX}}'));
-  assert.throws(() => skipped.finish(), SyntaxError);
-  const projection = new JsonProjection((keys) => {
-    if (keys.length === 0) {
-      return true;
+nodeTest(
+  "JSONL cursors commit complete validated records across one-byte Unicode chunks and keep torn tails",
+  () => {
+    const values: unknown[] = [],
+      frames = new JournalFrames(
+        () => true,
+        ({ value }) => {
+          values.push(value);
+        },
+        { policy: "live" },
+      );
+    const complete = Buffer.from('{"id":"🦄","ignored":{"text":"\\uD83E\\uDD84"}}\r\n');
+    for (const byte of complete) {
+      frames.write(Buffer.from([byte]));
     }
-    return keys[0] === "text" ? 3 : Number.NaN;
-  });
-  projection.write('{"skip":{"x":"ignored"},"text":"abcdef","number":1234}');
-  assert.deepEqual(projection.finish(), { text: "abc" });
-});
+    frames.write(Buffer.from('{"id":"later"'));
+    assert.equal(frames.finish(), complete.length);
+    assert.deepEqual(values, [{ id: "🦄", ignored: { text: "🦄" } }]);
+    frames.write(Buffer.from("}\n"));
+    assert.equal(frames.finish(), complete.length + Buffer.byteLength('{"id":"later"}\n'));
+    assert.deepEqual(values[1], { id: "later" });
+    const skipped = new JournalFrames(
+      (keys) => keys.length === 0 || keys[0] === "id",
+      () => assert.fail("malformed skipped data cannot commit"),
+    );
+    skipped.write(Buffer.from('{"id":"x","ignored":{"bad":truX}}'));
+    assert.throws(() => skipped.finish(), SyntaxError);
+    const projection = new JsonProjection((keys) => {
+      if (keys.length === 0) {
+        return true;
+      }
+      return keys[0] === "text" ? 3 : Number.NaN;
+    });
+    projection.write('{"skip":{"x":"ignored"},"text":"abcdef","number":1234}');
+    assert.deepEqual(projection.finish(), { text: "abc" });
+  },
+);
 
-test("JSON projection matches JSON.parse acceptance, values and observed strings for its grammar corpus at every two-chunk split and one UTF-16 unit at a time", () => {
-  const valid = [
-    '{"a":"\\uD83E\\uDD84é日\\u00e9\\/\\b\\f\\n\\r\\t\\"\\\\","b":[true,false,null,-0,0.5e-3,1E+2,-12.75,0],"c":{},"d":[]}',
-    ' { "__proto__" : {"x":"\\uDD84"}, "a":1, "a":[2,{"k\\u0041":""}] } ',
-    `{"long":"${"plain text ".repeat(4)}","after":"${"日本".repeat(9)}\\n"}`,
-    `{"escapes":"${"\\n".repeat(1030)}"}`,
-    '"top"',
-    "-1.5e9",
-    "null",
-    "[[[]]]",
-  ];
-  const invalid = [
-    '{"a":"\\u12"}',
-    '{"a":"\\x"}',
-    '{"a":"\u0001"}',
-    `{"a":"${"plain text ".repeat(4)}\u0001"}`,
-    '{"a":01}',
-    '{"a":1.}',
-    '{"a":-}',
-    '{"a":.5}',
-    '{"a":1e}',
-    '{"a":1e+}',
-    '{"a":1e-}',
-    '{"a":+1}',
-    '{"a":tru}',
-    '{"a":nulll}',
-    '{"a":1,}',
-    "[1,]",
-    '{"o":{"k\\x":1}}',
-    '{"o":{"k\u0001":1}}',
-    '{"a" 1}',
-    '{"a",1}',
-    "{a:1}",
-    '{"a":1}}',
-    '{"a":1} x',
-    "",
-    '{"a":"x',
-    '{"a":[1}}',
-    "[NaN]",
-    "\uFEFF{}",
-  ];
-  const stringsAt = (value: unknown, at: (string | number)[] = []): [string, string][] => {
-    if (typeof value === "string") {
-      return value === "" ? [] : [[JSON.stringify(at), value]];
-    }
-    return value !== null && typeof value === "object"
-      ? Object.entries(value).flatMap(([key, item]) =>
-          stringsAt(item, [...at, Array.isArray(value) ? Number(key) : key]),
-        )
-      : [];
-  };
-  const feeds = (json: string): [string, string[]][] => [
-    ...Array.from({ length: json.length + 1 }, (_, split): [string, string[]] => [
-      `split at ${split}`,
-      [json.slice(0, split), json.slice(split)],
-    ]),
-    ["one unit at a time", json.split("").flatMap((unit) => [unit, ""])],
-  ];
-  const project = (chunks: readonly string[], all: boolean) => {
-    const strings = new Map<string, string>();
-    const projection = new JsonProjection(
-      (keys) => all || keys.length === 0,
-      (keys, chunk) => {
-        strings.set(JSON.stringify(keys), (strings.get(JSON.stringify(keys)) ?? "") + chunk);
-      },
-      () => Infinity,
-    );
-    for (const chunk of chunks) {
-      projection.write(chunk);
-    }
-    return { value: projection.finish(), strings: [...strings] };
-  };
-  for (const json of invalid) {
-    assert.throws(() => JSON.parse(json), `${JSON.stringify(json)} is invalid JSON`);
-    for (const [feed, chunks] of feeds(json)) {
-      for (const all of [true, false]) {
-        assert.throws(() => project(chunks, all), `${JSON.stringify(json)} ${feed}`);
+nodeTest(
+  "JSON projection matches JSON.parse acceptance, values and observed strings for its grammar corpus at every two-chunk split and one UTF-16 unit at a time",
+  () => {
+    const valid = [
+      '{"a":"\\uD83E\\uDD84é日\\u00e9\\/\\b\\f\\n\\r\\t\\"\\\\","b":[true,false,null,-0,0.5e-3,1E+2,-12.75,0],"c":{},"d":[]}',
+      ' { "__proto__" : {"x":"\\uDD84"}, "a":1, "a":[2,{"k\\u0041":""}] } ',
+      `{"long":"${"plain text ".repeat(4)}","after":"${"日本".repeat(9)}\\n"}`,
+      `{"escapes":"${"\\n".repeat(1030)}"}`,
+      '"top"',
+      "-1.5e9",
+      "null",
+      "[[[]]]",
+    ];
+    const invalid = [
+      '{"a":"\\u12"}',
+      '{"a":"\\x"}',
+      '{"a":"\u0001"}',
+      `{"a":"${"plain text ".repeat(4)}\u0001"}`,
+      '{"a":01}',
+      '{"a":1.}',
+      '{"a":-}',
+      '{"a":.5}',
+      '{"a":1e}',
+      '{"a":1e+}',
+      '{"a":1e-}',
+      '{"a":+1}',
+      '{"a":tru}',
+      '{"a":nulll}',
+      '{"a":1,}',
+      "[1,]",
+      '{"o":{"k\\x":1}}',
+      '{"o":{"k\u0001":1}}',
+      '{"a" 1}',
+      '{"a",1}',
+      "{a:1}",
+      '{"a":1}}',
+      '{"a":1} x',
+      "",
+      '{"a":"x',
+      '{"a":[1}}',
+      "[NaN]",
+      "\uFEFF{}",
+    ];
+    const stringsAt = (value: unknown, at: (string | number)[] = []): [string, string][] => {
+      if (typeof value === "string") {
+        return value === "" ? [] : [[JSON.stringify(at), value]];
+      }
+      return value !== null && typeof value === "object"
+        ? Object.entries(value).flatMap(([key, item]) =>
+            stringsAt(item, [...at, Array.isArray(value) ? Number(key) : key]),
+          )
+        : [];
+    };
+    const feeds = (json: string): [string, string[]][] => [
+      ...Array.from({ length: json.length + 1 }, (_, split): [string, string[]] => [
+        `split at ${split}`,
+        [json.slice(0, split), json.slice(split)],
+      ]),
+      ["one unit at a time", json.split("").flatMap((unit) => [unit, ""])],
+    ];
+    const project = (chunks: readonly string[], all: boolean) => {
+      const strings = new Map<string, string>();
+      const projection = new JsonProjection(
+        (keys) => all || keys.length === 0,
+        (keys, chunk) => {
+          strings.set(JSON.stringify(keys), (strings.get(JSON.stringify(keys)) ?? "") + chunk);
+        },
+        () => Infinity,
+      );
+      for (const chunk of chunks) {
+        projection.write(chunk);
+      }
+      return { value: projection.finish(), strings: [...strings] };
+    };
+    for (const json of invalid) {
+      assert.throws(() => JSON.parse(json), `${JSON.stringify(json)} is invalid JSON`);
+      for (const [feed, chunks] of feeds(json)) {
+        for (const all of [true, false]) {
+          assert.throws(() => project(chunks, all), `${JSON.stringify(json)} ${feed}`);
+        }
       }
     }
-  }
-  for (const json of valid) {
-    const expected: unknown = JSON.parse(json);
-    const skipped = Array.isArray(expected) ? [] : {};
-    const root = expected !== null && typeof expected === "object" ? skipped : expected;
-    for (const [feed, chunks] of feeds(json)) {
-      const all = project(chunks, true);
-      assert.deepEqual(all.value, expected, `${json} ${feed}`);
-      assert.deepEqual(all.strings, stringsAt(expected), `${json} ${feed}`);
-      assert.deepEqual(project(chunks, false).value, root, `${json} ${feed}`);
+    for (const json of valid) {
+      const expected: unknown = JSON.parse(json);
+      const skipped = Array.isArray(expected) ? [] : {};
+      const root = expected !== null && typeof expected === "object" ? skipped : expected;
+      for (const [feed, chunks] of feeds(json)) {
+        const all = project(chunks, true);
+        assert.deepEqual(all.value, expected, `${json} ${feed}`);
+        assert.deepEqual(all.strings, stringsAt(expected), `${json} ${feed}`);
+        assert.deepEqual(project(chunks, false).value, root, `${json} ${feed}`);
+      }
     }
-  }
-});
+  },
+);
 
-test("sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records", (t) => {
-  const root = temporary(t),
-    file = path.join(root, "native.jsonl");
-  const ownerFile = path.join(root, "owner.json");
-  fs.writeFileSync(ownerFile, "{}");
-  const failure = new Error("original projection failure");
-  failure.toString = () => {
-    throw new Error("broken error stringifier");
-  };
-  assert.throws(
-    () =>
-      readJsonProjection(ownerFile, () => {
-        throw failure;
-      }),
-    (error: unknown) => {
-      assert.ok(error instanceof SyntaxError);
-      assert.equal(error.cause, failure);
-      assert.match(error.message, /original projection failure/);
-      return true;
-    },
-  );
-  const original =
-    '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
-  fs.writeFileSync(file, original);
-  let bytesRead = 0;
-  observeReads(t, ({ count }) => {
-    bytesRead += count;
-  });
-  const model = new NativeJournal(file).byId.get("m")?.value;
-  assert.deepEqual([model?.provider, model?.modelId], ["p", "m"]);
-  assert.equal(
-    bytesRead,
-    Buffer.byteLength(original),
-    "plain inspection does not pay for opt-in history prefix hashing",
-  );
-  assert.equal(fs.readFileSync(file, "utf8"), original);
-  assert.equal(new NativeJournal(file, "live").records.length, 1);
-  fs.appendFileSync(file, '\n{"type":"custom","id":"broken","data":[1,]}\n');
-  assert.throws(() => childUsage(launch(file), new Set()), SyntaxError);
-});
-
-test("sealed inspection and LF-published native bodies never weaken strict accounting or inherited baselines", (t) => {
-  const file = path.join(temporary(t), "native.jsonl"),
-    text = "Complete selected body ".repeat(400) + "FULL-END";
-  const original =
-    '{"type":"session","id":"child","version":3}\nnot JSON\n' +
-    JSON.stringify({
-      type: "message",
-      id: "terminal",
-      parentId: null,
-      message: {
-        role: "assistant",
-        provider: "fixture",
-        model: "faux",
-        timestamp: 7,
-        stopReason: "stop",
-        usage,
-        content: [{ type: "text", text }],
+nodeTest(
+  "sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records",
+  (t) => {
+    const root = temporary(t),
+      file = path.join(root, "native.jsonl");
+    const ownerFile = path.join(root, "owner.json");
+    fs.writeFileSync(ownerFile, "{}");
+    const failure = new Error("original projection failure");
+    failure.toString = () => {
+      throw new Error("broken error stringifier");
+    };
+    assert.throws(
+      () =>
+        readJsonProjection(ownerFile, () => {
+          throw failure;
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof SyntaxError);
+        assert.equal(error.cause, failure);
+        assert.match(error.message, /original projection failure/);
+        return true;
       },
+    );
+    const original =
+      '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
+    fs.writeFileSync(file, original);
+    let bytesRead = 0;
+    observeReads(t, ({ count }) => {
+      bytesRead += count;
     });
-  fs.writeFileSync(file, original);
-  const sealed = new NativeJournal(file),
-    unpublished = new NativeJournal(file, "inspect", true);
-  const sealedTerminal = sealed.byId.get("terminal");
-  assert.ok(sealedTerminal);
-  assert.equal(firstText(record(sealed.body(sealedTerminal).message).content), text);
-  assert.equal(unpublished.byId.has("terminal"), false);
-  assert.equal(fs.readFileSync(file, "utf8"), original);
-  fs.appendFileSync(file, "\n");
-  const published = new NativeJournal(file, "inspect", true);
-  const publishedTerminal = published.byId.get("terminal");
-  assert.ok(publishedTerminal);
-  const message = record(publishedTerminal.value.message);
-  assert.deepEqual([message.provider, message.model], ["fixture", "faux"]);
-  assert.equal(firstText(record(published.body(publishedTerminal).message).content), text);
-  assert.throws(
-    () => childUsage(launch(file), new Set()),
-    SyntaxError,
-    "inspection tolerance cannot weaken required accounting",
-  );
-  fs.writeFileSync(file, original.replace("not JSON\n", ""));
-  assert.throws(
-    () => baseline(file),
-    SyntaxError,
-    "an unpublished entry cannot become an inherited attempt baseline",
-  );
-  assert.throws(() => childUsage(launch(file), new Set(), "terminal"), /not LF-published/);
-  fs.appendFileSync(file, "\n");
-  assert.deepEqual([...baseline(file)], ["child", "terminal"]);
-  const terminalUsage = childUsage(launch(file), new Set(), "terminal");
-  assert.deepEqual(
-    terminalUsage.map((part) => part.usage.input),
-    [3],
-  );
-});
+    const model = new NativeJournal(file).byId.get("m")?.value;
+    assert.deepEqual([model?.provider, model?.modelId], ["p", "m"]);
+    assert.equal(
+      bytesRead,
+      Buffer.byteLength(original),
+      "plain inspection does not pay for opt-in history prefix hashing",
+    );
+    assert.equal(fs.readFileSync(file, "utf8"), original);
+    assert.equal(new NativeJournal(file, "live").records.length, 1);
+    fs.appendFileSync(file, '\n{"type":"custom","id":"broken","data":[1,]}\n');
+    assert.throws(() => childUsage(launch(file), new Set()), SyntaxError);
+  },
+);
 
-test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors", () => {
-  const invalid = Buffer.concat([
-    Buffer.from('{"ignored":"'),
-    Buffer.from([0xc3, 0x28]),
-    Buffer.from('"}\n'),
-  ]);
-  for (const policy of ["strict", "live"] as const) {
-    for (const bytes of [
-      invalid,
-      Buffer.from("[]\n"),
-      Buffer.from("null\n"),
-      Buffer.from('"scalar"\n'),
-    ]) {
-      const records: unknown[] = [],
-        reader = new JournalFrames(
-          (keys) => keys.length === 0,
-          ({ value }) => {
-            records.push(value);
-          },
-          { policy },
-        );
-      reader.write(Buffer.from('{"id":"committed"}\n'));
-      assert.throws(() => reader.write(bytes), SyntaxError);
-      assert.deepEqual(records, [{}], "only the prior selected object was committed");
+nodeTest(
+  "sealed inspection and LF-published native bodies never weaken strict accounting or inherited baselines",
+  (t) => {
+    const file = path.join(temporary(t), "native.jsonl"),
+      text = "Complete selected body ".repeat(400) + "FULL-END";
+    const original =
+      '{"type":"session","id":"child","version":3}\nnot JSON\n' +
+      JSON.stringify({
+        type: "message",
+        id: "terminal",
+        parentId: null,
+        message: {
+          role: "assistant",
+          provider: "fixture",
+          model: "faux",
+          timestamp: 7,
+          stopReason: "stop",
+          usage,
+          content: [{ type: "text", text }],
+        },
+      });
+    fs.writeFileSync(file, original);
+    const sealed = new NativeJournal(file),
+      unpublished = new NativeJournal(file, "inspect", true);
+    const sealedTerminal = sealed.byId.get("terminal");
+    assert.ok(sealedTerminal);
+    assert.equal(firstText(record(sealed.body(sealedTerminal).message).content), text);
+    assert.equal(unpublished.byId.has("terminal"), false);
+    assert.equal(fs.readFileSync(file, "utf8"), original);
+    fs.appendFileSync(file, "\n");
+    const published = new NativeJournal(file, "inspect", true);
+    const publishedTerminal = published.byId.get("terminal");
+    assert.ok(publishedTerminal);
+    const message = record(publishedTerminal.value.message);
+    assert.deepEqual([message.provider, message.model], ["fixture", "faux"]);
+    assert.equal(firstText(record(published.body(publishedTerminal).message).content), text);
+    assert.throws(
+      () => childUsage(launch(file), new Set()),
+      SyntaxError,
+      "inspection tolerance cannot weaken required accounting",
+    );
+    fs.writeFileSync(file, original.replace("not JSON\n", ""));
+    assert.throws(
+      () => baseline(file),
+      SyntaxError,
+      "an unpublished entry cannot become an inherited attempt baseline",
+    );
+    assert.throws(() => childUsage(launch(file), new Set(), "terminal"), /not LF-published/);
+    fs.appendFileSync(file, "\n");
+    assert.deepEqual([...baseline(file)], ["child", "terminal"]);
+    const terminalUsage = childUsage(launch(file), new Set(), "terminal");
+    assert.deepEqual(
+      terminalUsage.map((part) => part.usage.input),
+      [3],
+    );
+  },
+);
+
+nodeTest(
+  "strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors",
+  () => {
+    const invalid = Buffer.concat([
+      Buffer.from('{"ignored":"'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('"}\n'),
+    ]);
+    for (const policy of ["strict", "live"] as const) {
+      for (const bytes of [
+        invalid,
+        Buffer.from("[]\n"),
+        Buffer.from("null\n"),
+        Buffer.from('"scalar"\n'),
+      ]) {
+        const records: unknown[] = [],
+          reader = new JournalFrames(
+            (keys) => keys.length === 0,
+            ({ value }) => {
+              records.push(value);
+            },
+            { policy },
+          );
+        reader.write(Buffer.from('{"id":"committed"}\n'));
+        assert.throws(() => reader.write(bytes), SyntaxError);
+        assert.deepEqual(records, [{}], "only the prior selected object was committed");
+      }
     }
-  }
-});
+  },
+);
 
-test("output pages preserve Unicode at byte boundaries and do not read the preceding output", (t) => {
-  const file = path.join(temporary(t), "output");
-  fs.writeFileSync(file, "prefix\n🦄日本語\nend");
-  const reads: Array<{ length: number; position: number | bigint | null }> = [];
-  observeReads(t, ({ length, position }) => {
-    reads.push({ length, position });
-  });
-  const first = readOutputPage(file, { offset: 7, length: 5 });
-  assert.equal(first.text, "🦄");
-  const next = readOutputPage(file, { offset: first.nextOffset, length: 9 });
-  assert.equal(next.text, "日本語");
-  assert.equal(readOutputPage(file, { length: 4 }).text, "\nend");
-  assert.deepEqual(
-    reads,
-    [
-      { length: 5, position: 7 },
-      { length: 9, position: 11 },
-      { length: 4, position: 20 },
-    ],
-    "each page reads only its requested byte range, never the prefix",
-  );
-});
+nodeTest(
+  "output pages preserve Unicode at byte boundaries and do not read the preceding output",
+  (t) => {
+    const file = path.join(temporary(t), "output");
+    fs.writeFileSync(file, "prefix\n🦄日本語\nend");
+    const reads: Array<{ length: number; position: number | bigint | null }> = [];
+    observeReads(t, ({ length, position }) => {
+      reads.push({ length, position });
+    });
+    const first = readOutputPage(file, { offset: 7, length: 5 });
+    assert.equal(first.text, "🦄");
+    const next = readOutputPage(file, { offset: first.nextOffset, length: 9 });
+    assert.equal(next.text, "日本語");
+    assert.equal(readOutputPage(file, { length: 4 }).text, "\nend");
+    assert.deepEqual(
+      reads,
+      [
+        { length: 5, position: 7 },
+        { length: 9, position: 11 },
+        { length: 4, position: 20 },
+      ],
+      "each page reads only its requested byte range, never the prefix",
+    );
+  },
+);
 
-test(
+nodeTest(
   "a valid ignored individual value larger than Node's string ceiling preserves billing, selected model metadata, baselines and source bytes under a 96 MiB heap",
   { timeout: 180_000 },
   (t) => {

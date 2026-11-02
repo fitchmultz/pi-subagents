@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import {
   isChildProcessReplaced,
   observeChildProcessReplaced,
   readChildProcessIdentity,
 } from "../../src/shared/post-exit-stdio-guard.ts";
 
-test(
+nodeTest(
   "macOS process birth and replacement proof do not depend on PATH",
   {
     skip: process.platform !== "darwin",

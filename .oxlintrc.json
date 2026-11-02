@@ -142,9 +142,9 @@
         "ignoreVoid": false,
         "allowForKnownSafeCalls": [
           {
-            "from": "file",
-            "path": "./node_modules/@types/node/test.d.ts",
-            "name": ["test", "suite"]
+            "from": "package",
+            "package": "node:test",
+            "name": ["nodeTest", "nodeIt", "nodeDescribe"]
           }
         ],
         "allowForKnownSafePromises": []

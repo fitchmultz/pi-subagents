@@ -1,6 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe as nodeDescribe, it as nodeIt } from "node:test";
 import {
   isAttachment,
   isMessage,
@@ -10,8 +10,8 @@ import {
 
 const message = { id: "m1", timestamp: 1, content: { text: "hello" } };
 
-describe("pi-intercom wire validation", () => {
-  it("accepts the current session registration shape", () => {
+nodeDescribe("pi-intercom wire validation", () => {
+  nodeIt("accepts the current session registration shape", () => {
     assert.equal(
       isSessionRegistration({
         cwd: "/repo",
@@ -32,7 +32,7 @@ describe("pi-intercom wire validation", () => {
     assert.equal(isSessionRegistration({ cwd: "/repo", model: "model", pendingAsks: "0" }), false);
   });
 
-  it("drops malformed project ids from older broker session info", () => {
+  nodeIt("drops malformed project ids from older broker session info", () => {
     assert.deepEqual(
       normalizeSessionInfo({
         id: "session-1",
@@ -48,7 +48,7 @@ describe("pi-intercom wire validation", () => {
     );
   });
 
-  it("rejects control characters and non-finite numbers", () => {
+  nodeIt("rejects control characters and non-finite numbers", () => {
     assert.equal(isMessage({ ...message, id: "m\n1" }), false);
     assert.equal(isMessage({ ...message, timestamp: Number.NaN }), false);
     assert.equal(isMessage({ ...message, content: { text: "bad\u0000text" } }), false);
@@ -59,7 +59,7 @@ describe("pi-intercom wire validation", () => {
     assert.equal(isAttachment({ type: "file", name: "bad\nname", content: "ok" }), false);
   });
 
-  it("rejects invalid session counters and labels", () => {
+  nodeIt("rejects invalid session counters and labels", () => {
     assert.equal(isSessionRegistration({ cwd: "/tmp", model: "test", pendingAsks: -1 }), false);
     assert.equal(
       isSessionRegistration({ cwd: "/tmp", model: "test", lastSeen: Number.POSITIVE_INFINITY }),

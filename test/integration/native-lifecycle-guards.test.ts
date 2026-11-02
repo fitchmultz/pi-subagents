@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, before, test } from "node:test";
+import { after, before, test as nodeTest } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
@@ -79,75 +79,82 @@ after(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("real broker startup writes a backward-readable PID identity and stays protected", async (t) => {
-  const { stopUnhealthyBrokerBeforeSpawn } = await import("../../src/pi-intercom/broker/spawn.ts");
-  const pidPath = path.join(process.env.PI_INTERCOM_RUNTIME_DIR ?? "", "broker.pid");
-  const record = readFileSync(pidPath, "utf8");
-  assert.equal(Number.parseInt(record, 10), broker.pid);
-  if (process.platform === "linux") {
-    assert.match(record, /^\d+\nlinux-v1 /);
-  }
-  // An unhealthy-socket observation must not override a matching live identity.
-  const probe = t.mock.method(net, "connect", () => {
-    const socket = new net.Socket();
-    queueMicrotask(() => {
-      socket.emit("error", new Error("controlled unhealthy socket observation"));
+nodeTest(
+  "real broker startup writes a backward-readable PID identity and stays protected",
+  async (t) => {
+    const { stopUnhealthyBrokerBeforeSpawn } =
+      await import("../../src/pi-intercom/broker/spawn.ts");
+    const pidPath = path.join(process.env.PI_INTERCOM_RUNTIME_DIR ?? "", "broker.pid");
+    const record = readFileSync(pidPath, "utf8");
+    assert.equal(Number.parseInt(record, 10), broker.pid);
+    if (process.platform === "linux") {
+      assert.match(record, /^\d+\nlinux-v1 /);
+    }
+    // An unhealthy-socket observation must not override a matching live identity.
+    const probe = t.mock.method(net, "connect", () => {
+      const socket = new net.Socket();
+      queueMicrotask(() => {
+        socket.emit("error", new Error("controlled unhealthy socket observation"));
+      });
+      return socket;
     });
-    return socket;
-  });
-  await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
-  probe.mock.restore();
-  assert.equal(readFileSync(pidPath, "utf8"), record);
-  assert.equal(keeper.isConnected(), true);
-  await keeper.listSessions();
-});
+    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
+    probe.mock.restore();
+    assert.equal(readFileSync(pidPath, "utf8"), record);
+    assert.equal(keeper.isConnected(), true);
+    await keeper.listSessions();
+  },
+);
 
 // Kept as counterexamples to unsafe disconnect/stop approaches, not proposed fixes.
-test("unchanged protocol: accepted replace delivery is lost on recipient disconnect", async () => {
-  const recipient = new IntercomClient();
-  const received: string[] = [];
-  recipient.on("message", (_from: unknown, message: Message) => {
-    received.push(message.content.text);
-  });
-  await recipient.connect({
-    name: "queue-loss",
-    cwd: root,
-    model: "none",
-    status: "idle",
-    acceptsAsks: true,
-  });
-  const receipt = await keeper.send("queue-loss", {
-    text: "accepted only in broker memory",
-    delivery: "queue",
-    queueMode: "replace",
-    threadId: "proof",
-  });
-  assert.equal(receipt.accepted, true);
-  assert.equal(receipt.queued, true);
-  assert.deepEqual([...received], []);
-  const originalId = recipient.sessionId;
-  assertDefined(originalId);
-  const left = once(keeper, "session_left");
-  await recipient.disconnect();
-  assert.deepEqual(await left, [originalId]);
-  await recipient.connect(
-    { name: "queue-loss", cwd: root, model: "none", status: "idle" },
-    originalId,
-  );
-  assert.equal(recipient.sessionId, originalId);
-  const fresh = await keeper.send("queue-loss", {
-    text: "fresh processed delivery",
-    delivery: "queue",
-    queueMode: "replace",
-    threadId: "fresh-proof",
-  });
-  assert.equal(fresh.accepted, true);
-  assert.equal(fresh.queued, true);
-  await waitFor(() => received.includes("fresh processed delivery"));
-  assert.deepEqual(received, ["fresh processed delivery"]);
-  await recipient.disconnect();
-  writeFileSync(
-    path.join(root, "accepted-queued-disconnect.json"),
-    JSON.stringify({ receipt, received }),
-  );
-});
+nodeTest(
+  "unchanged protocol: accepted replace delivery is lost on recipient disconnect",
+  async () => {
+    const recipient = new IntercomClient();
+    const received: string[] = [];
+    recipient.on("message", (_from: unknown, message: Message) => {
+      received.push(message.content.text);
+    });
+    await recipient.connect({
+      name: "queue-loss",
+      cwd: root,
+      model: "none",
+      status: "idle",
+      acceptsAsks: true,
+    });
+    const receipt = await keeper.send("queue-loss", {
+      text: "accepted only in broker memory",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "proof",
+    });
+    assert.equal(receipt.accepted, true);
+    assert.equal(receipt.queued, true);
+    assert.deepEqual([...received], []);
+    const originalId = recipient.sessionId;
+    assertDefined(originalId);
+    const left = once(keeper, "session_left");
+    await recipient.disconnect();
+    assert.deepEqual(await left, [originalId]);
+    await recipient.connect(
+      { name: "queue-loss", cwd: root, model: "none", status: "idle" },
+      originalId,
+    );
+    assert.equal(recipient.sessionId, originalId);
+    const fresh = await keeper.send("queue-loss", {
+      text: "fresh processed delivery",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "fresh-proof",
+    });
+    assert.equal(fresh.accepted, true);
+    assert.equal(fresh.queued, true);
+    await waitFor(() => received.includes("fresh processed delivery"));
+    assert.deepEqual(received, ["fresh processed delivery"]);
+    await recipient.disconnect();
+    writeFileSync(
+      path.join(root, "accepted-queued-disconnect.json"),
+      JSON.stringify({ receipt, received }),
+    );
+  },
+);

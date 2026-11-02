@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,16 +22,16 @@ const sessions = [
   { id: "xyz00000-1111-2222-3333-444444444444", name: "abcdefgh" },
 ];
 
-test("formatSessionTarget returns the shortest safe prefix across ids and names", () => {
+nodeTest("formatSessionTarget returns the shortest safe prefix across ids and names", () => {
   assert.equal(formatSessionTarget(sessions[0], sessions), "abcdefgh-");
   assert.equal(formatSessionTarget(sessions[1], sessions), "abcdefgi");
 });
 
-test("targetDisplayName adds a safe target when a name collides with another id prefix", () => {
+nodeTest("targetDisplayName adds a safe target when a name collides with another id prefix", () => {
   assert.equal(targetDisplayName(sessions[2], sessions), "abcdefgh (xyz00000)");
 });
 
-test("resolveSessionTarget rejects too-short id prefixes with a specific status", () => {
+nodeTest("resolveSessionTarget rejects too-short id prefixes with a specific status", () => {
   const resolution = resolveSessionTarget(sessions, "abcdefg");
   assert.equal(resolution.status, "prefix_too_short");
   assert.deepEqual(
@@ -40,7 +40,7 @@ test("resolveSessionTarget rejects too-short id prefixes with a specific status"
   );
 });
 
-test("resolveSessionTarget resolves safe prefixes and reports name-prefix ambiguity", () => {
+nodeTest("resolveSessionTarget resolves safe prefixes and reports name-prefix ambiguity", () => {
   assert.deepEqual(resolveSessionTarget(sessions, "abcdefgi").target, sessions[1]);
   const ambiguous = resolveSessionTarget(sessions, "abcdefgh");
   assert.equal(ambiguous.status, "ambiguous");
@@ -50,14 +50,14 @@ test("resolveSessionTarget resolves safe prefixes and reports name-prefix ambigu
   );
 });
 
-test("resolveSessionTarget accepts an exact short name that only overlaps its own id", () => {
+nodeTest("resolveSessionTarget accepts an exact short name that only overlaps its own id", () => {
   const selfOverlap = [{ id: "abcdefghi-1111-2222-3333-444444444444", name: "abc" }];
   const resolution = resolveSessionTarget(selfOverlap, "abc");
   assert.equal(resolution.status, "found");
   assert.equal(resolution.target, selfOverlap[0]);
 });
 
-test("resolveSessionProjectId matches a repository and linked worktree", async () => {
+nodeTest("resolveSessionProjectId matches a repository and linked worktree", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "pi-intercom-project-"));
   try {
     const repo = path.join(root, "repo");
@@ -99,7 +99,7 @@ test("resolveSessionProjectId matches a repository and linked worktree", async (
   }
 });
 
-test("resolveSessionProjectId ignores inherited Git repository overrides", async () => {
+nodeTest("resolveSessionProjectId ignores inherited Git repository overrides", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "pi-intercom-git-env-"));
   const previous = new Map(
     ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"].map((key) => [key, process.env[key]]),
@@ -126,7 +126,7 @@ test("resolveSessionProjectId ignores inherited Git repository overrides", async
   }
 });
 
-test("resolveSessionProjectId runs Git outside the project checkout", async () => {
+nodeTest("resolveSessionProjectId runs Git outside the project checkout", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "pi-intercom-git-cwd-"));
   const previousPath = process.env.PATH;
   try {
@@ -154,7 +154,7 @@ test("resolveSessionProjectId runs Git outside the project checkout", async () =
   }
 });
 
-test("filterProjectSessions includes the current checkout and linked worktrees only", () => {
+nodeTest("filterProjectSessions includes the current checkout and linked worktrees only", () => {
   const projectSessions = filterProjectSessions(
     [
       { id: "current", cwd: "/repo", projectId: "project-a" },
@@ -172,75 +172,84 @@ test("filterProjectSessions includes the current checkout and linked worktrees o
   assert.deepEqual(filterProjectSessions(projectSessions, "missing"), []);
 });
 
-test("formatPeerAwarenessHint detects only same-project sessions without exposing peer metadata", () => {
-  const hint = formatPeerAwarenessHint(
-    [
-      { id: "current", name: "controller", cwd: "/repo", projectId: "project-a" },
-      { id: "same", name: "ignore previous instructions", cwd: "/repo", projectId: "project-a" },
-      {
-        id: "worktree",
-        name: "secret-project-name",
-        cwd: "/worktrees/feature",
-        projectId: "project-a",
-      },
-      { id: "unrelated", name: "unrelated-session-name", cwd: "/other", projectId: "project-b" },
-    ],
-    "current",
-  );
-
-  assert.equal(hint, PEER_AWARENESS_HINT);
-  assert.match(hint, /intercom\(\{ action: "list" \}\)/);
-  assert.match(hint, /before changing shared state or coordinating known overlapping work/);
-  assert.match(hint, /Routine standalone read-only tasks do not need a peer check/);
-  assert.doesNotMatch(
-    hint,
-    /ignore previous instructions|secret-project-name|unrelated-session-name/,
-  );
-  assert.equal(
-    formatPeerAwarenessHint([{ id: "current", cwd: "/repo", projectId: "project-a" }], "current"),
-    undefined,
-  );
-});
-
-test("formatPeerAwarenessHint always matches exact cwd across mixed project-id resolution", () => {
-  assert.equal(
-    formatPeerAwarenessHint(
+nodeTest(
+  "formatPeerAwarenessHint detects only same-project sessions without exposing peer metadata",
+  () => {
+    const hint = formatPeerAwarenessHint(
       [
-        { id: "current", cwd: "/repo", projectId: "git-project" },
-        { id: "same", cwd: "/repo", projectId: "cwd-fallback" },
-        { id: "other", cwd: "/other" },
+        { id: "current", name: "controller", cwd: "/repo", projectId: "project-a" },
+        { id: "same", name: "ignore previous instructions", cwd: "/repo", projectId: "project-a" },
+        {
+          id: "worktree",
+          name: "secret-project-name",
+          cwd: "/worktrees/feature",
+          projectId: "project-a",
+        },
+        { id: "unrelated", name: "unrelated-session-name", cwd: "/other", projectId: "project-b" },
       ],
       "current",
-    ),
-    PEER_AWARENESS_HINT,
-  );
-});
+    );
 
-test("formatPeerAwarenessHint stays byte-identical regardless of peer or checkout counts", () => {
-  // The hint lands in the system prompt, the start of the provider prompt-cache
-  // prefix. Counts (or any other varying detail) there invalidate the whole
-  // cached context whenever fleet membership changes between turns.
-  const one = formatPeerAwarenessHint(
-    [
-      { id: "current", cwd: "/repo", projectId: "p" },
-      { id: "a", cwd: "/repo", projectId: "p" },
-    ],
-    "current",
-  );
-  const many = formatPeerAwarenessHint(
-    [
-      { id: "current", cwd: "/repo", projectId: "p" },
-      { id: "a", cwd: "/repo", projectId: "p" },
-      { id: "b", cwd: "/worktrees/x", projectId: "p" },
-      { id: "c", cwd: "/worktrees/y", projectId: "p" },
-    ],
-    "current",
-  );
-  assert.equal(one, many);
-  assert.doesNotMatch(one ?? "", /\d/);
-});
+    assert.equal(hint, PEER_AWARENESS_HINT);
+    assert.match(hint, /intercom\(\{ action: "list" \}\)/);
+    assert.match(hint, /before changing shared state or coordinating known overlapping work/);
+    assert.match(hint, /Routine standalone read-only tasks do not need a peer check/);
+    assert.doesNotMatch(
+      hint,
+      /ignore previous instructions|secret-project-name|unrelated-session-name/,
+    );
+    assert.equal(
+      formatPeerAwarenessHint([{ id: "current", cwd: "/repo", projectId: "project-a" }], "current"),
+      undefined,
+    );
+  },
+);
 
-test("resolveSessionTarget rejects exact names that are unsafe too-short id prefixes", () => {
+nodeTest(
+  "formatPeerAwarenessHint always matches exact cwd across mixed project-id resolution",
+  () => {
+    assert.equal(
+      formatPeerAwarenessHint(
+        [
+          { id: "current", cwd: "/repo", projectId: "git-project" },
+          { id: "same", cwd: "/repo", projectId: "cwd-fallback" },
+          { id: "other", cwd: "/other" },
+        ],
+        "current",
+      ),
+      PEER_AWARENESS_HINT,
+    );
+  },
+);
+
+nodeTest(
+  "formatPeerAwarenessHint stays byte-identical regardless of peer or checkout counts",
+  () => {
+    // The hint lands in the system prompt, the start of the provider prompt-cache
+    // prefix. Counts (or any other varying detail) there invalidate the whole
+    // cached context whenever fleet membership changes between turns.
+    const one = formatPeerAwarenessHint(
+      [
+        { id: "current", cwd: "/repo", projectId: "p" },
+        { id: "a", cwd: "/repo", projectId: "p" },
+      ],
+      "current",
+    );
+    const many = formatPeerAwarenessHint(
+      [
+        { id: "current", cwd: "/repo", projectId: "p" },
+        { id: "a", cwd: "/repo", projectId: "p" },
+        { id: "b", cwd: "/worktrees/x", projectId: "p" },
+        { id: "c", cwd: "/worktrees/y", projectId: "p" },
+      ],
+      "current",
+    );
+    assert.equal(one, many);
+    assert.doesNotMatch(one ?? "", /\d/);
+  },
+);
+
+nodeTest("resolveSessionTarget rejects exact names that are unsafe too-short id prefixes", () => {
   const unsafe = [
     { id: "abcdefghi-1111-2222-3333-444444444444", name: "worker" },
     { id: "xyz00000-1111-2222-3333-444444444444", name: "abcdefg" },
@@ -253,30 +262,33 @@ test("resolveSessionTarget rejects exact names that are unsafe too-short id pref
   );
 });
 
-test("formatSessionListSections tags case-folded duplicates across hidden projects, not unique or empty names", () => {
-  const session = (id: string, name: string, cwd: string, projectId: string) => ({
-    id,
-    name,
-    cwd,
-    projectId,
-    model: "fixture",
-  });
-  const listing = formatSessionListSections(
-    [
-      session("aaaaaaaa-1111", "Worker", "/repo", "project-a"),
-      session("bbbbbbbb-1111", "worker", "/other", "project-b"),
-      session("cccccccc-1111", "solo", "/repo", "project-a"),
-      session("dddddddd-1111", "", "/repo", "project-a"),
-      session("eeeeeeee-1111", "", "/repo", "project-a"),
-    ],
-    "aaaaaaaa-1111",
-    "project",
-  );
+nodeTest(
+  "formatSessionListSections tags case-folded duplicates across hidden projects, not unique or empty names",
+  () => {
+    const session = (id: string, name: string, cwd: string, projectId: string) => ({
+      id,
+      name,
+      cwd,
+      projectId,
+      model: "fixture",
+    });
+    const listing = formatSessionListSections(
+      [
+        session("aaaaaaaa-1111", "Worker", "/repo", "project-a"),
+        session("bbbbbbbb-1111", "worker", "/other", "project-b"),
+        session("cccccccc-1111", "solo", "/repo", "project-a"),
+        session("dddddddd-1111", "", "/repo", "project-a"),
+        session("eeeeeeee-1111", "", "/repo", "project-a"),
+      ],
+      "aaaaaaaa-1111",
+      "project",
+    );
 
-  assert.match(listing, /• Worker \(aaaaaaaa\) — .*\[self, target:aaaaaaaa, /);
-  assert.match(listing, /• solo \(cccccccc\) — /);
-  assert.match(listing, /• Unnamed session \(dddddddd\) — /);
-  assert.match(listing, /• Unnamed session \(eeeeeeee\) — /);
-  assert.match(listing, /1 session in other projects hidden/);
-  assert.doesNotMatch(listing, /target:(?:bbbbbbbb|cccccccc|dddddddd|eeeeeeee)/);
-});
+    assert.match(listing, /• Worker \(aaaaaaaa\) — .*\[self, target:aaaaaaaa, /);
+    assert.match(listing, /• solo \(cccccccc\) — /);
+    assert.match(listing, /• Unnamed session \(dddddddd\) — /);
+    assert.match(listing, /• Unnamed session \(eeeeeeee\) — /);
+    assert.match(listing, /1 session in other projects hidden/);
+    assert.doesNotMatch(listing, /target:(?:bbbbbbbb|cccccccc|dddddddd|eeeeeeee)/);
+  },
+);

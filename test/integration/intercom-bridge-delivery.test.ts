@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:https";
@@ -94,7 +94,7 @@ function delayedRelay(port: number) {
   };
 }
 
-test(
+nodeTest(
   "persistent presence and event-driven HTTPS fallback survive helper crashes without consumer polling",
   { timeout: 60000 },
   async (t) => {

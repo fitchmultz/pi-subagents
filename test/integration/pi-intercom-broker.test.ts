@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import test, { type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import {
   createMessageReader,
@@ -62,133 +62,146 @@ async function startBroker(t: TestContext): Promise<ChildProcess> {
   return broker;
 }
 
-test("broker restores transactionally with exact cached frame limits and ordered records", async (t) => {
-  isolatedAgent(t);
-  const observer = new IntercomClient();
-  observer.on("error", (error: Error) => assert.fail(error.message));
-  // After hooks run in registration order; disconnect before the broker shutdown below.
-  t.after(() => observer.disconnect());
-  await startBroker(t);
-  const socket = net.connect(prepareBrokerSocketPath());
-  socket.on("error", () => {
-    // Protocol failures are asserted through responses and client disconnection below.
-  });
-  t.after(() => socket.destroy());
-  await once(socket, "connect");
-  const received = new EventEmitter();
-  socket.on(
-    "data",
-    createMessageReader(
-      (value) => {
-        received.emit("packet", value);
-      },
-      (error) => {
-        socket.destroy(error);
-      },
-    ),
-  );
-  const request = async (value: unknown) => {
-    const response = once(received, "packet");
-    writeMessage(socket, value);
-    const packets: unknown = await response;
-    return record(array(packets)[0]);
-  };
-  const initial = [
-    topic("duplicate", "first"),
-    topic("duplicate", "last"),
-    topic("largest", "日".repeat(1000)),
-  ];
-  const registered = await request({
-    type: "register",
-    requestedId: "restore-owner",
-    topicFrames: true,
-    session: { cwd: "/synthetic", model: "synthetic", topics: initial, subscriptions: [] },
-  });
-  assert.equal(registered.sessionId, "restore-owner");
-  await observer.connect({ cwd: "/observer", model: "synthetic" });
-  const observed = async () => {
-    const row = (await observer.listSessions()).find((info) => info.id === "restore-owner");
-    assertDefined(row);
-    return row;
-  };
-  assert.deepEqual(
-    (await observed()).topics,
-    initial,
-    "registration preserves original rows until mutation",
-  );
-  const restore = (change: unknown, requestId = "restore-request") =>
-    request({ type: "list", requestId, stream: true, change });
-  const ack = await restore({ action: "restore", topic: topic("new", "new state") });
-  assert.deepEqual(ack.sessions, [], "restore acknowledgements never echo the registry");
-  assert.equal(ack.more, false);
-  assert.deepEqual((await observed()).topics, [initial[1], initial[2], topic("new", "new state")]);
-  await restore({ action: "restore", topic: topic("duplicate", "stale", 1) });
-  await restore({ action: "restore", topic: topic("duplicate", "newer", 3) });
-  await restore({ action: "restore", subscription: { topic: "new", awaitRelease: true } });
-  const before = await observed();
-  assert.deepEqual(before.topics, [
-    topic("duplicate", "newer", 3),
-    initial[2],
-    topic("new", "new state"),
-  ]);
-  assert.deepEqual(before.subscriptions, [{ topic: "new", awaitRelease: true }]);
+nodeTest(
+  "broker restores transactionally with exact cached frame limits and ordered records",
+  async (t) => {
+    isolatedAgent(t);
+    const observer = new IntercomClient();
+    observer.on("error", (error: Error) => assert.fail(error.message));
+    // After hooks run in registration order; disconnect before the broker shutdown below.
+    t.after(() => observer.disconnect());
+    await startBroker(t);
+    const socket = net.connect(prepareBrokerSocketPath());
+    socket.on("error", () => {
+      // Protocol failures are asserted through responses and client disconnection below.
+    });
+    t.after(() => socket.destroy());
+    await once(socket, "connect");
+    const received = new EventEmitter();
+    socket.on(
+      "data",
+      createMessageReader(
+        (value) => {
+          received.emit("packet", value);
+        },
+        (error) => {
+          socket.destroy(error);
+        },
+      ),
+    );
+    const request = async (value: unknown) => {
+      const response = once(received, "packet");
+      writeMessage(socket, value);
+      const packets: unknown = await response;
+      return record(array(packets)[0]);
+    };
+    const initial = [
+      topic("duplicate", "first"),
+      topic("duplicate", "last"),
+      topic("largest", "日".repeat(1000)),
+    ];
+    const registered = await request({
+      type: "register",
+      requestedId: "restore-owner",
+      topicFrames: true,
+      session: { cwd: "/synthetic", model: "synthetic", topics: initial, subscriptions: [] },
+    });
+    assert.equal(registered.sessionId, "restore-owner");
+    await observer.connect({ cwd: "/observer", model: "synthetic" });
+    const observed = async () => {
+      const row = (await observer.listSessions()).find((info) => info.id === "restore-owner");
+      assertDefined(row);
+      return row;
+    };
+    assert.deepEqual(
+      (await observed()).topics,
+      initial,
+      "registration preserves original rows until mutation",
+    );
+    const restore = (change: unknown, requestId = "restore-request") =>
+      request({ type: "list", requestId, stream: true, change });
+    const ack = await restore({ action: "restore", topic: topic("new", "new state") });
+    assert.deepEqual(ack.sessions, [], "restore acknowledgements never echo the registry");
+    assert.equal(ack.more, false);
+    assert.deepEqual((await observed()).topics, [
+      initial[1],
+      initial[2],
+      topic("new", "new state"),
+    ]);
+    await restore({ action: "restore", topic: topic("duplicate", "stale", 1) });
+    await restore({ action: "restore", topic: topic("duplicate", "newer", 3) });
+    await restore({ action: "restore", subscription: { topic: "new", awaitRelease: true } });
+    const before = await observed();
+    assert.deepEqual(before.topics, [
+      topic("duplicate", "newer", 3),
+      initial[2],
+      topic("new", "new state"),
+    ]);
+    assert.deepEqual(before.subscriptions, [{ topic: "new", awaitRelease: true }]);
 
-  // The incoming request fits, but its long escaped ID makes an existing topic's reply too large.
-  const longRequestId = '"'.repeat((MAX_FRAME_SIZE_BYTES - 1024) / 2);
-  const denied = await restore({ action: "restore", topic: topic("not-committed") }, longRequestId);
-  assert.match(text(denied.error), /message too large/);
-  assert.deepEqual((await observed()).topics, before.topics);
-  assert.deepEqual((await observed()).subscriptions, before.subscriptions);
+    // The incoming request fits, but its long escaped ID makes an existing topic's reply too large.
+    const longRequestId = '"'.repeat((MAX_FRAME_SIZE_BYTES - 1024) / 2);
+    const denied = await restore(
+      { action: "restore", topic: topic("not-committed") },
+      longRequestId,
+    );
+    assert.match(text(denied.error), /message too large/);
+    assert.deepEqual((await observed()).topics, before.topics);
+    assert.deepEqual((await observed()).subscriptions, before.subscriptions);
 
-  // Replacing the largest row must lower the cached maximum, not retain a false rejection.
-  const correction = await restore(
-    { action: "restore", topic: topic("largest", "small", 2) },
-    longRequestId,
-  );
-  assert.equal(correction.error, undefined);
-  const invalid = await restore({ action: "restore", topic: { ...topic("invalid"), revision: 0 } });
-  assert.match(text(invalid.error), /Invalid topic change/);
-  const final = await observed();
-  assert.deepEqual(final.topics, [
-    topic("duplicate", "newer", 3),
-    topic("largest", "small", 2),
-    topic("new", "new state"),
-  ]);
-  assert.deepEqual(final.subscriptions, before.subscriptions);
+    // Replacing the largest row must lower the cached maximum, not retain a false rejection.
+    const correction = await restore(
+      { action: "restore", topic: topic("largest", "small", 2) },
+      longRequestId,
+    );
+    assert.equal(correction.error, undefined);
+    const invalid = await restore({
+      action: "restore",
+      topic: { ...topic("invalid"), revision: 0 },
+    });
+    assert.match(text(invalid.error), /Invalid topic change/);
+    const final = await observed();
+    assert.deepEqual(final.topics, [
+      topic("duplicate", "newer", 3),
+      topic("largest", "small", 2),
+      topic("new", "new state"),
+    ]);
+    assert.deepEqual(final.subscriptions, before.subscriptions);
 
-  writeMessage(socket, { type: "presence", status: "idle" });
-  const legacy = await request({ type: "list", requestId: "presence-barrier", stream: false });
-  assert.equal(array(legacy.sessions).length, 2);
-  for (const row of array(legacy.sessions)) {
-    assert.equal(Object.hasOwn(record(row), "topics"), false);
-    assert.equal(Object.hasOwn(record(row), "subscriptions"), false);
-  }
-  const identityUpdate = await observed();
-  assert.equal(identityUpdate.status, "idle");
-  assert.deepEqual(identityUpdate.topics, final.topics);
-  assert.deepEqual(identityUpdate.subscriptions, final.subscriptions);
+    writeMessage(socket, { type: "presence", status: "idle" });
+    const legacy = await request({ type: "list", requestId: "presence-barrier", stream: false });
+    assert.equal(array(legacy.sessions).length, 2);
+    for (const row of array(legacy.sessions)) {
+      assert.equal(Object.hasOwn(record(row), "topics"), false);
+      assert.equal(Object.hasOwn(record(row), "subscriptions"), false);
+    }
+    const identityUpdate = await observed();
+    assert.equal(identityUpdate.status, "idle");
+    assert.deepEqual(identityUpdate.topics, final.topics);
+    assert.deepEqual(identityUpdate.subscriptions, final.subscriptions);
 
-  // Explicit presence replacements must invalidate the byte cache for either record kind.
-  const replacement = topic("replacement", "日".repeat(1000));
-  writeMessage(socket, { type: "presence", topics: [replacement] });
-  const topicLimit = await restore(
-    { action: "restore", topic: topic("not-committed") },
-    longRequestId,
-  );
-  assert.match(text(topicLimit.error), /message too large/);
-  assert.deepEqual((await observed()).topics, [replacement]);
-  await restore({ action: "restore", topic: topic("replacement", "small", 2) });
-  const subscription = { topic: "s".repeat(3000), awaitRelease: true };
-  writeMessage(socket, { type: "presence", subscriptions: [subscription] });
-  const subscriptionLimit = await restore(
-    { action: "restore", topic: topic("not-committed") },
-    longRequestId,
-  );
-  assert.match(text(subscriptionLimit.error), /message too large/);
-  const afterPresence = await observed();
-  assert.deepEqual(afterPresence.topics, [topic("replacement", "small", 2)]);
-  assert.deepEqual(afterPresence.subscriptions, [subscription]);
-});
+    // Explicit presence replacements must invalidate the byte cache for either record kind.
+    const replacement = topic("replacement", "日".repeat(1000));
+    writeMessage(socket, { type: "presence", topics: [replacement] });
+    const topicLimit = await restore(
+      { action: "restore", topic: topic("not-committed") },
+      longRequestId,
+    );
+    assert.match(text(topicLimit.error), /message too large/);
+    assert.deepEqual((await observed()).topics, [replacement]);
+    await restore({ action: "restore", topic: topic("replacement", "small", 2) });
+    const subscription = { topic: "s".repeat(3000), awaitRelease: true };
+    writeMessage(socket, { type: "presence", subscriptions: [subscription] });
+    const subscriptionLimit = await restore(
+      { action: "restore", topic: topic("not-committed") },
+      longRequestId,
+    );
+    assert.match(text(subscriptionLimit.error), /message too large/);
+    const afterPresence = await observed();
+    assert.deepEqual(afterPresence.topics, [topic("replacement", "small", 2)]);
+    assert.deepEqual(afterPresence.subscriptions, [subscription]);
+  },
+);
 
 for (const outcome of [
   "complete",
@@ -199,7 +212,7 @@ for (const outcome of [
   "identity",
   "disconnect",
 ] as const) {
-  test(`multipart client snapshots stay private through ${outcome}`, async (t) => {
+  nodeTest(`multipart client snapshots stay private through ${outcome}`, async (t) => {
     isolatedAgent(t);
     let socket: net.Socket | undefined;
     let requestId: unknown;
@@ -398,538 +411,563 @@ for (const outcome of [
   });
 }
 
-test("last-message frames correlate concurrent pages without using direct-message delivery", async (t) => {
-  isolatedAgent(t);
-  await startBroker(t);
-  const requester = new IntercomClient();
-  const owner = new IntercomClient();
-  const other = new IntercomClient();
-  for (const client of [requester, owner, other]) {
-    client.on("error", (error: Error) => assert.fail(error.message));
-    client.on("message", () => assert.fail("A last read must not use the model delivery path"));
-  }
-  try {
-    await requester.connect({ name: "reader", cwd: "/reader", model: "fixture" });
-    const identity = { name: "owner", cwd: "/owner", model: "fixture", status: "thinking" };
-    await owner.connect(identity);
-    await other.connect({ name: "other", cwd: "/other", model: "fixture" });
-    assertDefined(owner.sessionId);
-    const session = { ...identity, id: owner.sessionId };
-    const requests: Array<{ requestId: string; from: SessionInfo; query: LastMessageQuery }> = [];
-    const forwarded = new EventEmitter();
-    const bothForwarded = once(forwarded, "ready");
-    owner.on("last_request", (request: (typeof requests)[number]) => {
-      requests.push(request);
-      if (requests.length === 2) {
-        forwarded.emit("ready");
-      }
-    });
-    const pending = [
-      requester.last(owner.sessionId, { limit: 4 }),
-      requester.last(owner.sessionId, { entryId: "entry-a", offset: 4, limit: 4 }),
-    ];
-    await bothForwarded;
-    // An observed response on the forger's socket proves the broker processed its earlier forgery.
-    other.respondLast(requests[1].requestId, { error: "forged response" });
-    await other.listSessions();
-    owner.respondLast(requests[1].requestId, {
-      session,
-      entryId: "entry-a",
-      text: "tail",
-      offset: 4,
-      totalLength: 8,
-    });
-    owner.respondLast(requests[0].requestId, {
-      session,
-      entryId: "entry-a",
-      text: "head",
-      offset: 0,
-      totalLength: 8,
-      nextOffset: 4,
-    });
-    const [head, tail] = await Promise.all(pending);
-    assert.deepEqual(head, {
-      session,
-      entryId: "entry-a",
-      text: "head",
-      offset: 0,
-      totalLength: 8,
-      nextOffset: 4,
-    });
-    assert.deepEqual(tail, {
-      session,
-      entryId: "entry-a",
-      text: "tail",
-      offset: 4,
-      totalLength: 8,
-    });
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].from.id, requester.sessionId);
-    assert.notEqual(requests[0].requestId, requests[1].requestId);
-    assert.deepEqual(await requester.last("missing"), { error: "Session not found" });
-    assert.deepEqual(await requester.last(other.sessionId ?? ""), {
-      error: "Recipient has no last-message reader.",
-    });
-    await assert.rejects(
-      requester.last(owner.sessionId, { limit: 16385 }),
-      /Invalid last-message query/,
-    );
+nodeTest(
+  "last-message frames correlate concurrent pages without using direct-message delivery",
+  async (t) => {
+    isolatedAgent(t);
+    await startBroker(t);
+    const requester = new IntercomClient();
+    const owner = new IntercomClient();
+    const other = new IntercomClient();
+    for (const client of [requester, owner, other]) {
+      client.on("error", (error: Error) => assert.fail(error.message));
+      client.on("message", () => assert.fail("A last read must not use the model delivery path"));
+    }
+    try {
+      await requester.connect({ name: "reader", cwd: "/reader", model: "fixture" });
+      const identity = { name: "owner", cwd: "/owner", model: "fixture", status: "thinking" };
+      await owner.connect(identity);
+      await other.connect({ name: "other", cwd: "/other", model: "fixture" });
+      assertDefined(owner.sessionId);
+      const session = { ...identity, id: owner.sessionId };
+      const requests: Array<{ requestId: string; from: SessionInfo; query: LastMessageQuery }> = [];
+      const forwarded = new EventEmitter();
+      const bothForwarded = once(forwarded, "ready");
+      owner.on("last_request", (request: (typeof requests)[number]) => {
+        requests.push(request);
+        if (requests.length === 2) {
+          forwarded.emit("ready");
+        }
+      });
+      const pending = [
+        requester.last(owner.sessionId, { limit: 4 }),
+        requester.last(owner.sessionId, { entryId: "entry-a", offset: 4, limit: 4 }),
+      ];
+      await bothForwarded;
+      // An observed response on the forger's socket proves the broker processed its earlier forgery.
+      other.respondLast(requests[1].requestId, { error: "forged response" });
+      await other.listSessions();
+      owner.respondLast(requests[1].requestId, {
+        session,
+        entryId: "entry-a",
+        text: "tail",
+        offset: 4,
+        totalLength: 8,
+      });
+      owner.respondLast(requests[0].requestId, {
+        session,
+        entryId: "entry-a",
+        text: "head",
+        offset: 0,
+        totalLength: 8,
+        nextOffset: 4,
+      });
+      const [head, tail] = await Promise.all(pending);
+      assert.deepEqual(head, {
+        session,
+        entryId: "entry-a",
+        text: "head",
+        offset: 0,
+        totalLength: 8,
+        nextOffset: 4,
+      });
+      assert.deepEqual(tail, {
+        session,
+        entryId: "entry-a",
+        text: "tail",
+        offset: 4,
+        totalLength: 8,
+      });
+      assert.equal(requests.length, 2);
+      assert.equal(requests[0].from.id, requester.sessionId);
+      assert.notEqual(requests[0].requestId, requests[1].requestId);
+      assert.deepEqual(await requester.last("missing"), { error: "Session not found" });
+      assert.deepEqual(await requester.last(other.sessionId ?? ""), {
+        error: "Recipient has no last-message reader.",
+      });
+      await assert.rejects(
+        requester.last(owner.sessionId, { limit: 16385 }),
+        /Invalid last-message query/,
+      );
 
-    owner.removeAllListeners("last_request");
-    const escapedPage = "\0".repeat(16384);
-    owner.on("last_request", (request: (typeof requests)[number]) => {
-      owner.respondLast(request.requestId, {
+      owner.removeAllListeners("last_request");
+      const escapedPage = "\0".repeat(16384);
+      owner.on("last_request", (request: (typeof requests)[number]) => {
+        owner.respondLast(request.requestId, {
+          session,
+          entryId: "escaped",
+          text: escapedPage,
+          offset: 0,
+          totalLength: 16384,
+        });
+      });
+      assert.deepEqual(await requester.last(owner.sessionId), {
         session,
         entryId: "escaped",
         text: escapedPage,
         offset: 0,
         totalLength: 16384,
       });
-    });
-    assert.deepEqual(await requester.last(owner.sessionId), {
-      session,
-      entryId: "escaped",
-      text: escapedPage,
-      offset: 0,
-      totalLength: 16384,
-    });
 
-    owner.removeAllListeners("last_request");
-    owner.on("last_request", (request: (typeof requests)[number]) => {
-      owner.respondLast(request.requestId, {
-        session,
-        entryId: "wrong-entry",
-        text: "tail",
-        offset: 4,
-        totalLength: 8,
+      owner.removeAllListeners("last_request");
+      owner.on("last_request", (request: (typeof requests)[number]) => {
+        owner.respondLast(request.requestId, {
+          session,
+          entryId: "wrong-entry",
+          text: "tail",
+          offset: 4,
+          totalLength: 8,
+        });
       });
-    });
-    assert.deepEqual(await requester.last(owner.sessionId, { entryId: "entry-a", offset: 4 }), {
-      error: "Recipient returned an invalid last-message page",
-    });
-    owner.removeAllListeners("last_request");
-    const dispatched = once(owner, "last_request");
-    const disconnected = requester.last(owner.sessionId);
-    await dispatched;
-    await owner.disconnect();
-    assert.deepEqual(await disconnected, { error: "Peer disconnected during last-message read" });
-  } finally {
-    await Promise.all([requester.disconnect(), owner.disconnect(), other.disconnect()]);
-  }
-});
-
-test("guarded broker sends bind one exact main context while ordinary names remain usable", async (t) => {
-  isolatedAgent(t);
-  await startBroker(t);
-  const clients: IntercomClient[] = [];
-  const connect = async (incarnation?: string, rootSessionId = "original-root") => {
-    const client = new IntercomClient();
-    clients.push(client);
-    client.on("error", (error: Error) => assert.fail(error.message));
-    await client.connect(
-      {
-        name: rootSessionId === "original-root" ? "ordinary-name" : rootSessionId,
-        cwd: "/fixture",
-        model: "fixture",
-        rootSessionId,
-        ...(incarnation !== undefined
-          ? ({ incarnation, guardedDelivery: 1, applicationGuard: "consent-1" } as const)
-          : {}),
-      },
-      nativePeerId(rootSessionId),
-    );
-    return client;
-  };
-  try {
-    const sender = await connect(undefined, "sender-root");
-    const owner = await connect("context-1");
-    const peerId = text(owner.sessionId);
-    const guard = {
-      rootSessionId: "original-root",
-      peerId,
-      incarnation: "context-1",
-      applicationGuard: "consent-1",
-    };
-    const options = {
-      text: "original command",
-      expectsReply: false,
-      delivery: "passive",
-      guard,
-    } as const;
-    const messages: Message[] = [];
-    owner.on("message", (_from: SessionInfo, message: Message) => {
-      messages.push(message);
-    });
-    const accepted = await sender.send(peerId, { ...options, messageId: "original-command" });
-    assert.equal(accepted.delivered, true);
-    await owner.listSessions();
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0].id, "original-command");
-    for (const changed of [
-      { ...guard, rootSessionId: "wrong-root" },
-      { ...guard, incarnation: "stale-context" },
-      { ...guard, applicationGuard: "stale-consent" },
-      { ...guard, peerId: "wrong-peer" },
-    ]) {
-      // Each response is the real broker's negative admission, not a client predicate.
-      // oxlint-disable-next-line no-await-in-loop
-      const denied = await sender.send(peerId, {
-        ...options,
-        guard: changed,
-        messageId: JSON.stringify(changed),
+      assert.deepEqual(await requester.last(owner.sessionId, { entryId: "entry-a", offset: 4 }), {
+        error: "Recipient returned an invalid last-message page",
       });
-      assert.equal(denied.accepted, false);
+      owner.removeAllListeners("last_request");
+      const dispatched = once(owner, "last_request");
+      const disconnected = requester.last(owner.sessionId);
+      await dispatched;
+      await owner.disconnect();
+      assert.deepEqual(await disconnected, { error: "Peer disconnected during last-message read" });
+    } finally {
+      await Promise.all([requester.disconnect(), owner.disconnect(), other.disconnect()]);
     }
-    assert.equal(
-      (await sender.send("ordinary-name", { ...options, messageId: "guarded-name" })).accepted,
-      false,
-    );
-    const duplicate = await connect("duplicate-context");
-    assert.notEqual(duplicate.sessionId, peerId);
-    assert.equal(
-      (await sender.send(peerId, { ...options, messageId: "ambiguous-root" })).reason,
-      "Guarded root is ambiguous",
-    );
-    await duplicate.disconnect();
-    await owner.disconnect();
-    const replacement = await connect("context-2");
-    assert.equal(replacement.sessionId, peerId, "a later context can reuse a requested peer ID");
-    const replacementMessages: unknown[] = [];
-    replacement.on("message", (...message: unknown[]) => {
-      replacementMessages.push(message);
-    });
-    assert.equal(
-      (await sender.send(peerId, { ...options, messageId: "old-handle" })).reason,
-      "Guarded target changed",
-    );
-    assert.equal(
-      (await sender.send("ordinary-name", { text: "ordinary local send", messageId: "ordinary" }))
-        .delivered,
-      true,
-      "ordinary convenience names still work",
-    );
-    await sender.disconnect();
-    const ordinary = once(replacement, "message");
-    const legacy = await connect(undefined, "legacy-root");
-    assert.equal((await legacy.send(peerId, { text: "ordinary local send" })).delivered, true);
-    await ordinary;
-    await replacement.listSessions();
-    assert.equal(replacementMessages.length, 2, "no stale guarded command reached the replacement");
-    assert.equal(
-      (
-        await legacy.send(peerId, {
-          ...options,
-          guard: { ...guard, incarnation: "context-2" },
-          messageId: "fresh-handle",
-        })
-      ).accepted,
-      true,
-    );
-    assert.equal(
-      (
-        await replacement.send(text(legacy.sessionId), {
-          ...options,
-          guard: {
-            rootSessionId: "legacy-root",
-            peerId: text(legacy.sessionId),
-            incarnation: "missing",
-            applicationGuard: "consent-1",
-          },
-          messageId: "legacy-recipient",
-        })
-      ).reason,
-      "Recipient does not support guarded delivery",
-    );
-  } finally {
-    await Promise.all(clients.map((client) => client.disconnect()));
-  }
-});
+  },
+);
 
-test("collaboration lineage restricts discovery and all delivery paths at the broker", async (t) => {
-  isolatedAgent(t);
-  await startBroker(t);
-  const clients: IntercomClient[] = [];
-  const connect = async (
-    native: string,
-    rootSessionId?: string,
-    parentSessionId?: string,
-    name = native,
-  ) => {
-    const client = new IntercomClient();
-    client.on("error", () => {
-      /* Invalid registrations below close their own sockets. */
-    });
-    clients.push(client);
-    await client.connect(
-      { name, cwd: `/projects/${native}`, model: "fixture", rootSessionId, parentSessionId },
-      nativePeerId(native),
-    );
-    return client;
-  };
-  try {
-    const main = await connect("main-a", "main-a");
-    const child = await connect("child-a", "main-a", "main-a");
-    const sibling = await connect("sibling-a", "main-a", "main-a", "worker");
-    const otherMain = await connect("main-b", "main-b");
-    const otherChild = await connect("child-b", "main-b", "main-b", "worker");
-    const legacy = await connect("legacy");
-    const ids = async (client: IntercomClient) =>
-      new Set((await client.listSessions()).map((session) => session.id));
-    assert.deepEqual(
-      await ids(main),
-      new Set([
-        main.sessionId,
-        child.sessionId,
-        sibling.sessionId,
-        otherMain.sessionId,
-        legacy.sessionId,
-      ]),
-    );
-    assert.deepEqual(
-      await ids(child),
-      new Set([main.sessionId, child.sessionId, sibling.sessionId]),
-    );
-    assert.deepEqual(
-      await ids(legacy),
-      new Set([main.sessionId, otherMain.sessionId, legacy.sessionId]),
-    );
-    const delivered = once(sibling, "message");
-    const receipt = await child.send("worker", { text: "visible sibling only" });
-    assert.equal(receipt.delivered, true, "hidden duplicate names must not create ambiguity");
-    const payload = await delivered;
-    assert.equal(record(payload[0]).id, child.sessionId);
-    const forbidden = await child.send(otherMain.sessionId ?? "", { text: "forbidden" });
-    assert.equal(forbidden.accepted, false);
-    assert.equal(forbidden.reason, "Session not found");
-    assert.equal(
-      (await main.send(otherChild.sessionId ?? "", { text: "foreign child" })).reason,
-      "Session not found",
-    );
-
-    let lastRequests = 0;
-    otherChild.on("last_request", () => {
-      lastRequests += 1;
-    });
-    assert.deepEqual(await main.last(otherChild.sessionId ?? ""), { error: "Session not found" });
-    await otherChild.listSessions(); // Real recipient socket barrier after the denied broker request.
-    assert.equal(lastRequests, 0);
-    const messages: unknown[] = [];
-    child.on("message", (...event: unknown[]) => {
-      messages.push(event);
-    });
-    await child.updateTopics({ action: "subscribe", subscription: { topic: "coordination" } });
-    await otherChild.updateTopics({
-      action: "publish",
-      topic: topic("coordination", "foreign private state"),
-    });
-    await child.listSessions(); // Publication accepted and the recipient processed a later broker response.
-    assert.deepEqual(messages, []);
-    const publication = once(child, "message");
-    await sibling.updateTopics({
-      action: "publish",
-      topic: topic("coordination", "same-group state"),
-    });
-    await publication;
-
-    // A peer cannot switch its collaboration group through a presence frame.
-    assertDefined(child.sessionId);
-    const raw = net.connect(prepareBrokerSocketPath());
-    raw.on("error", (error: Error) => assert.fail(error.message));
-    try {
-      await once(raw, "connect");
-      const events = new EventEmitter();
-      raw.on(
-        "data",
-        createMessageReader(
-          (value) => {
-            events.emit("frame", value);
-          },
-          (error) => {
-            raw.destroy(error);
-          },
-        ),
-      );
-      const registered = once(events, "frame");
-      writeMessage(raw, {
-        type: "register",
-        session: {
-          cwd: "/raw",
+nodeTest(
+  "guarded broker sends bind one exact main context while ordinary names remain usable",
+  async (t) => {
+    isolatedAgent(t);
+    await startBroker(t);
+    const clients: IntercomClient[] = [];
+    const connect = async (incarnation?: string, rootSessionId = "original-root") => {
+      const client = new IntercomClient();
+      clients.push(client);
+      client.on("error", (error: Error) => assert.fail(error.message));
+      await client.connect(
+        {
+          name: rootSessionId === "original-root" ? "ordinary-name" : rootSessionId,
+          cwd: "/fixture",
           model: "fixture",
-          rootSessionId: "main-a",
-          parentSessionId: "main-a",
+          rootSessionId,
+          ...(incarnation !== undefined
+            ? ({ incarnation, guardedDelivery: 1, applicationGuard: "consent-1" } as const)
+            : {}),
         },
+        nativePeerId(rootSessionId),
+      );
+      return client;
+    };
+    try {
+      const sender = await connect(undefined, "sender-root");
+      const owner = await connect("context-1");
+      const peerId = text(owner.sessionId);
+      const guard = {
+        rootSessionId: "original-root",
+        peerId,
+        incarnation: "context-1",
+        applicationGuard: "consent-1",
+      };
+      const options = {
+        text: "original command",
+        expectsReply: false,
+        delivery: "passive",
+        guard,
+      } as const;
+      const messages: Message[] = [];
+      owner.on("message", (_from: SessionInfo, message: Message) => {
+        messages.push(message);
       });
-      const registration = record((await registered)[0]);
-      assert.deepEqual(await main.last(text(registration.sessionId)), {
-        error: "Recipient does not support last-message reads; reload its extension.",
-      });
-      writeMessage(raw, { type: "presence", rootSessionId: "main-b", parentSessionId: "main-b" });
-      const listed = once(events, "frame");
-      writeMessage(raw, { type: "list", requestId: "pinned-lineage" });
-      const snapshot = record((await listed)[0]);
-      const visible = array(snapshot.sessions).map((session) => record(session));
+      const accepted = await sender.send(peerId, { ...options, messageId: "original-command" });
+      assert.equal(accepted.delivered, true);
+      await owner.listSessions();
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].id, "original-command");
+      for (const changed of [
+        { ...guard, rootSessionId: "wrong-root" },
+        { ...guard, incarnation: "stale-context" },
+        { ...guard, applicationGuard: "stale-consent" },
+        { ...guard, peerId: "wrong-peer" },
+      ]) {
+        // Each response is the real broker's negative admission, not a client predicate.
+        // oxlint-disable-next-line no-await-in-loop
+        const denied = await sender.send(peerId, {
+          ...options,
+          guard: changed,
+          messageId: JSON.stringify(changed),
+        });
+        assert.equal(denied.accepted, false);
+      }
       assert.equal(
-        visible.some((session) => session.id === otherMain.sessionId),
+        (await sender.send("ordinary-name", { ...options, messageId: "guarded-name" })).accepted,
         false,
       );
+      const duplicate = await connect("duplicate-context");
+      assert.notEqual(duplicate.sessionId, peerId);
       assert.equal(
-        visible.some((session) => session.id === main.sessionId),
+        (await sender.send(peerId, { ...options, messageId: "ambiguous-root" })).reason,
+        "Guarded root is ambiguous",
+      );
+      await duplicate.disconnect();
+      await owner.disconnect();
+      const replacement = await connect("context-2");
+      assert.equal(replacement.sessionId, peerId, "a later context can reuse a requested peer ID");
+      const replacementMessages: unknown[] = [];
+      replacement.on("message", (...message: unknown[]) => {
+        replacementMessages.push(message);
+      });
+      assert.equal(
+        (await sender.send(peerId, { ...options, messageId: "old-handle" })).reason,
+        "Guarded target changed",
+      );
+      assert.equal(
+        (await sender.send("ordinary-name", { text: "ordinary local send", messageId: "ordinary" }))
+          .delivered,
+        true,
+        "ordinary convenience names still work",
+      );
+      await sender.disconnect();
+      const ordinary = once(replacement, "message");
+      const legacy = await connect(undefined, "legacy-root");
+      assert.equal((await legacy.send(peerId, { text: "ordinary local send" })).delivered, true);
+      await ordinary;
+      await replacement.listSessions();
+      assert.equal(
+        replacementMessages.length,
+        2,
+        "no stale guarded command reached the replacement",
+      );
+      assert.equal(
+        (
+          await legacy.send(peerId, {
+            ...options,
+            guard: { ...guard, incarnation: "context-2" },
+            messageId: "fresh-handle",
+          })
+        ).accepted,
         true,
       );
-      const rawLeft = once(child, "session_left");
-      raw.destroy();
-      await rawLeft;
-    } finally {
-      raw.destroy();
-    }
-    await assert.rejects(connect("nested", "child-a", "child-a"), /disconnected|protocol|closed/i);
-    await assert.rejects(
-      connect("invalid", "main-a", "other-parent"),
-      /disconnected|protocol|closed/i,
-    );
-    const left: string[] = [];
-    child.on("session_left", (id: string) => {
-      left.push(id);
-    });
-    await otherChild.disconnect();
-    await child.listSessions();
-    assert.deepEqual(left, [], "hidden disconnects must not expose foreign child IDs");
-    const parentLeft = once(child, "session_left");
-    await main.disconnect();
-    await parentLeft;
-    assert.deepEqual(await ids(child), new Set([child.sessionId, sibling.sessionId]));
-    await sibling.listSessions();
-  } finally {
-    await Promise.all(clients.map((client) => client.disconnect()));
-  }
-});
-
-test("a parked child keeps its identity, topics and admitted input until one genuine wake", async (t) => {
-  isolatedAgent(t);
-  const broker = await startBroker(t);
-  const clients: IntercomClient[] = [];
-  const connect = async (native: string, root = "main-p", client = new IntercomClient()) => {
-    client.on("error", (error: Error) => assert.fail(error.message));
-    clients.push(client);
-    const parent = native === root ? undefined : root;
-    await client.connect(
-      {
-        name: native,
-        cwd: `/p/${native}`,
-        model: "fixture",
-        rootSessionId: root,
-        parentSessionId: parent,
-      },
-      nativePeerId(native),
-    );
-    return client;
-  };
-  try {
-    const main = await connect("main-p");
-    const child = await connect("child-p");
-    const sender = await connect("sibling-p");
-    const childId = text(child.sessionId);
-    for (const client of [main, sender]) {
-      client.on("session_left", (id: string) =>
-        assert.notEqual(id, childId, "parking is no departure"),
+      assert.equal(
+        (
+          await replacement.send(text(legacy.sessionId), {
+            ...options,
+            guard: {
+              rootSessionId: "legacy-root",
+              peerId: text(legacy.sessionId),
+              incarnation: "missing",
+              applicationGuard: "consent-1",
+            },
+            messageId: "legacy-recipient",
+          })
+        ).reason,
+        "Recipient does not support guarded delivery",
       );
+    } finally {
+      await Promise.all(clients.map((client) => client.disconnect()));
     }
-    const wakes: string[] = [];
-    main.on("wake", (id: string) => {
-      wakes.push(id);
-    });
-    await child.updateTopics({ action: "publish", topic: topic("status") });
-    assert.equal(await child.park(), true);
-    const crumb = await sender.send(childId, { text: "breadcrumb", passive: true });
-    assert.deepEqual([crumb.accepted, crumb.delivered, crumb.queued], [true, false, true]);
-    // Parked input passes the same final-envelope admission as resident delivery: this send
-    // frame fits exactly, but the delivered envelope adds sender metadata.
-    const probe = await sender.send(childId, { text: "x".repeat(MAX_FRAME_SIZE_BYTES) }).then(
-      () => "",
-      (error: unknown) => (error instanceof Error ? error.message : ""),
-    );
-    const frame = Number(/\((\d+) bytes/.exec(probe)?.[1]);
-    const fits = "x".repeat(2 * MAX_FRAME_SIZE_BYTES - frame);
-    const oversized = await sender.send(childId, { text: fits });
-    assert.equal(oversized.accepted, false, JSON.stringify({ ...oversized, frame }));
-    await child.disconnect();
-    const woke = once(main, "wake");
-    assert.equal((await sender.send(childId, { text: "work" })).queued, true);
-    await woke;
-    await main.listSessions(); // Socket barrier: any second wake would precede this reply.
-    assert.deepEqual(wakes, [childId], "passive input and exit alone never wake the child");
-    main.on("last_request", (request: { requestId: string; parked?: SessionInfo }) => {
-      assert.equal(request.parked?.id, childId);
-      main.respondLast(request.requestId, {
-        session: request.parked,
-        entryId: "captured",
-        text: "from captured history",
-        offset: 0,
-        totalLength: 21,
-      });
-    });
-    assert.equal(record(await sender.last(childId)).text, "from captured history");
-    // Only the exited child's own runtime owns its receipts: the broker refuses, never relays.
-    assert.deepEqual(await sender.receipt(childId, { rootSessionId: "main-p", messageId: "m-1" }), {
-      error: "publication_unavailable",
-    });
-    await main.listSessions();
-    assert.deepEqual(wakes, [childId], "a receipt read never wakes the parked child");
-    // Without its main, the exited child's reads are refused at once, never sent to its closed
-    // transport to time out.
-    const mainId = text(main.sessionId);
-    const left = once(sender, "session_left");
-    await main.disconnect();
-    assert.deepEqual(await left, [mainId]);
-    assert.deepEqual(await sender.receipt(childId, { rootSessionId: "main-p", messageId: "m-1" }), {
-      error: "publication_unavailable",
-    });
-    assert.deepEqual(await sender.last(childId), {
-      error: "Parked session history is unavailable.",
-    });
-    // No live session remains, yet the broker still owes the admitted input.
-    await sender.disconnect();
-    await delay(6000); // Past the broker's five-second idle shutdown check.
-    assert.equal(broker.exitCode, null, "owed parked input keeps the broker alive");
-    const returned = new IntercomClient();
-    const owed = once(returned, "wake");
-    await connect("main-p", "main-p", returned);
-    assert.deepEqual(await owed, [childId], "a returning main is woken for the owed input");
-    const restored = new IntercomClient();
-    clients.push(restored);
-    const received: string[] = [];
-    const flushed = new Promise<void>((resolve) => {
-      restored.on("message", (_from: SessionInfo, message: Message) => {
-        received.push(message.content.text);
-        if (received.length === 2) {
-          resolve();
-        }
-      });
-    });
-    await restored.connect(
-      {
-        name: "child-p",
-        cwd: "/p/child-p",
-        model: "fixture",
-        rootSessionId: "main-p",
-        parentSessionId: "main-p",
-      },
-      nativePeerId("child-p"),
-    );
-    assert.equal(restored.sessionId, childId);
-    await flushed;
-    assert.deepEqual(received, ["breadcrumb", "work"]);
-    const row = (await returned.listSessions()).find((info) => info.id === childId);
-    assert.deepEqual(
-      array(row?.topics).map((entry) => record(entry).topic),
-      ["status"],
-    );
-  } finally {
-    await Promise.all(clients.map((client) => client.disconnect()));
-  }
-});
+  },
+);
 
-test(
+nodeTest(
+  "collaboration lineage restricts discovery and all delivery paths at the broker",
+  async (t) => {
+    isolatedAgent(t);
+    await startBroker(t);
+    const clients: IntercomClient[] = [];
+    const connect = async (
+      native: string,
+      rootSessionId?: string,
+      parentSessionId?: string,
+      name = native,
+    ) => {
+      const client = new IntercomClient();
+      client.on("error", () => {
+        /* Invalid registrations below close their own sockets. */
+      });
+      clients.push(client);
+      await client.connect(
+        { name, cwd: `/projects/${native}`, model: "fixture", rootSessionId, parentSessionId },
+        nativePeerId(native),
+      );
+      return client;
+    };
+    try {
+      const main = await connect("main-a", "main-a");
+      const child = await connect("child-a", "main-a", "main-a");
+      const sibling = await connect("sibling-a", "main-a", "main-a", "worker");
+      const otherMain = await connect("main-b", "main-b");
+      const otherChild = await connect("child-b", "main-b", "main-b", "worker");
+      const legacy = await connect("legacy");
+      const ids = async (client: IntercomClient) =>
+        new Set((await client.listSessions()).map((session) => session.id));
+      assert.deepEqual(
+        await ids(main),
+        new Set([
+          main.sessionId,
+          child.sessionId,
+          sibling.sessionId,
+          otherMain.sessionId,
+          legacy.sessionId,
+        ]),
+      );
+      assert.deepEqual(
+        await ids(child),
+        new Set([main.sessionId, child.sessionId, sibling.sessionId]),
+      );
+      assert.deepEqual(
+        await ids(legacy),
+        new Set([main.sessionId, otherMain.sessionId, legacy.sessionId]),
+      );
+      const delivered = once(sibling, "message");
+      const receipt = await child.send("worker", { text: "visible sibling only" });
+      assert.equal(receipt.delivered, true, "hidden duplicate names must not create ambiguity");
+      const payload = await delivered;
+      assert.equal(record(payload[0]).id, child.sessionId);
+      const forbidden = await child.send(otherMain.sessionId ?? "", { text: "forbidden" });
+      assert.equal(forbidden.accepted, false);
+      assert.equal(forbidden.reason, "Session not found");
+      assert.equal(
+        (await main.send(otherChild.sessionId ?? "", { text: "foreign child" })).reason,
+        "Session not found",
+      );
+
+      let lastRequests = 0;
+      otherChild.on("last_request", () => {
+        lastRequests += 1;
+      });
+      assert.deepEqual(await main.last(otherChild.sessionId ?? ""), { error: "Session not found" });
+      await otherChild.listSessions(); // Real recipient socket barrier after the denied broker request.
+      assert.equal(lastRequests, 0);
+      const messages: unknown[] = [];
+      child.on("message", (...event: unknown[]) => {
+        messages.push(event);
+      });
+      await child.updateTopics({ action: "subscribe", subscription: { topic: "coordination" } });
+      await otherChild.updateTopics({
+        action: "publish",
+        topic: topic("coordination", "foreign private state"),
+      });
+      await child.listSessions(); // Publication accepted and the recipient processed a later broker response.
+      assert.deepEqual(messages, []);
+      const publication = once(child, "message");
+      await sibling.updateTopics({
+        action: "publish",
+        topic: topic("coordination", "same-group state"),
+      });
+      await publication;
+
+      // A peer cannot switch its collaboration group through a presence frame.
+      assertDefined(child.sessionId);
+      const raw = net.connect(prepareBrokerSocketPath());
+      raw.on("error", (error: Error) => assert.fail(error.message));
+      try {
+        await once(raw, "connect");
+        const events = new EventEmitter();
+        raw.on(
+          "data",
+          createMessageReader(
+            (value) => {
+              events.emit("frame", value);
+            },
+            (error) => {
+              raw.destroy(error);
+            },
+          ),
+        );
+        const registered = once(events, "frame");
+        writeMessage(raw, {
+          type: "register",
+          session: {
+            cwd: "/raw",
+            model: "fixture",
+            rootSessionId: "main-a",
+            parentSessionId: "main-a",
+          },
+        });
+        const registration = record((await registered)[0]);
+        assert.deepEqual(await main.last(text(registration.sessionId)), {
+          error: "Recipient does not support last-message reads; reload its extension.",
+        });
+        writeMessage(raw, { type: "presence", rootSessionId: "main-b", parentSessionId: "main-b" });
+        const listed = once(events, "frame");
+        writeMessage(raw, { type: "list", requestId: "pinned-lineage" });
+        const snapshot = record((await listed)[0]);
+        const visible = array(snapshot.sessions).map((session) => record(session));
+        assert.equal(
+          visible.some((session) => session.id === otherMain.sessionId),
+          false,
+        );
+        assert.equal(
+          visible.some((session) => session.id === main.sessionId),
+          true,
+        );
+        const rawLeft = once(child, "session_left");
+        raw.destroy();
+        await rawLeft;
+      } finally {
+        raw.destroy();
+      }
+      await assert.rejects(
+        connect("nested", "child-a", "child-a"),
+        /disconnected|protocol|closed/i,
+      );
+      await assert.rejects(
+        connect("invalid", "main-a", "other-parent"),
+        /disconnected|protocol|closed/i,
+      );
+      const left: string[] = [];
+      child.on("session_left", (id: string) => {
+        left.push(id);
+      });
+      await otherChild.disconnect();
+      await child.listSessions();
+      assert.deepEqual(left, [], "hidden disconnects must not expose foreign child IDs");
+      const parentLeft = once(child, "session_left");
+      await main.disconnect();
+      await parentLeft;
+      assert.deepEqual(await ids(child), new Set([child.sessionId, sibling.sessionId]));
+      await sibling.listSessions();
+    } finally {
+      await Promise.all(clients.map((client) => client.disconnect()));
+    }
+  },
+);
+
+nodeTest(
+  "a parked child keeps its identity, topics and admitted input until one genuine wake",
+  async (t) => {
+    isolatedAgent(t);
+    const broker = await startBroker(t);
+    const clients: IntercomClient[] = [];
+    const connect = async (native: string, root = "main-p", client = new IntercomClient()) => {
+      client.on("error", (error: Error) => assert.fail(error.message));
+      clients.push(client);
+      const parent = native === root ? undefined : root;
+      await client.connect(
+        {
+          name: native,
+          cwd: `/p/${native}`,
+          model: "fixture",
+          rootSessionId: root,
+          parentSessionId: parent,
+        },
+        nativePeerId(native),
+      );
+      return client;
+    };
+    try {
+      const main = await connect("main-p");
+      const child = await connect("child-p");
+      const sender = await connect("sibling-p");
+      const childId = text(child.sessionId);
+      for (const client of [main, sender]) {
+        client.on("session_left", (id: string) =>
+          assert.notEqual(id, childId, "parking is no departure"),
+        );
+      }
+      const wakes: string[] = [];
+      main.on("wake", (id: string) => {
+        wakes.push(id);
+      });
+      await child.updateTopics({ action: "publish", topic: topic("status") });
+      assert.equal(await child.park(), true);
+      const crumb = await sender.send(childId, { text: "breadcrumb", passive: true });
+      assert.deepEqual([crumb.accepted, crumb.delivered, crumb.queued], [true, false, true]);
+      // Parked input passes the same final-envelope admission as resident delivery: this send
+      // frame fits exactly, but the delivered envelope adds sender metadata.
+      const probe = await sender.send(childId, { text: "x".repeat(MAX_FRAME_SIZE_BYTES) }).then(
+        () => "",
+        (error: unknown) => (error instanceof Error ? error.message : ""),
+      );
+      const frame = Number(/\((\d+) bytes/.exec(probe)?.[1]);
+      const fits = "x".repeat(2 * MAX_FRAME_SIZE_BYTES - frame);
+      const oversized = await sender.send(childId, { text: fits });
+      assert.equal(oversized.accepted, false, JSON.stringify({ ...oversized, frame }));
+      await child.disconnect();
+      const woke = once(main, "wake");
+      assert.equal((await sender.send(childId, { text: "work" })).queued, true);
+      await woke;
+      await main.listSessions(); // Socket barrier: any second wake would precede this reply.
+      assert.deepEqual(wakes, [childId], "passive input and exit alone never wake the child");
+      main.on("last_request", (request: { requestId: string; parked?: SessionInfo }) => {
+        assert.equal(request.parked?.id, childId);
+        main.respondLast(request.requestId, {
+          session: request.parked,
+          entryId: "captured",
+          text: "from captured history",
+          offset: 0,
+          totalLength: 21,
+        });
+      });
+      assert.equal(record(await sender.last(childId)).text, "from captured history");
+      // Only the exited child's own runtime owns its receipts: the broker refuses, never relays.
+      assert.deepEqual(
+        await sender.receipt(childId, { rootSessionId: "main-p", messageId: "m-1" }),
+        {
+          error: "publication_unavailable",
+        },
+      );
+      await main.listSessions();
+      assert.deepEqual(wakes, [childId], "a receipt read never wakes the parked child");
+      // Without its main, the exited child's reads are refused at once, never sent to its closed
+      // transport to time out.
+      const mainId = text(main.sessionId);
+      const left = once(sender, "session_left");
+      await main.disconnect();
+      assert.deepEqual(await left, [mainId]);
+      assert.deepEqual(
+        await sender.receipt(childId, { rootSessionId: "main-p", messageId: "m-1" }),
+        {
+          error: "publication_unavailable",
+        },
+      );
+      assert.deepEqual(await sender.last(childId), {
+        error: "Parked session history is unavailable.",
+      });
+      // No live session remains, yet the broker still owes the admitted input.
+      await sender.disconnect();
+      await delay(6000); // Past the broker's five-second idle shutdown check.
+      assert.equal(broker.exitCode, null, "owed parked input keeps the broker alive");
+      const returned = new IntercomClient();
+      const owed = once(returned, "wake");
+      await connect("main-p", "main-p", returned);
+      assert.deepEqual(await owed, [childId], "a returning main is woken for the owed input");
+      const restored = new IntercomClient();
+      clients.push(restored);
+      const received: string[] = [];
+      const flushed = new Promise<void>((resolve) => {
+        restored.on("message", (_from: SessionInfo, message: Message) => {
+          received.push(message.content.text);
+          if (received.length === 2) {
+            resolve();
+          }
+        });
+      });
+      await restored.connect(
+        {
+          name: "child-p",
+          cwd: "/p/child-p",
+          model: "fixture",
+          rootSessionId: "main-p",
+          parentSessionId: "main-p",
+        },
+        nativePeerId("child-p"),
+      );
+      assert.equal(restored.sessionId, childId);
+      await flushed;
+      assert.deepEqual(received, ["breadcrumb", "work"]);
+      const row = (await returned.listSessions()).find((info) => info.id === childId);
+      assert.deepEqual(
+        array(row?.topics).map((entry) => record(entry).topic),
+        ["status"],
+      );
+    } finally {
+      await Promise.all(clients.map((client) => client.disconnect()));
+    }
+  },
+);
+
+nodeTest(
   "parked wake failures reach waiting senders without losing input or trusting other peers",
   { timeout: 30000 },
   async (t) => {
