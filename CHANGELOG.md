@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.8 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #319 from fitchmultz/chore/oxlint-v512-toolchain ([585602b](https://github.com/fitchmultz/pi-subagents/commit/585602bcda0b2bb785986a6d18e77496e311771f))
+
+### What's Changed
+
+- Align Oxlint toolchain and baseline config with the strict standard (1/5) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/319
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.7...v0.52.8
+
 ## 0.52.7 - 2026-11-01
 
 <!-- npm-release:unreleased:start -->
