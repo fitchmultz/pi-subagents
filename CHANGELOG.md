@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.14 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- perf: parallelize independent hot-path awaits in intercom and observer (#331) ([af45187](https://github.com/fitchmultz/pi-subagents/commit/af4518766064dc55969ca331d655611b2690f687))
+
+### What's Changed
+
+- perf: parallelize independent hot-path awaits in intercom and observer by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/331
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.13...v0.52.14
+
 ## 0.52.13 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
