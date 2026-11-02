@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 0.52.9 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+Release metadata only: no source changes since v0.52.8. That release had already shipped
+#319, #320 and #321, so 0.52.9 updates only the package version, lockfile and these release
+notes.
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.8...v0.52.9
+
 ## 0.52.8 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
