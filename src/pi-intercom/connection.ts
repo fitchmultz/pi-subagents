@@ -307,17 +307,17 @@ export class IntercomConnection {
   ): Promise<IntercomTransport> {
     const next = this.createClient();
     try {
-      await spawnBrokerIfNeeded(this.config.brokerCommand, this.config.brokerArgs, (message) => {
-        if (message === undefined) {
-          this.reporter.recover("older-broker");
-        } else {
-          this.reporter.report("older-broker", message, "warning");
-        }
-      });
-      await next.connect(
-        await this.lifecycle.registration(this.hooks.pendingAsks()),
-        nativePeerId(sessionId),
-      );
+      const [, registration] = await Promise.all([
+        spawnBrokerIfNeeded(this.config.brokerCommand, this.config.brokerArgs, (message) => {
+          if (message === undefined) {
+            this.reporter.recover("older-broker");
+          } else {
+            this.reporter.report("older-broker", message, "warning");
+          }
+        }),
+        this.lifecycle.registration(this.hooks.pendingAsks()),
+      ]);
+      await next.connect(registration, nativePeerId(sessionId));
       if (!this.lifecycle.live(ctx, generation)) {
         await next.disconnect();
         throw new Error("Intercom runtime no longer active");

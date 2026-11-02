@@ -16,12 +16,17 @@ if (manifest === undefined) {
 }
 const root = pathToFileURL(path.join(path.dirname(manifest), "dist/index.js"));
 // oxlint-disable-next-line typescript/no-unsafe-assignment
-const tui: typeof Tui = await import(root.href);
+const tuiPromise: Promise<typeof Tui> = import(root.href);
 // oxlint-disable-next-line typescript/no-unsafe-assignment
-const layout: typeof Layout = await import(new URL("./layout.js", root).href);
+const layoutPromise: Promise<typeof Layout> = import(new URL("./layout.js", root).href);
 // oxlint-disable-next-line typescript/no-unsafe-assignment
-const dispatch: typeof Dispatch = await import(new URL("./tui.js", root).href);
-const sdk = await loadSDK(sdkRoot);
+const dispatchPromise: Promise<typeof Dispatch> = import(new URL("./tui.js", root).href);
+const [tui, layout, dispatch, sdk] = await Promise.all([
+  tuiPromise,
+  layoutPromise,
+  dispatchPromise,
+  loadSDK(sdkRoot),
+]);
 export const { Container, HStack, ScrollView, Text, TruncatedText, VStack } = tui;
 export const {
   AssistantMessageComponent,
