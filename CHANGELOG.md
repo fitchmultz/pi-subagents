@@ -7,7 +7,9 @@
 <!-- npm-release:unreleased:start -->
 <!-- npm-release:unreleased:end -->
 
-- Merge pull request #320 from fitchmultz/chore/oxlint-v512-baseline ([1c7dbad](https://github.com/fitchmultz/pi-subagents/commit/1c7dbadb262f9ed2887e0102cf3b01835d6a0b61))
+Release metadata only: no source changes since v0.52.8. That release had already shipped
+#319, #320 and #321, so 0.52.9 updates only the package version, lockfile and these release
+notes.
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.8...v0.52.9
 
