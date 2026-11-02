@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.12 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #326 from fitchmultz/chore/oxlint-v512-records ([e8ff5c5](https://github.com/fitchmultz/pi-subagents/commit/e8ff5c54a0efc481875949e98f96223c4d46ffc4))
+
+### What's Changed
+
+- Adopt the strict standard records and policy integrity keeper (5/5) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/326
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.11...v0.52.12
+
 ## 0.52.11 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
