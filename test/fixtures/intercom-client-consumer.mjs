@@ -15,10 +15,18 @@ const hook = registerHooks({
   },
 });
 const { connectIntercom } = await import("@fitchmultz/pi-subagents/intercom-client");
-await assert.rejects(import("@fitchmultz/pi-subagents/dist/pi-intercom/broker/client.js"), {
-  code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
-});
-const root = mkdtempSync(join(process.env.HOME, "client-"));
+await assert.rejects(
+  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- bypasses tsc module resolution for the rejected subpath
+  import(/** @type {string} */ ("@fitchmultz/pi-subagents/dist/pi-intercom/broker/client.js")),
+  {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  },
+);
+const home = process.env.HOME;
+if (home === undefined) {
+  throw new Error("HOME is required");
+}
+const root = mkdtempSync(join(home, "client-"));
 const runtime = process.env.PI_INTERCOM_RUNTIME_DIR;
 /** @param {unknown} value */
 function text(value) {
@@ -54,7 +62,15 @@ try {
     "no broker or state created",
   );
   process.env.PI_INTERCOM_RUNTIME_DIR = runtime;
-  await assert.rejects(connectIntercom({ ...options, spawn: true }), /requires spawn:false/);
+  await assert.rejects(
+    connectIntercom(
+      /** @type {Parameters<typeof connectIntercom>[0]} */ (
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- fixture options intentionally mismatch the guarded runtime shape
+        /** @type {unknown} */ ({ ...options, spawn: true })
+      ),
+    ),
+    /requires spawn:false/,
+  );
   client = await connectIntercom(options);
   const senderId = client.sessionId;
   assert.ok(typeof senderId === "string" && senderId.length > 0);
@@ -76,12 +92,15 @@ try {
   let answer = first.text;
   while (page.nextOffset !== undefined) {
     // Follow the owner's UTF-16 cursor and immutable entry, not a newly selected answer.
-    // oxlint-disable-next-line no-await-in-loop
-    page = await client.last(guard.peerId, {
-      entryId: first.entryId,
-      offset: page.nextOffset,
-      limit: 6,
-    });
+    // oxlint-disable typescript/no-unsafe-type-assertion, no-await-in-loop -- paging repeats the first page shape
+    page = /** @type {typeof first} */ (
+      await client.last(guard.peerId, {
+        entryId: first.entryId,
+        offset: page.nextOffset,
+        limit: 6,
+      })
+    );
+    // oxlint-enable typescript/no-unsafe-type-assertion, no-await-in-loop
     assert.equal(page.entryId, first.entryId);
     answer += page.text;
   }
@@ -100,7 +119,16 @@ try {
     guard,
     replyHint,
   });
-  await assert.rejects(client.send(guard.peerId, { ...send, guard: undefined }), /exact guarded/);
+  await assert.rejects(
+    client.send(
+      guard.peerId,
+      /** @type {Parameters<typeof client.send>[1]} */ (
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- fixture options intentionally mismatch the guarded runtime shape
+        /** @type {unknown} */ ({ ...send, guard: undefined })
+      ),
+    ),
+    /exact guarded/,
+  );
   /** @param {unknown} error */
   function failure(error) {
     assert.ok(error instanceof Error);

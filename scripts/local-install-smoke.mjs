@@ -13,7 +13,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   process.exit(0);
 }
 
-function isolatedEnv(home) {
+function isolatedEnv(/** @type {string} */ home) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("PI_SUBAGENT_") || key.startsWith("PI_INTERCOM_")) {
@@ -33,7 +33,7 @@ function isolatedEnv(home) {
   };
 }
 
-function runPi(args, env) {
+function runPi(/** @type {string[]} */ args, /** @type {NodeJS.ProcessEnv} */ env) {
   const result = spawnSync(process.execPath, [hostCli, ...args], {
     cwd: process.cwd(),
     env,
@@ -42,12 +42,15 @@ function runPi(args, env) {
   });
   return {
     ok: !result.error && result.status === 0,
-    output: result.error ? result.error.message : `${result.stdout ?? ""}${result.stderr ?? ""}`,
+    output: result.error ? result.error.message : `${result.stdout}${result.stderr}`,
     status: result.status,
   };
 }
 
-function requireSuccess(label, result) {
+function requireSuccess(
+  /** @type {string} */ label,
+  /** @type {{ ok: boolean, output: string, status: number | null }} */ result,
+) {
   if (result.ok) {
     return;
   }
@@ -71,7 +74,9 @@ try {
     "[local-install-smoke] installed and listed the single pi-subagents package with bundled intercom",
   );
 } catch (error) {
-  console.error(`[local-install-smoke] ${error instanceof Error ? error.message : String(error)}`);
+  console.error(
+    `[local-install-smoke] ${error instanceof Error ? error.message : JSON.stringify(error)}`,
+  );
   process.exitCode = 1;
 } finally {
   rmSync(home, { recursive: true, force: true });

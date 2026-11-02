@@ -389,6 +389,21 @@ function prepare(values, uid) {
   syncDirectory(path.dirname(archive));
   return inspect(record, uid);
 }
+function ownerUid(/** @type {{ "owner-uid"?: string }} */ values) {
+  assert.match(values["owner-uid"] ?? "", /^(?:0|[1-9][0-9]*)$/, "E_OWNER_UID");
+  const uid = Number(values["owner-uid"]);
+  assert.ok(Number.isSafeInteger(uid) && uid <= 4_294_967_294, "E_OWNER_UID");
+  return uid;
+}
+
+function requireLinuxCapability() {
+  const capability = /^CapEff:\s*([a-f0-9]+)$/im.exec(fs.readFileSync("/proc/self/status", "utf8"));
+  assert.ok(capability !== null, "E_PROCESS_VISIBILITY");
+  const capEff = capability[1];
+  assert.ok(capEff !== undefined, "E_PROCESS_VISIBILITY");
+  assert.ok((BigInt(`0x${capEff}`) & (1n << 19n)) !== 0n, "E_PROCESS_VISIBILITY");
+}
+
 function main() {
   const { values, positionals } = parseArgs({
     options: {
@@ -408,23 +423,15 @@ function main() {
     return;
   }
   assert.ok(positionals.length === 1, "E_ACTION");
-  const action = positionals[0];
+  const action = positionals[0] ?? "";
   assert.ok(["prepare", "inspect", "archive"].includes(action), "E_ACTION");
   assert.ok(["linux", "darwin"].includes(process.platform), "E_PLATFORM");
   assert.ok(process.geteuid !== undefined, "E_PLATFORM");
   assert.ok(process.geteuid() === 0, "E_PRIVILEGE");
   if (process.platform === "linux") {
-    const capability = /^CapEff:\s*([a-f0-9]+)$/im.exec(
-      fs.readFileSync("/proc/self/status", "utf8"),
-    );
-    assert.ok(capability !== null, "E_PROCESS_VISIBILITY");
-    const capEff = capability[1];
-    assert.ok(capEff !== undefined, "E_PROCESS_VISIBILITY");
-    assert.ok((BigInt(`0x${capEff}`) & (1n << 19n)) !== 0n, "E_PROCESS_VISIBILITY");
+    requireLinuxCapability();
   }
-  assert.match(values["owner-uid"] ?? "", /^(?:0|[1-9][0-9]*)$/, "E_OWNER_UID");
-  const uid = Number(values["owner-uid"]);
-  assert.ok(Number.isSafeInteger(uid) && uid <= 4_294_967_294, "E_OWNER_UID");
+  const uid = ownerUid(values);
   if (action !== "inspect") {
     assert.ok(values.quiesced === true, "E_QUIESCENCE_ACK");
   }
@@ -454,7 +461,7 @@ try {
 } catch (error) {
   let code = "E_INSPECTION_FAILED";
   if (error instanceof assert.AssertionError && !error.generatedMessage) {
-    const firstLine = error.message.split("\n")[0];
+    const firstLine = error.message.split("\n")[0] ?? "";
     if (/^E_[A-Z_]+$/.test(firstLine)) {
       code = firstLine;
     }

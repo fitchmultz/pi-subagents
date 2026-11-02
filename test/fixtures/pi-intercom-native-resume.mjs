@@ -5,19 +5,43 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const [mode, directory, sourceSession] = process.argv.slice(2);
-assert.ok(mode && directory && process.send, "Run this fixture through the native intercom test");
-const repo = fileURLToPath(new URL("../../", import.meta.url));
-const sdkRoot =
-  process.env.PI_INTERCOM_TEST_SDK ??
-  path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url));
-const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
-const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
-const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
-  await import(sdkEntry.href);
-const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(
-  pathToFileURL(path.join(aiRoot, "dist/index.js")).href
+const [modeArgument, directoryArgument, sourceSession] = process.argv.slice(2);
+const send = process.send?.bind(process);
+if (send === undefined) {
+  throw new Error("Run this fixture through the native intercom test");
+}
+assert.ok(
+  // oxlint-disable-next-line typescript/strict-boolean-expressions -- fixture assert; also narrows for tsc
+  modeArgument && directoryArgument,
+  "Run this fixture through the native intercom test",
 );
+const mode = modeArgument;
+const directory = directoryArgument;
+const agentDir = process.env.PI_CODING_AGENT_DIR;
+if (agentDir === undefined) {
+  throw new Error("PI_CODING_AGENT_DIR is required");
+}
+const repo = fileURLToPath(new URL("../../", import.meta.url));
+const sdkPackageJson = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+if (sdkPackageJson === undefined) {
+  throw new Error("Could not locate the installed pi-coding-agent package");
+}
+const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(sdkPackageJson);
+const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
+const aiPackageJson = findPackageJSON("@earendil-works/pi-ai", sdkEntry);
+if (aiPackageJson === undefined) {
+  throw new Error("Could not locate the installed pi-ai package");
+}
+const aiRoot = path.dirname(aiPackageJson);
+/** @type {typeof import("@earendil-works/pi-coding-agent")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const sdk = await import(sdkEntry.href);
+const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
+  sdk;
+/** @type {typeof import("@earendil-works/pi-ai")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = ai;
 mkdirSync(directory, { recursive: true });
 const faux = fauxProvider({ provider: "fixture-restart" });
 const modelRuntime = await ModelRuntime.create({
@@ -30,12 +54,12 @@ const settingsManager = SettingsManager.inMemory({
   compaction: { enabled: false },
   retry: { enabled: false },
 });
-let context;
-let intercomEvents;
-const errors = [];
+/** @type {import("@earendil-works/pi-coding-agent").ExtensionContext | undefined} */ let context;
+/** @type {import("@earendil-works/pi-coding-agent").EventBus | undefined} */ let intercomEvents;
+/** @type {unknown[]} */ const errors = [];
 const loader = new DefaultResourceLoader({
   cwd: directory,
-  agentDir: process.env.PI_CODING_AGENT_DIR,
+  agentDir,
   settingsManager,
   noExtensions: true,
   noSkills: true,
@@ -47,7 +71,7 @@ const loader = new DefaultResourceLoader({
     process.env.PI_INTERCOM_TEST_EXTENSION ?? path.join(repo, "src/pi-intercom/index.ts"),
   ],
   extensionFactories: [
-    (pi) => {
+    (/** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ pi) => {
       intercomEvents = pi.events;
       pi.on("session_start", (_event, ctx) => {
         context = ctx;
@@ -60,9 +84,11 @@ await loader.reload();
 assert.deepEqual(loader.getExtensions().errors, []);
 function openSession() {
   if (mode === "fork") {
+    assert.ok(sourceSession !== undefined, "fork mode requires a source session");
     return SessionManager.forkFrom(sourceSession, directory, path.join(directory, "sessions"));
   }
   if (mode === "resume") {
+    assert.ok(sourceSession !== undefined, "resume mode requires a source session");
     return SessionManager.open(sourceSession);
   }
   return SessionManager.create(directory, path.join(directory, "sessions"));
@@ -70,7 +96,7 @@ function openSession() {
 const sessionManager = openSession();
 const { session } = await createAgentSession({
   cwd: directory,
-  agentDir: process.env.PI_CODING_AGENT_DIR,
+  agentDir,
   modelRuntime,
   model: faux.getModel(),
   settingsManager,
@@ -79,7 +105,11 @@ const { session } = await createAgentSession({
   noTools: "builtin",
 });
 const summary = async () => {
+  assert.ok(context !== undefined, "expected the session_start context");
+  assert.ok(intercomEvents !== undefined, "expected the intercom extension events");
+  const events = intercomEvents;
   const intercom = session.agent.state.tools.find((tool) => tool.name === "intercom");
+  assert.ok(intercom !== undefined, "expected the intercom tool");
   const status = await intercom.execute(
     "fixture-status",
     { action: "status" },
@@ -93,24 +123,34 @@ const summary = async () => {
     nativeQueued: session.agent.hasQueuedMessages(),
     publicPending: context.hasPendingMessages(),
     status: JSON.stringify(status),
+    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unsafe-assignment, typescript/strict-boolean-expressions -- journal entry payloads are dynamically shaped
     visibleIds: entries
       .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
-      .map((entry) => entry.details.message.id),
+      .map(
+        (entry) =>
+          /** @type {{ details?: { message?: { id?: string } } }} */ (entry).details?.message?.id,
+      ),
     provenance: Object.fromEntries(
       entries
         .filter(
           (entry) =>
-            entry.type === "custom" && entry.customType === "intercom_delivery" && entry.data.entry,
+            entry.type === "custom" &&
+            entry.customType === "intercom_delivery" &&
+            /** @type {{ entry?: unknown }} */ (entry.data).entry,
         )
         .map((entry) => {
-          const messageId = entry.data.entry.message.id;
-          const query = (rootSessionId) => {
-            let response;
-            intercomEvents.emit("pi-intercom:provenance-query", {
+          const delivery =
+            /** @type {{ entry?: { message?: { id?: string } }, sessionId?: string }} */ (
+              /** @type {{ data?: unknown }} */ (entry).data
+            );
+          const messageId = delivery.entry?.message?.id;
+          const query = (/** @type {string} */ rootSessionId) => {
+            /** @type {unknown} */ let response;
+            events.emit("pi-intercom:provenance-query", {
               version: 1,
               rootSessionId,
               messageId,
-              respond: (value) => {
+              respond: (/** @type {unknown} */ value) => {
                 response = value;
               },
             });
@@ -120,7 +160,7 @@ const summary = async () => {
             messageId,
             {
               current: query(sessionManager.getSessionId()),
-              original: query(entry.data.sessionId),
+              original: query(delivery.sessionId ?? ""),
             },
           ];
         }),
@@ -129,9 +169,10 @@ const summary = async () => {
       ...new Set(
         entries
           .filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery")
-          .map((entry) => entry.data.sessionId),
+          .map((entry) => /** @type {{ data?: { sessionId?: string } }} */ (entry).data?.sessionId),
       ),
     ],
+    // oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unsafe-assignment, typescript/strict-boolean-expressions
     errors,
   };
 };
@@ -139,10 +180,16 @@ const summary = async () => {
 if (mode === "seed") {
   faux.setResponses([
     fauxAssistantMessage("Saved conversation ready"),
-    async (_context, options) => {
-      process.send({ type: "ready", ...(await summary()) });
+    async (
+      /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ _context,
+      /** @type {import("@earendil-works/pi-ai").SimpleStreamOptions | undefined} */ options,
+    ) => {
+      send({ type: "ready", ...(await summary()) });
       await new Promise((resolve) => {
-        options.signal.addEventListener("abort", resolve, { once: true });
+        /** @type {AbortSignal} */ (
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- fixture always supplies an abort signal
+          /** @type {import("@earendil-works/pi-ai").SimpleStreamOptions} */ (options).signal
+        ).addEventListener("abort", resolve, { once: true });
       });
       return fauxAssistantMessage("Aborted");
     },
@@ -153,13 +200,16 @@ if (mode === "seed") {
 await session.bindExtensions({
   mode: "rpc",
   uiContext: { ...session.extensionRunner.getUIContext() },
-  onError: (error) => errors.push(error),
+  onError: (error) => {
+    errors.push(error);
+  },
 });
 
 if (mode === "seed") {
-  process.on("message", async (message) => {
-    if (message?.action === "snapshot") {
-      process.send({ type: "snapshot", ...(await summary()) });
+  // oxlint-disable-next-line typescript/no-misused-promises, typescript/strict-void-return -- snapshot handler awaits summary before replying
+  process.on("message", async (/** @type {{ action?: string }} */ message) => {
+    if (message.action === "snapshot") {
+      send({ type: "snapshot", ...(await summary()) });
     }
   });
   await session.prompt("Seed this saved session");
@@ -183,6 +233,6 @@ if (mode === "seed") {
   await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   await session.abort();
   session.dispose();
-  process.send({ type: "result", ...result });
+  send({ type: "result", ...result });
   process.disconnect();
 }

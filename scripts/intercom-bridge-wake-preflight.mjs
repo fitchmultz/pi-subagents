@@ -46,7 +46,9 @@ try {
     process.kill(pid, 0);
     throw new Error("Legacy helper is still running; stop it before preflight.");
   } catch (error) {
-    if (error.code !== "ESRCH") {
+    if (
+      !(typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH")
+    ) {
       throw error;
     }
   }
@@ -68,23 +70,22 @@ try {
     if (!isRecord(raw) || typeof raw.timestamp !== "string") {
       throw new Error("Invalid audit record.");
     }
-    const entry = raw;
-    const timestamp = Date.parse(entry.timestamp);
+    const timestamp = Date.parse(raw.timestamp);
     if (!Number.isSafeInteger(timestamp)) {
       throw new Error("Audit record has no valid timestamp.");
     }
     if (timestamp < coveredSince || timestamp > stoppedAt) {
       continue;
     }
-    if (entry.event === "log_overflow") {
+    if (raw.event === "log_overflow") {
       throw new Error(
         "Audit overflow prevents complete-history migration; use conservative startup.",
       );
     }
     if (
-      entry.event === "wake_delivery" &&
-      typeof entry.result === "string" &&
-      outcomes.has(entry.result)
+      raw.event === "wake_delivery" &&
+      typeof raw.result === "string" &&
+      outcomes.has(raw.result)
     ) {
       attempts.push(timestamp);
     }
@@ -107,6 +108,6 @@ try {
     }),
   );
 } catch (error) {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : JSON.stringify(error));
   process.exitCode = 1;
 }

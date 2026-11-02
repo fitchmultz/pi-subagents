@@ -3,6 +3,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+/**
+ * A host record as written by the release automation.
+ * @typedef {{ version: string, provenance: Record<string, unknown>, indexSha256: string, cliSha256: string, cohort: string, companions: unknown, runtimeLockSha256: string, runtimeGraphSha256: string }} HostRecord
+ */
 const [flavor, target, automationArg, sourceArg] = process.argv.slice(2);
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -10,22 +14,37 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   );
   process.exit(0);
 }
-assert.ok(["official", "fork"].includes(flavor) && target && automationArg && sourceArg);
 assert.ok(
-  process.env.PI_EDITOR_RECEIPT_TEST_ROOT,
+  flavor !== undefined &&
+    ["official", "fork"].includes(flavor) &&
+    target !== undefined &&
+    automationArg !== undefined &&
+    sourceArg !== undefined,
+);
+assert.ok(
+  process.env.PI_EDITOR_RECEIPT_TEST_ROOT !== undefined,
   "CI must supply the frozen native editor receipt source",
 );
 const automation = resolve(automationArg);
+/** @type {{ isolatedEnvironment: (root: string) => NodeJS.ProcessEnv, run: (command: string, args: string[], options?: { cwd?: string, env?: NodeJS.ProcessEnv, quiet?: boolean, timeout?: number, stdio?: "inherit" | "pipe" }) => string, stageSource: (source: string, destination: string) => void }} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
 const { isolatedEnvironment, run, stageSource } = await import(
   pathToFileURL(join(automation, "scripts/common.mjs")).href
 );
+/** @type {{ prepareHost: (host: string, flavor: string, target: string, env: NodeJS.ProcessEnv) => Promise<HostRecord>, selectDevelopmentHost: (development: string, host: HostRecord, env: NodeJS.ProcessEnv) => { packageDir: string, index: string, cli: string } }} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
 const { prepareHost, selectDevelopmentHost } = await import(
   pathToFileURL(join(automation, "scripts/hosts.mjs")).href
 );
 
+/**
+ * @param {HostRecord} host
+ * @param {HostRecord} expected
+ */
 function assertOfficialProvenance(host, expected) {
   for (const key of ["version", "integrity", "tarball", "installer"]) {
     assert.deepEqual(
+      // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
       host.provenance[key],
       expected.provenance[key],
       `Official host ${key} differs from the candidate`,
@@ -82,17 +101,20 @@ try {
     timeout: 1_650_000,
     stdio: "inherit",
   });
-  if (process.env.PI_RELEASE_CANDIDATE) {
+  if (process.env.PI_RELEASE_CANDIDATE !== undefined) {
     const candidate = resolve(process.env.PI_RELEASE_CANDIDATE);
+    /** @type {{ filename: string, hosts: Record<string, HostRecord> }} */
+    // oxlint-disable-next-line typescript/no-unsafe-assignment
     const { filename, hosts } = JSON.parse(readFileSync(join(candidate, "release.json"), "utf8"));
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
     assert.equal(basename(filename), filename, "Candidate filename must be local to the artifact");
     const expected = hosts[flavor];
-    assert.ok(expected, `Candidate did not record a ${flavor} host`);
+    assert.ok(expected !== undefined, `Candidate did not record a ${flavor} host`);
     let candidateHost = host;
     let candidateSelected = selected;
     if (flavor === "fork") {
       assert.ok(
-        process.env.PI_RELEASE_FORK,
+        process.env.PI_RELEASE_FORK !== undefined,
         "Candidate qualification requires its prepared fork host",
       );
       candidateHost = await prepareHost(
@@ -102,6 +124,7 @@ try {
         env,
       );
       assert.deepEqual(
+        // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
         candidateHost.provenance,
         expected.provenance,
         "Fork host artifact differs from the candidate",
@@ -118,11 +141,17 @@ try {
       "companions",
       "runtimeLockSha256",
     ]) {
-      assert.deepEqual(candidateHost[key], expected[key], `Host ${key} differs from the candidate`);
+      assert.deepEqual(
+        // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
+        /** @type {Record<string, unknown>} */ (candidateHost)[key],
+        /** @type {Record<string, unknown>} */ (expected)[key],
+        `Host ${key} differs from the candidate`,
+      );
     }
     // npm installs platform-specific optional dependencies; the recorded graph was prepared on Linux.
     if (process.platform === "linux") {
       assert.equal(
+        // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
         candidateHost.runtimeGraphSha256,
         expected.runtimeGraphSha256,
         "Linux host graph differs from the candidate",

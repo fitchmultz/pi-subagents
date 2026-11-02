@@ -7,14 +7,17 @@ import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import childProcess, { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { registeredSession } from "../support/native-readiness.ts";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
+import { hasErrorCode, isRecord } from "../../src/shared/unknown.ts";
 
-const [root, repo, sdkRoot, phase] = process.argv.slice(2);
+const [root = "", repo = "", sdkRoot = "", phase = ""] = process.argv.slice(2);
 const cwd = path.join(root, "project"),
   agentDir = path.join(root, "agent");
 const sdkLink = path.join(root, "selected-sdk");
 if (phase === "park-sdk-outcome") {
   const typebox = findPackageJSON("typebox", path.join(sdkRoot, "dist/index.js"));
-  assert.ok(typebox);
+  assert.ok(typebox !== undefined);
   fs.mkdirSync(path.join(root, "node_modules"));
   fs.symlinkSync(path.dirname(sdkRoot), path.join(root, "node_modules/@earendil-works"), "dir");
   fs.symlinkSync(path.dirname(typebox), path.join(root, "node_modules/typebox"), "dir");
@@ -69,10 +72,18 @@ if (phase === "dropped-hints") {
   process.env.SINGLE_AGENT_DROP_HINTS = "1";
   const watch = fs.watch;
   // A real watcher whose change listener never runs.
-  fs.watch = (target, options) => {
-    lostHints.watches++;
-    return watch(target, options);
-  };
+  // oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for the patch
+  fs.watch = /** @type {typeof fs.watch} */ (
+    (
+      /** @type {Parameters<typeof fs.watch>[0]} */ target,
+      /** @type {import("node:fs").WatchOptions | undefined} */ options,
+    ) => {
+      lostHints.watches++;
+      // oxlint-disable-next-line eslint/no-empty-function
+      return watch(target, options ?? {}, () => {});
+    }
+  );
+  // oxlint-enable typescript/no-unsafe-type-assertion
   syncBuiltinESMExports();
 }
 if (phase.startsWith("legacy-")) {
@@ -81,23 +92,65 @@ if (phase.startsWith("legacy-")) {
     recursive: true,
   });
 }
+/** @type {typeof import("@earendil-works/pi-coding-agent") & {
+ *   readWorkingSession: (sessionFile: string) => { leafId: string },
+ *   resolveModelReference?: (ref: string) => unknown,
+ *   writeWorkingSession?: (sessionFile: string, entries: unknown[]) => string,
+ * }} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const aiRoot = path.dirname(
-  findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))),
+  findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))) ??
+    "",
 );
+/** @type {typeof import("@earendil-works/pi-ai")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
 const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(
   pathToFileURL(path.join(aiRoot, "dist/index.js")).href
 );
-const { default: agents } = await import(
-  pathToFileURL(path.join(repo, "dist/agent/index.js")).href
-);
-const intercom = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
-  ? (await import(pathToFileURL(path.join(repo, "dist/pi-intercom/index.js")).href)).default
+/** @type {typeof import("../../src/agent/index.ts")["default"]} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-member-access
+const agents = (await import(pathToFileURL(path.join(repo, "dist/agent/index.js")).href)).default;
+/** @type {typeof import("../../src/pi-intercom/index.ts") | undefined} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const intercomModule = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
+  ? await import(pathToFileURL(path.join(repo, "dist/pi-intercom/index.js")).href)
   : undefined;
-const seedFile = path.join(root, "seed.json");
-const seed = fs.existsSync(seedFile) ? JSON.parse(fs.readFileSync(seedFile, "utf8")) : undefined;
+const intercom = intercomModule?.default;
 // `--no-session` parents: Pi keeps the native transcript only in memory and reports no session file.
 const sessionless = phase.endsWith("-sessionless");
+/** Verified shell family roots recorded by the native launcher. */
+const FamilySchema = Type.Object({ pid: Type.Integer(), descendant: Type.Integer() });
+/** Seed record an earlier phase pins for later recovery. */
+const SeedSchema = Type.Object({
+  runId: Type.Optional(Type.String()),
+  sessionId: Type.Optional(Type.String()),
+  sessionFile: Type.Optional(Type.String()),
+  pid: Type.Optional(Type.Integer()),
+  childPid: Type.Optional(Type.Integer()),
+  family: Type.Optional(FamilySchema),
+  nativeHeader: Type.Optional(Type.String()),
+  legacyResult: Type.Optional(Type.Unknown()),
+  legacyId: Type.Optional(Type.String()),
+  contributions: Type.Optional(Type.Unknown()),
+  bystanderPid: Type.Optional(Type.Integer()),
+});
+/**
+ * @template {import("typebox").TSchema} S
+ * @param {S} schema
+ * @param {string | object} source
+ * @returns {import("typebox").Static<S>}
+ */
+const parseValidated = (schema, source) => {
+  /** @type {unknown} */
+  const value = typeof source === "string" ? JSON.parse(source) : source;
+  Assert(schema, value);
+  return value;
+};
+const seedFile = path.join(root, "seed.json");
+const seed = fs.existsSync(seedFile)
+  ? parseValidated(SeedSchema, fs.readFileSync(seedFile, "utf8"))
+  : undefined;
 function parentManager() {
   if (sessionless) {
     return sdk.SessionManager.inMemory(cwd);
@@ -106,10 +159,15 @@ function parentManager() {
     return sdk.SessionManager.create(cwd, path.join(root, "parent-sessions"));
   }
   if (phase === "fork-owner") {
-    return sdk.SessionManager.forkFrom(seed.sessionFile, cwd, path.join(root, "fork-sessions"));
+    assert.ok(seed !== undefined, "seed.json is required for forked launches");
+    return sdk.SessionManager.forkFrom(
+      seed.sessionFile ?? "",
+      cwd,
+      path.join(root, "fork-sessions"),
+    );
   }
   if (seed) {
-    return sdk.SessionManager.open(seed.sessionFile);
+    return sdk.SessionManager.open(seed.sessionFile ?? "");
   }
   return sdk.SessionManager.create(cwd, path.join(root, "parent-sessions"));
 }
@@ -137,6 +195,7 @@ models.registerNativeProvider(
   }).provider,
 );
 faux.setResponses([fauxAssistantMessage("PARENT_STARTUP_LITERAL")]);
+/** @type {unknown[]} */
 const errors = [];
 let networkRequests = 0;
 globalThis.fetch = async () => {
@@ -145,44 +204,56 @@ globalThis.fetch = async () => {
 };
 if (phase.startsWith("crash-")) {
   const append = manager.appendCustomMessageEntry.bind(manager);
-  manager.appendCustomMessageEntry = (type, ...args) => {
-    if (type !== "agent-completion") {
-      return append(type, ...args);
+  manager.appendCustomMessageEntry = (
+    /** @type {string} */ customType,
+    /** @type {string | (import("@earendil-works/pi-ai").TextContent | import("@earendil-works/pi-ai").ImageContent)[]} */ content,
+    /** @type {boolean} */ display,
+    /** @type {unknown} */ details,
+  ) => {
+    if (customType !== "agent-completion") {
+      return append(customType, content, display, details);
     }
     if (phase === "crash-after") {
-      append(type, ...args);
+      append(customType, content, display, details);
     }
     fs.writeFileSync(
       path.join(root, `${phase}.json`),
       JSON.stringify({ entries: manager.getEntries() }),
     );
     process.kill(process.pid, "SIGKILL");
+    return "";
   };
 }
 if (sessionless) {
   // A redelivered completion repeats without bound; exit at the first native duplicate.
-  const identity = (type, details) => {
-    if (type === "agent-completion") {
+  const identity = (/** @type {string} */ type, /** @type {unknown} */ details) => {
+    if (isCompletionIdentity(details) && type === "agent-completion") {
       return details.id;
     }
-    return type === "subagent-notify" ? details.completion?.key : undefined;
+    if (isCompletionIdentity(details) && type === "subagent-notify") {
+      return details.completion?.key;
+    }
+    return;
   };
   const append = manager.appendCustomMessageEntry.bind(manager);
-  manager.appendCustomMessageEntry = (type, content, display, details) => {
-    const entryId = append(type, content, display, details);
-    const id = identity(type, details);
+  manager.appendCustomMessageEntry = (
+    /** @type {string} */ customType,
+    /** @type {string | (import("@earendil-works/pi-ai").TextContent | import("@earendil-works/pi-ai").ImageContent)[]} */ content,
+    /** @type {boolean} */ display,
+    /** @type {unknown} */ details,
+  ) => {
+    const entryId = append(customType, content, display, details);
+    const id = identity(customType, details);
     if (
       id !== undefined &&
       manager
         .getEntries()
+        .filter(isCustomMessageEntry)
         .filter(
-          (entry) =>
-            entry.type === "custom_message" &&
-            entry.customType === type &&
-            identity(type, entry.details) === id,
+          (entry) => entry.customType === customType && identity(customType, entry.details) === id,
         ).length > 1
     ) {
-      console.error(`Duplicate native ${type} entry ${entryId} for ${id}`);
+      console.error(`Duplicate native ${customType} entry ${entryId} for ${id}`);
       process.exit(1);
     }
     return entryId;
@@ -195,6 +266,7 @@ const settings = sdk.SettingsManager.inMemory({
   ...(phase === "queue-retain" ? { steeringMode: "all" } : {}),
 });
 settings.setProjectTrusted(true);
+/** @type {string | undefined} */
 let cwdOwner;
 if (phase === "cwd" || phase === "cwd-reopen" || phase.startsWith("cwd-invalid-")) {
   const source =
@@ -220,7 +292,7 @@ if (phase === "cwd" || phase === "cwd-reopen" || phase.startsWith("cwd-invalid-"
       }
     `,
     );
-  } else if (process.env.SINGLE_AGENT_CWD_OWNER) {
+  } else if (process.env.SINGLE_AGENT_CWD_OWNER !== undefined) {
     cwdOwner = source;
   } else {
     fs.writeFileSync(
@@ -239,15 +311,21 @@ if (phase === "cwd" || phase === "cwd-reopen" || phase.startsWith("cwd-invalid-"
     `,
     );
   }
-  const file = path.join(agentDir, "settings.json"),
-    configured = JSON.parse(fs.readFileSync(file, "utf8"));
+  const file = path.join(agentDir, "settings.json");
+  /** @type {unknown} */
+  const parsedSettings = JSON.parse(fs.readFileSync(file, "utf8"));
+  Assert(Type.Object({ extensions: Type.Array(Type.String()) }), parsedSettings);
+  const configured = parsedSettings;
   fs.writeFileSync(
     file,
     JSON.stringify({ ...configured, extensions: [...configured.extensions, cwdOwner] }),
   );
 }
+/** @type {{ events: { emit: (event: string, payload: unknown) => void } } | undefined} */
 let agentAPI;
+/** @type {(() => void) | undefined} */
 let publishLegacyAtSettlement;
+/** @type {{ toolCallId: string, isError?: boolean, result?: { content?: unknown, details?: unknown } }[]} */
 const toolEnds = [];
 const services = await sdk.createAgentSessionServices({
   cwd,
@@ -270,7 +348,7 @@ const services = await sdk.createAgentSessionServices({
         });
       },
     ],
-    additionalExtensionPaths: cwdOwner ? [cwdOwner] : [],
+    additionalExtensionPaths: cwdOwner !== undefined ? [cwdOwner] : [],
   },
 });
 const loader = services.resourceLoader;
@@ -293,8 +371,13 @@ const runtime = await sdk.createAgentSessionRuntime(
   },
 );
 const { session } = runtime;
-await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error) });
-const until = async (predicate, why) => {
+await session.bindExtensions({
+  mode: "print",
+  onError: (error) => {
+    errors.push(error);
+  },
+});
+const until = async (/** @type {() => boolean} */ predicate, /** @type {string} */ why) => {
   const deadline = Date.now() + 15000;
   while (!predicate()) {
     assert.ok(Date.now() < deadline, why);
@@ -304,7 +387,7 @@ const until = async (predicate, why) => {
   }
 };
 // Raw OS observation, independent of the controller's process identity reader.
-const processView = (pid) => {
+const processView = (/** @type {number} */ pid) => {
   if (process.platform === "linux") {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
     // Fields after comm start at state; pgrp and starttime are stat fields 5 and 22.
@@ -324,39 +407,76 @@ const processView = (pid) => {
 const nextBirthSecond = () =>
   delay((process.platform === "android" ? 3020 : 2020) - (Date.now() % 1000));
 // Child telemetry is append-only; only newline-terminated frames are published.
-const publishedRecords = (name) =>
+const publishedRecords = (/** @type {string} */ name) =>
   fs
     .readFileSync(path.join(root, name), "utf8")
     .split("\n")
     .slice(0, -1)
     .filter(Boolean)
-    .map(JSON.parse);
+    .map((text) => {
+      /** @type {unknown} */
+      const value = JSON.parse(text);
+      return value;
+    });
+/** @returns {import("typebox").Static<typeof RequestRecordSchema>[]} */
 const requests = () =>
-  fs.existsSync(path.join(root, "requests.jsonl")) ? publishedRecords("requests.jsonl") : [];
-const resultEntries = (id) =>
+  fs.existsSync(path.join(root, "requests.jsonl"))
+    ? publishedRecords("requests.jsonl").map(validating(RequestRecordSchema))
+    : [];
+/**
+ * @param {import("@earendil-works/pi-coding-agent").SessionEntry} entry
+ * @returns {entry is import("@earendil-works/pi-coding-agent").SessionMessageEntry & {
+ *   message: import("@earendil-works/pi-ai").ToolResultMessage,
+ * }}
+ */
+const isToolResultEntry = (entry) =>
+  entry.type === "message" && entry.message.role === "toolResult";
+/**
+ * @param {import("@earendil-works/pi-coding-agent").SessionEntry} entry
+ * @returns {entry is import("@earendil-works/pi-coding-agent").CustomMessageEntry}
+ */
+const isCustomMessageEntry = (entry) => entry.type === "custom_message";
+const resultEntries = (/** @type {string} */ id) =>
   manager
     .getEntries()
-    .filter(
-      (entry) =>
-        entry.type === "message" &&
-        entry.message.role === "toolResult" &&
-        entry.message.toolCallId === id,
-    );
+    .filter(isToolResultEntry)
+    .filter((entry) => entry.message.toolCallId === id);
 const notices = () =>
   manager
     .getEntries()
-    .filter((entry) => entry.type === "custom_message" && entry.customType === "agent-completion");
-const call = async (name, args, id, response = fauxAssistantMessage("PARENT_LITERAL_FINISHED")) => {
+    .filter(isCustomMessageEntry)
+    .filter((entry) => entry.customType === "agent-completion");
+const call = async (
+  /** @type {string} */ name,
+  /** @type {Record<string, unknown>} */ args,
+  /** @type {string} */ id,
+  /** @type {import("@earendil-works/pi-ai").FauxResponseStep} */ response = fauxAssistantMessage(
+    "PARENT_LITERAL_FINISHED",
+  ),
+) => {
   faux.setResponses([
-    fauxAssistantMessage([{ type: "toolCall", id, name, arguments: args }], {
-      stopReason: "toolUse",
-    }),
+    fauxAssistantMessage(
+      [
+        {
+          type: "toolCall",
+          id,
+          name,
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- tool arguments stay dynamic
+          arguments: /** @type {import("@earendil-works/pi-ai").JsonObject} */ (args),
+        },
+      ],
+      {
+        stopReason: "toolUse",
+      },
+    ),
     response,
   ]);
   await session.prompt(`Fixture native tool invocation ${id}`);
   await session.waitForIdle();
   assert.equal(resultEntries(id).length, 1);
-  return resultEntries(id)[0].message;
+  const [found] = resultEntries(id);
+  assert.ok(found !== undefined, `expected the tool result for ${id}`);
+  return found.message;
 };
 // Exact usage the child provider fixture stamps on every native assistant turn.
 const childTurnUsage = {
@@ -369,64 +489,477 @@ const childTurnUsage = {
   cacheWrite1h: 1,
   cost: { input: 0.25, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
 };
-const runsTool = () => session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+const runsTool = () => {
+  const tool = session.agent.state.tools.find((candidate) => candidate.name === "agent_runs");
+  assert.ok(tool !== undefined, "expected the agent_runs tool");
+  return tool;
+};
 // Observe the canonical completion the parent actually receives, then inspect without a model turn.
-const settled = async (receipt, why = "canonical native completion reaches the parent") => {
-  if (typeof receipt !== "string" && receipt.isError) {
+const settled = async (
+  /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<any> | string} */ receipt,
+  /** @type {string} */ why = "canonical native completion reaches the parent",
+) => {
+  if (typeof receipt !== "string" && receipt.isError === true) {
     return receipt; // a rejected launch has no completion to observe
   }
-  const id = typeof receipt === "string" ? receipt : receipt.details.id;
-  await until(() => notices().some((notice) => notice.details.id === id), why);
+  const id = typeof receipt === "string" ? receipt : runDetails(receipt).id;
+  await until(
+    () =>
+      notices().some((notice) => isCompletionIdentity(notice.details) && notice.details.id === id),
+    why,
+  );
   await session.waitForIdle();
   const signal = new AbortController().signal;
   return await runsTool().execute(`settled-${id}`, { action: "inspect", id }, signal);
 };
-const childRegistered = async (id) => {
+const childRegistered = async (/** @type {string} */ id) => {
+  /** @type {typeof import("../../src/pi-intercom/broker/client.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const { IntercomClient } = await import(
     pathToFileURL(path.join(repo, "dist/pi-intercom/broker/client.js")).href
   );
   const probe = new IntercomClient();
   try {
-    await registeredSession(probe, readJSON(path.join(runDir(id), "launch.json")).sessionId, {
-      observer: {
-        name: "registration-probe",
-        cwd,
-        model: "none",
-        rootSessionId: manager.getSessionId(),
+    await registeredSession(
+      probe,
+      readValidated(LaunchSchema, path.join(runDir(id), "launch.json")).sessionId ?? "",
+      {
+        observer: {
+          name: "registration-probe",
+          cwd,
+          model: "none",
+          rootSessionId: manager.getSessionId(),
+        },
+        timeoutMs: 15000,
       },
-      timeoutMs: 15000,
-    });
+    );
   } finally {
     await probe.disconnect();
   }
 };
-const runDir = (id) => path.join(agentDir, "sessions/agent-runs", manager.getSessionId(), id);
-const readJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
-const publishedFiles = (directory) =>
+const runDir = (/** @type {string} */ id) =>
+  path.join(agentDir, "sessions/agent-runs", manager.getSessionId(), id);
+/**
+ * Reads fixture-authored JSON as unknown; callers validate the shape they expect.
+ * @param {string} file
+ * @returns {unknown}
+ */
+/**
+ * @typedef {object} CompletionIdentity
+ * @property {string | undefined} id
+ * @property {string | undefined} receipt
+ * @property {{ key?: string } | undefined} completion
+ */
+/** Published provider requests carry the child's pid with each model request. */
+const RequestRecordSchema = Type.Object({
+  prompt: Type.Optional(Type.String()),
+  pid: Type.Integer(),
+  model: Type.Optional(Type.String()),
+  thinking: Type.Optional(Type.String()),
+  root: Type.Optional(Type.String()),
+  parent: Type.Optional(Type.String()),
+  cwd: Type.Optional(Type.String()),
+  context: Type.Optional(Type.Unknown()),
+});
+/**
+ * @param {unknown} value
+ * @returns {value is CompletionIdentity}
+ */
+const isCompletionIdentity = (value) => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const completion = value.completion;
+  return (
+    (value.id === undefined || typeof value.id === "string") &&
+    (completion === undefined || (isRecord(completion) && typeof completion.key === "string"))
+  );
+};
+/** Reads and validates an actor lock's process record. */
+const readActorIdentity = (/** @type {string} */ directory) =>
+  readValidated(ActorIdentitySchema, path.join(directory, "actor.lock/process.json"));
+/**
+ * @template {import("typebox").TSchema} S
+ * @param {S} schema
+ * @param {string} file
+ * @returns {import("typebox").Static<S>}
+ */
+const readValidated = (schema, file) => parseValidated(schema, fs.readFileSync(file, "utf8"));
+/**
+ * Journal lines are dynamically shaped; readers validate the entries they select.
+ * @param {string} text
+ */
+const parseJournalLine = (text) =>
+  /** @type {{ type?: string, customType?: string, details?: { id?: string } }} */ (
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- journal lines are dynamically shaped
+    JSON.parse(text)
+  );
+/**
+ * @template {import("typebox").TSchema} S
+ * @param {S} schema
+ * @returns {(record: unknown) => import("typebox").Static<S>}
+ */
+const validating = (schema) => (record) => {
+  Assert(schema, record);
+  return record;
+};
+/** Actor identity recorded in an actor lock by the native launcher. */
+const ActorIdentitySchema = Type.Object({
+  token: Type.String(),
+  pid: Type.Integer(),
+  identity: Type.Optional(Type.String()),
+});
+/** A published shell ledger record. */
+const ShellRecordSchema = Type.Object({
+  pid: Type.Integer(),
+  token: Type.String(),
+  identity: Type.Optional(Type.String()),
+  clock: Type.Optional(Type.Object({ namespace: Type.String() })),
+});
+/** A run's recorded launch metadata. */
+const LaunchSchema = Type.Object({
+  id: Type.Optional(Type.String()),
+  sessionId: Type.Optional(Type.String()),
+  sessionFile: Type.Optional(Type.String()),
+  prompt: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  thinking: Type.Optional(Type.String()),
+  pid: Type.Optional(Type.Integer()),
+  identity: Type.Optional(Type.String()),
+  trusted: Type.Optional(Type.Boolean()),
+  provider: Type.Optional(Type.String()),
+  parent: Type.Optional(Type.String()),
+  cwd: Type.Optional(Type.String()),
+  context: Type.Optional(Type.Unknown()),
+});
+/** The agent_runs tool records run inventories in its result details. */
+const RunResultDetailsSchema = Type.Object({
+  id: Type.String(),
+  sessionId: Type.String(),
+  status: Type.Optional(Type.String()),
+  sessionFile: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  thinking: Type.Optional(Type.String()),
+  command: Type.Optional(Type.String()),
+  receipt: Type.Optional(Type.String()),
+  stopRequest: Type.Optional(Type.String()),
+  stopAcknowledged: Type.Optional(Type.Boolean()),
+  parentSession: Type.Optional(Type.String()),
+  note: Type.Optional(Type.String()),
+  flag: Type.Optional(Type.String()),
+  completed: Type.Optional(Type.Boolean()),
+  lastWakeFailure: Type.Optional(Type.Object({ reason: Type.Optional(Type.String()) })),
+  contributions: Type.Optional(
+    Type.Array(Type.Object({ id: Type.String(), usage: Type.Unknown() })),
+  ),
+  output: Type.Optional(
+    Type.Object({ text: Type.String(), nextOffset: Type.Optional(Type.Integer()) }),
+  ),
+  nativeReceipt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  cwd: Type.Optional(Type.String()),
+  process: Type.Optional(
+    Type.Object({
+      live: Type.Optional(Type.Boolean()),
+      exitKnown: Type.Optional(Type.Boolean()),
+      exit: Type.Optional(
+        Type.Union([
+          Type.Object({
+            pid: Type.Optional(Type.Integer()),
+            code: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+            signal: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          }),
+          Type.Null(),
+        ]),
+      ),
+    }),
+  ),
+  result: Type.Optional(
+    Type.Object({
+      status: Type.Optional(Type.String()),
+      error: Type.Optional(Type.String()),
+      terminalEntryId: Type.Optional(Type.String()),
+      contributions: Type.Optional(
+        Type.Array(Type.Object({ id: Type.String(), usage: Type.Unknown() })),
+      ),
+      accountingPending: Type.Optional(
+        Type.Object({ terminalCandidate: Type.Optional(Type.String()) }),
+      ),
+      accountingError: Type.Optional(Type.Unknown()),
+    }),
+  ),
+  context: Type.Optional(Type.Unknown()),
+  guidance: Type.Optional(Type.Array(Type.Object({ state: Type.Optional(Type.String()) }))),
+});
+/** The validated agent_runs result details of a fixture tool result message. */
+const runDetails = (/** @type {{ details?: unknown }} */ receipt) => {
+  Assert(RunResultDetailsSchema, receipt.details);
+  return receipt.details;
+};
+/** The agent_runs list inventory recorded in a fixture tool result's details. */
+const RunsInventorySchema = Type.Object({
+  runs: Type.Array(
+    Type.Object({
+      id: Type.String(),
+      sessionId: Type.String(),
+      completed: Type.Boolean(),
+      status: Type.Optional(Type.String()),
+      guidance: Type.Optional(Type.Array(Type.Object({ state: Type.Optional(Type.String()) }))),
+    }),
+  ),
+  nextOffset: Type.Optional(Type.Integer()),
+  total: Type.Optional(Type.Integer()),
+});
+const runsDetails = (/** @type {{ details?: unknown }} */ receipt) => {
+  Assert(RunsInventorySchema, receipt.details);
+  return receipt.details;
+};
+/** Usage and continuation accounting recorded in a completion notice's details. */
+const UsageResultSchema = Type.Object({
+  contributions: Type.Array(Type.Object({ id: Type.String(), usage: Type.Unknown() })),
+  id: Type.String(),
+  owner: Type.String(),
+  status: Type.String(),
+  endedAt: Type.Unknown(),
+  terminalEntryId: Type.String(),
+});
+const UsageResultDetailsSchema = Type.Object({
+  sessionId: Type.String(),
+  sessionFile: Type.String(),
+  result: UsageResultSchema,
+});
+const usageDetails = (/** @type {{ details?: unknown }} */ receipt) => {
+  Assert(UsageResultDetailsSchema, receipt.details);
+  return receipt.details;
+};
+/** Native actor start records published by the runtime under test. */
+const NativeStartSchema = Type.Object({ pid: Type.Integer(), sessionId: Type.String() });
+const nativeStarts = () =>
+  publishedRecords("native-actor-starts.jsonl").map(validating(NativeStartSchema));
+/** Actor tick records published by the runtime under test. */
+const ActorTickSchema = Type.Object({ pid: Type.Integer() });
+const actorTicks = () => publishedRecords("actor-ticks.jsonl").map(validating(ActorTickSchema));
+/** Command poll records published by the runtime under test. */
+const CommandPollSchema = Type.Object({
+  pid: Type.Integer(),
+  reads: Type.Array(
+    Type.Object({
+      file: Type.Optional(Type.String()),
+      position: Type.Optional(Type.Integer()),
+      count: Type.Optional(Type.Integer()),
+      pid: Type.Optional(Type.Integer()),
+      opens: Type.Optional(Type.Integer()),
+      bytes: Type.Optional(Type.Integer()),
+    }),
+  ),
+});
+/** Shell poll records published by the runtime under test. */
+const ShellPollSchema = Type.Object({
+  scans: Type.Integer(),
+  opens: Type.Array(Type.String()),
+});
+const commandPolls = () =>
+  publishedRecords("command-polls.jsonl").map(validating(CommandPollSchema));
+const shellPolls = () => publishedRecords("shell-polls.jsonl").map(validating(ShellPollSchema));
+/** Journal read records published by the runtime under test. */
+const JournalReadSchema = Type.Object({
+  file: Type.String(),
+  pid: Type.Integer(),
+  position: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  count: Type.Integer(),
+});
+const journalReads = () =>
+  publishedRecords("journal-reads.jsonl").map(validating(JournalReadSchema));
+/** The single published request carrying the given prompt, asserted loudly. */
+/** @returns {import("typebox").Static<typeof RequestRecordSchema>} */
+const requestFor = (/** @type {string} */ prompt) => {
+  const found = requests().find((request) => request.prompt === prompt);
+  assert.ok(found !== undefined, `expected a published request for ${prompt}`);
+  return found;
+};
+/** The first published request, asserted loudly. */
+const firstRequest = () => {
+  const [found] = requests();
+  assert.ok(found !== undefined, "expected a published request");
+  return found;
+};
+/** The most recent published request, asserted loudly. */
+/** @returns {import("typebox").Static<typeof RequestRecordSchema>} */
+const lastRequest = () => {
+  const found = requests().at(-1);
+  assert.ok(found !== undefined, "expected a published request");
+  return found;
+};
+/** The active run id, asserted loudly. */
+const currentRunId = () => {
+  assert.ok(runId !== undefined, "expected an active run id");
+  return runId;
+};
+/** Parked-authority metadata recorded at handoff. */
+const ParkedAuthoritySchema = Type.Object({
+  state: Type.String(),
+  digest: Type.String(),
+  sessionId: Type.String(),
+  leafId: Type.String(),
+});
+/** Parked run metadata recorded at handoff. */
+const ParkedRunSchema = Type.Object({ token: Type.String(), state: Type.String() });
+/** A recorded wake-failure witness. */
+const WitnessSchema = Type.Object({ beforeOpen: Type.Unknown() });
+/** Preparation-fault evidence retained by the runtime. */
+const FaultSchema = Type.Object({ file: Type.String(), retained: Type.String() });
+/** A queued native command record. */
+const CommandRecordSchema = Type.Object({
+  prompt: Type.Optional(Type.String()),
+  action: Type.Optional(Type.String()),
+  actorToken: Type.Optional(Type.String()),
+});
+/** A published nested tool result. */
+const NestedResultSchema = Type.Object({ isError: Type.Boolean() });
+/** Session journal entries in retained fault evidence. */
+const JournalEntrySchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  parentSession: Type.Optional(Type.String()),
+  message: Type.Optional(Type.Object({ role: Type.Optional(Type.String()) })),
+});
+/** Subagent notify entries in a physical journal. */
+const NotifyEntrySchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  customType: Type.Optional(Type.String()),
+  details: Type.Object({
+    id: Type.Optional(Type.String()),
+    owner: Type.Optional(Type.String()),
+    completed: Type.Optional(Type.Boolean()),
+    completion: Type.Object({ ownerSessionId: Type.String() }),
+  }),
+});
+/**
+ * @param {import("@earendil-works/pi-coding-agent").SessionEntry} entry
+ * @returns {entry is import("@earendil-works/pi-coding-agent").SessionMessageEntry & {
+ *   message: import("@earendil-works/pi-ai").AssistantMessage,
+ * }}
+ */
+const isAssistantEntry = (entry) => entry.type === "message" && entry.message.role === "assistant";
+/** The first completion notice's content, asserted loudly. */
+const noticeContent = () => {
+  const notice = notices()[0];
+  assert.ok(notice !== undefined, "expected the completion notice");
+  assert.ok(typeof notice.content === "string", "expected a text completion notice");
+  return notice.content;
+};
+/** The completion notice for a run, asserted loudly. */
+const completionNotice = (/** @type {string} */ id) => {
+  const notice = notices().find(
+    (entry) => isCompletionIdentity(entry.details) && entry.details.id === id,
+  );
+  assert.ok(notice !== undefined, `expected the completion notice for ${id}`);
+  assert.ok(typeof notice.content === "string", "expected a text completion notice");
+  return notice.content;
+};
+/** The leading text block of a receipt, asserted loudly. */
+const contentText = (/** @type {{ content: { type?: string, text?: string }[] }} */ receipt) => {
+  const [first] = receipt.content;
+  assert.ok(first !== undefined && first.type === "text", "expected a text content block");
+  return first.text ?? "";
+};
+/** Intercom entries in a child journal. */
+const IntercomJournalEntrySchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  customType: Type.Optional(Type.String()),
+  details: Type.Object({ message: Type.Object({ content: Type.Object({ text: Type.String() }) }) }),
+});
+/** Published completion notice entries in a physical child journal. */
+const CompletionNoticeSchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  customType: Type.Optional(Type.String()),
+  details: Type.Object({
+    id: Type.String(),
+    owner: Type.Optional(Type.String()),
+    completed: Type.Optional(Type.Boolean()),
+    result: Type.Optional(UsageResultSchema),
+  }),
+});
+/** An admission receipt for a queued native command. */
+const AdmissionSchema = Type.Object({
+  id: Type.Optional(Type.String()),
+  action: Type.Optional(Type.String()),
+  runId: Type.Optional(Type.String()),
+  state: Type.Optional(Type.Union([Type.Literal("accepted"), Type.Literal("stale")])),
+  at: Type.Optional(Type.Number()),
+});
+/** A recorded actor exit event. */
+const ExitSchema = Type.Object({ code: Type.Optional(Type.Integer()) });
+/** A run's recorded result summary. */
+const ResultSchema = Type.Object({
+  status: Type.String(),
+  terminalEntryId: Type.Optional(Type.String()),
+  contributions: Type.Optional(Type.Array(Type.Unknown())),
+  accountingPending: Type.Optional(
+    Type.Object({ terminalCandidate: Type.Optional(Type.String()) }),
+  ),
+  accountingError: Type.Optional(Type.String()),
+});
+/** A recorded native spawn failure. */
+const SpawnErrorSchema = Type.Object({ error: Type.String() });
+/** A delayed read marker file. */
+const DelayedReadSchema = Type.Object({ file: Type.String() });
+/** A run's recorded successor run id. */
+const SuccessorSchema = Type.Object({ id: Type.String() });
+/** A run's readiness record. */
+const ReadySchema = Type.Object({ token: Type.String(), pid: Type.Optional(Type.Integer()) });
+/** An actor lock's claim record. */
+const ClaimSchema = Type.Object({ token: Type.String() });
+/** Agent settings written by the fixture and runtime. */
+const SettingsSchema = Type.Object({
+  extensions: Type.Array(Type.String()),
+  defaultProjectTrust: Type.Optional(Type.String()),
+});
+/** Session journal header line: type, working directory, session id. */
+const SessionHeaderSchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  cwd: Type.Optional(Type.String()),
+  id: Type.Optional(Type.String()),
+});
+/** Physical session journal entries written by the runtime. */
+const PhysicalEntrySchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  id: Type.Optional(Type.String()),
+});
+const publishedFiles = (/** @type {string} */ directory) =>
   fs.readdirSync(directory).filter((name) => name.endsWith(".json"));
 /** Parked authority is the digest of every saved byte, read without waking the child. */
-async function parkedAuthority(parked) {
+async function parkedAuthority(/** @type {string} */ parked) {
   if (phase !== "park") {
     return;
   }
-  const authority = readJSON(parked);
+  const authority = readValidated(ParkedAuthoritySchema, parked);
   const original = fs.readFileSync(authority.state);
   assert.equal(authority.digest, createHash("sha256").update(original).digest("hex"));
-  const { PARKED_HISTORY } = await import(pathToFileURL(path.join(repo, "dist/shared/parking.js")));
+  /** @type {typeof import("../../src/shared/parking.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  const { PARKED_HISTORY } = await import(
+    pathToFileURL(path.join(repo, "dist/shared/parking.js")).href
+  );
+  /** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const { nativePeerId } = await import(
-    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js"))
+    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
   );
   const history = () => {
+    /** @type {Promise<{ getBranch: () => unknown }> | { getBranch: () => unknown } | undefined} */
     let found;
+    assert.ok(agentAPI !== undefined, "expected the parent extension API");
     agentAPI.events.emit(PARKED_HISTORY, {
       peer: nativePeerId(authority.sessionId),
-      reply: (reply) => {
+      reply: (
+        /** @type {Promise<{ getBranch: () => unknown }> | { getBranch: () => unknown } | undefined} */ reply,
+      ) => {
         found = reply;
       },
     });
+    assert.ok(found !== undefined, "expected a history reply");
     return found;
   };
-  const starts = () => publishedRecords("native-actor-starts.jsonl").length;
+  const starts = () => nativeStarts().length;
   assert.match(JSON.stringify((await history()).getBranch()), /CHILD_LITERAL_RESULT:PARK_FIRST/);
   // One changed byte past the first read chunks still parses natively but is not this state.
   const at = original.lastIndexOf("x".repeat(64));
@@ -435,25 +968,31 @@ async function parkedAuthority(parked) {
   tampered[at] = "y".charCodeAt(0);
   fs.writeFileSync(authority.state, tampered);
   assert.equal(sdk.readWorkingSession(authority.state).leafId, authority.leafId);
-  await assert.rejects(history(), /not this child's saved generation/);
+  await assert.rejects(async () => history(), /not this child's saved generation/);
   fs.writeFileSync(authority.state, original);
   assert.equal(starts(), 1, "parked reads never wake the child");
 }
-function intercomTexts(sessionFile) {
+function intercomTexts(/** @type {string} */ sessionFile) {
   return fs
     .readFileSync(sessionFile, "utf8")
     .split("\n")
     .filter(Boolean)
-    .map(JSON.parse)
+    .map(parseJournalLine)
     .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
-    .map((entry) => entry.details.message.content.text);
+    .map((entry) => parseValidated(IntercomJournalEntrySchema, entry).details.message.content.text);
 }
-async function failedWake(parked, childCwd, runId) {
+async function failedWake(
+  /** @type {string} */ parked,
+  /** @type {string} */ childCwd,
+  /** @type {string} */ runId,
+) {
+  /** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const { nativePeerId } = await import(
-    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js"))
+    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
   );
-  const launch = readJSON(path.join(runDir(runId), "launch.json"));
-  const peer = nativePeerId(launch.sessionId);
+  const launch = readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"));
+  const peer = nativePeerId(launch.sessionId ?? "");
   const unavailable = `${childCwd}-unavailable`;
   fs.renameSync(childCwd, unavailable);
   try {
@@ -466,8 +1005,8 @@ async function failedWake(parked, childCwd, runId) {
         `wake-outcome-${id}`,
       );
       assert.equal(failure.isError, true, JSON.stringify(failure));
-      assert.match(failure.content[0].text, /saved working directory.*unavailable/i);
-      assert.match(failure.content[0].text, /still queued.*may arrive/i);
+      assert.match(contentText(failure), /saved working directory.*unavailable/i);
+      assert.match(contentText(failure), /still queued.*may arrive/i);
     }
     const inspection = await runsTool().execute(
       "wake-inspect",
@@ -475,10 +1014,10 @@ async function failedWake(parked, childCwd, runId) {
       new AbortController().signal,
     );
     assert.match(
-      inspection.details.lastWakeFailure.reason,
+      runDetails(inspection).lastWakeFailure?.reason ?? "",
       /saved working directory.*unavailable/i,
     );
-    assert.match(inspection.content[0].text, /last wake failure/i);
+    assert.match(contentText(inspection), /last wake failure/i);
     assert.equal(fs.existsSync(parked), true, "a failed wake retains the exact saved state");
   } finally {
     fs.renameSync(unavailable, childCwd);
@@ -491,21 +1030,23 @@ async function failedWake(parked, childCwd, runId) {
   );
   assert.equal(retry.isError, false, JSON.stringify(retry));
   await until(
-    () => intercomTexts(launch.sessionFile).includes("wake-outcome-retry"),
+    () => intercomTexts(launch.sessionFile ?? "").includes("wake-outcome-retry"),
     "restored child publishes retained input",
   );
   assert.deepEqual(
-    intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-outcome-")),
+    intercomTexts(launch.sessionFile ?? "").filter((text) => text.startsWith("wake-outcome-")),
     ["wake-outcome-first", "wake-outcome-second", "wake-outcome-retry"],
   );
 }
-async function failedSdkWake(parked, runId) {
+async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */ runId) {
+  /** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const { nativePeerId } = await import(
-    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js"))
+    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
   );
-  const launch = readJSON(path.join(runDir(runId), "launch.json"));
-  const saved = readJSON(parked);
-  const peer = nativePeerId(launch.sessionId);
+  const launch = readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"));
+  const saved = readValidated(ParkedRunSchema, parked);
+  const peer = nativePeerId(launch.sessionId ?? "");
   fs.unlinkSync(sdkLink);
   fs.mkdirSync(sdkLink);
   fs.writeFileSync(
@@ -519,34 +1060,36 @@ async function failedSdkWake(parked, runId) {
       "wake-sdk-ask",
     );
     assert.equal(failure.isError, true, JSON.stringify(failure));
-    assert.match(failure.content[0].text, /selected-sdk/);
-    assert.match(failure.content[0].text, /still queued.*may arrive/i);
+    assert.match(contentText(failure), /selected-sdk/);
+    assert.match(contentText(failure), /still queued.*may arrive/i);
     const inspection = await runsTool().execute(
       "wake-sdk-inspect",
       { action: "inspect", id: runId },
       new AbortController().signal,
     );
-    assert.match(inspection.details.lastWakeFailure.reason, /selected-sdk/);
+    assert.match(runDetails(inspection).lastWakeFailure?.reason ?? "", /selected-sdk/);
     assert.equal(fs.existsSync(parked), true);
 
-    const processFile = path.join(runDir(runId), "actor.lock/process.json");
-    const failed = readJSON(processFile);
+    const processFile = path.join(runDir(currentRunId()), "actor.lock/process.json");
+    const failed = readValidated(ActorIdentitySchema, processFile);
     await until(() => {
       try {
         process.kill(failed.pid, 0);
         return false;
       } catch (error) {
-        return error.code === "ESRCH";
+        return hasErrorCode(error, "ESRCH");
       }
     }, "the failed restore's exact process exits");
-    const witnessFile = path.join(runDir(runId), `wake-failure-${failed.token}.json`);
-    const witness = readJSON(witnessFile);
+    const witnessFile = path.join(runDir(currentRunId()), `wake-failure-${failed.token}.json`);
+    const witness = readValidated(WitnessSchema, witnessFile);
     assert.deepEqual(witness.beforeOpen, { actorToken: failed.token, parkedToken: saved.token });
     const originalState = fs.readFileSync(saved.state);
+    /** @type {typeof import("../../src/agent/process.ts")} */
+    // oxlint-disable-next-line typescript/no-unsafe-assignment
     const { ensureActor, ownIdentity } = await import(
-      pathToFileURL(path.join(repo, "dist/agent/process.js"))
+      pathToFileURL(path.join(repo, "dist/agent/process.js")).href
     );
-    const base = path.dirname(runDir(runId));
+    const base = path.dirname(runDir(currentRunId()));
     for (const beforeOpen of [
       undefined,
       { actorToken: "another-actor", parkedToken: saved.token },
@@ -554,8 +1097,21 @@ async function failedSdkWake(parked, runId) {
     ]) {
       fs.writeFileSync(witnessFile, JSON.stringify({ ...witness, beforeOpen }));
       // oxlint-disable-next-line no-await-in-loop
-      await assert.rejects(ensureActor(base, launch), /another actor generation/);
-      assert.deepEqual(readJSON(processFile), failed, "ambiguous claim remains untouched");
+      await assert.rejects(
+        ensureActor(
+          base,
+          /** @type {import("../../src/agent/contracts.ts").Launch} */ (
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+            /** @type {unknown} */ (launch)
+          ),
+        ),
+        /another actor generation/,
+      );
+      assert.deepEqual(
+        readValidated(ActorIdentitySchema, processFile),
+        failed,
+        "ambiguous claim remains untouched",
+      );
       assert.deepEqual(fs.readFileSync(saved.state), originalState);
     }
     fs.writeFileSync(witnessFile, JSON.stringify(witness));
@@ -563,7 +1119,13 @@ async function failedSdkWake(parked, runId) {
       // A matching token is not enough while its current process may still be alive.
       const live = { ...ownIdentity(), token: failed.token };
       fs.writeFileSync(processFile, JSON.stringify(live));
-      await ensureActor(base, launch);
+      await ensureActor(
+        base,
+        /** @type {import("../../src/agent/contracts.ts").Launch} */ (
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+          /** @type {unknown} */ (launch)
+        ),
+      );
       assert.equal(fs.readFileSync(processFile, "utf8"), JSON.stringify(live));
       assert.deepEqual(fs.readFileSync(saved.state), originalState);
     } finally {
@@ -581,11 +1143,11 @@ async function failedSdkWake(parked, runId) {
   );
   assert.equal(retry.isError, false, JSON.stringify(retry));
   await until(
-    () => intercomTexts(launch.sessionFile).includes("wake-sdk-retry"),
+    () => intercomTexts(launch.sessionFile ?? "").includes("wake-sdk-retry"),
     "restored child publishes retained input",
   );
   assert.deepEqual(
-    intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-sdk-")),
+    intercomTexts(launch.sessionFile ?? "").filter((text) => text.startsWith("wake-sdk-")),
     ["wake-sdk-original", "wake-sdk-retry"],
   );
 }
@@ -600,7 +1162,7 @@ try {
         "preparation-valid-launch",
       );
       assert.equal(receipt.isError, false, JSON.stringify(receipt));
-      runId = receipt.details.id;
+      runId = runDetails(receipt).id;
       await until(
         () => requests().some((request) => request.prompt === "HOLD:first"),
         "valid child reaches the actual native provider before preparation fails",
@@ -611,36 +1173,41 @@ try {
           runId,
           sessionId: manager.getSessionId(),
           sessionFile: manager.getSessionFile(),
-          childPid: requests().find((request) => request.prompt === "HOLD:first").pid,
+          childPid: requestFor("HOLD:first").pid,
         }),
       );
       const writeFile = fs.writeFileSync;
-      const base = path.dirname(runDir(runId));
+      const base = path.dirname(runDir(currentRunId()));
       let faults = 0;
-      fs.writeFileSync = (file, body, options) => {
-        if (
-          typeof file === "string" &&
-          file.startsWith(base + path.sep) &&
-          file.endsWith(".jsonl") &&
-          options?.flag === "wx" &&
-          faults === 0
-        ) {
-          faults++;
-          const header = JSON.parse(body.split("\n")[0]);
-          assert.equal(header.type, "session");
-          assert.equal(header.cwd, cwd);
-          assert.notEqual(header.id, manager.getSessionId());
-          // Fail the real prepared native session write after partial filesystem progress.
-          const retained = phase === "launch-preparation-fork-failure" ? body : body.slice(0, 17);
-          writeFile(file, retained, options);
-          writeFile(faultFile, JSON.stringify({ file, retained }));
-          if (phase === "launch-preparation-crash") {
-            process.kill(process.pid, "SIGKILL");
+      // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
+      fs.writeFileSync = /** @type {typeof fs.writeFileSync} */ (
+        (file, body, options) => {
+          if (
+            typeof file === "string" &&
+            typeof body === "string" &&
+            file.startsWith(base + path.sep) &&
+            file.endsWith(".jsonl") &&
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+            /** @type {{ flag?: string | number } | undefined} */ (options)?.flag === "wx" &&
+            faults === 0
+          ) {
+            faults++;
+            const header = parseValidated(SessionHeaderSchema, body.split("\n")[0] ?? "");
+            assert.equal(header.type, "session");
+            assert.equal(header.cwd, cwd);
+            assert.notEqual(header.id, manager.getSessionId());
+            // Fail the real prepared native session write after partial filesystem progress.
+            const retained = phase === "launch-preparation-fork-failure" ? body : body.slice(0, 17);
+            writeFile(file, retained, options);
+            writeFile(faultFile, JSON.stringify({ file, retained }));
+            if (phase === "launch-preparation-crash") {
+              process.kill(process.pid, "SIGKILL");
+            }
+            throw Object.assign(new Error("CONTROLLED_NATIVE_PREPARATION_EIO"), { code: "EIO" });
           }
-          throw Object.assign(new Error("CONTROLLED_NATIVE_PREPARATION_EIO"), { code: "EIO" });
+          writeFile(file, body, options);
         }
-        return writeFile(file, body, options);
-      };
+      );
       syncBuiltinESMExports();
       try {
         const failed = await call(
@@ -660,22 +1227,30 @@ try {
         syncBuiltinESMExports();
       }
     }
-    const failedDirectory = path.dirname(readJSON(faultFile).file);
+    const failedDirectory = path.dirname(readValidated(FaultSchema, faultFile).file);
     assert.equal(fs.existsSync(failedDirectory), true, "unpublished native journals are retained");
     assert.equal(fs.existsSync(path.join(failedDirectory, "launch.json")), false);
     assert.equal(fs.existsSync(path.join(failedDirectory, "commands")), false);
     assert.equal(fs.existsSync(path.join(failedDirectory, "actor.lock")), false);
     assert.equal(
-      fs.readFileSync(readJSON(faultFile).file, "utf8"),
-      readJSON(faultFile).retained,
+      fs.readFileSync(readValidated(FaultSchema, faultFile).file, "utf8"),
+      readValidated(FaultSchema, faultFile).retained,
       "preparation errors retain exact native filesystem evidence, including torn writes",
     );
     if (phase === "launch-preparation-fork-failure") {
-      const journal = readJSON(faultFile).retained.trim().split("\n").map(JSON.parse);
-      assert.equal(journal[0].parentSession, manager.getSessionFile());
+      const journal = readValidated(FaultSchema, faultFile)
+        .retained.trim()
+        .split("\n")
+        .map((text) => parseValidated(JournalEntrySchema, text));
+      assert.equal(journal[0]?.parentSession, manager.getSessionFile() ?? "");
       assert.ok(journal.length > 1, "the unpublished fork includes inherited native entries");
       assert.ok(
-        journal.some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+        journal.some(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message !== undefined &&
+            entry.message.role === "toolResult",
+        ),
         "the retained native branch includes prior tool evidence",
       );
     }
@@ -683,24 +1258,27 @@ try {
     const listed = await call("agent_runs", { action: "list" }, "preparation-list-valid");
     assert.equal(listed.isError, false, JSON.stringify(listed));
     assert.deepEqual(
-      listed.details.runs.map((run) => run.id),
+      runsDetails(listed).runs.map((run) => run.id),
       [runId],
     );
     faux.setResponses([fauxAssistantMessage("PREPARATION_COMPLETION_PROCESSED")]);
     fs.writeFileSync(path.join(root, "release-first"), "release");
     await until(
-      () => notices().some((notice) => notice.details.id === runId),
+      () =>
+        notices().some(
+          (notice) => isCompletionIdentity(notice.details) && notice.details.id === runId,
+        ),
       "valid native completion still reaches the journal despite failed preparation",
     );
     await session.waitForIdle();
     assert.equal(notices().length, 1);
     assert.match(
-      notices()[0].content,
+      noticeContent(),
       phase === "launch-preparation-reopen" ? /: stopped\./ : /CHILD_LITERAL_RESULT:HOLD:first/,
     );
     const completed = await call("agent_runs", { action: "list" }, "preparation-list-completed");
     assert.equal(completed.isError, false, JSON.stringify(completed));
-    assert.equal(completed.details.runs[0].completed, true);
+    assert.equal(runsDetails(completed).runs[0]?.completed, true);
     const sibling = await settled(
       await call(
         "delegate",
@@ -712,19 +1290,24 @@ try {
       ),
     );
     assert.equal(sibling.isError, false, JSON.stringify(sibling));
-    assert.equal(sibling.details.output.text, "CHILD_LITERAL_RESULT:PREPARATION_RECOVERY_LITERAL");
+    assert.equal(
+      runDetails(sibling).output?.text ?? "",
+      "CHILD_LITERAL_RESULT:PREPARATION_RECOVERY_LITERAL",
+    );
     assert.deepEqual(
       requests().map((request) => request.prompt),
       ["HOLD:first", "PREPARATION_RECOVERY_LITERAL"],
       "actual provider completion establishes that the failed launch dispatched no child",
     );
-    const starts = publishedRecords("native-actor-starts.jsonl");
+    const starts = nativeStarts();
     assert.deepEqual(
       starts.map((start) => start.sessionId).sort(),
-      [completed.details.runs[0].sessionId, sibling.details.sessionId].sort(),
+      [runsDetails(completed).runs[0]?.sessionId, runDetails(sibling).sessionId].sort((a, b) =>
+        String(a).localeCompare(String(b)),
+      ),
       "only the admitted valid run and recovery sibling initialized native actors",
     );
-    const launchFile = path.join(runDir(runId), "launch.json");
+    const launchFile = path.join(runDir(currentRunId()), "launch.json");
     const originalLaunch = fs.readFileSync(launchFile);
     try {
       fs.writeFileSync(launchFile, "{}");
@@ -741,13 +1324,15 @@ try {
         "polling-launch",
       ),
     );
-    const id = first.details.id;
-    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:POLL_LITERAL");
+    const id = runDetails(first).id;
+    assert.equal(runDetails(first).output?.text ?? "", "CHILD_LITERAL_RESULT:POLL_LITERAL");
     const directory = runDir(id);
     const base = path.dirname(directory);
-    const launch = readJSON(path.join(directory, "launch.json"));
+    const launch = readValidated(LaunchSchema, path.join(directory, "launch.json"));
+    /** @type {{ enqueue: (base: string, launch: unknown, action: string, command: Record<string, unknown>) => string, write: (file: string, value: unknown, exclusive?: boolean) => void }} */
+    // oxlint-disable-next-line typescript/no-unsafe-assignment
     const { enqueue, write } = await import(
-      pathToFileURL(path.join(repo, "dist/agent/storage.js"))
+      pathToFileURL(path.join(repo, "dist/agent/storage.js")).href
     );
     const ids = Array.from({ length: 8 }, () =>
       enqueue(base, launch, "steer", { prompt: "x".repeat(4096) }),
@@ -757,19 +1342,22 @@ try {
       () => receipts.every((file) => fs.existsSync(file)),
       "all eight native stale admissions published",
     );
-    assert.ok(receipts.every((file) => readJSON(file).state === "stale"));
+    assert.ok(receipts.every((file) => readValidated(AdmissionSchema, file).state === "stale"));
     const frozen = receipts.map((file) => fs.readFileSync(file));
-    const polls = () => publishedRecords("command-polls.jsonl");
-    const pid = requests()[0].pid;
-    const ticks = () =>
-      publishedRecords("actor-ticks.jsonl").filter((tick) => tick.pid === pid).length;
+    const polls = () => commandPolls();
+    const pid = firstRequest().pid;
+    const ticks = () => actorTicks().filter((tick) => tick.pid === pid).length;
     const actorScans = () => polls().filter((poll) => poll.pid === pid).length;
     const ownerScans = { count: 0 };
     const readdir = fs.readdirSync;
-    fs.readdirSync = (listed, ...args) => {
-      ownerScans.count += listed === base ? 1 : 0;
-      return readdir(listed, ...args);
-    };
+    // oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for the patch
+    fs.readdirSync = /** @type {typeof fs.readdirSync} */ (
+      (listed, ...args) => {
+        ownerScans.count += listed === base ? 1 : 0;
+        // oxlint-disable-next-line typescript/no-unsafe-argument
+        return readdir(listed, .../** @type {any[]} */ (args));
+      }
+    );
     syncBuiltinESMExports();
     // Idle reconciliation is change-driven: the actor keeps only its liveness tick.
     const settledTick = ticks();
@@ -785,7 +1373,7 @@ try {
     console.log("idle reconciliation scans:", JSON.stringify(idleScans));
     assert.deepEqual(idleScans, { actorCommandScans: 0, parentCompletionScans: 0 });
     // Each new durable command must wake at least one real actor scan before its admission.
-    const rescan = async (count) => {
+    const rescan = async (/** @type {number} */ count) => {
       for (let index = 0; index < count; index++) {
         const probe = enqueue(base, launch, "steer", { prompt: "PROBE" });
         // oxlint-disable-next-line no-await-in-loop
@@ -802,7 +1390,10 @@ try {
       .flatMap((poll) => poll.reads)
       .filter((read) => ids.some((command) => read.file === `${command}.json`));
     const counters = measured.reduce(
-      (sum, read) => ({ opens: sum.opens + read.opens, bytes: sum.bytes + read.bytes }),
+      (/** @type {{ opens: number, bytes: number }} */ sum, read) => ({
+        opens: sum.opens + (read.opens ?? 0),
+        bytes: sum.bytes + (read.bytes ?? 0),
+      }),
       { opens: 0, bytes: 0 },
     );
     console.log("post-admission command I/O:", JSON.stringify(counters));
@@ -817,7 +1408,12 @@ try {
       "CHILD_LITERAL_RESULT:POLL_LITERAL",
     );
     // Same-actor receipt loss must resume validation without reapplying a started command.
-    const changed = path.join(directory, "commands", `${ids[0]}.json`);
+    const changed = path.join(directory, "commands", `${ids[0] ?? ""}.json`);
+    /**
+     * @param {number} from
+     * @param {string} file
+     * @param {number} [reader]
+     */
     const fileReads = (from, file, reader) =>
       polls()
         .slice(from)
@@ -825,15 +1421,17 @@ try {
         .flatMap((poll) => poll.reads)
         .filter((read) => read.file === path.basename(file));
     let from = polls().length;
-    fs.unlinkSync(receipts[0]);
+    const [receiptFile] = receipts;
+    assert.ok(receiptFile !== undefined, "expected the first admission receipt");
+    fs.unlinkSync(receiptFile);
     await rescan(2);
     assert.ok(fileReads(from, changed).length >= 2, "missing receipt resumes body reads");
-    assert.equal(fs.existsSync(receipts[0]), false, "started set still suppresses readmission");
-    fs.writeFileSync(receipts[0], frozen[0]);
+    assert.equal(fs.existsSync(receiptFile), false, "started set still suppresses readmission");
+    fs.writeFileSync(receiptFile, frozen[0] ?? "");
     // A scan that read the receipt-less body may not have published yet; admitting a later
     // probe proves it finished, so it cannot pass for the first mutation's revalidation.
     await rescan(1);
-    const mutate = async (change) => {
+    const mutate = async (/** @type {() => unknown} */ change) => {
       process.kill(pid, "SIGSTOP");
       await until(
         () =>
@@ -849,7 +1447,7 @@ try {
         process.kill(pid, "SIGCONT");
       }
       await until(
-        () => fileReads(from, changed).some((read) => read.bytes > 0),
+        () => fileReads(from, changed).some((read) => (read.bytes ?? 0) > 0),
         "changed admitted body is revalidated",
       );
       const next = polls().length;
@@ -860,7 +1458,7 @@ try {
         "revalidated admitted body becomes skippable again",
       );
     };
-    const original = readJSON(changed);
+    const original = readValidated(AdmissionSchema, changed);
     const fixedTime = 1_700_000_000;
     await mutate(() => {
       write(changed, { ...original, prompt: "y".repeat(4096) });
@@ -879,23 +1477,26 @@ try {
     await mutate(() => write(changed, { ...original, prompt: "short" }));
     await mutate(() => write(changed, { ...original, prompt: "long".repeat(4096) }));
     // A filename is not command identity: a changed body ID requires its own admission.
-    const replacementId = (ids[0][0] === "a" ? "b" : "a") + ids[0].slice(1);
-    assert.notEqual(replacementId, ids[0]);
+    const firstId = ids[0];
+    assert.ok(firstId !== undefined, "expected an enqueued command id");
+    const replacementId = (firstId[0] === "a" ? "b" : "a") + firstId.slice(1);
+    assert.notEqual(replacementId, firstId);
     await mutate(() => write(changed, { ...original, id: replacementId }));
     assert.equal(
-      readJSON(path.join(directory, "admissions", `${replacementId}.json`)).state,
+      readValidated(AdmissionSchema, path.join(directory, "admissions", `${replacementId}.json`))
+        .state,
       "stale",
     );
 
     // Real actor replacement starts with no validation metadata. A lost steer receipt is
     // readmitted stale; the unadmitted predecessor run stays suppressed by its successor.
-    const actor = readJSON(path.join(directory, "actor.lock/process.json"));
+    const actor = readActorIdentity(directory);
     process.kill(pid, "SIGKILL");
     await until(
       () => fs.existsSync(path.join(directory, `exit-${actor.token}.json`)),
       "native launcher witnesses actor death",
     );
-    fs.unlinkSync(receipts[1]);
+    fs.unlinkSync(receipts[1] ?? "");
     fs.unlinkSync(path.join(directory, "admissions", `${id}.json`));
     from = polls().length;
     const cold = await settled(
@@ -905,8 +1506,8 @@ try {
         "polling-cold",
       ),
     );
-    assert.equal(cold.details.output.text, "CHILD_LITERAL_RESULT:POLL_COLD_LITERAL");
-    const coldPid = requests().at(-1).pid;
+    assert.equal(runDetails(cold).output?.text ?? "", "CHILD_LITERAL_RESULT:POLL_COLD_LITERAL");
+    const coldPid = lastRequest().pid;
     assert.notEqual(coldPid, pid);
     await until(
       () =>
@@ -917,7 +1518,7 @@ try {
         ),
       "cold actor validates every retained body before skipping",
     );
-    assert.equal(readJSON(receipts[1]).state, "stale");
+    assert.equal(readValidated(AdmissionSchema, receipts[1] ?? "").state, "stale");
     assert.equal(
       fs.existsSync(path.join(directory, "admissions", `${id}.json`)),
       false,
@@ -932,13 +1533,16 @@ try {
       "CHILD_LITERAL_RESULT:POLL_LITERAL",
     );
     // Even a retained admitted file must still fail validation when its body changes.
-    const coldActor = readJSON(path.join(directory, "actor.lock/process.json"));
+    const coldActor = readActorIdentity(directory);
     write(changed, { ...original, action: "invalid-action" });
     await until(
       () => fs.existsSync(path.join(directory, `exit-${coldActor.token}.json`)),
       "schema-invalid admitted replacement fails the real actor",
     );
-    assert.equal(readJSON(path.join(directory, `exit-${coldActor.token}.json`)).code, 1);
+    assert.equal(
+      readValidated(ExitSchema, path.join(directory, `exit-${coldActor.token}.json`)).code,
+      1,
+    );
   } else if (phase === "invalid-temp-root") {
     const receipt = await settled(
       await call(
@@ -948,7 +1552,10 @@ try {
       ),
       "an invalid legacy result root does not stop native completion delivery",
     );
-    assert.equal(receipt.details.output.text, "CHILD_LITERAL_RESULT:INVALID_ROOT_LITERAL");
+    assert.equal(
+      runDetails(receipt).output?.text ?? "",
+      "CHILD_LITERAL_RESULT:INVALID_ROOT_LITERAL",
+    );
   } else if (phase === "dropped-hints") {
     const first = await settled(
       await call(
@@ -958,16 +1565,19 @@ try {
       ),
       "a completion whose change notification was lost still reaches the idle parent",
     );
-    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:DROPPED_HINT_LITERAL");
+    assert.equal(runDetails(first).output?.text ?? "", "CHILD_LITERAL_RESULT:DROPPED_HINT_LITERAL");
     const next = await settled(
       await call(
         "agent_runs",
-        { action: "continue", id: first.details.id, prompt: "DROPPED_CONTINUE_LITERAL" },
+        { action: "continue", id: runDetails(first).id, prompt: "DROPPED_CONTINUE_LITERAL" },
         "dropped-continue",
       ),
       "the live actor admits a command whose change notification was lost",
     );
-    assert.equal(next.details.output.text, "CHILD_LITERAL_RESULT:DROPPED_CONTINUE_LITERAL");
+    assert.equal(
+      runDetails(next).output?.text ?? "",
+      "CHILD_LITERAL_RESULT:DROPPED_CONTINUE_LITERAL",
+    );
     assert.deepEqual(
       requests().map((request) => request.prompt),
       ["DROPPED_HINT_LITERAL", "DROPPED_CONTINUE_LITERAL"],
@@ -1035,11 +1645,12 @@ try {
     const admissions = path.join(runDir("inventory-0"), "admissions");
     fs.mkdirSync(commands);
     fs.mkdirSync(admissions);
+    /** @type {Map<string, { id: string, runId: string, action: string, state: string, at: number }[]>} */
     const expectedGuidance = new Map();
     for (let index = 0; index < 100; index++) {
       const id = `guidance-${index}`,
         guidanceRunId = `inventory-${Math.floor(index / 2)}`;
-      const state = ["pending", "accepted", "stale"][index % 3];
+      const state = ["pending", "accepted", "stale"][index % 3] ?? "";
       fs.writeFileSync(
         path.join(commands, `${id}.json`),
         JSON.stringify({
@@ -1069,32 +1680,43 @@ try {
     };
     const commandDescriptors = new Set();
     const io = { scans: 0, opens: 0, reads: 0, bytes: 0, maxReadBytes: 0 };
-    fs.readdirSync = (directory, ...args) => {
-      if (directory === commands) {
-        io.scans++;
+    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion, typescript/no-unsafe-argument -- narrowing the fs overloads for the patch
+    fs.readdirSync = /** @type {typeof fs.readdirSync} */ (
+      (directory, ...args) => {
+        if (directory === commands) {
+          io.scans++;
+        }
+        return original.readdir(directory, .../** @type {any[]} */ (args));
       }
-      return original.readdir(directory, ...args);
-    };
-    fs.openSync = (file, ...args) => {
-      const fd = original.open(file, ...args);
-      if (typeof file === "string" && path.dirname(file) === commands) {
-        commandDescriptors.add(fd);
-        io.opens++;
+    );
+    fs.openSync = /** @type {typeof fs.openSync} */ (
+      (file, ...args) => {
+        const fd = original.open(file, ...args);
+        if (typeof file === "string" && path.dirname(file) === commands) {
+          commandDescriptors.add(fd);
+          io.opens++;
+        }
+        return fd;
       }
-      return fd;
-    };
-    fs.readSync = (fd, ...args) => {
-      const bytes = original.read(fd, ...args);
-      if (commandDescriptors.has(fd)) {
-        io.reads++;
-        io.bytes += bytes;
-        io.maxReadBytes = Math.max(io.maxReadBytes, bytes);
+    );
+    fs.readSync = /** @type {typeof fs.readSync} */ (
+      (fd, ...args) => {
+        const bytes = original.read(
+          fd,
+          .../** @type {[NodeJS.ArrayBufferView, number, number, number | null]} */ (args),
+        );
+        if (commandDescriptors.has(fd)) {
+          io.reads++;
+          io.bytes += bytes;
+          io.maxReadBytes = Math.max(io.maxReadBytes, bytes);
+        }
+        return bytes;
       }
-      return bytes;
-    };
+    );
+    // oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion, typescript/no-unsafe-argument
     fs.closeSync = (fd) => {
       commandDescriptors.delete(fd);
-      return original.close(fd);
+      original.close(fd);
     };
     syncBuiltinESMExports();
     let inventory;
@@ -1110,7 +1732,9 @@ try {
       syncBuiltinESMExports();
     }
     console.log("inventory command I/O:", JSON.stringify(io));
-    const text = inventory.content.map((block) => block.text ?? "").join("\n");
+    const text = inventory.content
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("\n");
     assert.ok(
       Buffer.byteLength(text) < 100 * 1024,
       `metadata inventory was ${Buffer.byteLength(text)} bytes`,
@@ -1121,7 +1745,7 @@ try {
     assert.ok(io.maxReadBytes <= 64 * 1024, `bounded individual reads: ${io.maxReadBytes}`);
     assert.ok(io.bytes >= 100 * 256 * 1024, "the actual large command spool was read");
     assert.ok(io.bytes < 100 * (256 * 1024 + 1024), `command bytes read: ${io.bytes}`);
-    const page = JSON.parse(text);
+    const page = parseValidated(RunsInventorySchema, text);
     assert.equal(page.total, 51);
     assert.equal(page.runs.length, 50);
     assert.equal(page.nextOffset, 50);
@@ -1143,21 +1767,22 @@ try {
     );
     const last = await call("agent_runs", { action: "list", offset: 50 }, "inventory-next-page");
     assert.deepEqual(
-      last.details.runs.map((run) => run.id),
+      runsDetails(last).runs.map((run) => run.id),
       ["inventory-50"],
     );
-    assert.equal(last.details.nextOffset, undefined);
+    assert.equal(runsDetails(last).nextOffset, undefined);
     const inspected = await call(
       "agent_runs",
       { action: "inspect", id: "inventory-0", length: 32 },
       "inventory-explicit-inspect",
     );
-    assert.equal(inspected.details.output.text, "INVENTORY_OUTPUT_0:" + "x".repeat(13));
-    assert.equal(inspected.details.output.nextOffset, 32);
-    for (const guidance of expectedGuidance.get("inventory-0")) {
+    assert.equal(runDetails(inspected).output?.text ?? "", "INVENTORY_OUTPUT_0:" + "x".repeat(13));
+    assert.equal(runDetails(inspected).output?.nextOffset, 32);
+    for (const guidance of expectedGuidance.get("inventory-0") ?? []) {
       assert.ok(
-        inspected.content.some((block) =>
-          block.text?.includes(`${guidance.id}: ${guidance.state}`),
+        inspected.content.some(
+          (block) =>
+            block.type === "text" && block.text.includes(`${guidance.id}: ${guidance.state}`),
         ),
       );
     }
@@ -1176,20 +1801,22 @@ try {
         : []),
     ];
     for (const [reference, model, thinking] of selections) {
-      const prompt = `MODEL_SELECTION:${reference}`;
-      const selected = `single-agent-fixture/${reference}`;
+      const prompt = `MODEL_SELECTION:${reference ?? ""}`;
+      const selected = `single-agent-fixture/${reference ?? ""}`;
       // oxlint-disable-next-line no-await-in-loop
       const launched = await call("delegate", { prompt, model: selected }, prompt);
       // oxlint-disable-next-line no-await-in-loop
       const receipt = await settled(launched);
       assert.equal(receipt.isError, false, JSON.stringify(receipt));
-      assert.equal(receipt.details.model, `single-agent-fixture/${model}`);
-      assert.equal(receipt.details.thinking, thinking);
-      const request = requests().find((entry) => entry.prompt === prompt);
-      assert.ok(request, "real child provider received the requested selection");
+      assert.equal(runDetails(receipt).model, `single-agent-fixture/${model ?? ""}`);
+      assert.equal(runDetails(receipt).thinking, thinking);
+      const request = requestFor(prompt);
       assert.equal(request.model, model);
       assert.equal(request.thinking ?? "off", thinking);
-      const launch = readJSON(path.join(runDir(receipt.details.id), "launch.json"));
+      const launch = readValidated(
+        LaunchSchema,
+        path.join(runDir(runDetails(receipt).id), "launch.json"),
+      );
       assert.equal(launch.model, model);
       assert.equal(launch.thinking, thinking);
     }
@@ -1215,7 +1842,7 @@ try {
       assert.deepEqual(fs.readdirSync(base).sort(), before, "no failed launch is allocated");
       assert.equal(requests().length, requestCount, "no alternate model receives a request");
     }
-    assert.equal(session.model.id, "parent-model");
+    assert.equal(session.model?.id, "parent-model");
     assert.equal(session.thinkingLevel, "high");
   } else if (phase === "seed" || phase === "receipt" || phase === "receipt-sessionless") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
@@ -1225,15 +1852,15 @@ try {
       "launch-original",
     );
     assert.equal(receipt.isError, false, JSON.stringify(receipt));
-    assert.equal(receipt.details.receipt, "launch");
-    runId = receipt.details.id;
+    assert.equal(runDetails(receipt).receipt, "launch");
+    runId = runDetails(receipt).id;
     await until(
       () => requests().some((request) => request.prompt === prompt),
       "actual child native provider starts",
     );
-    assert.equal(fs.existsSync(path.join(runDir(runId), "result.json")), false);
-    assert.equal(receipt.details.completed, false);
-    const observedRequest = requests().find((request) => request.prompt === prompt);
+    assert.equal(fs.existsSync(path.join(runDir(currentRunId()), "result.json")), false);
+    assert.equal(runDetails(receipt).completed, false);
+    const observedRequest = requestFor(prompt);
     assert.equal(observedRequest.root, manager.getSessionId());
     assert.equal(observedRequest.parent, manager.getSessionId());
     const nativeContext = JSON.stringify(observedRequest.context);
@@ -1253,16 +1880,19 @@ try {
       // Inspection observes held work without waiting for, waking or interrupting it.
       const held = await call("agent_runs", { action: "inspect", id: runId }, "inspect-held");
       assert.equal(held.isError, false, JSON.stringify(held));
-      assert.equal(held.details.status, "running");
-      assert.equal(held.details.completed, false);
-      assert.equal(held.details.process.live, true);
-      assert.equal(fs.existsSync(path.join(runDir(runId), "stop-acknowledged.json")), false);
+      assert.equal(runDetails(held).status, "running");
+      assert.equal(runDetails(held).completed, false);
+      assert.equal(runDetails(held).process?.live, true);
+      assert.equal(
+        fs.existsSync(path.join(runDir(currentRunId()), "stop-acknowledged.json")),
+        false,
+      );
       assert.equal(requests().filter((request) => request.prompt === prompt).length, 1);
       faux.setResponses([fauxAssistantMessage("NOTIFICATION_PROCESSED")]);
       fs.writeFileSync(path.join(root, "release-first"), "release");
       await until(() => notices().length === 1, "actual native completion publishes");
       await session.waitForIdle();
-      assert.match(notices()[0].content, /: completed\. \nCHILD_LITERAL_RESULT:HOLD:first/);
+      assert.match(noticeContent(), /: completed\. \nCHILD_LITERAL_RESULT:HOLD:first/);
       assert.equal(resultEntries("launch-original").length, 1);
       assert.equal(session.getSessionStats().cost, 0);
       // Inspection scans completions before rendering; a duplicate would steer this turn.
@@ -1272,32 +1902,34 @@ try {
         "inspect-complete",
       );
       assert.equal(
-        inspection.details.process.live,
+        runDetails(inspection).process?.live,
         true,
         "idle actor stays messageable while main attached",
       );
-      assert.equal(inspection.details.nativeReceipt, notices()[0].id);
+      assert.equal(runDetails(inspection).nativeReceipt, notices()[0]?.id);
       assert.equal(notices().length, 1, "a later completion scan publishes no duplicate");
-      const owned = path.dirname(runDir(runId));
+      const owned = path.dirname(runDir(currentRunId()));
       const effects = () =>
         JSON.stringify({
           runs: fs.readdirSync(owned).sort(),
-          commands: fs.readdirSync(path.join(runDir(runId), "commands")).sort(),
+          commands: fs.readdirSync(path.join(runDir(currentRunId()), "commands")).sort(),
           requests: requests().length,
           notices: notices().length,
         });
       const before = effects();
       const model = "single-agent-fixture/literal-model";
-      for (const [index, [tool, args]] of [
+      /** @type {[string, Record<string, unknown>][]} */
+      const retiredCalls = [
         ["delegate", { prompt: "RETIRED_BLOCKING_LAUNCH", model, async: false }],
         ["delegate", { prompt: "RETIRED_ASYNC_FLAG", model, async: true }],
         ["agent_runs", { action: "wait", id: runId }],
         ["agent_runs", { action: "continue", id: runId, prompt: "RETIRED_WAIT", async: false }],
-      ].entries()) {
+      ];
+      for (const [index, [tool, args]] of retiredCalls.entries()) {
         // oxlint-disable-next-line no-await-in-loop
         const rejected = await call(tool, args, `retired-blocking-${index}`);
         assert.equal(rejected.isError, true, JSON.stringify(rejected));
-        assert.match(rejected.content[0].text, new RegExp(`^Validation failed for tool "${tool}"`));
+        assert.match(contentText(rejected), new RegExp(`^Validation failed for tool "${tool}"`));
         assert.equal(effects(), before, "native validation rejects retired input before effects");
       }
     }
@@ -1312,23 +1944,32 @@ try {
       { prompt: "PARK_FIRST", model, ...(phase === "park-wake-outcome" ? { cwd: childCwd } : {}) },
       "park-launch",
     );
-    runId = receipt.details.id;
+    runId = runDetails(receipt).id;
     faux.setResponses([fauxAssistantMessage("PARK_NOTICE")]);
     await until(() => notices().length === 1, "first child completion publishes");
     await session.waitForIdle();
-    const first = requests().find((request) => request.prompt === "PARK_FIRST");
+    const first = requestFor("PARK_FIRST");
     if (phase === "park-shells") {
-      const { ownIdentity } = await import(pathToFileURL(path.join(repo, "dist/agent/process.js")));
-      const { write } = await import(pathToFileURL(path.join(repo, "dist/agent/storage.js")));
-      const actor = readJSON(path.join(runDir(runId), "actor.lock", "process.json"));
-      const ledger = path.join(runDir(runId), "shells", actor.token);
+      /** @type {typeof import("../../src/agent/process.ts")} */
+      // oxlint-disable-next-line typescript/no-unsafe-assignment
+      const { ownIdentity } = await import(
+        pathToFileURL(path.join(repo, "dist/agent/process.js")).href
+      );
+      /** @type {{ write: (file: string, value: unknown, exclusive?: boolean) => void }} */
+      // oxlint-disable-next-line typescript/no-unsafe-assignment
+      const { write } = await import(pathToFileURL(path.join(repo, "dist/agent/storage.js")).href);
+      const actor = readActorIdentity(runDir(currentRunId()));
+      const ledger = path.join(runDir(currentRunId()), "shells", actor.token);
       const sleepers = Array.from({ length: 3 }, () =>
         spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
           detached: true,
           stdio: "ignore",
         }),
       );
-      const stop = async (child) => {
+      const stop = async (
+        /** @type {import("node:child_process").ChildProcess | undefined} */ child,
+      ) => {
+        assert.ok(child !== undefined, "expected a sleeper process");
         if (child.exitCode === null && child.signalCode === null) {
           const exited = new Promise((resolve) => {
             child.once("exit", resolve);
@@ -1352,11 +1993,12 @@ try {
         Array.from({ length: 580 }).forEach((_, index) => {
           write(path.join(ledger, `history-${index}.json`), claims[0]);
         });
-        const claim = (name, identity) => write(path.join(ledger, name), identity);
+        const claim = (/** @type {string} */ name, /** @type {unknown} */ identity) =>
+          write(path.join(ledger, name), identity);
         claim("live.json", claims[1]);
         const polls = () => {
           const file = path.join(root, "shell-polls.jsonl");
-          return fs.existsSync(file) ? publishedRecords("shell-polls.jsonl") : [];
+          return fs.existsSync(file) ? shellPolls() : [];
         };
         fs.writeFileSync(path.join(root, "advance-clock"), "");
         await until(() => polls().length > 0, "the due-idle actor validates its shell set");
@@ -1371,7 +2013,10 @@ try {
             ),
           "a live witness avoids rereading the historical shell set on recurring idle checks",
         );
-        const rescan = async (change, name) => {
+        const rescan = async (
+          /** @type {() => void | Promise<void>} */ change,
+          /** @type {string} */ name,
+        ) => {
           const start = polls().length;
           await change();
           await until(
@@ -1381,8 +2026,8 @@ try {
                 .some((poll) => poll.scans > 0 && poll.opens.includes(name)),
             `the actor revalidates the current shell set and discovers ${name}`,
           );
-          assert.equal(fs.existsSync(path.join(runDir(runId), "parked.json")), false);
-          assert.equal(fs.existsSync(path.join(runDir(runId), "park-failed.json")), false);
+          assert.equal(fs.existsSync(path.join(runDir(currentRunId()), "parked.json")), false);
+          assert.equal(fs.existsSync(path.join(runDir(currentRunId()), "park-failed.json")), false);
         };
         await rescan(async () => {
           claim("new.json", claims[2]);
@@ -1402,7 +2047,7 @@ try {
       }
     }
     fs.writeFileSync(path.join(root, "advance-clock"), "");
-    const parked = path.join(runDir(runId), "parked.json");
+    const parked = path.join(runDir(currentRunId()), "parked.json");
     if (phase === "park-orphan") {
       // This owner dies while the child's native save is blocked (official Pi stays resident).
       const forked = typeof sdk.writeWorkingSession === "function";
@@ -1429,7 +2074,7 @@ try {
         "parking preparation blocks",
       );
       faux.setResponses([fauxAssistantMessage("PARK_RACED_NOTICE")]);
-      const commands = path.join(runDir(runId), "commands");
+      const commands = path.join(runDir(currentRunId()), "commands");
       const earlier = fs.readdirSync(commands).length;
       const continued = call(
         "agent_runs",
@@ -1443,27 +2088,27 @@ try {
       fs.writeFileSync(path.join(root, "release-save"), "");
       const accepted = await continued;
       assert.equal(accepted.isError, false, JSON.stringify(accepted));
-      const raced = await settled(accepted.details.id, "raced continuation completes");
-      assert.equal(raced.details.result.status, "completed");
-      const second = requests().find((request) => request.prompt === "PARK_RACED");
-      assert.equal(second?.pid, first.pid, "the resident actor runs it");
+      const raced = await settled(runDetails(accepted).id, "raced continuation completes");
+      assert.equal(runDetails(raced).result?.status, "completed");
+      const second = requestFor("PARK_RACED");
+      assert.equal(second.pid, first.pid, "the resident actor runs it");
     } else if (typeof sdk.writeWorkingSession !== "function") {
       // Official Pi cannot capture exact working state, so the actor stays resident.
       await until(() => fs.existsSync(path.join(root, "clock-advanced")), "idle period passes");
       faux.setResponses([fauxAssistantMessage("RESIDENT_NOTICE")]);
       await call("agent_runs", { action: "continue", id: runId, prompt: "PARK_SECOND" }, "stay");
       await until(() => requests().some((request) => request.prompt === "PARK_SECOND"), "turn");
-      const second = requests().find((request) => request.prompt === "PARK_SECOND");
+      const second = requestFor("PARK_SECOND");
       assert.equal(second.pid, first.pid);
       assert.deepEqual(
         ["parked.json", "park-failed.json"].filter((name) =>
-          fs.existsSync(path.join(runDir(runId), name)),
+          fs.existsSync(path.join(runDir(currentRunId()), name)),
         ),
         [],
       );
     } else {
       const outcome = path.join(
-        runDir(runId),
+        runDir(currentRunId()),
         ["park", "park-shells", "park-wake-outcome", "park-sdk-outcome"].includes(phase)
           ? "parked.json"
           : "park-failed.json",
@@ -1487,7 +2132,7 @@ try {
           "park-refused",
         );
         assert.equal(refused.isError, true, JSON.stringify(refused));
-        assert.match(refused.content[0].text, /without saving its exact working state/);
+        assert.match(contentText(refused), /without saving its exact working state/);
         assert.equal(fs.existsSync(parked), false);
         assert.equal(
           requests().some((request) => request.prompt === "PARK_SECOND"),
@@ -1511,13 +2156,15 @@ try {
           () => requests().some((request) => request.prompt === "PARK_SECOND"),
           "restored actor runs the next turn",
         );
-        const second = requests().find((request) => request.prompt === "PARK_SECOND");
+        const second = requestFor("PARK_SECOND");
         assert.notEqual(second.pid, first.pid);
         assert.match(JSON.stringify(second.context), /CHILD_LITERAL_RESULT:PARK_FIRST/);
         assert.equal(requests().filter((request) => request.prompt === "PARK_FIRST").length, 1);
         assert.equal(fs.existsSync(parked), false);
-        const journal = fs.readdirSync(runDir(runId)).find((name) => name.endsWith(".jsonl"));
-        const saved = fs.readFileSync(path.join(runDir(runId), journal), "utf8");
+        const journal = fs
+          .readdirSync(runDir(currentRunId()))
+          .find((name) => name.endsWith(".jsonl"));
+        const saved = fs.readFileSync(path.join(runDir(currentRunId()), journal ?? ""), "utf8");
         assert.match(
           saved,
           /"customType":"park-fixture-save"/,
@@ -1529,21 +2176,21 @@ try {
     faux.setResponses([fauxAssistantMessage("RECOVERY_NOTIFICATION")]);
     await until(() => false, "must die at actual native append boundary");
   } else if (phase === "resume" || phase === "reopen") {
-    assert.notEqual(process.pid, seed.pid);
+    assert.notEqual(process.pid, seed?.pid);
     faux.setResponses([fauxAssistantMessage("RECOVERY_NOTIFICATION")]);
     await until(() => notices().length === 1, "fresh native parent receives canonical completion");
     await session.waitForIdle();
     assert.equal(resultEntries("launch-original").length, 1);
-    assert.match(notices()[0].content, /: stopped\./);
+    assert.match(noticeContent(), /: stopped\./);
     const inspection = await call(
       "agent_runs",
       { action: "inspect", id: runId },
       `inspect-${phase}`,
     );
-    assert.equal(inspection.details.completed, true);
-    assert.equal(inspection.details.nativeReceipt, notices()[0].id);
+    assert.equal(runDetails(inspection).completed, true);
+    assert.equal(runDetails(inspection).nativeReceipt, notices()[0]?.id);
     assert.equal(
-      requests().filter((request) => request.prompt?.startsWith("HOLD:first")).length,
+      requests().filter((request) => request.prompt?.startsWith("HOLD:first") === true).length,
       1,
     );
   } else if (phase === "bash-before-registration") {
@@ -1554,7 +2201,7 @@ try {
       `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(path.join(root, "original-work-started"))},'started');setInterval(()=>{},1000);`,
     );
     const file = path.join(agentDir, "settings.json"),
-      configured = readJSON(file);
+      configured = readValidated(SettingsSchema, file);
     fs.writeFileSync(
       file,
       JSON.stringify({
@@ -1570,17 +2217,17 @@ try {
       },
       "prefix-held-launch",
     );
-    const id = launched.details.id;
+    const id = runDetails(launched).id;
     await until(() => fs.existsSync(prefixReady), "actual native shell enters configured prefix");
     const pid = Number(fs.readFileSync(prefixReady, "utf8"));
-    const actorPid = requests()[0].pid;
+    const actorPid = firstRequest().pid;
     process.kill(actorPid, "SIGKILL");
-    const dead = (target) => {
+    const dead = (/** @type {number} */ target) => {
       try {
         process.kill(target, 0);
         return false;
       } catch (error) {
-        return error.code === "ESRCH";
+        return hasErrorCode(error, "ESRCH");
       }
     };
     await until(() => dead(actorPid), "actor actually dies before recorder execution");
@@ -1602,22 +2249,22 @@ try {
       ),
     );
     assert.equal(continued.isError, false, JSON.stringify(continued));
-    assert.equal(continued.details.status, "completed");
-    assert.notEqual(continued.details.id, id);
+    assert.equal(runDetails(continued).status, "completed");
+    assert.notEqual(runDetails(continued).id, id);
     const interrupted = await call(
       "agent_runs",
       { action: "inspect", id },
       "inspect-superseded-interrupted-run",
     );
-    assert.equal(interrupted.details.process.live, true, "replacement remains messageable");
+    assert.equal(runDetails(interrupted).process?.live, true, "replacement remains messageable");
     assert.equal(
-      interrupted.details.status,
+      runDetails(interrupted).status,
       "interrupted",
       "replacement actor liveness must not resurrect an unfinished predecessor",
     );
-    assert.equal(interrupted.details.completed, false, "no predecessor result was fabricated");
+    assert.equal(runDetails(interrupted).completed, false, "no predecessor result was fabricated");
     const inventory = await call("agent_runs", { action: "list" }, "list-after-actor-crash");
-    assert.equal(inventory.details.runs.find((run) => run.id === id).status, "interrupted");
+    assert.equal(runsDetails(inventory).runs.find((run) => run.id === id)?.status, "interrupted");
     assert.equal(fs.existsSync(path.join(runDir(id), "result.json")), false);
   } else if (
     phase === "bash-seed" ||
@@ -1640,12 +2287,12 @@ try {
       "bash-launch",
     );
     assert.equal(receipt.isError, false);
-    runId = receipt.details.id;
+    runId = runDetails(receipt).id;
     await until(
       () => fs.existsSync(path.join(root, "shell-family.json")),
       "native bash launches real owned shell family",
     );
-    const family = readJSON(path.join(root, "shell-family.json"));
+    const family = readValidated(FamilySchema, path.join(root, "shell-family.json"));
     await until(
       () =>
         [family.pid, family.descendant].every((pid) =>
@@ -1660,37 +2307,37 @@ try {
         sessionFile: manager.getSessionFile(),
         sessionId: manager.getSessionId(),
         pid: process.pid,
-        childPid: requests()[0].pid,
+        childPid: firstRequest().pid,
         family,
       }),
     );
     if (["bash-seed-paused", "bash-shutdown-stale", "bash-shutdown-timezone"].includes(phase)) {
-      process.kill(requests()[0].pid, "SIGSTOP");
+      process.kill(firstRequest().pid, "SIGSTOP");
       await until(
         () =>
-          spawnSync("ps", ["-p", String(requests()[0].pid), "-o", "state="], {
+          spawnSync("ps", ["-p", String(firstRequest().pid), "-o", "state="], {
             encoding: "utf8",
           }).stdout.includes("T"),
         "suspend the actor's parent watcher to exercise cold process/shell recovery",
       );
     }
     if (phase.startsWith("bash-shutdown-")) {
-      const processFile = path.join(runDir(runId), "actor.lock/process.json");
-      const actor = readJSON(processFile);
-      const ledger = path.join(runDir(runId), "shells", actor.token);
-      const original = path.join(ledger, publishedFiles(ledger)[0]);
-      const shell = readJSON(original);
+      const processFile = path.join(runDir(currentRunId()), "actor.lock/process.json");
+      const actor = readValidated(ActorIdentitySchema, processFile);
+      const ledger = path.join(runDir(currentRunId()), "shells", actor.token);
+      const original = path.join(ledger, publishedFiles(ledger)[0] ?? "");
+      const shell = readValidated(ShellRecordSchema, original);
       const publishedAt = fs.statSync(original).mtime;
-      const dead = (pid) => {
+      const dead = (/** @type {number} */ pid) => {
         try {
           process.kill(pid, 0);
           return false;
         } catch (error) {
-          assert.equal(error.code, "ESRCH");
+          assert.ok(hasErrorCode(error, "ESRCH"));
           return true;
         }
       };
-      const signalIfLive = (pid, signal) => {
+      const signalIfLive = (/** @type {number} */ pid, /** @type {NodeJS.Signals} */ signal) => {
         if (!dead(pid)) {
           process.kill(pid, signal);
         }
@@ -1702,13 +2349,20 @@ try {
           if (process.platform === "android") {
             // A controller clock correction must not disprove a live native owner.
             const claim = fs.readFileSync(processFile);
+            /** @type {typeof import("../../src/agent/process.ts")} */
+            // oxlint-disable-next-line typescript/no-unsafe-assignment
             const { ensureActor } = await import(
               pathToFileURL(path.join(repo, "dist/agent/process.js")).href
             );
             Date.now = () => now() + 300000;
             await ensureActor(
-              path.dirname(runDir(runId)),
-              readJSON(path.join(runDir(runId), "launch.json")),
+              path.dirname(runDir(currentRunId())),
+              /** @type {import("../../src/agent/contracts.ts").Launch} */ (
+                // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+                /** @type {unknown} */ (
+                  readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"))
+                )
+              ),
             );
             assert.deepEqual(
               fs.readFileSync(processFile),
@@ -1734,7 +2388,9 @@ try {
           } else {
             process.env.TZ = zone;
           }
-          const claimed = fs.existsSync(processFile) ? readJSON(processFile).pid : actor.pid;
+          const claimed = fs.existsSync(processFile)
+            ? readValidated(ActorIdentitySchema, processFile).pid
+            : actor.pid;
           for (const pid of new Set([claimed, actor.pid, shell.pid])) {
             signalIfLive(-pid, "SIGKILL");
           }
@@ -1749,7 +2405,7 @@ try {
           process.kill(actor.pid, "SIGKILL");
           await until(
             () =>
-              fs.existsSync(path.join(runDir(runId), `exit-${actor.token}.json`)) &&
+              fs.existsSync(path.join(runDir(currentRunId()), `exit-${actor.token}.json`)) &&
               dead(actor.pid),
             "native exit receipt proves the actor is gone",
           );
@@ -1761,13 +2417,17 @@ try {
         const idle = ["-e", "setInterval(()=>{},1000)"];
         const leader = spawn(process.execPath, idle, { detached: true, stdio: "ignore" });
         const member = spawn(process.execPath, idle, { stdio: "ignore" });
-        assert.ok(leader.pid && member.pid);
+        assert.ok(leader.pid !== undefined && member.pid !== undefined);
         const extras = ["stale-leader", "stale-member", "ambiguous"].map((name) =>
           path.join(ledger, `${name}.json`),
         );
         try {
           const [leaderView, memberView, shellView] = [leader.pid, member.pid, shell.pid].map(
             processView,
+          );
+          assert.ok(
+            leaderView !== undefined && memberView !== undefined && shellView !== undefined,
+            "expected stand-in views",
           );
           assert.equal(leaderView.group, leader.pid, "detached stand-in leads its group");
           assert.notEqual(memberView.group, member.pid, "inherited-group stand-in is no leader");
@@ -1787,7 +2447,7 @@ try {
             { ...shell, pid: member.pid, identity: "unverified" },
             shell,
           ].forEach((record, index) => {
-            const file = path.join(ledger, names[index]);
+            const file = path.join(ledger, names[index] ?? "");
             fs.writeFileSync(file, JSON.stringify(record));
             // Keep the shell's real publication time, as records published before PID reuse have.
             fs.utimesSync(file, publishedAt, publishedAt);
@@ -1811,8 +2471,11 @@ try {
       };
       await (phase === "bash-shutdown-timezone" ? stopAcrossZones() : stopWithStaleClaims());
     } else if (phase === "bash-parent-reuse") {
-      const file = path.join(path.dirname(runDir(runId)), "attachment.json");
-      const attachment = readJSON(file);
+      const file = path.join(path.dirname(runDir(currentRunId())), "attachment.json");
+      const attachment = readValidated(
+        Type.Object({ pid: Type.Integer(), identity: Type.Optional(Type.String()) }),
+        file,
+      );
       const publishedAt = fs.statSync(file).mtime;
       assert.equal(attachment.pid, process.pid);
       assert.equal(processView(process.pid).group, process.pid, "parent leads its native group");
@@ -1827,11 +2490,11 @@ try {
         ],
         { detached: true, stdio: "ignore" },
       );
-      assert.ok(bystander.pid);
+      assert.ok(bystander.pid !== undefined);
       bystander.unref();
       fs.writeFileSync(
         seedFile,
-        JSON.stringify({ ...readJSON(seedFile), bystanderPid: bystander.pid }),
+        JSON.stringify({ ...readValidated(SeedSchema, seedFile), bystanderPid: bystander.pid }),
       );
       await until(() => fs.existsSync(beat), "later native bystander publishes readiness");
       assert.notEqual(processView(bystander.pid).birth, processView(process.pid).birth);
@@ -1843,30 +2506,33 @@ try {
       process.kill(process.pid, "SIGKILL");
     }
   } else if (phase === "cold-actor-stop") {
-    const directory = runDir(runId);
+    const directory = runDir(currentRunId());
     const processFile = path.join(directory, "actor.lock/process.json");
-    const identity = readJSON(processFile);
+    const identity = readValidated(ActorIdentitySchema, processFile);
     const actorPublishedAt = fs.statSync(processFile).mtime;
     const ledger = path.join(directory, "shells", identity.token);
-    const recordFile = path.join(ledger, publishedFiles(ledger)[0]);
-    const shell = readJSON(recordFile);
+    const recordFile = path.join(ledger, publishedFiles(ledger)[0] ?? "");
+    const shell = readValidated(ShellRecordSchema, recordFile);
     const publishedAt = fs.statSync(recordFile).mtime;
     // Another user's live PID answers the non-signaling probe with EPERM. PID 1 is excluded.
-    const deniedProbe = (pid) => {
+    const deniedProbe = (/** @type {number} */ pid) => {
       try {
         process.kill(pid, 0);
+        return;
       } catch (error) {
-        return error.code;
+        return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
       }
     };
+    const getuid = process.getuid;
+    assert.ok(getuid !== undefined, "expected a unix uid");
     const deniedPid = spawnSync("ps", ["-A", "-o", "pid=", "-o", "uid="], { encoding: "utf8" })
       .stdout.trim()
       .split("\n")
       .map((line) => line.trim().split(/\s+/).map(Number))
-      .find(([pid, uid]) => pid > 1 && uid !== process.getuid() && deniedProbe(pid) === "EPERM")
+      .find(([pid = -1, uid = -1]) => pid > 1 && uid !== getuid() && deniedProbe(pid) === "EPERM")
       ?.at(0);
     if (deniedPid === undefined) {
-      const superuser = process.getuid() === 0;
+      const superuser = getuid() === 0;
       assert.ok(superuser || process.platform !== "darwin", "macOS users always see root daemons");
       console.error(
         `Skipped permission-denied shell claims: ${superuser ? "root may signal every PID" : "no live PID owned by another user is visible"}.`,
@@ -1885,13 +2551,13 @@ try {
     );
     assert.equal(blocked.isError, true, JSON.stringify(blocked));
     assert.match(JSON.stringify(blocked.content), /Owned native shell work remains live/);
-    const pending = readJSON(path.join(directory, "successor.json")).id;
+    const pending = readValidated(SuccessorSchema, path.join(directory, "successor.json")).id;
     const pendingFiles = [
       path.join(runDir(pending), "launch.json"),
       path.join(directory, "commands", `${pending}.json`),
     ];
     const queued = pendingFiles.map((file) => fs.readFileSync(file));
-    assert.equal(readJSON(pendingFiles[0]).prompt, prompt);
+    assert.equal(readValidated(CommandRecordSchema, pendingFiles[0] ?? "").prompt, prompt);
     assert.equal(fs.existsSync(path.join(directory, "admissions", `${pending}.json`)), false);
     const stillBlocked = await call(
       "agent_runs",
@@ -1916,7 +2582,7 @@ try {
     try {
       await until(() => fs.existsSync(path.join(root, "bystander-heartbeat")), "bystander ready");
       const beat = path.join(root, "bystander-heartbeat");
-      const survives = async (why) => {
+      const survives = async (/** @type {string} */ why) => {
         const size = fs.statSync(beat).size;
         await until(() => fs.statSync(beat).size > size, why);
       };
@@ -1939,6 +2605,7 @@ try {
         fs.writeFileSync(processFile, JSON.stringify(identity));
         fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
       }
+      assert.ok(bystander.pid !== undefined, "expected a bystander pid");
       const view = processView(bystander.pid);
       assert.notEqual(view.group, bystander.pid, "bystander is not a group leader");
       assert.notEqual(view.birth, processView(shell.pid).birth, "bystander has a different birth");
@@ -1981,9 +2648,10 @@ try {
           JSON.stringify(denied.content),
           mutation.token === shell.token ? unproven : /Foreign or missing native shell identity/,
         );
+        assert.ok(seed !== undefined && seed.family !== undefined, "expected a shell family");
         process.kill(seed.family.pid, 0);
         process.kill(seed.family.descendant, 0);
-        process.kill(bystander.pid, 0);
+        process.kill(bystander.pid ?? -1, 0);
         assert.equal(commands(), beforeCommands);
       }
       // A shell PID now held by a different-birth non-leader proves that claim's shell is gone.
@@ -1998,7 +2666,10 @@ try {
         }).stdout.trim();
         assert.match(age, /^(\d+-)?(\d+:)?\d+:\d+$/);
         const [days, clock] = age.includes("-") ? age.split("-") : ["0", age];
-        const [seconds = 0, minutes = 0, hours = 0] = clock.split(":").map(Number).reverse();
+        const [seconds = 0, minutes = 0, hours = 0] = (clock ?? "0:0:0")
+          .split(":")
+          .map(Number)
+          .reverse();
         const born =
           Date.now() - ((Number(days) * 24 + hours) * 3600 + minutes * 60 + seconds) * 1000;
         // The claim was published a minute before that birth, as one written before a reboot.
@@ -2009,20 +2680,24 @@ try {
       fs.writeFileSync(recordFile, JSON.stringify(shell));
       const stopped = await call("agent_runs", { action: "stop", id: runId }, "orphan-stop");
       assert.equal(stopped.isError, false, JSON.stringify(stopped));
-      assert.equal(stopped.details.stopRequest, undefined, "dead actor cannot read a stop command");
-      assert.equal(stopped.details.stopAcknowledged, false);
-      assert.equal(stopped.details.completed, false);
-      assert.equal(stopped.details.process.exitKnown, false);
-      const dead = (pid) => {
+      assert.equal(
+        runDetails(stopped).stopRequest,
+        undefined,
+        "dead actor cannot read a stop command",
+      );
+      assert.equal(runDetails(stopped).stopAcknowledged, false);
+      assert.equal(runDetails(stopped).completed, false);
+      assert.equal(runDetails(stopped).process?.exitKnown, false);
+      const dead = (/** @type {number} */ pid) => {
         try {
           process.kill(pid, 0);
           return false;
         } catch (error) {
-          return error.code === "ESRCH";
+          return hasErrorCode(error, "ESRCH");
         }
       };
       await until(
-        () => [shell.pid, seed.family.pid, seed.family.descendant].every(dead),
+        () => [shell.pid, seed?.family?.pid ?? -1, seed?.family?.descendant ?? -1].every(dead),
         "cold Stop kills actual orphan shell group",
       );
       if (birthProof) {
@@ -2034,8 +2709,8 @@ try {
       await survives("unrelated process survives completed cold Stop");
       const reused = await call("agent_runs", { action: "stop", id: runId }, "stale-only-stop");
       assert.equal(reused.isError, false, JSON.stringify(reused));
-      assert.equal(reused.details.stopRequest, undefined);
-      assert.match(reused.details.note, /No matching live actor or owned shell/);
+      assert.equal(runDetails(reused).stopRequest, undefined);
+      assert.match(runDetails(reused).note ?? "", /No matching live actor or owned shell/);
       await survives("reused PID survives Stop of its stale claim");
       const distinct = await call(
         "agent_runs",
@@ -2044,7 +2719,7 @@ try {
       );
       assert.equal(distinct.isError, true, JSON.stringify(distinct));
       assert.match(JSON.stringify(distinct.content), /awaiting native admission.*retry/i);
-      const retryWithout = async (file, expected) => {
+      const retryWithout = async (/** @type {string} */ file, /** @type {RegExp} */ expected) => {
         const held = `${file}.held`;
         fs.renameSync(file, held);
         try {
@@ -2061,12 +2736,14 @@ try {
           fs.renameSync(held, file);
         }
       };
-      for (const [file, expected] of [
+      /** @type {[string | undefined, RegExp][]} */
+      const retries = [
         [pendingFiles[1], /awaiting native admission.*retry/i],
         [processFile, /Actor launch is ambiguous/],
-      ]) {
+      ];
+      for (const [file, expected] of retries) {
         // oxlint-disable-next-line no-await-in-loop
-        await retryWithout(file, expected);
+        await retryWithout(file ?? "", expected);
       }
       const recovered = await settled(
         await call(
@@ -2076,10 +2753,13 @@ try {
         ),
       );
       assert.equal(recovered.isError, false, JSON.stringify(recovered));
-      assert.equal(recovered.details.id, pending, "retry resumes the same durable run");
-      assert.equal(recovered.details.result.status, "completed");
-      assert.equal(recovered.details.output.text, `CHILD_LITERAL_RESULT:${prompt}`);
-      assert.equal(recovered.details.sessionFile, readJSON(pendingFiles[0]).sessionFile);
+      assert.equal(runDetails(recovered).id, pending, "retry resumes the same durable run");
+      assert.equal(runDetails(recovered).result?.status, "completed");
+      assert.equal(runDetails(recovered).output?.text ?? "", `CHILD_LITERAL_RESULT:${prompt}`);
+      assert.equal(
+        runDetails(recovered).sessionFile,
+        readValidated(LaunchSchema, pendingFiles[0] ?? "").sessionFile,
+      );
       assert.deepEqual(
         pendingFiles.map((file) => fs.readFileSync(file)),
         queued,
@@ -2088,7 +2768,7 @@ try {
       assert.equal(fs.existsSync(path.join(runDir(pending), "successor.json")), false);
       assert.equal(fs.existsSync(path.join(directory, "result.json")), false);
       assert.equal(
-        readJSON(path.join(directory, "admissions", `${pending}.json`)).runId,
+        readValidated(AdmissionSchema, path.join(directory, "admissions", `${pending}.json`)).runId,
         pending,
         "the actual replacement actor admits the saved command",
       );
@@ -2097,7 +2777,7 @@ try {
         ["BASH_HOLD_LITERAL", prompt],
         "the first prompt is neither lost nor replayed and distinct retries never execute",
       );
-      const journal = sdk.SessionManager.open(recovered.details.sessionFile);
+      const journal = sdk.SessionManager.open(runDetails(recovered).sessionFile ?? "");
       assert.equal(
         journal
           .getEntries()
@@ -2124,9 +2804,11 @@ try {
       fs.rmSync(stale, { force: true });
       fs.rmSync(foreign, { force: true });
       fs.writeFileSync(recordFile, JSON.stringify(shell));
+      assert.ok(bystander.pid !== undefined, "expected the bystander pid");
       process.kill(bystander.pid, "SIGKILL");
     }
   } else if (phase === "cold-stop") {
+    assert.ok(seed !== undefined && seed.family !== undefined, "expected a shell family");
     const family = seed.family;
     const heartbeat = path.join(root, `heartbeat-${family.pid}`);
     const before = fs.statSync(heartbeat).size;
@@ -2134,8 +2816,8 @@ try {
       () => fs.statSync(heartbeat).size > before,
       "native shell keeps executing after actual main SIGKILL",
     );
-    const processFile = path.join(runDir(runId), "actor.lock/process.json");
-    const identity = readJSON(processFile);
+    const processFile = path.join(runDir(currentRunId()), "actor.lock/process.json");
+    const identity = readValidated(ActorIdentitySchema, processFile);
     fs.writeFileSync(
       processFile,
       JSON.stringify({ ...identity, identity: "different process birth" }),
@@ -2146,13 +2828,19 @@ try {
       process.kill(identity.pid, 0);
       process.kill(family.pid, 0);
       process.kill(family.descendant, 0);
-      assert.equal(fs.existsSync(path.join(runDir(runId), "stop-acknowledged.json")), false);
+      assert.equal(
+        fs.existsSync(path.join(runDir(currentRunId()), "stop-acknowledged.json")),
+        false,
+      );
     } finally {
       fs.writeFileSync(processFile, JSON.stringify(identity));
     }
-    const ledger = path.join(runDir(runId), "shells", identity.token);
-    const shell = readJSON(path.join(ledger, publishedFiles(ledger)[0]));
-    const kill = process.kill;
+    const ledger = path.join(runDir(currentRunId()), "shells", identity.token);
+    const shell = readValidated(
+      ShellRecordSchema,
+      path.join(ledger, publishedFiles(ledger)[0] ?? ""),
+    );
+    const kill = process.kill.bind(process);
     let stopping = false,
       raced = false;
     let stop;
@@ -2201,44 +2889,50 @@ try {
       try {
         kill(identity.pid, "SIGCONT");
       } catch (error) {
-        assert.equal(error.code, "ESRCH");
+        assert.ok(hasErrorCode(error, "ESRCH"));
       }
     }
     assert.equal(raced, true, "native shell exits between successful liveness and birth lookup");
     assert.equal(stop.isError, false, JSON.stringify(stop));
-    assert.equal(stop.details.stopAcknowledged, false);
-    assert.equal(stop.details.process.exitKnown, false);
+    assert.equal(runDetails(stop).stopAcknowledged, false);
+    assert.equal(runDetails(stop).process?.exitKnown, false);
     await until(
-      () => fs.existsSync(path.join(runDir(runId), "stop-acknowledged.json")),
+      () => fs.existsSync(path.join(runDir(currentRunId()), "stop-acknowledged.json")),
       "native actor actually handles stop",
     );
-    const dead = (pid) => {
+    const dead = (/** @type {number} */ pid) => {
       try {
         process.kill(pid, 0);
         return false;
       } catch (error) {
-        return error.code === "ESRCH";
+        return hasErrorCode(error, "ESRCH");
       }
     };
     await until(
       () => [identity.pid, family.pid, family.descendant].every(dead),
       "actor and actual native shell/descendant exit",
     );
-    assert.equal(readJSON(path.join(runDir(runId), "result.json")).status, "stopped");
-    const inspected = await call("agent_runs", { action: "inspect", id: runId }, "stopped-inspect");
-    assert.equal(inspected.details.process.live, false);
     assert.equal(
-      inspected.details.process.exitKnown,
+      readValidated(ResultSchema, path.join(runDir(currentRunId()), "result.json")).status,
+      "stopped",
+    );
+    const inspected = await call("agent_runs", { action: "inspect", id: runId }, "stopped-inspect");
+    assert.equal(runDetails(inspected).process?.live, false);
+    assert.equal(
+      runDetails(inspected).process?.exitKnown,
       false,
       "a cold liveness proof cannot invent the unavailable process exit code",
     );
   } else if (phase === "resume-stopped-bash") {
     await until(
-      () => notices().some((notice) => notice.details.id === runId),
+      () =>
+        notices().some(
+          (notice) => isCompletionIdentity(notice.details) && notice.details.id === runId,
+        ),
       "resumed parent observes the child's stopped result",
     );
     await session.waitForIdle();
-    const original = readJSON(path.join(runDir(runId), "launch.json"));
+    const original = readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"));
     const continued = await settled(
       await call(
         "agent_runs",
@@ -2247,11 +2941,14 @@ try {
       ),
     );
     assert.equal(continued.isError, false, JSON.stringify(continued));
-    assert.equal(continued.details.sessionId, original.sessionId);
-    assert.equal(continued.details.sessionFile, original.sessionFile);
-    assert.equal(continued.details.output.text, "CHILD_LITERAL_RESULT:INSPECT_INTERRUPTED_WORK");
-    const resumed = requests().find((request) => request.prompt === "INSPECT_INTERRUPTED_WORK");
-    assert.notEqual(resumed.pid, seed.childPid);
+    assert.equal(runDetails(continued).sessionId, original.sessionId);
+    assert.equal(runDetails(continued).sessionFile, original.sessionFile);
+    assert.equal(
+      runDetails(continued).output?.text ?? "",
+      "CHILD_LITERAL_RESULT:INSPECT_INTERRUPTED_WORK",
+    );
+    const resumed = requestFor("INSPECT_INTERRUPTED_WORK");
+    assert.notEqual(resumed.pid, seed?.childPid);
     assert.match(JSON.stringify(resumed.context), /owned-native-shell/);
     assert.equal(
       requests().filter((request) => request.prompt === "BASH_HOLD_LITERAL").length,
@@ -2259,12 +2956,12 @@ try {
       "continuation retains the old conversation without replaying its interrupted command",
     );
   } else if (phase === "foreign" || phase === "fork-owner") {
-    assert.notEqual(manager.getSessionId(), seed.sessionId);
+    assert.notEqual(manager.getSessionId(), seed?.sessionId);
     const listed = await call("agent_runs", { action: "list" }, "foreign-list");
-    assert.deepEqual(listed.details.runs, []);
+    assert.deepEqual(runsDetails(listed).runs, []);
     const denied = await call(
       "agent_runs",
-      { action: "inspect", id: seed.runId },
+      { action: "inspect", id: seed?.runId ?? "" },
       "foreign-inspect",
     );
     assert.equal(denied.isError, true);
@@ -2273,37 +2970,37 @@ try {
     const receipt = await settled(
       await call(
         "agent_runs",
-        { action: "continue", id: seed.runId, prompt: "COLD_FROZEN_LITERAL" },
+        { action: "continue", id: seed?.runId ?? "", prompt: "COLD_FROZEN_LITERAL" },
         "cold-continue",
       ),
     );
     assert.equal(receipt.isError, false, JSON.stringify(receipt));
-    const saved = readJSON(path.join(runDir(seed.runId), "launch.json"));
-    assert.equal(receipt.details.sessionFile, saved.sessionFile);
-    assert.equal(receipt.details.thinking, "high");
-    assert.equal(receipt.details.model, "single-agent-fixture/literal-model");
-    const observed = requests().find((request) => request.prompt === "COLD_FROZEN_LITERAL");
-    assert.notEqual(observed.pid, seed.childPid);
+    const saved = readValidated(LaunchSchema, path.join(runDir(seed?.runId ?? ""), "launch.json"));
+    assert.equal(runDetails(receipt).sessionFile, saved.sessionFile);
+    assert.equal(runDetails(receipt).thinking, "high");
+    assert.equal(runDetails(receipt).model, "single-agent-fixture/literal-model");
+    const observed = requestFor("COLD_FROZEN_LITERAL");
+    assert.notEqual(observed.pid, seed?.childPid);
     assert.match(JSON.stringify(observed.context), /EXACT untouched prompt Ω/);
     const startsBefore = new Set(requests().map((request) => request.pid)).size;
-    fs.renameSync(saved.sessionFile, saved.sessionFile + ".held");
+    fs.renameSync(saved.sessionFile ?? "", `${saved.sessionFile ?? ""}.held`);
     try {
       const denied = await call(
         "agent_runs",
-        { action: "continue", id: receipt.details.id, prompt: "MUST_NOT_START_LITERAL" },
+        { action: "continue", id: runDetails(receipt).id, prompt: "MUST_NOT_START_LITERAL" },
         "missing-session",
       );
       assert.equal(denied.isError, true);
       assert.equal(new Set(requests().map((request) => request.pid)).size, startsBefore);
     } finally {
-      fs.renameSync(saved.sessionFile + ".held", saved.sessionFile);
+      fs.renameSync(`${saved.sessionFile ?? ""}.held`, saved.sessionFile ?? "");
     }
-    const savedLaunch = path.join(runDir(receipt.details.id), "launch.json");
+    const savedLaunch = path.join(runDir(runDetails(receipt).id), "launch.json");
     fs.renameSync(savedLaunch, savedLaunch + ".held");
     try {
       const denied = await call(
         "agent_runs",
-        { action: "continue", id: receipt.details.id, prompt: "MUST_NOT_START_LITERAL" },
+        { action: "continue", id: runDetails(receipt).id, prompt: "MUST_NOT_START_LITERAL" },
         "missing-launch",
       );
       assert.equal(denied.isError, true);
@@ -2327,7 +3024,7 @@ try {
       "queued-launch",
     );
     assert.equal(receipt.isError, false);
-    runId = receipt.details.id;
+    runId = runDetails(receipt).id;
     const queuedRuns = [{ id: runId, prompt: "HOLD:queue", release: "queue" }];
     await until(
       () => requests().some((request) => request.prompt === "HOLD:queue"),
@@ -2344,7 +3041,7 @@ try {
       );
       assert.equal(second.isError, false, JSON.stringify(second));
       queuedRuns.push({
-        id: second.details.id,
+        id: runDetails(second).id,
         prompt: "HOLD:queuesecond",
         release: "queuesecond",
       });
@@ -2365,26 +3062,40 @@ try {
           .filter(
             (message) => message.role === "custom" && message.customType === "agent-completion",
           )
-          .map((message) => message.details.id)
-          .sort();
+          .map((message) =>
+            "details" in message && isCompletionIdentity(message.details)
+              ? message.details.id
+              : undefined,
+          )
+          .sort((a, b) => (a ?? "").localeCompare(b ?? ""));
       } finally {
         session.agent.steeringMode = steering;
         session.agent.followUpMode = followUp;
       }
     };
-    const scanCall = (id) =>
+    const scanCall = (/** @type {string} */ id) =>
       fauxAssistantMessage(
-        [{ type: "toolCall", id, name: "agent_runs", arguments: { action: "inspect", id: runId } }],
+        [
+          {
+            type: "toolCall",
+            id,
+            name: "agent_runs",
+            arguments: { action: "inspect", id: runId ?? "" },
+          },
+        ],
         { stopReason: "toolUse" },
       );
+    /** @type {{ promise: Promise<void>, resolve: () => void }} */
     const entered = Promise.withResolvers();
+    /** @type {import("@earendil-works/pi-ai").Message[] | undefined} */
     let cachePrefix;
+    /** @type {{ receipts: number, prefix: unknown }[]} */
     const deliverySteps = [];
     faux.setResponses([
       async (context, options) => {
         cachePrefix = structuredClone(context.messages);
         entered.resolve();
-        while (!options?.signal?.aborted) {
+        while (options?.signal?.aborted !== true) {
           if (fs.existsSync(path.join(root, "release-parent"))) {
             return phase === "queue-steer"
               ? scanCall("steer-boundary-one")
@@ -2396,21 +3107,21 @@ try {
         }
         return fauxAssistantMessage("PARENT_ABORTED", { stopReason: "aborted" });
       },
-      async (context) => {
+      async (/** @type {{ messages: import("@earendil-works/pi-ai").Message[] }} */ context) => {
         if (phase === "queue-steer") {
           deliverySteps.push({
             receipts: notices().length,
-            prefix: structuredClone(context.messages.slice(0, cachePrefix.length)),
+            prefix: structuredClone(context.messages.slice(0, (cachePrefix ?? []).length)),
           });
           return scanCall("steer-boundary-two");
         }
         return fauxAssistantMessage("NOTIFICATION_CONSUMED");
       },
-      async (context) => {
+      async (/** @type {{ messages: import("@earendil-works/pi-ai").Message[] }} */ context) => {
         if (phase === "queue-steer") {
           deliverySteps.push({
             receipts: notices().length,
-            prefix: structuredClone(context.messages.slice(0, cachePrefix.length)),
+            prefix: structuredClone(context.messages.slice(0, (cachePrefix ?? []).length)),
           });
           return scanCall("steer-boundary-three");
         }
@@ -2424,10 +3135,15 @@ try {
     queuedRuns.forEach((run) => {
       fs.writeFileSync(path.join(root, `release-${run.release}`), "release");
     });
-    const observe = () =>
-      session.agent.state.tools
-        .find((tool) => tool.name === "agent_runs")
-        .execute("queue-barrier", { action: "inspect", id: runId }, new AbortController().signal);
+    const observe = () => {
+      const tool = session.agent.state.tools.find((candidate) => candidate.name === "agent_runs");
+      assert.ok(tool !== undefined, "expected the agent_runs tool");
+      return tool.execute(
+        "queue-barrier",
+        { action: "inspect", id: runId ?? "" },
+        new AbortController().signal,
+      );
+    };
     await until(
       () => queuedRuns.every((run) => fs.existsSync(path.join(runDir(run.id), "result.json"))),
       "both independent children publish their canonical result",
@@ -2440,7 +3156,7 @@ try {
     );
     assert.equal(notices().length, 0);
     assert.equal(
-      inspected.details.nativeReceipt,
+      runDetails(inspected).nativeReceipt,
       null,
       "queue admission is not native publication",
     );
@@ -2492,7 +3208,7 @@ try {
         fs.writeFileSync(legacy, '{"incomplete":');
       }
       inspected = await observe();
-      assert.equal(inspected.details.nativeReceipt, null);
+      assert.equal(runDetails(inspected).nativeReceipt, null);
       assert.equal(
         session.agent.hasQueuedMessages(),
         false,
@@ -2562,16 +3278,17 @@ try {
       try {
         await other.session.bindExtensions({
           mode: "print",
-          onError: (error) => errors.push(error),
+          onError: (error) => {
+            errors.push(error);
+          },
         });
         await other.session.prompt(
           "Settle a different actual native owner while the first owner remains held",
         );
         await other.session.waitForIdle();
-        const terminal = otherManager
-          .getBranch()
-          .findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
-        assert.equal(terminal.message.content[0].text, "OTHER_NATIVE_OWNER_SETTLED");
+        const terminal = otherManager.getBranch().findLast(isAssistantEntry);
+        assert.ok(terminal !== undefined, "expected the terminal assistant message");
+        assert.equal(contentText(terminal.message), "OTHER_NATIVE_OWNER_SETTLED");
         await observe();
         assert.deepEqual(
           queuedIds(),
@@ -2606,37 +3323,34 @@ try {
     await observe();
     assert.deepEqual(
       notices()
-        .map((entry) => entry.details.id)
+        .map((entry) => parseValidated(CompletionNoticeSchema, entry).details.id)
         .sort(),
       expectedIds,
     );
     queuedRuns.forEach((run) => {
-      assert.match(
-        notices().find((entry) => entry.details.id === run.id).content,
-        new RegExp(`CHILD_LITERAL_RESULT:${run.prompt}`),
-      );
+      assert.match(completionNotice(run.id), new RegExp(`CHILD_LITERAL_RESULT:${run.prompt}`));
     });
     if (sessionless) {
       const answered = await call("agent_runs", { action: "list" }, "queue-list-after-receipt");
       assert.equal(answered.isError, false, JSON.stringify(answered));
       assert.deepEqual(
         notices()
-          .map((entry) => entry.details.id)
+          .map((entry) => parseValidated(CompletionNoticeSchema, entry).details.id)
           .sort(),
         expectedIds,
         "settled user turns after native recovery publish no duplicate",
       );
     } else {
       const physical = fs
-        .readFileSync(manager.getSessionFile(), "utf8")
+        .readFileSync(manager.getSessionFile() ?? "", "utf8")
         .trim()
         .split("\n")
-        .map(JSON.parse)
+        .map(parseJournalLine)
         .filter(
           (entry) => entry.type === "custom_message" && entry.customType === "agent-completion",
         );
       assert.deepEqual(
-        physical.map((entry) => entry.details.id).sort(),
+        physical.map((entry) => parseValidated(CompletionNoticeSchema, entry).details.id).sort(),
         expectedIds,
         "each independent completion is physically published once without duplicates",
       );
@@ -2667,19 +3381,20 @@ try {
     const legacyNotices = () =>
       manager
         .getEntries()
-        .filter(
-          (entry) => entry.type === "custom_message" && entry.customType === "subagent-notify",
-        );
+        .filter(isCustomMessageEntry)
+        .filter((entry) => entry.customType === "subagent-notify");
     if (phase === "legacy-mutation") {
-      const file = manager.getSessionFile();
+      const file = manager.getSessionFile() ?? "";
       const stat = fs.statSync(file);
       const before = fs.readFileSync(file, "utf8");
-      const entries = before.trimEnd().split("\n").map(JSON.parse);
+      const entries = before.trimEnd().split("\n").map(parseJournalLine);
       const notice = entries.find(
         (entry) => entry.type === "custom_message" && entry.customType === "subagent-notify",
       );
-      notice.details.completion.ownerSessionId = "0".repeat(manager.getSessionId().length);
-      const changed = entries.map(JSON.stringify).join("\n") + "\n";
+      assert.ok(notice !== undefined, "expected the subagent-notify entry");
+      const validatedNotice = parseValidated(NotifyEntrySchema, notice);
+      validatedNotice.details.completion.ownerSessionId = "0".repeat(manager.getSessionId().length);
+      const changed = entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
       assert.equal(Buffer.byteLength(changed), Buffer.byteLength(before));
       fs.writeFileSync(file, changed);
       fs.utimesSync(file, stat.atime, stat.mtime);
@@ -2689,16 +3404,19 @@ try {
       fs.writeFileSync(hint, JSON.stringify(result));
     }
     if (phase === "legacy-queue") {
+      /** @type {{ promise: Promise<void>, resolve: () => void }} */
       const entered = Promise.withResolvers();
       faux.setResponses([
-        async (_context, options) => {
+        async (_context, /** @type {{ signal?: AbortSignal } | undefined} */ options) => {
           entered.resolve();
           await new Promise((resolve) => {
-            options.signal.addEventListener("abort", resolve, { once: true });
+            options?.signal?.addEventListener("abort", resolve, { once: true });
           });
           return fauxAssistantMessage("PARENT_ABORTED");
         },
       ]);
+      // The parent prompt is intentionally held pending for the whole phase.
+      // oxlint-disable-next-line typescript/no-floating-promises
       void session.prompt("Hold native parent before legacy queue consumption");
       await entered.promise;
       fs.mkdirSync(path.dirname(hint), { recursive: true });
@@ -2757,16 +3475,22 @@ try {
       await session.waitForIdle();
     }
     assert.equal(legacyNotices().length, phase === "legacy-mutation" ? 2 : 1);
-    assert.equal(legacyNotices().at(-1).content, JSON.stringify(result));
+    assert.equal(legacyNotices().at(-1)?.content, JSON.stringify(result));
     if (sessionless) {
+      const legacyFirst = legacyNotices()[0];
+      assert.ok(
+        legacyFirst !== undefined && isCompletionIdentity(legacyFirst.details),
+        "expected the first subagent-notify entry",
+      );
       assert.equal(
-        legacyNotices()[0].details.completion.key,
+        legacyFirst.details.completion?.key,
         "completion:f07bd49a-fd91-4453-85ab-b60fc43f7391",
       );
     }
     // Legacy-again finds its earlier receipt; sessionless adds one completed user turn.
+    /** @type {Record<string, number>} */
     const calls = { "legacy-again": 0, "legacy-sessionless": 3 };
-    assert.equal(faux.state.callCount, calls[phase] ?? 1);
+    assert.equal(/** @type {{ callCount: number }} */ (faux.state).callCount, calls[phase] ?? 1);
     assert.equal(
       manager
         .getEntries()
@@ -2806,20 +3530,23 @@ try {
     assert.equal(requests().length, 0, "incompatible cwd owner fails before provider dispatch");
     assert.match(JSON.stringify(result), /directory|cwd|CWD_OWNER_CONTROLLED_ERROR/i);
     if (phase === "cwd-invalid-missing-setter") {
-      const id = result.details.id;
+      const id = runDetails(result).id;
       const names = ["launch.json", "result.json", "output.txt"];
       const frozen = names.map((name) => fs.readFileSync(path.join(runDir(id), name)));
-      const oldActor = readJSON(path.join(runDir(id), "actor.lock/process.json")).pid;
+      const oldActor = readValidated(
+        ActorIdentitySchema,
+        path.join(runDir(id), "actor.lock/process.json"),
+      );
       await until(() => {
         try {
-          process.kill(oldActor, 0);
+          process.kill(oldActor.pid, 0);
           return false;
         } catch (error) {
-          return error.code === "ESRCH";
+          return hasErrorCode(error, "ESRCH");
         }
       }, "failed startup actor actually exits before repair");
       const file = path.join(agentDir, "settings.json"),
-        configured = readJSON(file);
+        configured = readValidated(SettingsSchema, file);
       fs.writeFileSync(
         file,
         JSON.stringify({
@@ -2843,18 +3570,21 @@ try {
         requests().map((request) => request.prompt),
         ["REPAIRED_CWD_LITERAL"],
       );
-      assert.equal(continued.details.output.text, "CHILD_LITERAL_RESULT:REPAIRED_CWD_LITERAL");
+      assert.equal(
+        runDetails(continued).output?.text ?? "",
+        "CHILD_LITERAL_RESULT:REPAIRED_CWD_LITERAL",
+      );
       names.forEach((name, index) =>
         assert.deepEqual(fs.readFileSync(path.join(runDir(id), name)), frozen[index]),
       );
       const rename = fs.renameSync;
       let faults = 0;
       fs.renameSync = (source, destination) => {
-        if (destination.endsWith("/actor.lock/process.json") && faults === 0) {
+        if (String(destination).endsWith("/actor.lock/process.json") && faults === 0) {
           faults++;
           throw Object.assign(new Error("CONTROLLED_POST_SPAWN_PUBLICATION_EIO"), { code: "EIO" });
         }
-        return rename(source, destination);
+        rename(source, destination);
       };
       syncBuiltinESMExports();
       try {
@@ -2878,13 +3608,16 @@ try {
         "original child actually starts despite foreground publication error",
       );
       const listed = await call("agent_runs", { action: "list" }, "discover-ambiguous-launch");
-      const orphan = listed.details.runs.find(
-        (run) => run.id !== id && run.id !== continued.details.id,
+      const orphan = runsDetails(listed).runs.find(
+        (run) => run.id !== id && run.id !== runDetails(continued).id,
       );
       assert.ok(orphan, "canonical launch remains discoverable after post-spawn write failure");
       assert.equal(orphan.completed, false);
-      const claim = readJSON(path.join(runDir(orphan.id), "actor.lock/claim.json"));
-      const ready = readJSON(path.join(runDir(orphan.id), "ready.json"));
+      const claim = readValidated(
+        ClaimSchema,
+        path.join(runDir(orphan.id), "actor.lock/claim.json"),
+      );
+      const ready = readValidated(ReadySchema, path.join(runDir(orphan.id), "ready.json"));
       assert.equal(
         ready.token,
         claim.token,
@@ -2892,7 +3625,10 @@ try {
       );
       fs.writeFileSync(path.join(root, "release-publication"), "release");
       const original = await settled(orphan.id);
-      assert.equal(original.details.output.text, "CHILD_LITERAL_RESULT:HOLD:publication");
+      assert.equal(
+        runDetails(original).output?.text ?? "",
+        "CHILD_LITERAL_RESULT:HOLD:publication",
+      );
       const originalBytes = names.map((name) =>
         fs.readFileSync(path.join(runDir(orphan.id), name)),
       );
@@ -2908,11 +3644,11 @@ try {
         ),
       );
       assert.equal(retry.isError, false, JSON.stringify(retry));
-      assert.equal(retry.details.sessionFile, original.details.sessionFile);
-      assert.match(retry.details.output.text, /PUBLICATION_RETRY_LITERAL/);
+      assert.equal(runDetails(retry).sessionFile, runDetails(original).sessionFile);
+      assert.match(runDetails(retry).output?.text ?? "", /PUBLICATION_RETRY_LITERAL/);
       assert.equal(requests().filter((r) => r.prompt === "HOLD:publication").length, 1);
       assert.equal(requests().filter((r) => r.prompt === "PUBLICATION_RETRY_LITERAL").length, 1);
-      assert.equal(requests().find((r) => r.prompt === "PUBLICATION_RETRY_LITERAL").pid, ready.pid);
+      assert.equal(requestFor("PUBLICATION_RETRY_LITERAL").pid, ready.pid);
       names.forEach((name, index) =>
         assert.deepEqual(fs.readFileSync(path.join(runDir(orphan.id), name)), originalBytes[index]),
       );
@@ -2925,20 +3661,21 @@ try {
     const first = await settled(
       await call("delegate", { prompt: "PRE_SPAWN_FIRST", cwd: target, model }, "pre-spawn-first"),
     );
-    assert.equal(first.details.output.text, "CHILD_LITERAL_RESULT:PRE_SPAWN_FIRST");
-    const id = first.details.id;
-    const actorPid = requests().find((request) => request.prompt === "PRE_SPAWN_FIRST").pid;
+    assert.equal(runDetails(first).output?.text ?? "", "CHILD_LITERAL_RESULT:PRE_SPAWN_FIRST");
+    const id = runDetails(first).id;
+    const actorPid = requestFor("PRE_SPAWN_FIRST").pid;
     await call("agent_runs", { action: "stop", id }, "pre-spawn-stop");
     await until(() => {
       try {
         process.kill(actorPid, 0);
         return false;
       } catch (error) {
-        return error.code === "ESRCH";
+        return hasErrorCode(error, "ESRCH");
       }
     }, "the resident actor actually exits before its cwd changes");
     const prompt = "PRE_SPAWN_RECOVERED";
     // Each OS refusal happens before any process exists; the next attempt must reach the OS again.
+    /** @type {[string, () => void][]} */
     const refusals = [
       ["ENOENT", () => fs.renameSync(target, moved)],
       ["ENOTDIR", () => fs.writeFileSync(target, "")],
@@ -2950,7 +3687,9 @@ try {
         },
       ],
     ];
-    if (process.getuid() === 0) {
+    const getuid = process.getuid;
+    assert.ok(getuid !== undefined, "expected a unix uid");
+    if (getuid() === 0) {
       refusals.pop();
       console.error("Skipped the EACCES cwd refusal: root may enter a mode-000 directory.");
     }
@@ -2964,17 +3703,17 @@ try {
           `pre-spawn-${code}`,
         );
         assert.equal(refused.isError, true, JSON.stringify(refused));
-        assert.match(refused.content[0].text, new RegExp(`\\b${code}\\b`), "native OS diagnostic");
+        assert.match(contentText(refused), new RegExp(`\\b${code}\\b`), "native OS diagnostic");
       }
       // ENOTDIR throws synchronously; Node reports the other refusals as child errors.
       const saved = refusals.map(([code]) => code).findLast((code) => code !== "ENOTDIR");
       assert.match(
-        readJSON(path.join(runDir(id), "spawn-error.json")).error,
-        new RegExp(`\\b${saved}\\b`),
+        readValidated(SpawnErrorSchema, path.join(runDir(id), "spawn-error.json")).error,
+        new RegExp(`\\b${saved ?? ""}\\b`),
         "asynchronous spawn failures keep their saved native record",
       );
     } finally {
-      if (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
+      if (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() === true) {
         fs.chmodSync(target, 0o700);
         fs.rmdirSync(target);
       } else {
@@ -2986,8 +3725,8 @@ try {
       await call("agent_runs", { action: "continue", id, prompt }, "pre-spawn-recovered"),
     );
     assert.equal(recovered.isError, false, JSON.stringify(recovered));
-    assert.equal(recovered.details.output.text, `CHILD_LITERAL_RESULT:${prompt}`);
-    assert.equal(fs.realpathSync(recovered.details.cwd), fs.realpathSync(target));
+    assert.equal(runDetails(recovered).output?.text ?? "", `CHILD_LITERAL_RESULT:${prompt}`);
+    assert.equal(fs.realpathSync(runDetails(recovered).cwd ?? ""), fs.realpathSync(target));
     assert.deepEqual(
       requests().map((request) => request.prompt),
       ["PRE_SPAWN_FIRST", prompt],
@@ -3002,19 +3741,21 @@ try {
     const active = path.join(root, "active"),
       child = path.join(active, "child");
     const changed = path.join(root, "changed");
-    for (const [directory, literal] of [
+    /** @type {[string, string][]} */
+    const markers = [
       [cwd, "PARENT_A"],
       [active, "ACTIVE_B"],
       [child, "CHILD_C"],
       [changed, "CHANGED_D"],
-    ]) {
+    ];
+    for (const [directory, literal] of markers) {
       fs.mkdirSync(directory, { recursive: true });
       fs.writeFileSync(path.join(directory, "marker.txt"), literal);
     }
     if (phase === "cwd") {
       await call("change_dir", { path: active }, "select-parent-active-b");
       assert.equal(manager.getCwd(), cwd);
-      const before = fs.readFileSync(manager.getSessionFile());
+      const before = fs.readFileSync(manager.getSessionFile() ?? "");
       const first = await settled(
         await call(
           "delegate",
@@ -3028,11 +3769,11 @@ try {
         ),
       );
       assert.equal(first.isError, false, JSON.stringify(first));
-      assert.equal(fs.realpathSync(first.details.cwd), fs.realpathSync(child));
-      assert.match(first.details.output.text, /CHILD_C/);
-      assert.doesNotMatch(first.details.output.text, /ACTIVE_B|PARENT_A/);
+      assert.equal(fs.realpathSync(runDetails(first).cwd ?? ""), fs.realpathSync(child));
+      assert.match(runDetails(first).output?.text ?? "", /CHILD_C/);
+      assert.doesNotMatch(runDetails(first).output?.text ?? "", /ACTIVE_B|PARENT_A/);
       assert.deepEqual(
-        fs.readFileSync(manager.getSessionFile()).subarray(0, before.length),
+        fs.readFileSync(manager.getSessionFile() ?? "").subarray(0, before.length),
         before,
       );
       const moved = await settled(
@@ -3040,26 +3781,32 @@ try {
           "agent_runs",
           {
             action: "continue",
-            id: first.details.id,
+            id: runDetails(first).id,
             prompt: "CWD_CHANGE_AND_READ",
           },
           "child-change-d",
         ),
       );
       assert.equal(moved.isError, false, JSON.stringify(moved));
-      assert.match(moved.details.output.text, /CHANGED_D/);
-      assert.match(moved.details.output.text, new RegExp(changed));
-      runId = moved.details.id;
-      const inherited = readJSON(path.join(runDir(first.details.id), "launch.json"));
-      const header = fs.readFileSync(inherited.sessionFile, "utf8").split("\n")[0];
-      assert.equal(fs.realpathSync(JSON.parse(header).cwd), fs.realpathSync(child));
+      assert.match(runDetails(moved).output?.text ?? "", /CHANGED_D/);
+      assert.match(runDetails(moved).output?.text ?? "", new RegExp(changed));
+      runId = runDetails(moved).id;
+      const inherited = readValidated(
+        LaunchSchema,
+        path.join(runDir(runDetails(first).id), "launch.json"),
+      );
+      const header = fs.readFileSync(inherited.sessionFile ?? "", "utf8").split("\n")[0];
+      assert.equal(
+        fs.realpathSync(parseValidated(SessionHeaderSchema, header ?? "").cwd ?? ""),
+        fs.realpathSync(child),
+      );
       fs.writeFileSync(
         seedFile,
         JSON.stringify({
           runId,
           sessionId: manager.getSessionId(),
           sessionFile: manager.getSessionFile(),
-          childPid: requests()[0].pid,
+          childPid: firstRequest().pid,
           nativeHeader: header,
         }),
       );
@@ -3076,23 +3823,25 @@ try {
         ),
       );
       assert.equal(continued.isError, false, JSON.stringify(continued));
-      assert.match(continued.details.output.text, /CHANGED_D/);
-      assert.match(continued.details.output.text, new RegExp(changed));
+      assert.match(runDetails(continued).output?.text ?? "", /CHANGED_D/);
+      assert.match(runDetails(continued).output?.text ?? "", new RegExp(changed));
       assert.equal(
-        fs.realpathSync(continued.details.cwd),
+        fs.realpathSync(runDetails(continued).cwd ?? ""),
         fs.realpathSync(child),
         "launch snapshot remains C while owner restores D",
       );
       assert.equal(
-        fs.readFileSync(continued.details.sessionFile, "utf8").split("\n")[0],
-        seed.nativeHeader,
+        fs.readFileSync(runDetails(continued).sessionFile ?? "", "utf8").split("\n")[0],
+        seed?.nativeHeader,
       );
-      assert.notEqual(requests().at(-1).pid, seed.childPid);
+      assert.notEqual(lastRequest().pid, seed?.childPid);
     }
+    /** @type {{ sessionManager: unknown, result?: { cwd?: string } }} */
     const selection = { sessionManager: manager };
+    assert.ok(agentAPI !== undefined, "expected the parent extension API");
     agentAPI.events.emit("pi-change-working-dir:resolve-execution-cwd", selection);
     assert.equal(
-      fs.realpathSync(selection.result.cwd),
+      fs.realpathSync(selection.result?.cwd ?? ""),
       fs.realpathSync(active),
       "child cannot mutate parent directory selection",
     );
@@ -3115,7 +3864,7 @@ try {
     `,
     );
     const file = path.join(agentDir, "settings.json"),
-      configured = readJSON(file);
+      configured = readValidated(SettingsSchema, file);
     fs.writeFileSync(
       file,
       JSON.stringify({ ...configured, extensions: [...configured.extensions, extension] }),
@@ -3131,14 +3880,14 @@ try {
       ),
     );
     assert.equal(outcome.isError, false, JSON.stringify(outcome));
-    assert.match(outcome.details.output.text, /CUSTOM_REMOTE_OWNER_OUTPUT/);
-    assert.deepEqual(readJSON(path.join(root, "custom-command.json")), {
+    assert.match(runDetails(outcome).output?.text ?? "", /CUSTOM_REMOTE_OWNER_OUTPUT/);
+    assert.deepEqual(readValidated(CommandRecordSchema, path.join(root, "custom-command.json")), {
       command: "CUSTOM_UNTOUCHED_COMMAND",
     });
-    assert.equal(fs.existsSync(path.join(runDir(outcome.details.id), "shells")), false);
+    assert.equal(fs.existsSync(path.join(runDir(runDetails(outcome).id), "shells")), false);
   } else if (phase === "trust") {
     const globalFile = path.join(agentDir, "settings.json");
-    const globalSettings = readJSON(globalFile);
+    const globalSettings = readValidated(SettingsSchema, globalFile);
     fs.writeFileSync(globalFile, JSON.stringify({ ...globalSettings, defaultProjectTrust: "ask" }));
     for (const decision of ["untrusted", "remembered", "global-policy"]) {
       const target = path.join(root, decision);
@@ -3178,11 +3927,13 @@ try {
       const result = await settled(launched);
       assert.equal(result.isError, false, JSON.stringify(result));
       assert.equal(
-        readJSON(path.join(runDir(result.details.id), "launch.json")).trusted,
+        readValidated(LaunchSchema, path.join(runDir(runDetails(result).id), "launch.json"))
+          .trusted,
         decision !== "untrusted",
       );
       assert.equal(fs.existsSync(marker), decision !== "untrusted");
       const observed = requests().find((request) => request.prompt === `TRUST_LITERAL_${decision}`);
+      assert.ok(observed !== undefined, "expected the trust request");
       assert.match(
         JSON.stringify(observed.context),
         new RegExp(`TARGET_PROJECT_INSTRUCTION_${decision}`),
@@ -3200,30 +3951,33 @@ try {
       ),
     );
     assert.equal(completed.isError, false, JSON.stringify(completed));
-    runId = completed.details.id;
+    runId = runDetails(completed).id;
     assert.equal(notices().length, 1, "the canonical completion notice is the receipt");
-    const file = manager.getSessionFile();
+    const file = manager.getSessionFile() ?? "";
     const stat = fs.statSync(file);
     const before = fs.readFileSync(file, "utf8");
-    const lines = before.trimEnd().split("\n").map(JSON.parse);
+    const lines = before.trimEnd().split("\n").map(parseJournalLine);
     const physicalNotice = lines.find(
       (entry) => entry.type === "custom_message" && entry.details?.id === runId,
     );
-    assert.equal(physicalNotice.details.completed, true);
-    physicalNotice.details.owner = "0".repeat(manager.getSessionId().length);
-    const changed = lines.map(JSON.stringify).join("\n") + "\n";
+    assert.ok(physicalNotice !== undefined, "expected the mutated physical receipt");
+    const validatedNotice = parseValidated(CompletionNoticeSchema, physicalNotice);
+    assert.equal(validatedNotice.details.completed, true);
+    validatedNotice.details.owner = "0".repeat(manager.getSessionId().length);
+    const changed = lines.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
     assert.equal(Buffer.byteLength(changed), Buffer.byteLength(before));
     fs.writeFileSync(file, changed);
     fs.utimesSync(file, stat.atime, stat.mtime);
     faux.setResponses([fauxAssistantMessage("MUTATED_RECEIPT_FALLBACK_CONSUMED")]);
     const raw = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+    assert.ok(raw !== undefined, "expected the agent_runs tool");
     const inspected = await raw.execute(
       "mutation-scan",
       { action: "inspect", id: runId },
       new AbortController().signal,
     );
     assert.equal(
-      inspected.details.nativeReceipt,
+      runDetails(inspected).nativeReceipt,
       null,
       "same-size edited foreign physical receipt overrides stale manager entries",
     );
@@ -3237,7 +3991,7 @@ try {
       { action: "inspect", id: runId },
       new AbortController().signal,
     );
-    assert.equal(reconciled.details.nativeReceipt, notices()[1].id);
+    assert.equal(runDetails(reconciled).nativeReceipt, notices()[1]?.id);
     assert.equal(
       requests().filter((request) => request.prompt === "RECEIPT_MUTATION_LITERAL").length,
       1,
@@ -3251,45 +4005,54 @@ try {
       },
       "delayed-lf-launch",
     );
-    runId = launched.details.id;
+    runId = runDetails(launched).id;
     await until(
-      () => fs.existsSync(path.join(runDir(runId), "result.json")),
+      () => fs.existsSync(path.join(runDir(currentRunId()), "result.json")),
       "native successful result with withheld terminal LF",
     );
-    const pending = readJSON(path.join(runDir(runId), "result.json"));
+    const pending = readValidated(ResultSchema, path.join(runDir(currentRunId()), "result.json"));
     assert.equal(pending.status, "completed");
     assert.equal(pending.terminalEntryId, undefined);
     assert.equal(pending.contributions, undefined);
-    assert.match(pending.accountingError, /LF-published/);
+    assert.match(pending.accountingError ?? "", /LF-published/);
     const incomplete = await settled(runId);
     assert.equal(incomplete.isError, false);
-    assert.equal(incomplete.details.output.text, "CHILD_LITERAL_RESULT:DELAYED_LF_LITERAL");
+    assert.equal(
+      runDetails(incomplete).output?.text ?? "",
+      "CHILD_LITERAL_RESULT:DELAYED_LF_LITERAL",
+    );
     assert.equal(session.getSessionStats().cost, 0);
-    const source = readJSON(path.join(root, "delayed-lf.json")).file;
+    const source = readValidated(DelayedReadSchema, path.join(root, "delayed-lf.json")).file;
     assert.notEqual(fs.readFileSync(source).at(-1), 10);
-    const resultFile = path.join(runDir(runId), "result.json");
+    const resultFile = path.join(runDir(currentRunId()), "result.json");
     const pendingBytes = fs.readFileSync(resultFile);
     const open = fs.openSync;
-    let usageReads = 0;
-    fs.openSync = (file, flags, ...args) => {
-      if (file === source && flags === "r") {
-        usageReads++;
+    /** @type {{ count: number }} */
+    const usageReads = { count: 0 };
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
+    fs.openSync = /** @type {typeof fs.openSync} */ (
+      (file, flags, ...args) => {
+        if (file === source && flags === "r") {
+          usageReads.count++;
+        }
+        return open(file, flags, ...args);
       }
-      return open(file, flags, ...args);
-    };
+    );
     syncBuiltinESMExports();
     try {
       // List while the journal still withholds its LF. Listing waits on live-actor `ps` checks,
       // and once the LF lands the completion owner may legitimately repair billing meanwhile.
       // Any inventory read of the journal still counts here, LF or not.
       const raw = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+      assert.ok(raw !== undefined, "expected the agent_runs tool");
       const listed = await raw.execute(
         "pending-accounting-list",
         { action: "list" },
         new AbortController().signal,
       );
       assert.notEqual(listed.isError, true);
-      const metadata = listed.details.runs.find((run) => run.id === runId);
+      const metadata = runsDetails(listed).runs.find((run) => run.id === runId);
+      assert.ok(metadata !== undefined, "expected the run metadata");
       assert.equal(metadata.status, "completed");
       assert.equal("output" in metadata, false);
       assert.deepEqual(
@@ -3297,15 +4060,19 @@ try {
         pendingBytes,
         "native metadata inventory cannot repair pending accounting",
       );
-      assert.equal(usageReads, 0, "metadata-only reads never open the child usage journal");
+      assert.equal(usageReads.count, 0, "metadata-only reads never open the child usage journal");
       fs.appendFileSync(source, "\n");
       const inspected = await raw.execute(
         "pending-accounting-inspect",
         { action: "inspect", id: runId },
         new AbortController().signal,
       );
-      assert.equal(inspected.details.result.accountingPending, undefined);
-      assert.ok(usageReads > 0, "explicit native inspection still reads and repairs accounting");
+      assert.equal(runDetails(inspected).result?.accountingPending, undefined);
+      assert.ok(
+        // oxlint-disable-next-line typescript/no-unnecessary-condition -- tsc types the annotated counter as number
+        usageReads.count > 0,
+        "explicit native inspection still reads and repairs accounting",
+      );
       assert.notDeepEqual(fs.readFileSync(resultFile), pendingBytes);
       assert.equal(session.getSessionStats().cost, 0, "inspection is not finalized collection");
     } finally {
@@ -3314,14 +4081,14 @@ try {
     }
     const repaired = await call("agent_runs", { action: "inspect", id: runId }, "repaired-usage");
     assert.equal(repaired.isError, false);
-    assert.equal(repaired.details.result.accountingError, undefined);
-    assert.equal(repaired.details.result.accountingPending, undefined);
+    assert.equal(runDetails(repaired).result?.accountingError, undefined);
+    assert.equal(runDetails(repaired).result?.accountingPending, undefined);
     assert.equal(
-      repaired.details.result.terminalEntryId,
-      pending.accountingPending.terminalCandidate,
+      runDetails(repaired).result?.terminalEntryId,
+      pending.accountingPending?.terminalCandidate,
     );
     assert.deepEqual(
-      repaired.details.result.contributions.map((part) => part.usage),
+      runDetails(repaired).result?.contributions?.map((part) => part.usage),
       [childTurnUsage],
       "repaired accounting records the one terminal native turn exactly once",
     );
@@ -3340,7 +4107,7 @@ try {
         ),
       );
       assert.equal(repeated.isError, false, JSON.stringify(repeated));
-      assert.equal(repeated.details.id, seed.runId);
+      assert.equal(runDetails(repeated).id, seed?.runId);
       assert.equal(requests().length, before, "durable adoption cannot replay after native reopen");
     } else {
       const frozenCwd = path.join(root, "legacy-cwd");
@@ -3375,7 +4142,7 @@ try {
       await savedChild.prompt("Original native single-child prompt");
       await savedChild.waitForIdle();
       savedChild.dispose();
-      const header = fs.readFileSync(childManager.getSessionFile(), "utf8").split("\n")[0];
+      const header = fs.readFileSync(childManager.getSessionFile() ?? "", "utf8").split("\n")[0];
       const contract = {
         recordVersion: 3,
         nativeSessionId: childManager.getSessionId(),
@@ -3413,7 +4180,7 @@ try {
         fs.writeFileSync(contractFile, JSON.stringify(contract));
       };
       save();
-      const rejected = async (label) => {
+      const rejected = async (/** @type {string} */ label) => {
         const before = requests().length;
         const response = await call(
           "agent_runs",
@@ -3454,9 +4221,9 @@ try {
       );
       await rejected("non-native");
       save();
-      fs.renameSync(contract.sessionFile, contract.sessionFile + ".held");
+      fs.renameSync(contract.sessionFile ?? "", `${contract.sessionFile ?? ""}.held`);
       await rejected("missing-session");
-      fs.renameSync(contract.sessionFile + ".held", contract.sessionFile);
+      fs.renameSync(`${contract.sessionFile ?? ""}.held`, contract.sessionFile ?? "");
       const continued = await settled(
         await call(
           "agent_runs",
@@ -3469,16 +4236,17 @@ try {
         ),
       );
       assert.equal(continued.isError, false, JSON.stringify(continued));
-      assert.equal(continued.details.sessionFile, contract.sessionFile);
-      assert.equal(continued.details.sessionId, contract.nativeSessionId);
-      assert.equal(continued.details.model, "single-agent-fixture/literal-model");
-      assert.equal(continued.details.thinking, "off");
-      assert.equal(continued.details.cwd, frozenCwd);
-      assert.equal(continued.details.context, "fork");
-      assert.equal(fs.readFileSync(contract.sessionFile, "utf8").split("\n")[0], header);
+      assert.equal(runDetails(continued).sessionFile, contract.sessionFile);
+      assert.equal(runDetails(continued).sessionId, contract.nativeSessionId);
+      assert.equal(runDetails(continued).model, "single-agent-fixture/literal-model");
+      assert.equal(runDetails(continued).thinking, "off");
+      assert.equal(runDetails(continued).cwd, frozenCwd);
+      assert.equal(runDetails(continued).context, "fork");
+      assert.equal(fs.readFileSync(contract.sessionFile ?? "", "utf8").split("\n")[0], header);
       const observed = requests().find(
         (request) => request.prompt === "SAVED_NATIVE_CONTINUATION_7391",
       );
+      assert.ok(observed !== undefined, "expected the saved continuation request");
       assert.equal(observed.cwd, fs.realpathSync(frozenCwd));
       assert.match(JSON.stringify(observed.context), /LEGACY_NATIVE_MEMORY_7391/);
       assert.doesNotMatch(JSON.stringify(observed.context), /MUST_NOT_REVIVE_PROFILE_BODY/);
@@ -3488,14 +4256,14 @@ try {
         { action: "continue", id: legacyId, prompt: "MUST_NOT_REPLAY" },
         "saved-repeat",
       );
-      assert.equal(duplicate.details.id, continued.details.id);
-      assert.equal(duplicate.details.receipt, "existing-successor");
+      assert.equal(runDetails(duplicate).id, runDetails(continued).id);
+      assert.equal(runDetails(duplicate).receipt, "existing-successor");
       assert.equal(requests().length, before);
       fs.writeFileSync(
         seedFile,
         JSON.stringify({
           legacyId,
-          runId: continued.details.id,
+          runId: runDetails(continued).id,
           sessionFile: manager.getSessionFile(),
           sessionId: manager.getSessionId(),
         }),
@@ -3503,13 +4271,17 @@ try {
     }
   } else if (phase === "usage-reopen") {
     assert.equal(session.getSessionStats().cost, 0, "reload does not charge child usage");
-    const repeated = await call("agent_runs", { action: "inspect", id: seed.runId }, "reopened");
+    const repeated = await call(
+      "agent_runs",
+      { action: "inspect", id: seed?.runId ?? "" },
+      "reopened",
+    );
     assert.equal(repeated.usage, undefined);
-    assert.deepEqual(repeated.details.result.contributions, seed.contributions);
+    assert.deepEqual(runDetails(repeated).result?.contributions, seed?.contributions);
     assert.equal(session.getSessionStats().cost, 0);
-    const charged = sdk.SessionManager.open(manager.getSessionFile())
+    const charged = sdk.SessionManager.open(manager.getSessionFile() ?? "")
       .getEntries()
-      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult")
+      .filter(isToolResultEntry)
       .filter((entry) => entry.message.usage !== undefined);
     assert.deepEqual(charged, [], "no physical parent tool result carries child usage");
   } else if (phase === "usage") {
@@ -3518,27 +4290,35 @@ try {
       { prompt: "USAGE_LITERAL", model: "single-agent-fixture/literal-model" },
       "usage-launch",
     );
-    runId = receipt.details.id;
+    runId = runDetails(receipt).id;
     const first = await settled(receipt, "background child completion is physically published");
     assert.equal(notices().length, 1);
     assert.equal(session.getSessionStats().cost, 0, "a completion notice is not a parent charge");
-    const contributions = first.details.result.contributions;
+    const contributions = usageDetails(first).result.contributions;
     assert.deepEqual(
-      contributions.map((part) => [part.id.startsWith(`${first.details.sessionId}:`), part.usage]),
+      contributions.map((part) => [
+        part.id.startsWith(`${usageDetails(first).sessionId}:`),
+        part.usage,
+      ]),
       Array.from({ length: 35 }, () => [true, childTurnUsage]),
       "all 35 real native turns are recorded with exact optional counters",
     );
-    const nativeTurns = sdk.SessionManager.open(first.details.sessionFile)
+    const nativeTurns = sdk.SessionManager.open(usageDetails(first).sessionFile)
       .getEntries()
-      .filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+      .filter(isAssistantEntry);
     assert.deepEqual(
       contributions.map((part) => part.id),
-      nativeTurns.map((entry) => `${first.details.sessionId}:${entry.id}`),
+      nativeTurns.map((entry) => `${usageDetails(first).sessionId}:${entry.id}`),
     );
-    const canonicalFile = path.join(runDir(runId), "result.json");
-    const stored = readJSON(canonicalFile);
-    assert.deepEqual(stored, first.details.result);
-    assert.deepEqual(notices()[0].details.result, first.details.result);
+    const canonicalFile = path.join(runDir(currentRunId()), "result.json");
+    const stored = readValidated(UsageResultSchema, canonicalFile);
+    assert.deepEqual(stored, usageDetails(first).result);
+    const usageNotice = notices()[0];
+    assert.ok(usageNotice !== undefined, "expected the usage notice");
+    assert.deepEqual(
+      parseValidated(CompletionNoticeSchema, usageNotice).details.result,
+      usageDetails(first).result,
+    );
     const extended = {
       ...stored,
       diagnostics: { turns: Array(35).fill("PRIVATE_ACCOUNTING_DIAGNOSTIC") },
@@ -3547,6 +4327,7 @@ try {
     const canonical = fs.readFileSync(canonicalFile);
     for (const state of ["live", "exited"]) {
       const stopId = `usage-stop-${state}`;
+      /** @type {{ content: unknown } | undefined} */
       let downstream;
       // The second Stop observes the first Stop's published process exit.
       // oxlint-disable-next-line no-await-in-loop
@@ -3559,7 +4340,9 @@ try {
         return fauxAssistantMessage("COMPACT_STOP_CONSUMED");
       });
       const fullText = JSON.stringify(stopped.details, null, 2);
-      const text = stopped.content.map((block) => block.text ?? "").join("\n");
+      const text = stopped.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("\n");
       console.log(
         JSON.stringify({
           projection: "stop",
@@ -3570,24 +4353,25 @@ try {
         }),
       );
       assert.deepEqual(
-        JSON.parse(text).result,
+        parseValidated(Type.Object({ result: Type.Unknown() }), text).result,
         {
           id: runId,
           owner: manager.getSessionId(),
           status: "completed",
           endedAt: stored.endedAt,
-          terminalEntryId: nativeTurns.at(-1).id,
+          terminalEntryId: nativeTurns.at(-1)?.id,
         },
         "receipt text selects execution metadata, not per-turn or unknown saved diagnostics",
       );
       assert.doesNotMatch(text, /contributions|PRIVATE_ACCOUNTING_DIAGNOSTIC/);
+      assert.ok(downstream !== undefined, "expected the downstream context");
       assert.deepEqual(
         downstream.content,
         stopped.content,
         "the actual downstream provider context consumes the compact text",
       );
       assert.deepEqual(
-        stopped.details.result,
+        runDetails(stopped).result,
         extended,
         "tool details keep full accounting and unknown saved diagnostics",
       );
@@ -3596,27 +4380,37 @@ try {
         canonical,
         "stop text projection never rewrites canonical accounting",
       );
-      assert.equal(stopped.details.status, "completed");
-      assert.equal(stopped.details.completed, true);
-      assert.equal(stopped.details.stopAcknowledged, false);
-      assert.equal(stopped.details.process.exitKnown, state === "exited");
-      assert.equal(typeof stopped.details.stopRequest, state === "live" ? "string" : "undefined");
+      assert.equal(runDetails(stopped).status, "completed");
+      assert.equal(runDetails(stopped).completed, true);
+      assert.equal(runDetails(stopped).stopAcknowledged, false);
+      assert.equal(runDetails(stopped).process?.exitKnown, state === "exited");
+      assert.equal(
+        typeof runDetails(stopped).stopRequest,
+        state === "live" ? "string" : "undefined",
+      );
       assert.match(
-        stopped.details.note,
+        runDetails(stopped).note ?? "",
         state === "live"
           ? /Stop requested; neither native admission nor process exit is implied/
           : /No matching live actor or owned shell/,
       );
       const emitted = toolEnds.find((event) => event.toolCallId === stopId);
+      assert.ok(
+        emitted !== undefined && emitted.result !== undefined,
+        "expected the emitted stop event",
+      );
       assert.deepEqual(emitted.result.details, stopped.details);
-      const persisted = sdk.SessionManager.open(manager.getSessionFile())
+      const persistedEntry = sdk.SessionManager.open(manager.getSessionFile() ?? "")
         .getEntries()
-        .find(
-          (entry) =>
-            entry.type === "message" &&
-            entry.message.role === "toolResult" &&
-            entry.message.toolCallId === stopId,
-        ).message;
+        .find((entry) => isToolResultEntry(entry) && entry.message.toolCallId === stopId);
+      assert.ok(persistedEntry !== undefined, "expected the persisted stop receipt");
+      // oxlint-disable typescript/no-unsafe-type-assertion -- persisted stop receipts carry the tool-result message
+      const persisted = /** @type {import("@earendil-works/pi-ai").ToolResultMessage} */ (
+        /** @type {import("@earendil-works/pi-coding-agent").SessionMessageEntry} */ (
+          persistedEntry
+        ).message
+      );
+      // oxlint-enable typescript/no-unsafe-type-assertion
       assert.deepEqual(persisted.content, stopped.content);
       assert.deepEqual(persisted.details, JSON.parse(JSON.stringify(stopped.details)));
       if (state === "live") {
@@ -3626,8 +4420,11 @@ try {
           () =>
             fs.existsSync(
               path.join(
-                runDir(runId),
-                "exit-" + readJSON(path.join(runDir(runId), "ready.json")).token + ".json",
+                runDir(currentRunId()),
+                "exit-" +
+                  readValidated(ReadySchema, path.join(runDir(currentRunId()), "ready.json"))
+                    .token +
+                  ".json",
               ),
             ),
           "the completed actor publishes actual process exit before a repeated stop",
@@ -3640,7 +4437,7 @@ try {
           type: "toolCall",
           id,
           name: "agent_runs",
-          arguments: { action: "inspect", id: runId },
+          arguments: { action: "inspect", id: runId ?? "" },
         })),
         { stopReason: "toolUse" },
       ),
@@ -3648,9 +4445,11 @@ try {
     ]);
     await session.prompt("Observe the same child through concurrent native calls");
     for (const id of ["concurrent-one", "concurrent-two"]) {
-      const observed = resultEntries(id)[0].message;
+      const [observedEntry] = resultEntries(id);
+      assert.ok(observedEntry !== undefined, `expected the tool result for ${id}`);
+      const observed = observedEntry.message;
       assert.equal(observed.usage, undefined);
-      assert.deepEqual(observed.details.result.contributions, contributions);
+      assert.deepEqual(usageDetails(observed).result.contributions, contributions);
     }
     assert.equal(notices().length, 1, "duplicate observation publishes no second completion");
     assert.equal(session.getSessionStats().cost, 0);
@@ -3661,8 +4460,8 @@ try {
         "usage-continuation",
       ),
     );
-    assert.equal(next.details.sessionFile, first.details.sessionFile);
-    const later = next.details.result.contributions;
+    assert.equal(usageDetails(next).sessionFile, usageDetails(first).sessionFile);
+    const later = usageDetails(next).result.contributions;
     assert.deepEqual(
       later.map((part) => part.usage),
       [childTurnUsage],
@@ -3673,25 +4472,23 @@ try {
       false,
     );
     assert.equal(session.getSessionStats().cost, 0);
-    const journalReads = () =>
-      publishedRecords("journal-reads.jsonl").filter(
-        (read) => read.file === first.details.sessionFile,
-      );
-    const coldReads = journalReads();
+    const coldReads = journalReads().filter(
+      (read) => read.file === usageDetails(first).sessionFile,
+    );
     const warm = await settled(
       await call(
         "agent_runs",
-        { action: "continue", id: next.details.id, prompt: "USAGE_WARM_LITERAL" },
+        { action: "continue", id: runDetails(next).id, prompt: "USAGE_WARM_LITERAL" },
         "usage-warm-continuation",
       ),
     );
-    const actor = requests().find((request) => request.prompt === "USAGE_CONTINUATION_LITERAL").pid;
+    const actor = requestFor("USAGE_CONTINUATION_LITERAL").pid;
     assert.equal(
-      requests().find((request) => request.prompt === "USAGE_WARM_LITERAL").pid,
+      requestFor("USAGE_WARM_LITERAL").pid,
       actor,
       "the second continuation runs in the resident continuation actor",
     );
-    const journal = fs.readFileSync(first.details.sessionFile);
+    const journal = fs.readFileSync(runDetails(first).sessionFile ?? "");
     let lineEnd = 0;
     const published = journal
       .toString("utf8")
@@ -3699,23 +4496,28 @@ try {
       .slice(0, -1)
       .map((line) => {
         lineEnd += Buffer.byteLength(line) + 1;
-        return { entry: JSON.parse(line), end: lineEnd };
+        return { entry: parseValidated(PhysicalEntrySchema, line), end: lineEnd };
       });
     assert.equal(lineEnd, journal.length, "every native record is LF-published");
     const boundary = published.find(
-      ({ entry }) => entry.id === next.details.result.terminalEntryId,
-    ).end;
-    const appended = published.filter(({ end }) => end > boundary).map(({ entry }) => entry);
-    assert.equal(appended.at(-1).id, warm.details.result.terminalEntryId);
+      ({ entry }) => entry.id === runDetails(next).result?.terminalEntryId,
+    )?.end;
+    const appended = published.filter(({ end }) => end > (boundary ?? 0)).map(({ entry }) => entry);
+    assert.equal(appended.at(-1)?.id, runDetails(warm).result?.terminalEntryId);
     assert.deepEqual(
-      warm.details.result.contributions.map((part) => [part.id, part.usage]),
+      usageDetails(warm).result.contributions.map((part) => [part.id, part.usage]),
       appended
-        .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
-        .map((entry) => [`${first.details.sessionId}:${entry.id}`, childTurnUsage]),
+        .map(
+          (entry) =>
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+            /** @type {import("@earendil-works/pi-coding-agent").SessionEntry} */ (entry),
+        )
+        .filter(isAssistantEntry)
+        .map((entry) => [`${runDetails(first).sessionId}:${entry.id}`, childTurnUsage]),
       "the resident continuation records exactly its appended native turns",
     );
     const warmReads = journalReads().slice(coldReads.length);
-    const bytes = (reads) =>
+    const bytes = (/** @type {import("typebox").Static<typeof JournalReadSchema>[]} */ reads) =>
       reads.filter((read) => read.pid === actor).reduce((sum, read) => sum + read.count, 0);
     console.log(
       JSON.stringify({
@@ -3728,32 +4530,35 @@ try {
     assert.deepEqual(
       {
         readers: [...new Set(warmReads.map((read) => read.pid))],
-        from: Math.min(...warmReads.map((read) => read.position)),
+        from: Math.min(...warmReads.map((read) => read.position ?? 0)),
         bytes: bytes(warmReads),
       },
-      { readers: [actor], from: boundary, bytes: journal.length - boundary },
+      { readers: [actor], from: boundary ?? 0, bytes: journal.length - (boundary ?? 0) },
       "the resident actor reads only the journal records its run appended",
     );
     fs.writeFileSync(
       seedFile,
       JSON.stringify({
-        runId: next.details.id,
+        runId: runDetails(next).id,
         contributions: later,
         sessionFile: manager.getSessionFile(),
         sessionId: manager.getSessionId(),
-        childPid: requests()[0].pid,
+        childPid: firstRequest().pid,
         pid: process.pid,
       }),
     );
   } else if (phase === "cancellation") {
     const model = "single-agent-fixture/literal-model";
     const launched = await call("delegate", { prompt: "HOLD:existing", model }, "existing-launch");
-    const id = launched.details.id;
+    const id = runDetails(launched).id;
     await until(
       () => requests().some((request) => request.prompt === "HOLD:existing"),
       "existing native producer is really running",
     );
-    const abortable = async (_context, options) => {
+    const abortable = async (
+      /** @type {unknown} */ _context,
+      /** @type {{ signal?: AbortSignal } | undefined} */ options,
+    ) => {
       await until(() => options?.signal?.aborted === true, "parent abort reaches its provider");
       return fauxAssistantMessage("PARENT_ABORTED", { stopReason: "aborted" });
     };
@@ -3765,8 +4570,8 @@ try {
     await parentTurn;
     const signal = new AbortController().signal;
     const live = await runsTool().execute("existing-still-live", { action: "inspect", id }, signal);
-    assert.equal(live.details.process.live, true);
-    assert.equal(live.details.completed, false);
+    assert.equal(runDetails(live).process?.live, true);
+    assert.equal(runDetails(live).completed, false);
     assert.equal(
       fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")),
       false,
@@ -3774,7 +4579,7 @@ try {
     );
     fs.writeFileSync(path.join(root, "release-existing"), "release");
     const completed = await settled(id);
-    assert.equal(completed.details.output.text, "CHILD_LITERAL_RESULT:HOLD:existing");
+    assert.equal(runDetails(completed).output?.text ?? "", "CHILD_LITERAL_RESULT:HOLD:existing");
     faux.setResponses([
       fauxAssistantMessage(
         [
@@ -3797,24 +4602,35 @@ try {
     await until(() => resultEntries("continuation-before-abort").length === 1, "receipt published");
     await session.abort();
     await continued;
-    const successor = readJSON(path.join(runDir(id), "successor.json")).id;
-    assert.equal(resultEntries("continuation-before-abort")[0].message.details.id, successor);
+    const successor = readValidated(SuccessorSchema, path.join(runDir(id), "successor.json")).id;
+    const [continuationEntry] = resultEntries("continuation-before-abort");
+    assert.ok(continuationEntry !== undefined, "expected the continuation receipt");
+    assert.equal(
+      isCompletionIdentity(continuationEntry.message.details)
+        ? continuationEntry.message.details.id
+        : undefined,
+      successor,
+    );
     const running = await runsTool().execute(
       "successor-live",
       { action: "inspect", id: successor },
       signal,
     );
-    assert.equal(running.details.status, "running", "parent abort leaves the continuation running");
-    const stop = await call("agent_runs", { action: "stop", id: successor }, "explicit-stop");
-    assert.equal(stop.details.stopAcknowledged, false);
-    const stopped = await settled(successor, "explicit Stop publishes the actual native outcome");
-    assert.equal(stopped.details.result.status, "stopped");
-    assert.match(
-      notices().find((notice) => notice.details.id === successor).content,
-      /: stopped\./,
+    assert.equal(
+      runDetails(running).status,
+      "running",
+      "parent abort leaves the continuation running",
     );
+    const stop = await call("agent_runs", { action: "stop", id: successor }, "explicit-stop");
+    assert.equal(runDetails(stop).stopAcknowledged, false);
+    const stopped = await settled(successor, "explicit Stop publishes the actual native outcome");
+    assert.equal(runDetails(stopped).result?.status, "stopped");
+    assert.match(completionNotice(successor), /: stopped\./);
     assert.equal(fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")), true);
-    assert.equal(readJSON(path.join(runDir(id), "result.json")).status, "completed");
+    assert.equal(
+      readValidated(ResultSchema, path.join(runDir(id), "result.json")).status,
+      "completed",
+    );
     assert.equal(requests().filter((request) => request.prompt === "HOLD:existing").length, 1);
   } else if (phase === "dispose") {
     const launched = await call(
@@ -3825,7 +4641,7 @@ try {
       },
       "detach-launch",
     );
-    const id = launched.details.id;
+    const id = runDetails(launched).id;
     await until(
       () => requests().some((r) => r.prompt === "HOLD:foreground"),
       "held child actual readiness",
@@ -3836,16 +4652,19 @@ try {
       { action: "inspect", id },
       "reload-keeps-live-parent-child",
     );
-    assert.equal(reloaded.details.process.live, true);
-    assert.equal(reloaded.details.completed, false, "reload is not parent termination");
+    assert.equal(runDetails(reloaded).process?.live, true);
+    assert.equal(runDetails(reloaded).completed, false, "reload is not parent termination");
     await runtime.dispose();
     await until(
       () => fs.existsSync(path.join(runDir(id), "result.json")),
       "parent shutdown stops the held child without releasing its work",
     );
-    assert.equal(readJSON(path.join(runDir(id), "result.json")).status, "stopped");
+    assert.equal(
+      readValidated(ResultSchema, path.join(runDir(id), "result.json")).status,
+      "stopped",
+    );
     assert.equal(fs.existsSync(path.join(runDir(id), "stop-acknowledged.json")), true);
-    const child = requests().find((request) => request.prompt === "HOLD:foreground");
+    const child = requestFor("HOLD:foreground");
     assert.throws(
       () => process.kill(child.pid, 0),
       { code: "ESRCH" },
@@ -3863,16 +4682,19 @@ try {
       ),
     );
     assert.equal(initial.isError, false, JSON.stringify(initial));
-    const original = initial.details.id;
-    const oldPid = requests()[0].pid;
-    const oldIdentity = readJSON(path.join(runDir(original), "actor.lock/process.json"));
+    const original = runDetails(initial).id;
+    const oldPid = firstRequest().pid;
+    const oldIdentity = readValidated(
+      ActorIdentitySchema,
+      path.join(runDir(original), "actor.lock/process.json"),
+    );
     process.kill(oldPid, "SIGKILL");
     await until(() => {
       try {
         process.kill(oldPid, 0);
         return false;
       } catch (error) {
-        return error.code === "ESRCH";
+        return hasErrorCode(error, "ESRCH");
       }
     }, "prior actor actually exits before concurrent native continuations");
     await until(
@@ -3884,36 +4706,53 @@ try {
       { action: "inspect", id: original },
       "known-process-exit",
     );
-    assert.equal(exited.details.process.exitKnown, true);
-    assert.equal(exited.details.process.exit.pid, oldPid);
-    assert.equal(exited.details.process.exit.code, null);
-    assert.equal(exited.details.process.exit.signal, "SIGKILL");
+    assert.equal(runDetails(exited).process?.exitKnown, true);
+    assert.equal(runDetails(exited).process?.exit?.pid, oldPid);
+    assert.equal(runDetails(exited).process?.exit?.code, null);
+    assert.equal(runDetails(exited).process?.exit?.signal, "SIGKILL");
     assert.equal(
-      exited.details.result.status,
+      runDetails(exited).result?.status,
       "completed",
       "process exit is independent of the canonical workflow result",
     );
+    /** @type {typeof childProcess.spawn} */
     const spawnActor = childProcess.spawn;
+    /** @type {import("node:child_process").ChildProcess[]} */
     const replacements = [];
-    childProcess.spawn = (...args) => {
-      const child = spawnActor(...args);
-      if (args[1]?.[0]?.endsWith("/agent/runner.js")) {
+    /**
+     * @param {string} command
+     * @param {string[] | undefined} spawnArgs
+     * @param {import("node:child_process").SpawnOptions | undefined} spawnOptions
+     * @returns {import("node:child_process").ChildProcess}
+     */
+    const patchedSpawn = (command, spawnArgs, spawnOptions) => {
+      const child = spawnActor(command, spawnArgs ?? [], spawnOptions ?? {});
+      if (spawnArgs?.[0]?.endsWith("/agent/runner.js") === true) {
         replacements.push(child);
       }
       return child;
     };
+    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
+    childProcess.spawn = /** @type {typeof childProcess.spawn} */ (
+      /** @type {unknown} */ (patchedSpawn)
+    );
+    // oxlint-enable typescript/no-unsafe-type-assertion
     syncBuiltinESMExports();
     try {
       const ids = ["parallel-continue-one", "parallel-continue-two"];
       const prompts = ["HOLD:parallelfirst", "PARALLEL_SECOND_DISTINCT_LITERAL"];
       faux.setResponses([
         fauxAssistantMessage(
-          ids.map((id, index) => ({
-            type: "toolCall",
-            id,
-            name: "agent_runs",
-            arguments: { action: "continue", id: original, prompt: prompts[index] },
-          })),
+          ids.map(
+            (id, index) =>
+              // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
+              /** @type {import("@earendil-works/pi-ai").FauxContentBlock} */ ({
+                type: "toolCall",
+                id,
+                name: "agent_runs",
+                arguments: { action: "continue", id: original, prompt: prompts[index] ?? "" },
+              }),
+          ),
           { stopReason: "toolUse" },
         ),
         fauxAssistantMessage("PARALLEL_NATIVE_BATCH_COMPLETE"),
@@ -3922,17 +4761,26 @@ try {
       await session.waitForIdle();
       const receipts = ids.map((id) => {
         assert.equal(resultEntries(id).length, 1);
-        return resultEntries(id)[0].message;
+        const [found] = resultEntries(id);
+        assert.ok(found !== undefined, `expected the tool result for ${id}`);
+        return found.message;
       });
-      assert.equal(receipts[0].isError, false, JSON.stringify(receipts[0]));
-      assert.equal(receipts[0].details.receipt, "continuation");
+      const [firstReceipt, secondReceipt] = receipts;
+      assert.ok(
+        firstReceipt !== undefined && secondReceipt !== undefined,
+        "expected both receipts",
+      );
+      assert.equal(firstReceipt.isError, false, JSON.stringify(firstReceipt));
       assert.equal(
-        receipts[1].isError,
+        isCompletionIdentity(firstReceipt.details) ? firstReceipt.details.receipt : undefined,
+        "continuation",
+      );
+      assert.equal(
+        secondReceipt.isError,
         true,
         "a pending native admission must not accept and discard a distinct prompt",
       );
-      assert.match(JSON.stringify(receipts[1].content), /awaiting native admission.*retry/i);
-      const nativeStarts = () => publishedRecords("native-actor-starts.jsonl");
+      assert.match(JSON.stringify(secondReceipt.content), /awaiting native admission.*retry/i);
       await until(
         () =>
           replacements.every((child) => nativeStarts().some((entry) => entry.pid === child.pid)),
@@ -3940,7 +4788,9 @@ try {
       );
       const owners = new Set(
         nativeStarts()
-          .filter((entry) => entry.sessionId === initial.details.sessionId && entry.pid !== oldPid)
+          .filter(
+            (entry) => entry.sessionId === runDetails(initial).sessionId && entry.pid !== oldPid,
+          )
           .map((entry) => entry.pid),
       );
       assert.equal(
@@ -3953,15 +4803,18 @@ try {
         () => requests().some((r) => r.prompt === prompts[0]),
         "replacement actor actually starts tracked work",
       );
-      const first = readJSON(path.join(runDir(original), "successor.json")).id;
+      const first = readValidated(
+        SuccessorSchema,
+        path.join(runDir(original), "successor.json"),
+      ).id;
       assert.equal(
         first,
-        receipts[0].details.id,
+        isCompletionIdentity(firstReceipt.details) ? firstReceipt.details.id : undefined,
         "the only accepted successor claim remains canonical",
       );
-      const launch = readJSON(path.join(runDir(first), "launch.json"));
+      const launch = readValidated(LaunchSchema, path.join(runDir(first), "launch.json"));
       assert.equal(launch.id, first);
-      assert.equal(launch.sessionFile, initial.details.sessionFile);
+      assert.equal(launch.sessionFile, runDetails(initial).sessionFile);
       assert.equal(launch.prompt, prompts[0]);
       assert.equal(
         fs.existsSync(path.join(runDir(first), "successor.json")),
@@ -3969,28 +4822,34 @@ try {
         "pending work was not superseded",
       );
       assert.equal(requests().filter((r) => r.prompt === prompts[1]).length, 0);
-      const identity = readJSON(path.join(runDir(original), "actor.lock/process.json"));
-      const ready = readJSON(path.join(runDir(original), "ready.json"));
-      assert.equal(identity.pid, replacements[0].pid);
+      const identity = readValidated(
+        ActorIdentitySchema,
+        path.join(runDir(original), "actor.lock/process.json"),
+      );
+      const ready = readValidated(ReadySchema, path.join(runDir(original), "ready.json"));
+      assert.equal(identity.pid, replacements[0]?.pid);
       assert.equal(ready.pid, identity.pid);
       assert.equal(ready.token, identity.token);
       assert.notEqual(identity.pid, oldPid);
       fs.writeFileSync(path.join(root, "release-parallelfirst"), "release");
       const outcome = await settled(first);
       assert.equal(outcome.isError, false, JSON.stringify(outcome));
-      assert.equal(outcome.details.id, first);
+      assert.equal(runDetails(outcome).id, first);
       assert.equal(
-        outcome.details.result.status,
+        runDetails(outcome).result?.status,
         "completed",
         "accepted B does not remain permanently pending",
       );
-      assert.equal(outcome.details.output.text, `CHILD_LITERAL_RESULT:${prompts[0]}`);
+      assert.equal(
+        runDetails(outcome).output?.text ?? "",
+        `CHILD_LITERAL_RESULT:${prompts[0] ?? ""}`,
+      );
       const observed = requests().filter((r) => r.prompt === prompts[0]);
       assert.equal(observed.length, 1);
-      assert.equal(observed[0].pid, identity.pid);
+      assert.equal(observed[0]?.pid, identity.pid);
       assert.equal(
-        nativeStarts().find((entry) => entry.pid === observed[0].pid).sessionId,
-        initial.details.sessionId,
+        nativeStarts().find((entry) => entry.pid === (observed[0]?.pid ?? -1))?.sessionId,
+        runDetails(initial).sessionId,
       );
       const names = ["launch.json", "result.json", "output.txt"];
       const frozen = names.map((name) => fs.readFileSync(path.join(runDir(first), name)));
@@ -4006,13 +4865,19 @@ try {
         ),
       );
       assert.equal(retry.isError, false, JSON.stringify(retry));
-      assert.equal(retry.details.output.text, `CHILD_LITERAL_RESULT:${prompts[1]}`);
-      assert.equal(retry.details.sessionFile, initial.details.sessionFile);
-      assert.equal(readJSON(path.join(runDir(first), "successor.json")).id, retry.details.id);
+      assert.equal(
+        runDetails(retry).output?.text ?? "",
+        `CHILD_LITERAL_RESULT:${prompts[1] ?? ""}`,
+      );
+      assert.equal(runDetails(retry).sessionFile, runDetails(initial).sessionFile);
+      assert.equal(
+        readValidated(SuccessorSchema, path.join(runDir(first), "successor.json")).id,
+        runDetails(retry).id,
+      );
       assert.equal(replacements.length, 1, "explicit retry keeps the same native actor owner");
       assert.deepEqual(
         requests()
-          .filter((r) => prompts.includes(r.prompt))
+          .filter((r) => r.prompt !== undefined && prompts.includes(r.prompt))
           .map((r) => [r.prompt, r.pid]),
         [
           [prompts[0], identity.pid],
@@ -4024,13 +4889,13 @@ try {
         assert.deepEqual(fs.readFileSync(path.join(runDir(first), name)), frozen[index]),
       );
       const physical = fs
-        .readFileSync(initial.details.sessionFile, "utf8")
+        .readFileSync(runDetails(initial).sessionFile ?? "", "utf8")
         .trim()
         .split("\n")
-        .map(JSON.parse);
+        .map((text) => parseValidated(PhysicalEntrySchema, text));
       assert.equal(physical.filter((entry) => entry.type === "session").length, 1);
       assert.equal(
-        physical.filter((entry) => entry.id === outcome.details.result.terminalEntryId).length,
+        physical.filter((entry) => entry.id === runDetails(outcome).result?.terminalEntryId).length,
         1,
       );
     } finally {
@@ -4038,57 +4903,75 @@ try {
       syncBuiltinESMExports();
       fs.writeFileSync(path.join(root, "release-parallelfirst"), "release");
       await Promise.all(
-        replacements.map(
-          (child) =>
-            new Promise((resolve) => {
-              if (child.exitCode !== null || child.signalCode !== null) {
-                resolve();
-                return;
-              }
-              child.ref();
-              child.once("exit", resolve);
-              child.kill("SIGTERM");
-            }),
-        ),
+        replacements.map((child) => {
+          /** @type {{ promise: Promise<void>, resolve: () => void }} */
+          const childExited = Promise.withResolvers();
+          if (child.exitCode !== null || child.signalCode !== null) {
+            childExited.resolve();
+            return childExited.promise;
+          }
+          child.ref();
+          child.once("exit", () => childExited.resolve());
+          child.kill("SIGTERM");
+          return childExited.promise;
+        }),
       );
     }
   } else if (phase === "generation" || phase === "late-guidance") {
     const originalTimeout = globalThis.setTimeout;
     if (phase === "generation") {
-      globalThis.setTimeout = (callback, ms, ...args) =>
+      /**
+       * @param {(...args: unknown[]) => void} callback
+       * @param {Parameters<typeof setTimeout>[1]} ms
+       * @param {...unknown} args
+       */
+      const patchedTimeout = (callback, ms, ...args) =>
         originalTimeout(() => {
           callback(...args);
           if (ms === 3000) {
             fs.writeFileSync(path.join(root, "escalation-processed"), "done");
           }
         }, ms);
+      // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
+      globalThis.setTimeout = /** @type {typeof setTimeout} */ (patchedTimeout);
+      // oxlint-enable typescript/no-unsafe-type-assertion
     }
     const first = await call(
       "delegate",
       { prompt: "HOLD:boundary", model: "single-agent-fixture/literal-model" },
       "boundary-launch",
     );
-    const id = first.details.id;
+    const id = runDetails(first).id;
     await until(() => requests().some((r) => r.prompt === "HOLD:boundary"), "old turn starts");
+    /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<any> | undefined} */
     let stopped;
     if (phase === "generation") {
-      const oldPid = requests()[0].pid;
-      const oldActor = readJSON(path.join(runDir(id), "actor.lock/process.json"));
+      const oldPid = firstRequest().pid;
+      const oldActor = readValidated(
+        ActorIdentitySchema,
+        path.join(runDir(id), "actor.lock/process.json"),
+      );
       // Intercom shutdown joins the actor's bounded broker startup connect, which can outlast the
       // 3000 ms Stop escalation on a slow host. Graceful exit is the contract once it registered.
       await childRegistered(id);
       const link = fs.linkSync;
+      /** @type {{ file: string, destination: string } | undefined} */
       let heldStop;
       fs.linkSync = (source, destination) => {
         if (
-          path.dirname(destination) === path.join(runDir(id), "commands") &&
-          readJSON(source).action === "stop"
+          path.dirname(String(destination)) === path.join(runDir(id), "commands") &&
+          readValidated(CommandRecordSchema, String(source)).action === "stop"
         ) {
           assert.equal(heldStop, undefined, "one actual Stop publication is held");
-          heldStop = { file: path.join(runDir(id), "unpublished-stop.json"), destination };
-          return fs.renameSync(source, heldStop.file);
+          const unpublished = {
+            file: path.join(runDir(id), "unpublished-stop.json"),
+            destination: String(destination),
+          };
+          heldStop = unpublished;
+          fs.renameSync(source, unpublished.file);
+          return;
         }
-        return link(source, destination);
+        link(source, destination);
       };
       syncBuiltinESMExports();
       try {
@@ -4097,7 +4980,7 @@ try {
         fs.linkSync = link;
         syncBuiltinESMExports();
       }
-      assert.ok(heldStop, "the registered tool produced a real durable Stop record");
+      assert.ok(heldStop !== undefined, "the registered tool produced a real durable Stop record");
       assert.equal(fs.existsSync(heldStop.file), true, "original Stop bytes remain on disk");
       assert.equal(
         fs.existsSync(heldStop.destination),
@@ -4111,24 +4994,29 @@ try {
           process.kill(oldPid, 0);
           return false;
         } catch (error) {
-          return error.code === "ESRCH";
+          return hasErrorCode(error, "ESRCH");
         }
       }, "old actor actually exits before replacement");
+      assert.ok(stopped !== undefined, "expected the stopped receipt");
       assert.equal(
-        fs.existsSync(path.join(runDir(id), "admissions", `${stopped.details.stopRequest}.json`)),
+        fs.existsSync(
+          path.join(runDir(id), "admissions", `${runDetails(stopped).stopRequest ?? ""}.json`),
+        ),
         false,
         "observed old actor exit establishes that it cannot admit the held Stop",
       );
       assert.equal(
         heldStop.destination,
-        path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`),
+        path.join(runDir(id), "commands", `${runDetails(stopped).stopRequest ?? ""}.json`),
       );
       // Publish the exact tool-produced record only after the predecessor cannot read it.
       fs.renameSync(heldStop.file, heldStop.destination);
       assert.deepEqual(fs.readFileSync(heldStop.destination), heldBytes);
       assert.equal(
-        readJSON(path.join(runDir(id), "commands", `${stopped.details.stopRequest}.json`))
-          .actorToken,
+        readValidated(
+          CommandRecordSchema,
+          path.join(runDir(id), "commands", `${runDetails(stopped).stopRequest ?? ""}.json`),
+        ).actorToken,
         oldActor.token,
         "Stop is bound to the verified actor generation",
       );
@@ -4137,12 +5025,14 @@ try {
         "launcher publishes the old actor's actual exit event",
       );
       const exited = await call("agent_runs", { action: "inspect", id }, "old-exit-inspect");
-      assert.equal(exited.details.process.live, false);
-      assert.equal(exited.details.process.exitKnown, true);
-      assert.equal(exited.details.process.exit.code, 0);
+      assert.equal(runDetails(exited).process?.live, false);
+      assert.equal(runDetails(exited).process?.exitKnown, true);
+      assert.equal(runDetails(exited).process?.exit?.code, 0);
       assert.ok(
-        exited.content.some((block) =>
-          block.text?.includes("Process exit observed: code 0, signal none."),
+        exited.content.some(
+          (block) =>
+            block.type === "text" &&
+            block.text.includes("Process exit observed: code 0, signal none."),
         ),
         "model sees the observed process exit rather than inferring it from completion",
       );
@@ -4158,7 +5048,10 @@ try {
     } else {
       const link = fs.linkSync;
       fs.linkSync = (source, destination) => {
-        if (destination.includes("/commands/") && readJSON(source).action === "steer") {
+        if (
+          String(destination).includes("/commands/") &&
+          readValidated(CommandRecordSchema, String(source)).action === "steer"
+        ) {
           fs.writeFileSync(path.join(root, "release-boundary"), "release");
           const waited = spawnSync(
             process.execPath,
@@ -4181,7 +5074,7 @@ try {
           fs.linkSync = link;
           syncBuiltinESMExports();
         }
-        return link(source, destination);
+        link(source, destination);
       };
       syncBuiltinESMExports();
       const queued = await call(
@@ -4190,19 +5083,25 @@ try {
         "late-boundary",
       );
       assert.equal(queued.isError, false, JSON.stringify(queued));
-      assert.equal(queued.details.receipt, "guidance", "late guidance is only a queue receipt");
+      assert.equal(runDetails(queued).receipt, "guidance", "late guidance is only a queue receipt");
       await settled(queued);
-      const admission = path.join(runDir(id), "admissions", `${queued.details.command}.json`);
+      const admission = path.join(
+        runDir(id),
+        "admissions",
+        `${runDetails(queued).command ?? ""}.json`,
+      );
       await until(() => fs.existsSync(admission), "live actor publishes its admission decision");
       assert.equal(
         requests().some((r) => r.prompt === "LATE_MUST_NOT_START"),
         false,
       );
       const inspected = await call("agent_runs", { action: "inspect", id }, "stale-admission");
-      assert.equal(inspected.details.guidance.at(-1).state, "stale");
-      const text = inspected.content.map((block) => block.text ?? "").join("\n");
+      assert.equal(runDetails(inspected).guidance?.at(-1)?.state, "stale");
+      const text = inspected.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("\n");
       assert.ok(
-        text.includes(`${queued.details.command}: stale`),
+        text.includes(`${runDetails(queued).command ?? ""}: stale`),
         "model sees the guidance command ID and its actual rejection state",
       );
       assert.match(text, /stale.*no new work was started/i);
@@ -4210,12 +5109,12 @@ try {
       assert.match(text, /pending.*not.*admitted/i);
       assert.match(text, /receipt.*(published|not observed)/i);
       assert.match(text, /exit.*(unknown|code)/i);
-      if (inspected.details.nativeReceipt === null) {
+      if (runDetails(inspected).nativeReceipt === null) {
         assert.match(text, /Native completion receipt: not observed published/);
       } else {
         assert.ok(
           text.includes(
-            `Native completion receipt: published (${inspected.details.nativeReceipt})`,
+            `Native completion receipt: published (${runDetails(inspected).nativeReceipt ?? ""})`,
           ),
         );
       }
@@ -4224,7 +5123,7 @@ try {
     const frozen = ["launch.json", "result.json", "output.txt"].map((name) =>
       fs.readFileSync(path.join(runDir(id), name)),
     );
-    const oldPid = requests()[0].pid;
+    const oldPid = firstRequest().pid;
     const next = await call(
       "agent_runs",
       {
@@ -4235,42 +5134,55 @@ try {
       "replacement-launch",
     );
     assert.equal(next.isError, false, JSON.stringify(next));
-    assert.notEqual(next.details.id, id);
+    assert.notEqual(runDetails(next).id, id);
     await until(() => requests().some((r) => r.prompt === "HOLD:replacement"), "replacement ready");
     if (phase === "generation") {
-      assert.notEqual(requests().at(-1).pid, oldPid);
+      assert.notEqual(lastRequest().pid, oldPid);
       await until(
         () => fs.existsSync(path.join(root, "escalation-processed")),
         "old timer actually ran",
       );
       const live = await call(
         "agent_runs",
-        { action: "inspect", id: next.details.id },
+        { action: "inspect", id: runDetails(next).id },
         "after-old-timer",
       );
-      assert.equal(live.details.process.live, true, "old timer cannot kill new actor generation");
-      assert.equal(live.details.completed, false);
       assert.equal(
-        readJSON(path.join(runDir(id), "admissions", `${stopped.details.stopRequest}.json`)).state,
+        runDetails(live).process?.live,
+        true,
+        "old timer cannot kill new actor generation",
+      );
+      assert.equal(runDetails(live).completed, false);
+      assert.ok(stopped !== undefined, "expected the stopped receipt");
+      assert.equal(
+        readValidated(
+          AdmissionSchema,
+          path.join(runDir(id), "admissions", `${runDetails(stopped).stopRequest ?? ""}.json`),
+        ).state,
         "stale",
       );
       assert.equal(
-        readJSON(path.join(runDir(id), "admissions/legacy-unbound-stop.json")).state,
+        readValidated(AdmissionSchema, path.join(runDir(id), "admissions/legacy-unbound-stop.json"))
+          .state,
         "stale",
         "pre-upgrade unbound Stops cannot stop a replacement either",
       );
     }
     fs.writeFileSync(path.join(root, "release-replacement"), "release");
-    const outcome = await settled(next.details.id);
-    assert.equal(outcome.details.output.text, "CHILD_LITERAL_RESULT:HOLD:replacement");
-    assert.equal(outcome.details.status, "completed", "old Stop must not mark successor stopped");
+    const outcome = await settled(runDetails(next).id);
+    assert.equal(runDetails(outcome).output?.text ?? "", "CHILD_LITERAL_RESULT:HOLD:replacement");
+    assert.equal(
+      runDetails(outcome).status,
+      "completed",
+      "old Stop must not mark successor stopped",
+    );
     ["launch.json", "result.json", "output.txt"].forEach((name, index) =>
       assert.deepEqual(fs.readFileSync(path.join(runDir(id), name)), frozen[index]),
     );
     globalThis.setTimeout = originalTimeout;
   } else if (phase === "lineage") {
     // A generated child carries its parent's native ID in both variables; nothing else boots.
-    const lineage = (rootId, parentId) => ({
+    const lineage = (/** @type {string} */ rootId, /** @type {string} */ parentId) => ({
       PI_INTERCOM_ROOT_SESSION_ID: rootId,
       PI_INTERCOM_PARENT_SESSION_ID: parentId,
     });
@@ -4308,7 +5220,7 @@ try {
       assert.deepEqual(loaded.extensions, [], label);
       assert.equal(loaded.errors.length, 1, label);
       assert.match(
-        loaded.errors[0].error,
+        loaded.errors[0]?.error ?? "",
         /Child launch requires identical, unpadded root and parent native session IDs\./,
         label,
       );
@@ -4364,15 +5276,18 @@ try {
       ),
     );
     assert.equal(first.isError, false, JSON.stringify(first));
-    assert.equal(first.details.result.status, "completed");
-    assert.equal(first.details.output.text, "RECALLED_CALIBRATION_7391");
-    const saved = readJSON(path.join(runDir(first.details.id), "launch.json"));
+    assert.equal(runDetails(first).result?.status, "completed");
+    assert.equal(runDetails(first).output?.text ?? "", "RECALLED_CALIBRATION_7391");
+    const saved = readValidated(
+      LaunchSchema,
+      path.join(runDir(runDetails(first).id), "launch.json"),
+    );
     const second = await call(
       "agent_runs",
-      { action: "continue", id: first.details.id, prompt: "HOLD:second" },
+      { action: "continue", id: runDetails(first).id, prompt: "HOLD:second" },
       "continue-one",
     );
-    assert.notEqual(second.details.id, first.details.id);
+    assert.notEqual(runDetails(second).id, runDetails(first).id);
     const requestFile = path.join(root, "requests.jsonl");
     for (const stage of ["prefix", "body"]) {
       // oxlint-disable-next-line no-await-in-loop
@@ -4385,7 +5300,7 @@ try {
       if (stage === "prefix") {
         assert.throws(() => JSON.parse(tail), SyntaxError);
       } else {
-        assert.equal(JSON.parse(tail).prompt, "HOLD:second");
+        assert.equal(parseValidated(CommandRecordSchema, tail).prompt, "HOLD:second");
       }
       assert.deepEqual(
         requests().map((request) => request.prompt),
@@ -4398,7 +5313,7 @@ try {
       () => requests().some((request) => request.prompt === "HOLD:second"),
       "continuation is in native provider",
     );
-    const childPid = requests().find((request) => request.prompt === "HOLD:second").pid;
+    const childPid = requestFor("HOLD:second").pid;
     const requestSize = fs.statSync(requestFile).size;
     fs.appendFileSync(requestFile, '{"invalid":\n');
     try {
@@ -4411,60 +5326,61 @@ try {
     try {
       guidance = await call(
         "agent_runs",
-        { action: "continue", id: first.details.id, prompt: "GUIDANCE_LITERAL" },
+        { action: "continue", id: runDetails(first).id, prompt: "GUIDANCE_LITERAL" },
         "continue-original",
       );
       const pending = await call(
         "agent_runs",
-        { action: "inspect", id: second.details.id },
+        { action: "inspect", id: runDetails(second).id },
         "guidance-pending-inspect",
       );
-      const pendingText = pending.content.map((block) => block.text ?? "").join("\n");
-      assert.ok(pendingText.includes(`${guidance.details.command}: pending`));
+      const pendingText = pending.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("\n");
+      assert.ok(pendingText.includes(`${runDetails(guidance).command ?? ""}: pending`));
       assert.match(pendingText, /pending.*not yet admitted/);
     } finally {
       process.kill(childPid, "SIGCONT");
     }
-    assert.equal(guidance.details.id, second.details.id);
-    assert.equal(guidance.details.receipt, "guidance");
-    assert.equal(guidance.details.sessionId, saved.sessionId);
-    assert.equal(guidance.details.model, "single-agent-fixture/literal-model");
+    assert.equal(runDetails(guidance).id, runDetails(second).id);
+    assert.equal(runDetails(guidance).receipt, "guidance");
+    assert.equal(runDetails(guidance).sessionId, saved.sessionId);
+    assert.equal(runDetails(guidance).model, "single-agent-fixture/literal-model");
     const guidanceAdmission = path.join(
-      runDir(first.details.id),
+      runDir(runDetails(first).id),
       "admissions",
-      `${guidance.details.command}.json`,
+      `${runDetails(guidance).command ?? ""}.json`,
     );
     await until(
       () => fs.existsSync(guidanceAdmission),
       "actual actor admits live guidance before releasing held turn",
     );
-    assert.equal(readJSON(guidanceAdmission).state, "accepted");
+    assert.equal(readValidated(AdmissionSchema, guidanceAdmission).state, "accepted");
     const accepted = await call(
       "agent_runs",
-      { action: "inspect", id: second.details.id },
+      { action: "inspect", id: runDetails(second).id },
       "guidance-accepted-inspect",
     );
-    const acceptedText = accepted.content.map((block) => block.text ?? "").join("\n");
-    assert.ok(acceptedText.includes(`${guidance.details.command}: accepted`));
+    const acceptedText = accepted.content
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("\n");
+    assert.ok(acceptedText.includes(`${runDetails(guidance).command ?? ""}: accepted`));
     assert.match(
       acceptedText,
       /accepted.*queue admission, not journal publication or model consumption/,
     );
-    const nextSaved = readJSON(path.join(runDir(second.details.id), "launch.json"));
-    for (const field of [
-      "sessionId",
-      "sessionFile",
-      "provider",
-      "model",
-      "thinking",
-      "context",
-      "cwd",
-    ]) {
+    const nextSaved = readValidated(
+      LaunchSchema,
+      path.join(runDir(runDetails(second).id), "launch.json"),
+    );
+    /** @type {(keyof typeof nextSaved)[]} */
+    const fields = ["sessionId", "sessionFile", "provider", "model", "thinking", "context", "cwd"];
+    for (const field of fields) {
       assert.deepEqual(nextSaved[field], saved[field]);
     }
     fs.writeFileSync(path.join(root, "release-second"), "release");
     await until(
-      () => fs.existsSync(path.join(runDir(second.details.id), "result.json")),
+      () => fs.existsSync(path.join(runDir(runDetails(second).id), "result.json")),
       "successor result publishes",
     );
     assert.equal(
@@ -4472,7 +5388,7 @@ try {
       true,
     );
     assert.equal(
-      fs.readFileSync(path.join(runDir(second.details.id), "output.txt"), "utf8"),
+      fs.readFileSync(path.join(runDir(runDetails(second).id), "output.txt"), "utf8"),
       "CHILD_LITERAL_RESULT:GUIDANCE_LITERAL",
       "accepted guidance remains inside the tracked native turn outcome",
     );
@@ -4484,18 +5400,18 @@ try {
         "long-output",
       ),
     );
-    let output = long.details.output.text,
-      offset = long.details.output.nextOffset;
+    let output = runDetails(long).output?.text ?? "",
+      offset = runDetails(long).output?.nextOffset;
     while (offset !== undefined) {
       // Each next page depends on the preceding native tool receipt's byte cursor.
       // oxlint-disable-next-line no-await-in-loop
       const page = await call(
         "agent_runs",
-        { action: "inspect", id: long.details.id, offset },
+        { action: "inspect", id: runDetails(long).id, offset },
         `page-${offset}`,
       );
-      output += page.details.output.text;
-      offset = page.details.output.nextOffset;
+      output += runDetails(page).output?.text ?? "";
+      offset = runDetails(page).output?.nextOffset;
     }
     assert.equal(output, "😀雪".repeat(20000) + "END_LITERAL");
     const failedLaunch = await call(
@@ -4505,25 +5421,31 @@ try {
     );
     assert.equal(failedLaunch.isError, false, "the launch receipt is honest, not the outcome");
     const failure = await settled(failedLaunch);
-    assert.equal(failure.details.result.status, "failed");
-    assert.equal(failure.details.output.text, "ERROR_PARTIAL_LITERAL");
-    assert.equal(failure.details.result.error, "CONTROLLED_MODEL_FAILURE");
+    const failureDetails = runDetails(failure);
+    assert.equal(failureDetails.result?.status, "failed");
+    assert.equal(runDetails(failure).output?.text ?? "", "ERROR_PARTIAL_LITERAL");
+    assert.equal(runDetails(failure).result?.error, "CONTROLLED_MODEL_FAILURE");
     assert.match(
-      notices().find((notice) => notice.details.id === failure.details.id).content,
+      completionNotice(failureDetails.id),
       /: failed\.[\s\S]*CONTROLLED_MODEL_FAILURE/,
       "the parent's completion notice carries the actual native failure",
     );
     const emitted = toolEnds.find((event) => event.toolCallId === "model-failure");
+    assert.ok(
+      emitted !== undefined && emitted.result !== undefined,
+      "expected the emitted failure",
+    );
     assert.deepEqual(emitted.result.content, failedLaunch.content);
     assert.deepEqual(emitted.result.details, failedLaunch.details);
-    const reopened = sdk.SessionManager.open(manager.getSessionFile())
+    const reopenedEntry = sdk.SessionManager.open(manager.getSessionFile() ?? "")
       .getEntries()
-      .find(
-        (entry) =>
-          entry.type === "message" &&
-          entry.message.role === "toolResult" &&
-          entry.message.toolCallId === "model-failure",
-      ).message;
+      .find((entry) => isToolResultEntry(entry) && entry.message.toolCallId === "model-failure");
+    assert.ok(reopenedEntry !== undefined, "expected the reopened failure receipt");
+    const reopened = /** @type {import("@earendil-works/pi-ai").ToolResultMessage} */ (
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+      /** @type {import("@earendil-works/pi-coding-agent").SessionMessageEntry} */ (reopenedEntry)
+        .message
+    );
     assert.equal(reopened.isError, emitted.isError);
     assert.deepEqual(reopened.content, emitted.result.content);
     assert.deepEqual(reopened.details, JSON.parse(JSON.stringify(emitted.result.details)));
@@ -4535,7 +5457,10 @@ try {
       ),
     );
     assert.equal(nested.isError, false);
-    assert.equal(readJSON(path.join(root, "nested-result.json")).isError, true);
+    assert.equal(
+      readValidated(NestedResultSchema, path.join(root, "nested-result.json")).isError,
+      true,
+    );
     assert.equal(
       requests().some((request) => request.prompt === "UNAUTHORIZED_NESTED_CHILD"),
       false,

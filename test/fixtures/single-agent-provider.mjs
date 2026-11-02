@@ -5,17 +5,26 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 // Observe the actual runner's synchronous command scans, not a replacement Actor.
-function commandIO(root) {
+// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
+function commandIO(/** @type {string} */ root) {
   const original = {
     open: fs.openSync,
     read: fs.readSync,
     close: fs.closeSync,
     readdir: fs.readdirSync,
   };
+  /** @type {Map<number, { file: string, opens: number, bytes: number }>} */
   const descriptors = new Map();
-  let reads = [];
-  fs.openSync = (file, ...args) => {
-    const fd = original.open(file, ...args);
+  /** @type {{ file: string, opens: number, bytes: number }[]} */ let reads = [];
+  /**
+   * @param {import("node:fs").PathOrFileDescriptor} file
+   * @param {unknown[]} args
+   */
+  const tracedOpen = (file, ...args) => {
+    const fd =
+      /** @type {(f: import("node:fs").PathOrFileDescriptor, ...a: unknown[]) => number} */ (
+        original.open
+      )(file, ...args);
     if (typeof file === "string" && file.endsWith("/attachment.json") && args[0] === "r") {
       // The actor's parent liveness check witnesses elapsed loop iterations.
       fs.appendFileSync(
@@ -30,20 +39,34 @@ function commandIO(root) {
     }
     return fd;
   };
-  fs.readSync = (fd, ...args) => {
-    const bytes = original.read(fd, ...args);
+  /**
+   * @param {number} fd
+   * @param {unknown[]} args
+   */
+  const tracedRead = (fd, ...args) => {
+    const bytes = /** @type {(f: number, ...a: unknown[]) => number} */ (original.read)(
+      fd,
+      ...args,
+    );
     const count = descriptors.get(fd);
-    if (count) {
+    if (count !== undefined) {
       count.bytes += bytes;
     }
     return bytes;
   };
-  fs.closeSync = (fd) => {
+  /** @param {number} fd */
+  const tracedClose = (fd) => {
     descriptors.delete(fd);
-    return original.close(fd);
+    original.close(fd);
   };
-  fs.readdirSync = (directory, ...args) => {
-    const entries = original.readdir(directory, ...args);
+  /**
+   * @param {import("node:fs").PathLike} directory
+   * @param {unknown[]} args
+   */
+  const tracedReaddir = (directory, ...args) => {
+    const entries = /** @type {(d: import("node:fs").PathLike, ...a: unknown[]) => unknown} */ (
+      original.readdir
+    )(directory, ...args);
     if (typeof directory === "string" && directory.endsWith("/commands")) {
       // pending() and admission finish synchronously before this microtask runs.
       queueMicrotask(() => {
@@ -56,25 +79,49 @@ function commandIO(root) {
     }
     return entries;
   };
+  fs.openSync = /** @type {typeof fs.openSync} */ (tracedOpen);
+  fs.readSync = /** @type {typeof fs.readSync} */ (tracedRead);
+  fs.closeSync = /** @type {typeof fs.closeSync} */ (tracedClose);
+  fs.readdirSync = /** @type {typeof fs.readdirSync} */ (tracedReaddir);
   syncBuiltinESMExports();
 }
+// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 
 // Observe the byte ranges the actual actor reads from its native child journal.
-function journalIO(root) {
+// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
+function journalIO(/** @type {string} */ root) {
   const original = { open: fs.openSync, read: fs.readSync, close: fs.closeSync };
+  /** @type {Map<number, string>} */
   const journals = new Map();
-  fs.openSync = (file, ...args) => {
-    const fd = original.open(file, ...args);
+  /**
+   * @param {import("node:fs").PathOrFileDescriptor} file
+   * @param {unknown[]} args
+   */
+  const tracedOpen = (file, ...args) => {
+    const fd =
+      /** @type {(f: import("node:fs").PathOrFileDescriptor, ...a: unknown[]) => number} */ (
+        original.open
+      )(file, ...args);
     if (typeof file === "string" && file.includes("/agent-runs/") && file.endsWith(".jsonl")) {
       journals.set(fd, file);
     }
     return fd;
   };
-  fs.readSync = (fd, ...args) => {
-    const count = original.read(fd, ...args);
+  /**
+   * @param {number} fd
+   * @param {unknown[]} args
+   */
+  const tracedRead = (fd, ...args) => {
+    const count = /** @type {(f: number, ...a: unknown[]) => number} */ (original.read)(
+      fd,
+      ...args,
+    );
     const file = journals.get(fd);
     if (file !== undefined) {
-      const position = typeof args[1] === "object" ? args[1]?.position : args[3];
+      const position =
+        typeof args[1] === "object"
+          ? /** @type {{ position?: unknown } | null} */ (args[1])?.position
+          : args[3];
       fs.appendFileSync(
         path.join(root, "journal-reads.jsonl"),
         JSON.stringify({ pid: process.pid, file, position: position ?? null, count }) + "\n",
@@ -82,17 +129,23 @@ function journalIO(root) {
     }
     return count;
   };
-  fs.closeSync = (fd) => {
+  /** @param {number} fd */
+  const tracedClose = (fd) => {
     journals.delete(fd);
-    return original.close(fd);
+    original.close(fd);
   };
+  fs.openSync = /** @type {typeof fs.openSync} */ (tracedOpen);
+  fs.readSync = /** @type {typeof fs.readSync} */ (tracedRead);
+  fs.closeSync = /** @type {typeof fs.closeSync} */ (tracedClose);
   syncBuiltinESMExports();
 }
+// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 
-function shellIO(root) {
+// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
+function shellIO(/** @type {string} */ root) {
   const open = fs.openSync;
   const readdir = fs.readdirSync;
-  let pending;
+  /** @type {{ opens: string[], scans: number } | undefined} */ let pending;
   const observe = () => {
     if (!pending) {
       pending = { opens: [], scans: 0 };
@@ -103,30 +156,62 @@ function shellIO(root) {
     }
     return pending;
   };
-  fs.openSync = (file, ...args) => {
-    const fd = open(file, ...args);
+  /**
+   * @param {import("node:fs").PathOrFileDescriptor} file
+   * @param {unknown[]} args
+   */
+  const tracedOpen = (file, ...args) => {
+    const fd =
+      /** @type {(f: import("node:fs").PathOrFileDescriptor, ...a: unknown[]) => number} */ (open)(
+        file,
+        ...args,
+      );
     if (typeof file === "string" && file.includes("/shells/") && args[0] === "r") {
       observe().opens.push(path.basename(file));
     }
     return fd;
   };
-  fs.readdirSync = (directory, ...args) => {
-    const entries = readdir(directory, ...args);
+  /**
+   * @param {import("node:fs").PathLike} directory
+   * @param {unknown[]} args
+   */
+  const tracedReaddir = (directory, ...args) => {
+    const entries = /** @type {(d: import("node:fs").PathLike, ...a: unknown[]) => unknown} */ (
+      readdir
+    )(directory, ...args);
     if (typeof directory === "string" && directory.includes("/shells/")) {
       observe().scans++;
     }
     return entries;
   };
+  fs.openSync = /** @type {typeof fs.openSync} */ (tracedOpen);
+  fs.readdirSync = /** @type {typeof fs.readdirSync} */ (tracedReaddir);
   syncBuiltinESMExports();
 }
+// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 
-export default async function fixture(pi) {
-  const sdkEntry = path.join(process.env.PI_PACKAGE_DIR, "dist/index.js");
-  const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdkEntry)));
+export default async function fixture(
+  /** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ pi,
+) {
+  const packageDir = process.env.PI_PACKAGE_DIR;
+  if (packageDir === undefined) {
+    throw new Error("PI_PACKAGE_DIR is required");
+  }
+  const sdkEntry = path.join(packageDir, "dist/index.js");
+  const packageJson = findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdkEntry));
+  if (packageJson === undefined) {
+    throw new Error("Could not locate the installed pi-ai package");
+  }
+  const aiRoot = path.dirname(packageJson);
+  /** @type {typeof import("@earendil-works/pi-ai")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const { fauxProvider, fauxAssistantMessage } = await import(
     pathToFileURL(path.join(aiRoot, "dist/index.js")).href
   );
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
+  if (root === undefined) {
+    throw new Error("SINGLE_AGENT_TEST_ROOT is required");
+  }
   if (process.env.SINGLE_AGENT_COMMAND_IO === "1") {
     commandIO(root);
   }
@@ -139,20 +224,36 @@ export default async function fixture(pi) {
   ) {
     shellIO(root);
   }
+  const parkClock = process.env.SINGLE_AGENT_PARK_CLOCK;
   if (
-    process.env.SINGLE_AGENT_PARK_CLOCK?.startsWith("park") === true &&
+    parkClock !== undefined &&
+    parkClock.startsWith("park") &&
     /runner\.[jt]s$/.test(process.argv[1] ?? "")
   ) {
+    /**
+     * The fork's working-session save participation event; official Pi types do not
+     * export it yet, so the handler below is registered through a narrowed on().
+     * @typedef {object} ParkSaveEvent
+     * @property {AbortSignal} signal
+     * @property {unknown} boundary
+     * @property {(message: string) => void} invalidate
+     * @property {(name: string, details: unknown) => void} appendEntry
+     */
+    const onParkSave =
+      /** @type {(name: "working_session_save", handler: (event: ParkSaveEvent) => Promise<void> | void) => () => void} */ (
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- official Pi types do not export the save event
+        /** @type {unknown} */ (pi.on.bind(pi))
+      );
     // Once the test asks, the actual runner's clock runs 1000x faster, so its idle period
     // elapses after whatever settling the runner still does.
     const now = performance.now.bind(performance);
     const advanced = path.join(root, "advance-clock");
-    let from;
+    /** @type {number | undefined} */ let from;
     // A real save participant appends during preparation, changing the leaf being captured.
     let saves = 0;
-    pi.on("working_session_save", async (event) => {
+    onParkSave("working_session_save", async (event) => {
       saves += 1;
-      if (saves === 1 && /^park-(orphan|command)$/.test(process.env.SINGLE_AGENT_PARK_CLOCK)) {
+      if (saves === 1 && /^park-(orphan|command)$/.test(parkClock)) {
         // The first save blocks until the test releases it or the acquisition is cancelled.
         fs.writeFileSync(path.join(root, "save-held"), "");
         while (!event.signal.aborted && !fs.existsSync(path.join(root, "release-save"))) {
@@ -161,7 +262,7 @@ export default async function fixture(pi) {
         }
         return;
       }
-      if (saves > 1 && process.env.SINGLE_AGENT_PARK_CLOCK === "park-failed") {
+      if (saves > 1 && parkClock === "park-failed") {
         // Fail only the final capture, after the actor committed to exit.
         event.invalidate("fixture final capture refused");
       }
@@ -181,12 +282,21 @@ export default async function fixture(pi) {
     };
   }
   if (process.env.SINGLE_AGENT_DROP_HINTS === "1") {
-    const watch = fs.watch;
-    fs.watch = (target, options) => {
-      fs.appendFileSync(path.join(root, "lost-hint-watches.jsonl"), `${process.pid}\n`);
-      return watch(target, options);
-    };
+    // oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
+    /** @type {typeof fs.watch} */ const watch = fs.watch;
+    fs.watch = /** @type {typeof fs.watch} */ (
+      (
+        /** @type {import("node:fs").PathLike} */ target,
+        /** @type {import("node:fs").WatchOptions | undefined} */ options,
+      ) => {
+        fs.appendFileSync(path.join(root, "lost-hint-watches.jsonl"), `${process.pid}\n`);
+        return /** @type {(t: import("node:fs").PathLike, o: import("node:fs").WatchOptions | undefined) => import("node:fs").FSWatcher} */ (
+          watch
+        )(target, options);
+      }
+    );
     syncBuiltinESMExports();
+    // oxlint-enable typescript/no-unsafe-type-assertion
   }
   pi.on("session_start", (_event, ctx) => {
     fs.appendFileSync(
@@ -206,18 +316,23 @@ export default async function fixture(pi) {
       { id: "nested/model", reasoning: true },
     ],
   });
-  const publishRequest = async (request, signal) => {
+  const publishRequest = async (
+    /** @type {{ prompt?: string | undefined } & Record<string, unknown>} */ request,
+    /** @type {AbortSignal | undefined} */ signal,
+  ) => {
     const body = JSON.stringify(request);
     if (request.prompt === "HOLD:second") {
       const split = Math.floor(body.length / 2);
-      for (const [stage, chunk] of [
+      /** @type {[string, string][]} */
+      const stages = [
         ["prefix", body.slice(0, split)],
         ["body", body.slice(split)],
-      ]) {
+      ];
+      for (const [stage, chunk] of stages) {
         fs.appendFileSync(path.join(root, "requests.jsonl"), chunk);
         fs.writeFileSync(path.join(root, `request-${stage}`), "written");
         while (!fs.existsSync(path.join(root, `release-request-${stage}`))) {
-          if (signal?.aborted) {
+          if (signal?.aborted === true) {
             return;
           }
           // Hold actual request bytes on disk until the parent observes this publication stage.
@@ -230,12 +345,18 @@ export default async function fixture(pi) {
       fs.appendFileSync(path.join(root, "requests.jsonl"), body + "\n");
     }
   };
-  const respond = async (context, options, state, model) => {
+  const respond = async (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+    /** @type {import("@earendil-works/pi-ai").SimpleStreamOptions | undefined} */ options,
+    /** @type {import("@earendil-works/pi-ai").FauxProviderState} */ state,
+    /** @type {import("@earendil-works/pi-ai").Model<string>} */ model,
+  ) => {
     const user = context.messages.findLast((message) => message.role === "user");
     const prompt =
       typeof user?.content === "string"
         ? user.content
-        : user?.content?.map((block) => block.text ?? "").join("");
+        : // oxlint-disable-next-line typescript/no-unnecessary-condition -- content stays optional after the string branch
+          user?.content?.map((block) => (block.type === "text" ? block.text : "")).join("");
     await publishRequest(
       {
         pid: process.pid,
@@ -253,12 +374,18 @@ export default async function fixture(pi) {
     const hold = /^HOLD:([a-z]+)/.exec(prompt ?? "");
     if (prompt === "DELAYED_LF_LITERAL") {
       const append = fs.appendFileSync;
-      fs.appendFileSync = (...args) => {
+      /** @param {Parameters<typeof fs.appendFileSync>} args */
+      const delayedAppend = (...args) => {
         if (
           typeof args[1] === "string" &&
           args[1].includes("CHILD_LITERAL_RESULT:DELAYED_LF_LITERAL")
         ) {
-          append(args[0], args[1].slice(0, -1), ...args.slice(2));
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
+          /** @type {(...a: unknown[]) => void} */ (append)(
+            args[0],
+            args[1].slice(0, -1),
+            ...args.slice(2),
+          );
           fs.appendFileSync = append;
           syncBuiltinESMExports();
           fs.writeFileSync(path.join(root, "delayed-lf.json"), JSON.stringify({ file: args[0] }));
@@ -266,11 +393,12 @@ export default async function fixture(pi) {
         }
         append(...args);
       };
+      fs.appendFileSync = delayedAppend;
       syncBuiltinESMExports();
     }
     if (hold) {
-      while (!fs.existsSync(path.join(root, `release-${hold[1]}`))) {
-        if (options?.signal?.aborted) {
+      while (!fs.existsSync(path.join(root, `release-${hold[1] ?? ""}`))) {
+        if (options?.signal?.aborted === true) {
           return fauxAssistantMessage("PARTIAL_BEFORE_ABORT", { stopReason: "aborted" });
         }
         // The test releases only after observing a real provider request.
@@ -280,9 +408,13 @@ export default async function fixture(pi) {
     }
     return answer(context, prompt);
   };
-  const cwdAnswer = (context, prompt) => {
-    const results = context.messages.filter(
-      (m) => m.role === "toolResult" && m.toolCallId?.startsWith(prompt),
+  const cwdAnswer = (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+    /** @type {string} */ prompt,
+  ) => {
+    const results = /** @type {import("@earendil-works/pi-ai").ToolResultMessage[]} */ (
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- narrowed tool results carry the usage details
+      context.messages.filter((m) => m.role === "toolResult" && m.toolCallId.startsWith(prompt))
     );
     if (results.length === 0) {
       return fauxAssistantMessage(
@@ -315,9 +447,11 @@ export default async function fixture(pi) {
     }
     return fauxAssistantMessage(JSON.stringify(results));
   };
-  const usageAnswer = (context) => {
+  const usageAnswer = (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+  ) => {
     const steps = context.messages.filter(
-      (message) => message.role === "toolResult" && message.toolCallId?.startsWith("usage-step-"),
+      (message) => message.role === "toolResult" && message.toolCallId.startsWith("usage-step-"),
     ).length;
     return steps < 34
       ? fauxAssistantMessage(
@@ -333,27 +467,35 @@ export default async function fixture(pi) {
         )
       : fauxAssistantMessage("CHILD_LITERAL_RESULT:USAGE_LITERAL");
   };
-  const answer = (context, prompt) => {
-    if (prompt?.startsWith("CWD_")) {
+  const customBashAnswer = (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+  ) => {
+    const result = context.messages.findLast(
+      (m) => m.role === "toolResult" && m.toolName === "bash",
+    );
+    return fauxAssistantMessage(
+      result
+        ? JSON.stringify(result)
+        : [
+            {
+              type: "toolCall",
+              id: "custom-bash",
+              name: "bash",
+              arguments: { command: "CUSTOM_UNTOUCHED_COMMAND" },
+            },
+          ],
+      result ? {} : { stopReason: "toolUse" },
+    );
+  };
+  const answer = (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+    /** @type {string | undefined} */ prompt,
+  ) => {
+    if (prompt !== undefined && prompt.startsWith("CWD_")) {
       return cwdAnswer(context, prompt);
     }
     if (prompt === "CUSTOM_BASH_LITERAL") {
-      const result = context.messages.findLast(
-        (m) => m.role === "toolResult" && m.toolName === "bash",
-      );
-      return fauxAssistantMessage(
-        result
-          ? JSON.stringify(result)
-          : [
-              {
-                type: "toolCall",
-                id: "custom-bash",
-                name: "bash",
-                arguments: { command: "CUSTOM_UNTOUCHED_COMMAND" },
-              },
-            ],
-        result ? {} : { stopReason: "toolUse" },
-      );
+      return customBashAnswer(context);
     }
     if (
       prompt === "BASH_HOLD_LITERAL" &&
@@ -407,7 +549,7 @@ export default async function fixture(pi) {
       );
       return fauxAssistantMessage(found ? "RECALLED_CALIBRATION_7391" : "CALIBRATION_MISSING");
     }
-    return fauxAssistantMessage(`CHILD_LITERAL_RESULT:${prompt}`);
+    return fauxAssistantMessage(`CHILD_LITERAL_RESULT:${prompt ?? ""}`);
   };
   provider.setResponses(Array.from({ length: 100 }, () => respond));
   pi.registerProvider(provider.provider);
@@ -437,7 +579,11 @@ export default async function fixture(pi) {
     description: "Exercise the actual nested native tool boundary",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     execute: async (...args) => {
-      const result = await args[4].executeTool("delegate", { prompt: "UNAUTHORIZED_NESTED_CHILD" });
+      const toolContext =
+        /** @type {{ executeTool(name: string, args: unknown): Promise<unknown> }} */ (args[4]);
+      const result = await toolContext.executeTool("delegate", {
+        prompt: "UNAUTHORIZED_NESTED_CHILD",
+      });
       fs.writeFileSync(path.join(root, "nested-result.json"), JSON.stringify(result));
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined };
     },

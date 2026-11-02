@@ -13,7 +13,11 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 }
 assert.equal(process.argv.length, 2, "Expected no arguments; use --help");
 await import("./compat-host.mjs");
-const run = (command, args, options = {}) => {
+const run = (
+  /** @type {string} */ command,
+  /** @type {string[]} */ args,
+  /** @type {import("node:child_process").SpawnSyncOptions} */ options = {},
+) => {
   // Outlasts the 1_200_000 ms integration watchdog in scripts/run-tests.mjs.
   const result = spawnSync(command, args, { stdio: "inherit", timeout: 1_500_000, ...options });
   if (result.error) {
@@ -22,18 +26,19 @@ const run = (command, args, options = {}) => {
   assert.equal(
     result.status,
     0,
-    `${command} ${args.join(" ")} failed (${result.status ?? result.signal})`,
+    `${command} ${args.join(" ")} failed (${result.status ?? result.signal ?? "unknown"})`,
   );
-  return result.stdout?.trim();
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- spawnSync stdout shape depends on caller options
+  return /** @type {string | undefined} */ (/** @type {unknown} */ (result.stdout))?.trim();
 };
-const git = (cwd, args) =>
+const git = (/** @type {string} */ cwd, /** @type {string[]} */ args) =>
   run("git", args, { cwd, stdio: ["ignore", "pipe", "inherit"], encoding: "utf8" });
 const root = mkdtempSync(join(tmpdir(), "ps-editor-"));
 const editor = join(root, "source");
 try {
   const supplied = process.env.PI_EDITOR_RECEIPT_TEST_ROOT;
   let expectedRef;
-  if (supplied) {
+  if (supplied !== undefined) {
     const source = resolve(supplied);
     expectedRef = git(source, ["rev-parse", "HEAD"]);
     assert.equal(
@@ -42,7 +47,7 @@ try {
       "Supplied editor source must be clean",
     );
     run("git", ["clone", "--no-hardlinks", "--quiet", source, editor]);
-    git(editor, ["checkout", "--quiet", "--detach", expectedRef]);
+    git(editor, ["checkout", "--quiet", "--detach", expectedRef ?? ""]);
   } else {
     run("git", [
       "clone",
@@ -57,8 +62,8 @@ try {
     ]);
   }
   const ref = git(editor, ["rev-parse", "HEAD"]);
-  assert.match(ref, /^[a-f0-9]{40}$/);
-  if (expectedRef) {
+  assert.match(ref ?? "", /^[a-f0-9]{40}$/);
+  if (expectedRef !== undefined) {
     assert.equal(ref, expectedRef);
   }
   assert.ok(
@@ -74,7 +79,11 @@ try {
   git(editor, ["diff", "--exit-code"]);
   console.log(
     JSON.stringify({
-      nativeEditor: { ref, source: editor, supplied: supplied ? resolve(supplied) : null },
+      nativeEditor: {
+        ref,
+        source: editor,
+        supplied: supplied !== undefined ? resolve(supplied) : null,
+      },
     }),
   );
   const env = { ...process.env, PI_EDITOR_RECEIPT_TEST_ROOT: editor };

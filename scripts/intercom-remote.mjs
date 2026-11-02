@@ -23,6 +23,7 @@ Acceptance is not native journal persistence, model start, or task completion.
 No automatic retries: a lost mutation response means UNKNOWN, not unsent.`);
 }
 
+/** @type {Record<string, string[]>} */
 const actions = {
   register: [],
   list: [],
@@ -30,7 +31,7 @@ const actions = {
   inbox: ["after", "limit", "wait-ms"],
   send: ["to", "message", "id", "passive", "expects-reply", "reply-to"],
 };
-function messageId(id) {
+function messageId(/** @type {string | undefined} */ id) {
   // oxlint-disable-next-line no-control-regex
   const controls = /[\u0000-\u001f\u007f-\u009f]/;
   if (id !== undefined && (id.trim() === "" || id.length > 512 || controls.test(id))) {
@@ -38,18 +39,34 @@ function messageId(id) {
   }
   return id;
 }
-function requestBody(action, options, ids) {
+function requireSendOptions(/** @type {Record<string, string | boolean | undefined>} */ options) {
+  const to = options.to;
+  const message = options.message;
+  if (
+    typeof to !== "string" ||
+    typeof message !== "string" ||
+    to.trim() === "" ||
+    message.trim() === ""
+  ) {
+    throw new Error("--to and --message are required.");
+  }
+  return { to, message };
+}
+
+function requestBody(
+  /** @type {string} */ action,
+  /** @type {Record<string, string | boolean | undefined>} */ options,
+  /** @type {string[]} */ ids,
+) {
   if (action === "send") {
-    if (!options.to?.trim() || !options.message?.trim()) {
-      throw new Error("--to and --message are required.");
-    }
+    const { to, message } = requireSendOptions(options);
     return {
-      to: options.to,
-      message: options.message,
-      messageId: messageId(options.id),
+      to,
+      message,
+      messageId: messageId(typeof options.id === "string" ? options.id : undefined),
       passive: options.passive,
       expectsReply: options["expects-reply"],
-      replyTo: messageId(options["reply-to"]),
+      replyTo: messageId(typeof options["reply-to"] === "string" ? options["reply-to"] : undefined),
     };
   }
   if (action === "ack") {
@@ -62,10 +79,10 @@ function requestBody(action, options, ids) {
 }
 
 function tlsFiles() {
-  const files = {};
+  /** @type {Record<string, Buffer>} */ const files = {};
   for (const field of ["CA", "CERT", "KEY"]) {
     const path = process.env[`INTERCOM_BRIDGE_${field}`];
-    if (!path) {
+    if (path === undefined || path === "") {
       throw new Error(`INTERCOM_BRIDGE_${field} is required.`);
     }
     if (field === "KEY") {
@@ -76,17 +93,18 @@ function tlsFiles() {
   return files;
 }
 
-function privateKey(path) {
+function privateKey(/** @type {string} */ path) {
   const st = lstatSync(path);
-  if (!st.isFile() || st.uid !== process.getuid() || st.mode & 0o077) {
+  const uid = process.getuid?.();
+  if (uid === undefined || !st.isFile() || st.uid !== uid || (st.mode & 0o077) !== 0) {
     throw new Error("Client key must be an owned private regular file (0600).");
   }
 }
 
-function inboxQuery(options) {
-  const after = options.after ?? "0";
-  const limit = options.limit ?? "256";
-  const waitMs = options["wait-ms"] ?? "0";
+function inboxQuery(/** @type {Record<string, string | boolean | undefined>} */ options) {
+  const after = typeof options.after === "string" ? options.after : "0";
+  const limit = typeof options.limit === "string" ? options.limit : "256";
+  const waitMs = typeof options["wait-ms"] === "string" ? options["wait-ms"] : "0";
   if (
     !/^(0|[1-9]\d{0,15})$/.test(after) ||
     !Number.isSafeInteger(Number(after)) ||
@@ -105,7 +123,10 @@ function inboxQuery(options) {
   return query.toString();
 }
 
-let body, action, origin, query;
+/** @type {unknown} */ let body;
+/** @type {string} */ let action = "";
+/** @type {URL | undefined} */ let origin;
+/** @type {string} */ let query = "";
 try {
   const parsed = parseArgs({
     allowPositionals: true,
@@ -123,7 +144,7 @@ try {
       limit: { type: "string" },
     },
   });
-  if (parsed.values.help) {
+  if (parsed.values.help === true) {
     help();
     process.exit(0);
   }
@@ -138,26 +159,31 @@ try {
     }
     names.add(token.name);
   }
-  [action] = parsed.positionals;
+  [action = ""] = parsed.positionals;
   if (!Object.hasOwn(actions, action)) {
     throw new Error("Choose an action; use --help.");
   }
+  const allowedKeys = actions[action];
   if (
-    Object.keys(options).some((key) => !actions[action].includes(key)) ||
+    allowedKeys === undefined ||
+    Object.keys(options).some((key) => !allowedKeys.includes(key)) ||
     (action !== "ack" && parsed.positionals.length !== 1)
   ) {
     throw new Error("Unexpected arguments for this action.");
   }
   body = requestBody(action, options, parsed.positionals.slice(1));
   query = action === "inbox" ? inboxQuery(options) : "";
-  origin = new URL(process.env.INTERCOM_BRIDGE_URL || "https://127.0.0.1:9443");
+  const bridgeUrl = process.env.INTERCOM_BRIDGE_URL;
+  origin = new URL(
+    bridgeUrl !== undefined && bridgeUrl !== "" ? bridgeUrl : "https://127.0.0.1:9443",
+  );
   if (
     origin.protocol !== "https:" ||
-    origin.username ||
-    origin.password ||
+    origin.username !== "" ||
+    origin.password !== "" ||
     origin.pathname !== "/" ||
-    origin.search ||
-    origin.hash
+    origin.search !== "" ||
+    origin.hash !== ""
   ) {
     throw new Error("INTERCOM_BRIDGE_URL must be an HTTPS origin, without credentials or a path.");
   }
@@ -180,7 +206,12 @@ try {
   origin.search = query;
   const payload = JSON.stringify(body);
   const get = ["list", "inbox"].includes(action);
-  const result = await new Promise((resolve, reject) => {
+  /**
+   * @typedef {{ status: number | undefined, value: unknown }} BridgeReply
+   */
+  /** @type {{ promise: Promise<BridgeReply>, resolve: (value: BridgeReply) => void, reject: (reason?: unknown) => void }} */
+  const { promise: reply, resolve, reject } = Promise.withResolvers();
+  {
     const req = https.request(
       origin,
       {
@@ -196,9 +227,9 @@ try {
           : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
       },
       (res) => {
-        const chunks = [];
+        /** @type {Buffer[]} */ const chunks = [];
         let bytes = 0;
-        res.on("data", (chunk) => {
+        res.on("data", (/** @type {Buffer} */ chunk) => {
           bytes += chunk.length;
           if (bytes > 16 * 1024 * 1024) {
             req.destroy(new Error("Bridge response exceeds 16 MiB."));
@@ -225,9 +256,15 @@ try {
     req.once("close", () => clearTimeout(timer));
     req.once("error", reject);
     req.end(get ? undefined : payload);
-  });
+  }
+  const result = await reply;
   console.log(JSON.stringify(result.value, null, 2));
-  if (result.status < 200 || result.status >= 300 || result.value?.ok !== true) {
+  const ok =
+    typeof result.value === "object" &&
+    result.value !== null &&
+    "ok" in result.value &&
+    result.value.ok === true;
+  if ((result.status !== undefined && (result.status < 200 || result.status >= 300)) || !ok) {
     process.exitCode = 1;
   }
 } catch (error) {

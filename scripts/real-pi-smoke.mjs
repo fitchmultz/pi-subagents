@@ -13,7 +13,7 @@ function usage() {
   );
 }
 
-function parsePositiveInteger(value, source) {
+function parsePositiveInteger(/** @type {string} */ value, /** @type {string} */ source) {
   if (!/^\d+$/.test(value)) {
     throw new Error(`${source} must be a positive integer, got ${value}`);
   }
@@ -24,10 +24,23 @@ function parsePositiveInteger(value, source) {
   return parsed;
 }
 
-function parseArgs(argv) {
+/**
+ * @param {string[]} argv
+ * @param {number} index
+ * @returns {string}
+ */
+function requiredValue(argv, index) {
+  const value = argv[index];
+  if (value === undefined || value === "") {
+    throw new Error("--timeout-ms requires a value");
+  }
+  return value;
+}
+
+function parseArgs(/** @type {string[]} */ argv) {
   const options = { llm: false, llmFull: false, keepTemp: false, timeoutMs: DEFAULT_TIMEOUT_MS };
   for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+    const arg = argv[index] ?? "";
     if (arg === "--help" || arg === "-h") {
       usage();
       process.exit(0);
@@ -46,11 +59,7 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === "--timeout-ms") {
-      const value = argv[index + 1];
-      if (!value) {
-        throw new Error("--timeout-ms requires a value");
-      }
-      options.timeoutMs = parsePositiveInteger(value, "--timeout-ms");
+      options.timeoutMs = parsePositiveInteger(requiredValue(argv, index + 1), "--timeout-ms");
       index += 1;
       continue;
     }
@@ -63,7 +72,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function isolatedEnv(root, agentDir) {
+function isolatedEnv(/** @type {string} */ root, /** @type {string} */ agentDir) {
   const home = join(root, "home");
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -85,11 +94,18 @@ function isolatedEnv(root, agentDir) {
   };
 }
 
+/**
+ * @param {string} label
+ * @param {string[]} args
+ * @param {{ processes: import("./real-pi-processes.mjs").SmokeProcesses, input?: string | ((child: import("node:child_process").ChildProcess) => void) }} options
+ */
 function runPi(label, args, options) {
   return options.processes.run(label, "pi", args, options.input);
 }
 
-async function verifyBundledResources(options) {
+async function verifyBundledResources(
+  /** @type {{ processes: import("./real-pi-processes.mjs").SmokeProcesses, input?: string | ((child: import("node:child_process").ChildProcess) => void), root: string }} */ options,
+) {
   const marker = join(options.root, "resources.json");
   const observer = join(options.root, "observe-resources.mjs");
   writeFileSync(
@@ -107,6 +123,8 @@ async function verifyBundledResources(options) {
       throw new Error(`bundled Pi resources did not register ${name}:\n${output}`);
     }
   }
+  /** @type {string[]} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const tools = JSON.parse(readFileSync(marker, "utf8"));
   for (const name of ["delegate", "agent_runs", "intercom"]) {
     if (!tools.includes(name)) {
@@ -126,12 +144,19 @@ async function verifyBundledResources(options) {
   }
 }
 
+/**
+ * @param {string} output
+ * @returns {{ type?: string, id?: string, success?: boolean, data?: { commands?: { name?: string }[] } } | undefined}
+ */
 function commandResponse(output) {
+  /** @type {{ type?: string, id?: string, success?: boolean, data?: { commands?: { name?: string }[] } } | undefined} */
   let response;
   for (const line of output.split(/\r?\n/)) {
     try {
+      /** @type {{ type?: string, id?: string, success?: boolean, data?: { commands?: { name?: string }[] } }} */
+      // oxlint-disable-next-line typescript/no-unsafe-assignment
       const parsed = JSON.parse(line);
-      if (parsed?.type === "response" && parsed?.id === "commands") {
+      if (parsed.type === "response" && parsed.id === "commands") {
         response = parsed;
       }
     } catch {
@@ -141,13 +166,18 @@ function commandResponse(output) {
   return response;
 }
 
-function registeredCommands(response) {
-  return response?.success === true && Array.isArray(response?.data?.commands)
-    ? response.data.commands.map((command) => command?.name)
+function registeredCommands(
+  /** @type {{ success?: boolean, data?: { commands?: { name?: string }[] } } | undefined} */ response,
+) {
+  return response !== undefined &&
+    response.success === true &&
+    response.data !== undefined &&
+    Array.isArray(response.data.commands)
+    ? response.data.commands.map((command) => command.name)
     : [];
 }
 
-function createProject(root) {
+function createProject(/** @type {string} */ root) {
   const projectRoot = join(root, "project");
   mkdirSync(projectRoot, { recursive: true });
   return projectRoot;
@@ -158,7 +188,9 @@ async function main() {
   try {
     options = parseArgs(process.argv.slice(2));
   } catch (error) {
-    console.error(`[real-pi-smoke] ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[real-pi-smoke] ${error instanceof Error ? error.message : JSON.stringify(error)}`,
+    );
     usage();
     process.exit(2);
   }
@@ -169,19 +201,19 @@ async function main() {
   const projectRoot = createProject(root);
   const env = isolatedEnv(root, agentDir);
   const cancellation = new AbortController();
-  const cancel = (signal) => cancellation.abort(new Error(`Cancelled by ${signal}`));
+  const cancel = (/** @type {NodeJS.Signals} */ signal) =>
+    cancellation.abort(new Error(`Cancelled by ${signal}`));
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, cancel);
   }
-  const runOptions = {
+  const smokeOptions = {
     cwd: projectRoot,
     env,
     timeoutMs: options.timeoutMs,
     root,
     signal: cancellation.signal,
   };
-
-  runOptions.processes = new SmokeProcesses(runOptions);
+  const runOptions = { ...smokeOptions, processes: new SmokeProcesses(smokeOptions) };
 
   try {
     await runPi("pi install pi-subagents", ["install", repoRoot, "--approve"], runOptions);
@@ -223,7 +255,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[real-pi-smoke] ${error instanceof Error ? error.message : String(error)}`);
+main().catch((/** @type {unknown} */ error) => {
+  console.error(
+    `[real-pi-smoke] ${error instanceof Error ? error.message : JSON.stringify(error)}`,
+  );
   process.exitCode = 1;
 });
