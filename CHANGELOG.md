@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.13 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Raise the Pi floor to 1.5.0 (#329) ([fdc15e0](https://github.com/fitchmultz/pi-subagents/commit/fdc15e09fff7bedb74901b09374779b1e8fe4449))
+
+### What's Changed
+
+- Raise the Pi floor to 1.5.0 by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/329
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.12...v0.52.13
+
 ## 0.52.12 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
