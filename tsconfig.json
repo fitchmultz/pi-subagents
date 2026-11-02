@@ -23,7 +23,12 @@
     "exactOptionalPropertyTypes": true,
     "noUncheckedSideEffectImports": true,
     "forceConsistentCasingInFileNames": true,
-    "noCheck": false
+    "noCheck": false,
+    "paths": {
+      "@earendil-works/pi-ai": [
+        "./node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/pi-ai-extension-view.d.ts"
+      ]
+    }
   },
   "include": [
     "**/*.ts",

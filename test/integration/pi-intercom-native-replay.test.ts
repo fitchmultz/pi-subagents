@@ -28,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import type { ReadonlyDeep as ReadonlyInput } from "type-fest";
+import { Type } from "typebox";
 import { createMessageReader, writeMessage } from "../../src/pi-intercom/broker/framing.ts";
 import {
   getBrokerSocketPath,
@@ -98,7 +99,7 @@ const {
   sdkEntry.href,
   () => import("@earendil-works/pi-coding-agent"),
 );
-const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore, Type } =
+const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } =
   await importSelectedNative(
     import.meta.url,
     "@earendil-works/pi-ai",

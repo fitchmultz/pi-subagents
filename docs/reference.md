@@ -29,7 +29,7 @@ unknown IDs and invalid suffixes fail without fuzzy matching or another provider
 Native resolution follows Pi's case-insensitive ID matching. Pi still applies the
 selected model's native thinking capabilities.
 
-Official Pi 1.3.0 and 1.4.0 do not export that resolver. Older fork runtimes also
+Official Pi, including 1.5.0, does not export that resolver. Older fork runtimes also
 lack the export. Those hosts retain
 case-sensitive literal-ID overrides and inherited thinking; suffix requests fail with an upgrade
 message rather than being parsed by an extension-side replacement. This requires

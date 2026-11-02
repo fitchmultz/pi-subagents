@@ -1,6 +1,5 @@
 import {
   getMarkdownTheme,
-  keyHint,
   truncateToVisualLines,
   type ExtensionAPI,
   type ExtensionContext,
@@ -18,7 +17,12 @@ import {
 } from "@earendil-works/pi-tui";
 import { actionText } from "./tui-action.ts";
 
-function preview(content: Component, expanded: boolean, theme: Theme, showHint = true): Component {
+function preview(
+  content: Component,
+  expanded: boolean,
+  theme: Theme,
+  expandHint?: string,
+): Component {
   if (expanded) {
     return content;
   }
@@ -35,7 +39,7 @@ function preview(content: Component, expanded: boolean, theme: Theme, showHint =
         );
         const hint = theme.fg(
           "dim",
-          `… ${skippedCount} more lines${showHint ? ` · ${keyHint("app.tools.expand", "to expand")}` : ""}`,
+          `… ${skippedCount} more lines${expandHint === undefined ? "" : ` · ${expandHint}`}`,
         );
         cache = {
           width,
@@ -55,6 +59,7 @@ export const renderCompactResult: NonNullable<ToolDefinition["renderResult"]> = 
   result,
   { expanded },
   theme,
+  context,
 ) =>
   preview(
     new Text(
@@ -70,6 +75,8 @@ export const renderCompactResult: NonNullable<ToolDefinition["renderResult"]> = 
     ),
     expanded,
     theme,
+    // Pi injects keyHint so the hint shows the user's configured keys.
+    context.keyHint("app.tools.expand", "to expand"),
   );
 
 export function registerCompactMessages(pi: ExtensionAPI, types: readonly string[]): void {
@@ -81,7 +88,8 @@ export function registerCompactMessages(pi: ExtensionAPI, types: readonly string
     ui = undefined;
   });
   for (const type of types) {
-    pi.registerMessageRenderer(type, (message, { expanded, outputPad }, theme) => {
+    pi.registerMessageRenderer(type, (message, options, theme) => {
+      const { expanded, outputPad } = options;
       const text =
         typeof message.content === "string"
           ? message.content
@@ -101,7 +109,7 @@ export function registerCompactMessages(pi: ExtensionAPI, types: readonly string
             this.addChild(
               markdown.render(width).length > 4
                 ? actionText(
-                    `${label} · ${keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")}`,
+                    `${label} · ${options.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")}`,
                     () => ui?.setToolsExpanded(!expanded),
                   )
                 : new Text(label, 0, 0),
@@ -111,7 +119,7 @@ export function registerCompactMessages(pi: ExtensionAPI, types: readonly string
         })(),
       );
       box.addChild(new Spacer(1));
-      box.addChild(preview(markdown, expanded, theme, false));
+      box.addChild(preview(markdown, expanded, theme));
       return box;
     });
   }
