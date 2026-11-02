@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.15 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Recheck unreported Cursor reviews in automatic releases (#333) ([1b388fc](https://github.com/fitchmultz/pi-subagents/commit/1b388fc6f86904b32af6c479374f1a2a529f941f))
+
+### What's Changed
+
+- Recheck unreported Cursor reviews in automatic releases by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/333
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.14...v0.52.15
+
 ## 0.52.14 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
