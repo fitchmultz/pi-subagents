@@ -6,7 +6,7 @@ import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { createMessageReader, writeFrame } from "../pi-intercom/broker/framing.ts";
 import type { ObservationIdentity } from "./observation.ts";
 import type { Launch } from "./contracts.ts";
-export type Watch = { launch: Launch; identity?: ObservationIdentity };
+export type Watch = { launch: Launch; identity?: ObservationIdentity | undefined };
 import { Assert, Type } from "./typebox.ts";
 
 const activitySchema = Type.Object({
@@ -86,8 +86,8 @@ export interface ViewedTool {
 }
 
 export class ObservationChannel {
-  current?: ObservationClient;
-  private pending?: ObservationClient;
+  current?: ObservationClient | undefined;
+  private pending?: ObservationClient | undefined;
   private readonly changed: () => void;
   constructor(changed: () => void) {
     this.changed = changed;
@@ -134,7 +134,7 @@ export class ObservationClient {
   closed = false;
   revision = 0;
   leaf?: string | null;
-  message?: { key: number; ended: boolean; blocks: ViewedBlock[] };
+  message?: { key: number; ended: boolean; blocks: ViewedBlock[] } | undefined;
   readonly tools = new Map<string, ViewedTool>();
   private readonly handovers: Array<Static<typeof settlementSchema>> = [];
   private seq = -1;
@@ -290,7 +290,7 @@ export class ObservationClient {
   }
   /** Retire live state only after its exact journal entries have been indexed. */
   settle(has: (entry: string) => boolean): boolean {
-    while (this.handovers.length > 0 && has(this.handovers[0][1])) {
+    while (this.handovers.length > 0 && has(this.handovers[0]?.[1] ?? "")) {
       const item = this.handovers.shift();
       if (item) {
         this.retire(item[2], item[3]);

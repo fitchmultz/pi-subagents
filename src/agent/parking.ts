@@ -162,7 +162,7 @@ export class Parking {
   private restored?: string;
   private since = 0;
   private leaf?: string | null;
-  private shell?: string;
+  private shell?: string | undefined;
   private readonly base: string;
   private readonly launch: Launch;
   private readonly token: string;

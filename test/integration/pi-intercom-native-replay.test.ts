@@ -374,7 +374,7 @@ async function makeSession(
         model: faux.getModel(),
         noTools: "builtin",
         sessionManager,
-        sessionStartEvent,
+        ...(sessionStartEvent !== undefined ? { sessionStartEvent } : {}),
       });
       return {
         ...next,
@@ -719,7 +719,7 @@ nodeTest(
     assert.deepEqual(received.guard, { ...guard, applicationGuard: "consent-2" });
     assert.deepEqual(received.replyHint, { tool: "publish_reply", commandId, commandFingerprint });
     assert.equal(received.nativeHandoff, true);
-    assert.equal(received.placementEntryId, receiver.visible("fresh-guard")[0].id);
+    assert.equal(received.placementEntryId, receiver.visible("fresh-guard")[0]?.id);
     assert.equal(received.discarded, false);
     assert.equal(received.text, undefined);
     assert.equal(received.bodyText, undefined);
@@ -729,11 +729,13 @@ nodeTest(
       messageId: "fresh-guard",
     });
     await waitFor(() => heldReads.length === 1, "broker receipt query token");
-    const token = text(at(heldReads[0].frame, "requestId"));
+    const [heldRead] = heldReads;
+    assert.ok(heldRead !== undefined, "expected one held broker read");
+    const token = text(at(heldRead.frame, "requestId"));
     fixtureClient.respondLast(token, { error: "forged receipt from a different peer" });
     await fixtureClient.listSessions(); // Same-socket response proves the forgery was processed.
     holdReads = false;
-    writeMessage(heldReads[0].socket, heldReads[0].frame);
+    writeMessage(heldRead.socket, heldRead.frame);
     const relayedReceipt = record(record(await relayed).receipt);
     assert.equal(relayedReceipt.messageId, "fresh-guard");
     assert.equal(
@@ -942,7 +944,7 @@ nodeTest(
     await receiver.session.navigateTree(branchPoint, { summarize: false });
     const priorBranchReceipt = record(provenance(receiver, "new-0").receipt);
     assert.equal(priorBranchReceipt.rootSessionId, manager.getSessionId());
-    assert.equal(priorBranchReceipt.placementEntryId, receiver.visible("new-0")[0].id);
+    assert.equal(priorBranchReceipt.placementEntryId, receiver.visible("new-0")[0]?.id);
     assert.equal(
       receiver.faux.state.callCount,
       0,
@@ -994,7 +996,7 @@ nodeTest(
       assert.equal(receipt.rootSessionId, rootSessionId);
       assert.equal(receipt.messageId, "passive");
       assert.equal(record(receipt.sender).peerId, originalSender);
-      assert.equal(receipt.placementEntryId, receiver.visible("passive")[0].id);
+      assert.equal(receipt.placementEntryId, receiver.visible("passive")[0]?.id);
       assert.equal(receipt.nativeHandoff, true);
       assert.equal(receipt.queued, false);
       assert.equal(receipt.discarded, false);
@@ -1082,13 +1084,18 @@ nodeTest(
     await waitFor(() => receiver.visible("passive").length === 1, "idle passive flush");
     const placed = record(provenance(receiver, "passive").receipt);
     assert.equal(placed.queued, true, "the earlier queue observation is retained");
-    assert.equal(placed.placementEntryId, receiver.visible("passive")[0].id);
+    assert.equal(placed.placementEntryId, receiver.visible("passive")[0]?.id);
     assert.equal(placed.nativeHandoff, true);
-    assert.match(seen[0], /message:steer/);
-    assert.doesNotMatch(seen[0], /duplicate steer must not appear/);
-    assert.doesNotMatch(seen[0], /message:queued|message:passive/);
-    assert.match(seen[1], /message:queued/);
-    assert.doesNotMatch(seen[1], /message:passive/);
+    const [steerFrame, queuedFrame] = seen;
+    assert.ok(
+      steerFrame !== undefined && queuedFrame !== undefined,
+      "expected steer and queued frames",
+    );
+    assert.match(steerFrame, /message:steer/);
+    assert.doesNotMatch(steerFrame, /duplicate steer must not appear/);
+    assert.doesNotMatch(steerFrame, /message:queued|message:passive/);
+    assert.match(queuedFrame, /message:queued/);
+    assert.doesNotMatch(queuedFrame, /message:passive/);
     const prefix = array(at(initialContext, "messages"));
     assert.ok(prefix.length > 0);
     for (const context of seen) {
@@ -1100,7 +1107,7 @@ nodeTest(
     }
     for (const id of receiver.sends) {
       assert.equal(receiver.visible(id).length, 1, id);
-      assert.equal(receiver.visible(id)[0].customType, "intercom_message");
+      assert.equal(receiver.visible(id)[0]?.customType, "intercom_message");
     }
     assert.equal(receiver.faux.state.callCount, 3);
     assert.equal(receiver.settled(), 1);
@@ -1169,7 +1176,9 @@ for (const { count, reload, repeat } of [
       "native handoffs",
     );
     if (questionBacklog) {
-      const pending = (await executeIntercom(receiver, { action: "pending" })).content[0].text;
+      const [pendingPage] = (await executeIntercom(receiver, { action: "pending" })).content;
+      assert.ok(pendingPage !== undefined, "expected a pending listing page");
+      const pending = pendingPage.text;
       assert.match(pending, /replyTo: "cleared-0"/);
       assert.match(pending, /replyTo: "cleared-100"/);
       const peer = observedSession(
@@ -1650,8 +1659,10 @@ for (const recovery of [false, true]) {
       assert.doesNotMatch(JSON.stringify(pending), /first-ask/);
       for (const id of receiver.sends) {
         assert.equal(receiver.visible(id).length, 1, id);
+        const [askEntry] = receiver.visible(id);
+        assert.ok(askEntry !== undefined, `expected one visible entry for ${id}`);
         assert.equal(
-          JSON.stringify(receiver.visible(id)[0].content).includes("To reply"),
+          JSON.stringify(askEntry.content).includes("To reply"),
           ["first-ask", "second-ask"].includes(id),
           id,
         );
@@ -1738,14 +1749,20 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
     (result) => result.toolCallId.startsWith("contender-") && result.isError,
   );
   assert.equal(rejected.length, 1, "rejecting the contender must not reject the winning waiter");
-  assert.match(JSON.stringify(rejected[0].content), /Already waiting for a reply/);
+  const [rejectedAsk] = rejected;
+  assert.ok(rejectedAsk !== undefined, "expected the rejected contender result");
+  assert.match(JSON.stringify(rejectedAsk.content), /Already waiting for a reply/);
   assert.equal(received.length, 2, "only one concurrent ask may reach the peer");
-  const winner = received[1];
-  assert.notEqual(winner.content.text, rejected[0].toolCallId);
+  const [firstReceived, winner] = received;
+  assert.ok(firstReceived !== undefined && winner !== undefined, "expected both concurrent asks");
+  assert.notEqual(winner.content.text, rejectedAsk.toolCallId);
   await reply(winner);
   await concurrent;
-  const winningResult = results.find((result) => result.toolCallId === winner.content.text);
-  assert.equal(winningResult?.isError, false);
+  const winningResult: (typeof results)[number] | undefined = results.find(
+    (result) => result.toolCallId === winner.content.text,
+  );
+  assert.ok(winningResult !== undefined, "expected the winning ask result");
+  assert.equal(winningResult.isError, false);
   assert.match(JSON.stringify(winningResult.content), new RegExp(`answer:${winner.content.text}`));
 
   await completedAsk("after");
@@ -1762,7 +1779,7 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
     // oxlint-disable-next-line no-await-in-loop
     await asker.send("reply-before", {
       text: "Duplicate answered reply",
-      replyTo: received[0].id,
+      replyTo: firstReceived.id,
       delivery: "passive",
     });
     const barrier = `reply-dedup-${reload}`;
@@ -1949,8 +1966,10 @@ nodeTest(
         );
         assert.equal(receiver.faux.state.callCount, 1);
         assert.equal(receiver.visible("startup-queued").length, 1);
-        assert.doesNotMatch(seen[0], /User startup held before the agent runs/);
-        assert.equal(seen[0].split("message:startup-queued").length - 1, 1);
+        const [startupSeen] = seen;
+        assert.ok(startupSeen !== undefined, "expected the startup admission frame");
+        assert.doesNotMatch(startupSeen, /User startup held before the agent runs/);
+        assert.equal(startupSeen.split("message:startup-queued").length - 1, 1);
       } else {
         await waitFor(
           () =>
@@ -2267,7 +2286,7 @@ nodeTest("native peer metadata never elevates ordinary context to human authorit
   });
   await waitFor(() => receiver.settled() === 1, "ordinary peer settlement");
   assert.equal(receiver.visible("peer-origin").length, 1);
-  assert.equal(receiver.visible("peer-origin")[0].customType, "intercom_message");
+  assert.equal(receiver.visible("peer-origin")[0]?.customType, "intercom_message");
   assert.match(seen, /From sender-ordinary-origin/);
   assert.match(seen, /Literal full proposed edit/);
   assert.doesNotMatch(seen, /Direct user message|human origin/);
@@ -2556,11 +2575,13 @@ for (const stopReason of ["stop", "length"] as const) {
         assert.equal(text(record(page.session).status), expectedStatus);
         assert.equal(text(record(page.session).name), targetName);
         pages.push(text(page.text));
-        assert.equal(text(result.content[0].text), page.text);
-        assert.match(text(result.content[1].text), /Session: last-target/);
-        assert.ok(text(result.content[1].text).includes(`Status: ${expectedStatus}`));
+        const [replyPage, detailPage] = result.content;
+        assert.ok(replyPage !== undefined && detailPage !== undefined, "expected reply pages");
+        assert.equal(text(replyPage.text), page.text);
+        assert.match(text(detailPage.text), /Session: last-target/);
+        assert.ok(text(detailPage.text).includes(`Status: ${expectedStatus}`));
         if (page.nextOffset !== undefined) {
-          assert.match(text(result.content[1].text), /Next page: intercom\(/);
+          assert.match(text(detailPage.text), /Next page: intercom\(/);
         }
         if (pages.length === 1) {
           release.resolve();
@@ -2662,6 +2683,7 @@ nodeTest(
     t.after(() => sender.disconnect());
     const seed = restartFixture(t, "seed", path.join(root, "restart-seed"));
     const [ready] = await seed.result;
+    assert.ok(ready !== undefined, "expected a ready fixture result");
     assert.equal(ready.type, "ready");
     for (const message of [
       { messageId: "native-steer", text: "native steering handoff" },
@@ -2693,10 +2715,12 @@ nodeTest(
     const snapshotPromise = receiveResume(seed.child);
     seed.child.send({ action: "snapshot" });
     const [snapshot] = await snapshotPromise;
+    assert.ok(snapshot !== undefined, "expected a snapshot result");
     assert.equal(snapshot.nativeQueued, true);
     assert.match(snapshot.status, /Pending inbound messages: 4/);
     assert.deepEqual(snapshot.visibleIds, []);
-    const beforePlacement = record(record(record(snapshot.provenance.passive).current).receipt);
+    const snapshotPassive = record(snapshot.provenance.passive);
+    const beforePlacement = record(record(snapshotPassive.current).receipt);
     assert.equal(beforePlacement.queued, true);
     assert.equal(beforePlacement.placementEntryId, null);
     assert.equal(record(beforePlacement.sender).peerId, sender.sessionId);
@@ -2710,6 +2734,7 @@ nodeTest(
       // These processes share a broker target and must not overlap.
       // oxlint-disable-next-line no-await-in-loop
       const [result] = await fresh.result;
+      assert.ok(result !== undefined, "expected a fresh restart result");
       // Release the previous native process before starting its successor.
       // oxlint-disable-next-line no-await-in-loop
       await fresh.exited;
@@ -2723,8 +2748,9 @@ nodeTest(
       assert.match(result.status, /Pending inbound messages: 0/);
       if (mode === "fork") {
         forkCheckpointOwners = [...result.checkpointOwners];
-        assert.deepEqual(record(result.provenance.passive).current, { error: "receipt_not_found" });
-        assert.deepEqual(record(result.provenance.passive).original, {
+        const freshPassive = record(result.provenance.passive);
+        assert.deepEqual(record(freshPassive.current), { error: "receipt_not_found" });
+        assert.deepEqual(record(freshPassive.original), {
           error: "publication_unavailable",
         });
       }
@@ -2741,11 +2767,13 @@ nodeTest(
       // The second resume must read the journal produced by the first resume.
       // oxlint-disable-next-line no-await-in-loop
       const [result] = await resumed.result;
+      assert.ok(result !== undefined, "expected a resumed restart result");
       // Do not overlap native processes that own the same saved session.
       // oxlint-disable-next-line no-await-in-loop
       await resumed.exited;
       assert.equal(result.sessionId, ready.sessionId);
-      const recoveredReceipt = record(record(record(result.provenance.passive).current).receipt);
+      const resumedPassive = record(result.provenance.passive);
+      const recoveredReceipt = record(record(resumedPassive.current).receipt);
       assert.equal(recoveredReceipt.rootSessionId, ready.sessionId);
       assert.equal(record(recoveredReceipt.sender).peerId, sender.sessionId);
       assert.equal(recoveredReceipt.checkpointEntryId, beforePlacement.checkpointEntryId);
@@ -2777,6 +2805,7 @@ nodeTest(
 
     const passiveSeed = restartFixture(t, "seed", path.join(root, "restart-passive-seed"));
     const [passiveReady] = await passiveSeed.result;
+    assert.ok(passiveReady !== undefined, "expected a passive ready result");
     assert.equal(
       (
         await sender.send("restart-parent", {
@@ -2789,7 +2818,9 @@ nodeTest(
     );
     const passiveSnapshot = receiveResume(passiveSeed.child);
     passiveSeed.child.send({ action: "snapshot" });
-    assert.match((await passiveSnapshot)[0].status, /Pending inbound messages: 1/);
+    const [passiveStatus] = await passiveSnapshot;
+    assert.ok(passiveStatus !== undefined, "expected a passive snapshot");
+    assert.match(passiveStatus.status, /Pending inbound messages: 1/);
     passiveSeed.child.kill("SIGKILL");
     await passiveSeed.exited;
     const passiveResume = restartFixture(
@@ -2799,6 +2830,7 @@ nodeTest(
       passiveReady.sessionFile,
     );
     const [passiveResult] = await passiveResume.result;
+    assert.ok(passiveResult !== undefined, "expected a passive resume result");
     await passiveResume.exited;
     assert.equal(passiveResult.modelCalls, 0);
     assert.deepEqual(passiveResult.visibleIds, ["passive-only"]);
@@ -3045,6 +3077,7 @@ nodeTest(
       // Finish this delivered request before admitting the next action.
       // oxlint-disable-next-line no-await-in-loop
       const [from, input] = array(await received).map(record);
+      assert.ok(from !== undefined && input !== undefined, "expected a delivered ask frame");
       assert.equal(at(input, "content", "text"), `safe ${action}`);
       if (action === "ask") {
         assert.equal(input.expectsReply, true);
@@ -3311,6 +3344,7 @@ nodeTest(
       // Observe actual delivery before replying to this ask.
       // oxlint-disable-next-line no-await-in-loop
       const [from, input] = array(await request).map(record);
+      assert.ok(from !== undefined && input !== undefined, "expected a delivered ask frame");
       assert.equal(input.delivery, delivery);
       assert.equal(input.expectsReply, true);
       assert.equal(settled, false);
@@ -3359,6 +3393,7 @@ for (const outcome of [
         (error: unknown) => ({ error }),
       );
       const [from, question] = array(await received).map(record);
+      assert.ok(from !== undefined && question !== undefined, "expected an ordinary ask frame");
       if (outcome === "disconnect") {
         await asker.sender.disconnect();
       } else if (outcome === "cancel") {
@@ -3419,6 +3454,7 @@ for (const outcome of [
         message: "Next ordinary question",
       });
       const [nextFrom, nextQuestion] = array(await next).map(record);
+      assert.ok(nextFrom !== undefined && nextQuestion !== undefined, "expected a retry ask frame");
       await asker.sender.send(text(nextFrom.id), {
         text: "Next answer",
         replyTo: text(nextQuestion.id),
@@ -3540,8 +3576,10 @@ for (const scenario of ["already-replied", "agent-settled", "non-error"] as cons
     const correlated = replies.filter((reply) => reply.replyTo === "spurious-question");
     assert.equal(correlated.length, scenario === "already-replied" ? 1 : 0);
     if (scenario === "already-replied") {
-      assert.equal(correlated[0].content.text, "Normal reply");
-      assert.deepEqual(correlated[0].content.attachments, [
+      const [correlatedReply] = correlated;
+      assert.ok(correlatedReply !== undefined, "expected the correlated reply");
+      assert.equal(correlatedReply.content.text, "Normal reply");
+      assert.deepEqual(correlatedReply.content.attachments, [
         { type: "context", name: "answer.txt", content: "Supporting context" },
       ]);
     }
@@ -3967,8 +4005,10 @@ nodeTest(
     );
     assert.equal((await presence()).pendingAsks, 0);
     assert.equal(lowLevelEnds.length, 1);
-    assert.equal(lowLevelEnds[0].status, "thinking", "low-level agent_end is not final settlement");
-    assert.equal(lowLevelEnds[0].acceptsAsks, false);
+    const [lowLevelEnd] = lowLevelEnds;
+    assert.ok(lowLevelEnd !== undefined, "expected one low-level agent_end");
+    assert.equal(lowLevelEnd.status, "thinking", "low-level agent_end is not final settlement");
+    assert.equal(lowLevelEnd.acceptsAsks, false);
     assert.deepEqual(receiver.errors, []);
   },
 );

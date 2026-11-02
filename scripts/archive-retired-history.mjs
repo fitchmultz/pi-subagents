@@ -418,7 +418,9 @@ function main() {
       fs.readFileSync("/proc/self/status", "utf8"),
     );
     assert.ok(capability !== null, "E_PROCESS_VISIBILITY");
-    assert.ok((BigInt(`0x${capability[1]}`) & (1n << 19n)) !== 0n, "E_PROCESS_VISIBILITY");
+    const capEff = capability[1];
+    assert.ok(capEff !== undefined, "E_PROCESS_VISIBILITY");
+    assert.ok((BigInt(`0x${capEff}`) & (1n << 19n)) !== 0n, "E_PROCESS_VISIBILITY");
   }
   assert.match(values["owner-uid"] ?? "", /^(?:0|[1-9][0-9]*)$/, "E_OWNER_UID");
   const uid = Number(values["owner-uid"]);

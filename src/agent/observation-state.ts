@@ -24,7 +24,7 @@ const WRITING = { text: "writing", thinking: "thinking", toolCall: "calling" } a
 /** A live in-flight assistant message: a transient native reference, never a receipt. */
 export interface LiveMessage {
   readonly key: number;
-  message: AssistantMessage;
+  message: AssistantMessage | undefined;
   ended: boolean;
 }
 /** A native message found in the session tree: `[seq, entry id, live message key, tool call id]`. */
@@ -77,7 +77,7 @@ export class LiveTool {
 export class LiveState {
   version = 0;
   activityVersion = 0;
-  message?: LiveMessage;
+  message?: LiveMessage | undefined;
   readonly tools = new Map<string, LiveTool>();
   readonly settlements: Settlement[] = [];
   settled = 0;

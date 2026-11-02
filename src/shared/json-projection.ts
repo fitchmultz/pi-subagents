@@ -12,7 +12,7 @@ export type StringChunk = (
 ) => void;
 interface Container {
   readonly path: readonly (string | number)[];
-  readonly value?: Record<string, unknown> | unknown[];
+  readonly value?: Record<string, unknown> | unknown[] | undefined;
   readonly array: boolean;
   key: string;
   index: number;
@@ -95,7 +95,7 @@ export class JsonProjection {
   private text = "";
   private numberState = 0;
   private readonly select: Projection;
-  private readonly stringChunk?: StringChunk;
+  private readonly stringChunk?: StringChunk | undefined;
   private readonly keys: KeyLimit;
   value: unknown;
   constructor(select: Projection, stringChunk?: StringChunk, keys: KeyLimit = () => 4096) {

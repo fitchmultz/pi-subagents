@@ -58,10 +58,16 @@ class MessageBuffer {
     if (size === 0) {
       return Buffer.alloc(0);
     }
+    if (first === undefined) {
+      throw new Error("Frame reader has no buffered chunk for a non-empty read.");
+    }
     const result = first.length >= size ? first.subarray(0, size) : Buffer.allocUnsafe(size);
     let written = 0;
     while (written < size) {
       const chunk = this.chunks[this.index];
+      if (chunk === undefined) {
+        throw new Error("Frame reader ran out of buffered chunks mid-read.");
+      }
       const count = Math.min(chunk.length, size - written);
       if (first.length < size) {
         chunk.copy(result, written, 0, count);

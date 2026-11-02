@@ -43,7 +43,7 @@ export interface ViewerOptions {
 export class ObservationViewer {
   snapshot?: Record<string, unknown>;
   activity?: unknown;
-  message?: { readonly key: number; ended: boolean; blocks: LiveBlock[] };
+  message?: { readonly key: number; ended: boolean; blocks: LiveBlock[] } | undefined;
   /** Baselines received after the first: live state was rebuilt from the journal leaf. */
   resyncs = 0;
   private seq = 0;

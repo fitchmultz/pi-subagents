@@ -7,7 +7,7 @@ import { errorMessage, type UnknownRecord } from "../../src/shared/unknown.ts";
 import { assertDefined, json, numberValue, record, text } from "./assertions.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
-interface Credential {
+export interface Credential {
   readonly ca: string;
   readonly cert: string;
   readonly key: string;

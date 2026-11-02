@@ -16,6 +16,7 @@ export function registerIntercomTools(
       "Message connected Pi sessions in your group; mains also reach other mains across projects. List shows target IDs. Ask waits for a correlated reply; reply answers the active or sole pending ask. Pending lists asks; status shows connection and inbound queue. Last pages a peer's last completed response without waking it. Broker acceptance is not recipient persistence, consumption or completion.",
     parameters: intercomSchema,
     renderResult: renderCompactResult,
+    // oxlint-disable-next-line max-params
     async execute(_id, params, signal, _update, ctx) {
       const result = throwIfToolError(await tools.execute(params, signal, ctx));
       return { content: [...result.content], details: result.details };

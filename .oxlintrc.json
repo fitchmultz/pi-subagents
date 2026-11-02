@@ -344,7 +344,6 @@
         "**/*.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "**/*.spec.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "**/__tests__/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
-        "**/*.test-d.ts",
         "test/support/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "test/fixtures/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
       ],
@@ -398,7 +397,7 @@
       }
     },
     {
-      "files": ["**/*.test-d.ts"],
+      "files": ["**/*.test-d.{ts,mts,cts}"],
       "rules": {
         "typescript/ban-ts-comment": [
           "error",
@@ -409,56 +408,29 @@
             "ts-nocheck": true,
             "minimumDescriptionLength": 10
           }
-        ]
-      }
-    },
-    {
-      "files": ["test/integration/pi-intercom-runtime.test.ts"],
-      "rules": {
-        "unicorn/no-useless-undefined": [
+        ],
+        "complexity": [
           "error",
           {
-            "checkArguments": false
+            "max": 15,
+            "variant": "modified"
           }
-        ]
-      }
-    },
-    {
-      "files": ["src/pi-intercom/tool-registration.ts"],
-      "rules": {
+        ],
+        "max-depth": [
+          "error",
+          {
+            "max": 4
+          }
+        ],
         "max-params": [
           "error",
           {
-            "max": 5
+            "max": 6
           }
-        ]
-      }
-    },
-    {
-      "files": [
-        "test/integration/pi-intercom-runtime.test.ts",
-        "test/integration/pi-intercom-native-replay.test.ts"
-      ],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": []
-          }
-        ]
-      }
-    },
-    {
-      "files": ["test/fixtures/native-execution-cwd-owner.ts"],
-      "rules": {
-        "no-param-reassign": [
-          "error",
-          {
-            "props": true,
-            "ignorePropertyModificationsFor": ["event", "request"]
-          }
-        ]
+        ],
+        "max-statements": "off",
+        "max-lines-per-function": "off",
+        "max-lines": "off"
       }
     },
     {

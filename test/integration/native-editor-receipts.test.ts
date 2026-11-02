@@ -176,17 +176,26 @@ nodeTest(
       receipts.map((receipt) => receipt.isError),
       [false, false, true, false, false, false],
     );
+    const [firstReceipt, secondReceipt, failedReceipt] = receipts;
+    assert.ok(
+      firstReceipt !== undefined && secondReceipt !== undefined && failedReceipt !== undefined,
+      "expected six receipts",
+    );
     assert.equal(
-      receipts[2].isError,
+      failedReceipt.isError,
       true,
       "native error hook preserves the real partial-publication error",
     );
-    assert.deepEqual(record(receipts[2].details).modifiedFiles, [path.join(cwd, "a")]);
+    assert.deepEqual(record(failedReceipt.details).modifiedFiles, [path.join(cwd, "a")]);
     assert.deepEqual(
-      records(record(receipts[2].details).files).map((file) => file.status),
+      records(record(failedReceipt.details).files).map((file) => file.status),
       ["applied", "failed", "unattempted"],
     );
-    assert.equal(records(record(receipts[3].details).files)[0].status, "unchanged");
+    const unchangedReceipt = receipts[3];
+    assert.ok(unchangedReceipt !== undefined, "expected the unchanged receipt");
+    const [unchangedFile] = records(record(unchangedReceipt.details).files);
+    assert.ok(unchangedFile !== undefined, "expected one unchanged file record");
+    assert.equal(unchangedFile.status, "unchanged");
     const published = sdk.SessionManager.open(manager.getSessionFile() ?? "")
       .getEntries()
       .filter((entry) => entry.type === "message" && entry.message.role === "toolResult");

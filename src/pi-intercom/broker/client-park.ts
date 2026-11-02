@@ -4,7 +4,7 @@ import { writeMessage } from "./framing.ts";
 /** Parking negotiation and its single outstanding broker acknowledgement. */
 export class ParkRequests {
   supported = false;
-  private acknowledged?: (parked: boolean) => void;
+  private acknowledged?: ((parked: boolean) => void) | undefined;
   settle(parked: boolean): void {
     this.acknowledged?.(parked);
   }

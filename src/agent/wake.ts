@@ -21,7 +21,7 @@ export type WatchState = "unwatched" | "armed" | "changed" | "watching";
 
 /** Native change hints for one directory identity; owners still reconcile canonical files. */
 export class DirectoryWatch {
-  private watcher?: fs.FSWatcher;
+  private watcher?: fs.FSWatcher | undefined;
   private armed = "";
   private checked = "";
   private failed = false;
@@ -78,7 +78,7 @@ export class DirectoryWatch {
 /** A coalesced wake for one owner loop; raised until that loop takes it. */
 export class Wake {
   private raised = true;
-  private resolve?: () => void;
+  private resolve?: (() => void) | undefined;
   readonly raise = (): void => {
     this.raised = true;
     this.resolve?.();

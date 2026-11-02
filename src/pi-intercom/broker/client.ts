@@ -516,15 +516,15 @@ export class IntercomClient extends EventEmitter {
   }
 
   updatePresence(updates: {
-    readonly applicationGuard?: string | null;
-    readonly name?: string;
-    readonly status?: string;
-    readonly model?: string;
-    readonly pendingAsks?: number;
-    readonly acceptsAsks?: boolean;
-    readonly lastIntercomActivity?: number;
-    readonly subscriptions?: SessionInfo["subscriptions"];
-    readonly topics?: readonly TopicUpdate[];
+    readonly applicationGuard?: string | null | undefined;
+    readonly name?: string | undefined;
+    readonly status?: string | undefined;
+    readonly model?: string | undefined;
+    readonly pendingAsks?: number | undefined;
+    readonly acceptsAsks?: boolean | undefined;
+    readonly lastIntercomActivity?: number | undefined;
+    readonly subscriptions?: SessionInfo["subscriptions"] | undefined;
+    readonly topics?: readonly TopicUpdate[] | undefined;
   }): void {
     if (this.disconnecting) {
       return;

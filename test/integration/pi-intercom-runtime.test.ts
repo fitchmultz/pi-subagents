@@ -95,7 +95,7 @@ nodeTest(
       });
       assert.equal(result.accepted, false);
       assert.equal(result.delivered, false);
-      assert.equal(result.queued, undefined);
+      assert.ok(result.queued === undefined, "oversized sends never report queueing");
       assert.match(result.reason ?? "", /message too large/i);
     }
     const received = once(receiver, "message");

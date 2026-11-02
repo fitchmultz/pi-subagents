@@ -9,7 +9,7 @@ const BIRTH_FIELDS = ["lstart=", "pgid="];
 export const PS_COMMAND = process.platform === "darwin" ? "/bin/ps" : "ps";
 
 interface AgentProcessExit {
-  readonly pid?: number;
+  readonly pid?: number | undefined;
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly at: number;
@@ -22,7 +22,7 @@ interface ChildWithPipedStdio {
 }
 
 interface ChildWithKill {
-  readonly pid?: number;
+  readonly pid?: number | undefined;
   readonly kill: (signal?: NodeJS.Signals | number) => boolean;
 }
 
@@ -265,8 +265,8 @@ class OwnedChildLifecycle implements ChildProcessLifecycle {
   private isStopping = false;
   private isSettledCleanup = false;
   private exit?: AgentProcessExit;
-  private drainTimer?: NodeJS.Timeout;
-  private escalationTimer?: NodeJS.Timeout;
+  private drainTimer?: NodeJS.Timeout | undefined;
+  private escalationTimer?: NodeJS.Timeout | undefined;
   private readonly child: ChildWithPipedStdio & ChildWithKill;
   private readonly clearStdioGuard: () => void;
   constructor(child: ChildWithPipedStdio & ChildWithKill) {

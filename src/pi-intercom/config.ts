@@ -12,7 +12,7 @@ export interface IntercomConfig {
   /** Require confirmation before non-reply sends from interactive sessions. */
   readonly confirmSend: boolean;
   /** Optional custom status suffix shown after automatic lifecycle status. */
-  readonly status?: string;
+  readonly status?: string | undefined;
   /** Show reply hint in incoming messages (default: true). */
   readonly replyHint: boolean;
   /** Ordinary ask reply timeout, in milliseconds (default: 120000 = 2 minutes). */

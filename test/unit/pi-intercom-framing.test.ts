@@ -26,7 +26,9 @@ nodeTest("framing rejects oversized incoming frames before buffering payload", (
 
   assert.equal(messages.length, 0);
   assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /frame too large/);
+  const [oversized] = errors;
+  assert.ok(oversized !== undefined, "expected one framing error");
+  assert.match(oversized.message, /frame too large/);
 });
 
 nodeTest("framing refuses to write oversized messages", () => {
@@ -103,7 +105,9 @@ nodeTest(
       assert.equal(errors.length, 1);
       const expectedError =
         failure === "size" ? /frame too large/ : /Failed to (?:parse|handle) intercom message/;
-      assert.match(errors[0].message, expectedError);
+      const [failureError] = errors;
+      assert.ok(failureError !== undefined, "expected one framing error");
+      assert.match(failureError.message, expectedError);
       reader(Buffer.alloc(0));
       assert.deepEqual(messages, failure === "size" ? [] : [{ retained: true }]);
       reader(frame('{"fresh":true}'));

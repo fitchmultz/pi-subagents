@@ -35,12 +35,12 @@ function bucket(identity: Identity): string {
 /** Mailbox commits and durable retry/quota deadlines drive wakes; there is no intake scan timer. */
 export class WakeDeliveries {
   private readonly stateDir: string | undefined;
-  private readonly state?: WakeState;
+  private readonly state?: WakeState | undefined;
   private readonly allowed: (identity: Identity) => boolean;
   private readonly deliveries = new Map<string, Delivery>();
   private readonly controller = new AbortController();
   private timer?: NodeJS.Timeout;
-  private running?: Promise<void>;
+  private running?: Promise<void> | undefined;
   private dirty = false;
   private storageBackoff = 15000;
 

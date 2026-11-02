@@ -20,7 +20,7 @@ const sessions = [
   { id: "abcdefgh-1111-2222-3333-444444444444", name: "worker" },
   { id: "abcdefgi-1111-2222-3333-444444444444", name: "reviewer" },
   { id: "xyz00000-1111-2222-3333-444444444444", name: "abcdefgh" },
-];
+] as const;
 
 nodeTest("formatSessionTarget returns the shortest safe prefix across ids and names", () => {
   assert.equal(formatSessionTarget(sessions[0], sessions), "abcdefgh-");
@@ -253,7 +253,7 @@ nodeTest("resolveSessionTarget rejects exact names that are unsafe too-short id 
   const unsafe = [
     { id: "abcdefghi-1111-2222-3333-444444444444", name: "worker" },
     { id: "xyz00000-1111-2222-3333-444444444444", name: "abcdefg" },
-  ];
+  ] as const;
   const ambiguous = resolveSessionTarget(unsafe, "abcdefg");
   assert.equal(ambiguous.status, "ambiguous");
   assert.deepEqual(

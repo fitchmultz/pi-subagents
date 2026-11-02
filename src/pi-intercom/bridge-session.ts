@@ -16,12 +16,12 @@ const SEND_TIMEOUT = 8000;
 const LIST_TIMEOUT = 5000;
 
 interface SendOptions extends Pick<Message, "replyTo" | "expectsReply" | "delivery"> {
-  readonly messageId?: string;
+  readonly messageId?: string | undefined;
 }
 export interface SessionOwner {
-  readonly stateDir?: string;
-  readonly notifications?: boolean;
-  readonly mailboxChanged?: () => void;
+  readonly stateDir?: string | undefined;
+  readonly notifications?: boolean | undefined;
+  readonly mailboxChanged?: (() => void) | undefined;
   readonly allowed: (identity: Identity) => boolean;
   readonly lost: (fp: string, count?: number) => void;
   readonly retired: (fp: string, generation: string) => void;
@@ -42,7 +42,7 @@ export class Session {
   private inboxChanged = new AbortController();
   private closed = false;
   private connecting?: Promise<void>;
-  private disconnecting?: Promise<void>;
+  private disconnecting?: Promise<void> | undefined;
   private retirement?: Promise<void>;
   private lease?: NodeJS.Timeout;
   private closeReason: Fault = new Fault(503, "broker_unavailable", "Broker connection failed.");

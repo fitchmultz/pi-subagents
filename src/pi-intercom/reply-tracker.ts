@@ -79,8 +79,9 @@ function explicitReply(
 }
 function replyBySender(contexts: readonly IntercomContext[], to: string): IntercomContext {
   const matches = matchingSender(contexts, to);
-  if (matches.length === 1) {
-    return matches[0];
+  const [onlyMatch] = matches;
+  if (matches.length === 1 && onlyMatch !== undefined) {
+    return onlyMatch;
   }
   if (matches.length > 1) {
     throw new RecoveryError(
@@ -164,7 +165,7 @@ export class ReplyTracker {
     const beforeQueued = this.pendingTurnContexts.length;
     for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
       const context = this.pendingTurnContexts[index];
-      if (expires(context)) {
+      if (context !== undefined && expires(context)) {
         this.pendingTurnContexts.splice(index, 1);
       }
     }
@@ -181,7 +182,7 @@ export class ReplyTracker {
   }
 
   resolveReplyTarget(
-    options: { readonly to?: string; readonly replyTo?: string },
+    options: { readonly to?: string | undefined; readonly replyTo?: string | undefined },
     now = Date.now(),
   ): IntercomContext {
     this.pruneExpired(now);
@@ -204,11 +205,17 @@ export class ReplyTracker {
     if (to !== "") {
       return replyBySender(contexts, to);
     }
+    return this.implicitReplyTarget(pending);
+  }
+
+  /** Without an explicit target, the turn context wins, then a sole pending ask. */
+  private implicitReplyTarget(pending: readonly IntercomContext[]): IntercomContext {
     if (this.currentTurnContext) {
       return this.currentTurnContext;
     }
-    if (pending.length === 1) {
-      return pending[0];
+    const [solePending] = pending;
+    if (pending.length === 1 && solePending !== undefined) {
+      return solePending;
     }
     if (pending.length === 0) {
       throw new RecoveryError("no_pending_reply", "No active intercom context to reply to");

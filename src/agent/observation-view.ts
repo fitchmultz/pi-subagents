@@ -206,7 +206,7 @@ export class Viewer {
   }
   private message(frame: Frame, state: LiveState): string | undefined {
     const live = state.message;
-    if (live === undefined) {
+    if (live === undefined || live.message === undefined) {
       return undefined;
     }
     const reset = this.key !== live.key;
@@ -222,17 +222,30 @@ export class Viewer {
     this.ended = live.ended;
     const limit = Math.min(content.length, BLOCKS);
     this.blocks.length = Math.min(this.blocks.length, limit);
-    for (let index = 0; index < limit && !frame.full; index++) {
-      const item = this.cursor(index, content[index]).next(index, frame, state);
-      if (item !== undefined) {
-        frame.blocks.push(item);
-      }
-    }
+    this.appendBlocks(frame, state, content, limit);
     if (!changed && frame.blocks.length === 0) {
       return undefined;
     }
     // An ended message stays live until its session entry is found and handed over.
     return `{"key":${live.key},"reset":${reset},"ended":${live.ended},"count":${content.length},"blocks":[${frame.blocks.join(",")}]}`;
+  }
+  /** Refill the frame from live content blocks, reusing cursors by block identity. */
+  private appendBlocks(
+    frame: Frame,
+    state: LiveState,
+    content: readonly Block[],
+    limit: number,
+  ): void {
+    for (let index = 0; index < limit && !frame.full; index++) {
+      const block = content[index];
+      if (block === undefined) {
+        continue;
+      }
+      const item = this.cursor(index, block).next(index, frame, state);
+      if (item !== undefined) {
+        frame.blocks.push(item);
+      }
+    }
   }
   private cursor(index: number, block: Block): BlockCursor {
     const existing = this.blocks.at(index);

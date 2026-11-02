@@ -174,12 +174,14 @@ nodeTest("reply targets and errors keep exact sender and ask correlation", () =>
         },
       ],
     },
-  ]) {
+  ] as const) {
     const tracker = new ReplyTracker();
     for (const [index, [id, senderName]] of senders.entries()) {
+      const reply = ["First", "Second", "Third"][index];
+      assert.ok(reply !== undefined, "expected a reply per sender");
       tracker.recordIncomingMessage(
         createSession(id, senderName),
-        createMessage(`ask-${index + 1}`, ["First", "Second", "Third"][index]),
+        createMessage(`ask-${index + 1}`, reply),
         1000 + index,
       );
     }

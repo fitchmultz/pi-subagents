@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 interface OutputPageOptions {
-  readonly offset?: number;
-  readonly length?: number;
+  readonly offset?: number | undefined;
+  readonly length?: number | undefined;
 }
 function pageLength(options: OutputPageOptions): number {
   const length = options.length ?? 64 * 1024;
@@ -40,7 +40,7 @@ function utf8Bounds(bytes: Buffer, count: number, more: boolean): { start: numbe
       last--;
     }
     const lead = bytes[last];
-    if (last + width(lead) > end) {
+    if (lead === undefined || last + width(lead) > end) {
       end = last;
     }
   }

@@ -255,8 +255,10 @@ nodeTest(
       try {
         const rows = db.prepare("SELECT settledAt FROM wake_attempts ORDER BY sequence").all();
         assert.equal(rows.length, 2, "failed completion cannot drop the original slot");
-        assert.equal(rows[0].settledAt, now + 3600000, "retry uses the later durable bound");
-        assert.equal(rows[1].settledAt, null, "new attempt is still open before transport settles");
+        const [retriedRow, openRow] = rows;
+        assert.ok(retriedRow !== undefined && openRow !== undefined, "expected two attempt rows");
+        assert.equal(retriedRow.settledAt, now + 3600000, "retry uses the later durable bound");
+        assert.equal(openRow.settledAt, null, "new attempt is still open before transport settles");
       } finally {
         db.close();
       }
@@ -293,7 +295,9 @@ nodeTest(
       } catch (error) {
         failure = error;
       }
-      const retained = readdirSync(root).includes(created[0]);
+      const [createdFile] = created;
+      assert.ok(createdFile !== undefined, "expected one created owner file");
+      const retained = readdirSync(root).includes(createdFile);
       t.diagnostic(
         JSON.stringify({ ownerRetained: retained, peerAdmitted: !(failure instanceof Error) }),
       );

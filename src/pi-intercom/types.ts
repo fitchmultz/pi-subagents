@@ -16,23 +16,23 @@ export type WakeResult =
 
 export interface SessionInfo {
   readonly id: string;
-  readonly name?: string;
+  readonly name?: string | undefined;
   readonly cwd: string;
   readonly model: string;
   /** Opaque same-repository/worktree identity used for ambient peer awareness. */
-  readonly projectId?: string;
-  readonly rootSessionId?: string;
-  readonly parentSessionId?: string;
-  readonly incarnation?: string;
-  readonly guardedDelivery?: 1;
-  readonly applicationGuard?: string;
-  readonly status?: string;
-  readonly lastSeen?: number;
-  readonly lastIntercomActivity?: number;
-  readonly pendingAsks?: number;
-  readonly acceptsAsks?: boolean;
-  readonly subscriptions?: readonly TopicSubscription[];
-  readonly topics?: readonly TopicUpdate[];
+  readonly projectId?: string | undefined;
+  readonly rootSessionId?: string | undefined;
+  readonly parentSessionId?: string | undefined;
+  readonly incarnation?: string | undefined;
+  readonly guardedDelivery?: 1 | undefined;
+  readonly applicationGuard?: string | undefined;
+  readonly status?: string | undefined;
+  readonly lastSeen?: number | undefined;
+  readonly lastIntercomActivity?: number | undefined;
+  readonly pendingAsks?: number | undefined;
+  readonly acceptsAsks?: boolean | undefined;
+  readonly subscriptions?: readonly TopicSubscription[] | undefined;
+  readonly topics?: readonly TopicUpdate[] | undefined;
 }
 
 export interface TopicSubscription {
@@ -102,10 +102,10 @@ export interface DeliveryGuard extends ContextTarget {
 export interface PublicationReplyHint {
   readonly tool: string;
   readonly commandId: string;
-  readonly commandFingerprint?: string;
+  readonly commandFingerprint?: string | undefined;
 }
 export type SendOptions = Omit<Message, "id" | "timestamp" | "content"> &
-  Message["content"] & { readonly messageId?: string };
+  Message["content"] & { readonly messageId?: string | undefined };
 export function isContextTarget(value: unknown): value is ContextTarget {
   return (
     isRecord(value) &&
@@ -150,20 +150,20 @@ export function isHumanMessageOrigin(value: unknown): value is HumanMessageOrigi
 export interface Message {
   readonly id: string;
   readonly timestamp: number;
-  readonly replyTo?: string;
-  readonly expectsReply?: boolean;
+  readonly replyTo?: string | undefined;
+  readonly expectsReply?: boolean | undefined;
   /** Recipients verify parent ownership before elevating human origin. */
-  readonly human?: HumanMessageOrigin;
-  readonly topic?: TopicUpdate;
-  readonly delivery?: MessageDelivery;
-  readonly queueMode?: QueueMode;
-  readonly threadId?: string;
-  readonly passive?: boolean;
-  readonly guard?: DeliveryGuard;
-  readonly replyHint?: PublicationReplyHint;
+  readonly human?: HumanMessageOrigin | undefined;
+  readonly topic?: TopicUpdate | undefined;
+  readonly delivery?: MessageDelivery | undefined;
+  readonly queueMode?: QueueMode | undefined;
+  readonly threadId?: string | undefined;
+  readonly passive?: boolean | undefined;
+  readonly guard?: DeliveryGuard | undefined;
+  readonly replyHint?: PublicationReplyHint | undefined;
   readonly content: {
     readonly text: string;
-    readonly attachments?: readonly Attachment[];
+    readonly attachments?: readonly Attachment[] | undefined;
   };
 }
 export interface Attachment {
@@ -378,24 +378,29 @@ export interface SessionSnapshot {
 }
 
 type CompactTopicMessage = Omit<Message, "topic"> & {
-  readonly topic?: Omit<TopicUpdate, "text"> & { readonly text?: string };
+  readonly topic?: (Omit<TopicUpdate, "text"> & { readonly text?: string | undefined }) | undefined;
 };
 /** Topic text and the standard coalescing key need only one copy on the wire. */
 export function compactTopicMessage(message: Message): CompactTopicMessage {
   if (!message.topic) {
     return message;
   }
+  const { threadId, ...rest } = message;
+  const dropThreadId =
+    message.queueMode === "replace" && threadId === `topic:${message.topic.topic}`;
   return {
-    ...message,
+    ...rest,
     topic:
-      message.topic.text === message.content.text
-        ? { ...message.topic, text: undefined }
-        : message.topic,
-    threadId:
-      message.queueMode === "replace" && message.threadId === `topic:${message.topic.topic}`
-        ? undefined
-        : message.threadId,
+      message.topic.text === message.content.text ? withoutTopicText(message.topic) : message.topic,
+    ...(dropThreadId || threadId === undefined ? {} : { threadId }),
   };
+}
+
+function withoutTopicText(
+  topic: TopicUpdate,
+): Omit<TopicUpdate, "text"> & { readonly text?: string | undefined } {
+  const { text: _duplicate, ...rest } = topic;
+  return rest;
 }
 
 export function normalizeMessage(value: unknown): Message | null {
@@ -424,9 +429,9 @@ export function normalizeMessage(value: unknown): Message | null {
 }
 
 export interface LastMessageQuery {
-  readonly entryId?: string;
-  readonly offset?: number;
-  readonly limit?: number;
+  readonly entryId?: string | undefined;
+  readonly offset?: number | undefined;
+  readonly limit?: number | undefined;
 }
 
 export const LAST_MESSAGE_PAGE_LIMIT = 16384;
@@ -468,13 +473,13 @@ export interface NativeReceipt extends ReceiptQuery {
   readonly version: 1;
   readonly sender: {
     readonly peerId: string;
-    readonly rootSessionId?: string;
-    readonly incarnation?: string;
+    readonly rootSessionId?: string | undefined;
+    readonly incarnation?: string | undefined;
   };
   readonly textSha256: string;
   readonly delivery: MessageDelivery;
-  readonly guard?: DeliveryGuard;
-  readonly replyHint?: PublicationReplyHint;
+  readonly guard?: DeliveryGuard | undefined;
+  readonly replyHint?: PublicationReplyHint | undefined;
   readonly checkpointEntryId: string;
   readonly receivedAt: number;
   /** Historical observations, not a promise that an input is still queued. */

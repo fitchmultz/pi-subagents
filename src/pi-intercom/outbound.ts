@@ -93,6 +93,7 @@ export class IntercomOutbound {
       case "queue":
         return " (intentionally deferred behind active recipient work)";
       case undefined:
+      default:
         return " (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)";
     }
   }
