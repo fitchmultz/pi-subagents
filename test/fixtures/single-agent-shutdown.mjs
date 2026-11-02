@@ -6,6 +6,11 @@ import { findPackageJSON } from "node:module";
 import { setImmediate as nextTurn } from "node:timers/promises";
 
 const [root, repo, sdkRoot] = process.argv.slice(2);
+assert.ok(
+  // oxlint-disable-next-line typescript/strict-boolean-expressions -- fixture assert; also narrows for tsc
+  root && repo && sdkRoot,
+  "Run this fixture with root, repo and sdk arguments",
+);
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PI_")) {
     delete process.env[key];
@@ -17,16 +22,25 @@ Object.assign(process.env, {
   PI_PACKAGE_DIR: sdkRoot,
   PI_INTERCOM_RUNTIME_DIR: path.join(root, "ic"),
 });
+/** @type {typeof import("@earendil-works/pi-coding-agent")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
-const aiRoot = path.dirname(
-  findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))),
+const aiPackageJson = findPackageJSON(
+  "@earendil-works/pi-ai",
+  pathToFileURL(path.join(sdkRoot, "dist/index.js")),
 );
-const { fauxProvider, InMemoryCredentialStore } = await import(
-  pathToFileURL(path.join(aiRoot, "dist/index.js")).href
-);
-const { default: agents } = await import(
-  pathToFileURL(path.join(repo, "dist/agent/index.js")).href
-);
+if (aiPackageJson === undefined) {
+  throw new Error("Could not locate the installed pi-ai package");
+}
+const aiRoot = path.dirname(aiPackageJson);
+/** @type {typeof import("@earendil-works/pi-ai")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const { fauxProvider, InMemoryCredentialStore } = ai;
+/** @type {typeof import("../../src/agent/index.ts")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const agentModule = await import(pathToFileURL(path.join(repo, "dist/agent/index.js")).href);
+const { default: agents } = agentModule;
 const faux = fauxProvider();
 const models = await sdk.ModelRuntime.create({
   credentials: new InMemoryCredentialStore(),
@@ -35,11 +49,23 @@ const models = await sdk.ModelRuntime.create({
 });
 models.registerNativeProvider(faux.provider);
 const manager = sdk.SessionManager.inMemory(root);
-const paused = Promise.withResolvers(),
-  release = Promise.withResolvers(),
-  shutdownEntered = Promise.withResolvers();
+// oxlint-disable typescript/no-unsafe-type-assertion -- withResolvers cannot express its generic in JSDoc
+const paused = /** @type {{ promise: Promise<void>, resolve: () => void }} */ (
+  Promise.withResolvers()
+);
+const release = /** @type {{ promise: Promise<void>, resolve: () => void }} */ (
+  Promise.withResolvers()
+);
+const shutdownEntered = /** @type {{ promise: Promise<void>, resolve: () => void }} */ (
+  Promise.withResolvers()
+);
+// oxlint-enable typescript/no-unsafe-type-assertion
 const artifactRoot = path.join(root, "agent/sessions/agent-runs", manager.getSessionId());
-const createRuntime = async ({ sessionManager }) => {
+const createRuntime = async (
+  /** @type {{ sessionManager: import("@earendil-works/pi-coding-agent").SessionManager }} */ {
+    sessionManager,
+  },
+) => {
   const services = await sdk.createAgentSessionServices({
     cwd: root,
     agentDir: path.join(root, "agent"),
@@ -55,7 +81,7 @@ const createRuntime = async ({ sessionManager }) => {
       noPromptTemplates: true,
       noContextFiles: true,
       extensionFactories: [
-        (pi) => {
+        (/** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ pi) => {
           pi.on("session_shutdown", () => {
             shutdownEntered.resolve();
           });
@@ -81,17 +107,28 @@ const runtime = await sdk.createAgentSessionRuntime(createRuntime, {
   sessionManager: manager,
 });
 const originalMkdir = fs.promises.mkdir;
-fs.promises.mkdir = async (file, ...args) => {
+/**
+ * @param {import("node:fs").PathLike} file
+ * @param {unknown[]} args
+ */
+// oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
+const tracedMkdir = async (file, ...args) => {
   if (file === artifactRoot) {
     paused.resolve();
     await release.promise;
   }
-  return originalMkdir(file, ...args);
+  return /** @type {(f: import("node:fs").PathLike, ...a: unknown[]) => Promise<unknown>} */ (
+    originalMkdir
+  )(file, ...args);
 };
-const errors = [];
+fs.promises.mkdir = /** @type {typeof fs.promises.mkdir} */ (tracedMkdir);
+// oxlint-enable typescript/no-unsafe-type-assertion
+/** @type {unknown[]} */ const errors = [];
 const reset = runtime.session.bindExtensions({
   mode: "print",
-  onError: (error) => errors.push(error),
+  onError: (error) => {
+    errors.push(error);
+  },
 });
 let dispose;
 try {
@@ -110,8 +147,13 @@ try {
   release.resolve();
   await reset;
   await dispose;
+  /** @type {{ attached: boolean }} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  const attachment = JSON.parse(
+    fs.readFileSync(path.join(artifactRoot, "attachment.json"), "utf8"),
+  );
   assert.equal(
-    JSON.parse(fs.readFileSync(path.join(artifactRoot, "attachment.json"), "utf8")).attached,
+    attachment.attached,
     false,
     "the actual resumed filesystem operation is joined and its owner attachment is retired",
   );

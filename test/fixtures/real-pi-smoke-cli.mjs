@@ -14,8 +14,17 @@ import { fileURLToPath } from "node:url";
 
 const fixture = fileURLToPath(import.meta.url);
 const evidence = process.env.SMOKE_CLEANUP_EVIDENCE;
+if (evidence === undefined) {
+  throw new Error("SMOKE_CLEANUP_EVIDENCE is required");
+}
 const scenario = process.env.SMOKE_CLEANUP_SCENARIO;
+if (scenario === undefined) {
+  throw new Error("SMOKE_CLEANUP_SCENARIO is required");
+}
 const agentDir = process.env.PI_CODING_AGENT_DIR;
+if (agentDir === undefined) {
+  throw new Error("PI_CODING_AGENT_DIR is required");
+}
 const root = dirname(agentDir);
 const runId = "00000000-0000-4000-8000-000000000001";
 const sessionId = "00000000-0000-4000-8000-000000000002";
@@ -24,7 +33,10 @@ const sessions = join(root, "sessions");
 const sessionFile = join(sessions, "parent.jsonl");
 const args = process.argv.slice(2);
 const role = args[0];
-const record = (event, extra = {}) =>
+if (role === undefined) {
+  throw new Error("A role argument is required");
+}
+const record = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ extra = {}) =>
   appendFileSync(
     join(evidence, "events.jsonl"),
     `${JSON.stringify({ event, role, pid: process.pid, time: Date.now(), ...extra })}\n`,
@@ -34,9 +46,9 @@ const resourcesPresent = () => ({
   models: existsSync(join(agentDir, "models.json")),
   artifacts: existsSync(asyncDir),
 });
-const launch = (kind, detached = true) =>
+const launch = (/** @type {string} */ kind, detached = true) =>
   spawn(process.execPath, [fixture, kind], { detached, stdio: "ignore", env: process.env });
-const save = (path, value) => {
+const save = (/** @type {string} */ path, /** @type {unknown} */ value) => {
   mkdirSync(dirname(path), { recursive: true });
   // Readers use existence as readiness; publish only a complete JSON record.
   const temporary = `${path}.${process.pid}.tmp`;
@@ -50,7 +62,8 @@ function scenarioState() {
   }
   return scenario === "async-failure" ? "failed" : "running";
 }
-function promptKind(prompt) {
+function promptKind(/** @type {string} */ prompt) {
+  /** @type {[string, string][]} */
   const markers = [
     ["intercom tool", "intercom"],
     ["action list", "list"],
@@ -109,9 +122,13 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     }
   } else {
     const { brokerPidRecord } = await import("../../src/pi-intercom/broker/pid.ts");
+    const runtimeDir = process.env.PI_INTERCOM_RUNTIME_DIR;
+    if (runtimeDir === undefined) {
+      throw new Error("PI_INTERCOM_RUNTIME_DIR is required");
+    }
     if (!scenario.startsWith("startup-")) {
-      mkdirSync(process.env.PI_INTERCOM_RUNTIME_DIR, { recursive: true });
-      writeFileSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid"), brokerPidRecord());
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(join(runtimeDir, "broker.pid"), brokerPidRecord());
     }
     // Startup cases stay detached without publishing broker.pid for the whole cleanup,
     // rather than racing a second timer against the controller's command deadline.
@@ -123,18 +140,25 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
 } else if (role === "install") {
   save(join(evidence, "install.json"), { repo: args[1], root });
 } else if (role === "list") {
-  console.log(JSON.parse(readFileSync(join(evidence, "install.json"), "utf8")).repo);
+  /** @type {{ repo: string }} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  const install = JSON.parse(readFileSync(join(evidence, "install.json"), "utf8"));
+  console.log(install.repo);
 } else if (role === "--version") {
   console.log("credential-free-fixture");
 } else {
   // RPC transport double: answers get_commands, or keeps one prompted main open until stdin closes.
-  const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+  const emit = (/** @type {unknown} */ value) => process.stdout.write(`${JSON.stringify(value)}\n`);
   const fact = "CALIBRATION_FACT=packed-otter-7319";
-  const toolEvents = (toolName, details) => [
+  const toolEvents = (/** @type {string} */ toolName, /** @type {unknown} */ details) => [
     { type: "tool_execution_start", toolName },
     { type: "tool_execution_end", toolName, isError: false, result: { details } },
   ];
-  const notice = (id, status, text) => ({
+  const notice = (
+    /** @type {string} */ id,
+    /** @type {string} */ status,
+    /** @type {string} */ text,
+  ) => ({
     type: "message_end",
     message: {
       role: "custom",
@@ -142,7 +166,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       details: { id, result: { status }, page: { text } },
     },
   });
-  const reply = (text) => {
+  const reply = (/** @type {string} */ text) => {
     const message = {
       role: "assistant",
       provider: "fixture",
@@ -153,12 +177,15 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message })}\n`);
     return { type: "message_end", message };
   };
-  const forkRun = (id, extra) => ({
+  const forkRun = (
+    /** @type {string | number} */ id,
+    /** @type {Record<string, unknown>} */ extra = {},
+  ) => ({
     id: `00000000-0000-4000-8000-00000000000${id}`,
     sessionFile: join(sessions, "fact.jsonl"),
     ...extra,
   });
-  const startOwned = async (kind) => {
+  const startOwned = async (/** @type {string} */ kind) => {
     if (kind === "intercom") {
       launch("broker").unref();
       while (!existsSync(join(evidence, "broker-ready"))) {
@@ -180,7 +207,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       }
       save(join(evidence, "parent-ready"), {
         ...resourcesPresent(),
-        brokerPublished: existsSync(join(process.env.PI_INTERCOM_RUNTIME_DIR, "broker.pid")),
+        brokerPublished: existsSync(join(process.env.PI_INTERCOM_RUNTIME_DIR ?? "", "broker.pid")),
       });
       if (scenario === "startup-failure") {
         await delay(600);
@@ -195,7 +222,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       }
     }
   };
-  const prompted = async (command) => {
+  const prompted = async (/** @type {{ id: string | number, message: string }} */ command) => {
     const kind = promptKind(command.message);
     record("prompt", { kind });
     mkdirSync(sessions, { recursive: true });
@@ -223,7 +250,10 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
         // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
-      const { status } = JSON.parse(readFileSync(result, "utf8"));
+      /** @type {{ status: string }} */
+      // oxlint-disable-next-line typescript/no-unsafe-assignment
+      const resultRecord = JSON.parse(readFileSync(result, "utf8"));
+      const { status } = resultRecord;
       emit(notice(runId, status, readFileSync(join(asyncDir, "output.txt"), "utf8")));
       emit(reply("real-pi-smoke delegate ok"));
     } else {
@@ -248,9 +278,11 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   };
   let input = "";
   process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => {
+  process.stdin.on("data", (/** @type {string} */ chunk) => {
     input += chunk;
     for (let end = input.indexOf("\n"); end >= 0; end = input.indexOf("\n")) {
+      /** @type {{ type?: string, id: string | number, message: string }} */
+      // oxlint-disable-next-line typescript/no-unsafe-assignment
       const command = JSON.parse(input.slice(0, end));
       input = input.slice(end + 1);
       if (command.type === "get_commands") {
@@ -267,6 +299,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
           },
         });
       } else {
+        // oxlint-disable-next-line typescript/no-floating-promises -- prompted replies through the fixture protocol by design
         void prompted(command);
       }
     }

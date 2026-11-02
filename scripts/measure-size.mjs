@@ -4,6 +4,7 @@ import { extname, join } from "node:path";
 
 const roots = ["src", "scripts", "generated"];
 const extensions = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".sh"]);
+/** @type {Record<string, number>} */
 const ceilings = { productionBytes: 1048576 };
 
 /**
@@ -47,6 +48,7 @@ const rows = await Promise.all(
     return { path, lines: lineCount(content.toString("utf8")), bytes: content.byteLength };
   }),
 );
+/** @type {Record<string, number>} */
 const measured = {
   sourceLines: rows
     .filter((row) => row.path.startsWith("src/") && row.path.endsWith(".ts"))
@@ -56,7 +58,9 @@ const measured = {
 };
 console.log(JSON.stringify({ files: rows.length, measured, ceilings }, null, 2));
 if (!process.argv.includes("--report")) {
-  const exceeded = Object.keys(ceilings).filter((key) => measured[key] > ceilings[key]);
+  const exceeded = Object.keys(ceilings).filter(
+    (key) => (measured[key] ?? 0) > (ceilings[key] ?? Number.POSITIVE_INFINITY),
+  );
   if (exceeded.length > 0) {
     console.error(`Shrink budget exceeded: ${exceeded.join(", ")}`);
     process.exitCode = 1;

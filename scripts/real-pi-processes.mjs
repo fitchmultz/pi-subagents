@@ -9,9 +9,40 @@ import {
   trySignalChildTree,
 } from "../src/shared/post-exit-stdio-guard.ts";
 
+// oxlint-disable-next-line typescript/strict-void-return
 const execFileAsync = promisify(execFile);
 
-export function* filesIn(dir) {
+/**
+ * @param {string} cwd
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {import("node:child_process").ExecFileOptionsWithStringEncoding & { detached: boolean }}
+ */
+function spawnOptions(cwd, env) {
+  return { cwd, env, encoding: "utf8", detached: true, maxBuffer: 16 * 1024 * 1024 };
+}
+
+/**
+ * A smoke-owned process: a direct execFile child or a discovered detached worker.
+ * @typedef {object} ProcessEntry
+ * @property {import("node:child_process").ChildProcess | { pid: number, kill(signal?: NodeJS.Signals | number): true }} child
+ * @property {boolean | undefined} [broker]
+ * @property {boolean | undefined} [exited]
+ * @property {number | undefined} [stoppedAt]
+ */
+/**
+ * @typedef {object} SmokeProcessOptions
+ * @property {string} cwd
+ * @property {NodeJS.ProcessEnv} env
+ * @property {number} timeoutMs
+ * @property {AbortSignal} signal
+ * @property {string} root
+ */
+
+/**
+ * @param {string} dir
+ * @returns {Generator<string, void, void>}
+ */
+export function* filesIn(/** @type {string} */ dir) {
   if (!existsSync(dir)) {
     return;
   }
@@ -25,24 +56,29 @@ export function* filesIn(dir) {
   }
 }
 
-export function processRef(pid) {
+export function processRef(/** @type {number} */ pid) {
   if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) {
     throw new Error("Invalid smoke-owned process ID");
   }
-  return { pid, kill: (signal) => process.kill(pid, signal) };
+  return {
+    pid,
+    kill: (/** @type {NodeJS.Signals | number | undefined} */ signal) => process.kill(pid, signal),
+  };
 }
 
 // This attempt owns only PIDs discovered from private run files or known direct children.
 // Credentials and artifacts must remain available until all owned workers and the broker exit.
 export class SmokeProcesses {
-  #processes = new Map();
-  #options;
+  // oxlint-disable-next-line typescript/prefer-readonly -- JSDoc class fields cannot express readonly
+  /** @type {Map<number, ProcessEntry>} */ #processes = new Map();
+  // oxlint-disable-next-line typescript/prefer-readonly -- JSDoc class fields cannot express readonly
+  /** @type {SmokeProcessOptions} */ #options;
 
-  constructor({ cwd, env, timeoutMs, signal, root }) {
+  constructor(/** @type {SmokeProcessOptions} */ { cwd, env, timeoutMs, signal, root }) {
     this.#options = { cwd, env, timeoutMs, signal, root };
   }
 
-  #remember(pid, broker = false) {
+  #remember(/** @type {number | undefined} */ pid, /** @type {boolean} */ broker = false) {
     if (pid === undefined) {
       return;
     }
@@ -50,17 +86,30 @@ export class SmokeProcesses {
       this.#processes.set(pid, { child: processRef(pid) });
     }
     if (broker) {
-      this.#processes.get(pid).broker = true;
+      const remembered = this.#processes.get(pid);
+      if (remembered) {
+        remembered.broker = true;
+      }
     }
   }
 
+  /**
+   * @param {string} label
+   * @param {string} command
+   * @param {string[]} args
+   * @param {string | ((child: import("node:child_process").ChildProcess) => void)} [input]
+   * @returns {Promise<string>}
+   */
   run(label, command, args, input) {
     const { cwd, env, timeoutMs, signal } = this.#options;
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
-      let discovery;
-      let discoveryError;
-      const finish = async (error, output) => {
+      /** @type {Promise<void> | undefined} */ let discovery;
+      /** @type {string | undefined} */ let discoveryError;
+      const finish = async (
+        /** @type {Error | undefined} */ error,
+        /** @type {string} */ output = "",
+      ) => {
         clearTimeout(timer);
         clearInterval(watcher);
         signal.removeEventListener("abort", cancel);
@@ -71,25 +120,23 @@ export class SmokeProcesses {
           resolve(output);
         }
       };
-      const child = execFile(
-        command,
-        args,
-        { cwd, env, encoding: "utf8", detached: true, maxBuffer: 16 * 1024 * 1024 },
-        (error, stdout, stderr) => {
-          const output = `${stdout ?? ""}${stderr ?? ""}`;
-          void finish(
-            error
-              ? new Error(
-                  `${label} failed with ${error.code ?? "spawn error"}\nCommand: ${command} ${args.join(" ")}\n${output}`,
-                )
-              : undefined,
-            output,
-          );
-        },
-      );
+      const failure = (
+        /** @type {import("node:child_process").ExecFileException | null} */ error,
+        /** @type {string} */ output,
+      ) =>
+        error === null
+          ? undefined
+          : new Error(
+              `${label} failed with ${error.code ?? "spawn error"}\nCommand: ${command} ${args.join(" ")}\n${output}`,
+            );
+      const child = execFile(command, args, spawnOptions(cwd, env), (error, stdout, stderr) => {
+        const output = `${stdout}${stderr}`;
+        // oxlint-disable-next-line typescript/no-floating-promises -- finish settles the outer promise by design
+        void finish(failure(error, output), output);
+      });
       attachChildProcessLifecycle(child);
-      if (child.pid) {
-        const entry = { child };
+      if (child.pid !== undefined) {
+        /** @type {ProcessEntry} */ const entry = { child };
         this.#processes.set(child.pid, entry);
         child.once("close", () => {
           entry.exited = !isChildTreeAlive(child);
@@ -98,11 +145,12 @@ export class SmokeProcesses {
       // Discover detached startup children even if their parent's startup fails.
       const watcher = setInterval(() => {
         discovery ??= this.#collect()
-          .catch((error) => {
-            if (error.message !== discoveryError) {
-              console.error(`[real-pi-smoke] process discovery: ${error.message}`);
+          .catch((/** @type {unknown} */ error) => {
+            const message = error instanceof Error ? error.message : JSON.stringify(error);
+            if (message !== discoveryError) {
+              console.error(`[real-pi-smoke] process discovery: ${message}`);
             }
-            discoveryError = error.message;
+            discoveryError = message;
           })
           .finally(() => {
             discovery = undefined;
@@ -110,6 +158,7 @@ export class SmokeProcesses {
       }, 100);
       // The outer finally stops parents AND detached workers; rejecting must not kill parents first.
       const timer = setTimeout(() => {
+        // oxlint-disable-next-line typescript/no-floating-promises -- finish settles the outer promise by design
         void finish(
           new Error(
             `${label} timed out after ${timeoutMs}ms\nCommand: ${command} ${args.join(" ")}`,
@@ -117,36 +166,47 @@ export class SmokeProcesses {
         );
       }, timeoutMs);
       const cancel = () => {
-        void finish(signal.reason);
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion, typescript/no-floating-promises -- signal.reason is any; finish settles the outer promise
+        void finish(/** @type {Error | undefined} */ (signal.reason));
       };
       signal.addEventListener("abort", cancel, { once: true });
-      child.stdin.on("error", () => {
+      child.stdin?.on("error", () => {
         // A command may exit without reading RPC input; execFile reports its exit failure.
       });
       // A function input owns a persistent RPC stdin and closes it to request orderly shutdown.
       if (typeof input === "function") {
         input(child);
       } else {
-        child.stdin.end(input);
+        child.stdin?.end(input);
       }
     });
   }
 
   #readRunPids() {
     const { env } = this.#options;
-    const runs = join(env.PI_CODING_AGENT_DIR, "sessions", "agent-runs");
+    const agentDir = env.PI_CODING_AGENT_DIR;
+    const runtimeDir = env.PI_INTERCOM_RUNTIME_DIR;
+    if (agentDir === undefined || runtimeDir === undefined) {
+      throw new Error(
+        "PI_CODING_AGENT_DIR and PI_INTERCOM_RUNTIME_DIR are required for ownership discovery",
+      );
+    }
+    const runs = join(agentDir, "sessions", "agent-runs");
     for (const file of filesIn(runs)) {
       if (basename(file) === "process.json" && basename(dirname(file)) === "actor.lock") {
-        this.#remember(JSON.parse(readFileSync(file, "utf8")).pid);
+        /** @type {{ pid: number }} */
+        // oxlint-disable-next-line typescript/no-unsafe-assignment
+        const record = JSON.parse(readFileSync(file, "utf8"));
+        this.#remember(record.pid);
       }
     }
-    const brokerPid = join(env.PI_INTERCOM_RUNTIME_DIR, "broker.pid");
+    const brokerPid = join(runtimeDir, "broker.pid");
     if (existsSync(brokerPid)) {
       this.#remember(Number(readFileSync(brokerPid, "utf8").split("\n")[0]), true);
     }
   }
 
-  async #discoverChildren(child) {
+  async #discoverChildren(/** @type {{ pid?: number | undefined }} */ child) {
     try {
       const { stdout } = await execFileAsync("pgrep", ["-P", String(child.pid)], {
         env: this.#options.env,
@@ -157,7 +217,7 @@ export class SmokeProcesses {
         this.#remember(Number(pid));
       }
     } catch (error) {
-      if (error.code !== 1) {
+      if (typeof error !== "object" || error === null || !("code" in error) || error.code !== 1) {
         throw error;
       }
       // pgrep exit 1 means there are no matching children.
@@ -168,10 +228,11 @@ export class SmokeProcesses {
     this.#readRunPids();
     // Visit newly remembered grandchildren too, before signalling parents. Never scan argv globally.
     for (const entry of this.#processes.values()) {
-      if (!entry.exited) {
+      if (entry.exited !== true) {
         entry.exited = !isChildTreeAlive(entry.child);
       }
-      if (!entry.exited) {
+      // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- exited stays optional under tsc
+      if (entry.exited !== true) {
         // The Map expands during discovery; sequential traversal covers newly found grandchildren.
         // oxlint-disable-next-line no-await-in-loop
         await this.#discoverChildren(entry.child);
@@ -180,23 +241,24 @@ export class SmokeProcesses {
   }
 
   #alive() {
-    const alive = [];
+    /** @type {ProcessEntry[]} */ const alive = [];
     for (const entry of this.#processes.values()) {
-      if (!entry.exited) {
+      if (entry.exited !== true) {
         entry.exited = !isChildTreeAlive(entry.child);
       }
-      if (!entry.exited) {
+      // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- exited stays optional under tsc
+      if (entry.exited !== true) {
         alive.push(entry);
       }
     }
     return alive;
   }
 
-  #signal(alive) {
-    const workers = alive.filter((entry) => !entry.broker);
+  #signal(/** @type {ProcessEntry[]} */ alive) {
+    const workers = alive.filter((entry) => entry.broker !== true);
     // Stop the broker last so exiting workers cannot restart it during cleanup.
-    for (const entry of workers.length ? workers : alive) {
-      if (!entry.stoppedAt) {
+    for (const entry of workers.length > 0 ? workers : alive) {
+      if (entry.stoppedAt === undefined) {
         entry.stoppedAt = Date.now();
         trySignalChildTree(entry.child, "SIGTERM");
       } else if (Date.now() - entry.stoppedAt >= 3000) {
@@ -206,7 +268,7 @@ export class SmokeProcesses {
   }
 
   async stop() {
-    let lastError;
+    /** @type {string | undefined} */ let lastError;
     while (true) {
       let collected = false;
       try {
@@ -216,10 +278,11 @@ export class SmokeProcesses {
         collected = true;
       } catch (error) {
         // Retain the controller and credentials if ownership cannot yet be read.
-        if (error.message !== lastError) {
-          console.error(`[real-pi-smoke] waiting for owned-process cleanup: ${error.message}`);
+        const message = error instanceof Error ? error.message : JSON.stringify(error);
+        if (message !== lastError) {
+          console.error(`[real-pi-smoke] waiting for owned-process cleanup: ${message}`);
         }
-        lastError = error.message;
+        lastError = message;
       }
       const alive = this.#alive();
       if (collected && alive.length === 0) {

@@ -16,10 +16,13 @@ import { join } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 
+/** @type {(file: string, args: readonly string[], options: import("node:child_process").ExecFileOptions) => Promise<{ stdout: string, stderr: string }>} */
+// oxlint-disable-next-line typescript/strict-void-return
 const execFile = promisify(execFileCallback);
 const cwd = process.cwd();
 const buildScript = join(cwd, "scripts", "build.mjs");
-const tscBin = (root) => join(root, "node_modules", "typescript", "bin", "tsc");
+const tscBin = (/** @type {string} */ root) =>
+  join(root, "node_modules", "typescript", "bin", "tsc");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -30,17 +33,17 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 
 // No shell: process.execPath runs scripts and npm's cli.js directly, which is safe for
 // paths containing spaces on every platform (shell:true concatenates args unescaped).
-async function runNode(args) {
+async function runNode(/** @type {string[]} */ args) {
   const { stderr, stdout } = await execFile(process.execPath, args, {
     cwd,
     maxBuffer: 20 * 1024 * 1024,
   });
   // Forward output on success too: install-time diagnostics such as the
   // concurrent-swap race-loss warning are otherwise swallowed.
-  if (stdout) {
+  if (stdout !== "") {
     process.stdout.write(stdout);
   }
-  if (stderr) {
+  if (stderr !== "") {
     process.stderr.write(stderr);
   }
 }
@@ -51,10 +54,13 @@ async function main() {
     return;
   }
   const npmExecPath = process.env.npm_execpath;
-  if (!npmExecPath) {
+  if (npmExecPath === undefined || npmExecPath === "") {
     throw new Error(`npm_execpath is not set; run "npm install" manually in ${cwd} and retry.`);
   }
-  const { devDependencies } = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+  /** @type {{ devDependencies: { typescript: string } }} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+  const { devDependencies } = pkg;
   const prefix = await mkdtemp(join(tmpdir(), "pi-subagents-tsc-"));
   try {
     await runNode([
@@ -75,13 +81,15 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  if (error?.stdout) {
-    process.stdout.write(error.stdout);
+main().catch((/** @type {unknown} */ error) => {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- exec rejections carry partial output
+  const output = /** @type {{ stdout?: string, stderr?: string }} */ (error);
+  if (output.stdout !== undefined && output.stdout !== "") {
+    process.stdout.write(output.stdout);
   }
-  if (error?.stderr) {
-    process.stderr.write(error.stderr);
+  if (output.stderr !== undefined && output.stderr !== "") {
+    process.stderr.write(output.stderr);
   }
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(error instanceof Error ? error.message : JSON.stringify(error));
   process.exitCode = 1;
 });

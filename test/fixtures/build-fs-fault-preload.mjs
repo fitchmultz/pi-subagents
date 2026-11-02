@@ -1,41 +1,69 @@
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { basename, join } from "node:path";
 
-const require = createRequire(import.meta.url);
-const fs = require("node:fs");
-const fsPromises = require("node:fs/promises");
+const nodeRequire = createRequire(import.meta.url);
+/** @type {typeof import("node:fs")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const fs = nodeRequire("node:fs");
+/** @type {typeof import("node:fs/promises")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const fsPromises = nodeRequire("node:fs/promises");
 const originalRename = fsPromises.rename;
 const originalRm = fsPromises.rm;
 
 // Faults target only this build's staging-to-dist rename, never retiring or restoring dist.
+/**
+ * @param {(...args: unknown[]) => Promise<unknown>} fault
+ */
+// oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
 function failPublish(fault) {
-  fsPromises.rename = async (...args) =>
-    /^dist\.staging\.\d+$/.test(basename(String(args[0])))
+  /** @param {unknown[]} args */
+  const tracedRename = async (...args) =>
+    typeof args[0] === "string" && /^dist\.staging\.\d+$/.test(basename(args[0]))
       ? fault(...args)
-      : originalRename(...args);
+      : /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
+  fsPromises.rename = /** @type {typeof fsPromises.rename} */ (tracedRename);
 }
+// oxlint-enable typescript/no-unsafe-type-assertion
 
+// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
+/** @type {Record<string, () => void>} */
 const faults = {
   "stale-rm"() {
-    const locked = (path) => basename(String(path)) === process.env.LOCKED_STAGING_NAME;
-    fsPromises.rm = async (path, options) => {
+    const locked = (/** @type {import("node:fs").PathLike} */ path) =>
+      basename(String(path)) === process.env.LOCKED_STAGING_NAME;
+    /**
+     * @param {import("node:fs").PathLike} path
+     * @param {import("node:fs").RmOptions | undefined} options
+     */
+    const tracedRm = async (path, options) => {
       if (locked(path)) {
         throw new Error("synthetic stale-staging lock");
       }
-      return originalRm(path, options);
+      return /** @type {(p: import("node:fs").PathLike, o: import("node:fs").RmOptions | undefined) => Promise<void>} */ (
+        originalRm
+      )(path, options);
     };
-    fsPromises.rename = async (from, to) => {
+    /**
+     * @param {import("node:fs").PathLike} from
+     * @param {import("node:fs").PathLike} to
+     */
+    const tracedStaleRename = async (from, to) => {
       if (locked(from)) {
         throw new Error("synthetic stale-staging lock");
       }
-      return originalRename(from, to);
+      return /** @type {(f: import("node:fs").PathLike, t: import("node:fs").PathLike) => Promise<void>} */ (
+        originalRename
+      )(from, to);
     };
+    fsPromises.rm = /** @type {typeof fsPromises.rm} */ (tracedRm);
+    fsPromises.rename = /** @type {typeof fsPromises.rename} */ (tracedStaleRename);
   },
   "late-winner"() {
     let firstRename = true;
     failPublish(async (...args) => {
       if (!firstRename) {
-        return originalRename(...args);
+        return /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
       }
       firstRename = false;
       // The ref'd timer keeps the child alive so its marker proves publication
@@ -64,8 +92,11 @@ const faults = {
   },
   "vanish-staging"() {
     failPublish(async (...args) => {
-      await originalRm(args[0], { force: true, recursive: true });
-      return originalRename(...args);
+      await originalRm(/** @type {import("node:fs").PathLike} */ (args[0]), {
+        force: true,
+        recursive: true,
+      });
+      return /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
     });
   },
   "empty-dist"() {
@@ -78,14 +109,15 @@ const faults = {
         throw new Error("synthetic empty dist");
       }
       fs.rmSync(dist, { recursive: true, force: true });
-      return originalRename(...args);
+      return /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
     });
   },
 };
 
 const faultName = process.env.BUILD_SWAP_FAULT;
-if (faultName && !Object.hasOwn(faults, faultName)) {
+if (faultName !== undefined && !Object.hasOwn(faults, faultName)) {
   throw new Error(`unknown build-swap fault: ${faultName}`);
 }
-faults[faultName]?.();
+faults[faultName ?? ""]?.();
+// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 syncBuiltinESMExports();

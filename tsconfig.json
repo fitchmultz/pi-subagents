@@ -14,7 +14,7 @@
     "strict": true,
     "noImplicitReturns": true,
     "allowJs": true,
-    "checkJs": false,
+    "checkJs": true,
     "types": ["node"],
     "noUnusedLocals": true,
     "noFallthroughCasesInSwitch": true,

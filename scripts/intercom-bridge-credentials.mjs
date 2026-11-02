@@ -13,12 +13,34 @@ import {
 import { resolve, join } from "node:path";
 import { parseArgs } from "node:util";
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * @param {string | undefined} value
+ * @returns {value is string}
+ */
+function hasValue(value) {
+  return value !== undefined && value !== "";
+}
+
+/** @param {(string | undefined)[]} values */
+function firstValue(values) {
+  for (const value of values) {
+    if (hasValue(value)) {
+      return value;
+    }
+  }
+  return;
+}
+
+function errorMessage(/** @type {unknown} */ error) {
+  return error instanceof Error ? error.message : JSON.stringify(error);
 }
 
 function help() {
@@ -50,19 +72,21 @@ Exit: 0 success, 1 filesystem/OpenSSL failure, 2 invalid arguments.
 Never transfer ca.key or server.key to the remote host.`);
 }
 
-function privatePath(path, directory = false) {
+function privatePath(/** @type {string} */ path, /** @type {boolean} */ directory = false) {
   const st = lstatSync(path);
+  const uid = process.getuid?.();
   if (
+    uid === undefined ||
     st.isSymbolicLink() ||
     !(directory ? st.isDirectory() : st.isFile()) ||
-    st.uid !== process.getuid() ||
-    st.mode & 0o077
+    st.uid !== uid ||
+    (st.mode & 0o077) !== 0
   ) {
     throw new Error(`Expected an owned, private ${directory ? "directory" : "file"}: ${path}`);
   }
 }
 
-function atomicConfig(path, config) {
+function atomicConfig(/** @type {string} */ path, /** @type {unknown} */ config) {
   const temp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   try {
     writeFileSync(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
@@ -72,19 +96,26 @@ function atomicConfig(path, config) {
   }
 }
 
+/** @param {string[]} args */
 function openssl(...args) {
-  execFileSync(process.env.OPENSSL || "openssl", args, {
+  const opensslBin = process.env.OPENSSL;
+  execFileSync(opensslBin !== undefined && opensslBin !== "" ? opensslBin : "openssl", args, {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 30000,
   });
 }
 
-function key(path) {
+function key(/** @type {string} */ path) {
   openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", path);
   privatePath(path);
 }
 
-function issueCertificate(dir, stem, name, { server = false, days = 7 } = {}) {
+function issueCertificate(
+  /** @type {string} */ dir,
+  /** @type {string} */ stem,
+  /** @type {string} */ name,
+  /** @type {{ server?: boolean, days?: number }} */ { server = false, days = 7 } = {},
+) {
   const keyPath = join(dir, `${stem}.key`);
   const certPath = join(dir, `${stem}.crt`);
   const csrPath = join(dir, `${stem}.csr`);
@@ -129,7 +160,9 @@ function issueCertificate(dir, stem, name, { server = false, days = 7 } = {}) {
   };
 }
 
-function readConfig(path) {
+function readConfig(/** @type {string} */ path) {
+  /** @type {{ ca?: string, clients?: unknown[], cert?: string, key?: string }} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const config = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(config) || !Array.isArray(config.clients) || typeof config.ca !== "string") {
     throw new Error("Invalid clients allowlist.");
@@ -161,22 +194,24 @@ try {
       days: { type: "string" },
     },
   });
-  if (args.values.help) {
+  if (args.values.help === true) {
     help();
     process.exit(0);
   }
-  const [action, dir, name] = args.positionals;
+  const [action = "", dir = "", name] = args.positionals;
+  const cwdArg = args.values.cwd;
+  const daysArg = args.values.days;
   port = args.values.port === undefined ? 9443 : Number(args.values.port);
   const defaultDays = action === "renew-server" ? 365 : 7;
   certificateDays = args.values.days === undefined ? defaultDays : Number(args.values.days);
   if (
     !["init", "issue", "revoke", "renew-server"].includes(action) ||
-    !dir ||
+    dir === "" ||
     args.positionals.length > 3 ||
-    (["issue", "revoke"].includes(action) && !name) ||
-    (action === "renew-server" && (name || args.values.cwd)) ||
-    (name && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) ||
-    (action === "revoke" && (args.values.cwd || args.values.days)) ||
+    (["issue", "revoke"].includes(action) && !hasValue(name)) ||
+    (action === "renew-server" && (hasValue(name) || hasValue(cwdArg))) ||
+    (hasValue(name) && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) ||
+    (action === "revoke" && (hasValue(cwdArg) || hasValue(daysArg))) ||
     (action !== "init" && args.values.port !== undefined) ||
     !Number.isInteger(port) ||
     port < 0 ||
@@ -192,12 +227,15 @@ try {
   process.exit(2);
 }
 
-let lock;
+/** @type {string | undefined} */ let lock;
 try {
   process.umask(0o077);
   const [action, rawDir, suppliedName] = args.positionals;
+  if (rawDir === undefined) {
+    throw new Error("A directory argument is required.");
+  }
   const dir = resolve(rawDir);
-  const name = suppliedName || "grok-bot";
+  const name = hasValue(suppliedName) ? suppliedName : "grok-bot";
   const configPath = join(dir, "config.json");
   let config;
   if (action === "init") {
@@ -253,10 +291,12 @@ try {
     config = readConfig(configPath);
   }
   if (action === "revoke") {
-    if (!config.clients.some((client) => client.name === name)) {
+    if (!config.clients.some((/** @type {{ name: string }} */ client) => client.name === name)) {
       throw new Error(`No authorized client named ${name}.`);
     }
-    config.clients = config.clients.filter((client) => client.name !== name);
+    config.clients = config.clients.filter(
+      (/** @type {{ name: string }} */ client) => client.name !== name,
+    );
     atomicConfig(configPath, config);
     console.log(
       JSON.stringify({ revoked: name, config: configPath, next: "Send SIGHUP to the helper PID." }),
@@ -284,13 +324,17 @@ try {
     const credential = issueCertificate(dir, `${name}-${randomBytes(8).toString("hex")}`, name, {
       days: certificateDays,
     });
-    const previous = config.clients.find((client) => client.name === name);
-    config.clients = config.clients.filter((client) => client.name !== name);
+    const previous = config.clients.find(
+      (/** @type {{ name: string }} */ client) => client.name === name,
+    );
+    config.clients = config.clients.filter(
+      (/** @type {{ name: string }} */ client) => client.name !== name,
+    );
     config.clients.push({
       ...previous,
       fingerprint256: credential.fingerprint256,
       name,
-      cwd: resolve(args.values.cwd || previous?.cwd || process.cwd()),
+      cwd: resolve(firstValue([args.values.cwd, previous?.cwd]) ?? process.cwd()),
     });
     atomicConfig(configPath, config);
     console.log(
@@ -307,7 +351,7 @@ try {
   console.error(errorMessage(error));
   process.exitCode = 1;
 } finally {
-  if (lock) {
+  if (lock !== undefined) {
     rmSync(join(lock, "owner"), { force: true });
     rmdirSync(lock);
   }

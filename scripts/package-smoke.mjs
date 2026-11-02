@@ -25,13 +25,20 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 }
 assert.ok(process.argv.length <= 3, "Expected at most one package tarball; use --help");
 
+/** @type {{ name: string, version: string, pi: { extensions?: string[], skills?: string[], agents?: unknown, prompts?: unknown } }} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const candidate = process.argv[2] ? resolve(process.argv[2]) : undefined;
+const candidate = process.argv[2] !== undefined ? resolve(process.argv[2]) : undefined;
 const root = mkdtempSync(join(tmpdir(), "ps-package-"));
 const packDir = join(root, "pack");
 mkdirSync(packDir);
 
-function run(command, args, cwd = process.cwd(), env = process.env) {
+function run(
+  /** @type {string} */ command,
+  /** @type {string[]} */ args,
+  /** @type {string} */ cwd = process.cwd(),
+  /** @type {NodeJS.ProcessEnv} */ env = process.env,
+) {
   const result = spawnSync(command, args, {
     cwd,
     env,
@@ -48,7 +55,9 @@ function run(command, args, cwd = process.cwd(), env = process.env) {
   return result.stdout;
 }
 
-function verifyManifest(manifest) {
+function verifyManifest(
+  /** @type {{ name?: string, private?: boolean, publishConfig?: unknown, bin?: unknown, pi: { extensions?: string[], skills?: string[], agents?: unknown, prompts?: unknown } }} */ manifest,
+) {
   assert.equal(manifest.name, "@fitchmultz/pi-subagents");
   assert.notEqual(manifest.private, true);
   assert.deepEqual(manifest.publishConfig, { access: "public" });
@@ -59,7 +68,8 @@ function verifyManifest(manifest) {
   assert.equal(manifest.pi.prompts, undefined);
 }
 
-function installProduction(pack) {
+function installProduction(/** @type {{ filename?: string, files?: { path: string }[] }} */ pack) {
+  assert.ok(pack.filename !== undefined, "npm pack must report a filename");
   const installDir = join(root, "npm");
   mkdirSync(installDir);
   writeFileSync(
@@ -103,7 +113,7 @@ function installProduction(pack) {
   ];
 }
 
-function verifyDeclarations(consumerDir) {
+function verifyDeclarations(/** @type {string} */ consumerDir) {
   const contract = join(consumerDir, "public-client.test-d.ts");
   cpSync(new URL("../test/fixtures/intercom-client-contract.test-d.ts", import.meta.url), contract);
   const compiler = compilerInvocation();
@@ -130,10 +140,19 @@ function verifyDeclarations(consumerDir) {
   );
 }
 
-async function verifyRuntime({ packageRoot, consumerDir }) {
-  verifyManifest(JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")));
+async function verifyRuntime(
+  /** @type {{ packageRoot: string, consumerDir: string }} */ { packageRoot, consumerDir },
+) {
+  /** @type {{ name?: string, private?: boolean, publishConfig?: unknown, bin?: unknown, pi: { extensions?: string[], skills?: string[], agents?: unknown, prompts?: unknown } }} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  verifyManifest(manifest);
   verifyDeclarations(consumerDir);
+  /** @type {typeof import("@earendil-works/pi-coding-agent")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const sdk = await import(pathToFileURL(join(hostRoot, "dist/index.js")).href);
+  /** @type {typeof import("../src/agent/host.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const nativeHost = await import(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href);
   assert.equal(
     await nativeHost.loadSDK(hostRoot),
@@ -162,9 +181,12 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
       PI_INTERCOM_PARENT_SESSION_ID: "package-smoke",
     },
   );
+  /** @type {typeof import("../src/pi-intercom/broker/spawn.ts")} */
+  // oxlint-disable-next-line typescript/no-unsafe-assignment
   const broker = await import(
     pathToFileURL(join(packageRoot, "dist/pi-intercom/broker/spawn.js")).href
   );
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
   assert.equal(realpathSync(broker.getBrokerSpawnOptions().cwd), realpathSync(packageRoot));
   const help = run(
     process.execPath,
@@ -203,27 +225,33 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
 try {
   verifyManifest(packageJson);
   process.env.PI_PACKAGE_DIR = hostRoot;
-  const pack = Object.values(
+  /** @type {{ name: string, version: string, filename: string, files: { path: string }[] }[]} */
+  const packReports = Object.values(
+    // oxlint-disable-next-line typescript/no-unsafe-argument
     JSON.parse(
       run("npm", [
         "pack",
         "--json",
         "--pack-destination",
         packDir,
-        ...(candidate ? [candidate] : []),
+        ...(candidate !== undefined ? [candidate] : []),
       ]),
     ),
-  )[0];
-  assert.ok(pack && Array.isArray(pack.files), "npm pack must report files");
-  if (candidate) {
+  );
+  const pack = packReports[0];
+  assert.ok(pack !== undefined && Array.isArray(pack.files), "npm pack must report files");
+  if (candidate !== undefined) {
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
     assert.equal(pack.name, packageJson.name);
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
     assert.equal(pack.version, packageJson.version, "Candidate version differs from source");
     assert.ok(
       readFileSync(join(packDir, pack.filename)).equals(readFileSync(candidate)),
       "npm changed the candidate tarball",
     );
   }
-  const paths = new Set(pack.files.map((file) => file.path));
+  const files = pack.files;
+  const paths = new Set(files.map((file) => file.path));
   for (const path of [
     "package.json",
     "LICENSE",
@@ -266,7 +294,9 @@ try {
     `[package-smoke] ${pack.name}@${pack.version}: ${pack.files.length} files; one entry, zero profiles/prompts; runtime-only npm and standalone native actors passed`,
   );
 } catch (error) {
-  console.error(`[package-smoke] ${error instanceof Error ? error.stack : String(error)}`);
+  console.error(
+    `[package-smoke] ${error instanceof Error ? (error.stack ?? "no stack") : JSON.stringify(error)}`,
+  );
   process.exitCode = 1;
 } finally {
   rmSync(root, { recursive: true, force: true });

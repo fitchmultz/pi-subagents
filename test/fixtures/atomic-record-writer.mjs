@@ -1,8 +1,16 @@
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { write } from "../../src/agent/storage.ts";
 
-const [file, id] = process.argv.slice(2);
+const [fileArgument, idArgument] = process.argv.slice(2);
+assert.ok(fileArgument !== undefined && idArgument !== undefined, "expected file and id arguments");
+const file = fileArgument;
+const id = idArgument;
+const send = process.send?.bind(process);
+if (send === undefined) {
+  throw new Error("Run this fixture under a parent with an IPC channel");
+}
 const gate = process.argv.at(4);
 fs.linkSync = () => {
   throw Object.assign(new Error("Hard links are denied"), { code: "EACCES" });
@@ -23,11 +31,13 @@ process.once("message", () => {
   try {
     write(file, { winner: Number(id), body: "P".repeat(200_000) }, true);
   } catch (error) {
-    if (error.code !== "EEXIST") {
+    if (
+      !(typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST")
+    ) {
       throw error;
     }
     outcome = "exists";
   }
-  process.send(outcome, () => process.disconnect());
+  send(outcome, () => process.disconnect());
 });
-process.send("ready");
+send("ready");

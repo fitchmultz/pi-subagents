@@ -14,7 +14,7 @@ function usage() {
   );
 }
 
-function parsePositiveInteger(value, source) {
+function parsePositiveInteger(/** @type {string} */ value, /** @type {string} */ source) {
   if (!/^\d+$/.test(value)) {
     console.error(`${source} must be a positive integer number of milliseconds, got: ${value}`);
     process.exit(2);
@@ -29,25 +29,39 @@ function parsePositiveInteger(value, source) {
   return parsed;
 }
 
-function parseArgs(argv) {
-  let mode = "unit";
-  let timeoutMs = process.env.PI_TEST_TIMEOUT_MS
-    ? parsePositiveInteger(process.env.PI_TEST_TIMEOUT_MS, "PI_TEST_TIMEOUT_MS")
+/**
+ * @param {string[]} argv
+ * @param {number} index
+ * @returns {string}
+ */
+function requiredValue(argv, index) {
+  const value = argv[index];
+  if (value === undefined || value === "") {
+    console.error("--timeout-ms requires a value");
+    process.exit(2);
+  }
+  return value;
+}
+
+function initialTimeout() {
+  const env = process.env.PI_TEST_TIMEOUT_MS;
+  return env !== undefined && env !== ""
+    ? parsePositiveInteger(env, "PI_TEST_TIMEOUT_MS")
     : undefined;
+}
+
+function parseArgs(/** @type {string[]} */ argv) {
+  let mode = "unit";
+  let timeoutMs = initialTimeout();
 
   for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+    const arg = argv[index] ?? "";
     if (arg === "--help" || arg === "-h") {
       usage();
       process.exit(0);
     }
     if (arg === "--timeout-ms") {
-      const value = argv[index + 1];
-      if (!value) {
-        console.error("--timeout-ms requires a value");
-        process.exit(2);
-      }
-      timeoutMs = parsePositiveInteger(value, "--timeout-ms");
+      timeoutMs = parsePositiveInteger(requiredValue(argv, index + 1), "--timeout-ms");
       index += 1;
       continue;
     }
@@ -71,7 +85,7 @@ function parseArgs(argv) {
   return { mode, timeoutMs };
 }
 
-function testFiles(dir) {
+function testFiles(/** @type {string} */ dir) {
   return readdirSync(dir)
     .filter((name) => name.endsWith(".test.ts"))
     .sort()
@@ -88,8 +102,20 @@ function sanitizedEnv() {
   return env;
 }
 
+/**
+ * @param {string} label
+ * @param {string[]} files
+ * @param {number} timeoutMs
+ * @param {number} [concurrency]
+ */
 function runNodeTest(label, files, timeoutMs, concurrency) {
-  const args = [...(concurrency ? [`--test-concurrency=${concurrency}`] : []), "--test", ...files];
+  const args = [
+    ...(concurrency !== undefined && concurrency !== 0
+      ? [`--test-concurrency=${concurrency}`]
+      : []),
+    "--test",
+    ...files,
+  ];
   const startedAt = Date.now();
   const tempRoot = mkdtempSync(
     join(process.platform === "android" ? tmpdir() : "/tmp", "pi-subagents-"),
@@ -112,12 +138,14 @@ function runNodeTest(label, files, timeoutMs, concurrency) {
     try {
       rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch (error) {
-      console.error(`Could not remove ${tempRoot}: ${error.message}`);
+      console.error(
+        `Could not remove ${tempRoot}: ${error instanceof Error ? error.message : JSON.stringify(error)}`,
+      );
     }
   }
   const elapsedMs = Date.now() - startedAt;
   if (result.error) {
-    if (result.error.code === "ETIMEDOUT") {
+    if (/** @type {NodeJS.ErrnoException} */ (result.error).code === "ETIMEDOUT") {
       console.error(`${label} timed out after ${timeoutMs}ms (elapsed ${elapsedMs}ms).`);
       console.error(`Command: ${process.execPath} ${args.join(" ")}`);
       console.error(
@@ -128,7 +156,7 @@ function runNodeTest(label, files, timeoutMs, concurrency) {
     console.error(`Failed to start ${label}: ${result.error.message}`);
     return 1;
   }
-  if (result.signal) {
+  if (result.signal !== null) {
     console.error(`${label} exited due to signal ${result.signal} after ${elapsedMs}ms.`);
     console.error(`Command: ${process.execPath} ${args.join(" ")}`);
     return 1;
