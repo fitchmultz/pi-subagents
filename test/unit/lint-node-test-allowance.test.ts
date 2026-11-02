@@ -145,6 +145,9 @@ nodeTest("node:test registration allowance passes all six qualification controls
     [
       join(repoRoot, "node_modules", "oxlint", "bin", "oxlint"),
       "--type-aware",
+      // The default formatter follows the caller's environment; pin the
+      // machine-readable shape the controls below parse.
+      "--format=agent",
       "--config",
       join(repoRoot, ".oxlintrc.json"),
       ...Object.keys(probes).map((name) => join(probeRoot, name)),
