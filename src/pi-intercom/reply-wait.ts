@@ -15,13 +15,13 @@ interface ReplyWaiter {
 export interface ReplyWaitOptions {
   readonly from: string;
   readonly replyTo: string;
-  readonly signal?: AbortSignal;
+  readonly signal?: AbortSignal | undefined;
 }
 export interface AskTransaction {
   readonly to: string;
   readonly questionId: string;
   readonly options: Parameters<IntercomClient["send"]>[1];
-  readonly signal?: AbortSignal;
+  readonly signal?: AbortSignal | undefined;
   readonly onSent: (result: SendResult) => void;
 }
 /** One correlated blocking wait; admitted before send so a fast reply cannot race it. */
@@ -53,7 +53,7 @@ export class ReplyWait {
     }
   }
   receive(
-    sender: { readonly id: string; readonly name?: string },
+    sender: { readonly id: string; readonly name?: string | undefined },
     message: Message,
     onMatch: () => void,
   ): boolean {

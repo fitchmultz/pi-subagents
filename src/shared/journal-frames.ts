@@ -13,7 +13,7 @@ export interface JournalOptions {
   readonly requireNewline?: boolean;
   readonly start?: number;
   readonly end?: number;
-  readonly stringChunk?: StringChunk;
+  readonly stringChunk?: StringChunk | undefined;
 }
 
 /** Byte-framed JSONL. Publication framing is independent of malformed-record tolerance. */

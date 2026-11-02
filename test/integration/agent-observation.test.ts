@@ -5,7 +5,7 @@ import * as net from "node:net";
 import * as path from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { test, type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { writeFrame } from "../../src/pi-intercom/broker/framing.ts";
 import { agentObservationSocketPath } from "../../src/pi-intercom/broker/paths.ts";
@@ -123,7 +123,7 @@ function assertUnobserved(started: ObservedChild, shutdown: Record<string, unkno
   assert.equal(record(shutdown.observation).error, undefined);
 }
 
-test(
+nodeTest(
   "live text reconstructs exactly, survives reopen and hands over to durable entries",
   {
     timeout: 180_000,
@@ -171,7 +171,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "concurrent tool progress stays bounded across reopen and reverse completion",
   {
     timeout: 180_000,
@@ -216,7 +216,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "a paused viewer never changes native output and catches up after resuming",
   {
     timeout: 180_000,
@@ -248,7 +248,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "a viewer that misses retained handovers resynchronizes from a durable baseline",
   {
     timeout: 180_000,
@@ -274,7 +274,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "live blocks that shrink or change type in place are resent, never stitched",
   {
     timeout: 120_000,
@@ -305,7 +305,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "a crashed generation's endpoint is removed before its replacement starts",
   {
     timeout: 120_000,
@@ -331,7 +331,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "a connected viewer of an idle actor arms no recurring flush",
   {
     timeout: 60_000,
@@ -347,7 +347,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "foreign viewers are refused and an unsafe endpoint only disables observation",
   {
     timeout: 120_000,
@@ -405,7 +405,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "an observer fault whose teardown cannot remove the endpoint never touches native work",
   {
     timeout: 120_000,
@@ -438,7 +438,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "a late viewer starts from native state and tools stay exact across unobserved intervals",
   {
     timeout: 180_000,
@@ -469,7 +469,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "an activity peer follows block transitions within one native message",
   {
     timeout: 120_000,
@@ -502,7 +502,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "nested tool calls are shown live and retired with their parent's result",
   {
     timeout: 120_000,

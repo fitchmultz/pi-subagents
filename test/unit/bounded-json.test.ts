@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import { boundedJson } from "../../src/shared/bounded-json.ts";
 
 const budget = { bytes: 64 * 1024, nodes: 4096, depth: 32 };
 
-test("bounded live previews serialize ordinary values exactly like JSON.stringify", () => {
+nodeTest("bounded live previews serialize ordinary values exactly like JSON.stringify", () => {
   const shared = { reused: true };
   const values: unknown[] = [
     'plain "quoted" \\ \n \u2028 é 雪 😀',
@@ -30,7 +30,7 @@ test("bounded live previews serialize ordinary values exactly like JSON.stringif
   }
 });
 
-test("bounded live previews classify values they cannot or should not serialize", () => {
+nodeTest("bounded live previews classify values they cannot or should not serialize", () => {
   const cyclic: Record<string, unknown> = {};
   cyclic.self = cyclic;
   const { proxy, revoke } = Proxy.revocable({}, {});
@@ -65,7 +65,7 @@ test("bounded live previews classify values they cannot or should not serialize"
   }
 });
 
-test("bounded live previews never run accessors, proxy traps or custom serializers", () => {
+nodeTest("bounded live previews never run accessors, proxy traps or custom serializers", () => {
   let calls = 0;
   const run = (): string => {
     calls++;

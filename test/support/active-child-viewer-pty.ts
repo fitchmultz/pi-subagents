@@ -17,7 +17,7 @@ type Options = {
   mode: "fullscreen" | "regular";
   managed: boolean;
   refresh: boolean;
-  adopt?: string;
+  adopt?: string | undefined;
 };
 type ProcessIdentity = { pid: number; birth: string; role: string };
 type Evidence = {
@@ -49,8 +49,10 @@ function options(): Options {
       i += 1;
       continue;
     }
+    assert.ok(key !== undefined, "expected an option key");
     const value = args.at(i + 1);
-    assert.ok(allowed.has(key) && value !== undefined, `Invalid option ${key}`);
+    assert.ok(allowed.has(key), `Invalid option ${key}`);
+    assert.ok(value !== undefined, `Invalid option ${key}`);
     assert.ok(!values.has(key), `Duplicate option ${key}`);
     values.set(key, value);
     i += 2;
@@ -201,7 +203,9 @@ class Proof {
     await this.installCommand("npm", ["pack", source, "--pack-destination", packages, "--silent"]);
     const archives = fs.readdirSync(packages).filter((file) => file.endsWith(".tgz"));
     assert.equal(archives.length, 1, "npm pack must produce one archive");
-    const tarball = path.join(packages, archives[0]);
+    const [archive] = archives;
+    assert.ok(archive !== undefined, "expected one packed archive");
+    const tarball = path.join(packages, archive);
     const unpacked = path.join(packages, "unpacked");
     fs.mkdirSync(unpacked);
     await this.installCommand("/usr/bin/tar", ["-xzf", tarball, "-C", unpacked]);
@@ -785,7 +789,7 @@ class Proof {
     for (const [columns, height] of [
       [46, 18],
       [100, 32],
-    ]) {
+    ] as const) {
       this.tmux(["resize-window", "-t", "proof", "-x", String(columns), "-y", String(height)]);
       // oxlint-disable-next-line no-await-in-loop
       await this.until(

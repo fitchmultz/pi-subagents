@@ -124,28 +124,34 @@ async function window(): Promise<void> {
     // Do not yield to already-due delivery timers until the native reader holds its SHARED lock.
     // Acquiring earlier would block the synchronous batch-setup commits themselves.
     untilSync(() => existsSync(held));
-    assert.equal(
-      rows("SELECT count(*) AS attempts FROM wake_attempts")[0].attempts,
-      0,
-      "reader acquired before the first reservation",
-    );
+    const [attemptCount] = rows("SELECT count(*) AS attempts FROM wake_attempts");
+    assert.ok(attemptCount !== undefined, "expected an attempt count row");
+    assert.equal(attemptCount.attempts, 0, "reader acquired before the first reservation");
     await until(() => arrivals.length === 20);
     assert.deepEqual(await exited, [0, null], "native reader released the contended transaction");
-    const first = numberValue(
-      rows("SELECT attemptedAt FROM wake_attempts ORDER BY sequence LIMIT 1")[0].attemptedAt,
-    );
-    assert.ok(arrivals[0] - first >= 650, "real COMMIT contention precedes TLS wire arrival");
+    const [firstAttempt] = rows("SELECT attemptedAt FROM wake_attempts ORDER BY sequence LIMIT 1");
+    assert.ok(firstAttempt !== undefined, "expected a first wake attempt");
+    const first = numberValue(firstAttempt.attemptedAt);
+    const [firstArrival] = arrivals;
+    assert.ok(firstArrival !== undefined, "expected a first arrival timestamp");
+    assert.ok(firstArrival - first >= 650, "real COMMIT contention precedes TLS wire arrival");
     for (const [index, box] of boxes.entries()) {
-      assert.deepEqual(record(box.ack([ids[index]])).acked, [ids[index]]);
+      const id = ids[index];
+      assert.ok(id !== undefined, "expected an id per mailbox");
+      assert.deepEqual(record(box.ack([id])).acked, [id]);
     }
     deliveries.changed();
     // Only idle time is jumped; both clocks advance normally during COMMIT, TLS and dispatch.
     offset += first + hour - 2300 - Date.now();
-    send(boxes[0]);
+    const [firstBox] = boxes;
+    assert.ok(firstBox !== undefined, "expected a first mailbox");
+    send(firstBox);
     await until(() => arrivals.length === 21);
-    const span = arrivals[20] - arrivals[0];
-    const trailing = arrivals.filter((at) => at > arrivals[20] - hour).length;
-    console.log(JSON.stringify({ commitLag: arrivals[0] - first, wireSpan: span, trailing }));
+    const lastArrival = arrivals[20];
+    assert.ok(lastArrival !== undefined, "expected a last arrival timestamp");
+    const span = lastArrival - firstArrival;
+    const trailing = arrivals.filter((at) => at > lastArrival - hour).length;
+    console.log(JSON.stringify({ commitLag: firstArrival - first, wireSpan: span, trailing }));
     assert.ok(span >= hour, `twenty-first wire POST arrived after only ${span}ms`);
     assert.ok(trailing <= 20, "no more than twenty actual POSTs in a trailing hour");
   } finally {

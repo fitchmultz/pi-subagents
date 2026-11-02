@@ -37,11 +37,11 @@ export class ObserverTranscript extends Container {
   private readonly cards = new Map<string, Card>();
   private readonly pages = new Map<string, PageRequest>();
   private readonly expanded = new Set<string>();
-  private before?: string;
+  private before?: string | undefined;
   private start = 0;
   private stop = 0;
   private entries: NativeRecord[] = [];
-  private selected?: string;
+  private selected?: string | undefined;
   height = 0;
   private mounted: Card[] = [];
   waiting = false;
@@ -50,8 +50,8 @@ export class ObserverTranscript extends Container {
   private readonly changed: (event: TranscriptChange) => void;
   private readonly loaded: () => void;
   private paused = false;
-  private hydration?: Promise<void>;
-  private active?: Hydration;
+  private hydration?: Promise<void> | undefined;
+  private active?: Hydration | undefined;
   private readonly jobs = new Map<string, Hydration>();
   private readonly pending = new Map<string, PageRequest>();
   version = 0;

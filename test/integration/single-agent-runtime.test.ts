@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { findPackageJSON } from "node:module";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
 import { Assert } from "typebox/value";
@@ -163,7 +163,7 @@ for (const phase of [
   "dropped-hints",
   "invalid-temp-root",
 ]) {
-  test(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
+  nodeTest(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));
     try {
       const stderr = run(root, phase);
@@ -185,7 +185,7 @@ for (const [phase, diagnostics] of [
   // Darwin's unzoned legacy births cannot be compared across zones; Linux identities are zone-free.
   ["bash-shutdown-timezone", process.platform === "linux" ? 0 : 2],
 ] as const) {
-  test(
+  nodeTest(
     `single-agent ${phase} parent shutdown stops verified owners, spares reused PIDs and reports only true ambiguity`,
     { timeout: 60000 },
     async () => {
@@ -207,7 +207,7 @@ for (const [phase, diagnostics] of [
     },
   );
 }
-test(
+nodeTest(
   "single-agent native preparation SIGKILL leaves only an unadmitted directory and does not starve saved completion or subsequent launches",
   { timeout: 60000 },
   async () => {
@@ -234,7 +234,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent native parking keeps parent-death shutdown while its native save is blocked",
   { timeout: 60000 },
   async () => {
@@ -254,7 +254,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent native cwd captures active parent B, initializes fork C once and restores child-selected D on cold continuation",
   { timeout: 60000 },
   async () => {
@@ -268,7 +268,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent actual native runtime shutdown joins admitted filesystem initialization",
   { timeout: 30000 },
   () => {
@@ -285,7 +285,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent native child usage is recorded exactly once per native entry and never charged to the parent across notice, concurrent inspection, cold and resident continuations and a fresh reader; a resident continuation reads only its appended journal records",
   { timeout: 60000 },
   async () => {
@@ -298,7 +298,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent continues only owned frozen legacy single-native journals, retaining identity and refusing missing, foreign, retired or duplicate launches",
   { timeout: 60000 },
   async () => {
@@ -311,7 +311,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent legacy-only native queued input survives SIGKILL without canonical storage or invented ownership",
   { timeout: 60000 },
   async () => {
@@ -327,7 +327,7 @@ test(
   },
 );
 for (const crash of [undefined, "before", "after"]) {
-  test(
+  nodeTest(
     `single-agent cold stopped-result recovery ${crash === undefined ? "after orderly parent exit" : `after SIGKILL ${crash} native append`}`,
     { timeout: 90000 },
     async () => {
@@ -379,7 +379,7 @@ for (const crash of [undefined, "before", "after"]) {
     },
   );
 }
-test(
+nodeTest(
   "single-agent actor SIGKILL retains native shell ownership for cold Stop and same-run continuation retry without replay, bystander signals or blocking on another user's proven-reused PID",
   { timeout: 60000 },
   async (t) => {
@@ -399,7 +399,7 @@ test(
     }
   },
 );
-test(
+nodeTest(
   "single-agent cold Stop verifies birth and stops an OS-suspended actor and descendants without fabricated exit",
   { timeout: 60000 },
   async () => {
@@ -416,7 +416,7 @@ for (const [death, phase] of [
   ["SIGKILL", "bash-seed"],
   ["SIGKILL with reused attachment PID", "bash-parent-reuse"],
 ] as const) {
-  test(
+  nodeTest(
     `single-agent parent ${death} stops native shell work and cold continuation reuses the interrupted child conversation`,
     { timeout: 60000 },
     async () => {
@@ -467,49 +467,52 @@ for (const [death, phase] of [
     },
   );
 }
-test("failed native actor spawns release only their launch claim and preserve the OS error", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-spawn-failure-"));
-  t.after(() => {
-    fs.chmodSync(path.join(root, "denied"), 0o700);
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-  const base = path.join(root, "owner");
-  const directory = path.join(base, "run");
-  fs.mkdirSync(directory, { recursive: true });
-  const file = path.join(root, "file");
-  fs.writeFileSync(file, "");
-  const denied = path.join(root, "denied");
-  fs.mkdirSync(denied, { mode: 0o000 });
-  const cases = [
-    [path.join(root, "missing"), "ENOENT"],
-    [path.join(file, "child"), "ENOTDIR"],
-    [denied, "EACCES"],
-  ] as const;
-  for (const [cwd, code] of cases) {
-    const probe = spawnSync(process.execPath, ["-e", ""], { cwd });
-    if (code === "EACCES" && probe.error === undefined) {
-      t.diagnostic("EACCES case unavailable: current user can enter mode-000 directory");
-      continue;
+nodeTest(
+  "failed native actor spawns release only their launch claim and preserve the OS error",
+  async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-spawn-failure-"));
+    t.after(() => {
+      fs.chmodSync(path.join(root, "denied"), 0o700);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const base = path.join(root, "owner");
+    const directory = path.join(base, "run");
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(root, "file");
+    fs.writeFileSync(file, "");
+    const denied = path.join(root, "denied");
+    fs.mkdirSync(denied, { mode: 0o000 });
+    const cases = [
+      [path.join(root, "missing"), "ENOENT"],
+      [path.join(file, "child"), "ENOTDIR"],
+      [denied, "EACCES"],
+    ] as const;
+    for (const [cwd, code] of cases) {
+      const probe = spawnSync(process.execPath, ["-e", ""], { cwd });
+      if (code === "EACCES" && probe.error === undefined) {
+        t.diagnostic("EACCES case unavailable: current user can enter mode-000 directory");
+        continue;
+      }
+      assert.ok(probe.error && "code" in probe.error);
+      assert.equal(probe.error.code, code);
+      const launch = { ...usageLaunch(path.join(directory, "child.jsonl")), cwd };
+      // oxlint-disable-next-line no-await-in-loop
+      await Promise.all([
+        assert.rejects(ensureActor(base, launch), { code }),
+        assert.rejects(ensureActor(base, launch), { code }),
+      ]);
+      // oxlint-disable-next-line no-await-in-loop
+      await assert.rejects(ensureActor(base, launch), { code });
+      assert.equal(fs.existsSync(path.join(directory, "actor.lock")), false);
     }
-    assert.ok(probe.error && "code" in probe.error);
-    assert.equal(probe.error.code, code);
-    const launch = { ...usageLaunch(path.join(directory, "child.jsonl")), cwd };
-    // oxlint-disable-next-line no-await-in-loop
-    await Promise.all([
-      assert.rejects(ensureActor(base, launch), { code }),
-      assert.rejects(ensureActor(base, launch), { code }),
-    ]);
-    // oxlint-disable-next-line no-await-in-loop
-    await assert.rejects(ensureActor(base, launch), { code });
-    assert.equal(fs.existsSync(path.join(directory, "actor.lock")), false);
-  }
-  fs.mkdirSync(path.join(directory, "actor.lock"));
-  await assert.rejects(
-    ensureActor(base, usageLaunch(path.join(directory, "child.jsonl"))),
-    /ambiguous/,
-  );
-  assert.equal(fs.existsSync(path.join(directory, "actor.lock")), true);
-});
+    fs.mkdirSync(path.join(directory, "actor.lock"));
+    await assert.rejects(
+      ensureActor(base, usageLaunch(path.join(directory, "child.jsonl"))),
+      /ambiguous/,
+    );
+    assert.equal(fs.existsSync(path.join(directory, "actor.lock")), true);
+  },
+);
 
 for (const [name, thrown, error] of [
   ["Error", "new Error('CONTROLLED_SDK_STARTUP_FAILURE')", "CONTROLLED_SDK_STARTUP_FAILURE"],
@@ -518,7 +521,7 @@ for (const [name, thrown, error] of [
   ["BigInt", "7n", "7"],
   ["undefined", "undefined", "undefined"],
 ] as const) {
-  test(
+  nodeTest(
     `single-agent detached actor publishes a canonical failed result when a controlled SDK double throws ${name} at startup`,
     { timeout: 30000 },
     async (t) => {

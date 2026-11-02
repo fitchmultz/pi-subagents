@@ -16,7 +16,14 @@
     "allowJs": true,
     "checkJs": false,
     "types": ["node"],
-    "noUnusedLocals": true
+    "noUnusedLocals": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedSideEffectImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "noCheck": false
   },
   "include": [
     "**/*.ts",

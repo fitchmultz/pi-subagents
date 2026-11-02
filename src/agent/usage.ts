@@ -74,7 +74,7 @@ function reusable(cached: Prefix | undefined, stat: fs.BigIntStats): Prefix {
  * accepted LF boundary. Baselines, required usage and attribution apply to each read.
  */
 export class UsageIndex {
-  private prefix?: Prefix;
+  private prefix?: Prefix | undefined;
   read(launch: Launch, baseline: ReadonlySet<string>, terminal?: string): Contribution[] {
     const values: unknown[] = [];
     const reachedTerminal = new Error("Native terminal boundary reached.");

@@ -303,7 +303,7 @@ class IntercomBroker {
     }
     const targets = findSessions(this.sessions, msg.to, currentId);
     const target = targets[0];
-    if (targets.length === 1) {
+    if (targets.length === 1 && target !== undefined) {
       const guardError = guardedDeliveryError(this.sessions, msg.to, message);
       if (guardError !== null) {
         writeMessage(socket, {

@@ -22,7 +22,7 @@ export class PersistentPresence {
   private readonly registrations = new Map<string, Registration>();
   private stopped = false;
   private timer?: NodeJS.Timeout;
-  private running?: Promise<void>;
+  private running?: Promise<void> | undefined;
   private readonly owner: PresenceOwner;
 
   constructor(owner: PresenceOwner) {

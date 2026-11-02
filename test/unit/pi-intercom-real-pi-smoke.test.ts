@@ -2,7 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 
 const script = fileURLToPath(new URL("../../scripts/real-pi-smoke.mjs", import.meta.url));
 
@@ -10,7 +10,7 @@ function run(...args: readonly string[]) {
   return spawnSync(process.execPath, [script, ...args], { encoding: "utf-8" });
 }
 
-test("real Pi smoke CLI preserves help and invalid-argument behavior", () => {
+nodeTest("real Pi smoke CLI preserves help and invalid-argument behavior", () => {
   for (const args of [
     ["--help"],
     ["-h"],

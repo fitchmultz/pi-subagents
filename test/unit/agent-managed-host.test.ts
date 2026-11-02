@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as path from "node:path";
-import { test, type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import agents from "../../src/agent/index.ts";
 import { attachmentSchema } from "../../src/agent/contracts.ts";
@@ -70,54 +70,60 @@ const attachment = (sessionId: string) =>
     attachmentSchema,
   );
 
-test("official Pi without a managed host attaches the current process at session_start", async (t) => {
-  const official = worker(t, "official");
-  await official.start();
-  assert.equal(attachment("official")?.pid, process.pid);
-  await official.shutdown();
-  assert.equal(attachment("official")?.attached, false);
-});
+nodeTest(
+  "official Pi without a managed host attaches the current process at session_start",
+  async (t) => {
+    const official = worker(t, "official");
+    await official.start();
+    assert.equal(attachment("official")?.pid, process.pid);
+    await official.shutdown();
+    assert.equal(attachment("official")?.attached, false);
+  },
+);
 
-test("a managed worker attaches its launcher only after readiness is accepted, and hands children off", async (t) => {
-  const ready = Promise.withResolvers<boolean>();
-  const owner = { pid: process.ppid };
-  const first = worker(t, "handoff", { owner, ready: ready.promise });
-  await first.start();
-  assert.equal(
-    attachment("handoff"),
-    undefined,
-    "session_start never adopts children before readiness",
-  );
-  ready.resolve(true);
-  // Attachment is asynchronous filesystem publication after readiness; observe it.
-  await until(() => attachment("handoff") !== undefined, "attachment after readiness", 5_000);
-  assert.deepEqual(
-    { pid: attachment("handoff")?.pid, attached: attachment("handoff")?.attached },
-    { pid: owner.pid, attached: true },
-  );
-  const generation = attachment("handoff")?.generation;
-  await first.shutdown("handoff");
-  assert.equal(
-    attachment("handoff")?.attached,
-    true,
-    "a committed restart leaves children attached",
-  );
+nodeTest(
+  "a managed worker attaches its launcher only after readiness is accepted, and hands children off",
+  async (t) => {
+    const ready = Promise.withResolvers<boolean>();
+    const owner = { pid: process.ppid };
+    const first = worker(t, "handoff", { owner, ready: ready.promise });
+    await first.start();
+    assert.equal(
+      attachment("handoff"),
+      undefined,
+      "session_start never adopts children before readiness",
+    );
+    ready.resolve(true);
+    // Attachment is asynchronous filesystem publication after readiness; observe it.
+    await until(() => attachment("handoff") !== undefined, "attachment after readiness", 5_000);
+    assert.deepEqual(
+      { pid: attachment("handoff")?.pid, attached: attachment("handoff")?.attached },
+      { pid: owner.pid, attached: true },
+    );
+    const generation = attachment("handoff")?.generation;
+    await first.shutdown("handoff");
+    assert.equal(
+      attachment("handoff")?.attached,
+      true,
+      "a committed restart leaves children attached",
+    );
 
-  // The replacement retires before readiness: provisional keeps them for a rollback worker.
-  const provisional = worker(t, "handoff", { owner, ready: Promise.resolve(false) });
-  await provisional.start();
-  await provisional.shutdown("provisional");
-  assert.deepEqual(
-    { attached: attachment("handoff")?.attached, generation: attachment("handoff")?.generation },
-    { attached: true, generation },
-  );
+    // The replacement retires before readiness: provisional keeps them for a rollback worker.
+    const provisional = worker(t, "handoff", { owner, ready: Promise.resolve(false) });
+    await provisional.start();
+    await provisional.shutdown("provisional");
+    assert.deepEqual(
+      { attached: attachment("handoff")?.attached, generation: attachment("handoff")?.generation },
+      { attached: true, generation },
+    );
 
-  // Another unready replacement whose user quits releases the launcher-owned children.
-  const quitting = worker(t, "handoff", { owner, ready: Promise.resolve(false) });
-  await quitting.start();
-  await quitting.shutdown("release");
-  assert.deepEqual(
-    { attached: attachment("handoff")?.attached, generation: attachment("handoff")?.generation },
-    { attached: false, generation },
-  );
-});
+    // Another unready replacement whose user quits releases the launcher-owned children.
+    const quitting = worker(t, "handoff", { owner, ready: Promise.resolve(false) });
+    await quitting.start();
+    await quitting.shutdown("release");
+    assert.deepEqual(
+      { attached: attachment("handoff")?.attached, generation: attachment("handoff")?.generation },
+      { attached: false, generation },
+    );
+  },
+);

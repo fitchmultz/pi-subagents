@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test, { mock } from "node:test";
+import { test as nodeTest, mock } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs, {
@@ -25,7 +25,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const pidDir = process.env.PI_INTERCOM_RUNTIME_DIR;
 assert.ok(pidDir !== undefined && pidDir !== "");
 
-test(
+nodeTest(
   "legacy PID alias to a real Linux thread cannot be a broker process",
   { skip: process.platform !== "linux" },
   async () => {
@@ -65,7 +65,7 @@ test(
   },
 );
 
-test("legacy numeric live process remains ambiguous and blocking", async () => {
+nodeTest("legacy numeric live process remains ambiguous and blocking", async () => {
   const dir = pidDir;
   fs.mkdirSync(dir, { recursive: true });
   const pidPath = path.join(dir, "broker.pid");
@@ -78,7 +78,7 @@ test("legacy numeric live process remains ambiguous and blocking", async () => {
   }
 });
 
-test(
+nodeTest(
   "native PID identity preserves a live process and only disproves comparable identities",
   { skip: process.platform !== "linux" },
   async (t) => {
@@ -89,7 +89,16 @@ test(
       const record = brokerPidRecord();
       assert.equal(Number.parseInt(record, 10), process.pid, "legacy reader compatibility");
       const [pid, line] = record.trim().split("\n");
+      assert.ok(pid !== undefined && line !== undefined, "expected a pid line and identity line");
       const [version, boot, namespace, clock, start] = line.split(" ");
+      assert.ok(
+        version !== undefined &&
+          boot !== undefined &&
+          namespace !== undefined &&
+          clock !== undefined &&
+          start !== undefined,
+        "expected a complete identity line",
+      );
       assert.equal(version, "linux-v1");
       assert.equal(boot, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim());
       assert.equal(namespace, fs.readlinkSync("/proc/self/ns/pid"));
@@ -151,7 +160,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "unreadable or mismatched procfs views cannot disprove a live PID",
   { skip: process.platform !== "linux" },
   () => {
@@ -202,7 +211,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "non-Linux PID records remain numeric without procfs",
   { skip: process.platform === "linux" },
   () => {
@@ -211,26 +220,26 @@ test(
   },
 );
 
-test("getBrokerLaunchSpec maps the legacy tsx default to native Node", () => {
+nodeTest("getBrokerLaunchSpec maps the legacy tsx default to native Node", () => {
   const spec = getBrokerLaunchSpec("/repo/broker.ts", "npx", ["--no-install", "tsx"]);
   assert.equal(spec.command, process.execPath);
   assert.deepEqual(spec.args, ["/repo/broker.ts"]);
 });
 
-test("getBrokerLaunchSpec uses custom broker command", () => {
+nodeTest("getBrokerLaunchSpec uses custom broker command", () => {
   const spec = getBrokerLaunchSpec("/repo/broker.ts", "bun", []);
   assert.equal(spec.command, "bun");
   assert.deepEqual(spec.args, ["/repo/broker.ts"]);
 });
 
-test("getBrokerSpawnOptions detaches the broker with no inherited stdio", () => {
+nodeTest("getBrokerSpawnOptions detaches the broker with no inherited stdio", () => {
   const options = getBrokerSpawnOptions();
   assert.equal(options.detached, true);
   assert.equal(options.stdio, "ignore");
   assert.equal(options.cwd, projectRoot);
 });
 
-test("spawn guard fails loud instead of killing a live unhealthy broker PID", async (t) => {
+nodeTest("spawn guard fails loud instead of killing a live unhealthy broker PID", async (t) => {
   const intercomDir = pidDir;
   fs.mkdirSync(intercomDir, { recursive: true });
   const pidPath = path.join(intercomDir, "broker.pid");
@@ -252,7 +261,7 @@ test("spawn guard fails loud instead of killing a live unhealthy broker PID", as
   }
 });
 
-test("spawn guard treats EPERM as a live unhealthy broker PID and fails loud", async (t) => {
+nodeTest("spawn guard treats EPERM as a live unhealthy broker PID and fails loud", async (t) => {
   const intercomDir = pidDir;
   fs.mkdirSync(intercomDir, { recursive: true });
   const pidPath = path.join(intercomDir, "broker.pid");

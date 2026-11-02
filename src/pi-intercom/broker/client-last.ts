@@ -24,7 +24,7 @@ export function lastRequest(msg: UnknownRecord): {
   readonly requestId: string;
   readonly from: SessionInfo;
   readonly query: NativeReadQuery;
-  readonly parked?: SessionInfo;
+  readonly parked?: SessionInfo | undefined;
 } {
   const from = normalizeSessionInfo(msg.from);
   if (typeof msg.requestId !== "string" || !from || !isNativeReadQuery(msg.query)) {

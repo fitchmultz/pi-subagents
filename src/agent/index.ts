@@ -82,17 +82,17 @@ function legacyInput(): string[] {
   }
 }
 class AgentRuntime {
-  private ctx?: ExtensionContext;
+  private ctx?: ExtensionContext | undefined;
   private readonly reporter = new BackgroundReporter(() => this.ctx);
   // A managed launcher owns children across worker replacement; otherwise this process does.
-  private host?: ManagedHost;
+  private host?: ManagedHost | undefined;
   private accepted = false;
   private base = "";
   private owner = "";
   private generation = "";
   // Polling remains only while change hints are unavailable or a reconciliation failed.
   private timer?: NodeJS.Timeout;
-  private woken?: NodeJS.Immediate;
+  private woken?: NodeJS.Immediate | undefined;
   // Change hints for the owner directory, legacy results and every awaited canonical file.
   private readonly watches: CompletionWatches;
   private awaited: ReadonlySet<string> = new Set();

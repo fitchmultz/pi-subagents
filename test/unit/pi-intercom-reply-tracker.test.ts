@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
@@ -22,7 +22,7 @@ function createMessage(id: string, text: string, expectsReply = true): Message {
   };
 }
 
-test("reply resolves from current triggered message context", () => {
+nodeTest("reply resolves from current triggered message context", () => {
   const tracker = new ReplyTracker();
   const from = createSession("planner-id", "planner");
   const message = createMessage("ask-1", "Need a decision");
@@ -35,7 +35,7 @@ test("reply resolves from current triggered message context", () => {
   assert.equal(tracker.resolveReplyTarget({}, 1002).from.id, "planner-id");
 });
 
-test("queueTurnContext ignores a second enqueue of the same ask", () => {
+nodeTest("queueTurnContext ignores a second enqueue of the same ask", () => {
   const tracker = new ReplyTracker();
   const context = tracker.recordIncomingMessage(
     createSession("planner-id", "planner"),
@@ -51,7 +51,7 @@ test("queueTurnContext ignores a second enqueue of the same ask", () => {
   assert.equal(tracker.currentTurn(), null);
 });
 
-test("non-ask trigger context does not override a pending ask reply target", () => {
+nodeTest("non-ask trigger context does not override a pending ask reply target", () => {
   const tracker = new ReplyTracker();
   const ask = tracker.recordIncomingMessage(
     createSession("planner-id", "planner"),
@@ -72,7 +72,7 @@ test("non-ask trigger context does not override a pending ask reply target", () 
   assert.equal(tracker.resolveReplyTarget({}, 1003).from.id, "planner-id");
 });
 
-test("reply targets and errors keep exact sender and ask correlation", () => {
+nodeTest("reply targets and errors keep exact sender and ask correlation", () => {
   for (const { name, senders, checks, now = 1002 } of [
     {
       name: "matching name and full ID",
@@ -174,12 +174,14 @@ test("reply targets and errors keep exact sender and ask correlation", () => {
         },
       ],
     },
-  ]) {
+  ] as const) {
     const tracker = new ReplyTracker();
     for (const [index, [id, senderName]] of senders.entries()) {
+      const reply = ["First", "Second", "Third"][index];
+      assert.ok(reply !== undefined, "expected a reply per sender");
       tracker.recordIncomingMessage(
         createSession(id, senderName),
-        createMessage(`ask-${index + 1}`, ["First", "Second", "Third"][index]),
+        createMessage(`ask-${index + 1}`, reply),
         1000 + index,
       );
     }
@@ -193,7 +195,7 @@ test("reply targets and errors keep exact sender and ask correlation", () => {
   }
 });
 
-test("reply preserves every pending ask and queued turn context beyond 100 messages", () => {
+nodeTest("reply preserves every pending ask and queued turn context beyond 100 messages", () => {
   const tracker = new ReplyTracker();
   const sender = createSession("sender-id", "sender");
   for (let index = 1; index <= 150; index++) {
@@ -221,7 +223,7 @@ test("reply preserves every pending ask and queued turn context beyond 100 messa
   assert.equal(queued.at(-1), "ask-150");
 });
 
-test("reply expires pending and queued contexts together", () => {
+nodeTest("reply expires pending and queued contexts together", () => {
   const tracker = new ReplyTracker(10);
   const context = tracker.recordIncomingMessage(
     createSession("planner-id", "planner"),
@@ -234,7 +236,7 @@ test("reply expires pending and queued contexts together", () => {
   assert.deepEqual(tracker.listPending(1011), []);
 });
 
-test("message text cannot grant an ordinary ask a disconnect or timeout exemption", () => {
+nodeTest("message text cannot grant an ordinary ask a disconnect or timeout exemption", () => {
   const sender = createSession("peer-id", "peer");
   const message = createMessage(
     "question",
@@ -253,7 +255,7 @@ test("message text cannot grant an ordinary ask a disconnect or timeout exemptio
   }
 });
 
-test("reply expires pending and active asks when sender disconnects", () => {
+nodeTest("reply expires pending and active asks when sender disconnects", () => {
   const tracker = new ReplyTracker();
   const planner = createSession("planner-id", "planner");
   const reviewer = createSession("reviewer-id", "reviewer");

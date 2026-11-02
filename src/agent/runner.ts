@@ -43,8 +43,16 @@ function completionStatus(
   }
   return "completed";
 }
+/** The recorded failure: the launch error, the model's error, or the missing terminal message. */
+const failureReason = (
+  error: string | undefined,
+  message: AssistantMessage | undefined,
+): string | undefined =>
+  error ??
+  message?.errorMessage ??
+  (message ? undefined : "Native run produced no terminal assistant message.");
 class Actor {
-  private active?: Promise<void>;
+  private active?: Promise<void> | undefined;
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
@@ -54,7 +62,7 @@ class Actor {
   private readonly wake = new Wake();
   // A deferred run waits for an idle session, which has no command-file event.
   private retry = false;
-  private current?: Launch;
+  private current?: Launch | undefined;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
@@ -96,17 +104,17 @@ class Actor {
     const message = terminal?.message;
     const accounting = this.usage(launch, baseline, terminal?.id);
     const output = this.output(message);
+    const failure = failureReason(error, message);
     const result: Result = {
       id: launch.id,
       owner: launch.owner,
       status: completionStatus(this.stopping, message, error),
       endedAt: Date.now(),
-      terminalEntryId: accounting.accountingError === undefined ? terminal?.id : undefined,
+      ...(accounting.accountingError === undefined && terminal?.id !== undefined
+        ? { terminalEntryId: terminal.id }
+        : {}),
       ...accounting,
-      error:
-        error ??
-        message?.errorMessage ??
-        (message ? undefined : "Native run produced no terminal assistant message."),
+      ...(failure !== undefined ? { error: failure } : {}),
     };
     fs.writeFileSync(path.join(runDirectory(this.base, launch.id), "output.txt"), output, {
       mode: 0o600,

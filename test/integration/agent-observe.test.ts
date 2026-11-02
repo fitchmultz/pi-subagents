@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
-import { test, type TestContext } from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   Container,
@@ -44,8 +44,8 @@ function observesNativeProgress(component: Component): component is ObserverTran
 
 class CaptureTerminal extends ProcessTerminal {
   output = "";
-  input?: (data: string) => void;
-  resize?: () => void;
+  input?: ((data: string) => void) | undefined;
+  resize?: (() => void) | undefined;
   width = 100;
   height = 32;
   override get columns(): number {
@@ -99,7 +99,9 @@ class CaptureTerminal extends ProcessTerminal {
     const rows = screen.getScreenLines().map(stripTerminalSequences);
     const y = rows.findIndex((row) => row.includes(text));
     assert.ok(y >= 0, `visible mouse target: ${text}\n${rows.join("\n")}`);
-    const x = visibleWidth(rows[y].slice(0, rows[y].indexOf(text)));
+    const targetRow = rows[y];
+    assert.ok(targetRow !== undefined, `visible mouse target row: ${text}`);
+    const x = visibleWidth(targetRow.slice(0, targetRow.indexOf(text)));
     this.send(`\x1b[<0;${x + 1};${y + 1}M`);
     this.send(`\x1b[<0;${x + 1};${y + 1}m`);
   }
@@ -424,7 +426,7 @@ async function exerciseReading(options: {
 }
 
 for (const tuiMode of ["fullscreen", "regular"] as const) {
-  test(
+  nodeTest(
     `native ${tuiMode} observer watches an actual child without waking or aborting either agent and clears on replacement`,
     { timeout: 45000 },
     async (t) => {
@@ -1113,7 +1115,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
   );
 }
 
-test(
+nodeTest(
   "native observer caches completed metadata, probes each active root once per tick, strips only active work and resolves ambiguity beyond its row cache",
   { timeout: 30000 },
   async (t) => {
@@ -1363,7 +1365,8 @@ test(
       "immutable launch prompts are not re-read",
     );
     assert.equal(
-      reads.filter((file) => completedIds.has(path.relative(base, file).split(path.sep)[0])).length,
+      reads.filter((file) => completedIds.has(path.relative(base, file).split(path.sep)[0] ?? ""))
+        .length,
       0,
       "completed metadata and idle actors are cached",
     );

@@ -21,8 +21,8 @@ interface Parked {
   readonly retained: Retained;
   /** The fenced actor's socket closed: input waits for its restored replacement. */
   closed: boolean;
-  attempt?: WakeAttempt;
-  lastFailure?: string;
+  attempt?: WakeAttempt | undefined;
+  lastFailure?: string | undefined;
 }
 export interface ParkablePeer {
   readonly socket: net.Socket;
@@ -31,7 +31,7 @@ export interface ParkablePeer {
   readonly parking: boolean;
   readonly wakeResults: boolean;
   readonly wakeNotices: boolean;
-  parked?: Parked;
+  parked?: Parked | undefined;
 }
 export function reachable<T extends ParkablePeer>(target?: T): target is T {
   const socket = target?.socket;
@@ -101,7 +101,10 @@ export class ParkedSessions<T extends ParkablePeer> {
     }
   }
   /** A free requested identity, or a parked one resumed by the same child lineage. */
-  claim(requestedId: unknown, next: Omit<SessionInfo, "id">): { id: string; resumed?: T } {
+  claim(
+    requestedId: unknown,
+    next: Omit<SessionInfo, "id">,
+  ): { id: string; resumed?: T | undefined } {
     const id = requested(requestedId);
     const previous = id === undefined ? undefined : this.sessions.get(id);
     const resumes =
@@ -112,7 +115,7 @@ export class ParkedSessions<T extends ParkablePeer> {
       return { id: randomUUID() };
     }
     previous?.socket.destroy();
-    return { id, resumed: previous };
+    return { id, ...(previous !== undefined ? { resumed: previous } : {}) };
   }
   /** Flushes a restored child's input and re-sends wakes owed to a (re)registered main. */
   registered(id: string, previous?: T): void {

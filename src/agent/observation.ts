@@ -62,11 +62,11 @@ export class ActorObservation {
   private readonly state: LiveState;
   private readonly viewers = new Set<Viewer>();
   private readonly greeting = new Set<net.Socket>();
-  private server?: net.Server;
-  private socketPath?: string;
+  private server?: net.Server | undefined;
+  private socketPath?: string | undefined;
   private inode?: number;
-  private unsubscribe?: () => void;
-  private timer?: NodeJS.Timeout;
+  private unsubscribe?: (() => void) | undefined;
+  private timer?: NodeJS.Timeout | undefined;
   private closed = false;
   /** The actor's run is in progress, including native work before and after the agent loop. */
   private running = false;

@@ -100,13 +100,13 @@ interface LastPeer {
   readonly info: SessionInfo;
   readonly lastMessages: boolean;
   readonly receiptReads: boolean;
-  readonly parked?: { readonly closed: boolean };
+  readonly parked?: { readonly closed: boolean } | undefined;
 }
 interface PendingLast {
   readonly fromId: string;
   readonly toId: string;
   /** A parked child's main answers from the child's captured native history. */
-  readonly via?: string;
+  readonly via?: string | undefined;
   readonly requestId: string;
   readonly query: NativeReadQuery;
   readonly timer: NodeJS.Timeout;
@@ -130,24 +130,25 @@ function unavailable(
   targets: readonly LastPeer[],
   name: string,
   pending: number,
-  { query, via }: { readonly query: NativeReadQuery; readonly via?: LastPeer },
+  { query, via }: { readonly query: NativeReadQuery; readonly via?: LastPeer | undefined },
 ): string | undefined {
-  if (targets.length === 0) {
+  const [target] = targets;
+  if (target === undefined) {
     return "Session not found";
   }
   if (targets.length > 1) {
     return `Multiple sessions named "${name}" are connected. Use the session ID instead.`;
   }
-  const exited = exitedRefusal(targets[0], query, via);
+  const exited = exitedRefusal(target, query, via);
   if (exited !== undefined) {
     return exited;
   }
-  if (!targets[0].lastMessages) {
+  if (!target.lastMessages) {
     return "Recipient does not support last-message reads; reload its extension.";
   }
   if (
     "messageId" in query &&
-    (!targets[0].receiptReads || targets[0].info.rootSessionId !== query.rootSessionId)
+    (!target.receiptReads || target.info.rootSessionId !== query.rootSessionId)
   ) {
     return "publication_unavailable";
   }
@@ -213,19 +214,19 @@ export class LastMessageRelay {
   ): void {
     const message = lastRequest(input);
     const targets = findSessions(this.sessions, message.to, fromId);
-    const target = targets[0];
     const from = this.sessions.get(fromId);
     if (!from) {
       return;
     }
     const token = randomUUID();
-    const via = targets.length === 1 ? reader(target.info.id) : undefined;
+    const delegated = this.delegatedReader(targets, reader);
+    const via = delegated?.via;
     const frame = {
       type: "last_request" as const,
       requestId: token,
       from: messageSender(from.info),
       query: message.query,
-      parked: via && messageSender(target.info),
+      parked: delegated === undefined ? undefined : messageSender(delegated.target.info),
     };
     const error =
       unavailable(targets, message.to, this.pending.size, { query: message.query, via }) ??
@@ -238,24 +239,67 @@ export class LastMessageRelay {
       });
       return;
     }
+    const [recipient] = targets;
+    if (recipient === undefined) {
+      return;
+    }
+    this.forward(
+      { token, fromId, requestId: message.requestId, query: message.query },
+      recipient,
+      via,
+      frame,
+    );
+  }
+
+  /** Register the correlated wait, then forward the read to the reader or the recipient. */
+  private forward(
+    wait: {
+      readonly token: string;
+      readonly fromId: string;
+      readonly requestId: string;
+      readonly query: NativeReadQuery;
+    },
+    recipient: LastPeer,
+    via: LastPeer | undefined,
+    frame: {
+      readonly type: "last_request";
+      readonly requestId: string;
+      readonly from: SessionInfo;
+      readonly query: NativeReadQuery;
+      readonly parked?: SessionInfo | undefined;
+    },
+  ): void {
     const timer = setTimeout(
-      () => this.finish(token, { error: "Last-message read timed out" }),
+      () => this.finish(wait.token, { error: "Last-message read timed out" }),
       5000,
     );
     timer.unref();
-    this.pending.set(token, {
-      fromId,
-      toId: target.info.id,
+    this.pending.set(wait.token, {
+      fromId: wait.fromId,
+      toId: recipient.info.id,
       via: via?.info.id,
-      requestId: message.requestId,
-      query: message.query,
+      requestId: wait.requestId,
+      query: wait.query,
       timer,
     });
     try {
-      writeMessage((via ?? target).socket, frame);
+      writeMessage((via ?? recipient).socket, frame);
     } catch {
-      this.finish(token, { error: "Recipient disconnected before last-message read" });
+      this.finish(wait.token, { error: "Recipient disconnected before last-message read" });
     }
+  }
+
+  /** A sole matched target may delegate the read to another peer's captured history. */
+  private delegatedReader(
+    targets: readonly LastPeer[],
+    reader: (id: string) => LastPeer | undefined,
+  ): { readonly target: LastPeer; readonly via: LastPeer } | undefined {
+    const [target] = targets;
+    if (targets.length !== 1 || target === undefined) {
+      return undefined;
+    }
+    const via = reader(target.info.id);
+    return via === undefined ? undefined : { target, via };
   }
 
   respond(fromId: string, message: UnknownRecord): void {

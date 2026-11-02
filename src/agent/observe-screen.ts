@@ -45,7 +45,7 @@ interface ScreenOptions {
 export class ObserverScreen extends VStack {
   private selected: string;
   private readonly list = new ChildList((id) => this.open(id));
-  private reading?: Reading;
+  private reading?: Reading | undefined;
   private readonly connection = new ObservationChannel(() => this.schedule());
   private get client(): ObservationClient | undefined {
     return this.connection.current;
@@ -53,10 +53,10 @@ export class ObserverScreen extends VStack {
   private observed = { revision: -1, status: "", signature: "" };
   private readonly saved = new Map<string, Reading>();
   private focus: "list" | "conversation" = "list";
-  private details?: Details;
+  private details?: Details | undefined;
   private failure = "";
-  private timer?: NodeJS.Timeout;
-  private indexer?: NodeJS.Immediate;
+  private timer?: NodeJS.Timeout | undefined;
+  private indexer?: NodeJS.Immediate | undefined;
   private lastFlush = -Infinity;
   private closed = false;
   private frame?: LayoutFrame;

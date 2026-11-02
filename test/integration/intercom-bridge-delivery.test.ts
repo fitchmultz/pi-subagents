@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:https";
@@ -94,7 +94,7 @@ function delayedRelay(port: number) {
   };
 }
 
-test(
+nodeTest(
   "persistent presence and event-driven HTTPS fallback survive helper crashes without consumer polling",
   { timeout: 60000 },
   async (t) => {
@@ -181,7 +181,9 @@ test(
       );
       config.port = 0;
       config.stateDir = stateDir;
-      records(config.clients)[0].wake = { envFile };
+      const [client] = records(config.clients);
+      assert.ok(client !== undefined, "expected a configured bridge client");
+      client.wake = { envFile };
       writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
       const helperEnv = {
         ...env,
@@ -210,7 +212,9 @@ test(
         });
         passive.push({ id: sent.id, text: body });
       }
-      await bridge.wait(new RegExp(`"messageId":"${passive[256].id}"`));
+      const finalPassive = passive[256];
+      assert.ok(finalPassive !== undefined, "expected the final passive delivery");
+      await bridge.wait(new RegExp(`"messageId":"${finalPassive.id}"`));
       await advanceClock(bridge, "SIGUSR1");
       await advanceClock(bridge, "SIGALRM");
       assert.ok(
@@ -353,7 +357,9 @@ test(
         .map(json)
         .filter((entry) => entry.event === "fixture_fetch");
       assert.equal(attempts.length, 1);
-      const wakeLatency = numberValue(attempts[0].timestamp) - receivedAt;
+      const [firstAttempt] = attempts;
+      assert.ok(firstAttempt !== undefined, "expected one fixture fetch attempt");
+      const wakeLatency = numberValue(firstAttempt.timestamp) - receivedAt;
       assert.ok(wakeLatency >= 2000, "ACK grace precedes fallback");
       assert.ok(wakeLatency < 3000, "mailbox commit promptly wakes after two-second ACK grace");
       assert.ok(!bridge.output().includes("fixture-bearer-secret"));

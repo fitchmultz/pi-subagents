@@ -19,7 +19,7 @@ export interface ObserverRow {
   status: string;
   live: boolean;
   createdAt: number;
-  activity?: string;
+  activity?: string | undefined;
 }
 
 export class Details extends ScrollView {
@@ -149,7 +149,7 @@ export function appendHeader(
     model: string;
     thinking: string;
     activity: string;
-    details?: Details;
+    details?: Details | undefined;
     toggle: () => void;
   },
 ): void {

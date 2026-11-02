@@ -4,12 +4,12 @@ import path from "node:path";
 
 export interface TargetIdentity {
   readonly id: string;
-  readonly name?: string;
+  readonly name?: string | undefined;
 }
 
 export interface ProjectSessionIdentity extends TargetIdentity {
   readonly cwd: string;
-  readonly projectId?: string;
+  readonly projectId?: string | undefined;
 }
 
 export const MIN_SESSION_TARGET_PREFIX_LENGTH = 8;
@@ -170,8 +170,9 @@ export function formatPeerAwarenessHint(
 }
 
 function matchedTargets<T extends TargetIdentity>(matches: readonly T[]): TargetResolution<T> {
-  if (matches.length === 1) {
-    return { status: "found", target: matches[0], matches };
+  const [target] = matches;
+  if (matches.length === 1 && target !== undefined) {
+    return { status: "found", target, matches };
   }
   return matches.length > 1 ? { status: "ambiguous", matches } : { status: "none", matches: [] };
 }

@@ -10,7 +10,7 @@ export class Reading {
   following = true;
   pending = false;
   width = 0;
-  destination?: EntryAnchor;
+  destination?: EntryAnchor | undefined;
   private readonly changed: (kind: "history" | "content") => void;
   constructor(
     watch: Watch,

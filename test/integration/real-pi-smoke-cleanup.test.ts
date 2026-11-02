@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test as nodeTest } from "node:test";
 import { isChildTreeAlive, trySignalChildTree } from "../../src/shared/post-exit-stdio-guard.ts";
 
 const script =
@@ -157,7 +157,7 @@ function assertSmokeResult(
 
 // The same test runs unchanged against the original and repaired scripts via PI_REAL_SMOKE_TEST_SCRIPT.
 // Eight negative cases each retain the ten-second post-launch orphan-write observation.
-test(
+nodeTest(
   "real smoke stops its owned detached processes before deleting credentials and artifacts",
   { skip: process.platform === "win32", timeout: 150_000 },
   async (t) => {

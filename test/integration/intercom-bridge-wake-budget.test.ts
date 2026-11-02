@@ -1,5 +1,5 @@
 import "../support/isolated-home.ts";
-import test from "node:test";
+import { test as nodeTest, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:https";
@@ -20,12 +20,20 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
-import { bridgeApi, exec, parseCredential, start, stop } from "../support/intercom-bridge.ts";
+import {
+  bridgeApi,
+  exec,
+  parseCredential,
+  start,
+  stop,
+  type BridgeApi,
+  type Credential,
+} from "../support/intercom-bridge.ts";
 import { json, numberValue, readJson, record, records, text } from "../support/assertions.ts";
 
 const repo = resolve(import.meta.dirname, "../..");
 
-async function fixture(t: test.TestContext, identities = 1, realClock = false) {
+async function fixture(t: TestContext, identities = 1, realClock = false) {
   const root = mkdtempSync("/tmp/pib-budget-");
   const env = {
     ...process.env,
@@ -36,7 +44,7 @@ async function fixture(t: test.TestContext, identities = 1, realClock = false) {
     PI_CODING_AGENT_DIR: join(root, "agent"),
   };
   const keys = join(root, "keys");
-  const credentials = [];
+  const credentials: Credential[] = [];
   for (let index = 0; index < identities; index++) {
     // oxlint-disable-next-line no-await-in-loop
     const result = await exec(
@@ -88,9 +96,11 @@ async function fixture(t: test.TestContext, identities = 1, realClock = false) {
   config.stateDir = stateDir;
   config.port = 0;
   writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  const [primaryCredential] = credentials;
+  assert.ok(primaryCredential !== undefined, "expected a generated bridge credential");
   const helperEnv = {
     ...env,
-    NODE_EXTRA_CA_CERTS: credentials[0].ca,
+    NODE_EXTRA_CA_CERTS: primaryCredential.ca,
     PI_FIXTURE_CLOCK_FILE: join(root, "fixture-clock"),
   };
   const broker = start("src/pi-intercom/broker/broker.ts", [], env);
@@ -110,8 +120,8 @@ async function fixture(t: test.TestContext, identities = 1, realClock = false) {
     ["--config", configPath],
     helperEnv,
   );
-  const apis = [];
-  const remoteIds = [];
+  const apis: BridgeApi[] = [];
+  const remoteIds: string[] = [];
   for (const credential of credentials) {
     // oxlint-disable-next-line no-await-in-loop
     const api = await bridgeApi(bridge, credential);
@@ -172,6 +182,22 @@ async function fixture(t: test.TestContext, identities = 1, realClock = false) {
     }
     rmSync(root, { recursive: true, force: true });
   });
+  /** Each registered identity owns exactly one slot; restarts rebind api slots in place. */
+  const api = (index: number) => {
+    const value = apis[index];
+    assert.ok(value !== undefined, `expected the api for identity ${index}`);
+    return value;
+  };
+  const remoteId = (index: number) => {
+    const value = remoteIds[index];
+    assert.ok(value !== undefined, `expected the remote id for identity ${index}`);
+    return value;
+  };
+  const credential = (index: number) => {
+    const value = credentials[index];
+    assert.ok(value !== undefined, `expected the credential for identity ${index}`);
+    return value;
+  };
   return {
     root,
     env,
@@ -186,32 +212,37 @@ async function fixture(t: test.TestContext, identities = 1, realClock = false) {
     clock,
     restart,
     rows,
+    api,
+    remoteId,
+    credential,
     current: () => bridge,
   };
 }
 
-test(
+nodeTest(
   "real mailbox commit reaches HTTPS just after ACK grace without consumer polling",
   { timeout: 30000 },
   async (t) => {
     const f = await fixture(t, 1, true);
-    const healthy = await f.peer.send(f.remoteIds[0], { text: "already received by primary" });
+    const healthy = await f.peer.send(f.remoteId(0), { text: "already received by primary" });
     await f.current().wait(new RegExp(`"messageId":"${healthy.id}"`));
-    assert.deepEqual((await f.apis[0].api("ack", { ids: [healthy.id] })).body.acked, [healthy.id]);
+    assert.deepEqual((await f.api(0).api("ack", { ids: [healthy.id] })).body.acked, [healthy.id]);
     const payload = "actionable large payload " + "x".repeat(150000);
     const started = performance.now();
-    const cold = await f.peer.send(f.remoteIds[0], { text: payload });
+    const cold = await f.peer.send(f.remoteId(0), { text: payload });
     await f.current().wait(new RegExp(`"messageId":"${cold.id}".*"result":"http_rejected"`));
     const elapsed = performance.now() - started;
     assert.ok(elapsed >= 1900, `ACK coordination grace: ${elapsed}ms`);
     assert.ok(elapsed < 6000, `event-driven cold latency: ${elapsed}ms`);
     assert.equal(f.requests.length, 1, "healthy ACK prevents fallback; cold mail alone wakes");
-    assert.equal(record(f.requests[0].body).text, payload);
+    const [healthyRequest] = f.requests;
+    assert.ok(healthyRequest !== undefined, "expected the cold wake request");
+    assert.equal(record(healthyRequest.body).text, payload);
     t.diagnostic(`real broker commit -> HTTPS result: ${elapsed.toFixed(0)}ms`);
   },
 );
 
-test(
+nodeTest(
   "FULL commit delay cannot shorten healthy consumer ACK grace",
   { timeout: 30000 },
   async (t) => {
@@ -257,7 +288,7 @@ test(
     const mailboxPath = join(
       f.root,
       "state",
-      `${f.credentials[0].fingerprint256.replaceAll(":", "").toUpperCase()}.sqlite`,
+      `${f.credential(0).fingerprint256.replaceAll(":", "").toUpperCase()}.sqlite`,
     );
     const locked = new DatabaseSync(mailboxPath);
     locked.exec("BEGIN IMMEDIATE");
@@ -270,7 +301,7 @@ test(
     let id: string;
     try {
       id = (
-        await f.peer.send(f.remoteIds[0], {
+        await f.peer.send(f.remoteId(0), {
           text: "healthy fsynced intake after real SQLite contention",
         })
       ).id;
@@ -291,7 +322,7 @@ test(
     assert.ok(committed - started >= 800, "real SQLite writer contention delayed mailbox commit");
     assert.ok(storedAt - timings.receivedAt >= 800, "owner's FULL write actually waited on SQLite");
     timings.inboxStartAfterObservedCommitMs = performance.now() - committed;
-    const inbox = await f.apis[0].api("inbox");
+    const inbox = await f.api(0).api("inbox");
     timings.inboxResponseAfterObservedCommitMs = performance.now() - committed;
     receipts.inbox = { status: inbox.status, requestId: inbox.body.requestId };
     assert.equal(inbox.status, 200);
@@ -317,13 +348,15 @@ test(
     // durable deadline, not whether 1400ms of deliberate sleep leaves enough CI time for TLS/fsync.
     const batches = f.rows("SELECT due, backoff FROM wake_batches");
     assert.equal(batches.length, 1, "owner published one initial grace for the fresh mailbox");
-    assert.equal(batches[0].backoff, 0, "deadline is initial grace, not a retry");
-    const due = numberValue(batches[0].due);
+    const [initialBatch] = batches;
+    assert.ok(initialBatch !== undefined, "expected one initial wake batch");
+    assert.equal(initialBatch.backoff, 0, "deadline is initial grace, not a retry");
+    const due = numberValue(initialBatch.due);
     timings.due = due;
     timings.graceAfterStoredLogMs = due - storedAt;
     assert.ok(due >= storedAt + 2000, "FULL commit leaves the entire two-second ACK grace");
     timings.ackStartAfterObservedCommitMs = performance.now() - committed;
-    const ack = await f.apis[0].api("ack", { ids: [id] });
+    const ack = await f.api(0).api("ack", { ids: [id] });
     timings.ackResponseAfterObservedCommitMs = performance.now() - committed;
     receipts.ack = { status: ack.status, requestId: ack.body.requestId };
     receipts.attemptsAfterAck = f.rows("SELECT attemptedAt FROM wake_attempts").length;
@@ -334,16 +367,18 @@ test(
     await f.current().wait(new RegExp(`"requestId":"${requestId}".*"result":"ok"`));
     const ackEvents = events().filter((entry) => entry.requestId === requestId);
     assert.equal(ackEvents.length, 1);
-    assert.equal(ackEvents[0].event, "request");
-    assert.equal(ackEvents[0].result, "ok");
-    const ackAt = Date.parse(text(ackEvents[0].timestamp));
+    const [ackEvent] = ackEvents;
+    assert.ok(ackEvent !== undefined, "expected one request event");
+    assert.equal(ackEvent.event, "request");
+    assert.equal(ackEvent.result, "ok");
+    const ackAt = Date.parse(text(ackEvent.timestamp));
     timings.ackOwnerAfterStoredLogMs = ackAt - storedAt;
     // Response delivery/client scheduling can lag actual ACK processing. Its correlated owner
     // receipt is after durable ACK/reconciliation and before HTTP reply, the relevant boundary.
     assert.ok(ackAt < due, "owner processed successful primary ACK within post-commit grace");
     assert.equal(f.requests.length, 0, "FULL commit wait must not spend the primary's ACK grace");
     assert.equal(f.rows("SELECT attemptedAt FROM wake_attempts").length, 0);
-    const cold = await f.peer.send(f.remoteIds[0], {
+    const cold = await f.peer.send(f.remoteId(0), {
       text: "cold wake witnesses processing beyond the prior ACK grace",
     });
     await f.current().wait(new RegExp(`"messageId":"${cold.id}".*"result":"http_rejected"`));
@@ -362,20 +397,24 @@ test(
       1,
       "actual owner transport witnesses no late fallback for healthy ACK",
     );
-    assert.equal(record(f.requests[0].body).message_id, cold.id);
+    const [coldRequest] = f.requests;
+    assert.ok(coldRequest !== undefined, "expected the fallback wake request");
+    assert.equal(record(coldRequest.body).message_id, cold.id);
   },
 );
 
-test(
+nodeTest(
   "wake-key reload preserves unread retry after owner timers and authenticated reattachment",
   { timeout: 30000 },
   async (t) => {
     const f = await fixture(t, 3);
-    const sent = await f.peer.send(f.remoteIds[0], { text: "unACKed through wake-key rotation" });
+    const sent = await f.peer.send(f.remoteId(0), { text: "unACKed through wake-key rotation" });
     await f.current().wait(new RegExp(`"messageId":"${sent.id}".*"result":"stored"`));
     await f.clock("SIGWINCH");
     await f.current().wait(/"result":"http_rejected"/);
-    const attemptTime = f.rows("SELECT attemptedAt FROM wake_attempts")[0].attemptedAt;
+    const [attemptRow] = f.rows("SELECT attemptedAt FROM wake_attempts");
+    assert.ok(attemptRow !== undefined, "expected a wake attempt row");
+    const attemptTime = attemptRow.attemptedAt;
     assert.ok(typeof attemptTime === "number");
     const envFile = join(f.root, "wake-0.env");
     writeFileSync(
@@ -392,7 +431,7 @@ test(
       [attemptTime + 30000],
       "scheduled reconciliation must retain the original retry deadline without ACK",
     );
-    const inbox = await f.apis[0].api("inbox");
+    const inbox = await f.api(0).api("inbox");
     assert.equal(inbox.status, 200);
     assert.equal(records(inbox.body.messages).length, 1);
     await f.clock("SIGWINCH");
@@ -408,7 +447,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "all URLs/fingerprints share 20 durable attempts; reload, rotation, and crash cannot reset quota",
   { timeout: 60000 },
   async (t) => {
@@ -416,7 +455,7 @@ test(
     for (let index = 0; index < 20; index++) {
       const identity = index % 3;
       // oxlint-disable-next-line no-await-in-loop
-      const sent = await f.peer.send(f.remoteIds[identity], { text: `cold request ${index}` });
+      const sent = await f.peer.send(f.remoteId(identity), { text: `cold request ${index}` });
       // oxlint-disable-next-line no-await-in-loop
       await f.current().wait(new RegExp(`"messageId":"${sent.id}"`));
       const after = f.current().output().length;
@@ -427,7 +466,7 @@ test(
       assert.equal(f.requests.length, index + 1);
       // Actual ACK permits a fresh immediate wake, without inheriting the prior batch's backoff.
       // oxlint-disable-next-line no-await-in-loop
-      assert.deepEqual((await f.apis[identity].api("ack", { ids: [sent.id] })).body.acked, [
+      assert.deepEqual((await f.api(identity).api("ack", { ids: [sent.id] })).body.acked, [
         sent.id,
       ]);
     }
@@ -437,7 +476,7 @@ test(
       "400s also consume allowance",
     );
     assert.ok(f.requests.some((request) => request.path === "/other"));
-    const final = await f.peer.send(f.remoteIds[0], { text: "quota-deferred payload" });
+    const final = await f.peer.send(f.remoteId(0), { text: "quota-deferred payload" });
     await f.current().wait(new RegExp(`"messageId":"${final.id}"`));
     await f.clock("SIGWINCH");
     assert.equal(f.requests.length, 20);
@@ -487,7 +526,7 @@ test(
   },
 );
 
-test(
+nodeTest(
   "healthy fsynced ACK, passive and exact note prefixes suppress wake; explicit asks and retained fingerprints coalesce",
   { timeout: 60000 },
   async (t) => {
@@ -503,18 +542,18 @@ test(
     const ids = [];
     for (const message of messages) {
       // oxlint-disable-next-line no-await-in-loop
-      ids.push((await f.peer.send(f.remoteIds[0], { text: message })).id);
+      ids.push((await f.peer.send(f.remoteId(0), { text: message })).id);
     }
-    const passiveAsk = await f.peer.send(f.remoteIds[0], {
+    const passiveAsk = await f.peer.send(f.remoteId(0), {
       text: "ACK: passive ask",
       delivery: "passive",
     });
-    const healthy = await f.peer.send(f.remoteIds[0], {
+    const healthy = await f.peer.send(f.remoteId(0), {
       text: "healthy primary intake",
       expectsReply: true,
     });
     await f.current().wait(new RegExp(`"messageId":"${healthy.id}"`));
-    const intake = (await f.apis[0].api("inbox")).body;
+    const intake = (await f.api(0).api("inbox")).body;
     const fd = openSync(join(f.root, "primary-intake.json"), "w", 0o600);
     try {
       writeSync(fd, JSON.stringify(intake));
@@ -522,42 +561,50 @@ test(
     } finally {
       closeSync(fd);
     }
-    assert.deepEqual((await f.apis[0].api("ack", { ids: [healthy.id] })).body.acked, [healthy.id]);
+    assert.deepEqual((await f.api(0).api("ack", { ids: [healthy.id] })).body.acked, [healthy.id]);
     await f.clock("SIGWINCH");
     assert.equal(f.requests.length, 0);
     assert.equal(
-      records((await f.apis[0].api("inbox")).body.messages).length,
+      records((await f.api(0).api("inbox")).body.messages).length,
       7,
       "suppression preserves every unacknowledged payload",
     );
-    const explicit = await f.peer.send(f.remoteIds[0], {
+    const explicit = await f.peer.send(f.remoteId(0), {
       text: "ACK: please answer this request",
       expectsReply: true,
     });
     const joined = [];
     for (let index = 0; index < 32; index++) {
       // oxlint-disable-next-line no-await-in-loop
-      joined.push((await f.peer.send(f.remoteIds[2], { text: `same URL flood ${index}` })).id);
+      joined.push((await f.peer.send(f.remoteId(2), { text: `same URL flood ${index}` })).id);
     }
-    await f.current().wait(new RegExp(`"messageId":"${joined[31]}"`));
+    const [lastJoined] = joined.slice(-1);
+    assert.ok(lastJoined !== undefined, "expected the last flood message id");
+    await f.current().wait(new RegExp(`"messageId":"${lastJoined}"`));
     const after = f.current().output().length;
     await f.clock("SIGWINCH");
     await f.current().wait(/"result":"http_rejected"/, after);
     assert.equal(f.requests.length, 1, "all retained fingerprints on a URL form one cold batch");
-    assert.equal(record(f.requests[0].body).message_id, explicit.id);
-    assert.equal(record(f.requests[0].body).ask_id, explicit.id);
+    const [wakeRequest] = f.requests;
+    assert.ok(wakeRequest !== undefined, "expected one cold wake request");
+    assert.equal(record(wakeRequest.body).message_id, explicit.id);
+    assert.equal(record(wakeRequest.body).ask_id, explicit.id);
     for (let index = 0; index < 32; index++) {
       // oxlint-disable-next-line no-await-in-loop
-      joined.push((await f.peer.send(f.remoteIds[2], { text: `after POST flood ${index}` })).id);
+      joined.push((await f.peer.send(f.remoteId(2), { text: `after POST flood ${index}` })).id);
     }
-    await f.current().wait(new RegExp(`"messageId":"${joined[63]}"`));
+    const [finalJoined] = joined.slice(-1);
+    assert.ok(finalJoined !== undefined, "expected the final flood message id");
+    await f.current().wait(new RegExp(`"messageId":"${finalJoined}"`));
     await f.clock("SIGWINCH");
     assert.equal(f.requests.length, 1, "new pending flood does not bypass cold batch backoff");
     assert.deepEqual(
-      (await f.apis[0].api("ack", { ids: [explicit.id, passiveAsk.id] })).body.acked,
+      (await f.api(0).api("ack", { ids: [explicit.id, passiveAsk.id] })).body.acked,
       [explicit.id, passiveAsk.id],
     );
-    const attemptTime = f.rows("SELECT attemptedAt FROM wake_attempts")[0].attemptedAt;
+    const [attemptRow] = f.rows("SELECT attemptedAt FROM wake_attempts");
+    assert.ok(attemptRow !== undefined, "expected a wake attempt row");
+    const attemptTime = attemptRow.attemptedAt;
     assert.ok(typeof attemptTime === "number");
     await f.restart();
     assert.deepEqual(
@@ -570,12 +617,12 @@ test(
       1,
       "empty first fingerprint cannot reset another fingerprint's persisted retry",
     );
-    f.apis[0] = await bridgeApi(f.current(), f.credentials[0]);
-    f.apis[2] = await bridgeApi(f.current(), f.credentials[2]);
-    assert.deepEqual((await f.apis[2].api("ack", { ids: joined })).body.acked, joined);
+    f.apis[0] = await bridgeApi(f.current(), f.credential(0));
+    f.apis[2] = await bridgeApi(f.current(), f.credential(2));
+    assert.deepEqual((await f.api(2).api("ack", { ids: joined })).body.acked, joined);
     await f.clock("SIGUSR1");
     assert.equal(f.requests.length, 1, "real ACKs transfer durable intake and retire notification");
-    const newMail = await f.peer.send(f.remoteIds[0], {
+    const newMail = await f.peer.send(f.remoteId(0), {
       text: "ACKNOWLEDGE is not an exact ACK prefix",
     });
     await f.current().wait(new RegExp(`"messageId":"${newMail.id}"`));
@@ -590,44 +637,55 @@ test(
   },
 );
 
-test("failed POST settlement recovers after ACK even with no remaining candidate", async (t) => {
-  const f = await fixture(t);
-  // At the wire boundary the pre-POST reservation is already durable; deny only its completion.
-  f.server.once("request", () => chmodSync(f.quotaPath, 0o644));
-  const sent = await f.peer.send(f.remoteIds[0], {
-    text: "actionable work ACKed after failed completion write",
-  });
-  await f.current().wait(new RegExp(`"messageId":"${sent.id}".*"result":"stored"`));
-  const publicationDeadline = performance.now() + 5000;
-  while (f.rows("SELECT due FROM wake_batches").length === 0) {
-    assert.ok(performance.now() < publicationDeadline, "owner published the post-commit grace");
-    // oxlint-disable-next-line no-await-in-loop
-    await delay(5);
-  }
-  const after = f.current().output().length;
-  await f.clock("SIGWINCH");
-  await f.current().wait(/"result":"storage_unavailable"/, after);
-  assert.equal(f.requests.length, 1);
-  assert.equal(f.rows("SELECT settledAt FROM wake_attempts")[0].settledAt, null);
-  chmodSync(f.quotaPath, 0o600);
-  assert.deepEqual((await f.apis[0].api("ack", { ids: [sent.id] })).body.acked, [sent.id]);
-  await f.clock("SIGALRM");
-  assert.equal(f.rows("SELECT due FROM wake_batches").length, 0, "real ACK retired the candidate");
-  assert.equal(
-    typeof f.rows("SELECT settledAt FROM wake_attempts")[0].settledAt,
-    "number",
-    "empty reconciliation still retries the failed durable settlement",
-  );
-  assert.equal(f.requests.length, 1, "settlement repair never replays the consumed payload");
-});
+nodeTest(
+  "failed POST settlement recovers after ACK even with no remaining candidate",
+  async (t) => {
+    const f = await fixture(t);
+    // At the wire boundary the pre-POST reservation is already durable; deny only its completion.
+    f.server.once("request", () => chmodSync(f.quotaPath, 0o644));
+    const sent = await f.peer.send(f.remoteId(0), {
+      text: "actionable work ACKed after failed completion write",
+    });
+    await f.current().wait(new RegExp(`"messageId":"${sent.id}".*"result":"stored"`));
+    const publicationDeadline = performance.now() + 5000;
+    while (f.rows("SELECT due FROM wake_batches").length === 0) {
+      assert.ok(performance.now() < publicationDeadline, "owner published the post-commit grace");
+      // oxlint-disable-next-line no-await-in-loop
+      await delay(5);
+    }
+    const after = f.current().output().length;
+    await f.clock("SIGWINCH");
+    await f.current().wait(/"result":"storage_unavailable"/, after);
+    assert.equal(f.requests.length, 1);
+    const [unsettledRow] = f.rows("SELECT settledAt FROM wake_attempts");
+    assert.ok(unsettledRow !== undefined, "expected a wake attempt row");
+    assert.equal(unsettledRow.settledAt, null);
+    chmodSync(f.quotaPath, 0o600);
+    assert.deepEqual((await f.api(0).api("ack", { ids: [sent.id] })).body.acked, [sent.id]);
+    await f.clock("SIGALRM");
+    assert.equal(
+      f.rows("SELECT due FROM wake_batches").length,
+      0,
+      "real ACK retired the candidate",
+    );
+    const [settledRow] = f.rows("SELECT settledAt FROM wake_attempts");
+    assert.ok(settledRow !== undefined, "expected a wake attempt row");
+    assert.equal(
+      typeof settledRow.settledAt,
+      "number",
+      "empty reconciliation still retries the failed durable settlement",
+    );
+    assert.equal(f.requests.length, 1, "settlement repair never replays the consumed payload");
+  },
+);
 
-test(
+nodeTest(
   "reservation survives crash before POST; permission and corrupt ledger fail closed",
   { timeout: 60000 },
   async (t) => {
     const f = await fixture(t);
     chmodSync(f.quotaPath, 0o644);
-    const sent = await f.peer.send(f.remoteIds[0], { text: "retained through storage failure" });
+    const sent = await f.peer.send(f.remoteId(0), { text: "retained through storage failure" });
     await f.current().wait(new RegExp(`"messageId":"${sent.id}"`));
     const after = f.current().output().length;
     await f.clock("SIGWINCH");
@@ -660,7 +718,9 @@ test(
     await f.clock("SIGUSR2");
     await f.current().wait(/"result":"http_rejected"/, recovered);
     assert.equal(f.requests.length, 1);
-    assert.equal(record(f.requests[0].body).message_id, sent.id);
+    const [retainedRequest] = f.requests;
+    assert.ok(retainedRequest !== undefined, "expected the retained wake request");
+    assert.equal(record(retainedRequest.body).message_id, sent.id);
     await stop(f.current().child);
     writeFileSync(f.quotaPath, "corrupt quota ledger", { mode: 0o600 });
     await assert.rejects(f.restart(), /Exited before/);
