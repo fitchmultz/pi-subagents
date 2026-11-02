@@ -187,34 +187,42 @@ nodeTest("the compiler profile keeps every adopted strict flag", () => {
   }
 });
 
-nodeTest("every disabled rule name belongs to the recorded directive inventory", () => {
-  const disabled = new Set<string>();
+nodeTest("the directive inventory keeps its recorded rule names and duplication bounds", () => {
+  const disabled = new Map<string, number>();
   for (const dir of ["src", "scripts", "test", ".github"]) {
     for (const rule of scanDirectives(dir)) {
       if (rule !== "") {
-        disabled.add(rule);
+        disabled.set(rule, (disabled.get(rule) ?? 0) + 1);
       }
     }
   }
-  assert.deepEqual([...disabled].sort(), [
-    "eslint/no-empty-function",
-    "max-params",
-    "no-await-in-loop",
-    "no-control-regex",
-    "no-param-reassign",
-    "typescript/no-floating-promises",
-    "typescript/no-misused-promises",
-    "typescript/no-unnecessary-boolean-literal-compare",
-    "typescript/no-unnecessary-condition",
-    "typescript/no-unnecessary-type-assertion",
-    "typescript/no-unsafe-argument",
-    "typescript/no-unsafe-assignment",
-    "typescript/no-unsafe-member-access",
-    "typescript/no-unsafe-return",
-    "typescript/no-unsafe-type-assertion",
-    "typescript/prefer-readonly",
-    "typescript/strict-boolean-expressions",
-    "typescript/strict-void-return",
-    "typescript/unbound-method",
-  ]);
+  const recorded: Array<[string, number]> = [
+    ["eslint/no-empty-function", 1],
+    ["max-params", 1],
+    ["no-await-in-loop", 185],
+    ["no-control-regex", 5],
+    ["no-param-reassign", 3],
+    ["typescript/no-floating-promises", 6],
+    ["typescript/no-misused-promises", 1],
+    ["typescript/no-unnecessary-boolean-literal-compare", 2],
+    ["typescript/no-unnecessary-condition", 21],
+    ["typescript/no-unnecessary-type-assertion", 12],
+    ["typescript/no-unsafe-argument", 3],
+    ["typescript/no-unsafe-assignment", 58],
+    ["typescript/no-unsafe-member-access", 1],
+    ["typescript/no-unsafe-return", 2],
+    ["typescript/no-unsafe-type-assertion", 40],
+    ["typescript/prefer-readonly", 2],
+    ["typescript/strict-boolean-expressions", 4],
+    ["typescript/strict-void-return", 5],
+    ["typescript/unbound-method", 1],
+  ];
+  assert.deepEqual(
+    [...disabled.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    recorded,
+  );
+  assert.deepEqual(
+    [...disabled.keys()].sort(),
+    recorded.map(([rule]) => rule),
+  );
 });
