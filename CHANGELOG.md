@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.8 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #321 from fitchmultz/chore/oxlint-v512-strict-ts ([600fcaa](https://github.com/fitchmultz/pi-subagents/commit/600fcaa9b22d59d4111179a8563332ff0420f9d0))
+
+### What's Changed
+
+- Align Oxlint toolchain and baseline config with the strict standard (1/5) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/319
+- Narrow the node:test registration allowance to package-origin distinct names (2/5) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/320
+- Adopt the strict compiler options and clear every strict-mode error (3/5) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/321
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.7...v0.52.8
+
 ## 0.52.7 - 2026-11-01
 
 <!-- npm-release:unreleased:start -->
