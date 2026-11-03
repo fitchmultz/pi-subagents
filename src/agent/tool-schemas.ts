@@ -1,6 +1,7 @@
 import type { Static } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "./typebox.ts";
+import { thinkingSchema } from "./contracts.ts";
 
 // Main-session tool parameters only; the detached runner must not load pi-ai values.
 export const delegateSchema = Type.Object(
@@ -15,6 +16,7 @@ export const delegateSchema = Type.Object(
           "Exact provider/model ID (:thinking and any case need host support); no fuzzy match or fallback.",
       }),
     ),
+    thinking: Type.Optional(thinkingSchema),
     context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
   },
   { additionalProperties: false },

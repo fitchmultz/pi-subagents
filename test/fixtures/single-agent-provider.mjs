@@ -367,6 +367,7 @@ export default async function fixture(
         prompt,
         context: context.messages,
         thinking: options?.reasoning,
+        nativeThinking: pi.getThinkingLevel(),
         model: model.id,
       },
       options?.signal,
@@ -551,8 +552,14 @@ export default async function fixture(
     }
     return fauxAssistantMessage(`CHILD_LITERAL_RESULT:${prompt ?? ""}`);
   };
-  provider.setResponses(Array.from({ length: 100 }, () => respond));
-  pi.registerProvider(provider.provider);
+  const inheritedProvider = fauxProvider({
+    provider: "single-agent-parent",
+    models: [{ id: "parent-model", reasoning: true }],
+  });
+  for (const selected of [provider, inheritedProvider]) {
+    selected.setResponses(Array.from({ length: 100 }, () => respond));
+    pi.registerProvider(selected.provider);
+  }
   pi.on("message_end", (event) => {
     if (event.message.role !== "assistant") {
       return;

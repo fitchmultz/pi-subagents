@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add optional `delegate.thinking` to select child effort independently of the parent on all supported hosts, including official Pi 1.5.0. Omission keeps inherited effort. Native model suffixes must agree with an explicit field. Pi still clamps effort to model capabilities; guidance and saved continuations retain the child's saved effort.
+
 ## 0.52.16 - 2026-11-03
 
 <!-- npm-release:unreleased:start -->
