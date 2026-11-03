@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.16 - 2026-11-03
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Skip no-op releases and restate malformed remediation dispositions (#336) ([579c60f](https://github.com/fitchmultz/pi-subagents/commit/579c60ff5beddd38a3090f91d6ad566e88a0e1c1))
+
+### What's Changed
+
+- Skip no-op releases and restate malformed remediation dispositions by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/336
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.15...v0.52.16
+
 ## 0.52.15 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
