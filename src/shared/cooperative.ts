@@ -16,7 +16,6 @@ export async function runCooperatively<T>(steps: Generator<void, T>): Promise<T>
     // single-record stall off-thread rather than increasing this batch size.
     if (++count === 32) {
       // Yield between ordered atomic recovery records; concurrency would reorder delivery.
-      // oxlint-disable-next-line no-await-in-loop
       await yieldToInput();
       count = 0;
     }

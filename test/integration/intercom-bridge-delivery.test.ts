@@ -205,7 +205,6 @@ nodeTest(
       for (let index = 0; index < 257; index++) {
         const body = `passive ${index}: exact\nmailbox text`;
         // Cross the notification count boundary through the real broker, using both native forms.
-        // oxlint-disable-next-line no-await-in-loop
         const sent = await peer.send(remoteId, {
           text: body,
           ...modes[index % 2],
@@ -309,7 +308,6 @@ nodeTest(
       // An active message behind another full passive page still gets prompt event-driven fallback.
       const largePassive: string[] = [];
       for (let index = 0; index < 6; index++) {
-        // oxlint-disable-next-line no-await-in-loop
         const sent = await peer.send(remoteId, {
           text: `${index}:${"x".repeat(850000)}`,
           delivery: "passive",

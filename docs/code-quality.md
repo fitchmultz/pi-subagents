@@ -1,85 +1,113 @@
 # Code quality
 
-Oxlint checks maintained TypeScript and JavaScript. Oxfmt owns formatting.
-Both tools use the committed npm versions and repository configuration.
+The [Strict Oxlint/Oxfmt Engineering Standard v5.2](strict-oxlint-oxfmt-standard.md)
+owns the policy. [Quality exceptions](quality-exceptions.md) records the few
+operations that require different treatment. No finding budget or suppression
+baseline is accepted.
+
+## Commands
+
+Use the committed npm lockfile. Local checks are:
 
 ```sh
 npm ci --ignore-scripts
 npm run lint
-npm run lint:fix
-npm run format
 npm run format:check
 npm run typecheck
-npm run ci
+npm run typecheck:declarations
+npm run check:quality
+npm run build
 ```
 
-Lint rejects unsafe types, unchecked assertions, floating promises, accidental
-mutation, import cycles and ambiguous control flow. Application readonly types
-remain checked by TypeScript. `typescript/prefer-readonly-parameter-types` is
-disabled: the published backend cannot express the existing native SDK aliases
-with package-scoped allowances. The project does not patch the checker or add
-production wrappers to satisfy that rule.
+`npm run lint:fix` and `npm run format` are writing conveniences.
+`npm run lint:agent` is another output format for the same lint gate.
+
+Full `npm run ci` remains hosted-only. It runs each independent gate even when
+another fails: native lint, format, implementation types, handwritten declaration
+types, policy and coverage, package size, package/install smokes, unit tests, and
+integration tests. Package smokes build the actual artifacts before testing them.
+The aggregate fails if any gate fails.
+
+CI qualifies official Pi on Linux and the maintained fork on Linux and macOS.
+Those are distinct runtime graphs, not interchangeable version labels. Android
+has no published oxlint-tsgolint backend; native semantic qualification runs on
+a supported host. A skipped local native probe is not hosted acceptance.
+
+## Coverage and enforcement
+
+`quality/check.ts` compares the effective policy with the normative JSON in the
+standard and the explicit repository mappings. It checks native lint membership,
+resolved compiler membership, formatter ownership, and required command scope.
+The inventory includes ignored files outside generated, dependency, and private
+runtime trees, so hiding maintained code with a Git ignore does not exempt it.
+
+The compiler's own resolution checks production dependencies on test support,
+including aliases, re-exports, and literal dynamic imports. Oxc's parser identifies
+actual comments and operation-bound directives. Strings containing example
+directives are data. Copied, moved, duplicate, stale, and wrong-operation
+directives fail; unused directives also fail native lint.
+
+The source profiles are:
+
+- `src/**`, `scripts/**`, `quality/**`, and `.github/scripts/**` are production
+  implementation. Mixed-use helpers retain that profile.
+- `test/**` contains tests, fixtures, and exclusively test-used support.
+- `*.test-d.{ts,mts,cts}` are compiler-checked negative consumer contracts with
+  explained expected failures and passing counterparts.
+- Handwritten `*.d.{ts,mts,cts}` files receive the declaration profile and an
+  actual `skipLibCheck:false` check through `quality/declarations.ts`.
+
+The root `tsconfig.json` checks all maintained TS and JS with the full required
+strict options. The application retains `skipLibCheck:true` because the installed
+SDK dependency closure includes incompatible third-party declaration imports.
+The declaration gate checks any handwritten declarations and their real dependency
+closure without that option or permissive stubs. There are currently no handwritten
+declaration files.
+
+`tsconfig.build.json` and `tsconfig.client.json` are emission configurations, not
+substitutes for the checked root project. Build-swap tests, packed-consumer type
+tests, and actual package/native-install smokes verify their outputs.
 
 Production limits are complexity 10, depth 3, parameters 4, statements 40,
-function lines 80 and file lines 500, excluding blank lines and comments.
-Tests retain complexity 15, depth 4 and parameters 6. Cohesive test suites have
-no size or statement limits.
+function lines 80, and file lines 500. Tests retain complexity 15, depth 4, and
+parameters 6 without statement or line limits. These are the standard's profiles,
+not local exceptions. There is no React, DOM JSX, Jest, or Vitest implementation;
+Node's test runner owns execution. A real failing assertion is qualified through
+the repository test command.
 
-Formatting uses width 100, two spaces, LF and double quotes. npm owns lockfile
-formatting. Build outputs keep their own bytes.
-The VS Code Oxc extension uses these same lint and formatting configurations.
+Oxfmt owns supported maintained files, with width 100, two spaces, LF, double
+quotes, and no import/package/Tailwind/JSDoc transformations. npm owns
+`package-lock.json`; the build owns `dist/**` and temporary publication trees.
+Captured `docs/evidence/*.log` files retain original command bytes. Git, Pi state,
+dependency trees, npm cache, and OS metadata are not maintained source.
+No committed generated output requires a separate freshness generator.
 
-`npm run ci` runs lint, formatting, TypeScript, package/install smokes and all
-tests. CI separately qualifies the latest official Pi on GitHub-hosted Linux and
-the maintained fork on Linux and macOS. There is no custom checker build, probe
-suite or self-hosted runner requirement.
-
-CI's lint job also enforces the production byte ceiling before qualification
-substitutes the selected host graph. The retired workflow schema generator and
-its patching dependency are not part of the new runtime. `npm run check:size`
-still reports source and production line counts for visibility; no line count
-is mandated. The 1 MiB byte ceiling and all lint limits stay unchanged.
+The existing viewer import restriction remains: lazy viewer values must come
+from the selected host through `observe-layout.ts`. It strengthens the base
+policy and protects runtime identity. The existing 1 MiB production-byte ceiling
+also remains. Neither is a new requirement of this standard.
 
 ## Adoption record
 
-Repository: `fitchmultz/pi-subagents`. Adopted standard: strict Oxlint/Oxfmt
-engineering standard v5.1.2, kept as the repository copy at
-`docs/strict-oxlint-oxfmt-standard.md`. Exception records live in
-[Quality exceptions](quality-exceptions.md) and follow the standard's Appendix B.
+Repository: `fitchmultz/pi-subagents`. Standard: v5.2, 3 November 2026.
+Runtime: Node `>=24.21.0`, npm, committed lockfile.
+Qualified tools: Oxlint 1.91.0, oxlint-tsgolint 7.0.2006, Oxfmt 0.76.0,
+TypeScript 7.0.2, oxc-parser 0.157.0, and `@types/node` 24.19.2.
 
-Supported runtime and package manager: Node `>=24.21.0` with npm and the
-committed lockfile. Installed tool versions (devDependencies): oxlint 1.90.0,
-oxlint-tsgolint 7.0.2005, oxfmt 0.75.0, `@types/node` 24.19.2, typebox 1.4.3.
+The adoption starts at `7f449e2dcc8e7e82432bea79a2709f0b49256239`.
+The adoption PR records the exact integrated head and hosted results; CI verifies
+the source SHA before qualification. Local M1 evidence uses Node 24.22.1 and
+official Pi 1.5.0; separate native fork coverage runs against its selected graph.
 
-Configuration and acceptance paths: lint `.oxlintrc.json`, formatting
-`.oxfmtrc.json`, compiler `tsconfig.json`. Local acceptance commands are
-`npm run lint`, `npm run format:check` and `npm run typecheck`; the aggregate
-acceptance command is hosted `npm run ci` (lint, formatting, TypeScript, byte
-ceiling, package/install smokes and the complete test suites, plus separate
-official-Pi and fork qualification jobs).
+Qualification lives in `strict-oxlint-qualification.test.ts`,
+`lint-node-test-allowance.test.ts`, `quality-coverage.test.ts`,
+`strict-oxlint-policy.test.ts`, and `quality-acceptance.test.ts`.
+These cover semantic and category rules, all six structural boundaries, Node
+registration origins, operation attachment, strict JS/TS/declaration checking,
+formatting idempotence, coverage omissions, and acceptance exit propagation.
+The adoption also exercised each aggregate gate's failure independently; ordinary
+regression coverage retains one representative failure plus the all-green case.
 
-Compiler projects and source profiles: one `tsc --noEmit` project covers all
-maintained TypeScript and checked-JavaScript (`src`, `scripts`, `test`,
-`.github`) with `strict`, `checkJs`, `noUncheckedIndexedAccess`,
-`exactOptionalPropertyTypes` and the full strict flag set. Lint profiles:
-production limits (complexity 10, depth 3, parameters 4, statements 40,
-function lines 80, file lines 500), test/fixture limits (complexity 15, depth
-4, parameters 6, no size limits) and declaration files with size limits off.
-
-Formatter and generator ownership: oxfmt formats all maintained source at
-width 100; npm owns lockfile formatting; build outputs keep their own bytes.
-
-Migration status: complete. The toolchain, baseline configuration, strict
-TypeScript compiler options, checked-JavaScript coverage and this records
-policy landed as PRs #319, #320, #321, #325 and the records PR; the policy
-integrity keeper `test/unit/strict-oxlint-policy.test.ts` pins the effective
-configuration, the four-entry overrides inventory and the directive rule-name
-inventory against drift.
-
-Integrated verification: hosted `npm run ci` on the merge of each part, with
-the single-agent-runtime, agent-receipts, pi-intercom-native-replay and
-retired-history-archive keepers exercising the native contracts. Locally
-verified state for the checked-JavaScript part is recorded in PR #325; the
-retired-history-archive suite requires passwordless `sudo` and
-`scripts/package-smoke.mjs` requires a short Unix socket directory, so hosted
-CI is the authoritative gate for both.
+The policy and source repairs are integrated. Completion requires the adoption
+PR's exact-head hosted checks and release verification; local passes alone do not
+establish complete adoption.

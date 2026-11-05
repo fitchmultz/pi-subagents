@@ -38,10 +38,8 @@ export function asError(error: unknown): Error {
 }
 
 // Protocol text permits line feeds and tabs, but rejects other C0/C1 controls.
-// oxlint-disable-next-line no-control-regex
 const UNSAFE_TEXT_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 // Protocol labels are single-line fields and reject every C0/C1 control.
-// oxlint-disable-next-line no-control-regex
 const UNSAFE_LABEL_CONTROLS = /[\u0000-\u001f\u007f-\u009f]/;
 
 export function safeText(value: unknown): boolean {

@@ -344,13 +344,11 @@ class Actor {
           this.retry = false;
           this.pending().forEach((command) => this.accept(command));
         }
-        // oxlint-disable-next-line no-await-in-loop
         if (await this.park(runtime, parked)) {
           return;
         }
         const polling = this.retry || this.stopping || watch === "unwatched";
         const tick = Math.max(1, this.nextParentCheck - performance.now());
-        // oxlint-disable-next-line no-await-in-loop
         await this.wake.sleep(polling ? 100 : tick);
       }
     } finally {

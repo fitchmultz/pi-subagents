@@ -44,7 +44,6 @@ async function waitForExit(targets: readonly ProcessIdentity[], timeout: number)
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline && targets.some(alive)) {
     // Join actual process exit while native abort persists the interrupted turn.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(25);
   }
 }

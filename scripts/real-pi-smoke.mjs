@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { runLiveSmoke } from "./real-pi-live.mjs";
 import { SmokeProcesses } from "./real-pi-processes.mjs";
+import assert from "node:assert/strict";
+import { isRecord, isUnknownArray } from "../src/shared/unknown.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -123,9 +125,8 @@ async function verifyBundledResources(
       throw new Error(`bundled Pi resources did not register ${name}:\n${output}`);
     }
   }
-  /** @type {string[]} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const tools = JSON.parse(readFileSync(marker, "utf8"));
+  /** @type {unknown} */ const tools = JSON.parse(readFileSync(marker, "utf8"));
+  assert.ok(isUnknownArray(tools));
   for (const name of ["delegate", "agent_runs", "intercom"]) {
     if (!tools.includes(name)) {
       throw new Error(`${name} must be eager on the single package entry`);
@@ -146,17 +147,15 @@ async function verifyBundledResources(
 
 /**
  * @param {string} output
- * @returns {{ type?: string, id?: string, success?: boolean, data?: { commands?: { name?: string }[] } } | undefined}
+ * @returns {Record<string, unknown> | undefined}
  */
 function commandResponse(output) {
-  /** @type {{ type?: string, id?: string, success?: boolean, data?: { commands?: { name?: string }[] } } | undefined} */
+  /** @type {Record<string, unknown> | undefined} */
   let response;
   for (const line of output.split(/\r?\n/)) {
     try {
-      /** @type {{ type?: string, id?: string, success?: boolean, data?: { commands?: { name?: string }[] } }} */
-      // oxlint-disable-next-line typescript/no-unsafe-assignment
-      const parsed = JSON.parse(line);
-      if (parsed.type === "response" && parsed.id === "commands") {
+      /** @type {unknown} */ const parsed = JSON.parse(line);
+      if (isRecord(parsed) && parsed.type === "response" && parsed.id === "commands") {
         response = parsed;
       }
     } catch {
@@ -166,15 +165,18 @@ function commandResponse(output) {
   return response;
 }
 
-function registeredCommands(
-  /** @type {{ success?: boolean, data?: { commands?: { name?: string }[] } } | undefined} */ response,
-) {
-  return response !== undefined &&
-    response.success === true &&
-    response.data !== undefined &&
-    Array.isArray(response.data.commands)
-    ? response.data.commands.map((command) => command.name)
-    : [];
+function registeredCommands(/** @type {Record<string, unknown> | undefined} */ response) {
+  if (
+    response?.success !== true ||
+    !isRecord(response.data) ||
+    !isUnknownArray(response.data.commands)
+  ) {
+    return [];
+  }
+  return response.data.commands.map((command) => {
+    assert.ok(isRecord(command));
+    return command.name;
+  });
 }
 
 function createProject(/** @type {string} */ root) {

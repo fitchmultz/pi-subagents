@@ -1,32 +1,24 @@
-import { createRequire, syncBuiltinESMExports } from "node:module";
+import { syncBuiltinESMExports } from "node:module";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import { basename, join } from "node:path";
 
-const nodeRequire = createRequire(import.meta.url);
-/** @type {typeof import("node:fs")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const fs = nodeRequire("node:fs");
-/** @type {typeof import("node:fs/promises")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const fsPromises = nodeRequire("node:fs/promises");
 const originalRename = fsPromises.rename;
 const originalRm = fsPromises.rm;
 
 // Faults target only this build's staging-to-dist rename, never retiring or restoring dist.
 /**
- * @param {(...args: unknown[]) => Promise<unknown>} fault
+ * @param {typeof fsPromises.rename} fault
  */
-// oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
 function failPublish(fault) {
-  /** @param {unknown[]} args */
+  /** @type {typeof fsPromises.rename} */
   const tracedRename = async (...args) =>
     typeof args[0] === "string" && /^dist\.staging\.\d+$/.test(basename(args[0]))
       ? fault(...args)
-      : /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
-  fsPromises.rename = /** @type {typeof fsPromises.rename} */ (tracedRename);
+      : originalRename(...args);
+  fsPromises.rename = tracedRename;
 }
-// oxlint-enable typescript/no-unsafe-type-assertion
 
-// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
 /** @type {Record<string, () => void>} */
 const faults = {
   "stale-rm"() {
@@ -40,9 +32,7 @@ const faults = {
       if (locked(path)) {
         throw new Error("synthetic stale-staging lock");
       }
-      return /** @type {(p: import("node:fs").PathLike, o: import("node:fs").RmOptions | undefined) => Promise<void>} */ (
-        originalRm
-      )(path, options);
+      return originalRm(path, options);
     };
     /**
      * @param {import("node:fs").PathLike} from
@@ -52,18 +42,16 @@ const faults = {
       if (locked(from)) {
         throw new Error("synthetic stale-staging lock");
       }
-      return /** @type {(f: import("node:fs").PathLike, t: import("node:fs").PathLike) => Promise<void>} */ (
-        originalRename
-      )(from, to);
+      return originalRename(from, to);
     };
-    fsPromises.rm = /** @type {typeof fsPromises.rm} */ (tracedRm);
-    fsPromises.rename = /** @type {typeof fsPromises.rename} */ (tracedStaleRename);
+    fsPromises.rm = tracedRm;
+    fsPromises.rename = tracedStaleRename;
   },
   "late-winner"() {
     let firstRename = true;
     failPublish(async (...args) => {
       if (!firstRename) {
-        return /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
+        return originalRename(...args);
       }
       firstRename = false;
       // The ref'd timer keeps the child alive so its marker proves publication
@@ -92,11 +80,11 @@ const faults = {
   },
   "vanish-staging"() {
     failPublish(async (...args) => {
-      await originalRm(/** @type {import("node:fs").PathLike} */ (args[0]), {
+      await originalRm(args[0], {
         force: true,
         recursive: true,
       });
-      return /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
+      return originalRename(...args);
     });
   },
   "empty-dist"() {
@@ -109,7 +97,7 @@ const faults = {
         throw new Error("synthetic empty dist");
       }
       fs.rmSync(dist, { recursive: true, force: true });
-      return /** @type {(...a: unknown[]) => Promise<unknown>} */ (originalRename)(...args);
+      return originalRename(...args);
     });
   },
 };
@@ -119,5 +107,4 @@ if (faultName !== undefined && !Object.hasOwn(faults, faultName)) {
   throw new Error(`unknown build-swap fault: ${faultName}`);
 }
 faults[faultName ?? ""]?.();
-// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 syncBuiltinESMExports();

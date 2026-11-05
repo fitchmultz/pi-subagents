@@ -33,7 +33,6 @@ export function object(value: unknown, fields: readonly string[]): UnknownRecord
 
 export function label(value: unknown, field: string, max = 512): string {
   // Labels are single-line identifiers and paths; reject C0/C1 controls and DEL.
-  // oxlint-disable-next-line no-control-regex
   const controls = /[\u0000-\u001f\u007f-\u009f]/;
   if (
     typeof value !== "string" ||
@@ -48,7 +47,6 @@ export function label(value: unknown, field: string, max = 512): string {
 
 export function text(value: unknown): string {
   // Message text permits tab/newline/CR, but rejects other C0/C1 controls and DEL.
-  // oxlint-disable-next-line no-control-regex
   const controls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
   if (typeof value !== "string" || value.trim() === "" || controls.test(value)) {
     throw new Fault(400, "invalid_input", "Invalid message.");

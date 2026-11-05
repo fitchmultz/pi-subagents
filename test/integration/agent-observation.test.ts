@@ -395,7 +395,6 @@ nodeTest(
     // A valid viewer that sends anything after its hello is disconnected, not obeyed, and its
     // slot is reclaimed: twice the four-viewer detail capacity, then a healthy viewer.
     for (let attempt = 0; attempt < 8; attempt++) {
-      // oxlint-disable-next-line no-await-in-loop
       assert.ok((await refused(hello, { t: "stop" })) > 0, `post-hello viewer ${String(attempt)}`);
     }
     (await viewer(started)).close();
@@ -487,9 +486,7 @@ nodeTest(
       ["text", "writing"],
       ["call", "calling"],
     ] as const) {
-      // oxlint-disable-next-line no-await-in-loop
       await started.gate(gate);
-      // oxlint-disable-next-line no-await-in-loop
       await peer.until(() => record(peer.activity).phase === phase, `${phase} activity`);
       started.release(gate);
     }

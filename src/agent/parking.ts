@@ -400,7 +400,6 @@ async function awaitWake(
         throw new Error(failure);
       }
       // DirectoryWatch reconciles dropped hints without imposing a deadline on native startup.
-      // oxlint-disable-next-line no-await-in-loop
       await wake.sleep(200);
     }
   } finally {

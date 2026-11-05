@@ -2,7 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import agents from "../../src/agent/index.ts";
 import { attachmentSchema } from "../../src/agent/contracts.ts";
 import { read } from "../../src/agent/storage.ts";
@@ -11,26 +11,28 @@ import { until } from "../support/observation-child.ts";
 
 // Drives the extension through the same events the native fork emits for a managed worker:
 // session_start with ctx.managedHost, then session_shutdown with a disposition.
-type Handler = (event: object, ctx: object) => unknown;
-function worker(
+async function worker(
   t: TestContext,
   sessionId: string,
   managedHost?: { owner: { pid: number }; ready: Promise<boolean> },
 ) {
-  const handlers = new Map<string, Handler[]>();
-  const registered: unknown[] = [];
-  const pi = {
-    on: (name: string, handler: Handler) =>
-      handlers.set(name, [...(handlers.get(name) ?? []), handler]),
-    registerTool: (tool: unknown) => registered.push(tool),
-    registerMessageRenderer: (type: string) => registered.push(type),
-    sendMessage: (message: unknown) => registered.push(message),
-    // Cross-extension parking events have no publisher in this unit.
-    events: { on: (name: string) => registered.push(name) },
-  };
-  // Only the members the agent runtime touches for these events are provided.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  agents(pi as unknown as ExtensionAPI);
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: getPiAgentDir(),
+    settingsManager: SettingsManager.inMemory(),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    extensionFactories: [agents],
+  });
+  await loader.reload();
+  const loaded = loader.getExtensions();
+  assert.deepEqual(loaded.errors, []);
+  const extension = loaded.extensions.at(0);
+  assert.ok(extension !== undefined);
+  const { handlers } = extension;
   const ctx = {
     mode: "print",
     managedHost,
@@ -73,7 +75,7 @@ const attachment = (sessionId: string) =>
 nodeTest(
   "official Pi without a managed host attaches the current process at session_start",
   async (t) => {
-    const official = worker(t, "official");
+    const official = await worker(t, "official");
     await official.start();
     assert.equal(attachment("official")?.pid, process.pid);
     await official.shutdown();
@@ -86,7 +88,7 @@ nodeTest(
   async (t) => {
     const ready = Promise.withResolvers<boolean>();
     const owner = { pid: process.ppid };
-    const first = worker(t, "handoff", { owner, ready: ready.promise });
+    const first = await worker(t, "handoff", { owner, ready: ready.promise });
     await first.start();
     assert.equal(
       attachment("handoff"),
@@ -109,7 +111,7 @@ nodeTest(
     );
 
     // The replacement retires before readiness: provisional keeps them for a rollback worker.
-    const provisional = worker(t, "handoff", { owner, ready: Promise.resolve(false) });
+    const provisional = await worker(t, "handoff", { owner, ready: Promise.resolve(false) });
     await provisional.start();
     await provisional.shutdown("provisional");
     assert.deepEqual(
@@ -118,7 +120,7 @@ nodeTest(
     );
 
     // Another unready replacement whose user quits releases the launcher-owned children.
-    const quitting = worker(t, "handoff", { owner, ready: Promise.resolve(false) });
+    const quitting = await worker(t, "handoff", { owner, ready: Promise.resolve(false) });
     await quitting.start();
     await quitting.shutdown("release");
     assert.deepEqual(

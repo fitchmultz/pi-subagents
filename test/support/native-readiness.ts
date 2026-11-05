@@ -12,11 +12,9 @@ export async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   // Each native readiness observation must finish before retrying it.
-  // oxlint-disable-next-line no-await-in-loop
   while (!(await check())) {
     assert.ok(Date.now() < deadline, `Timed out waiting for ${description}`);
     // Back off only after observing the preceding readiness check.
-    // oxlint-disable-next-line no-await-in-loop
     await sleep(5);
   }
 }

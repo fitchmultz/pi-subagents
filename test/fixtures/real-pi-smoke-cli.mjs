@@ -11,6 +11,8 @@ import {
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import assert from "node:assert/strict";
+import { readJson, record, text } from "../support/assertions.ts";
 
 const fixture = fileURLToPath(import.meta.url);
 const evidence = process.env.SMOKE_CLEANUP_EVIDENCE;
@@ -36,7 +38,10 @@ const role = args[0];
 if (role === undefined) {
   throw new Error("A role argument is required");
 }
-const record = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ extra = {}) =>
+const recordEvent = (
+  /** @type {string} */ event,
+  /** @type {Record<string, unknown>} */ extra = {},
+) =>
   appendFileSync(
     join(evidence, "events.jsonl"),
     `${JSON.stringify({ event, role, pid: process.pid, time: Date.now(), ...extra })}\n`,
@@ -72,14 +77,14 @@ function promptKind(/** @type {string} */ prompt) {
   return markers.find(([marker]) => prompt.includes(marker))?.[1] ?? "delegate";
 }
 if (["launcher", "runner", "child", "broker"].includes(role)) {
-  record("started");
+  recordEvent("started");
   process.on("SIGTERM", () => {
-    record("stopping", resourcesPresent());
+    recordEvent("stopping", resourcesPresent());
     if (role !== "child") {
       setTimeout(() => process.exit(0), 150);
     }
   });
-  process.on("exit", () => record("exiting", resourcesPresent()));
+  process.on("exit", () => recordEvent("exiting", resourcesPresent()));
   if (role === "launcher") {
     const runner = launch("runner", false);
     runner.on("exit", () => process.exit(0));
@@ -89,7 +94,6 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     save(join(asyncDir, "actor.lock", "process.json"), { pid: process.pid });
     while (!existsSync(join(evidence, "child-ready"))) {
       // Child/broker readiness is published before the parent may emit its wire result.
-      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     const state = scenarioState();
@@ -100,7 +104,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
     writeFileSync(join(evidence, "runner-ready"), "ready");
     if (scenario === "success") {
       await delay(1200); // Terminal status is published before the runner's final artifact write.
-      record("finalizing", resourcesPresent());
+      recordEvent("finalizing", resourcesPresent());
       writeFileSync(join(asyncDir, "final-result.json"), "{}\n");
       process.exit(0);
     }
@@ -113,7 +117,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       setTimeout(() => process.exit(0), 200);
     } else {
       setTimeout(() => {
-        record("delayed-write", resourcesPresent());
+        recordEvent("delayed-write", resourcesPresent());
         writeFileSync(
           join(evidence, "delayed-child-write"),
           "orphan wrote after the smoke ended\n",
@@ -140,10 +144,8 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
 } else if (role === "install") {
   save(join(evidence, "install.json"), { repo: args[1], root });
 } else if (role === "list") {
-  /** @type {{ repo: string }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const install = JSON.parse(readFileSync(join(evidence, "install.json"), "utf8"));
-  console.log(install.repo);
+  const install = record(readJson(join(evidence, "install.json")));
+  console.log(text(install.repo));
 } else if (role === "--version") {
   console.log("credential-free-fixture");
 } else {
@@ -157,22 +159,22 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   const notice = (
     /** @type {string} */ id,
     /** @type {string} */ status,
-    /** @type {string} */ text,
+    /** @type {string} */ body,
   ) => ({
     type: "message_end",
     message: {
       role: "custom",
       customType: "agent-completion",
-      details: { id, result: { status }, page: { text } },
+      details: { id, result: { status }, page: { text: body } },
     },
   });
-  const reply = (/** @type {string} */ text) => {
+  const reply = (/** @type {string} */ body) => {
     const message = {
       role: "assistant",
       provider: "fixture",
       model: "smoke",
       stopReason: "stop",
-      content: [{ type: "text", text }],
+      content: [{ type: "text", text: body }],
     };
     appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message })}\n`);
     return { type: "message_end", message };
@@ -190,7 +192,6 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       launch("broker").unref();
       while (!existsSync(join(evidence, "broker-ready"))) {
         // Child/broker readiness is published before the parent may emit its wire result.
-        // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
     }
@@ -202,7 +203,6 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       launcher.unref();
       while (!existsSync(join(evidence, "runner-ready"))) {
         // Child/broker readiness is published before the parent may emit its wire result.
-        // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
       save(join(evidence, "parent-ready"), {
@@ -224,7 +224,7 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   };
   const prompted = async (/** @type {{ id: string | number, message: string }} */ command) => {
     const kind = promptKind(command.message);
-    record("prompt", { kind });
+    recordEvent("prompt", { kind });
     mkdirSync(sessions, { recursive: true });
     if (!existsSync(sessionFile)) {
       appendFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId })}\n`);
@@ -247,13 +247,9 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
       const result = join(asyncDir, "result.json");
       while (!existsSync(result)) {
         // The double reports completion only after its detached runner publishes a result.
-        // oxlint-disable-next-line no-await-in-loop
         await delay(10);
       }
-      /** @type {{ status: string }} */
-      // oxlint-disable-next-line typescript/no-unsafe-assignment
-      const resultRecord = JSON.parse(readFileSync(result, "utf8"));
-      const { status } = resultRecord;
+      const status = text(record(readJson(result)).status);
       emit(notice(runId, status, readFileSync(join(asyncDir, "output.txt"), "utf8")));
       emit(reply("real-pi-smoke delegate ok"));
     } else {
@@ -281,9 +277,11 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
   process.stdin.on("data", (/** @type {string} */ chunk) => {
     input += chunk;
     for (let end = input.indexOf("\n"); end >= 0; end = input.indexOf("\n")) {
-      /** @type {{ type?: string, id: string | number, message: string }} */
-      // oxlint-disable-next-line typescript/no-unsafe-assignment
-      const command = JSON.parse(input.slice(0, end));
+      /** @type {unknown} */
+      const parsed = JSON.parse(input.slice(0, end));
+      const command = record(parsed);
+      const { id } = command;
+      assert.ok(typeof id === "string" || typeof id === "number");
       input = input.slice(end + 1);
       if (command.type === "get_commands") {
         writeFileSync(
@@ -292,15 +290,17 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
         );
         emit({
           type: "response",
-          id: command.id,
+          id,
           success: true,
           data: {
             commands: ["skill:pi-intercom", "skill:pi-subagents"].map((name) => ({ name })),
           },
         });
       } else {
-        // oxlint-disable-next-line typescript/no-floating-promises -- prompted replies through the fixture protocol by design
-        void prompted(command);
+        prompted({ id, message: text(command.message) }).catch((/** @type {unknown} */ error) => {
+          console.error(error);
+          process.exit(1);
+        });
       }
     }
   });

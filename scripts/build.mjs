@@ -11,6 +11,7 @@
  */
 
 import { execFile as execFileCallback } from "node:child_process";
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -21,7 +22,6 @@ import { promisify } from "node:util";
 import { compilerInvocation } from "./typescript.mjs";
 
 /** @type {(file: string, args: readonly string[], options: import("node:child_process").ExecFileOptions) => Promise<{ stdout: string, stderr: string }>} */
-// oxlint-disable-next-line typescript/strict-void-return
 const execFile = promisify(execFileCallback);
 const RM_OPTIONS = { force: true, maxRetries: 5, recursive: true, retryDelay: 100 };
 
@@ -80,7 +80,6 @@ async function reapStrandedStaging(/** @type {string} */ cwd) {
       continue;
     }
     // Reap abandoned trees sequentially to bound filesystem removal pressure.
-    // oxlint-disable-next-line no-await-in-loop
     await discardStaging(join(cwd, entry.name));
   }
 }
@@ -114,13 +113,13 @@ async function compileToStaging(
     await compileProject(cwd, stagingDir, compiler, "tsconfig.client.json");
     await stampBuild(cwd, stagingDir);
   } catch (error) {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- exec rejections carry partial output
-    const output = /** @type {{ stdout?: string, stderr?: string }} */ (error);
-    if (output.stdout !== undefined && output.stdout !== "") {
-      process.stdout.write(output.stdout);
-    }
-    if (output.stderr !== undefined && output.stderr !== "") {
-      process.stderr.write(output.stderr);
+    if (typeof error === "object" && error !== null) {
+      if ("stdout" in error && typeof error.stdout === "string") {
+        process.stdout.write(error.stdout);
+      }
+      if ("stderr" in error && typeof error.stderr === "string") {
+        process.stderr.write(error.stderr);
+      }
     }
     await discardStaging(stagingDir);
     throw error;
@@ -135,13 +134,13 @@ async function stampBuild(/** @type {string} */ cwd, /** @type {string} */ stagi
     .sort();
   for (const file of files) {
     // Hash sorted path/content pairs in order without buffering the whole emitted tree.
-    // oxlint-disable-next-line no-await-in-loop
     const content = await readFile(join(stagingDir, file));
     hash.update(file).update("\0").update(content).update("\0");
   }
-  /** @type {{ version: string }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  /** @type {unknown} */
   const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+  assert.ok(typeof pkg === "object" && pkg !== null && "version" in pkg);
+  assert.ok(typeof pkg.version === "string");
   const { version } = pkg;
   await writeFile(
     join(stagingDir, stamp),
@@ -184,7 +183,6 @@ async function publishStaging(/** @type {string} */ stagingDir, /** @type {strin
     });
     for (let retry = 0; ; retry++) {
       // Each retry must observe publication before another rename can race it.
-      // oxlint-disable-next-line no-await-in-loop
       if (await tryPublish(stagingDir, distDir, retry)) {
         break;
       }

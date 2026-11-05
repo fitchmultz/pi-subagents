@@ -118,7 +118,6 @@ export class PersistentPresence {
       }
       try {
         // Each identity has one connection attempt; preserve the native broker's spawn safeguards.
-        // oxlint-disable-next-line no-await-in-loop
         await this.owner.connect(identity, registration.expires);
       } catch {
         log("presence_retry", { name: identity.name, result: "broker_unavailable" });

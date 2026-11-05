@@ -55,11 +55,9 @@ broker.stderr.on("data", (c: Buffer) => {
 async function waitFor(check: () => boolean | Promise<boolean>, label = "condition") {
   const deadline = Date.now() + 10000;
   // The previous native observation must settle before the next poll.
-  // oxlint-disable-next-line no-await-in-loop
   while (!(await check())) {
     assert.ok(Date.now() < deadline, `timed out: ${label}`);
     // Poll the process/socket boundary until its real readiness condition is observed.
-    // oxlint-disable-next-line no-await-in-loop
     await sleep(10);
   }
 }

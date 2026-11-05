@@ -111,7 +111,6 @@ export default function fixture(pi: ExtensionAPI): void {
           !fs.existsSync(path.join(root, "release-parent")) &&
           options?.signal?.aborted !== true
         ) {
-          // oxlint-disable-next-line no-await-in-loop
           await delay(20);
         }
         return fauxAssistantMessage("PARENT_FINAL_FACT");
@@ -162,7 +161,6 @@ export default function fixture(pi: ExtensionAPI): void {
             });
           }
         }
-        // oxlint-disable-next-line no-await-in-loop
         await delay(20);
       }
       return {

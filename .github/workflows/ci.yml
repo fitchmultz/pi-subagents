@@ -65,8 +65,14 @@ jobs:
         with:
           node-version: ">=24.21.0 <25"
           package-manager-cache: false
-      - run: npm ci --ignore-scripts
-      - run: npm run lint && npm run format:check && npm run check:size
+      - id: dependencies
+        run: npm ci --ignore-scripts
+      - run: npm run lint
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+      - run: npm run format:check
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+      - run: npm run check:size
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
 
   resolve:
     uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@c832dd07c016914db40bb98e5bdbb9c623cd6303 # main
