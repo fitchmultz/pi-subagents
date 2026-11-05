@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.17 - 2026-11-05
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Adopt strict Oxlint/Oxfmt v5.2 without finding baselines (#339) ([8de822c](https://github.com/fitchmultz/pi-subagents/commit/8de822c14a56fdad3e13961abb02a106dac71a4f))
+
+### What's Changed
+
+- Adopt strict Oxlint/Oxfmt v5.2 without finding baselines by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/339
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.16...v0.52.17
+
 ## 0.52.16 - 2026-11-03
 
 <!-- npm-release:unreleased:start -->
