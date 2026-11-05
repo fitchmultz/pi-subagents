@@ -405,7 +405,6 @@ class Proof {
       }
       assert.ok(Date.now() < deadline, `Timed out: ${label}`);
       // Polls join observed publication. Elapsed time never proves a negative result.
-      // oxlint-disable-next-line no-await-in-loop
       await delay(40);
     }
     this.report.checks.push(label);
@@ -725,7 +724,6 @@ class Proof {
     );
     await this.visible("watch-child", "02-inventory");
     for (const key of ["Down", "Up"]) {
-      // oxlint-disable-next-line no-await-in-loop
       await this.key(key);
     }
     await this.key("Enter");
@@ -740,7 +738,6 @@ class Proof {
     const streamStarted = Date.now();
     for (const value of ["B", "C", "D", "E", "F", "G", "H", "I"]) {
       this.progress(value);
-      // oxlint-disable-next-line no-await-in-loop
       await delay(450);
     }
     await this.holds("LIVE_PROGRESS_I", "06-streaming");
@@ -775,9 +772,7 @@ class Proof {
     await this.holds("Following live", "10-following-again");
 
     for (const label of ["11-earlier", "12-earlier-top"]) {
-      // oxlint-disable-next-line no-await-in-loop
       await this.key("PPage");
-      // oxlint-disable-next-line no-await-in-loop
       await delay(250);
       this.capture(label);
       const screen = this.screen();
@@ -791,13 +786,11 @@ class Proof {
       [100, 32],
     ] as const) {
       this.tmux(["resize-window", "-t", "proof", "-x", String(columns), "-y", String(height)]);
-      // oxlint-disable-next-line no-await-in-loop
       await this.until(
         () =>
           this.events("resize").some((event) => event.columns === columns && event.rows === height),
         `native-resize-${columns}x${height}`,
       );
-      // oxlint-disable-next-line no-await-in-loop
       await this.holds("LIVE_PROGRESS_J", `14-resize-${columns}x${height}`);
     }
 
@@ -935,7 +928,6 @@ class Proof {
         }
         const deadline = Date.now() + 5000;
         while (targets.some(alive) && Date.now() < deadline) {
-          // oxlint-disable-next-line no-await-in-loop
           await delay(40);
         }
       }
@@ -946,7 +938,6 @@ class Proof {
       [...this.actors.values(), ...(this.server ? [this.server] : [])].some(alive) &&
       Date.now() < deadline
     ) {
-      // oxlint-disable-next-line no-await-in-loop
       await delay(40);
     }
     const survivors = [...this.actors.values(), ...(this.server ? [this.server] : [])].filter(

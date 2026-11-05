@@ -184,7 +184,6 @@ nodeTest(
           }
           assert.ok(Date.now() < deadline, "owned broker did not exit");
           // Poll actual process exit before removing its runtime directory.
-          // oxlint-disable-next-line no-await-in-loop
           await delay(10);
         }
       }

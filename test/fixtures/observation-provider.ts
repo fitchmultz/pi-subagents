@@ -89,7 +89,6 @@ function gateFor(root: string): Gate {
       if (signal?.aborted === true) {
         return;
       }
-      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
   };
@@ -208,9 +207,7 @@ export default function observationFixture(pi: ExtensionAPI): void {
         const live = { ...block, arguments: {} };
         partial.content = [...partial.content, live];
         outer.push({ type: "toolcall_start", contentIndex: index, partial: { ...partial } });
-        // oxlint-disable-next-line no-await-in-loop
         await yieldTurn();
-        // oxlint-disable-next-line no-await-in-loop
         await gate("call", { id: block.id }, signal);
         live.arguments = block.arguments;
         outer.push({
@@ -229,7 +226,6 @@ export default function observationFixture(pi: ExtensionAPI): void {
         if (signal?.aborted === true) {
           break;
         }
-        // oxlint-disable-next-line no-await-in-loop
         await yieldTurn();
         const delta = full.slice(at, at + CHUNK);
         if (live.type === "text") {
@@ -245,7 +241,6 @@ export default function observationFixture(pi: ExtensionAPI): void {
         });
         const held = live.type === "text" ? SIZES.textGate : SIZES.thinking / 2;
         if (at < held && at + CHUNK >= held) {
-          // oxlint-disable-next-line no-await-in-loop
           await gate(live.type, { chars: full.slice(0, at + CHUNK).length }, signal);
         }
       }
@@ -377,7 +372,6 @@ function registerTools(pi: ExtensionAPI, gate: Gate): void {
     });
     for (const details of [cyclic, proxy, throwing, { big: 1n }, new Uint8Array(1024)]) {
       update?.({ content: [{ type: "text", text: "hostile" }], details });
-      // oxlint-disable-next-line no-await-in-loop
       await yieldTurn();
     }
     barrier("C").resolve(null);
@@ -392,7 +386,6 @@ function registerTools(pi: ExtensionAPI, gate: Gate): void {
       first.text += observationText(SIZES.growingStep, `g${step}`);
       progress.details.step = step;
       update?.(progress);
-      // oxlint-disable-next-line no-await-in-loop
       await yieldTurn();
     }
     barrier("B").resolve(null);
@@ -404,10 +397,8 @@ function registerTools(pi: ExtensionAPI, gate: Gate): void {
       const value = observationText(SIZES.progress, `p${index}`);
       update?.({ content: [{ type: "text", text: value }], details: { update: index } });
       if (index === SIZES.progressUpdates / 2) {
-        // oxlint-disable-next-line no-await-in-loop
         await gate("tools", { update: index }, signal);
       }
-      // oxlint-disable-next-line no-await-in-loop
       await yieldTurn();
     }
     return text(`A=${SIZES.progressUpdates}`);

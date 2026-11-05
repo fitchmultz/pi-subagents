@@ -19,6 +19,8 @@ const run = (
   /** @type {import("node:child_process").SpawnSyncOptions} */ options = {},
 ) => {
   // Outlasts the 1_200_000 ms integration watchdog in scripts/run-tests.mjs.
+  // Inherited stdio produces null at runtime despite SpawnSyncReturns<T>'s declaration.
+  /** @type {import("node:child_process").SpawnSyncReturns<string | Buffer | null>} */
   const result = spawnSync(command, args, { stdio: "inherit", timeout: 1_500_000, ...options });
   if (result.error) {
     throw result.error;
@@ -28,8 +30,7 @@ const run = (
     0,
     `${command} ${args.join(" ")} failed (${result.status ?? result.signal ?? "unknown"})`,
   );
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- spawnSync stdout shape depends on caller options
-  return /** @type {string | undefined} */ (/** @type {unknown} */ (result.stdout))?.trim();
+  return result.stdout === null ? undefined : result.stdout.toString().trim();
 };
 const git = (/** @type {string} */ cwd, /** @type {string[]} */ args) =>
   run("git", args, { cwd, stdio: ["ignore", "pipe", "inherit"], encoding: "utf8" });

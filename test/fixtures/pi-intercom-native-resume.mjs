@@ -3,7 +3,11 @@ import { mkdirSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { loadNativeAI } from "../support/native-host.ts";
+import { loadSDK } from "../../src/agent/host.ts";
+import { record } from "../support/assertions.ts";
+import { isInboundCheckpoint, isInboundEntry } from "../../src/pi-intercom/inbound-record.ts";
 
 const [modeArgument, directoryArgument, sourceSession] = process.argv.slice(2);
 const send = process.send?.bind(process);
@@ -11,8 +15,10 @@ if (send === undefined) {
   throw new Error("Run this fixture through the native intercom test");
 }
 assert.ok(
-  // oxlint-disable-next-line typescript/strict-boolean-expressions -- fixture assert; also narrows for tsc
-  modeArgument && directoryArgument,
+  modeArgument !== undefined &&
+    modeArgument !== "" &&
+    directoryArgument !== undefined &&
+    directoryArgument !== "",
   "Run this fixture through the native intercom test",
 );
 const mode = modeArgument;
@@ -27,20 +33,10 @@ if (sdkPackageJson === undefined) {
   throw new Error("Could not locate the installed pi-coding-agent package");
 }
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(sdkPackageJson);
-const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
-const aiPackageJson = findPackageJSON("@earendil-works/pi-ai", sdkEntry);
-if (aiPackageJson === undefined) {
-  throw new Error("Could not locate the installed pi-ai package");
-}
-const aiRoot = path.dirname(aiPackageJson);
-/** @type {typeof import("@earendil-works/pi-coding-agent")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const sdk = await import(sdkEntry.href);
+const sdk = await loadSDK(sdkRoot);
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
   sdk;
-/** @type {typeof import("@earendil-works/pi-ai")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const ai = await loadNativeAI(sdkRoot);
 const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = ai;
 mkdirSync(directory, { recursive: true });
 const faux = fauxProvider({ provider: "fixture-restart" });
@@ -116,6 +112,15 @@ const summary = async () => {
     new AbortController().signal,
   );
   const entries = sessionManager.getEntries();
+  const checkpoints = entries
+    .filter((entry) => entry.type === "custom")
+    .filter((entry) => entry.customType === "intercom_delivery")
+    .map((entry) => {
+      /** @type {unknown} */
+      const data = entry.data;
+      assert.ok(isInboundCheckpoint(data), "expected a native inbound checkpoint");
+      return data;
+    });
   return {
     sessionId: sessionManager.getSessionId(),
     sessionFile: sessionManager.getSessionFile(),
@@ -123,27 +128,20 @@ const summary = async () => {
     nativeQueued: session.agent.hasQueuedMessages(),
     publicPending: context.hasPendingMessages(),
     status: JSON.stringify(status),
-    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unsafe-assignment, typescript/strict-boolean-expressions -- journal entry payloads are dynamically shaped
     visibleIds: entries
-      .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
-      .map(
-        (entry) =>
-          /** @type {{ details?: { message?: { id?: string } } }} */ (entry).details?.message?.id,
-      ),
+      .filter((entry) => entry.type === "custom_message")
+      .filter((entry) => entry.customType === "intercom_message")
+      .map((entry) => {
+        /** @type {unknown} */
+        const details = entry.details;
+        assert.ok(isInboundEntry(details), "expected a visible native inbound entry");
+        return details.message.id;
+      }),
     provenance: Object.fromEntries(
-      entries
-        .filter(
-          (entry) =>
-            entry.type === "custom" &&
-            entry.customType === "intercom_delivery" &&
-            /** @type {{ entry?: unknown }} */ (entry.data).entry,
-        )
-        .map((entry) => {
-          const delivery =
-            /** @type {{ entry?: { message?: { id?: string } }, sessionId?: string }} */ (
-              /** @type {{ data?: unknown }} */ (entry).data
-            );
-          const messageId = delivery.entry?.message?.id;
+      checkpoints
+        .filter((checkpoint) => "entry" in checkpoint)
+        .map((delivery) => {
+          const messageId = delivery.entry.message.id;
           const query = (/** @type {string} */ rootSessionId) => {
             /** @type {unknown} */ let response;
             events.emit("pi-intercom:provenance-query", {
@@ -160,19 +158,12 @@ const summary = async () => {
             messageId,
             {
               current: query(sessionManager.getSessionId()),
-              original: query(delivery.sessionId ?? ""),
+              original: query(delivery.sessionId),
             },
           ];
         }),
     ),
-    checkpointOwners: [
-      ...new Set(
-        entries
-          .filter((entry) => entry.type === "custom" && entry.customType === "intercom_delivery")
-          .map((entry) => /** @type {{ data?: { sessionId?: string } }} */ (entry).data?.sessionId),
-      ),
-    ],
-    // oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unsafe-assignment, typescript/strict-boolean-expressions
+    checkpointOwners: [...new Set(checkpoints.map((checkpoint) => checkpoint.sessionId))],
     errors,
   };
 };
@@ -185,11 +176,10 @@ if (mode === "seed") {
       /** @type {import("@earendil-works/pi-ai").SimpleStreamOptions | undefined} */ options,
     ) => {
       send({ type: "ready", ...(await summary()) });
+      const signal = options?.signal;
+      assert.ok(signal !== undefined, "native provider request supplies its abort signal");
       await new Promise((resolve) => {
-        /** @type {AbortSignal} */ (
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- fixture always supplies an abort signal
-          /** @type {import("@earendil-works/pi-ai").SimpleStreamOptions} */ (options).signal
-        ).addEventListener("abort", resolve, { once: true });
+        signal.addEventListener("abort", resolve, { once: true });
       });
       return fauxAssistantMessage("Aborted");
     },
@@ -206,10 +196,16 @@ await session.bindExtensions({
 });
 
 if (mode === "seed") {
-  // oxlint-disable-next-line typescript/no-misused-promises, typescript/strict-void-return -- snapshot handler awaits summary before replying
-  process.on("message", async (/** @type {{ action?: string }} */ message) => {
-    if (message.action === "snapshot") {
-      send({ type: "snapshot", ...(await summary()) });
+  process.on("message", (/** @type {unknown} */ message) => {
+    if (record(message).action === "snapshot") {
+      summary()
+        .then((snapshot) => {
+          send({ type: "snapshot", ...snapshot });
+        })
+        .catch((/** @type {unknown} */ error) => {
+          console.error(error);
+          process.exit(1);
+        });
     }
   });
   await session.prompt("Seed this saved session");
@@ -218,14 +214,12 @@ if (mode === "seed") {
 } else {
   const deadline = Date.now() + 5_000;
   // Each summary awaits a real broker response before deciding whether native delivery settled.
-  // oxlint-disable-next-line no-await-in-loop
   while (!(await summary()).status.includes("Pending inbound messages: 0") || !session.isIdle) {
     assert.ok(
       Date.now() < deadline,
       "restored native delivery finishes without waking passive messages",
     );
     // Native delivery consumes its queue between polls; do not race concurrent status calls.
-    // oxlint-disable-next-line no-await-in-loop
     await sleep(5);
   }
   await session.waitForIdle();

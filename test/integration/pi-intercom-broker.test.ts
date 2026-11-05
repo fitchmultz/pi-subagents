@@ -598,7 +598,6 @@ nodeTest(
         { ...guard, peerId: "wrong-peer" },
       ]) {
         // Each response is the real broker's negative admission, not a client predicate.
-        // oxlint-disable-next-line no-await-in-loop
         const denied = await sender.send(peerId, {
           ...options,
           guard: changed,

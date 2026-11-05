@@ -174,7 +174,6 @@ nodeTest(
           "broadcast",
         ]) {
           // An ignored legacy policy must not re-enable any retired route.
-          // oxlint-disable-next-line no-await-in-loop
           assert.equal((await api(retired, {})).status, 404);
         }
         for (const [action, body] of [
@@ -190,7 +189,6 @@ nodeTest(
           ["reply", { replyTo: "missing", message: "invalid passive reply", passive: true }],
         ] as const) {
           // Each rejection is acknowledged before the next security case is sent.
-          // oxlint-disable-next-line no-await-in-loop
           const rejected = await api(action, body);
           assert.ok(rejected.status >= 400, JSON.stringify(rejected));
         }
@@ -242,7 +240,6 @@ nodeTest(
         for (const passive of [false, true]) {
           const messageId = passive ? " exact HTTP passive ID " : "x".repeat(512);
           const incoming = nextMessage(peer);
-          // oxlint-disable-next-line no-await-in-loop
           const receipt = await api("send", {
             to: peer.sessionId,
             message: `HTTP passive=${passive}`,
@@ -251,7 +248,6 @@ nodeTest(
           });
           assert.equal(receipt.body.accepted, true);
           assert.equal(receipt.body.id, messageId);
-          // oxlint-disable-next-line no-await-in-loop
           const delivered = await incoming;
           assert.equal(delivered.message.id, messageId);
           assert.equal(delivered.message.delivery, passive ? "passive" : "steer");
@@ -259,7 +255,6 @@ nodeTest(
         }
         for (const messageId of [undefined, " exact CLI passive ID ", "c".repeat(512)]) {
           const passiveIncoming = nextMessage(peer);
-          // oxlint-disable-next-line no-await-in-loop
           const output = await exec(
             process.execPath,
             [
@@ -285,7 +280,6 @@ nodeTest(
           } else {
             assert.equal(passiveReceipt.id, messageId);
           }
-          // oxlint-disable-next-line no-await-in-loop
           const passiveMessage = await passiveIncoming;
           assert.equal(passiveMessage.message.id, passiveReceipt.id);
           assert.equal(passiveMessage.message.delivery, "passive");
@@ -309,7 +303,6 @@ nodeTest(
         try {
           const invalidIds = ["", " ", "x".repeat(513), "a\nb", "a\u0000b", "a\u007fb", "a\u009fb"];
           for (const messageId of [...invalidIds, null, true, 1, {}, []]) {
-            // oxlint-disable-next-line no-await-in-loop
             const rejected = await api("send", {
               to: peer.sessionId,
               message: "invalid ID",
@@ -320,7 +313,6 @@ nodeTest(
             assert.equal(record(rejected.body.error).message, "Invalid message ID.");
           }
           for (const [action, body] of [["register", {}]] as const) {
-            // oxlint-disable-next-line no-await-in-loop
             const rejected = await api(action, { ...body, messageId: "send-only" });
             assert.equal(rejected.status, 400);
             assert.equal(record(rejected.body.error).code, "invalid_input");
@@ -363,7 +355,6 @@ nodeTest(
             ),
           ]) {
             // No TLS credentials: argument validation must happen before any transport setup.
-            // oxlint-disable-next-line no-await-in-loop
             await assert.rejects(
               exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), ...args], {
                 env: {},
@@ -438,7 +429,6 @@ nodeTest(
           let lastId = "";
           for (let index = messages(before.body).length; index <= 256; index++) {
             // Broker acknowledgements bound each publication and preserve inbox fill order.
-            // oxlint-disable-next-line no-await-in-loop
             lastId = (await peer.send(remoteId, { text: `bounded notice ${index}` })).id;
           }
           await activeBridge.wait(new RegExp(`"messageId":"${lastId}"`));
@@ -512,7 +502,6 @@ nodeTest(
             for (let attempt = 0; attempt < 100; attempt++) {
               // A read-only probe proves all eight mutation slots are admitted;
               // it cannot retire the generation itself.
-              // oxlint-disable-next-line no-await-in-loop
               const probe = await api("inbox");
               if (probe.status === 429) {
                 assert.equal(record(probe.body.error).code, "too_many_requests");
@@ -959,12 +948,10 @@ nodeTest(
           const expected: string[] = [];
           for (let index = 0; index < 300; index++) {
             // Ordered broker publications exercise the actual bridge inbox.
-            // oxlint-disable-next-line no-await-in-loop
             expected.push((await peer.send(remoteId, { text: `durable notice ${index}` })).id);
           }
           for (let index = 0; index < 6; index++) {
             // Exceed the former 4 MiB total without exceeding a broker frame.
-            // oxlint-disable-next-line no-await-in-loop
             const sent = await peer.send(remoteId, { text: `${index}:${"x".repeat(850000)}` });
             expected.push(sent.id);
           }
@@ -993,7 +980,6 @@ nodeTest(
           let more = true;
           while (more) {
             // Cursor pages are the public interface; never hydrate the whole mailbox.
-            // oxlint-disable-next-line no-await-in-loop
             const page = (await api(`inbox?after=${after}&limit=256`)).body;
             const items = messages(page);
             assert.ok(items.length <= 256);
@@ -1017,7 +1003,6 @@ nodeTest(
             "waitMs=1&waitMs=2",
           ]) {
             // Each invalid request must reach the public parser and be rejected.
-            // oxlint-disable-next-line no-await-in-loop
             assert.equal((await api(`inbox?${query}`)).status, 400);
           }
           const result = json(
@@ -1049,7 +1034,6 @@ nodeTest(
           assert.equal(firstMessage(result).message.id, expected[256]);
           for (const value of ["", "-1", "10001", "1.5", "1e3", "01", "+1", " 1", "Infinity"]) {
             // Validation must fail before TLS/file loading, with the maintained CLI's argument exit.
-            // oxlint-disable-next-line no-await-in-loop
             await assert.rejects(
               exec(process.execPath, [
                 join(repo, "scripts/intercom-remote.mjs"),
@@ -1067,7 +1051,6 @@ nodeTest(
             ["list", "--wait-ms=0"],
           ]) {
             // Repeated and misplaced wait options cannot silently select a different operation.
-            // oxlint-disable-next-line no-await-in-loop
             await assert.rejects(
               exec(process.execPath, [join(repo, "scripts/intercom-remote.mjs"), ...args]),
               (error: unknown) => error instanceof Error && record(error.cause).code === 2,
@@ -1174,10 +1157,8 @@ nodeTest(
             // Each transition owns a distinct pending HTTP request, admitted by its audit event.
             offset = bridge.output().length;
             const pending = api("inbox?after=9007199254740991&waitMs=10000").catch(() => null);
-            // oxlint-disable-next-line no-await-in-loop
             await bridge.wait(/"event":"inbox_wait"/, offset);
             if (mode === "shutdown") {
-              // oxlint-disable-next-line no-await-in-loop
               await stop(bridge.child);
               assert.equal(
                 bridge.child.exitCode,
@@ -1192,7 +1173,6 @@ nodeTest(
               );
               assert.ok(
                 // Observe the shared broker after helper shutdown before the next transition.
-                // oxlint-disable-next-line no-await-in-loop
                 (await peer.listSessions()).some((row) => row.id === peer.sessionId),
                 "the independent peer remains usable after helper shutdown",
               );
@@ -1204,32 +1184,25 @@ nodeTest(
                 { mode: 0o600 },
               );
               bridge.child.kill("SIGHUP");
-              // oxlint-disable-next-line no-await-in-loop
               await bridge.wait(/"event":"allowlist_reloaded"/, offset);
-              // oxlint-disable-next-line no-await-in-loop
               await assert.rejects(api("inbox"));
             }
-            // oxlint-disable-next-line no-await-in-loop
             const result = await pending;
             assert.ok(result === null || result.body.ok === false, "no revoked data is exposed");
             if (mode !== "shutdown") {
               // The denied generation owns its socket until retirement, even after HTTP ends.
-              // oxlint-disable-next-line no-await-in-loop
               await bridge.wait(/"event":"session_closed"/, offset);
             }
             config.clients = clients;
             writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
             if (mode === "shutdown") {
               bridge = start("src/pi-intercom/bridge.ts", ["--config", configPath], env);
-              // oxlint-disable-next-line no-await-in-loop
               api = (await bridgeApi(bridge, credential)).api;
             } else {
               offset = bridge.output().length;
               bridge.child.kill("SIGHUP");
-              // oxlint-disable-next-line no-await-in-loop
               await bridge.wait(/"event":"allowlist_reloaded"/, offset);
             }
-            // oxlint-disable-next-line no-await-in-loop
             assert.equal((await api("register", {})).body.ok, true);
           }
         },
@@ -1387,7 +1360,6 @@ nodeTest(
           config.stateDir = dir;
           writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
           // Neither a symlink nor a nonprivate directory may be accepted.
-          // oxlint-disable-next-line no-await-in-loop
           await assert.rejects(
             exec(
               process.execPath,

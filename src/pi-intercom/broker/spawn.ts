@@ -179,7 +179,6 @@ async function previousBrokerWarning(): Promise<string | undefined> {
   const previousSockets = getPreviousBrokerSocketPaths();
   for (const socketPath of previousSockets) {
     // Migration probes are sequential and never register or send to old peers.
-    // oxlint-disable-next-line no-await-in-loop
     if (isOwnedBrokerSocket(socketPath) && (await checkOneSocket(socketPath))) {
       return "An older agent-directory Intercom broker is still running. Its peers are not part of shared same-user discovery until they reload with the updated extension. Existing sessions and accepted work are untouched; no legacy fallback is used.";
     }
@@ -289,12 +288,10 @@ async function waitForBroker(timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     // Each probe must finish before the next to avoid parallel socket attempts.
-    // oxlint-disable-next-line no-await-in-loop
     if (await checkSocketConnectable()) {
       return;
     }
     // Polling waits between probes rather than starting an unbounded batch.
-    // oxlint-disable-next-line no-await-in-loop
     await sleep(100);
   }
   throw new Error("Broker failed to start within timeout");

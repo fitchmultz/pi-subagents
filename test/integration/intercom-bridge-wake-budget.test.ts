@@ -46,7 +46,6 @@ async function fixture(t: TestContext, identities = 1, realClock = false) {
   const keys = join(root, "keys");
   const credentials: Credential[] = [];
   for (let index = 0; index < identities; index++) {
-    // oxlint-disable-next-line no-await-in-loop
     const result = await exec(
       process.execPath,
       [
@@ -123,10 +122,8 @@ async function fixture(t: TestContext, identities = 1, realClock = false) {
   const apis: BridgeApi[] = [];
   const remoteIds: string[] = [];
   for (const credential of credentials) {
-    // oxlint-disable-next-line no-await-in-loop
     const api = await bridgeApi(bridge, credential);
     apis.push(api);
-    // oxlint-disable-next-line no-await-in-loop
     remoteIds.push(text((await api.api("register", {})).body.sessionId));
   }
   const quotaPath = join(stateDir, "wake-quota.sqlite");
@@ -147,7 +144,6 @@ async function fixture(t: TestContext, identities = 1, realClock = false) {
       await bridge.wait(/"event":"registered"/);
       await clock("SIGWINCH");
       for (let index = 1; index < identities; index++) {
-        // oxlint-disable-next-line no-await-in-loop
         await bridge.wait(new RegExp(`"event":"registered","name":"bot-${index}"`));
       }
     }
@@ -454,18 +450,13 @@ nodeTest(
     const f = await fixture(t, 3);
     for (let index = 0; index < 20; index++) {
       const identity = index % 3;
-      // oxlint-disable-next-line no-await-in-loop
       const sent = await f.peer.send(f.remoteId(identity), { text: `cold request ${index}` });
-      // oxlint-disable-next-line no-await-in-loop
       await f.current().wait(new RegExp(`"messageId":"${sent.id}"`));
       const after = f.current().output().length;
-      // oxlint-disable-next-line no-await-in-loop
       await f.clock("SIGWINCH");
-      // oxlint-disable-next-line no-await-in-loop
       await f.current().wait(/"result":"http_rejected"/, after);
       assert.equal(f.requests.length, index + 1);
       // Actual ACK permits a fresh immediate wake, without inheriting the prior batch's backoff.
-      // oxlint-disable-next-line no-await-in-loop
       assert.deepEqual((await f.api(identity).api("ack", { ids: [sent.id] })).body.acked, [
         sent.id,
       ]);
@@ -541,7 +532,6 @@ nodeTest(
     ];
     const ids = [];
     for (const message of messages) {
-      // oxlint-disable-next-line no-await-in-loop
       ids.push((await f.peer.send(f.remoteId(0), { text: message })).id);
     }
     const passiveAsk = await f.peer.send(f.remoteId(0), {
@@ -575,7 +565,6 @@ nodeTest(
     });
     const joined = [];
     for (let index = 0; index < 32; index++) {
-      // oxlint-disable-next-line no-await-in-loop
       joined.push((await f.peer.send(f.remoteId(2), { text: `same URL flood ${index}` })).id);
     }
     const [lastJoined] = joined.slice(-1);
@@ -590,7 +579,6 @@ nodeTest(
     assert.equal(record(wakeRequest.body).message_id, explicit.id);
     assert.equal(record(wakeRequest.body).ask_id, explicit.id);
     for (let index = 0; index < 32; index++) {
-      // oxlint-disable-next-line no-await-in-loop
       joined.push((await f.peer.send(f.remoteId(2), { text: `after POST flood ${index}` })).id);
     }
     const [finalJoined] = joined.slice(-1);
@@ -650,7 +638,6 @@ nodeTest(
     const publicationDeadline = performance.now() + 5000;
     while (f.rows("SELECT due FROM wake_batches").length === 0) {
       assert.ok(performance.now() < publicationDeadline, "owner published the post-commit grace");
-      // oxlint-disable-next-line no-await-in-loop
       await delay(5);
     }
     const after = f.current().output().length;

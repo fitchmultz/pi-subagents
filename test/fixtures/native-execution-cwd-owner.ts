@@ -56,13 +56,13 @@ export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", (event, ctx) => {
     initialize(ctx);
     // Native before_agent_start owns a mutable structured prompt draft.
-    // oxlint-disable-next-line no-param-reassign
+    // oxlint-disable-next-line no-param-reassign -- QX-003: Pi reads the shared prompt draft after this handler.
     event.systemPromptOptions.cwd = cwd;
   });
   pi.on("tool_call", (event) => {
     if (event.toolName === "read" && typeof event.input.path === "string") {
       // Native tool_call permits the directory owner to resolve the input path.
-      // oxlint-disable-next-line no-param-reassign
+      // oxlint-disable-next-line no-param-reassign -- QX-003: Pi executes this same mutable tool-call input.
       event.input.path = resolve(cwd, event.input.path);
     }
   });
@@ -75,7 +75,7 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
       // This event bus protocol explicitly requires the directory owner to fill result.
-      // oxlint-disable-next-line no-param-reassign
+      // oxlint-disable-next-line no-param-reassign -- QX-003: the event bus caller reads this request object.
       request.result = {
         cwd: name === "set" && request.path !== undefined ? change(request.path, context) : cwd,
       };

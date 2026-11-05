@@ -359,7 +359,6 @@ export class Session {
       log("inbox_wait", { ...this.fields(), requestId: context.requestId, after: operation.after });
       try {
         // A nonmatching commit must rearm the same cursor, not start parallel readers.
-        // oxlint-disable-next-line no-await-in-loop
         await delay(remaining, undefined, { signal });
       } catch (error) {
         if (!signal.aborted) {

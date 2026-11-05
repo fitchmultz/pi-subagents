@@ -25,7 +25,6 @@ export async function until(check: () => boolean, reason: string, timeout = 30_0
       throw new Error(`Timed out: ${reason}`);
     }
     // Poll actual durable publication or process death, not a readiness sleep.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }

@@ -199,7 +199,6 @@ export class WakeDeliveries {
       // ponytail: two cold Macs can each admit one wake. Literal cross-Mac single admission
       // requires a neutral quota authority governing every writer, not a URL hash or HTTP 2xx.
       try {
-        // oxlint-disable-next-line no-await-in-loop
         await this.post(candidate);
       } finally {
         // Expiry starts after response/error/abort, never before COMMIT or connect/TLS.

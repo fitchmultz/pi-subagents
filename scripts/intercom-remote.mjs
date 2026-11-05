@@ -32,7 +32,6 @@ const actions = {
   send: ["to", "message", "id", "passive", "expects-reply", "reply-to"],
 };
 function messageId(/** @type {string | undefined} */ id) {
-  // oxlint-disable-next-line no-control-regex
   const controls = /[\u0000-\u001f\u007f-\u009f]/;
   if (id !== undefined && (id.trim() === "" || id.length > 512 || controls.test(id))) {
     throw new Error("Invalid message ID.");

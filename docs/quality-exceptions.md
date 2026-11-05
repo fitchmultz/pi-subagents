@@ -1,179 +1,222 @@
 # Quality exceptions
 
-Records follow the repository copy of the strict Oxlint/Oxfmt engineering
-standard (`docs/strict-oxlint-oxfmt-standard.md`). Every exception cites its
-evidence here; the standard's Section 2 defines eligibility and scope.
+These decisions follow Section 2 of the [v5.2 standard](strict-oxlint-oxfmt-standard.md).
+They preserve supported contracts rather than tolerate existing findings.
+All use Oxlint 1.91.0 and oxlint-tsgolint 7.0.2006.
+`quality/directives.ts` binds each site to its file, rule, enclosing owner, and
+operation. Its inventory is not a finding-count budget.
 
-## QX-001 Unawaited node:test registrations
+The audit at base `7f449e2` found 353 real lint directive comments in 61 files:
+318 next-line directives and 35 range/file/enable directives. The current code
+has 23 next-line directives in 11 files and no range or file disables.
+Literal examples in tests and documentation are not directives.
 
-ID and title: QX-001 — unawaited `node:test` registrations under distinct
-local import names.
+Removed protections are not silently waived: JSON enters as `unknown` and is
+validated, native filesystem signatures retain their overloads, genuine shared
+host resolution is reused, and promise cleanup uses owned `try/finally`.
+The old per-rule suppression-count test is removed. QX-002's five-parameter
+exception is also removed: `execute(...[, params, signal, , ctx])` preserves the
+SDK's contextually typed positional contract without changing its callers.
 
-Rule, option, or threshold; installed tool versions:
-`typescript/no-floating-promises` → `allowForKnownSafeCalls`; oxlint 1.90.0,
-oxlint-tsgolint 7.0.2005, `@types/node` 24.19.2.
+Line numbers below identify directive comments. The following line is the
+authorized operation. The checker uses operation identity, not these line numbers.
 
-Scope: files, authorized operations, origins, or bounded pattern: test
-registrations imported from `node:test` and invoked unawaited, anywhere in
-`test/**`. The allowance entry is
-`{"from": "package", "package": "node:test", "name": ["nodeTest", "nodeIt", "nodeDescribe"]}`;
-the repository imports every registration form under exactly those distinct
-local names (`test as nodeTest`, `it as nodeIt`, `describe as nodeDescribe`).
+## QX-001 Node test registrations
 
-Directive selectors/inventory and optional duplication bounds: none; the
-allowance is configuration-owned, so no site directives exist to inventory.
+Rule: `typescript/no-floating-promises`, test-profile
+`allowForKnownSafeCalls` at `.oxlintrc.json:364`.
+The installed `@types/node` version is 24.19.2. Only actual `node:test`
+declarations imported as `nodeTest`, `nodeIt`, or `nodeDescribe` qualify.
 
-Diagnostic and required contract: `node:test`'s `test()`, `it()`, `describe()`
-and `suite()` return `Promise<void>` while the Node test runner owns their
-scheduling. Standard Section 6.4 records that awaiting a registration can
-alter module evaluation and hook timing, and prohibits mass conversion of
-registrations into awaited calls, async suites or Promise collections. The
-intended usage — unawaited module-level and suite-body registrations — is
-therefore a genuine diagnostic whose prescribed change is inappropriate for
-the runner's contract.
+Node owns top-level and suite-body registration promises. Awaiting each
+registration changes module/hook timing; collecting them changes registration
+ownership. Prefixing calls with `void` is not a compliant alternative because
+`ignoreVoid:false` remains required. The chosen native origin allowance avoids
+those scheduling changes without disabling floating-promise checks in tests or
+production.
 
-Actual compliant alternative and demonstrated quality cost: awaiting all
-~425 registration calls (prohibited scheduling change), prefixing each with
-`void` (~425 no-op markers that Section 3.3 rejects as lint-only ceremony), or
-per-site next-line directives (~425 directives whose bounded inventory would
-be unmanageable). Each alternative adds mechanical noise to every test file
-without changing what the runner executes.
+`lint-node-test-allowance.test.ts` retains all six native controls: each used
+registration form passes at top level and inside a suite; context subtests,
+same-named locals, same-named imports from other modules, floating work inside
+tests, and unrelated promise calls fail at their exact locations.
 
-Chosen adjustment and why its scope is appropriate: the package-origin
-safe-call allowance with distinct local names is the narrowest native option.
-It admits only calls whose declaration originates from the `node:test`
-package under the three enumerated names. The previous repository entry
-matched declaration names `test`/`suite` from `@types/node/test.d.ts` and also
-admitted unawaited `TestContext.test()` subtests; the package-origin form with
-non-default local names closes that boundary while keeping every intended
-registration form passing.
+Lost detection: declaration matching cannot infer calling context. An imported
+registration called inside a running test could create an unawaited subtest.
+Use awaited/returned context methods inside running tests. Review and rerun the
+six controls when Node declarations, import forms, or native matching change.
 
-Structural comparison or unsafe-type evidence, where applicable: not a
-structural or unsafe-type exception.
+## QX-003 Shared native event mutation
 
-Verification commands, relevant tests, and results:
-`node --test test/unit/lint-node-test-allowance.test.ts` runs the standard's
-six controls with the repository configuration: intended unawaited top-level
-and suite-body registrations pass for each form used; an unawaited context
-subtest (`t.test()`), an unawaited same-named local function, an unawaited
-same-named function imported from another module, a floating promise inside a
-test body, and an unawaited unrelated promise call each still fail with
-`typescript/no-floating-promises` at the exact site. `npm run lint` passes on
-the migrated tree (oxlint 1.90.0, macOS arm64 and hosted Linux CI).
+Rule: `no-param-reassign` with `props:true` and empty ignore lists.
 
-Retained protection, lost detection, and established assumptions: wrong-name,
-wrong-origin and in-body floating promises remain checked by the rule at
-`error` with `ignoreVoid: false` and `checkThenables: true`. Known detection
-limit, recorded per Section 6.4: declaration-origin matching cannot see
-runtime calling context, so an imported registration invoked inside a running
-test would create an unawaited subtest that the allowance also admits. The
-repository creates subtests only through awaited `t.test()` context calls
-(19 sites; zero registrations appear nested inside test bodies), and new
-subtests inside tests must keep using awaited context methods.
+| Directive location                               | Authorized operation                                  | Why a copy is wrong                                            |
+| ------------------------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------- |
+| `test/fixtures/native-execution-cwd-owner.ts:59` | `before_agent_start`: `event.systemPromptOptions.cwd` | Pi reads the same structured prompt draft after the handler.   |
+| `test/fixtures/native-execution-cwd-owner.ts:65` | `tool_call`: `event.input.path`                       | Pi executes the same mutable input after directory resolution. |
+| `test/fixtures/native-execution-cwd-owner.ts:78` | execution-cwd bus request: `request.result`           | The bus caller reads the response on the request it sent.      |
 
-Review and revisit trigger: an oxlint or oxlint-tsgolint release that changes
-allowance matching, a new `node:test` import form or registration name in the
-repository, or a Node test-runner change to registration scheduling. Each
-trigger reruns the six controls.
+The actual compliant copy alternative, `const updated = { ...event.input,
+path: resolve(cwd, event.input.path) }`, does not update the object Pi executes.
+Returning that copy is not this callback's protocol. An alias would merely hide
+the same mutation. These are supported-contract exceptions, not exceptions for
+all parameters named `event` or `request`.
 
-## QX-002 Five-parameter Pi tool executor callback
+Native execution-cwd integration tests exercise the shared objects against the
+real host. The native directive qualification removes the directive and requires
+`no-param-reassign`; the policy keeper rejects copied/wrong operations and
+multiple assignments on one directive line. All other mutations remain checked.
+Revisit when the SDK or directory-owner protocol offers a returned-value API.
 
-ID and title: QX-002 — the `intercom` tool's `execute` callback needs five
-positional parameters.
+## QX-004 Selected-runtime and built-artifact imports
 
-Rule, option, or threshold; installed tool versions: `max-params`
-(base `max: 4`); oxlint 1.90.0, oxlint-tsgolint 7.0.2005.
+Rule: `typescript/no-unsafe-assignment`. Computed `import(url)` has type `any`.
+The receiving declaration uses the authoritative SDK or source module type,
+rather than allowing `any` to propagate.
 
-Scope: files, authorized operations, origins, or bounded pattern: one
-callback, `src/pi-intercom/tool-registration.ts` (`registerIntercomTools`'s
-`pi.registerTool` `execute`).
+| Directive location                           | Runtime artifact and required identity                     |
+| -------------------------------------------- | ---------------------------------------------------------- |
+| `src/agent/host.ts:111`                      | SDK from the caller-selected package root.                 |
+| `src/agent/observe-layout.ts:18`             | Selected host's TUI root.                                  |
+| `src/agent/observe-layout.ts:20`             | That TUI's layout module.                                  |
+| `src/agent/observe-layout.ts:22`             | That TUI's dispatch module.                                |
+| `src/agent/typebox.ts:11`                    | Detached child's selected TypeBox instance.                |
+| `src/agent/typebox.ts:16`                    | The same graph's TypeBox value operations.                 |
+| `.github/scripts/ci-host.mjs:31`             | `common.mjs` from the workflow-pinned automation checkout. |
+| `.github/scripts/ci-host.mjs:36`             | `hosts.mjs` from that same automation checkout.            |
+| `scripts/package-smoke.mjs:157`              | Installed package's emitted host loader, not source.       |
+| `scripts/package-smoke.mjs:187`              | Installed package's emitted broker launcher.               |
+| `test/support/native-host.ts:13`             | Pi AI companion resolved from the caller-selected SDK.     |
+| `test/fixtures/single-agent-shutdown.mjs:36` | Supplied repository's compiled agent entry.                |
+| `test/fixtures/single-agent-parent.mjs:96`   | Supplied repository's compiled agent entry.                |
+| `test/fixtures/single-agent-parent.mjs:101`  | Its already-loaded process owner.                          |
+| `test/fixtures/single-agent-parent.mjs:106`  | Its already-loaded session-target owner.                   |
+| `test/fixtures/single-agent-parent.mjs:111`  | Its already-loaded storage owner.                          |
+| `test/fixtures/single-agent-parent.mjs:116`  | Its compiled intercom extension when that phase needs it.  |
+| `test/fixtures/single-agent-parent.mjs:516`  | Its compiled broker client constructor.                    |
 
-Directive selectors/inventory and optional duplication bounds: one
-`// oxlint-disable-next-line max-params` directive at that callback; the
-repository's full directive inventory is QX-002 (1) plus QX-003 (3).
+The simple statically typed alternative is:
 
-Diagnostic and required contract: the Pi SDK's tool executor interface
-declares `execute(id, params, signal, update, ctx)` positionally; the
-callback must accept the fifth `ctx` parameter to receive the extension
-context it forwards to `tools.execute`. Dropping earlier parameters is not
-possible because the signature is positional.
+```ts
+import * as sdk from "@earendil-works/pi-coding-agent";
+import agents from "../../src/agent/index.ts";
+```
 
-Actual compliant alternative and demonstrated quality cost: the previous
-file-scoped override raised `max-params` to 5 for the entire file, including
-future helpers that could legitimately grow past four parameters without a
-platform contract; a rest/destructuring signature is not available for a
-positional interface implementation.
+That resolves the fixture's development graph and source, not a caller-selected
+SDK or installed artifact. It loses the very behavior these owners and tests
+promise. Static imports of private emitted JavaScript also pull stripped output
+into checked-JS compilation; a measured alternative produced missing annotations
+and incompatible generic storage signatures. Adding permissive declarations
+would not prove that arbitrary selected artifacts match them.
 
-Chosen adjustment and why its scope is appropriate: the single next-line
-directive marks exactly the callback whose arity the Pi SDK fixes, restoring
-the base `max: 4` check for every other signature in the file.
+Several boundaries do disappear through real reuse: three fixture SDK imports use
+the existing `loadSDK`, and four companion lookups share `loadNativeAI`, which
+owns SDK-relative resolution. Compatible smoke-script imports use literal package
+specifiers after `compat-host.mjs` verifies their graph. The remaining sites cannot
+use that narrower assumption without dropping caller-selected roots or testing
+source instead of production output.
 
-Structural comparison or unsafe-type evidence, where applicable: not a
-structural or unsafe-type exception.
+Safety rests on trusted installed/generated code and matched host qualification,
+not a property-presence predicate. Such a predicate cannot verify class private
+brands, overloads, generics, or return contracts. `packageRoot` validates SDK
+package identity; companion resolution starts at that root. Build/package smokes
+compare exact SDK/TypeBox identities and exercise actual emitted consumers.
+The CI automation interfaces match the workflow's immutable automation revision
+`c832dd07c016914db40bb98e5bdbb9c623cd6303`; its actual host qualification exercises
+both imported APIs.
 
-Verification commands, relevant tests, and results: `npm run lint` passes
-with the directive in place and the file override removed; removing the
-directive reproduces the `max-params` error at the callback (oxlint 1.90.0,
-macOS arm64).
+The native qualification requires accepted annotated imports to pass and the
+same imports without directives to report `no-unsafe-assignment`.
+The policy keeper rejects a directive moved to another computed import even
+with the total unchanged. All downstream unsafe-call, member, argument, return,
+and assertion rules remain active.
 
-Retained protection, lost detection, and established assumptions: every
-other function in the file and repository remains capped at four parameters;
-a future sixth executor parameter from the Pi SDK requires updating the
-directive and this record.
+Lost detection: these assignments trust that the selected module implements its
+declared ABI. Unsupported or substituted code can violate that assumption.
+Official/fork compatibility, artifact provenance, class identity, and real
+consumer tests remain required. Revisit on module-path, SDK ABI, build-output,
+automation-revision, or native computed-import typing changes.
 
-Review and revisit trigger: a Pi SDK release changing the tool executor
-arity, or the callback moving to another file.
+## QX-005 Isolation before module evaluation
 
-## QX-003 Native event and request objects the handler owns
+Rule: `import/no-unassigned-import`, test-profile allowance at
+`.oxlintrc.json:374`, limited to `../support/isolated-home.ts` and
+`./isolated-home.ts`. The parser also resolves the relative request and requires
+the actual owner `test/support/isolated-home.ts`, not a same-named file elsewhere.
 
-ID and title: QX-003 — the native execution-cwd owner mutates the
-`before_agent_start` prompt draft, the `tool_call` input, and the
-execution-cwd request result.
+This module sets private HOME, runtime paths, and child environment before
+imported production modules evaluate. Calling an initializer in the test body
+runs after static imports and can initialize storage against the real user home.
+Importing a token just to appease lint adds a dummy export without changing the
+side-effect contract. A dynamic-import rewrite of every consumer would alter
+module evaluation solely to avoid an accurately intentional side-effect import.
 
-Rule, option, or threshold; installed tool versions: `no-param-reassign`
-(base `props: true`, empty ignore lists); oxlint 1.90.0,
-oxlint-tsgolint 7.0.2005.
+Other unassigned imports remain errors. Native lint checks the allowed requests;
+the policy keeper rejects a wrong-origin same-named bootstrap. The isolated
+filesystem/process tests verify runtime behavior. Lost detection is limited to
+this owner's intentional initialization. Revisit if isolation moves to a native
+runner preloader that also covers direct test execution.
 
-Scope: files, authorized operations, origins, or bounded pattern: three
-assignments in `test/fixtures/native-execution-cwd-owner.ts`:
-`event.systemPromptOptions.cwd` in `before_agent_start`, `event.input.path`
-in `tool_call`, and `request.result` in the `pi-change-working-dir`
-execution-cwd event handler.
+## QX-006 Fork working-session participation
 
-Directive selectors/inventory and optional duplication bounds: three
-`// oxlint-disable-next-line no-param-reassign` directives, one per
-assignment, each beneath the comment stating the owning contract; the
-repository's full directive inventory is QX-002 (1) plus QX-003 (3).
+Rule: `typescript/no-unsafe-type-assertion` at
+`test/fixtures/single-agent-provider.mjs:165`, only the bound `pi.on` used for
+`working_session_save`. This event is implemented by the maintained fork but
+absent from official Pi's event overloads.
 
-Diagnostic and required contract: the native extension contract makes these
-objects the handler's to mutate — `before_agent_start` publishes a mutable
-structured prompt draft the handler edits, `tool_call` permits the registered
-directory owner to resolve the read tool's input path, and the
-`pi-change-working-dir` event bus protocol requires the owner to fill
-`request.result`. The fixture exists to exercise exactly those ownership
-paths against real native events.
+The fixture derives the event from the selected SDK when declared and otherwise
+uses its explicit compatibility shape: signal, boundary, invalidation, and entry
+append. The returned value is ignored and typed `void`. The fork's native event
+awaits participation; the official host never emits it and keeps actors resident.
 
-Actual compliant alternative and demonstrated quality cost: the previous
-file-scoped override set `ignorePropertyModificationsFor: ["event",
-"request"]`, which would admit any future param mutation anywhere in the
-fixture; copying the objects first would break the contracts being tested
-(the broker and host observe the same objects).
+Calling `pi.on("working_session_save", handler)` directly cannot compile under
+official declarations. Removing the handler drops real save-race/orphan coverage.
+Using `pi.events.on` registers on a different bus. A generic `Function` guard or
+reflective call would lose the argument/result contract without proving the event.
 
-Chosen adjustment and why its scope is appropriate: per-assignment directives
-mark exactly the three ownership mutations the native contracts define,
-keeping the rule active for every other parameter in the fixture.
+The native qualification reproduces the exact JSDoc assertion and requires its
+unsafe-assertion diagnostic without the directive. Native park-command, orphan,
+and saved-generation tests exercise the fork event; official tests exercise the
+resident fallback. Lost detection is this one overload bridge, not arbitrary SDK
+calls. Revisit when official Pi declares the event or the fork changes its contract.
 
-Structural comparison or unsafe-type evidence, where applicable: not a
-structural or unsafe-type exception.
+## QX-007 Native SQLite receiver forwarding
 
-Verification commands, relevant tests, and results: `npm run lint` passes
-with the directives in place and the file override removed; removing any
-directive reproduces the `no-param-reassign` error at that assignment
-(oxlint 1.90.0, macOS arm64).
+Rule: `typescript/unbound-method` at
+`test/fixtures/intercom-wake-window.ts:183`, capturing
+`DatabaseSync.prototype.exec` for the publish fixture. Its only call is
+`nativeExec.call(this, sql)` inside the replacement native instance method.
 
-Retained protection, lost detection, and established assumptions: every
-other parameter property in the fixture remains protected; a fourth native
-ownership path requires a new directive and a record update.
+The fixture pauses the real exclusive-lock operation after publication. It does
+not substitute lock or admission results. Binding the prototype instead is a
+real failure:
 
-Review and revisit trigger: a Pi SDK change to these event contracts, or the
-fixture moving to another file.
+```ts
+const exec = DatabaseSync.prototype.exec.bind(DatabaseSync.prototype);
+exec("CREATE TABLE actual(value TEXT)"); // TypeError: Illegal invocation
+```
+
+The same operation through `nativeExec.call(db, sql)` creates the real table.
+Binding a particular database would require exposing the production owner's
+private instance or adding a test-only injection API. A wrapper or reflective
+alias would conceal the same capture rather than fix receiver ownership.
+
+The native qualification checks the capture diagnostic. The policy checker also
+requires the one real-receiver call and rejects prototype binding, escape, extra
+calls, and replacement with an arrow. Native wake-window integration tests own
+the actual lock/admission behavior. Lost detection at the capture is replaced by
+this bounded receiver check; other unbound methods remain errors.
+Revisit if Node's declaration or the fixture's native interception changes.
+
+## Review and verification
+
+The adoption used a separate read-only reviewer. Its accepted findings removed
+a proposed async-finally exception, removed redundant value guards, and tightened
+compiler coverage and operation attachment. The five-parameter exception was
+replaced with the actual typed rest tuple, rather than preserving an unsupported
+claim that destructuring was impossible.
+
+The normal acceptance tests retain native allowance/directive controls and policy
+mutation controls. The adoption PR records exact-head local and hosted commands,
+results, and reviewer disposition. Changes to these decisions require a contract
+comparison and relevant native evidence in the same review; adding an identifier
+alone does not authorize a new exception.

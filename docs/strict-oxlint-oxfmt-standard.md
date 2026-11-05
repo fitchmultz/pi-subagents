@@ -1,14 +1,16 @@
 # Strict Oxlint and Oxfmt Engineering Standard
 
-**Version 5.1.2 · 1 November 2026**
+**Version 5.2 · 3 November 2026**
 
 This standard defines linting, formatting, typechecking, and verification requirements for JavaScript and TypeScript projects. It applies to engineers, reviewers, and coding agents.
 
-**Apply strict checks by default. Relax an applicable rule only when evidence demonstrates that the best reasonable compliant implementation would produce worse code.**
+**Apply strict checks by default. Relax an applicable rule only when the best reasonable compliant implementation demonstrably harms a supported contract or introduces disproportionate complexity without a meaningful safety or correctness benefit.**
 
 The objective is software that is correct, maintainable, readable, consistent, appropriately reusable, and efficient. Automated checks support that objective; passing them is necessary for acceptance but does not by itself establish engineering quality.
 
 This file is the complete implementation standard. Each adopting repository supplies its configurations, source mappings, verification, and local exception records. Previous releases and external conversations are not required to interpret it.
+
+Adoption includes correcting existing nonconformance and harmful practices within the declared scope. The same requirements apply to a repository's first implementation and to an existing quality system.
 
 ## Contents
 
@@ -60,11 +62,14 @@ Additional architectural requirements must come from an applicable repository in
 
 ### 2.1 Eligibility
 
-A quality exception is permitted only when a documented comparison demonstrates that the best reasonable compliant implementation would materially worsen the code under Section 1.1. It can address a checker false positive or an otherwise accurate lint finding whose prescribed change is inappropriate for the actual contract.
+Use a sound, straightforward compliant implementation whenever one is reasonably available. A quality exception is permitted only when a concrete comparison demonstrates that the best reasonable compliant implementation would:
 
-Valid grounds can include correctness, public or runtime compatibility, accurate typing, ownership, lifecycle, accessibility, demonstrated performance, or material readability and maintainability. Exceptions can apply to lint rules, structural thresholds, and formatting requirements.
+1. Harm supported functionality, sound typing, correctness, or safety, including an established ownership, lifecycle, accessibility, compatibility, or performance contract; or
+2. Introduce disproportionate verbosity, indirection, or complexity without a meaningful safety or correctness benefit.
 
-Migration size, time pressure, a green-check deadline, personal preference, or the existence of old code does not establish eligibility. Compare against a sound, straightforward compliant alternative, not an artificially cumbersome rewrite. Investigate enough to resolve the actual decision; an exhaustive search of hypothetical designs is not required.
+The resulting implementation must still satisfy Section 1.1 and every boundary in Section 2.5. Exceptions can address lint rules, structural thresholds, or formatting requirements. A checker limitation must be demonstrated; calling a finding a false positive does not establish eligibility.
+
+A modest amount of explicit typing, validation, or meaningful decomposition is normal compliance work. Fewer lines, stylistic preference, migration effort, deadlines, historical practice, and the desire for green checks are not grounds for an exception. Compare actual reasonable alternatives; do not manufacture an awkward rewrite or demand an exhaustive search of hypothetical designs. If the evidence does not establish one of the two grounds above, keep the rule and improve the implementation.
 
 ### 2.2 Decision process
 
@@ -72,16 +77,16 @@ Each exception must establish:
 
 1. **The finding.** Identify the installed tool version, rule and options, affected operation, and a reproducible diagnostic. Check project membership, declarations, and configuration before attributing the problem to the rule.
 2. **The contract.** Explain the behavior, type relationship, ownership, or design responsibility that must remain correct. Cite the relevant code, consumers, or API contract.
-3. **The comparison.** Present the best reasonable compliant alternative and its concrete quality cost. Use code comparisons for readability claims and focused tests or probes for runtime/type-contract claims.
-4. **The adjustment.** Select the narrowest useful option, declaration-qualified allowance, operation-bound directive, or file/profile override. A global change requires evidence of a systematic mismatch across the rule's relevant uses.
+3. **The comparison.** Present the best reasonable compliant alternative and demonstrate one of the two grounds in Section 2.1. For complexity claims, show the actual code and explain why its additional machinery provides no meaningful safety or correctness benefit. Use focused tests or probes for runtime/type-contract claims.
+4. **The adjustment.** Select the smallest scope and least reduction in checking that resolves the demonstrated problem: a native option, declaration-qualified allowance, operation-bound directive, or file/profile override. Preserve all unaffected protections. Convenience, repeated findings, or simpler verification does not justify broader scope. A global change requires evidence of a mismatch throughout the rule's relevant scope that a narrower adjustment cannot address.
 5. **The remaining protection.** Verify the intended case passes and meaningful neighboring violations still fail. State what detection is lost and what other checks protect the affected contract.
 6. **The review record.** Record the decision using Appendix B and include the implementation, configuration, and relevant checks in the same reviewable change. Use independent review when available; otherwise perform and identify a separate critical review pass.
 
-The evidence, rather than the presence of an exception identifier, establishes justification. If the comparison does not establish a quality loss, retain the rule and improve the implementation. If correctness remains unresolved, leave the finding visible and continue independent work.
+The evidence, rather than the presence of an exception identifier, establishes justification. If the comparison does not establish eligibility under Section 2.1, retain the rule and improve the implementation. If correctness remains unresolved, leave the finding visible and continue independent work.
 
 ### 2.3 Structural and unsafe-type evidence
 
-For a structural exception, show the actual proposed implementation and the compliant alternative, including any helpers or interface changes it introduces. Record the relevant metric before and after. Explain the concrete effect on responsibilities, contracts, or readability. The exception record and PR must include or link the comparison. A rejected alternative can be a review excerpt or patch; it need not remain in production code. An unsupported assertion that extraction adds indirection is insufficient.
+For a structural exception, show the actual proposed implementation and the compliant alternative, including any helpers or interface changes it introduces. Record the relevant metric before and after. Explain the concrete effect on responsibilities, contracts, or readability and why it meets Section 2.1. The exception record and PR must include or link the comparison. A rejected alternative can be a review excerpt or patch; it need not remain in production code. An unsupported assertion that extraction adds indirection is insufficient.
 
 For `no-explicit-any` or a `no-unsafe-*` exception, brevity or stylistic preference is insufficient. Identify the exact value/type flow and establish why the operation is sound despite the diagnostic. Show how unchecked information is validated or otherwise constrained before trusted use. Supply relevant compiler, runtime, or declaration-contract evidence and a meaningful invalid control. Record remaining assumptions; assumptions essential to safety must be established before accepting the exception. Eligibility depends on evidence, not whether the code originated inside or outside the repository.
 
@@ -133,6 +138,8 @@ Prefer a small, cohesive shared abstraction over repeated implementations of the
 
 Use accurate types, `unknown` at untrusted boundaries, validation, and narrowing. Validate external data where it enters the trusted model. Preserve existing schemas and fallback behavior unless separately changing their contract. Avoid repeated guards for values already established by a trustworthy boundary.
 
+Carry the established contract into consumers through accurate shared types. Do not propagate `unknown` throughout a trusted model and reconstruct ordinary property access, arithmetic, calls, or rendering through generic reflection and coercion helpers merely to avoid diagnostics. Dynamic access remains appropriate for genuinely dynamic contracts; keep its purpose and unchecked assumptions explicit.
+
 `const value: unknown = JSON.parse(text)` is a valid boundary before validation and preserves native parse-error behavior. Use schema codecs when their contract fits. Replacing a parser with a schema decoder is a behavioral decision when error identity, messages, fallback behavior, or accepted inputs change.
 
 Use readonly views for borrowed data when they accurately express the API. Preserve mutable state at its owner and accurate lifecycle/resource types. Readonly views do not imply frozen objects or pure methods. A focused recursive type utility must preserve the features its consumers rely on, including callable signatures, overloads, generics, private brands, and collection behavior; verify those contracts with type tests.
@@ -142,6 +149,8 @@ Direct parameter-mutation lint does not detect every mutation through aliases or
 ### 3.3 Behavioral preservation
 
 Typing, formatting, and decomposition must preserve supported behavior. Identify intentional improvements as behavioral work and verify them separately from mechanical edits.
+
+Establish the supported contract from consumers, documented promises, tests, and applicable owner decisions before building compatibility machinery. Observed behavior is evidence, not automatically a perpetual compatibility commitment. Changes to accepted inputs or failure semantics still require normal product-change authorization and relevant tests. Missing tests or uncertain consumers do not authorize silently narrowing behavior.
 
 | Area            | Contracts to preserve or explicitly change                                                                                        |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -160,7 +169,22 @@ Own asynchronous work through the appropriate await, return, or real lifecycle/e
 
 Extract meaningful responsibilities and interfaces. Keep control flow and assertions easy to follow. Evaluate the result, not the number of files or helpers.
 
-Avoid numbered-stage functions, compressed statements, dummy closures, or movement into exempt profiles solely to meet a metric. Use options objects when they express a coherent API, not as a compulsory replacement for every multi-parameter signature. SDK callbacks, constructors, and public APIs retain their supported contracts. If reasonable decomposition would worsen the design, evaluate a bounded structural exception.
+Avoid numbered-stage functions, compressed statements, dummy closures, or movement into exempt profiles solely to meet a metric. Use options objects when they express a coherent API, not as a compulsory replacement for every multi-parameter signature. SDK callbacks, constructors, and public APIs retain their supported contracts. A bounded structural exception remains subject to the two eligibility grounds in Section 2.1.
+
+### 3.5 Practices to correct
+
+Review existing code as well as new edits. Correct the following practices wherever they are identified within the adoption scope; their age or a prior passing check does not justify retaining them.
+
+| Practice                                                                                                                          | Required correction                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Duplicate types, schemas, validators, or guards that restate an established contract                                              | Reuse the authoritative contract at the appropriate boundary, preserving real ownership and distribution distinctions.                                              |
+| Misleading generics, unjustified casts or predicates, annotation removal, or reflection used to evade a safety check              | Restore accurate types and checked value flow. Use a narrowly qualified exception only when Section 2 is satisfied.                                                 |
+| Forwarding wrappers, dummy state, copies, aliases, proxies, or readonly adapters with no responsibility beyond clearing a finding | Remove the scaffolding and express the actual API and ownership directly. Preserve adapters that enforce a real boundary or compatibility contract.                 |
+| Fragmentation or test extraction performed only to satisfy a metric that does not apply                                           | Restore cohesive responsibilities and readable scenarios. Keep useful helpers and decomposition; file count alone does not establish harm.                          |
+| Accidental changes to errors, accepted inputs, serialization, scheduling, cleanup, or assertions during compliance work           | Restore the supported contract, or treat the change as separately authorized and verified behavioral work.                                                          |
+| Obsolete semantic patches, coverage exemptions, ineffective policy controls, or duplicate acceptance work                         | Replace them with the required published-tool protections and meaningful checks. Preserve independently necessary launcher, resource, and compatibility safeguards. |
+
+Verify consumers and responsibilities before removal. A helper's name, size, age, or number of consumers is not sufficient evidence that it is unnecessary. Additional inherited restrictions must provide a current engineering benefit; neither their prior presence nor their apparent strictness establishes that benefit. Reconcile them with this standard and applicable repository instructions.
 
 ## 4. Source coverage and compiler requirements
 
@@ -183,6 +207,8 @@ Classify by contents and consumers:
 Mixed production/test helpers are production. A data module with executable factories, calls, or orchestration is implementation. Maintained generators and template behavior retain their implementation obligations. Verify independently distributed starters and standalone tools in their actual distribution context.
 
 Maintain a compact coverage check against the actual repository inventory and resolved compiler membership. Every maintained source must have its applicable lint, compiler, and formatter owner. Generated, vendor, and diagnostic classifications require evidence. New maintained files must enter coverage automatically or fail the coverage check.
+
+Count compiler membership only in projects that the canonical acceptance workflow actually checks. Discovering a configuration file, matching an include glob, or listing compiler files does not establish that those files are typechecked. Missing ownership is a coverage failure, not a reason to generate an exemption.
 
 Account for ignore files, nested configs, CLI selections, project references, generated declarations, and same-basename declarations that can shadow implementations. Production dependencies on test-only support require production reclassification; production dependencies on invalid diagnostic fixtures are prohibited. Use existing architectural and compiler facilities where available.
 
@@ -432,6 +458,8 @@ Use the actual configuration, flags, compatibility settings, and runtime inputs.
 
 Use supported native facilities and small repository checks. The controlled requirements are the baseline, defined profiles, compiler minimums, and recorded quality exceptions. A machine-readable representation may support verification without becoming an independent source of authority.
 
+Start by proving the actual acceptance path for representative maintained source. Reuse native configuration, compiler membership, existing parsers, and proven shared checks before adding local machinery. Reused checks must exercise this repository's effective settings and commands; copying another repository's policy engine does not establish conformance. Keep repository-specific mappings local and avoid parallel implementations of the same requirement.
+
 Integrity checks must detect:
 
 - Unrecorded rule/category disablement, option relaxation, threshold increases, broader allowances, or warning severity, including category-enabled rules absent from the explicit list.
@@ -442,11 +470,15 @@ Integrity checks must detect:
 
 Directive verification must distinguish actual comments from strings, documentation examples, and classified diagnostic fixtures. Native unused-disable detection is required but cannot establish authorization for a used directive. Use existing parsers and compiler membership facilities where possible. Review source classifications against actual behavior and consumers; automation verifies declared mappings and observable boundary violations, while engineering review establishes semantic role.
 
-When a stable resolved-config API is unavailable, constrain composition and combine straightforward validation with native probes of the real invocation. Preserve useful existing checks. The standard requires neither a replacement typechecker nor a generic configuration, workflow, or dependency-analysis platform. The verification mechanism must remain proportionate to the repository.
+When a stable resolved-config API is unavailable, constrain composition and combine straightforward validation with native probes of the real invocation. Preserve useful existing checks. Verify required behavior and scope; fixed command or layout assumptions belong in explicit repository mappings, not additional policy requirements. The standard requires neither a replacement typechecker nor a generic configuration, workflow, or dependency-analysis platform. The verification mechanism must remain proportionate to the repository.
+
+Apply Section 3's design and reuse requirements to enforcement code itself. Remove redundant gate executions and unnecessary dependency installations while preserving isolation and meaningful regression controls. Where ordinary acceptance cost is material, measure it and simplify the expensive steps. An additional reporting format is not an additional protection.
 
 ### 8.2 Qualification controls
 
 Each control must exercise the intended protection with a valid counterpart. Assert the relevant diagnostic identity, file/location, and exit status. When a native finding has no code, assert its specific message and location. Parsing failures, missing dependencies, unrelated diagnostics, and empty selections do not demonstrate the intended enforcement.
+
+Use syntactically valid semantic errors to qualify handwritten declaration checking through its actual acceptance gate. For directive authorization, put an otherwise valid directive on a different operation that genuinely violates the rule; unused-disable detection must not be the reason that control fails. Configuration self-tests supplement these real enforcement controls rather than replacing them.
 
 | Protection                     | Required evidence at adoption                                                                                                                 |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -465,6 +497,8 @@ Each control must exercise the intended protection with a valid counterpart. Ass
 
 Use isolated disposable mutations for acceptance-wiring checks and restore them before final verification. Reuse meaningful existing tests. Generate oversized structural fixtures temporarily instead of maintaining large synthetic source files. Keep regression tests for nontrivial enforcement behavior and exception boundaries in normal acceptance; disposable acceptance-wiring mutations may be removed after qualification.
 
+Retained exception tests must exercise the detection boundary being relied upon. For a native allowance, keep its native valid and invalid controls, including all six Node-registration controls where applicable. An optional qualification command or a test of an exception manifest alone does not satisfy this requirement. Reuse focused controls without rerunning an entire disposable qualification suite on every source edit.
+
 Enforcement and toolchain changes require the affected qualification and integration controls. Ordinary source changes require existing gates, relevant behavioral tests, and review; they do not require recreating every disposable policy fault. Expand verification to resolve a concrete risk, not merely to increase test counts.
 
 ### 8.3 Evidence quality
@@ -475,11 +509,15 @@ Report checks as passed, failed, blocked, or unrun. Selected suites are not full
 
 ## 9. Adoption and change review
 
-### 9.1 Establish the starting state
+### 9.1 Establish and reconcile the starting state
 
 Record the starting revision and unrelated uncommitted changes. Inventory runtimes, package managers, compiler projects, test runners, generators, standalone scripts, templates, existing quality checks, and CI commands. Establish current failures before attributing them to the migration.
 
 Read applicable repository instructions and reconcile conflicting quality settings explicitly. Classify existing overrides and suppressions as defined profiles, currently justified quality exceptions, or unexplained relaxations requiring repair. Neither silent grandfathering nor blanket removal is acceptable.
+
+For both new and existing implementations, compare the effective source coverage, settings, acceptance paths, exception records, and source practices against this file. A previous adoption claim or green check does not establish conformance. Apply Section 3.5 to identified harmful practices and remove lint-only scaffolding once its lack of an independent responsibility is established. Retain useful contracts, safeguards, and improvements supported by evidence.
+
+Update conflicting quality instructions, configuration generators, probes, and records so the repository implements one coherent standard. Do not preserve an obsolete requirement in a verifier after removing it from the policy. The implementation must be understandable without previous releases or migration conversations. Identified conformance defects remain adoption work until corrected within the declared scope.
 
 ### 9.2 Implement in reviewable units
 
@@ -524,6 +562,8 @@ The canonical acceptance workflow must require:
 - Policy, coverage, generated-freshness, and relevant build/contract checks.
 - The actual tests required by the repository and affected behavior.
 
+`lint:agent` is an alternative output format for the same lint gate, not a second required full lint run. Keep diagnostic conveniences outside the aggregate when they duplicate checks without adding protection.
+
 Run independent checks so one failure does not hide the rest. Execute each compiler project and aggregate failures, or use independent required CI jobs. Run tests when an independent compiler check fails. Respect real build dependencies and report dependent checks as blocked when their prerequisites cannot be produced.
 
 The aggregate result must fail if any required gate fails. Verify shell pipelines, wrappers, job conditions, and status propagation. Writing/fixing commands are conveniences; acceptance uses check commands. Diagnostic filtering, forced success, skipped required jobs, and `continue-on-error` cannot establish completion.
@@ -538,6 +578,7 @@ Adoption is complete when:
 4. Required checks pass on the exact integrated revision.
 5. Intentional behavioral changes and quality exceptions have evidence and the required review.
 6. Required hosted CI has passed at the relevant revision.
+7. Identified nonconformance and harmful practices within the adoption scope have been corrected, and obsolete or contradictory enforcement has been reconciled.
 
 For a repository without hosted CI, record that fact and its actual acceptance process. Where hosted CI is required but has not run, report local verification complete and hosted acceptance pending.
 
@@ -958,12 +999,21 @@ Scope: files, authorized operations, origins, or bounded pattern:
 Directive selectors/inventory and optional duplication bounds:
 Diagnostic and required contract:
 Actual compliant alternative and demonstrated quality cost:
+Eligibility ground: supported-contract harm or disproportionate complexity without meaningful safety/correctness benefit:
 Chosen adjustment and why its scope is appropriate:
 Structural comparison or unsafe-type evidence, where applicable:
 Verification commands, relevant tests, and results:
 Retained protection, lost detection, and established assumptions:
 Review and revisit trigger:
 ```
+
+## Repository records
+
+The repository's [adoption record](code-quality.md#adoption-record) identifies its
+runtime, tools, source mappings, acceptance path, and verification requirements.
+[Quality exceptions](quality-exceptions.md) contains the operation inventory,
+contract comparisons, retained protections, and revisit conditions required by
+Appendix B.
 
 ## References
 

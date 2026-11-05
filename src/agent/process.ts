@@ -63,9 +63,7 @@ export async function observeAlive(identities: readonly ClaimedProcess[]): Promi
     // One `ps` at a time: each spawn briefly holds the event loop, so concurrent spawns add up.
     const { pid, identity, clock } = claim;
     verdicts.push(
-      probe(claim) ??
-        // oxlint-disable-next-line no-await-in-loop
-        !(await observeChildProcessReplaced(pid, identity, claim.published, clock)),
+      probe(claim) ?? !(await observeChildProcessReplaced(pid, identity, claim.published, clock)),
     );
   }
   return verdicts;
@@ -243,7 +241,6 @@ async function awaitStopping(
         throw new Error("Previous actor is still stopping; no replacement was launched.");
       }
       // The old actor must actually exit before replacing its generation.
-      // oxlint-disable-next-line no-await-in-loop
       await delay(25);
     }
   }
