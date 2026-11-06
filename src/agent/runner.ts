@@ -9,7 +9,7 @@ import {
   type Launch,
   type Result,
 } from "./contracts.ts";
-import { launchAt, missing, read, runDirectory, write } from "./storage.ts";
+import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { Parking, type Runtime } from "./parking.ts";
@@ -19,17 +19,6 @@ import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 
-function commandIdentity(file: string): string | undefined {
-  try {
-    const stat = fs.statSync(file, { bigint: true });
-    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-  } catch (error) {
-    if (missing(error)) {
-      return;
-    }
-    throw error;
-  }
-}
 function completionStatus(
   stopping: boolean,
   message: AssistantMessage | undefined,
@@ -52,7 +41,11 @@ const failureReason = (
   message?.errorMessage ??
   (message ? undefined : "Native run produced no terminal assistant message.");
 class Actor {
-  private active?: Promise<void> | undefined;
+  private work:
+    | { readonly kind: "idle" }
+    | { readonly kind: "running"; readonly launch: Launch; readonly task: Promise<void> } = {
+    kind: "idle",
+  };
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
@@ -62,7 +55,6 @@ class Actor {
   private readonly wake = new Wake();
   // A deferred run waits for an idle session, which has no command-file event.
   private retry = false;
-  private current?: Launch | undefined;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
@@ -152,7 +144,10 @@ class Actor {
     this.stopping = true;
     this.wake.raise();
     write(path.join(this.dir, `stopping-${this.token}.json`), { at: Date.now() });
-    write(path.join(this.dir, "stop-acknowledged.json"), { at: Date.now(), id: this.current?.id });
+    write(path.join(this.dir, "stop-acknowledged.json"), {
+      at: Date.now(),
+      id: this.work.kind === "running" ? this.work.launch.id : undefined,
+    });
     this.session?.abort().catch((error: unknown) => {
       this.errors.push(errorText(error));
     });
@@ -182,29 +177,33 @@ class Actor {
     if (!session) {
       throw new Error("Native child session is not ready.");
     }
-    this.current = launch;
     const baseline = new Set(session.sessionManager.getEntries().map((entry) => entry.id));
+    const task = Promise.resolve().then(() => this.executeRun(launch, session, baseline));
+    this.work = { kind: "running", launch, task };
     this.observation?.working(true);
-    this.active = (async () => {
-      try {
-        if (
-          launch.provider !== this.initial.provider ||
-          launch.model !== this.initial.model ||
-          launch.thinking !== this.initial.thinking
-        ) {
-          throw new Error("Continuation model snapshot changed unexpectedly.");
-        }
-        await session.prompt(launch.prompt, { expandPromptTemplates: false });
-        await session.waitForIdle();
-        this.saveResult(launch, baseline);
-      } catch (error) {
-        this.saveResult(launch, baseline, errorText(error));
-      } finally {
-        this.active = undefined;
-        this.current = undefined;
-        this.observation?.working(false);
+  }
+  private async executeRun(
+    launch: Launch,
+    session: AgentSession,
+    baseline: ReadonlySet<string>,
+  ): Promise<void> {
+    try {
+      if (
+        launch.provider !== this.initial.provider ||
+        launch.model !== this.initial.model ||
+        launch.thinking !== this.initial.thinking
+      ) {
+        throw new Error("Continuation model snapshot changed unexpectedly.");
       }
-    })();
+      await session.prompt(launch.prompt, { expandPromptTemplates: false });
+      await session.waitForIdle();
+      this.saveResult(launch, baseline);
+    } catch (error) {
+      this.saveResult(launch, baseline, errorText(error));
+    } finally {
+      this.work = { kind: "idle" };
+      this.observation?.working(false);
+    }
   }
   private commandLaunch(command: Command): Launch | undefined {
     const receipt = path.join(this.dir, "admissions", `${command.id}.json`);
@@ -236,7 +235,7 @@ class Actor {
     }
     if (
       command.action === "run" &&
-      (this.stopping || this.active !== undefined || !session.isIdle)
+      (this.stopping || this.work.kind === "running" || !session.isIdle)
     ) {
       this.retry = true;
       return;
@@ -261,33 +260,31 @@ class Actor {
     this.applyCommand(command, launch, session);
   }
   private staleCommand(command: Command, launch: Launch, session: AgentSession): boolean {
-    // Unbound legacy Stops cannot safely target this generation either.
-    if (command.action === "stop") {
-      return command.actorToken !== this.token;
+    switch (command.action) {
+      case "stop":
+        return command.actorToken !== this.token;
+      case "steer":
+        return this.work.kind !== "running" || session.isIdle || this.work.launch.id !== launch.id;
+      case "run":
+        return false;
     }
-    return (
-      command.action === "steer" &&
-      (this.active === undefined || session.isIdle || this.current?.id !== launch.id)
-    );
   }
   private applyCommand(command: Command, launch: Launch, session: AgentSession): void {
-    if (command.action === "stop") {
-      this.stop();
-      return;
+    switch (command.action) {
+      case "stop":
+        this.stop();
+        return;
+      case "run":
+        this.run(launch);
+        return;
+      case "steer":
+        // Synchronous native queue admission cannot turn into an idle prompt after an await.
+        session.agent.steer({
+          role: "user",
+          content: [{ type: "text", text: command.prompt }],
+          timestamp: Date.now(),
+        });
     }
-    if (command.action === "run") {
-      this.run(launch);
-      return;
-    }
-    if (command.prompt === undefined) {
-      throw new Error("Missing guidance.");
-    }
-    // Synchronous native queue admission cannot turn into an idle prompt after an await.
-    session.agent.steer({
-      role: "user",
-      content: [{ type: "text", text: command.prompt }],
-      timestamp: Date.now(),
-    });
   }
   private pendingCommand(file: string): Command | undefined {
     const identity = commandIdentity(file);
@@ -329,7 +326,7 @@ class Actor {
         this.errors.push(errorText(error));
       });
     }
-    return this.stopping && this.active === undefined && (this.session?.isIdle ?? true);
+    return this.stopping && this.work.kind === "idle" && (this.session?.isIdle ?? true);
   }
   /** Durable command readiness, not elapsed time, defines admission. */
   private async admitCommands(runtime: Runtime, parked: Parking): Promise<void> {
@@ -369,14 +366,14 @@ class Actor {
       this.parking = await parked.park(runtime, {
         signal: owner.signal,
         pi: this.context?.pi,
-        busy: this.stopping || this.active !== undefined || this.observation?.watched === true,
+        busy: this.stopping || this.work.kind === "running" || this.observation?.watched === true,
         // Raced commands and viewers keep this actor resident; the loop admits after release.
         quiet: () => {
           const queued = this.pending().some((command) => this.commandLaunch(command));
           if (queued) {
             this.wake.raise();
           }
-          const idle = this.active === undefined && !this.stopping;
+          const idle = this.work.kind === "idle" && !this.stopping;
           return !queued && idle && this.observation?.watched !== true;
         },
         errors: this.errors,
@@ -387,7 +384,7 @@ class Actor {
     return this.parking;
   }
   private failure(error: unknown, unopened?: string): void {
-    const launch = this.current ?? this.initial;
+    const launch = this.work.kind === "running" ? this.work.launch : this.initial;
     const result: Result = {
       id: launch.id,
       owner: launch.owner,
@@ -483,7 +480,9 @@ class Actor {
       process.on("SIGTERM", this.stop);
       process.on("SIGINT", this.stop);
       await this.admitCommands(runtime, parked);
-      await this.active;
+      if (this.work.kind === "running") {
+        await this.work.task;
+      }
     } catch (error) {
       this.failure(error, parked?.opened === true ? undefined : parkedToken);
     } finally {

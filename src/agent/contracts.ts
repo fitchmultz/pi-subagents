@@ -93,14 +93,23 @@ export const resultSchema = Type.Object({
   ),
 });
 export type Result = Static<typeof resultSchema>;
-export const commandSchema = Type.Object({
+export const commandMetadataSchema = Type.Object({
   id: Type.String(),
   runId: Type.String(),
   action: Type.Union([Type.Literal("run"), Type.Literal("steer"), Type.Literal("stop")]),
-  prompt: Type.Optional(Type.String()),
-  actorToken: Type.Optional(Type.String()),
   createdAt: Type.Number(),
 });
+const commandFields = Type.Omit(commandMetadataSchema, ["action"]).properties;
+export const commandSchema = Type.Union([
+  Type.Object({ ...commandFields, action: Type.Literal("run") }),
+  Type.Object({ ...commandFields, action: Type.Literal("steer"), prompt: Type.String() }),
+  Type.Object({
+    ...commandFields,
+    action: Type.Literal("stop"),
+    // Historical unbound Stops parse but cannot target any current actor.
+    actorToken: Type.Optional(Type.String()),
+  }),
+]);
 export type Command = Static<typeof commandSchema>;
 export const successorSchema = Type.Object({ id: Type.String() });
 /** Authority to restore exact working state, valid only after the named actor has exited. */

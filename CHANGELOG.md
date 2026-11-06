@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
+
 ## 0.52.17 - 2026-11-05
 
 <!-- npm-release:unreleased:start -->

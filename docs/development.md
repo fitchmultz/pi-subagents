@@ -80,6 +80,12 @@ npm and attached to the matching GitHub release.
 
 ## Isolation and safety
 
+Actor command admission keeps execution separate from native session activity.
+Execution is either idle or running with one launch and task. A stopping actor
+admits no new Run work. Run, Steer and Stop payloads are action-specific;
+guidance always carries a prompt and new Stops always name the actor token.
+Historical unbound Stops remain readable and receive stale admission receipts.
+
 Every test/smoke broker uses a short, explicit `PI_INTERCOM_RUNTIME_DIR` owned by
 the fixture. Do not touch `/tmp/pi-intercom-<uid>` to test namespace behavior on a
 workstation with active sessions. Tests for the default path inspect it without
