@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
+
 ## 0.52.18 - 2026-11-06
 
 <!-- npm-release:unreleased:start -->

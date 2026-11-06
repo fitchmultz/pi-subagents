@@ -8,11 +8,48 @@ import { Assert } from "./typebox.ts";
 import {
   contributionsSchema,
   resultSchema,
+  type AccountingState,
   type Contribution,
   type Launch,
   type Result,
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
+
+/** Pending repair remains authoritative until its native terminal is published and validated. */
+export function accountingState(result: Result | undefined): AccountingState {
+  if (result?.accountingPending !== undefined) {
+    return { kind: "pending", pending: result.accountingPending, error: result.accountingError };
+  }
+  const terminalEntryId = result?.terminalEntryId;
+  if (result?.contributions !== undefined) {
+    return { kind: "verified", contributions: result.contributions, terminalEntryId };
+  }
+  return result?.accountingError === undefined
+    ? { kind: "unrecorded", terminalEntryId }
+    : { kind: "unavailable", error: result.accountingError, terminalEntryId };
+}
+
+export function accountingFields(
+  state: AccountingState,
+): Pick<Result, "contributions" | "accountingPending" | "accountingError" | "terminalEntryId"> {
+  const terminal =
+    state.kind !== "pending" && state.terminalEntryId !== undefined
+      ? { terminalEntryId: state.terminalEntryId }
+      : {};
+  switch (state.kind) {
+    case "unrecorded":
+      return terminal;
+    case "verified":
+      return { contributions: state.contributions, ...terminal };
+    case "pending":
+      return {
+        accountingPending: state.pending,
+        ...(state.error === undefined ? {} : { accountingError: state.error }),
+      };
+    case "unavailable":
+      return { accountingError: state.error, ...terminal };
+  }
+}
 
 /** Billing evidence of one native entry. Missing required usage is an error only outside a baseline. */
 function billing(entry: UnknownRecord): UnknownRecord | "missing" | undefined {
@@ -171,10 +208,11 @@ export function readResult(base: string, launch: Launch): Result | undefined {
   if (!result) {
     return;
   }
-  const pending = result.accountingPending;
-  if (pending === undefined) {
+  const accounting = accountingState(result);
+  if (accounting.kind !== "pending") {
     return result;
   }
+  const { pending } = accounting;
   let contributions;
   try {
     contributions = childUsage(launch, new Set(pending.baseline), pending.terminalCandidate);
@@ -183,7 +221,14 @@ export function readResult(base: string, launch: Launch): Result | undefined {
     return result;
   }
   const { accountingPending: _pending, accountingError: _error, ...execution } = result;
-  const repaired = { ...execution, terminalEntryId: pending.terminalCandidate, contributions };
+  const repaired = {
+    ...execution,
+    ...accountingFields({
+      kind: "verified",
+      terminalEntryId: pending.terminalCandidate,
+      contributions,
+    }),
+  };
   write(path.join(runDirectory(base, launch.id), "result.json"), repaired);
   return repaired;
 }
