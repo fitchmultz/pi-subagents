@@ -9,18 +9,20 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hasErrorCode } from "../../shared/unknown.ts";
+import { brokerPidRecord, isLinuxProcessReplaced } from "./pid.ts";
 
 type OwnerState = "live" | "exited" | "uncertain";
 
 function ownerState(fd: number): OwnerState {
   try {
-    const first = readFileSync(fd, "utf8").split("\n")[0] ?? "";
+    const lines = readFileSync(fd, "utf8").split("\n");
+    const first = lines[0] ?? "";
     const pid = Number(first);
     if (!/^[1-9]\d*$/.test(first) || !Number.isSafeInteger(pid)) {
       return "uncertain";
     }
     process.kill(pid, 0);
-    return "live";
+    return isLinuxProcessReplaced(pid, lines.slice(2).join("\n")) ? "exited" : "live";
   } catch (error) {
     return hasErrorCode(error, "ESRCH") ? "exited" : "uncertain";
   }
@@ -64,8 +66,10 @@ function publishClaim(file: string, fd: number): () => void {
     }
   };
   try {
-    // Preserve the legacy PID/timestamp record. Age is not evidence that its owner exited.
-    writeFileSync(fd, `${process.pid}\n${Date.now()}\n`);
+    // Keep legacy PID/timestamp lines; qualified native identity can prove later PID reuse.
+    const record = brokerPidRecord();
+    const identity = record.slice(record.indexOf("\n") + 1);
+    writeFileSync(fd, `${process.pid}\n${Date.now()}\n${identity}`);
     return release;
   } catch (error) {
     release();

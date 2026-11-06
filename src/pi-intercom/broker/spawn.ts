@@ -252,5 +252,7 @@ async function waitForBroker(timeoutMs = 5000): Promise<void> {
     // Polling waits between probes rather than starting an unbounded batch.
     await sleep(100);
   }
-  throw new Error("Broker failed to start within timeout");
+  throw new Error(
+    `Broker failed to start within timeout. Startup claim: ${BROKER_SPAWN_LOCK}. Live or uncertain owners are not reclaimed.`,
+  );
 }
