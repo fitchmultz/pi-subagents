@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Give prepared topic transactions action-specific payloads while preserving validate-before-commit and stale-restore normalization.
+- Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
 
 ## 0.52.18 - 2026-11-06
 

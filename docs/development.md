@@ -23,6 +23,12 @@ Run narrow owner-boundary tests locally through `scripts/run-tests.mjs`. Full
 `npm run ci` belongs in hosted CI and includes package/install smokes and the
 complete suites. Keep the strict Oxlint/Oxfmt rules; see [code quality](code-quality.md).
 
+Builds compile into process-owned staging before replacing `dist`. If a publisher
+exits after retiring the previous build, later builds preserve its complete
+`.previous` tree until a new complete build publishes. A failed build reports
+the retained recovery paths. Recovery never promotes an older backup into a
+concurrent publisher's retirement gap or reaps live or uncertain owners.
+
 ## Native Android/Termux
 
 Use app-private storage, not Android's shared `/sdcard` filesystem. No Termux app
