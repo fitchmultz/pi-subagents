@@ -29,6 +29,7 @@ import {
   snapshotFrames,
   TopicSnapshot,
   publicationMessage,
+  preparedPublication,
   deliveryAcknowledgement,
   shouldReplaceDelivery,
 } from "./snapshots.ts";
@@ -245,7 +246,7 @@ class IntercomBroker {
         ? session.info
         : session.topics.snapshot(session.info, prepared);
       const from = messageSender(nextInfo);
-      const deliveries = this.planPublications(currentId, from, prepared.publication);
+      const deliveries = this.planPublications(currentId, from, preparedPublication(prepared));
       // Validate every frame before committing state or delivering publications.
       if (prepared.restore) {
         session.topics.validateRestore(session.info, prepared, requestId);
