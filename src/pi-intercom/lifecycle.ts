@@ -24,14 +24,21 @@ type ContextSnapshot = Readonly<Record<keyof ContextTarget, string | null>> &
     readonly guardedDelivery: 1 | null;
   };
 
+type ContextState =
+  | { readonly kind: "inactive"; readonly epoch: number }
+  | { readonly kind: "invalidated"; readonly epoch: number; readonly sessionId: string }
+  | {
+      readonly kind: "live";
+      readonly epoch: number;
+      readonly context: ExtensionContext;
+      readonly sessionId: string;
+      readonly incarnation: string;
+    };
+
 /** Owns native context validity and occupancy, never journal or socket state. */
 export class IntercomLifecycle {
-  private context: ExtensionContext | null = null;
-  private sessionId: string | null = null;
+  private state: ContextState = { kind: "inactive", epoch: 0 };
   private model = "unknown";
-  private disposed = true;
-  private epoch = 0;
-  private incarnation: string | null = null;
   private peerId: string | null = null;
   private guardedDelivery = false;
   private applicationGuard: string | undefined;
@@ -47,10 +54,10 @@ export class IntercomLifecycle {
     this.lineage = lineage;
   }
   get generation(): number {
-    return this.epoch;
+    return this.state.epoch;
   }
   get currentSessionId(): string | null {
-    return this.sessionId;
+    return this.state.kind === "inactive" ? null : this.state.sessionId;
   }
   get toolCount(): number {
     return this.tools.size;
@@ -88,7 +95,7 @@ export class IntercomLifecycle {
     request.respond(this.snapshot());
   }
   snapshot(): ContextSnapshot {
-    if (!this.live()) {
+    if (this.state.kind !== "live" || !this.live()) {
       return {
         version: 1,
         rootSessionId: null,
@@ -100,10 +107,10 @@ export class IntercomLifecycle {
     }
     return {
       version: 1,
-      rootSessionId: this.lineage?.rootSessionId ?? this.sessionId,
+      rootSessionId: this.lineage?.rootSessionId ?? this.state.sessionId,
       parentSessionId: this.lineage?.parentSessionId,
       peerId: this.peerId,
-      incarnation: this.incarnation,
+      incarnation: this.state.incarnation,
       connected: this.peerId !== null,
       guardedDelivery: this.guardedDelivery ? 1 : null,
       applicationGuard: this.applicationGuard,
@@ -135,39 +142,43 @@ export class IntercomLifecycle {
     );
   }
   start(ctx: ExtensionContext): number {
-    this.disposed = false;
-    this.epoch += 1;
-    this.context = ctx;
-    this.sessionId = ctx.sessionManager.getSessionId();
-    this.incarnation = randomUUID();
+    this.state = {
+      kind: "live",
+      epoch: this.state.epoch + 1,
+      context: ctx,
+      sessionId: ctx.sessionManager.getSessionId(),
+      incarnation: randomUUID(),
+    };
     this.applicationGuard = undefined;
     this.model = ctx.model?.id ?? "unknown";
     this.running = false;
     this.activity = 0;
     this.tools.clear();
     this.transport(null);
-    return this.epoch;
+    return this.state.epoch;
   }
   invalidate(): void {
-    this.disposed = true;
-    this.epoch += 1;
+    const epoch = this.state.epoch + 1;
+    this.state =
+      this.state.kind === "inactive"
+        ? { kind: "inactive", epoch }
+        : { kind: "invalidated", epoch, sessionId: this.state.sessionId };
     this.running = false;
     this.tools.clear();
     this.publishContext();
   }
   clear(): void {
-    this.context = null;
-    this.sessionId = null;
+    this.state = { kind: "inactive", epoch: this.state.epoch };
   }
   live(
-    ctx: ExtensionContext | null = this.context,
-    generation = this.epoch,
+    ctx: ExtensionContext | null = this.state.kind === "live" ? this.state.context : null,
+    generation = this.state.epoch,
   ): ExtensionContext | null {
-    if (this.disposed || generation !== this.epoch || !ctx) {
+    if (this.state.kind !== "live" || generation !== this.state.epoch || !ctx) {
       return null;
     }
     try {
-      if (this.sessionId !== null && ctx.sessionManager.getSessionId() !== this.sessionId) {
+      if (ctx.sessionManager.getSessionId() !== this.state.sessionId) {
         return null;
       }
       // Reading a native property detects invalidated contexts without modifying them.
@@ -240,12 +251,12 @@ export class IntercomLifecycle {
   }
   async registration(pendingAsks: number): Promise<Omit<SessionInfo, "id">> {
     const live = this.live();
-    if (!live || this.sessionId === null) {
+    if (!live || this.state.kind !== "live") {
       throw new Error("Intercom runtime not initialized");
     }
     return {
-      ...this.identity(this.sessionId),
-      incarnation: this.incarnation ?? undefined,
+      ...this.identity(this.state.sessionId),
+      incarnation: this.state.incarnation,
       guardedDelivery: 1,
       applicationGuard: this.applicationGuard,
       cwd: live.cwd,
