@@ -80,6 +80,10 @@ npm and attached to the matching GitHub release.
 
 ## Isolation and safety
 
+Smoke child cleanup treats leader exit and pipe closure separately. Pipe draining
+has waiting, draining and closed phases. Closing it cancels its deadlines and
+detaches its listeners, so later events cannot restart cleanup.
+
 Every test/smoke broker uses a short, explicit `PI_INTERCOM_RUNTIME_DIR` owned by
 the fixture. Do not touch `/tmp/pi-intercom-<uid>` to test namespace behavior on a
 workstation with active sessions. Tests for the default path inspect it without
