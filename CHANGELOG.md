@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
+
 ## 0.52.18 - 2026-11-06
 
 <!-- npm-release:unreleased:start -->
