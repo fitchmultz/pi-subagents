@@ -341,6 +341,9 @@ tool to give up the turn.
 
 Shutdown joins admitted inbound work before detaching its native owner. Stale
 runtime generations must not checkpoint or deliver into a replacement session.
+Context state is inactive, live with its session and incarnation, or invalidated
+while transport cleanup retains the session ID. Clearing cleanup drops that ID;
+transport connection and native tool activity remain separate from context validity.
 The native tests own these contracts; neither a timer nor a source-string test is
 publication evidence.
 

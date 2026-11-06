@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Make directory-watch availability and the coalesced wake's single-owner contract explicit without changing polling fallback.
+
 ## 0.52.18 - 2026-11-06
 
 <!-- npm-release:unreleased:start -->

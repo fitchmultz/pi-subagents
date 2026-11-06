@@ -85,6 +85,16 @@ availability. Missing paths can be armed later; unsupported or failed native
 watches keep the existing polling fallback. Each coalesced Wake has one waiting
 owner loop.
 
+Parent attachment keeps one binding through detached, waiting, attaching and
+attached phases. The existing shutdown signal closes the owner. Managed
+readiness can attach only its own still-current waiting binding; shutdown joins
+admitted publication before releasing the matching generation.
+
+Parking returns resident, exit-with-parked-authority or exit-after-failed-save.
+Both exit outcomes have disposed the native runtime and must exit the actor;
+neither permits a second ordinary disposal. Restore tracks unopened, opening
+and adopted phases, keeping the exact saved cut with the phase that owns it.
+
 Smoke child cleanup treats leader exit and pipe closure separately. Pipe draining
 has waiting, draining and closed phases. Closing it cancels its deadlines and
 detaches its listeners, so later events cannot restart cleanup.
