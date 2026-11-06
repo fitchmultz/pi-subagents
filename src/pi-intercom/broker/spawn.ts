@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import net from "net";
@@ -12,6 +12,7 @@ import {
   prepareBrokerSocketPath,
 } from "./paths.ts";
 import { isBrokerPidReused } from "./pid.ts";
+import { acquireSpawnClaim } from "./spawn-claim.ts";
 import { errorMessage, hasErrorCode } from "../../shared/unknown.ts";
 
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -85,8 +86,8 @@ export async function spawnBrokerIfNeeded(
     return;
   }
 
-  const ownsLock = acquireSpawnLock();
-  if (!ownsLock) {
+  const release = acquireSpawnClaim(BROKER_SPAWN_LOCK);
+  if (release === undefined) {
     await waitForBroker();
     return;
   }
@@ -138,7 +139,7 @@ export async function spawnBrokerIfNeeded(
         });
     });
   } finally {
-    releaseSpawnLock();
+    release();
   }
 }
 
@@ -153,26 +154,33 @@ export async function assertBrokerCanStart(): Promise<void> {
   await stopUnhealthyBrokerBeforeSpawn();
 }
 
-function readLivePid(pidPath: string): number | null {
-  if (!existsSync(pidPath)) {
-    return null;
-  }
+type BrokerOwner =
+  | { readonly kind: "absent" }
+  | { readonly kind: "live"; readonly pid: number }
+  | { readonly kind: "uncertain"; readonly reason: string };
+
+function readBrokerOwner(pidPath: string): BrokerOwner {
   let raw: string;
   try {
     raw = readFileSync(pidPath, "utf-8");
-  } catch {
-    return null;
+  } catch (error) {
+    return hasErrorCode(error, "ENOENT")
+      ? { kind: "absent" }
+      : { kind: "uncertain", reason: `Cannot read broker PID record: ${errorMessage(error)}` };
   }
-  const pid = parseInt(raw.trim(), 10);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return null;
+  const first = raw.trim().split("\n")[0] ?? "";
+  const pid = Number(first);
+  if (!/^[1-9]\d*$/.test(first) || !Number.isSafeInteger(pid)) {
+    return { kind: "uncertain", reason: "Broker PID record is invalid" };
   }
   try {
     process.kill(pid, 0);
   } catch (error) {
-    return hasErrorCode(error, "EPERM") ? pid : null;
+    return hasErrorCode(error, "ESRCH")
+      ? { kind: "absent" }
+      : { kind: "uncertain", reason: `Cannot establish broker PID ${pid}: ${errorMessage(error)}` };
   }
-  return isBrokerPidReused(pid, raw) ? null : pid;
+  return isBrokerPidReused(pid, raw) ? { kind: "absent" } : { kind: "live", pid };
 }
 
 async function previousBrokerWarning(): Promise<string | undefined> {
@@ -183,9 +191,10 @@ async function previousBrokerWarning(): Promise<string | undefined> {
       return "An older agent-directory Intercom broker is still running. Its peers are not part of shared same-user discovery until they reload with the updated extension. Existing sessions and accepted work are untouched; no legacy fallback is used.";
     }
   }
-  const previousPid = readLivePid(join(getPiAgentDir(), "intercom", "broker.pid"));
-  if (previousPid !== null) {
-    return `Older Intercom broker PID ${previousPid} may still own accepted work. Its peers need to reload with the updated extension to join shared same-user discovery. Nothing was stopped or replaced; no legacy fallback is used.`;
+  const previous = readBrokerOwner(join(getPiAgentDir(), "intercom", "broker.pid"));
+  if (previous.kind !== "absent") {
+    const owner = previous.kind === "live" ? `PID ${previous.pid}` : "with uncertain PID identity";
+    return `Older Intercom broker ${owner} may still own accepted work. Its peers need to reload with the updated extension to join shared same-user discovery. Nothing was stopped or replaced; no legacy fallback is used.`;
   }
   return undefined;
 }
@@ -194,13 +203,19 @@ export async function stopUnhealthyBrokerBeforeSpawn(): Promise<void> {
   if (await checkSocketConnectable()) {
     return;
   }
-  const pid = readLivePid(BROKER_PID);
-  if (pid === null) {
-    return;
+  const owner = readBrokerOwner(BROKER_PID);
+  switch (owner.kind) {
+    case "absent":
+      return;
+    case "live":
+      throw new Error(
+        `Intercom broker PID ${owner.pid} may still own accepted work but its socket is unhealthy; refusing to spawn a second broker. Let the broker exit normally, then retry.`,
+      );
+    case "uncertain":
+      throw new Error(
+        `${owner.reason}; refusing to spawn a second broker while ownership is uncertain.`,
+      );
   }
-  throw new Error(
-    `Intercom broker PID ${pid} may still own accepted work but its socket is unhealthy; refusing to spawn a second broker. Let the broker exit normally, then retry.`,
-  );
 }
 
 async function checkSocketConnectable(): Promise<boolean> {
@@ -227,63 +242,6 @@ function checkOneSocket(brokerSocket: string): Promise<boolean> {
   });
 }
 
-function acquireSpawnLock(): boolean {
-  const maxRetries = 5;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      writeFileSync(BROKER_SPAWN_LOCK, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
-      return true;
-    } catch (error) {
-      if (!hasErrorCode(error, "EEXIST")) {
-        throw error;
-      }
-      if (isSpawnLockStale()) {
-        releaseSpawnLock();
-        continue;
-      }
-      return false;
-    }
-  }
-  return false;
-}
-
-function isSpawnLockStale(): boolean {
-  if (!existsSync(BROKER_SPAWN_LOCK)) {
-    return false;
-  }
-
-  try {
-    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8")
-      .trim()
-      .split("\n");
-    const pid = Number.parseInt(pidLine, 10);
-    const createdAt = Number.parseInt(createdAtLine, 10);
-    const ageMs = Date.now() - createdAt;
-
-    if (Number.isFinite(pid)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        // The process that created the lock is gone.
-        return true;
-      }
-    }
-
-    return !Number.isFinite(createdAt) || ageMs > 10_000;
-  } catch {
-    // Unreadable lock contents are treated as stale so a new broker can start.
-    return true;
-  }
-}
-
-function releaseSpawnLock(): void {
-  try {
-    unlinkSync(BROKER_SPAWN_LOCK);
-  } catch {
-    // Another cleanup path may already have removed the lock.
-  }
-}
-
 async function waitForBroker(timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -294,5 +252,7 @@ async function waitForBroker(timeoutMs = 5000): Promise<void> {
     // Polling waits between probes rather than starting an unbounded batch.
     await sleep(100);
   }
-  throw new Error("Broker failed to start within timeout");
+  throw new Error(
+    `Broker failed to start within timeout. Startup claim: ${BROKER_SPAWN_LOCK}. Live or uncertain owners are not reclaimed.`,
+  );
 }
