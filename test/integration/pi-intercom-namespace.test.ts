@@ -3,12 +3,21 @@ import assert from "node:assert/strict";
 import { fork, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+} from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test as nodeTest } from "node:test";
 import { assertRecord, records, text } from "../support/assertions.ts";
+import { waitFor } from "../support/native-readiness.ts";
 
 const repo = process.cwd();
 
@@ -45,6 +54,72 @@ async function request(child: ChildProcess, action: string, params = {}) {
   assert.equal(result.error, undefined);
   return result.result;
 }
+
+nodeTest("a suspended live spawn owner keeps its claim beyond the old age limit", async () => {
+  const runtime = text(process.env.PI_INTERCOM_RUNTIME_DIR);
+  const fixture = path.join(repo, "test/fixtures/intercom-spawn-owner.ts");
+  const launcher = fork(fixture, ["hold"], {
+    execArgv: [],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  const launcherExit = once(launcher, "exit");
+  const marker = path.join(runtime, "suspended-candidate.json");
+  let candidate: number | undefined;
+  try {
+    await waitFor(() => existsSync(marker), "spawned candidate owns the suspension marker");
+    const raw: unknown = JSON.parse(readFileSync(marker, "utf8"));
+    assertRecord(raw);
+    assert.equal(raw.launcher, launcher.pid);
+    assert.ok(typeof raw.candidate === "number");
+    candidate = raw.candidate;
+    const claim = path.join(runtime, "broker.spawn.lock");
+    const saved = readFileSync(claim, "utf8");
+    assert.equal(Number.parseInt(saved, 10), launcher.pid);
+    const createdAt = Number(saved.split("\n")[1]);
+    assert.ok(Number.isFinite(createdAt));
+    await delay(Math.max(0, createdAt + 10_010 - Date.now()));
+    const contender = fork(fixture, [], {
+      execArgv: [],
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    let error = "";
+    contender.stderr?.on("data", (chunk: Buffer) => {
+      error += chunk.toString();
+    });
+    const exited: readonly unknown[] = await once(contender, "exit");
+    const code = exited[0];
+    assert.equal(code, 1, "a live claim prevents a second startup");
+    assert.match(error, /Broker failed to start within timeout/);
+    assert.equal(readFileSync(claim, "utf8"), saved);
+    assert.ok(launcher.pid !== undefined);
+    process.kill(launcher.pid, 0);
+    process.kill(candidate, "SIGKILL");
+    candidate = undefined;
+    launcher.kill("SIGKILL");
+    await launcherExit;
+    assert.equal(readFileSync(claim, "utf8"), saved);
+    const replacement = fork(fixture, [], {
+      execArgv: [],
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    assert.deepEqual(await once(replacement, "exit"), [0, null]);
+    assert.equal(existsSync(claim), false, "the new owner releases only its acquired claim");
+  } finally {
+    if (candidate !== undefined) {
+      process.kill(candidate, "SIGKILL");
+    }
+    launcher.kill("SIGCONT");
+    launcher.kill("SIGTERM");
+    await launcherExit;
+    const pidFile = path.join(runtime, "broker.pid");
+    if (existsSync(pidFile)) {
+      const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+      process.kill(pid, "SIGTERM");
+      await waitFor(() => !existsSync(pidFile), "test broker exit");
+    }
+    rmSync(runtime, { recursive: true, force: true });
+  }
+});
 
 nodeTest(
   "shared runtime routes across agent directories/cwds/temp roots without taking over old brokers",
