@@ -17,7 +17,14 @@ import {
   signalProcess,
 } from "./process.ts";
 import { stopChildren } from "./shutdown.ts";
-import { isChild, errorText, rememberSDK, retainsChildren } from "./host.ts";
+import {
+  isChild,
+  errorText,
+  managedHost,
+  rememberSDK,
+  retainsChildren,
+  type ManagedHost,
+} from "./host.ts";
 import { serveParked } from "./parking.ts";
 import {
   resultSchema,
@@ -54,24 +61,20 @@ import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 
-/** Native fork lifetime owner (`ctx.managedHost`); read structurally so official Pi stays supported. */
-interface ManagedHost {
-  readonly owner: { readonly pid: number };
-  readonly ready: Promise<boolean>;
+interface AttachmentBinding {
+  readonly context: ExtensionContext;
+  readonly owner: string;
+  readonly base: string;
+  readonly host: ManagedHost | undefined;
 }
-function managedHost(context: ExtensionContext): ManagedHost | undefined {
-  const host: unknown = Reflect.get(context, "managedHost");
-  if (typeof host !== "object" || host === null) {
-    return undefined;
-  }
-  const owner: unknown = Reflect.get(host, "owner");
-  const pid: unknown =
-    typeof owner === "object" && owner !== null ? Reflect.get(owner, "pid") : undefined;
-  const ready: unknown = Reflect.get(host, "ready");
-  return typeof pid === "number" && Number.isSafeInteger(pid) && ready instanceof Promise
-    ? { owner: { pid }, ready: ready.then((accepted) => accepted === true) }
-    : undefined;
-}
+type AttachmentState =
+  | { readonly kind: "detached" }
+  | { readonly kind: "waiting"; readonly binding: AttachmentBinding }
+  | {
+      readonly kind: "attaching" | "attached";
+      readonly binding: AttachmentBinding;
+      readonly generation: string;
+    };
 
 /** Legacy results are optional; their reconciliation reports an invalid configured root. */
 function legacyInput(): string[] {
@@ -82,14 +85,8 @@ function legacyInput(): string[] {
   }
 }
 class AgentRuntime {
-  private ctx?: ExtensionContext | undefined;
+  private attachment: AttachmentState = { kind: "detached" };
   private readonly reporter = new BackgroundReporter(() => this.ctx);
-  // A managed launcher owns children across worker replacement; otherwise this process does.
-  private host?: ManagedHost | undefined;
-  private accepted = false;
-  private base = "";
-  private owner = "";
-  private generation = "";
   // Polling remains only while change hints are unavailable or a reconciliation failed.
   private timer?: NodeJS.Timeout;
   private woken?: NodeJS.Immediate | undefined;
@@ -99,7 +96,6 @@ class AgentRuntime {
   // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
   private observed = new Map<string, string>();
   private probe?: NodeJS.Timeout;
-  private closing = false;
   private reset: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
   private readonly child = isChild();
@@ -109,11 +105,28 @@ class AgentRuntime {
     this.pi = pi;
     this.watches = new CompletionWatches(this.reporter, this.wake);
   }
+  private get binding(): AttachmentBinding {
+    if (this.attachment.kind === "detached") {
+      throw new Error("Agent runtime is not attached.");
+    }
+    return this.attachment.binding;
+  }
+  private get ctx(): ExtensionContext | undefined {
+    return this.attachment.kind === "attaching" || this.attachment.kind === "attached"
+      ? this.attachment.binding.context
+      : undefined;
+  }
+  private get base(): string {
+    return this.binding.base;
+  }
+  private get owner(): string {
+    return this.binding.owner;
+  }
   private checkMain(): void {
     if (isChild()) {
       throw new Error("Only a main session may delegate or control agent runs.");
     }
-    if (this.closing || !this.ctx || this.base.length === 0) {
+    if (this.shutdown.signal.aborted || this.attachment.kind !== "attached") {
       throw new Error("Agent runtime is not attached.");
     }
   }
@@ -133,17 +146,18 @@ class AgentRuntime {
   };
   private readonly scan = (): void => {
     clearTimeout(this.timer);
-    if (this.closing || !this.ctx || this.child) {
+    if (this.shutdown.signal.aborted || this.attachment.kind !== "attached" || this.child) {
       return;
     }
+    const { context } = this.attachment.binding;
     const inputs = () => [this.base, ...legacyInput(), ...this.awaited];
     const before = new Map(inputs().map((file) => [file, pathStamp(file)]));
     let reconciled = true;
     try {
-      const { notices, awaited } = notifications(this.ctx, this.base, this.owner);
+      const { notices, awaited } = notifications(context, this.base, this.owner);
       this.awaited = awaited;
-      notices.unshift(...reconcileLegacy(this.ctx, this.reporter));
-      deliver(this.pi, this.ctx, notices);
+      notices.unshift(...reconcileLegacy(context, this.reporter));
+      deliver(this.pi, context, notices);
       this.reporter.recover("completion-scan");
     } catch (error) {
       reconciled = false;
@@ -172,23 +186,34 @@ class AgentRuntime {
     this.awaited = new Set();
   }
   private start(context: ExtensionContext): Promise<void> | undefined {
+    if (this.shutdown.signal.aborted) {
+      return;
+    }
     this.reporter.start();
-    this.host = managedHost(context);
-    if (this.host === undefined || this.accepted || this.child) {
-      this.reset = this.reset.then(() => this.attach(context));
+    const owner = context.sessionManager.getSessionId();
+    const host = managedHost(context);
+    const binding = { context, owner, base: ownerDirectory(this.agentDir, owner), host };
+    if (
+      host === undefined ||
+      this.attachment.kind === "attached" ||
+      this.attachment.kind === "attaching" ||
+      this.child
+    ) {
+      this.reset = this.reset.then(() => this.attach(binding));
       return this.reset;
     }
     // Attach and publish only after the launcher retires rollback: an unready replacement
     // must neither adopt children nor append completions to a journal it may abandon.
     // Readiness follows session_start, so never await it here.
-    this.owner = context.sessionManager.getSessionId();
-    this.base = ownerDirectory(this.agentDir, this.owner);
-    this.host.ready
-      .then(async (accepted) => {
-        if (accepted && !this.closing) {
-          this.accepted = true;
-          await this.start(context);
+    const waiting: AttachmentState = { kind: "waiting", binding };
+    this.attachment = waiting;
+    host.ready
+      .then((accepted) => {
+        if (accepted && !this.shutdown.signal.aborted && this.attachment === waiting) {
+          this.reset = this.reset.then(() => this.attach(binding));
+          return this.reset;
         }
+        return null;
       })
       .catch((error: unknown) => {
         this.reporter.report(undefined, `Agent runtime attachment: ${errorText(error)}`);
@@ -196,37 +221,36 @@ class AgentRuntime {
     return undefined;
   }
   private ownerIdentity(): Omit<ProcessIdentity, "token"> {
-    return ownIdentity(this.host?.owner.pid);
+    return ownIdentity(this.binding.host?.owner.pid);
   }
-  private async attach(context: ExtensionContext): Promise<void> {
+  private async attach(binding: AttachmentBinding): Promise<void> {
     this.unwatch();
-    this.ctx = context;
+    const attaching: AttachmentState = { kind: "attaching", binding, generation: randomUUID() };
+    this.attachment = attaching;
     if (this.child) {
+      this.attachment = { ...attaching, kind: "attached" };
       return;
     }
-    this.owner = context.sessionManager.getSessionId();
-    this.base = ownerDirectory(this.agentDir, this.owner);
-    this.generation = randomUUID();
-    await fs.promises.mkdir(this.base, { recursive: true, mode: 0o700 });
-    write(path.join(this.base, "attachment.json"), {
-      ...this.ownerIdentity(),
-      generation: this.generation,
+    await fs.promises.mkdir(binding.base, { recursive: true, mode: 0o700 });
+    write(path.join(binding.base, "attachment.json"), {
+      ...ownIdentity(binding.host?.owner.pid),
+      generation: attaching.generation,
       attached: true,
     });
-    if (this.closing) {
+    if (this.shutdown.signal.aborted) {
       return;
     }
+    this.attachment = { ...attaching, kind: "attached" };
     // Recovery and watch setup stay off the awaited startup path.
     this.timer = setTimeout(this.scan, 200).unref();
     this.probe = setInterval(this.recover, 1000).unref();
   }
   private async dispose(retain: boolean): Promise<void> {
     this.reporter.shutdown();
-    this.closing = true;
     this.unwatch();
     this.shutdown.abort();
     await this.reset;
-    if (!retain && this.base.length > 0) {
+    if (!retain && !this.child && this.attachment.kind !== "detached") {
       const file = path.join(this.base, "attachment.json");
       const attachment = read(file, attachmentSchema);
       if (attachment !== undefined && this.releases(attachment)) {
@@ -240,16 +264,20 @@ class AgentRuntime {
         );
       }
     }
-    this.ctx = undefined;
+    this.attachment = { kind: "detached" };
   }
   private releases(attachment: Attachment): boolean {
-    if (attachment.generation === this.generation) {
-      return true;
+    const state = this.attachment;
+    switch (state.kind) {
+      case "detached":
+        return false;
+      case "waiting":
+        // An unready replacement can release the launcher's existing generation on quit.
+        return attachment.attached && attachment.pid === state.binding.host?.owner.pid;
+      case "attaching":
+      case "attached":
+        return attachment.generation === state.generation;
     }
-    // An unready replacement never attached, but exiting still releases the launcher-owned children.
-    return (
-      this.generation.length === 0 && attachment.attached && attachment.pid === this.host?.owner.pid
-    );
   }
   private stop(launch: Launch) {
     const base = this.base;
@@ -433,6 +461,7 @@ class AgentRuntime {
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.
       if (
+        this.attachment.kind === "attached" &&
         settle(this.owner, context.hasPendingMessages() || event.context.pendingMessages.length > 0)
       ) {
         // Released admissions may have been dropped from the queue rather than published.

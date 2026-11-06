@@ -86,6 +86,11 @@ admits no new Run work. Run, Steer and Stop payloads are action-specific;
 guidance always carries a prompt and new Stops always name the actor token.
 Historical unbound Stops remain readable and receive stale admission receipts.
 
+Parent attachment keeps one binding through detached, waiting, attaching and
+attached phases. The existing shutdown signal closes the owner. Managed
+readiness can attach only its own still-current waiting binding; shutdown joins
+admitted publication before releasing the matching generation.
+
 Parking returns resident, exit-with-parked-authority or exit-after-failed-save.
 Both exit outcomes have disposed the native runtime and must exit the actor;
 neither permits a second ordinary disposal. Restore tracks unopened, opening
