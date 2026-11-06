@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.19 - 2026-11-06
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix: preserve live and uncertain broker startup ownership (#342) ([f6147dd](https://github.com/fitchmultz/pi-subagents/commit/f6147dd7a31775e8499a6fd77b4185d6d918d646))
+
+### What's Changed
+
+- fix: preserve live and uncertain broker startup ownership by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/342
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.18...v0.52.19
+
 ## 0.52.18 - 2026-11-06
 
 <!-- npm-release:unreleased:start -->
