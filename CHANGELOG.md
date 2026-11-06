@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Give prepared topic transactions action-specific payloads while preserving validate-before-commit and stale-restore normalization.
+
 ## 0.52.18 - 2026-11-06
 
 <!-- npm-release:unreleased:start -->
