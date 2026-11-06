@@ -1557,15 +1557,12 @@ for (const recovery of [false, true]) {
           },
         },
       );
-      const replies: string[] = [];
+      const replies: { readonly replyTo: string; readonly text: string }[] = [];
       receiver.sender.on(
         "message",
         (_from: ReadonlyInput<SessionInfo>, message: ReadonlyInput<Message>) => {
-          if (
-            message.replyTo !== undefined &&
-            message.content.text === "Answer the selected first ask"
-          ) {
-            replies.push(message.replyTo);
+          if (message.replyTo !== undefined) {
+            replies.push({ replyTo: message.replyTo, text: message.content.text });
           }
         },
       );
@@ -1638,8 +1635,8 @@ for (const recovery of [false, true]) {
       );
       assert.deepEqual(
         replies,
-        ["first-ask"],
-        "trigger-last must not switch the implicit reply to a follower ask",
+        [{ replyTo: "first-ask", text: "Answer the selected first ask" }],
+        "only the selected ask receives a reply, and unconsumed input receives no failure reply",
       );
       const intercom = registeredTool(receiver.session, "intercom");
       const pending = await intercom.execute(

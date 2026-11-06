@@ -333,7 +333,9 @@ once on its last item; passive breadcrumbs are appended before that waking work.
 The first unresolved eligible ask remains the implicit reply target, independently
 of which message triggers the turn. Reply attribution refers to the unresolved
 ask by ID. Placing delayed input does not revive an already replied, expired, or
-retired reply obligation. A busy recipient's steer is handed to Pi's native
+retired reply obligation. A failed turn can retire only an ask whose input Pi has
+consumed; queued input remains answerable after abort recovery.
+A busy recipient's steer is handed to Pi's native
 queue and consumed at its next tool boundary; no extension probe asks another
 tool to give up the turn.
 
