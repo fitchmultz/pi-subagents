@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Keep replied or retired asks out of reply attribution when their queued input reaches a later native turn.
+- Preserve unanswered queued asks through abort recovery without sending a premature recipient-failure reply.
 - Restore a stranded last-good build before compiling again after a publisher exits in the replacement gap.
 
 ## 0.52.17 - 2026-11-05

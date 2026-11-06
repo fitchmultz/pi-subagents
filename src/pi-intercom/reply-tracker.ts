@@ -93,9 +93,9 @@ function replyBySender(contexts: readonly IntercomContext[], to: string): Interc
 }
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
-  private readonly pendingTurnContexts: IntercomContext[] = [];
-  private currentTurnContext: IntercomContext | null = null;
-  private activeAgentContext: IntercomContext | null = null;
+  private readonly pendingTurnIds: string[] = [];
+  private currentTurnId: string | null = null;
+  private activeAgentId: string | null = null;
   private readonly askTimeoutMs: number;
 
   constructor(askTimeoutMs = 10 * 60 * 1000) {
@@ -115,67 +115,66 @@ export class ReplyTracker {
     return context;
   }
 
-  queueTurnContext(context: IntercomContext): void {
-    if (context.message.expectsReply !== true) {
+  queueTurnContext(messageId: string): void {
+    if (!this.pendingAsks.has(messageId) || this.hasTurnContext(messageId)) {
       return;
     }
-    if (this.hasTurnContext(context.message.id)) {
-      return;
-    }
-    this.pendingTurnContexts.push(context);
+    this.pendingTurnIds.push(messageId);
   }
 
   beginTurn(now = Date.now()): void {
     this.pruneExpired(now);
-    this.currentTurnContext = this.pendingTurnContexts.shift() ?? null;
-    if (this.currentTurnContext) {
-      this.activeAgentContext = this.currentTurnContext;
+    this.currentTurnId = this.pendingTurnIds.shift() ?? null;
+    if (this.currentTurnId !== null) {
+      this.activeAgentId = this.currentTurnId;
     }
   }
 
   currentTurn(): IntercomContext | null {
-    return this.currentTurnContext ?? this.activeAgentContext;
+    const id = this.currentTurnId ?? this.activeAgentId;
+    return id === null ? null : (this.pendingAsks.get(id) ?? null);
   }
 
   endTurn(): void {
-    this.currentTurnContext = null;
+    this.currentTurnId = null;
   }
 
   endAgent(): void {
-    this.currentTurnContext = null;
-    this.activeAgentContext = null;
+    this.currentTurnId = null;
+    this.activeAgentId = null;
   }
 
   reset(): void {
     this.pendingAsks.clear();
-    this.pendingTurnContexts.length = 0;
-    this.currentTurnContext = null;
-    this.activeAgentContext = null;
+    this.pendingTurnIds.length = 0;
+    this.endAgent();
   }
 
   expireSender(sessionId: string): number {
-    const expires = (context: IntercomContext) => context.from.id === sessionId;
+    const expiring = new Set(
+      [...this.pendingAsks.values()]
+        .filter((context) => context.from.id === sessionId)
+        .map((context) => context.message.id),
+    );
     let expired = 0;
-    for (const [messageId, context] of this.pendingAsks) {
-      if (expires(context)) {
-        this.pendingAsks.delete(messageId);
-        expired += 1;
-      }
-    }
-    const beforeQueued = this.pendingTurnContexts.length;
-    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
-      const context = this.pendingTurnContexts[index];
-      if (context !== undefined && expires(context)) {
-        this.pendingTurnContexts.splice(index, 1);
-      }
-    }
-    expired += beforeQueued - this.pendingTurnContexts.length;
-    if (this.currentTurnContext && expires(this.currentTurnContext)) {
-      this.currentTurnContext = null;
+    for (const messageId of expiring) {
+      this.pendingAsks.delete(messageId);
       expired += 1;
     }
-    if (this.activeAgentContext && expires(this.activeAgentContext)) {
-      this.activeAgentContext = null;
+    const beforeQueued = this.pendingTurnIds.length;
+    for (let index = this.pendingTurnIds.length - 1; index >= 0; index -= 1) {
+      const id = this.pendingTurnIds[index];
+      if (id !== undefined && expiring.has(id)) {
+        this.pendingTurnIds.splice(index, 1);
+      }
+    }
+    expired += beforeQueued - this.pendingTurnIds.length;
+    if (this.currentTurnId !== null && expiring.has(this.currentTurnId)) {
+      this.currentTurnId = null;
+      expired += 1;
+    }
+    if (this.activeAgentId !== null && expiring.has(this.activeAgentId)) {
+      this.activeAgentId = null;
       expired += 1;
     }
     return expired;
@@ -188,30 +187,23 @@ export class ReplyTracker {
     this.pruneExpired(now);
 
     const pending = Array.from(this.pendingAsks.values());
-    const contexts = this.currentTurnContext
-      ? [
-          this.currentTurnContext,
-          ...pending.filter(
-            (context) => context.message.id !== this.currentTurnContext?.message.id,
-          ),
-        ]
-      : pending;
-
     const replyTo = options.replyTo ?? "";
     const to = options.to ?? "";
     if (replyTo !== "") {
-      return explicitReply(contexts, replyTo, to);
+      return explicitReply(pending, replyTo, to);
     }
     if (to !== "") {
-      return replyBySender(contexts, to);
+      return replyBySender(pending, to);
     }
     return this.implicitReplyTarget(pending);
   }
 
   /** Without an explicit target, the turn context wins, then a sole pending ask. */
   private implicitReplyTarget(pending: readonly IntercomContext[]): IntercomContext {
-    if (this.currentTurnContext) {
-      return this.currentTurnContext;
+    const current =
+      this.currentTurnId === null ? undefined : this.pendingAsks.get(this.currentTurnId);
+    if (current) {
+      return current;
     }
     const [solePending] = pending;
     if (pending.length === 1 && solePending !== undefined) {
@@ -234,24 +226,24 @@ export class ReplyTracker {
 
   private hasTurnContext(messageId: string): boolean {
     return (
-      this.pendingTurnContexts.some((context) => context.message.id === messageId) ||
-      this.currentTurnContext?.message.id === messageId ||
-      this.activeAgentContext?.message.id === messageId
+      this.pendingTurnIds.includes(messageId) ||
+      this.currentTurnId === messageId ||
+      this.activeAgentId === messageId
     );
   }
 
   private removeContext(messageId: string): void {
     this.pendingAsks.delete(messageId);
-    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
-      if (this.pendingTurnContexts[index]?.message.id === messageId) {
-        this.pendingTurnContexts.splice(index, 1);
+    for (let index = this.pendingTurnIds.length - 1; index >= 0; index -= 1) {
+      if (this.pendingTurnIds[index] === messageId) {
+        this.pendingTurnIds.splice(index, 1);
       }
     }
-    if (this.currentTurnContext?.message.id === messageId) {
-      this.currentTurnContext = null;
+    if (this.currentTurnId === messageId) {
+      this.currentTurnId = null;
     }
-    if (this.activeAgentContext?.message.id === messageId) {
-      this.activeAgentContext = null;
+    if (this.activeAgentId === messageId) {
+      this.activeAgentId = null;
     }
   }
 
