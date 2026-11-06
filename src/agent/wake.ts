@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import assert from "node:assert/strict";
 import { journalStamp } from "../shared/native-journal.ts";
 import { missing } from "./storage.ts";
 
@@ -21,10 +22,12 @@ export type WatchState = "unwatched" | "armed" | "changed" | "watching";
 
 /** Native change hints for one directory identity; owners still reconcile canonical files. */
 export class DirectoryWatch {
-  private watcher?: fs.FSWatcher | undefined;
-  private armed = "";
+  private state:
+    | { readonly kind: "unarmed" | "polling" }
+    | { readonly kind: "armed"; readonly watcher: fs.FSWatcher; readonly identity: string } = {
+    kind: "unarmed",
+  };
   private checked = "";
-  private failed = false;
   private readonly directory: string;
   private readonly relevant: (file: string | null) => boolean;
   private readonly wake: () => void;
@@ -38,40 +41,40 @@ export class DirectoryWatch {
     const identity = stat?.isDirectory() === true ? `${stat.dev}:${stat.ino}` : "";
     const checked = this.checked;
     this.checked = stat === undefined ? "" : `${identity}:${stat.mtimeNs}:${stat.ctimeNs}`;
-    if (this.watcher !== undefined && identity === this.armed) {
+    if (this.state.kind === "armed" && identity === this.state.identity) {
       return checked === this.checked ? "watching" : "changed";
     }
     // A replaced directory leaves an inode watch silent on Linux.
     this.close();
-    return identity === "" || this.failed ? "unwatched" : this.arm(identity);
+    return identity === "" || this.state.kind === "polling" ? "unwatched" : this.arm(identity);
   }
   private arm(identity: string): WatchState {
     try {
       const watcher = fs.watch(this.directory, { persistent: false }, (_event, file) => {
-        if (watcher === this.watcher && this.relevant(file)) {
+        if (this.state.kind === "armed" && watcher === this.state.watcher && this.relevant(file)) {
           this.wake();
         }
       });
       watcher.on("error", () => {
-        if (watcher === this.watcher) {
-          this.failed = true;
-          this.close();
+        if (this.state.kind === "armed" && watcher === this.state.watcher) {
+          watcher.close();
+          this.state = { kind: "polling" };
           this.wake();
         }
       });
-      this.watcher = watcher;
-      this.armed = identity;
+      this.state = { kind: "armed", watcher, identity };
       return "armed";
     } catch (error) {
       // Unsupported platforms and watch limits keep their owner's polling fallback.
-      this.failed = !missing(error);
+      this.state = { kind: missing(error) ? "unarmed" : "polling" };
       return "unwatched";
     }
   }
   close(): void {
-    this.watcher?.close();
-    this.watcher = undefined;
-    this.armed = "";
+    if (this.state.kind === "armed") {
+      this.state.watcher.close();
+      this.state = { kind: "unarmed" };
+    }
   }
 }
 
@@ -90,6 +93,7 @@ export class Wake {
   }
   /** Returns at once for a wake raised since the last take. */
   async sleep(ms: number): Promise<void> {
+    assert.equal(this.resolve, undefined, "A Wake belongs to one waiting owner loop.");
     if (this.raised) {
       return;
     }

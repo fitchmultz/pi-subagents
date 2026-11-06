@@ -80,6 +80,11 @@ npm and attached to the matching GitHub release.
 
 ## Isolation and safety
 
+Directory watches distinguish unarmed, armed-to-one-inode and polling-only
+availability. Missing paths can be armed later; unsupported or failed native
+watches keep the existing polling fallback. Each coalesced Wake has one waiting
+owner loop.
+
 Smoke child cleanup treats leader exit and pipe closure separately. Pipe draining
 has waiting, draining and closed phases. Closing it cancels its deadlines and
 detaches its listeners, so later events cannot restart cleanup.
