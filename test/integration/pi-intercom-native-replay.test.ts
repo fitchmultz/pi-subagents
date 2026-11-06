@@ -1557,15 +1557,12 @@ for (const recovery of [false, true]) {
           },
         },
       );
-      const replies: string[] = [];
+      const replies: { readonly replyTo: string; readonly text: string }[] = [];
       receiver.sender.on(
         "message",
         (_from: ReadonlyInput<SessionInfo>, message: ReadonlyInput<Message>) => {
-          if (
-            message.replyTo !== undefined &&
-            message.content.text === "Answer the selected first ask"
-          ) {
-            replies.push(message.replyTo);
+          if (message.replyTo !== undefined) {
+            replies.push({ replyTo: message.replyTo, text: message.content.text });
           }
         },
       );
@@ -1638,8 +1635,8 @@ for (const recovery of [false, true]) {
       );
       assert.deepEqual(
         replies,
-        ["first-ask"],
-        "trigger-last must not switch the implicit reply to a follower ask",
+        [{ replyTo: "first-ask", text: "Answer the selected first ask" }],
+        "only the selected ask receives a reply, and unconsumed input receives no failure reply",
       );
       const intercom = registeredTool(receiver.session, "intercom");
       const pending = await intercom.execute(
@@ -3556,6 +3553,85 @@ for (const scenario of ["already-replied", "agent-settled", "non-error"] as cons
     assert.deepEqual(recipient.errors, []);
   });
 }
+
+nodeTest("native delayed input cannot revive an already-replied ask", async (t) => {
+  const releaseWork = gate(t);
+  const releaseQuestion = gate(t);
+  const recipient = await makeSession(t, "replied-before-delivery", { hasUI: true });
+  let working = false;
+  let questionStarted = false;
+  const replies: ReadonlyInput<Message>[] = [];
+  recipient.sender.on(
+    "message",
+    (_from: ReadonlyInput<SessionInfo>, message: ReadonlyInput<Message>) => {
+      replies.push(message);
+    },
+  );
+  recipient.faux.setResponses([
+    async () => {
+      working = true;
+      await releaseWork.promise;
+      return fauxAssistantMessage("Original work finished");
+    },
+    async () => {
+      questionStarted = true;
+      await releaseQuestion.promise;
+      return fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "Failure after the question was already answered",
+      });
+    },
+  ]);
+  const running = recipient.session.prompt("Work before the question");
+  await waitFor(() => working, "held native work");
+  await recipient.send("retired-question", {
+    text: "A decision that can be answered before delivery",
+    expectsReply: true,
+    delivery: "queue",
+    queueMode: "replace",
+    threadId: "decision",
+  });
+  await waitFor(
+    () => at(provenance(recipient, "retired-question"), "receipt", "queued") === true,
+    "recipient staged the question",
+  );
+  assert.equal(recipient.visible("retired-question").length, 0);
+  await executeIntercom(recipient, {
+    action: "reply",
+    replyTo: "retired-question",
+    message: "Answer before native delivery",
+  });
+  await waitFor(() => replies.length === 1, "first correlated reply");
+  assert.match(
+    JSON.stringify(await executeIntercom(recipient, { action: "pending" })),
+    /No unresolved inbound asks/,
+  );
+  releaseWork.resolve();
+  await waitFor(() => questionStarted, "delayed question entered a native turn");
+  for (const target of [{}, { replyTo: "retired-question" }]) {
+    await assert.rejects(
+      executeIntercom(recipient, { action: "reply", message: "Duplicate answer", ...target }),
+      (error: unknown) => at(error, "details", "reasonCode") === "no_pending_reply",
+    );
+  }
+  releaseQuestion.resolve();
+  await running;
+  await recipient.session.waitForIdle();
+  const control = once(recipient.sender, "message");
+  await executeIntercom(recipient, {
+    action: "send",
+    to: "sender-replied-before-delivery",
+    message: "Reply-check barrier",
+  });
+  await control;
+  assert.deepEqual(
+    replies
+      .filter((reply) => reply.replyTo === "retired-question")
+      .map((reply) => reply.content.text),
+    ["Answer before native delivery"],
+  );
+  assert.deepEqual(recipient.errors, []);
+});
 
 for (const hasUI of [false, true]) {
   nodeTest(

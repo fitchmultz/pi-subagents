@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Keep replied or retired asks out of reply attribution when their queued input reaches a later native turn.
+- Preserve unanswered queued asks through abort recovery without sending a premature recipient-failure reply.
+
 ## 0.52.17 - 2026-11-05
 
 <!-- npm-release:unreleased:start -->

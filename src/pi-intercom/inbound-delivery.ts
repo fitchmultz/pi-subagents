@@ -185,7 +185,7 @@ export class InboundDeliveryOwner {
     const trigger = index === -1 ? undefined : rest.splice(index, 1)[0];
     const replyTarget = entries.find((entry) => entry.message.expectsReply === true) ?? trigger;
     if (replyTarget && this.journal.get(replyTarget.message.id) === replyTarget) {
-      this.hooks.replies.queueTurnContext({ ...replyTarget, receivedAt: Date.now() });
+      this.hooks.replies.queueTurnContext(replyTarget.message.id);
     }
     for (const entry of rest) {
       if (!this.live(generation)) {
@@ -295,11 +295,7 @@ export class InboundDeliveryOwner {
       this.journal.markNative(entry.message.id);
     }
     if (delivery !== "passive") {
-      this.hooks.replies.queueTurnContext({
-        from: entry.from,
-        message: entry.message,
-        receivedAt: Date.now(),
-      });
+      this.hooks.replies.queueTurnContext(entry.message.id);
     }
   }
   private nativeMessage(entry: InboundMessageEntry): Parameters<ExtensionAPI["sendMessage"]>[0] {

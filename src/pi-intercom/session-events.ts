@@ -33,7 +33,7 @@ type Connection = Readonly<
   >
 >;
 type Journal = Readonly<
-  Pick<InboundJournal, "clearNative" | "consume" | "reconcileConsumed" | "reset" | "retire">
+  Pick<InboundJournal, "clearNative" | "consume" | "get" | "reconcileConsumed" | "reset" | "retire">
 >;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "reject">>;
 type InboundDeliveryHandle = Readonly<
@@ -101,6 +101,8 @@ export class IntercomSessionEvents {
       client?.isConnected() !== true ||
       !context ||
       context.message.expectsReply !== true ||
+      // A native turn can start without consuming its queued input after an abort.
+      journal.get(context.message.id) !== undefined ||
       error === null ||
       error === ""
     ) {
