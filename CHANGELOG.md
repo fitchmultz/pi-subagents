@@ -7,6 +7,7 @@
 <!-- npm-release:unreleased:start -->
 
 - Make post-exit pipe cleanup terminal across waiting, draining and closed phases so later pipe events cannot restart smoke child cleanup.
+- Distinguish parked and failed actor exit outcomes; both have disposed the native runtime, exit the actor and permit no second ordinary disposal.
 
 <!-- npm-release:unreleased:end -->
 
@@ -16,6 +17,7 @@
 
 - fix: preserve live and uncertain broker startup ownership by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/342
 - refactor: make post-exit pipe cleanup terminal by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/346
+- refactor: distinguish parked and failed actor exit outcomes by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/348
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.18...v0.52.19
 
