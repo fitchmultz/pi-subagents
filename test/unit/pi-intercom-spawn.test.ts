@@ -78,6 +78,20 @@ nodeTest("legacy numeric live process remains ambiguous and blocking", async () 
   }
 });
 
+nodeTest("an unreadable broker PID record cannot authorize another broker", async () => {
+  fs.mkdirSync(pidDir, { recursive: true });
+  const pidPath = path.join(pidDir, "broker.pid");
+  writeFileSync(pidPath, String(process.pid), { mode: 0o600 });
+  fs.chmodSync(pidPath, 0);
+  try {
+    assert.throws(() => readFileSync(pidPath), { code: "EACCES" });
+    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
+  } finally {
+    fs.chmodSync(pidPath, 0o600);
+    rmSync(pidDir, { recursive: true, force: true });
+  }
+});
+
 nodeTest(
   "native PID identity preserves a live process and only disproves comparable identities",
   { skip: process.platform !== "linux" },

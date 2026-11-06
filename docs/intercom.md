@@ -392,4 +392,11 @@ records include native boot/namespace/start identity to reject proven PID reuse;
 ambiguous legacy numeric PIDs remain blocking. A process is never killed merely
 to recover broker startup.
 
+Startup distinguishes absent, live and uncertain ownership. An unreadable or
+invalid PID record is uncertain, not permission to launch another broker.
+A startup claim stays owned while its process is live, regardless of age.
+Only a proven exited owner permits reclaiming it. Each starter keeps the claim's
+file descriptor open and releases only the same device/inode, leaving a
+replacement claim untouched.
+
 Remote authenticated mail is separate: see [bridge setup](intercom-bridge.md).

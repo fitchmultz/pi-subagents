@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Preserve live or uncertain broker startup ownership; reclaim only exited spawn owners and release only the acquired claim.
+
 ## 0.52.17 - 2026-11-05
 
 <!-- npm-release:unreleased:start -->
