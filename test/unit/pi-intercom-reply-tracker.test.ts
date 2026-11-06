@@ -28,7 +28,7 @@ nodeTest("reply resolves from current triggered message context", () => {
   const message = createMessage("ask-1", "Need a decision");
 
   const context = tracker.recordIncomingMessage(from, message, 1000);
-  tracker.queueTurnContext(context);
+  tracker.queueTurnContext(context.message.id);
   tracker.beginTurn(1001);
 
   assert.equal(tracker.resolveReplyTarget({}, 1002).message.id, "ask-1");
@@ -42,8 +42,8 @@ nodeTest("queueTurnContext ignores a second enqueue of the same ask", () => {
     createMessage("ask-1", "Need a decision"),
     1000,
   );
-  tracker.queueTurnContext(context);
-  tracker.queueTurnContext(context);
+  tracker.queueTurnContext(context.message.id);
+  tracker.queueTurnContext(context.message.id);
   tracker.beginTurn(1001);
   assert.equal(tracker.currentTurn()?.message.id, "ask-1");
   tracker.endAgent();
@@ -64,7 +64,7 @@ nodeTest("non-ask trigger context does not override a pending ask reply target",
     1001,
   );
 
-  tracker.queueTurnContext(result);
+  tracker.queueTurnContext(result.message.id);
   tracker.beginTurn(1002);
 
   assert.equal(tracker.currentTurn(), null);
@@ -204,7 +204,7 @@ nodeTest("reply preserves every pending ask and queued turn context beyond 100 m
       createMessage(`ask-${index}`, `Question ${index}`),
       index,
     );
-    tracker.queueTurnContext(context);
+    tracker.queueTurnContext(context.message.id);
   }
 
   assert.equal(tracker.listPending(151).length, 150);
@@ -230,7 +230,7 @@ nodeTest("reply expires pending and queued contexts together", () => {
     createMessage("ask-old", "Old"),
     1000,
   );
-  tracker.queueTurnContext(context);
+  tracker.queueTurnContext(context.message.id);
   tracker.beginTurn(1011);
   assert.equal(tracker.currentTurn(), null);
   assert.deepEqual(tracker.listPending(1011), []);
@@ -244,7 +244,7 @@ nodeTest("message text cannot grant an ordinary ask a disconnect or timeout exem
   );
   for (const transition of ["disconnect", "timeout"]) {
     const tracker = new ReplyTracker(10);
-    tracker.queueTurnContext(tracker.recordIncomingMessage(sender, message, 1000));
+    tracker.queueTurnContext(tracker.recordIncomingMessage(sender, message, 1000).message.id);
     tracker.beginTurn(1001);
     if (transition === "disconnect") {
       tracker.expireSender(sender.id);
@@ -270,8 +270,8 @@ nodeTest("reply expires pending and active asks when sender disconnects", () => 
     1001,
   );
   tracker.recordIncomingMessage(reviewer, createMessage("ask-3", "Still connected"), 1002);
-  tracker.queueTurnContext(current);
-  tracker.queueTurnContext(queued);
+  tracker.queueTurnContext(current.message.id);
+  tracker.queueTurnContext(queued.message.id);
   tracker.beginTurn(1003);
 
   tracker.expireSender("planner-id");

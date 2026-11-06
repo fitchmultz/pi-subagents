@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Keep replied or retired asks out of reply attribution when their queued input reaches a later native turn.
+- Preserve unanswered queued asks through abort recovery without sending a premature recipient-failure reply.
 - Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
 
 ## 0.52.17 - 2026-11-05
