@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Keep replied or retired asks out of reply attribution when their queued input reaches a later native turn.
+- Preserve unanswered queued asks through abort recovery without sending a premature recipient-failure reply.
 - Preserve live or uncertain broker startup ownership; reclaim only exited spawn owners and release only the acquired claim.
 
 ## 0.52.17 - 2026-11-05
