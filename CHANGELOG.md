@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Restore a stranded last-good build before compiling again after a publisher exits in the replacement gap.
+
 ## 0.52.17 - 2026-11-05
 
 <!-- npm-release:unreleased:start -->

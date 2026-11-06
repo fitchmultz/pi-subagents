@@ -67,11 +67,26 @@ async function hasPublishedDist(/** @type {string} */ path) {
   }
 }
 
-async function reapStrandedStaging(/** @type {string} */ cwd) {
+async function recoverPrevious(/** @type {string} */ previous, /** @type {string} */ dist) {
+  if (!(await hasPublishedDist(dist))) {
+    try {
+      await rename(previous, dist);
+      return;
+    } catch (error) {
+      // A concurrent publisher can close the gap while recovery is renaming.
+      if (!(await hasPublishedDist(dist))) {
+        throw error;
+      }
+    }
+  }
+  await discardStaging(previous);
+}
+
+async function recoverStrandedBuilds(/** @type {string} */ cwd) {
   // Signal 0 proves only that the owner was gone at probe time. Pid reuse
   // between this probe and removal is inherent to pid-based reaping.
   for (const entry of await readdir(cwd, { withFileTypes: true })) {
-    const match = /^dist\.staging\.(\d+)(?:\.previous)?$/.exec(entry.name);
+    const match = /^dist\.staging\.(\d+)(\.previous)?$/.exec(entry.name);
     if (!match || !entry.isDirectory()) {
       continue;
     }
@@ -79,8 +94,13 @@ async function reapStrandedStaging(/** @type {string} */ cwd) {
     if (ownerPid === process.pid || !isOwnerGone(ownerPid)) {
       continue;
     }
-    // Reap abandoned trees sequentially to bound filesystem removal pressure.
-    await discardStaging(join(cwd, entry.name));
+    const stranded = join(cwd, entry.name);
+    // A previous tree is complete rollback material, not an abandoned partial emit.
+    if (match[2] !== undefined) {
+      await recoverPrevious(stranded, join(cwd, "dist"));
+    } else {
+      await discardStaging(stranded);
+    }
   }
 }
 
@@ -208,7 +228,7 @@ async function publishStaging(/** @type {string} */ stagingDir, /** @type {strin
 async function main() {
   const cwd = process.cwd();
   const compiler = compilerInvocation(process.argv[2]);
-  await reapStrandedStaging(cwd);
+  await recoverStrandedBuilds(cwd);
   // Pid-scoped staging isolates concurrent emits; only a complete tree publishes.
   const stagingDir = join(cwd, `dist.staging.${process.pid}`);
   await rm(stagingDir, RM_OPTIONS);

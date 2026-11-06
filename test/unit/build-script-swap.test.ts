@@ -185,6 +185,32 @@ nodeTest("build.mjs: reaps dead-pid staging and keeps live-pid staging", () =>
   }),
 );
 
+nodeTest("build.mjs: restores a killed publisher's last-good dist before a failing compile", () =>
+  withFixture(async (dir) => {
+    assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "last-good" })).code, 0);
+    const saved = readFileSync(join(dir, "dist/index.js"), "utf8");
+    const killed = spawnSync(
+      process.execPath,
+      [...faultArgs(), buildScript, join(dir, "node_modules/typescript/bin/tsc")],
+      {
+        cwd: dir,
+        env: { ...process.env, BUILD_SWAP_FAULT: "kill-after-retire" },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(killed.signal, "SIGKILL", killed.stderr);
+    assert.equal(existsSync(join(dir, "dist")), false, "death occurred in the publication gap");
+    const previous = join(dir, `dist.staging.${killed.pid}.previous`);
+    assert.equal(readFileSync(join(previous, "index.js"), "utf8"), saved);
+    const failed = await runBuild(dir, { TSC_STUB_FAIL: "1" });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.stderr, /stub-tsc: induced failure/);
+    assert.ok(existsSync(join(dir, "dist")), "recover the last-good tree before compiling again");
+    assert.equal(readFileSync(join(dir, "dist/index.js"), "utf8"), saved);
+    assert.deepEqual(stagingDirs(dir), []);
+  }),
+);
+
 nodeTest("build.mjs: warns and continues when stranded staging cannot be removed", () =>
   withFixture(async (dir) => {
     const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;

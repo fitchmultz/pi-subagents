@@ -21,6 +21,14 @@ function failPublish(fault) {
 
 /** @type {Record<string, () => void>} */
 const faults = {
+  "kill-after-retire"() {
+    fsPromises.rename = async (from, to) => {
+      await originalRename(from, to);
+      if (basename(String(from)) === "dist" && String(to).endsWith(".previous")) {
+        process.kill(process.pid, "SIGKILL");
+      }
+    };
+  },
   "stale-rm"() {
     const locked = (/** @type {import("node:fs").PathLike} */ path) =>
       basename(String(path)) === process.env.LOCKED_STAGING_NAME;
