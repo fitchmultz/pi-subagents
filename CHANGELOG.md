@@ -3,8 +3,10 @@
 ## [Unreleased]
 
 - Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
+- Make directory-watch availability and the coalesced wake's single-owner contract explicit without changing polling fallback.
 - Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
 - Centralize broker request settlement and close multipart snapshot readers after completion or failure.
+- Give prepared topic transactions action-specific payloads while preserving validate-before-commit and stale-restore normalization.
 
 ## 0.52.18 - 2026-11-06
 
