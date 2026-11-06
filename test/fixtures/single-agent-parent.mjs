@@ -954,9 +954,11 @@ async function parkedAuthority(/** @type {string} */ parked) {
   assert.equal(starts(), 1, "parked reads never wake the child");
 }
 function intercomTexts(/** @type {string} */ sessionFile) {
+  // The actor is still writing; only LF-terminated records have been published.
   return fs
     .readFileSync(sessionFile, "utf8")
     .split("\n")
+    .slice(0, -1)
     .filter(Boolean)
     .map(parseJournalLine)
     .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
