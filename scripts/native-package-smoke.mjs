@@ -19,9 +19,10 @@ import { createRequire } from "node:module";
 import { hostCli, hostIndex, hostRoot } from "./compat-host.mjs";
 import { SmokeProcesses } from "./real-pi-processes.mjs";
 import { assertChildJournal, assertObservations } from "./native-package-smoke-assertions.mjs";
+import { isRecord, isUnknownArray } from "../src/shared/unknown.ts";
+import { isContextTarget } from "../src/pi-intercom/types.ts";
 
 /** @type {(file: string, args: readonly string[], options: import("node:child_process").ExecFileOptions) => Promise<{ stdout: string, stderr: string }>} */
-// oxlint-disable-next-line typescript/strict-void-return
 const execFile = promisify(execFileCallback);
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -145,20 +146,9 @@ writeFileSync(
     retry: { enabled: false },
   }),
 );
-/** @type {typeof import("@earendil-works/pi-coding-agent")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const sdk = await import(pathToFileURL(hostIndex).href);
-/** @type {typeof import("@earendil-works/pi-ai")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const ai = await import(import.meta.resolve("@earendil-works/pi-ai"));
-/**
- * The intercom context snapshot the consumer fixture answers with.
- * @typedef {object} IntercomContextSnapshot
- * @property {boolean | undefined} connected
- * @property {string | undefined} peerId
- * @property {string | undefined} rootSessionId
- * @property {number | undefined} incarnation
- */
+// compat-host verifies this specifier resolves to the selected native graph.
+const sdk = await import("@earendil-works/pi-coding-agent");
+const ai = await import("@earendil-works/pi-ai");
 const selected = ai.fauxProvider({ provider: "packed-probe", models: [{ id: "native" }] });
 const processes = new SmokeProcesses({
   cwd: root,
@@ -191,7 +181,6 @@ try {
   while (!existsSync(join(runtimeDir, "broker.pid"))) {
     assert.ok(brokerError === undefined && Date.now() < deadline, brokerReadinessMessage());
     // Observe the broker's publication, not a sleep-based startup assumption.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(25);
   }
   const settingsManager = sdk.SettingsManager.create(root, agentDir, { projectTrusted: true });
@@ -249,7 +238,6 @@ try {
     },
   });
   assert.deepEqual(
-    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
     [...session.getActiveToolNames()].sort(),
     expectedTools,
     "exactly three eager package tools",
@@ -263,9 +251,8 @@ try {
   const status = await execute("intercom", { action: "status" });
   assert.match(JSON.stringify(status.content), /Connected: Yes/);
   const runs = await execute("agent_runs", { action: "list" });
-  /** @type {{ total: number, runs: unknown[] }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const listDetails = runs.details;
+  /** @type {unknown} */ const listDetails = runs.details;
+  assert.ok(isRecord(listDetails));
   assert.equal(listDetails.total, 0);
   assert.equal(session.model?.provider, "packed-probe");
   assert.equal(session.model.id, "native");
@@ -274,9 +261,10 @@ try {
     events.push(event);
   });
   watchdog = setTimeout(() => {
-    // Fire-and-forget by design: the watchdog only interrupts a stuck turn.
-    // oxlint-disable-next-line typescript/no-floating-promises
-    void session?.abort();
+    // Interrupt a stuck turn, retaining abort failures in the smoke's error evidence.
+    session?.abort().catch((/** @type {unknown} */ error) => {
+      errors.push(error);
+    });
   }, 30_000);
   await session.prompt("Exercise the packed native delegate.", { expandPromptTemplates: false });
   const relevantEvents = () =>
@@ -299,7 +287,6 @@ try {
       Date.now() < completionDeadline,
       `native completion notification resumes the parent: ${JSON.stringify(session.messages.slice(-3))}`,
     );
-    // oxlint-disable-next-line no-await-in-loop
     await delay(25);
   }
   await session.waitForIdle();
@@ -313,20 +300,24 @@ try {
     (event) => event.type === "tool_execution_start" && event.toolName === "delegate",
   );
   assert.equal(starts.length, 1, "one real native delegate call, no fabricated wire events");
-  const receipt =
-    /** @type {{ isError?: boolean, result?: { details?: { receipt?: string, id?: string } } } | undefined} */ (
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the packed event shape is not exported by the SDK
-      events.find((event) => event.type === "tool_execution_end" && event.toolName === "delegate")
-    );
-  assert.ok(receipt !== undefined && receipt.isError !== true, JSON.stringify(receipt));
-  assert.equal(receipt.result?.details?.receipt, "launch");
-  /** @type {{ status: string, output: { text: string }, sessionFile: string, result?: { terminalEntryId?: string } }} */
-  // oxlint-disable-next-line typescript/no-unnecessary-condition, typescript/no-unsafe-assignment -- cast-type optionality is not modelled by the checker
-  const run = (await execute("agent_runs", { action: "inspect", id: receipt.result?.details?.id }))
+  const receipt = events.find(
+    (event) => event.type === "tool_execution_end" && event.toolName === "delegate",
+  );
+  assert.ok(receipt?.type === "tool_execution_end" && !receipt.isError, JSON.stringify(receipt));
+  /** @type {unknown} */ const launchResult = receipt.result;
+  assert.ok(isRecord(launchResult) && isRecord(launchResult.details));
+  assert.equal(launchResult.details.receipt, "launch");
+  assert.ok(typeof launchResult.details.id === "string");
+  /** @type {unknown} */
+  const run = (await execute("agent_runs", { action: "inspect", id: launchResult.details.id }))
     .details;
+  assert.ok(isRecord(run) && isRecord(run.output) && typeof run.sessionFile === "string");
   assert.equal(run.status, "completed");
   assert.equal(run.output.text, "PACKED_NATIVE_COMPLETE");
-  assertChildJournal(run.sessionFile, run.result?.terminalEntryId, "PACKED_NATIVE_COMPLETE");
+  assert.ok(run.result === undefined || isRecord(run.result));
+  const terminalEntryId = run.result?.terminalEntryId;
+  assert.ok(terminalEntryId === undefined || typeof terminalEntryId === "string");
+  assertChildJournal(run.sessionFile, terminalEntryId, "PACKED_NATIVE_COMPLETE");
   assertObservations(observations);
   assert.equal(networkAttempts, 0);
   assert.deepEqual(errors, []);
@@ -334,35 +325,30 @@ try {
   if (consumerScript !== undefined) {
     assert.ok(intercomEvents !== undefined, "expected the consumer observer extension");
     assert.ok(consumerDir !== undefined, "expected the consumer script directory argument");
-    /** @type {IntercomContextSnapshot | undefined} */ let target;
+    /** @type {unknown} */ let target;
     intercomEvents.emit("pi-intercom:context-query", {
       version: 1,
-      respond: (/** @type {IntercomContextSnapshot} */ snapshot) => {
+      respond: (/** @type {unknown} */ snapshot) => {
         target = snapshot;
       },
     });
-    assert.ok(
-      target?.connected === true &&
-        target.peerId !== undefined &&
-        target.rootSessionId !== undefined &&
-        target.incarnation !== undefined,
-    );
+    assert.ok(isRecord(target) && target.connected === true && isContextTarget(target));
     const guard = {
       rootSessionId: target.rootSessionId,
       peerId: target.peerId,
       incarnation: target.incarnation,
       applicationGuard: "package-consent-1",
     };
-    /** @type {{ applicationGuard?: string } | undefined} */ let consent;
+    /** @type {unknown} */ let consent;
     intercomEvents.emit("pi-intercom:application-guard", {
       version: 1,
       target: guard,
       revision: guard.applicationGuard,
-      respond: (/** @type {{ applicationGuard?: string }} */ result) => {
+      respond: (/** @type {unknown} */ result) => {
         consent = result;
       },
     });
-    assert.ok(consent !== undefined, "the consumer answered the guard query");
+    assert.ok(isRecord(consent), "the consumer answered the guard query");
     assert.equal(consent.applicationGuard, guard.applicationGuard);
     const consumerHome = join(root, "consumer-home");
     mkdirSync(consumerHome);
@@ -376,7 +362,7 @@ try {
         PI_INTERCOM_RUNTIME_DIR: runtimeDir,
         S3_ROOT: guard.rootSessionId,
         S3_PEER: guard.peerId,
-        S3_INCARNATION: String(guard.incarnation),
+        S3_INCARNATION: guard.incarnation,
         S3_GUARD: guard.applicationGuard,
         S3_BROKER_PID: String(brokerPid),
       },
@@ -391,7 +377,7 @@ try {
           "--permission",
           "--allow-fs-read=*",
           "--allow-fs-write=*",
-          "--input-type=module",
+          "--input-type=module-typescript",
           "-e",
           readFileSync(consumerScript, "utf8"),
         ],
@@ -399,7 +385,6 @@ try {
       );
       process.stdout.write(stdout);
       process.stderr.write(stderr);
-      // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
       assert.equal(events.filter((event) => event.type === "turn_start").length, turns);
     } finally {
       // The consumer's failure/timeout must never leave this fixture's broker stopped.
@@ -472,11 +457,10 @@ export default function(pi) {
       "",
     );
     assert.doesNotMatch(output, /Failed to load extension|ERR_INTERNAL_ASSERTION|Extension error/);
-    /** @type {{ tools: string[], sdkReused: boolean }} */
-    // oxlint-disable-next-line typescript/no-unsafe-assignment
-    const cli = JSON.parse(readFileSync(marker, "utf8"));
-    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
-    assert.deepEqual(cli.tools.sort(), expectedTools);
+    /** @type {unknown} */ const cli = JSON.parse(readFileSync(marker, "utf8"));
+    assert.ok(isRecord(cli) && isUnknownArray(cli.tools));
+    assert.ok(cli.tools.every((tool) => typeof tool === "string"));
+    assert.deepEqual([...cli.tools].sort(), expectedTools);
     if (!existsSync(join(packageRoot, "node_modules/@earendil-works/pi-coding-agent"))) {
       assert.equal(cli.sdkReused, true, "production-only installs reuse Pi's loaded SDK");
     }

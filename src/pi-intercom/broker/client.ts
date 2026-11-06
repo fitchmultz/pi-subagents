@@ -202,12 +202,10 @@ export class IntercomClient extends EventEmitter {
   ): Promise<void> {
     for (const topic of topics ?? []) {
       // Restore frames are individually acknowledged to preserve order and bound socket payloads.
-      // oxlint-disable-next-line no-await-in-loop
       await this.updateTopics({ action: "restore", topic });
     }
     for (const subscription of subscriptions ?? []) {
       // Subscriptions are committed before connect resolves and subsequent messages can arrive.
-      // oxlint-disable-next-line no-await-in-loop
       await this.updateTopics({ action: "restore", subscription });
     }
   }

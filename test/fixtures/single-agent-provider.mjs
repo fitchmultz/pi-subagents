@@ -1,72 +1,46 @@
 import fs from "node:fs";
 import path from "node:path";
-import { findPackageJSON, syncBuiltinESMExports } from "node:module";
-import { pathToFileURL } from "node:url";
+import { syncBuiltinESMExports } from "node:module";
+import { loadNativeAI } from "../support/native-host.ts";
 import { setTimeout as delay } from "node:timers/promises";
+import { mock } from "node:test";
+import { traceReadSync, traceReaddirSync } from "../support/strict-fixture-fs.ts";
 
 // Observe the actual runner's synchronous command scans, not a replacement Actor.
-// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
 function commandIO(/** @type {string} */ root) {
-  const original = {
-    open: fs.openSync,
-    read: fs.readSync,
-    close: fs.closeSync,
-    readdir: fs.readdirSync,
-  };
+  const original = { open: fs.openSync, close: fs.closeSync };
   /** @type {Map<number, { file: string, opens: number, bytes: number }>} */
   const descriptors = new Map();
   /** @type {{ file: string, opens: number, bytes: number }[]} */ let reads = [];
-  /**
-   * @param {import("node:fs").PathOrFileDescriptor} file
-   * @param {unknown[]} args
-   */
-  const tracedOpen = (file, ...args) => {
-    const fd =
-      /** @type {(f: import("node:fs").PathOrFileDescriptor, ...a: unknown[]) => number} */ (
-        original.open
-      )(file, ...args);
-    if (typeof file === "string" && file.endsWith("/attachment.json") && args[0] === "r") {
+  /** @type {typeof fs.openSync} */
+  const tracedOpen = (file, flags, mode) => {
+    const fd = original.open(file, flags, mode);
+    if (typeof file === "string" && file.endsWith("/attachment.json") && flags === "r") {
       // The actor's parent liveness check witnesses elapsed loop iterations.
       fs.appendFileSync(
         path.join(root, "actor-ticks.jsonl"),
         JSON.stringify({ pid: process.pid }) + "\n",
       );
     }
-    if (typeof file === "string" && file.includes("/commands/") && args[0] === "r") {
+    if (typeof file === "string" && file.includes("/commands/") && flags === "r") {
       const count = { file: path.basename(file), opens: 1, bytes: 0 };
       reads.push(count);
       descriptors.set(fd, count);
     }
     return fd;
   };
-  /**
-   * @param {number} fd
-   * @param {unknown[]} args
-   */
-  const tracedRead = (fd, ...args) => {
-    const bytes = /** @type {(f: number, ...a: unknown[]) => number} */ (original.read)(
-      fd,
-      ...args,
-    );
+  traceReadSync((fd, bytes) => {
     const count = descriptors.get(fd);
     if (count !== undefined) {
       count.bytes += bytes;
     }
-    return bytes;
-  };
+  });
   /** @param {number} fd */
   const tracedClose = (fd) => {
     descriptors.delete(fd);
     original.close(fd);
   };
-  /**
-   * @param {import("node:fs").PathLike} directory
-   * @param {unknown[]} args
-   */
-  const tracedReaddir = (directory, ...args) => {
-    const entries = /** @type {(d: import("node:fs").PathLike, ...a: unknown[]) => unknown} */ (
-      original.readdir
-    )(directory, ...args);
+  traceReaddirSync((directory) => {
     if (typeof directory === "string" && directory.endsWith("/commands")) {
       // pending() and admission finish synchronously before this microtask runs.
       queueMicrotask(() => {
@@ -77,74 +51,46 @@ function commandIO(/** @type {string} */ root) {
         reads = [];
       });
     }
-    return entries;
-  };
-  fs.openSync = /** @type {typeof fs.openSync} */ (tracedOpen);
-  fs.readSync = /** @type {typeof fs.readSync} */ (tracedRead);
-  fs.closeSync = /** @type {typeof fs.closeSync} */ (tracedClose);
-  fs.readdirSync = /** @type {typeof fs.readdirSync} */ (tracedReaddir);
+  });
+  fs.openSync = tracedOpen;
+  fs.closeSync = tracedClose;
   syncBuiltinESMExports();
 }
-// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 
 // Observe the byte ranges the actual actor reads from its native child journal.
-// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
 function journalIO(/** @type {string} */ root) {
-  const original = { open: fs.openSync, read: fs.readSync, close: fs.closeSync };
+  const original = { open: fs.openSync, close: fs.closeSync };
   /** @type {Map<number, string>} */
   const journals = new Map();
-  /**
-   * @param {import("node:fs").PathOrFileDescriptor} file
-   * @param {unknown[]} args
-   */
-  const tracedOpen = (file, ...args) => {
-    const fd =
-      /** @type {(f: import("node:fs").PathOrFileDescriptor, ...a: unknown[]) => number} */ (
-        original.open
-      )(file, ...args);
+  /** @type {typeof fs.openSync} */
+  const tracedOpen = (file, flags, mode) => {
+    const fd = original.open(file, flags, mode);
     if (typeof file === "string" && file.includes("/agent-runs/") && file.endsWith(".jsonl")) {
       journals.set(fd, file);
     }
     return fd;
   };
-  /**
-   * @param {number} fd
-   * @param {unknown[]} args
-   */
-  const tracedRead = (fd, ...args) => {
-    const count = /** @type {(f: number, ...a: unknown[]) => number} */ (original.read)(
-      fd,
-      ...args,
-    );
+  traceReadSync((fd, count, position) => {
     const file = journals.get(fd);
     if (file !== undefined) {
-      const position =
-        typeof args[1] === "object"
-          ? /** @type {{ position?: unknown } | null} */ (args[1])?.position
-          : args[3];
       fs.appendFileSync(
         path.join(root, "journal-reads.jsonl"),
         JSON.stringify({ pid: process.pid, file, position: position ?? null, count }) + "\n",
       );
     }
-    return count;
-  };
+  });
   /** @param {number} fd */
   const tracedClose = (fd) => {
     journals.delete(fd);
     original.close(fd);
   };
-  fs.openSync = /** @type {typeof fs.openSync} */ (tracedOpen);
-  fs.readSync = /** @type {typeof fs.readSync} */ (tracedRead);
-  fs.closeSync = /** @type {typeof fs.closeSync} */ (tracedClose);
+  fs.openSync = tracedOpen;
+  fs.closeSync = tracedClose;
   syncBuiltinESMExports();
 }
-// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 
-// oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- narrowing the fs overloads for spread calls
 function shellIO(/** @type {string} */ root) {
   const open = fs.openSync;
-  const readdir = fs.readdirSync;
   /** @type {{ opens: string[], scans: number } | undefined} */ let pending;
   const observe = () => {
     if (!pending) {
@@ -156,39 +102,22 @@ function shellIO(/** @type {string} */ root) {
     }
     return pending;
   };
-  /**
-   * @param {import("node:fs").PathOrFileDescriptor} file
-   * @param {unknown[]} args
-   */
-  const tracedOpen = (file, ...args) => {
-    const fd =
-      /** @type {(f: import("node:fs").PathOrFileDescriptor, ...a: unknown[]) => number} */ (open)(
-        file,
-        ...args,
-      );
-    if (typeof file === "string" && file.includes("/shells/") && args[0] === "r") {
+  /** @type {typeof fs.openSync} */
+  const tracedOpen = (file, flags, mode) => {
+    const fd = open(file, flags, mode);
+    if (typeof file === "string" && file.includes("/shells/") && flags === "r") {
       observe().opens.push(path.basename(file));
     }
     return fd;
   };
-  /**
-   * @param {import("node:fs").PathLike} directory
-   * @param {unknown[]} args
-   */
-  const tracedReaddir = (directory, ...args) => {
-    const entries = /** @type {(d: import("node:fs").PathLike, ...a: unknown[]) => unknown} */ (
-      readdir
-    )(directory, ...args);
+  traceReaddirSync((directory) => {
     if (typeof directory === "string" && directory.includes("/shells/")) {
       observe().scans++;
     }
-    return entries;
-  };
-  fs.openSync = /** @type {typeof fs.openSync} */ (tracedOpen);
-  fs.readdirSync = /** @type {typeof fs.readdirSync} */ (tracedReaddir);
+  });
+  fs.openSync = tracedOpen;
   syncBuiltinESMExports();
 }
-// oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
 
 export default async function fixture(
   /** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ pi,
@@ -197,17 +126,7 @@ export default async function fixture(
   if (packageDir === undefined) {
     throw new Error("PI_PACKAGE_DIR is required");
   }
-  const sdkEntry = path.join(packageDir, "dist/index.js");
-  const packageJson = findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdkEntry));
-  if (packageJson === undefined) {
-    throw new Error("Could not locate the installed pi-ai package");
-  }
-  const aiRoot = path.dirname(packageJson);
-  /** @type {typeof import("@earendil-works/pi-ai")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const { fauxProvider, fauxAssistantMessage } = await import(
-    pathToFileURL(path.join(aiRoot, "dist/index.js")).href
-  );
+  const { fauxProvider, fauxAssistantMessage } = await loadNativeAI(packageDir);
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
   if (root === undefined) {
     throw new Error("SINGLE_AGENT_TEST_ROOT is required");
@@ -233,15 +152,17 @@ export default async function fixture(
     /**
      * The fork's working-session save participation event; official Pi types do not
      * export it yet, so the handler below is registered through a narrowed on().
-     * @typedef {object} ParkSaveEvent
+     * @typedef {object} OfficialHostSaveShape
      * @property {AbortSignal} signal
      * @property {unknown} boundary
      * @property {(message: string) => void} invalidate
      * @property {(name: string, details: unknown) => void} appendEntry
      */
+    /** @typedef {Extract<import("@earendil-works/pi-coding-agent").ExtensionEvent, { type: "working_session_save" }>} NativeSaveEvent */
+    /** @typedef {[NativeSaveEvent] extends [never] ? OfficialHostSaveShape : NativeSaveEvent} ParkSaveEvent */
     const onParkSave =
-      /** @type {(name: "working_session_save", handler: (event: ParkSaveEvent) => Promise<void> | void) => () => void} */ (
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- official Pi types do not export the save event
+      /** @type {(name: "working_session_save", handler: (event: ParkSaveEvent) => Promise<void> | void) => void} */ (
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- QX-006: the selected fork implements this native save participation event.
         /** @type {unknown} */ (pi.on.bind(pi))
       );
     // Once the test asks, the actual runner's clock runs 1000x faster, so its idle period
@@ -257,7 +178,6 @@ export default async function fixture(
         // The first save blocks until the test releases it or the acquisition is cancelled.
         fs.writeFileSync(path.join(root, "save-held"), "");
         while (!event.signal.aborted && !fs.existsSync(path.join(root, "release-save"))) {
-          // oxlint-disable-next-line no-await-in-loop
           await delay(20);
         }
         return;
@@ -282,21 +202,24 @@ export default async function fixture(
     };
   }
   if (process.env.SINGLE_AGENT_DROP_HINTS === "1") {
-    // oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
-    /** @type {typeof fs.watch} */ const watch = fs.watch;
-    fs.watch = /** @type {typeof fs.watch} */ (
+    const watch = fs.watch;
+    mock.method(
+      fs,
+      "watch",
       (
         /** @type {import("node:fs").PathLike} */ target,
-        /** @type {import("node:fs").WatchOptions | undefined} */ options,
+        /** @type {import("node:fs").WatchOptions | BufferEncoding | "buffer" | null | undefined} */ options,
       ) => {
         fs.appendFileSync(path.join(root, "lost-hint-watches.jsonl"), `${process.pid}\n`);
-        return /** @type {(t: import("node:fs").PathLike, o: import("node:fs").WatchOptions | undefined) => import("node:fs").FSWatcher} */ (
-          watch
-        )(target, options);
-      }
+        if (options === undefined) {
+          return watch(target);
+        }
+        return watch(target, options, () => {
+          // Intentionally drop native change hints; the actor must recover by polling.
+        });
+      },
     );
     syncBuiltinESMExports();
-    // oxlint-enable typescript/no-unsafe-type-assertion
   }
   pi.on("session_start", (_event, ctx) => {
     fs.appendFileSync(
@@ -336,7 +259,6 @@ export default async function fixture(
             return;
           }
           // Hold actual request bytes on disk until the parent observes this publication stage.
-          // oxlint-disable-next-line no-await-in-loop
           await delay(15);
         }
       }
@@ -355,8 +277,7 @@ export default async function fixture(
     const prompt =
       typeof user?.content === "string"
         ? user.content
-        : // oxlint-disable-next-line typescript/no-unnecessary-condition -- content stays optional after the string branch
-          user?.content?.map((block) => (block.type === "text" ? block.text : "")).join("");
+        : user?.content.map((block) => (block.type === "text" ? block.text : "")).join("");
     await publishRequest(
       {
         pid: process.pid,
@@ -381,12 +302,7 @@ export default async function fixture(
           typeof args[1] === "string" &&
           args[1].includes("CHILD_LITERAL_RESULT:DELAYED_LF_LITERAL")
         ) {
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- narrowing the fs overloads for spread calls
-          /** @type {(...a: unknown[]) => void} */ (append)(
-            args[0],
-            args[1].slice(0, -1),
-            ...args.slice(2),
-          );
+          append(args[0], args[1].slice(0, -1), args[2]);
           fs.appendFileSync = append;
           syncBuiltinESMExports();
           fs.writeFileSync(path.join(root, "delayed-lf.json"), JSON.stringify({ file: args[0] }));
@@ -403,7 +319,6 @@ export default async function fixture(
           return fauxAssistantMessage("PARTIAL_BEFORE_ABORT", { stopReason: "aborted" });
         }
         // The test releases only after observing a real provider request.
-        // oxlint-disable-next-line no-await-in-loop
         await delay(15);
       }
     }
@@ -413,10 +328,9 @@ export default async function fixture(
     /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
     /** @type {string} */ prompt,
   ) => {
-    const results = /** @type {import("@earendil-works/pi-ai").ToolResultMessage[]} */ (
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- narrowed tool results carry the usage details
-      context.messages.filter((m) => m.role === "toolResult" && m.toolCallId.startsWith(prompt))
-    );
+    const results = context.messages
+      .filter((message) => message.role === "toolResult")
+      .filter((message) => message.toolCallId.startsWith(prompt));
     if (results.length === 0) {
       return fauxAssistantMessage(
         [
@@ -585,9 +499,7 @@ export default async function fixture(
     label: "Nested probe",
     description: "Exercise the actual nested native tool boundary",
     parameters: { type: "object", properties: {}, additionalProperties: false },
-    execute: async (...args) => {
-      const toolContext =
-        /** @type {{ executeTool(name: string, args: unknown): Promise<unknown> }} */ (args[4]);
+    execute: async (_id, _args, _signal, _onUpdate, toolContext) => {
       const result = await toolContext.executeTool("delegate", {
         prompt: "UNAUTHORIZED_NESTED_CHILD",
       });

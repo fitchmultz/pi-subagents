@@ -3,6 +3,11 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type {
+  GuardedSendOptions,
+  IntercomClient,
+  IntercomClientOptions,
+} from "@fitchmultz/pi-subagents/intercom-client";
 
 // Run as an external ESM consumer, with no Pi SDK, provider or extension loader.
 assert.equal(process.permission.has("child"), false, "subprocess creation is denied");
@@ -16,8 +21,8 @@ const hook = registerHooks({
 });
 const { connectIntercom } = await import("@fitchmultz/pi-subagents/intercom-client");
 await assert.rejects(
-  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- bypasses tsc module resolution for the rejected subpath
-  import(/** @type {string} */ ("@fitchmultz/pi-subagents/dist/pi-intercom/broker/client.js")),
+  // @ts-expect-error The private broker implementation is not a package export.
+  import("@fitchmultz/pi-subagents/dist/pi-intercom/broker/client.js"),
   {
     code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
   },
@@ -28,8 +33,7 @@ if (home === undefined) {
 }
 const root = mkdtempSync(join(home, "client-"));
 const runtime = process.env.PI_INTERCOM_RUNTIME_DIR;
-/** @param {unknown} value */
-function text(value) {
+function text(value: unknown): string {
   assert.ok(typeof value === "string" && value.length > 0);
   return value;
 }
@@ -41,7 +45,7 @@ const guard = {
 };
 const brokerPid = Number(process.env.S3_BROKER_PID);
 assert.ok(Number.isSafeInteger(brokerPid) && brokerPid > 1 && brokerPid !== process.pid);
-const options = Object.freeze({
+const options: IntercomClientOptions = Object.freeze({
   spawn: false,
   session: {
     name: "supported-consumer",
@@ -52,7 +56,7 @@ const options = Object.freeze({
   },
   sendTimeoutMs: 100,
 });
-let client;
+let client: IntercomClient | undefined;
 try {
   process.env.PI_INTERCOM_RUNTIME_DIR = join(root, "absent");
   await assert.rejects(connectIntercom(options), /broker socket is unavailable/);
@@ -63,12 +67,8 @@ try {
   );
   process.env.PI_INTERCOM_RUNTIME_DIR = runtime;
   await assert.rejects(
-    connectIntercom(
-      /** @type {Parameters<typeof connectIntercom>[0]} */ (
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- fixture options intentionally mismatch the guarded runtime shape
-        /** @type {unknown} */ ({ ...options, spawn: true })
-      ),
-    ),
+    // @ts-expect-error External consumers cannot request broker spawning.
+    connectIntercom({ ...options, spawn: true }),
     /requires spawn:false/,
   );
   client = await connectIntercom(options);
@@ -92,26 +92,24 @@ try {
   let answer = first.text;
   while (page.nextOffset !== undefined) {
     // Follow the owner's UTF-16 cursor and immutable entry, not a newly selected answer.
-    // oxlint-disable typescript/no-unsafe-type-assertion, no-await-in-loop -- paging repeats the first page shape
-    page = /** @type {typeof first} */ (
-      await client.last(guard.peerId, {
-        entryId: first.entryId,
-        offset: page.nextOffset,
-        limit: 6,
-      })
-    );
-    // oxlint-enable typescript/no-unsafe-type-assertion, no-await-in-loop
+    const next = await client.last(guard.peerId, {
+      entryId: first.entryId,
+      offset: page.nextOffset,
+      limit: 6,
+    });
+    assert.ok("entryId" in next);
+    page = next;
     assert.equal(page.entryId, first.entryId);
     answer += page.text;
   }
   assert.equal(answer, "PACKED_PARENT_COMPLETE");
   const messageId = "a1234567-1234-1234-1234-123456789abc";
-  const replyHint = {
+  const replyHint: GuardedSendOptions["replyHint"] = {
     tool: "publish_reply",
     commandId: "12345678-1234-1234-1234-123456789abc",
     commandFingerprint: "9".repeat(64),
   };
-  const send = Object.freeze({
+  const send: GuardedSendOptions = Object.freeze({
     messageId,
     text: "  Original sender 日本語 😀 e\u0301 é\n\tKeep spacing.  ",
     expectsReply: false,
@@ -120,17 +118,11 @@ try {
     replyHint,
   });
   await assert.rejects(
-    client.send(
-      guard.peerId,
-      /** @type {Parameters<typeof client.send>[1]} */ (
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- fixture options intentionally mismatch the guarded runtime shape
-        /** @type {unknown} */ ({ ...send, guard: undefined })
-      ),
-    ),
+    // @ts-expect-error Every send requires an exact recipient guard.
+    client.send(guard.peerId, { ...send, guard: undefined }),
     /exact guarded/,
   );
-  /** @param {unknown} error */
-  function failure(error) {
+  function failure(error: unknown): Error {
     assert.ok(error instanceof Error);
     return error;
   }
@@ -153,7 +145,6 @@ try {
   const deadline = Date.now() + 5000;
   for (;;) {
     // A lost acknowledgement is reconciled by reads of the original ID, never another send.
-    // oxlint-disable-next-line no-await-in-loop
     const result = await client.receipt(guard.peerId, {
       rootSessionId: guard.rootSessionId,
       messageId,
@@ -163,7 +154,6 @@ try {
       break;
     }
     assert.ok(Date.now() < deadline, JSON.stringify(result));
-    // oxlint-disable-next-line no-await-in-loop
     await delay(5);
   }
   assert.equal(received.receipt.messageId, messageId);

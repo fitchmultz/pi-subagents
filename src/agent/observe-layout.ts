@@ -15,11 +15,11 @@ if (manifest === undefined) {
   throw new Error("Cannot locate the native Pi TUI package.");
 }
 const root = pathToFileURL(path.join(path.dirname(manifest), "dist/index.js"));
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: resolve the selected host TUI, not a second package instance.
 const tuiPromise: Promise<typeof Tui> = import(root.href);
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: layout must share the selected host TUI instance.
 const layoutPromise: Promise<typeof Layout> = import(new URL("./layout.js", root).href);
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: dispatch must share the selected host TUI instance.
 const dispatchPromise: Promise<typeof Dispatch> = import(new URL("./tui.js", root).href);
 const [tui, layout, dispatch, sdk] = await Promise.all([
   tuiPromise,

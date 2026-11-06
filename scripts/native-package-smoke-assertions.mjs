@@ -1,6 +1,22 @@
 // Journal and observation assertions shared with the packed-native smoke script.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { isRecord, isUnknownArray } from "../src/shared/unknown.ts";
+
+function jsonRecords(/** @type {string} */ file) {
+  return readFileSync(file, "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => {
+      /** @type {unknown} */ const entry = JSON.parse(line);
+      assert.ok(isRecord(entry));
+      return entry;
+    });
+}
+
+function containsText(/** @type {unknown} */ content, /** @type {string} */ text) {
+  return isUnknownArray(content) && content.some((part) => isRecord(part) && part.text === text);
+}
 
 /**
  * Assert the child journal records its native tool result and completion entry.
@@ -9,23 +25,15 @@ import { readFileSync } from "node:fs";
  * @param {string} completionText
  */
 export function assertChildJournal(sessionFile, terminalEntryId, completionText) {
-  const childEntries = readFileSync(sessionFile, "utf8")
-    .trimEnd()
-    .split("\n")
-    .map((line) =>
-      /** @type {{ id?: string, type?: string, message?: { role?: string, toolName?: string, content?: { text?: string }[] } }} */ (
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- journal line shape, guarded below
-        JSON.parse(line)
-      ),
-    );
-  // oxlint-disable typescript/no-unnecessary-condition -- journal fields are optional under tsc
+  const childEntries = jsonRecords(sessionFile);
   assert.ok(
     childEntries.some(
       (entry) =>
         entry.type === "message" &&
-        entry.message?.role === "toolResult" &&
-        entry.message?.toolName === "packed_probe" &&
-        entry.message?.content?.some((part) => part.text === "PACKED_TOOL_RESULT") === true,
+        isRecord(entry.message) &&
+        entry.message.role === "toolResult" &&
+        entry.message.toolName === "packed_probe" &&
+        containsText(entry.message.content, "PACKED_TOOL_RESULT"),
     ),
     "actual child journal contains its native tool result",
   );
@@ -34,12 +42,12 @@ export function assertChildJournal(sessionFile, terminalEntryId, completionText)
       (entry) =>
         entry.id === terminalEntryId &&
         entry.type === "message" &&
-        entry.message?.role === "assistant" &&
-        entry.message?.content?.some((part) => part.text === completionText) === true,
+        isRecord(entry.message) &&
+        entry.message.role === "assistant" &&
+        containsText(entry.message.content, completionText),
     ),
     "completion references an actually published child assistant entry",
   );
-  // oxlint-enable typescript/no-unnecessary-condition
 }
 
 /**
@@ -47,13 +55,7 @@ export function assertChildJournal(sessionFile, terminalEntryId, completionText)
  * @param {string} observations
  */
 export function assertObservations(observations) {
-  /** @type {Record<string, unknown>[]} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const observed = readFileSync(observations, "utf8")
-    .trimEnd()
-    .split("\n")
-    // oxlint-disable-next-line typescript/no-unsafe-return
-    .map((line) => JSON.parse(line));
+  const observed = jsonRecords(observations);
   const matches = (/** @type {(item: Record<string, unknown>) => boolean} */ predicate) =>
     observed.filter(predicate).length;
   assert.equal(

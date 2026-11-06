@@ -121,7 +121,6 @@ async function until(
   const deadline = Date.now() + timeout;
   while (!check()) {
     assert.ok(Date.now() < deadline, `${reason}\n${detail?.() ?? ""}`);
-    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
@@ -1338,7 +1337,6 @@ nodeTest(
       assert.equal(ui.setTheme(name).success, true);
       const accent = ui.getTheme(name)?.fg("accent", status);
       assertDefined(accent);
-      // oxlint-disable-next-line no-await-in-loop
       await until(
         () => screen.getScreenLines().some((line) => line.includes(accent)),
         `native ${name} theme change restyles the visible strip`,

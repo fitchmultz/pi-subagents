@@ -6,48 +6,14 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { isChildTreeAlive } from "../src/shared/post-exit-stdio-guard.ts";
 import { filesIn, processRef } from "./real-pi-processes.mjs";
+import assert from "node:assert/strict";
+import { isRecord } from "../src/shared/unknown.ts";
+import { sessionView } from "./real-pi-events.mjs";
 
-/**
- * One JSON record decoded from the RPC main's stdout stream.
- * @typedef {Record<string, unknown> & { type?: string }} RpcEvent
- */
-/**
- * A message record projected from a message_end event.
- * @typedef {object} StreamedMessage
- * @property {string | undefined} customType
- * @property {string | undefined} role
- * @property {{ type?: string, text?: string }[] | undefined} content
- * @property {string | undefined} stopReason
- * @property {SessionNotice | undefined} details
- */
-/**
- * A completion notification saved from a custom agent-completion message.
- * @typedef {object} SessionNotice
- * @property {string | undefined} id
- * @property {number | undefined} index
- * @property {{ status?: string } | undefined} result
- * @property {{ text?: string } | undefined} page
- */
-/**
- * A launch/continuation receipt projected from a tool_execution_end event.
- * @typedef {object} SessionReceipt
- * @property {string | undefined} tool
- * @property {string | undefined} receipt
- * @property {string | undefined} name
- * @property {string | undefined} id
- * @property {string | undefined} sessionFile
- * @property {string | undefined} context
- * @property {number | undefined} index
- * @property {string | undefined} predecessor
- */
-/**
- * The verified view of one live RPC session.
- * @typedef {object} SessionView
- * @property {RpcEvent[]} events
- * @property {SessionReceipt[]} receipts
- * @property {Map<string | undefined, SessionNotice>} notices
- * @property {{ index: number, text: string, stopReason: string | undefined }[]} replies
- */
+/** @typedef {import("./real-pi-events.mjs").RpcEvent} RpcEvent */
+/** @typedef {import("./real-pi-events.mjs").SessionReceipt} SessionReceipt */
+/** @typedef {import("./real-pi-events.mjs").SessionNotice} SessionNotice */
+/** @typedef {import("./real-pi-events.mjs").SessionView} SessionView */
 /**
  * The shared smoke runner options (built by scripts/real-pi-smoke.mjs).
  * @typedef {object} LiveSmokeOptions
@@ -96,47 +62,6 @@ function modelArgs() {
   return args;
 }
 
-function addMessage(
-  /** @type {SessionView} */ view,
-  /** @type {StreamedMessage | undefined} */ message,
-  /** @type {number} */ index,
-) {
-  if (message?.customType === "agent-completion" && message.details !== undefined) {
-    view.notices.set(message.details.id, { ...message.details, index });
-  } else if (message?.role === "assistant") {
-    const text = (message.content ?? []).filter((part) => part.type === "text");
-    view.replies.push({
-      index,
-      text: text.map((part) => part.text).join("\n"),
-      stopReason: message.stopReason,
-    });
-  }
-}
-
-function sessionView(/** @type {RpcEvent[]} */ events) {
-  /** @type {SessionView} */
-  const view = { events, receipts: [], notices: new Map(), replies: [] };
-  for (const [index, event] of events.entries()) {
-    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- RpcEvent carries unknown payloads
-    const details = /** @type {SessionReceipt | undefined} */ (
-      /** @type {{ details?: SessionReceipt } | undefined} */ (event.result)?.details
-    );
-    // oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
-    if (event.type === "message_end") {
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- RpcEvent carries unknown payloads
-      addMessage(view, /** @type {StreamedMessage} */ (event.message), index);
-    } else if (
-      event.type === "tool_execution_end" &&
-      details !== undefined &&
-      (details.receipt === "launch" || details.receipt === "continuation")
-    ) {
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- RpcEvent carries unknown payloads
-      view.receipts.push({ ...details, index, tool: /** @type {string} */ (event.toolName) });
-    }
-  }
-  return view;
-}
-
 // Persistent RPC main: launch/continuation receipts are not completion, so the main stays
 // alive until every receipt's native completion notification has resumed and settled it.
 function rpcSession(
@@ -158,11 +83,13 @@ function rpcSession(
     for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
       const line = buffer.slice(0, end).replace(/\r$/, "");
       buffer = buffer.slice(end + 1);
-      /** @type {RpcEvent} */ let record;
+      /** @type {unknown} */ let record;
       try {
-        // oxlint-disable-next-line typescript/no-unsafe-assignment
         record = JSON.parse(line);
       } catch {
+        continue;
+      }
+      if (!isRecord(record)) {
         continue;
       }
       events.push(record);
@@ -229,19 +156,13 @@ async function runLiveSession(
     // Verify while the main is alive; only then request its orderly shutdown.
     await verify(view);
   } finally {
-    // oxlint-disable-next-line typescript/no-unnecessary-condition -- the finally also runs when startup failed
-    session?.close();
+    session.close();
     writeFileSync(
       join(options.root, `${label.replace(/ /g, "-")}.jsonl`),
-      // oxlint-disable-next-line typescript/no-unnecessary-condition, typescript/strict-boolean-expressions -- the finally also runs when startup failed
-      session ? session.events.map((event) => JSON.stringify(event)).join("\n") : "",
+      session.events.map((event) => JSON.stringify(event)).join("\n"),
     );
   }
   await exited;
-  // oxlint-disable-next-line typescript/no-unnecessary-condition -- flow analysis misses the race failure path
-  if (view === undefined) {
-    throw new Error(`${label} settled without a session view`);
-  }
   return view;
 }
 
@@ -250,11 +171,12 @@ function* savedAssistantModels(/** @type {string} */ file) {
     if (line.trim() === "") {
       continue;
     }
-    /** @type {{ type?: string, message?: { role?: string, provider?: string, model?: string } }} */
-    // oxlint-disable-next-line typescript/no-unsafe-assignment
-    const entry = JSON.parse(line);
-    if (entry.type === "message" && entry.message?.role === "assistant") {
-      yield `${entry.message.provider ?? ""}/${entry.message.model ?? ""}`;
+    /** @type {unknown} */ const entry = JSON.parse(line);
+    assert.ok(isRecord(entry));
+    if (entry.type === "message" && isRecord(entry.message) && entry.message.role === "assistant") {
+      const { provider = "", model = "" } = entry.message;
+      assert.ok(typeof provider === "string" && typeof model === "string");
+      yield `${provider}/${model}`;
     }
   }
 }
@@ -307,9 +229,10 @@ function asyncCompletion(/** @type {string} */ dir, /** @type {string} */ runId)
   if (!existsSync(resultPath)) {
     return { status: "missing" };
   }
-  /** @type {{ id: string, status: string, error?: string }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const result = JSON.parse(readFileSync(resultPath, "utf8"));
+  /** @type {unknown} */ const result = JSON.parse(readFileSync(resultPath, "utf8"));
+  assert.ok(isRecord(result));
+  assert.ok(typeof result.status === "string");
+  assert.ok(result.error === undefined || typeof result.error === "string");
   if (result.id !== runId) {
     throw new Error("Async completion belongs to another saved run");
   }
@@ -320,9 +243,8 @@ function asyncCompletion(/** @type {string} */ dir, /** @type {string} */ runId)
   if (!existsSync(processPath)) {
     return { status: "completed; actor exit unconfirmed" };
   }
-  /** @type {{ pid: number }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const actor = JSON.parse(readFileSync(processPath, "utf8"));
+  /** @type {unknown} */ const actor = JSON.parse(readFileSync(processPath, "utf8"));
+  assert.ok(isRecord(actor) && typeof actor.pid === "number");
   return {
     status: result.status,
     output: isChildTreeAlive(processRef(actor.pid))
@@ -356,7 +278,6 @@ async function waitForAsyncCompletion(
       return;
     }
     // Result publication is not process exit; retain resources until final actor writes finish.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(100, undefined, { signal });
   }
   throw new Error(
@@ -395,7 +316,7 @@ function requireFinalReply(
   /** @type {RegExp} */ pattern,
 ) {
   const last = view.replies.at(-1);
-  const notified = Math.max(-1, ...[...view.notices.values()].map(({ index }) => index ?? -1));
+  const notified = Math.max(-1, ...[...view.notices.values()].map(({ index }) => index));
   if (last === undefined || last.stopReason !== "stop" || last.index < notified) {
     throw new Error(
       `${label} did not finish a successful reply after its final completion notification.`,
@@ -410,7 +331,7 @@ function requireCompletion(
   /** @type {string} */ expected,
 ) {
   const notice = view.notices.get(receipt.id);
-  if (notice?.result?.status !== "completed" || notice.page?.text?.trim() !== expected) {
+  if (notice?.result.status !== "completed" || notice.page.text?.trim() !== expected) {
     throw new Error(`Run ${receipt.id ?? ""} completion notification did not report: ${expected}`);
   }
 }
@@ -435,7 +356,6 @@ async function runBasicLiveSmoke(
   for (const [kind, prompt, tool] of prompts) {
     const label = `real Pi ${kind} prompt`;
     // Keep separate native parent sessions so each smoke owns its saved runs.
-    // oxlint-disable-next-line no-await-in-loop
     await runLiveSession(runOptions, {
       label,
       prompt,
@@ -524,7 +444,7 @@ function topologyLinksPreserved(first, continued, forked, firstNotice) {
 
 function requireForkTopology(/** @type {SessionView} */ view) {
   const kinds = view.receipts.map(
-    ({ tool, receipt, context }) => `${tool ?? ""}:${receipt ?? ""}:${context ?? ""}`,
+    ({ tool, receipt, context }) => `${tool}:${receipt}:${context ?? ""}`,
   );
   const expected = [
     "agent_runs:continuation:fresh",

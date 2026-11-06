@@ -20,7 +20,6 @@ async function until(predicate: () => boolean): Promise<void> {
   const end = performance.now() + 15000;
   while (!predicate()) {
     assert.ok(performance.now() < end, "owner reached the next durable/transport boundary");
-    // oxlint-disable-next-line no-await-in-loop
     await delay(5);
   }
 }
@@ -181,7 +180,7 @@ if (mode === "reader") {
   state.close();
 } else if (mode === "publish") {
   // Pause the real native lock call after its file exists, without supplying lock/admission results.
-  // oxlint-disable-next-line typescript/unbound-method -- re-bound to the native receiver below.
+  // oxlint-disable-next-line typescript/unbound-method -- QX-007: invoke only through call(this, sql) on the native database receiver.
   const nativeExec = DatabaseSync.prototype.exec;
   DatabaseSync.prototype.exec = function (sql: string): void {
     if (sql === "BEGIN EXCLUSIVE") {

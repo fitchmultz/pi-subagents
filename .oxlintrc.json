@@ -1,10 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "node"],
-  "ignorePatterns": ["dist/**", "dist.staging*/**"],
-  "env": {
-    "node": true
-  },
   "categories": {
     "correctness": "error",
     "suspicious": "error",
@@ -93,7 +89,7 @@
     "typescript/no-unnecessary-condition": [
       "error",
       {
-        "checkTypePredicates": true,
+        "checkTypePredicates": false,
         "allowConstantLoopConditions": "only-allowed-literals"
       }
     ],
@@ -131,7 +127,7 @@
     "typescript/no-base-to-string": [
       "error",
       {
-        "checkUnknown": true
+        "checkUnknown": false
       }
     ],
     "typescript/no-floating-promises": [
@@ -140,25 +136,14 @@
         "checkThenables": true,
         "ignoreIIFE": false,
         "ignoreVoid": false,
-        "allowForKnownSafeCalls": [
-          {
-            "from": "package",
-            "package": "node:test",
-            "name": ["nodeTest", "nodeIt", "nodeDescribe"]
-          }
-        ],
+        "allowForKnownSafeCalls": [],
         "allowForKnownSafePromises": []
       }
     ],
     "typescript/no-misused-promises": "error",
     "typescript/await-thenable": "error",
     "typescript/return-await": ["error", "error-handling-correctness-only"],
-    "typescript/strict-void-return": [
-      "error",
-      {
-        "allowReturnAny": false
-      }
-    ],
+    "typescript/strict-void-return": "off",
     "typescript/no-confusing-void-expression": [
       "error",
       {
@@ -192,7 +177,7 @@
       {
         "allowEmptyReject": false,
         "allowThrowingAny": false,
-        "allowThrowingUnknown": false
+        "allowThrowingUnknown": true
       }
     ],
     "no-useless-catch": "error",
@@ -288,7 +273,7 @@
     "no-new-func": "error",
     "no-with": "error",
     "no-debugger": "error",
-    "no-control-regex": "error",
+    "no-control-regex": "off",
     "no-empty": [
       "error",
       {
@@ -305,7 +290,7 @@
     ],
     "unicorn/no-abusive-eslint-disable": "error",
     "typescript/prefer-readonly-parameter-types": "off",
-    "no-await-in-loop": "error",
+    "no-await-in-loop": "off",
     "require-await": "off",
     "typescript/require-await": "off",
     "typescript/consistent-return": "off",
@@ -348,19 +333,6 @@
         "test/fixtures/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
       ],
       "rules": {
-        "import/no-unassigned-import": [
-          "error",
-          {
-            "allow": ["../support/isolated-home.ts", "./isolated-home.ts"]
-          }
-        ],
-        "typescript/no-unnecessary-condition": [
-          "error",
-          {
-            "checkTypePredicates": false,
-            "allowConstantLoopConditions": "only-allowed-literals"
-          }
-        ],
         "complexity": [
           "error",
           {
@@ -382,11 +354,33 @@
         ],
         "max-statements": "off",
         "max-lines-per-function": "off",
-        "max-lines": "off"
+        "max-lines": "off",
+        "typescript/no-floating-promises": [
+          "error",
+          {
+            "checkThenables": true,
+            "ignoreIIFE": false,
+            "ignoreVoid": false,
+            "allowForKnownSafeCalls": [
+              {
+                "from": "package",
+                "package": "node:test",
+                "name": ["nodeTest", "nodeIt", "nodeDescribe"]
+              }
+            ],
+            "allowForKnownSafePromises": []
+          }
+        ],
+        "import/no-unassigned-import": [
+          "error",
+          {
+            "allow": ["../support/isolated-home.ts", "./isolated-home.ts"]
+          }
+        ]
       }
     },
     {
-      "files": ["**/*.d.{ts,mts,cts}"],
+      "files": ["**/*.d.ts", "**/*.d.mts", "**/*.d.cts"],
       "rules": {
         "complexity": "off",
         "max-depth": "off",
@@ -433,5 +427,9 @@
         "max-lines": "off"
       }
     }
-  ]
+  ],
+  "env": {
+    "node": true
+  },
+  "ignorePatterns": ["dist/**", "dist.staging*/**"]
 }

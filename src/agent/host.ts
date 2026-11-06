@@ -108,7 +108,7 @@ export async function loadSDK(root: string): Promise<HostSDK> {
     return resolvedSDK;
   }
   // Selected host SDK, not a second package-local runtime hidden behind Jiti aliases.
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: selected host module must retain its runtime identity.
   const sdk: HostSDK = await import(pathToFileURL(path.join(root, "dist/index.js")).href);
   return sdk;
 }

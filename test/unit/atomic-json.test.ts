@@ -122,7 +122,6 @@ nodeIt(
     );
     for (const { exit } of writers) {
       // The published backing must remain readable after every producer exits.
-      // oxlint-disable-next-line no-await-in-loop
       assert.deepEqual(await exit, [0, null]);
     }
     assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), {
@@ -151,7 +150,6 @@ nodeIt(
     while (!fs.existsSync(`${gate}.ready`)) {
       assert.ok(Date.now() < deadline && child.exitCode === null, "writer reaches actual fsync");
       // The real fsync publication establishes the owner processed its input before this check.
-      // oxlint-disable-next-line no-await-in-loop
       await delay(10);
     }
     assert.equal(fs.existsSync(file), false);

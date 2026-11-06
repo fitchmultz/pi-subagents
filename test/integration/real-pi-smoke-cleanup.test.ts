@@ -44,7 +44,6 @@ async function until(check: () => boolean, timeoutMs = 15_000) {
   while (!check()) {
     assert.ok(Date.now() < deadline, "fixture did not finish before its watchdog");
     // Observe the owner publication before advancing this lifecycle transition.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
@@ -175,7 +174,6 @@ nodeTest(
     ]) {
       const scenario = name === "success-clean" ? "success" : name;
       // Each scenario owns shared fixture state; complete it before starting the next one.
-      // oxlint-disable-next-line no-await-in-loop
       await t.test(name, async () => {
         const root = mkdtempSync(
           join(process.env.PI_REAL_SMOKE_TEST_ROOT ?? tmpdir(), "pi-subagents-smoke-cleanup-"),
@@ -205,16 +203,16 @@ nodeTest(
         });
         try {
           controller = startSmoke(root, auth, bin, scenario, name !== "success-clean");
-          const defined4438_0 = controller.stdout;
-          assertDefined(defined4438_0);
-          defined4438_0.setEncoding("utf8");
-          defined4438_0.on("data", (chunk: unknown) => {
+          const stdout = controller.stdout;
+          assertDefined(stdout);
+          stdout.setEncoding("utf8");
+          stdout.on("data", (chunk: unknown) => {
             output += text(chunk);
           });
-          const defined4534_0 = controller.stderr;
-          assertDefined(defined4534_0);
-          defined4534_0.setEncoding("utf8");
-          defined4534_0.on("data", (chunk: unknown) => {
+          const stderr = controller.stderr;
+          assertDefined(stderr);
+          stderr.setEncoding("utf8");
+          stderr.on("data", (chunk: unknown) => {
             output += text(chunk);
           });
           controller.on("close", (exitCode) => {
@@ -230,12 +228,8 @@ nodeTest(
           smokeRoot = text(
             record(parseJson(readFileSync(join(root, "install.json"), "utf8"))).root,
           );
-          const defined5078_0 = smokeRoot;
-          assertDefined(defined5078_0);
-          const copiedAuth = join(defined5078_0, "pi-agent", "auth.json");
-          const defined5150_0 = smokeRoot;
-          assertDefined(defined5150_0);
-          const copiedModels = join(defined5150_0, "pi-agent", "models.json");
+          const copiedAuth = join(smokeRoot, "pi-agent", "auth.json");
+          const copiedModels = join(smokeRoot, "pi-agent", "models.json");
           const ready = record(parseJson(readFileSync(join(root, "parent-ready"), "utf8")));
           assert.ok(
             ready.auth === true && ready.models === true,
@@ -266,7 +260,7 @@ nodeTest(
             const owned = eventsAt(root).filter((event) => event.event === "started");
             if (
               (!existsSync(copiedAuth) || !existsSync(copiedModels)) &&
-              owned.some((event) => isChildTreeAlive(processRef(numberValue(event.pid))))
+              owned.some((event) => isChildTreeAlive(processRef(event.pid)))
             ) {
               prematureRemoval = true;
             }
@@ -274,7 +268,7 @@ nodeTest(
           });
           const owned = eventsAt(root).filter((event) => event.event === "started");
           const liveAtExit = owned
-            .filter((event) => isChildTreeAlive(processRef(numberValue(event.pid))))
+            .filter((event) => isChildTreeAlive(processRef(event.pid)))
             .map((event) => event.role);
           const writeAt = numberValue(
             record(parseJson(readFileSync(join(root, "child-ready"), "utf8"))).writeAt,
@@ -302,10 +296,8 @@ nodeTest(
             false,
             "--keep-temp must still remove copied credentials",
           );
-          const defined7176_0 = smokeRoot;
-          assertDefined(defined7176_0);
           assert.equal(
-            existsSync(defined7176_0),
+            existsSync(smokeRoot),
             name !== "success-clean",
             "only --keep-temp preserves noncredential evidence",
           );

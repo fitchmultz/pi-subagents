@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isRecord } from "../../src/shared/unknown.ts";
 
 /**
  * A host record as written by the release automation.
- * @typedef {{ version: string, provenance: Record<string, unknown>, indexSha256: string, cliSha256: string, cohort: string, companions: unknown, runtimeLockSha256: string, runtimeGraphSha256: string }} HostRecord
+ * @typedef {{ flavor: string, directory: string, packageDir: string, packageDirs: Record<string, string>, version: string, provenance: Record<string, unknown>, index: string, cli: string, indexSha256: string, cliSha256: string, cohort: Record<string, string>, companions: Record<string, string>, runtimeLockSha256: string, runtimeGraphSha256: string }} HostRecord
  */
 const [flavor, target, automationArg, sourceArg] = process.argv.slice(2);
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -26,25 +27,25 @@ assert.ok(
   "CI must supply the frozen native editor receipt source",
 );
 const automation = resolve(automationArg);
-/** @type {{ isolatedEnvironment: (root: string) => NodeJS.ProcessEnv, run: (command: string, args: string[], options?: { cwd?: string, env?: NodeJS.ProcessEnv, quiet?: boolean, timeout?: number, stdio?: "inherit" | "pipe" }) => string, stageSource: (source: string, destination: string) => void }} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+/** @type {{ isolatedEnvironment: (root: string) => NodeJS.ProcessEnv, run: (command: string, args: string[], options?: { cwd?: string, env?: NodeJS.ProcessEnv, quiet?: boolean, timeout?: number, stdio?: "inherit" | "pipe" }) => string | null, stageSource: (source: string, destination: string) => void }} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
 const { isolatedEnvironment, run, stageSource } = await import(
   pathToFileURL(join(automation, "scripts/common.mjs")).href
 );
 /** @type {{ prepareHost: (host: string, flavor: string, target: string, env: NodeJS.ProcessEnv) => Promise<HostRecord>, selectDevelopmentHost: (development: string, host: HostRecord, env: NodeJS.ProcessEnv) => { packageDir: string, index: string, cli: string } }} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
 const { prepareHost, selectDevelopmentHost } = await import(
   pathToFileURL(join(automation, "scripts/hosts.mjs")).href
 );
 
 /**
  * @param {HostRecord} host
- * @param {HostRecord} expected
+ * @param {Record<string, unknown>} expected
  */
 function assertOfficialProvenance(host, expected) {
+  assert.ok(isRecord(expected.provenance));
   for (const key of ["version", "integrity", "tarball", "installer"]) {
     assert.deepEqual(
-      // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
       host.provenance[key],
       expected.provenance[key],
       `Official host ${key} differs from the candidate`,
@@ -83,11 +84,13 @@ try {
     PI_PACKAGE_DIR: selected.packageDir,
     PI_EDITOR_RECEIPT_TEST_ROOT: resolve(process.env.PI_EDITOR_RECEIPT_TEST_ROOT),
   };
-  const editorRef = run("git", ["rev-parse", "HEAD"], {
+  const editorOutput = run("git", ["rev-parse", "HEAD"], {
     cwd: testEnv.PI_EDITOR_RECEIPT_TEST_ROOT,
     env,
     quiet: true,
-  }).trim();
+  });
+  assert.ok(editorOutput !== null);
+  const editorRef = editorOutput.trim();
   console.log(
     JSON.stringify({
       qualification: flavor,
@@ -104,13 +107,14 @@ try {
   });
   if (process.env.PI_RELEASE_CANDIDATE !== undefined) {
     const candidate = resolve(process.env.PI_RELEASE_CANDIDATE);
-    /** @type {{ filename: string, hosts: Record<string, HostRecord> }} */
-    // oxlint-disable-next-line typescript/no-unsafe-assignment
-    const { filename, hosts } = JSON.parse(readFileSync(join(candidate, "release.json"), "utf8"));
-    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
+    /** @type {unknown} */
+    const release = JSON.parse(readFileSync(join(candidate, "release.json"), "utf8"));
+    assert.ok(isRecord(release));
+    const { filename, hosts } = release;
+    assert.ok(typeof filename === "string" && isRecord(hosts));
     assert.equal(basename(filename), filename, "Candidate filename must be local to the artifact");
     const expected = hosts[flavor];
-    assert.ok(expected !== undefined, `Candidate did not record a ${flavor} host`);
+    assert.ok(isRecord(expected), `Candidate did not record a ${flavor} host`);
     let candidateHost = host;
     let candidateSelected = selected;
     if (flavor === "fork") {
@@ -125,7 +129,6 @@ try {
         env,
       );
       assert.deepEqual(
-        // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
         candidateHost.provenance,
         expected.provenance,
         "Fork host artifact differs from the candidate",
@@ -134,25 +137,21 @@ try {
     } else {
       assertOfficialProvenance(candidateHost, expected);
     }
-    for (const key of [
+    /** @type {(keyof HostRecord)[]} */
+    const identityFields = [
       "version",
       "indexSha256",
       "cliSha256",
       "cohort",
       "companions",
       "runtimeLockSha256",
-    ]) {
-      assert.deepEqual(
-        // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
-        /** @type {Record<string, unknown>} */ (candidateHost)[key],
-        /** @type {Record<string, unknown>} */ (expected)[key],
-        `Host ${key} differs from the candidate`,
-      );
+    ];
+    for (const key of identityFields) {
+      assert.deepEqual(candidateHost[key], expected[key], `Host ${key} differs from the candidate`);
     }
     // npm installs platform-specific optional dependencies; the recorded graph was prepared on Linux.
     if (process.platform === "linux") {
       assert.equal(
-        // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
         candidateHost.runtimeGraphSha256,
         expected.runtimeGraphSha256,
         "Linux host graph differs from the candidate",

@@ -330,8 +330,12 @@ not an end-to-end exactly-once guarantee for arbitrary tool side effects.
 
 Idle recovery preserves admission order within the non-passive backlog and wakes
 once on its last item; passive breadcrumbs are appended before that waking work.
-The first eligible ask remains the implicit reply target, independently of which
-message triggers the turn. A busy recipient's steer is handed to Pi's native
+The first unresolved eligible ask remains the implicit reply target, independently
+of which message triggers the turn. Reply attribution refers to the unresolved
+ask by ID. Placing delayed input does not revive an already replied, expired, or
+retired reply obligation. A failed turn can retire only an ask whose input Pi has
+consumed; queued input remains answerable after abort recovery.
+A busy recipient's steer is handed to Pi's native
 queue and consumed at its next tool boundary; no extension probe asks another
 tool to give up the turn.
 
@@ -391,5 +395,15 @@ owner. PID checks are conservative, including permission-denied cases. Linux
 records include native boot/namespace/start identity to reject proven PID reuse;
 ambiguous legacy numeric PIDs remain blocking. A process is never killed merely
 to recover broker startup.
+
+Startup distinguishes absent, live and uncertain ownership. An unreadable or
+invalid PID record is uncertain, not permission to launch another broker.
+A startup claim stays owned while its process is live, regardless of age.
+Only a proven exited or replaced owner permits reclaiming it. Linux claims carry
+the same native process identity as broker PID records. Legacy or incomparable
+identities remain blocking; a timestamp alone cannot prove PID reuse.
+Each starter keeps the claim's
+file descriptor open and releases only the same device/inode, leaving a
+replacement claim untouched.
 
 Remote authenticated mail is separate: see [bridge setup](intercom-bridge.md).

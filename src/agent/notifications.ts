@@ -8,17 +8,20 @@ import type { Launch, Result } from "./contracts.ts";
 import { launchAt, list, runDirectory } from "./storage.ts";
 import { readCanonicalResult, readResult } from "./usage.ts";
 
+function isStringSet(value: unknown): value is Set<string> {
+  if (!(value instanceof Set)) {
+    return false;
+  }
+  const entries: Set<unknown> = value;
+  return [...entries].every((entry) => typeof entry === "string");
+}
+
 function queuedAdmissions(): Set<string> {
   const store = globalThis as Record<string, unknown>;
   const existing = store.__pi_single_agent_admissions__;
-  if (existing instanceof Set) {
-    const values: Set<unknown> = existing;
-    const strings = [...values].filter((value): value is string => typeof value === "string");
-    if (strings.length === values.size) {
-      // Keep one live queue identity across native extension reloads.
-      // oxlint-disable-next-line typescript/no-unsafe-return
-      return existing;
-    }
+  if (isStringSet(existing)) {
+    // Keep one live queue identity across native extension reloads.
+    return existing;
   }
   const queued = new Set<string>();
   store.__pi_single_agent_admissions__ = queued;

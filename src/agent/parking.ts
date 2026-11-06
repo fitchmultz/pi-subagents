@@ -29,7 +29,14 @@ import type { NativeHistory } from "../pi-intercom/last-message.ts";
 type SDK = Awaited<ReturnType<typeof loadSDK>>;
 type Restore = NonNullable<SDK["readWorkingSession"]>;
 export type Runtime = Awaited<ReturnType<SDK["createAgentSessionRuntime"]>>;
+export type ParkOutcome = "resident" | "exit-parked" | "exit-failed";
 type SessionManager = Parameters<SDK["createAgentSessionRuntime"]>[1]["sessionManager"];
+type OpenSource =
+  | { readonly kind: "journal" }
+  | { readonly kind: "parked"; readonly state: string; readonly saved: WorkingState };
+type RestorePhase =
+  | { readonly kind: "unopened" }
+  | { readonly kind: "opening" | "adopted"; readonly source: OpenSource };
 interface WorkingHold {
   readonly state: WorkingState;
   readonly sleepReady: boolean;
@@ -156,10 +163,7 @@ export function parkedState(
 }
 /** One actor generation's idle parking and exact restore; commands stay with the runner. */
 export class Parking {
-  saved?: WorkingState;
-  /** Set before entering either native open, whose effects may outlive an exception. */
-  opened = false;
-  private restored?: string;
+  private restore: RestorePhase = { kind: "unopened" };
   private since = 0;
   private leaf?: string | null;
   private shell?: string | undefined;
@@ -179,36 +183,48 @@ export class Parking {
   private get file(): string {
     return path.join(this.dir, "parked.json");
   }
+  get saved(): WorkingState | undefined {
+    return this.restore.kind !== "unopened" && this.restore.source.kind === "parked"
+      ? this.restore.source.saved
+      : undefined;
+  }
+  /** Set before entering either native open, whose effects may outlive an exception. */
+  get opened(): boolean {
+    return this.restore.kind !== "unopened";
+  }
   /** Parked authority is exact state or nothing; never a journal-only reopen. */
   open(): SessionManager {
     const { sdk, launch } = this;
     const { openWorkingSession: restore } = sdk;
     const parked = parkedState(this.dir, launch, restore && sdk.readWorkingSession);
-    this.opened = true;
+    this.restore = {
+      kind: "opening",
+      source: parked ? { kind: "parked", ...parked } : { kind: "journal" },
+    };
     if (!parked || !restore) {
       return sdk.SessionManager.open(launch.sessionFile, undefined, launch.cwd);
     }
-    this.saved = parked.saved;
-    this.restored = parked.state;
     return restore(parked.saved);
   }
   /** The ready restored generation owns this state now; a later park writes a new cut. */
   adopt(): void {
-    if (this.restored !== undefined) {
-      fs.rmSync(this.file);
-      fs.rmSync(this.restored, { force: true });
+    if (this.restore.kind !== "opening") {
+      return;
     }
+    const { source } = this.restore;
+    if (source.kind === "parked") {
+      fs.rmSync(this.file);
+      fs.rmSync(source.state, { force: true });
+    }
+    this.restore = { kind: "adopted", source };
   }
-  /** True once this generation has exited its runtime with or without parked authority. */
-  async park(runtime: Runtime, actor: Resident): Promise<boolean> {
+  /** Both exit outcomes have disposed the runtime; only one publishes parked authority. */
+  async park(runtime: Runtime, actor: Resident): Promise<ParkOutcome> {
     if (!actor.pi || !this.due(runtime.session, actor.busy) || this.hasShell()) {
-      return false;
+      return "resident";
     }
     const hold = await this.prepare(runtime, actor.pi, actor);
-    if (hold) {
-      await this.commit(runtime, hold, actor.errors);
-    }
-    return hold !== undefined;
+    return hold ? this.commit(runtime, hold, actor.errors) : "resident";
   }
   private hasShell(): boolean {
     const witness = this.shell === undefined ? undefined : shell(this.shell, this.token);
@@ -259,7 +275,11 @@ export class Parking {
     return undefined;
   }
   /** Commit: native strict exit, then capture; failure leaves no parked authority. */
-  private async commit(runtime: Runtime, hold: WorkingHold, errors: string[]): Promise<void> {
+  private async commit(
+    runtime: Runtime,
+    hold: WorkingHold,
+    errors: string[],
+  ): Promise<Exclude<ParkOutcome, "resident">> {
     const save = this.sdk.writeWorkingSession;
     if (save && finalizing(runtime)) {
       runtime.setFinalization((final) => this.capture(final, save), { strictShutdown: true });
@@ -275,7 +295,9 @@ export class Parking {
     if (read(this.file, parkedSchema)?.token !== this.token) {
       // Truthful boundary: retained input stays queued and nothing restarts implicitly.
       write(path.join(this.dir, "park-failed.json"), { token: this.token, errors });
+      return "exit-failed";
     }
+    return "exit-parked";
   }
   private async capture(
     session: AgentSession,
@@ -400,7 +422,6 @@ async function awaitWake(
         throw new Error(failure);
       }
       // DirectoryWatch reconciles dropped hints without imposing a deadline on native startup.
-      // oxlint-disable-next-line no-await-in-loop
       await wake.sleep(200);
     }
   } finally {

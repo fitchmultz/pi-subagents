@@ -16,6 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostRoot } from "./compat-host.mjs";
 import { compilerInvocation } from "./typescript.mjs";
+import { isRecord, isUnknownArray } from "../src/shared/unknown.ts";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
@@ -25,9 +28,11 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 }
 assert.ok(process.argv.length <= 3, "Expected at most one package tarball; use --help");
 
-/** @type {{ name: string, version: string, pi: { extensions?: string[], skills?: string[], agents?: unknown, prompts?: unknown } }} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+/** @type {unknown} */
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+assert.ok(isRecord(packageJson));
+assert.ok(typeof packageJson.name === "string" && typeof packageJson.version === "string");
+const packageName = packageJson.name;
 const candidate = process.argv[2] !== undefined ? resolve(process.argv[2]) : undefined;
 const root = mkdtempSync(join(tmpdir(), "ps-package-"));
 const packDir = join(root, "pack");
@@ -55,9 +60,8 @@ function run(
   return result.stdout;
 }
 
-function verifyManifest(
-  /** @type {{ name?: string, private?: boolean, publishConfig?: unknown, bin?: unknown, pi: { extensions?: string[], skills?: string[], agents?: unknown, prompts?: unknown } }} */ manifest,
-) {
+function verifyManifest(/** @type {unknown} */ manifest) {
+  assert.ok(isRecord(manifest) && isRecord(manifest.pi));
   assert.equal(manifest.name, "@fitchmultz/pi-subagents");
   assert.notEqual(manifest.private, true);
   assert.deepEqual(manifest.publishConfig, { access: "public" });
@@ -87,7 +91,7 @@ function installProduction(/** @type {{ filename?: string, files?: { path: strin
     ],
     installDir,
   );
-  const installed = join(installDir, "node_modules", packageJson.name);
+  const installed = join(installDir, "node_modules", packageName);
   const standalone = join(root, "standalone");
   cpSync(installed, standalone, { recursive: true });
   run("npm", ["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps"], standalone);
@@ -143,16 +147,14 @@ function verifyDeclarations(/** @type {string} */ consumerDir) {
 async function verifyRuntime(
   /** @type {{ packageRoot: string, consumerDir: string }} */ { packageRoot, consumerDir },
 ) {
-  /** @type {{ name?: string, private?: boolean, publishConfig?: unknown, bin?: unknown, pi: { extensions?: string[], skills?: string[], agents?: unknown, prompts?: unknown } }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  /** @type {unknown} */
   const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
   verifyManifest(manifest);
   verifyDeclarations(consumerDir);
-  /** @type {typeof import("@earendil-works/pi-coding-agent")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const sdk = await import(pathToFileURL(join(hostRoot, "dist/index.js")).href);
+  // compat-host verifies this specifier resolves to the selected native graph.
+  const sdk = await import("@earendil-works/pi-coding-agent");
   /** @type {typeof import("../src/agent/host.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
   const nativeHost = await import(pathToFileURL(join(packageRoot, "dist/agent/host.js")).href);
   assert.equal(
     await nativeHost.loadSDK(hostRoot),
@@ -182,11 +184,10 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
     },
   );
   /** @type {typeof import("../src/pi-intercom/broker/spawn.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
   const broker = await import(
     pathToFileURL(join(packageRoot, "dist/pi-intercom/broker/spawn.js")).href
   );
-  // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
   assert.equal(realpathSync(broker.getBrokerSpawnOptions().cwd), realpathSync(packageRoot));
   const help = run(
     process.execPath,
@@ -207,7 +208,9 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
         fileURLToPath(new URL("./native-package-smoke.mjs", import.meta.url)),
         packageRoot,
         consumerDir,
-        fileURLToPath(new URL("../test/fixtures/intercom-client-consumer.mjs", import.meta.url)),
+        fileURLToPath(
+          new URL("../test/fixtures/intercom-client-consumer.test-d.mts", import.meta.url),
+        ),
       ],
       root,
       {
@@ -225,25 +228,32 @@ assert.equal(native.Assert, hostValue.Assert, "detached validation uses the sele
 try {
   verifyManifest(packageJson);
   process.env.PI_PACKAGE_DIR = hostRoot;
-  /** @type {{ name: string, version: string, filename: string, files: { path: string }[] }[]} */
-  const packReports = Object.values(
-    // oxlint-disable-next-line typescript/no-unsafe-argument
-    JSON.parse(
-      run("npm", [
-        "pack",
-        "--json",
-        "--pack-destination",
-        packDir,
-        ...(candidate !== undefined ? [candidate] : []),
-      ]),
-    ),
+  const packSchema = Type.Array(
+    Type.Object({
+      name: Type.String(),
+      version: Type.String(),
+      filename: Type.String(),
+      files: Type.Array(Type.Object({ path: Type.String() })),
+    }),
   );
+  /** @type {unknown} */
+  const report = JSON.parse(
+    run("npm", [
+      "pack",
+      "--json",
+      "--pack-destination",
+      packDir,
+      ...(candidate !== undefined ? [candidate] : []),
+    ]),
+  );
+  // npm 12 reports by package name; earlier npm versions report an array.
+  assert.ok(isRecord(report) || isUnknownArray(report));
+  const packReports = Object.values(report);
+  Assert(packSchema, packReports);
   const pack = packReports[0];
   assert.ok(pack !== undefined && Array.isArray(pack.files), "npm pack must report files");
   if (candidate !== undefined) {
-    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
     assert.equal(pack.name, packageJson.name);
-    // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
     assert.equal(pack.version, packageJson.version, "Candidate version differs from source");
     assert.ok(
       readFileSync(join(packDir, pack.filename)).equals(readFileSync(candidate)),
@@ -287,7 +297,6 @@ try {
   }
   for (const packageRoot of installProduction(pack)) {
     // Qualify both the npm node_modules location and standalone git-style production graph.
-    // oxlint-disable-next-line no-await-in-loop
     await verifyRuntime(packageRoot);
   }
   console.log(

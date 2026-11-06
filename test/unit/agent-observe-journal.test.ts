@@ -105,7 +105,6 @@ nodeTest(
       assert.ok(first.pages > 1);
       const parts: string[] = [];
       for (let index = 0; index < first.pages; index++) {
-        // oxlint-disable-next-line no-await-in-loop
         const page = await journal.page(record, index);
         assert.equal(page.message.isError, true);
         const content = page.message.content;

@@ -161,8 +161,7 @@ function issueCertificate(
 }
 
 function readConfig(/** @type {string} */ path) {
-  /** @type {{ ca?: string, clients?: unknown[], cert?: string, key?: string }} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  /** @type {unknown} */
   const config = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(config) || !Array.isArray(config.clients) || typeof config.ca !== "string") {
     throw new Error("Invalid clients allowlist.");
@@ -178,7 +177,9 @@ function readConfig(/** @type {string} */ path) {
     }
     return { ...client, name: client.name, cwd: client.cwd, fingerprint256: client.fingerprint256 };
   });
-  return { ...config, ca: config.ca, clients };
+  /** @type {Record<string, unknown> & { ca: string, clients: typeof clients }} */
+  const validated = { ...config, ca: config.ca, clients };
+  return validated;
 }
 
 let args;

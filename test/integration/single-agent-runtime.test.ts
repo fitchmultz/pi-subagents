@@ -51,7 +51,6 @@ async function until(check: () => boolean, reason: string): Promise<void> {
   while (!check()) {
     assert.ok(Date.now() < deadline, reason);
     // Poll actual durable/native publication or process death, not a readiness sleep.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 }
@@ -497,12 +496,10 @@ nodeTest(
       assert.ok(probe.error && "code" in probe.error);
       assert.equal(probe.error.code, code);
       const launch = { ...usageLaunch(path.join(directory, "child.jsonl")), cwd };
-      // oxlint-disable-next-line no-await-in-loop
       await Promise.all([
         assert.rejects(ensureActor(base, launch), { code }),
         assert.rejects(ensureActor(base, launch), { code }),
       ]);
-      // oxlint-disable-next-line no-await-in-loop
       await assert.rejects(ensureActor(base, launch), { code });
       assert.equal(fs.existsSync(path.join(directory, "actor.lock")), false);
     }

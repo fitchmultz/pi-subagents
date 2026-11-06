@@ -128,12 +128,10 @@ nodeTest(
       });
       server.listen(legacyPath);
       // Readiness comes from the real listener, not a delay.
-      // oxlint-disable-next-line no-await-in-loop
       await once(server, "listening");
       const before = fs.lstatSync(legacyPath);
       const client = new IntercomClient();
       try {
-        // oxlint-disable-next-line no-await-in-loop
         await assert.rejects(
           client.connect({ name: "new-client", cwd: "/tmp", model: "test" }),
           /broker socket is unavailable/,
@@ -148,7 +146,6 @@ nodeTest(
         assert.equal(fs.lstatSync(legacyPath).mode, before.mode);
       } finally {
         server.close();
-        // oxlint-disable-next-line no-await-in-loop
         await once(server, "close");
         fs.rmSync(legacyPath, { force: true });
         if (legacyPath.endsWith("/broker.sock")) {

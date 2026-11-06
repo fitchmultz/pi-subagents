@@ -122,7 +122,6 @@ export class ObservationViewer {
       if (this.closed || Date.now() > deadline) {
         throw new Error(`${reason}: ${this.closed ? "viewer closed" : "timed out"}`);
       }
-      // oxlint-disable-next-line no-await-in-loop
       await new Promise<void>((resolve) => {
         const wake = (): void => {
           clearTimeout(timer);

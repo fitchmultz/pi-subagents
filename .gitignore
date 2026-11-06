@@ -2,13 +2,5 @@
 .DS_Store
 dist/
 dist.staging*/
-AGENTS.md
 node_modules
-.fallow/
-audit/
-.dogfood/
-
-context.md
-
-# CueLoop local/runtime artifacts (do not commit)
-.cueloop/
+/.npm-cache/

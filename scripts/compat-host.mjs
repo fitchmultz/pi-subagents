@@ -12,9 +12,12 @@ if (hostPackageJson === undefined) {
 }
 export const hostRoot = realpathSync(dirname(hostPackageJson));
 export const hostIndex = join(hostRoot, "dist/index.js");
-/** @type {{ version: string, bin: { pi: string } }} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+/** @type {unknown} */
 const manifest = JSON.parse(readFileSync(join(hostRoot, "package.json"), "utf8"));
+assert.ok(typeof manifest === "object" && manifest !== null);
+assert.ok("version" in manifest && typeof manifest.version === "string");
+assert.ok("bin" in manifest && typeof manifest.bin === "object" && manifest.bin !== null);
+assert.ok("pi" in manifest.bin && typeof manifest.bin.pi === "string");
 export const hostCli = realpathSync(join(hostRoot, manifest.bin.pi));
 /** @type {[string, string][]} */
 const expectedHostPaths = [
@@ -26,7 +29,6 @@ for (const [name, actual] of expectedHostPaths) {
   const expected = process.env[name];
   if (expected !== undefined) {
     assert.equal(
-      // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
       realpathSync(expected),
       realpathSync(actual),
       `${name} must select the installed graph`,
@@ -35,11 +37,9 @@ for (const [name, actual] of expectedHostPaths) {
 }
 const expectedVersion = process.env.PI_COMPAT_EXPECTED_VERSION;
 if (expectedVersion !== undefined) {
-  // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
   assert.equal(manifest.version, expectedVersion);
 }
 assert.equal(
-  // oxlint-disable-next-line typescript/no-unnecessary-condition -- assert generic inference already matches
   realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))),
   realpathSync(hostIndex),
 );

@@ -923,10 +923,8 @@ nodeTest(
     for (let index = 0; index < 12; index++) {
       const id = `new-${index}`;
       // Observe each native passive receipt before admitting the next message.
-      // oxlint-disable-next-line no-await-in-loop
       await receiver.send(id, { text: `passive ${index}`, delivery: "passive" });
       // Receipt indexing is checked after each ordered send.
-      // oxlint-disable-next-line no-await-in-loop
       await waitFor(
         () => receiver.events.some((event) => event.type === "sdk.message_end" && event.id === id),
         "native passive receipt",
@@ -1163,7 +1161,6 @@ for (const { count, reload, repeat } of [
       Date.now = () => now() - (repeat === true ? 120_000 : 0);
       for (let index = 0; index < count; index++) {
         // Populate native handoffs in send order before the clear.
-        // oxlint-disable-next-line no-await-in-loop
         await receiver.send(`cleared-${index}`, {
           text: `${progressPrefix}message:cleared-${index}`,
           ...questionOptions,
@@ -1236,7 +1233,6 @@ for (const { count, reload, repeat } of [
       }
       for (let index = 0; index < count; index++) {
         // Each new direction must be admitted before its successor.
-        // oxlint-disable-next-line no-await-in-loop
         await receiver.send(`second-abort-${index}`);
       }
       await waitFor(
@@ -1421,7 +1417,6 @@ for (const hasUI of [true, false]) {
       await waitFor(() => receiver.faux.state.callCount === 1, "active provider");
       for (let index = 0; index < 101; index++) {
         // Recover followers in native admission order.
-        // oxlint-disable-next-line no-await-in-loop
         await receiver.send(`recovered-${index}`);
       }
       await waitFor(
@@ -1562,15 +1557,12 @@ for (const recovery of [false, true]) {
           },
         },
       );
-      const replies: string[] = [];
+      const replies: { readonly replyTo: string; readonly text: string }[] = [];
       receiver.sender.on(
         "message",
         (_from: ReadonlyInput<SessionInfo>, message: ReadonlyInput<Message>) => {
-          if (
-            message.replyTo !== undefined &&
-            message.content.text === "Answer the selected first ask"
-          ) {
-            replies.push(message.replyTo);
+          if (message.replyTo !== undefined) {
+            replies.push({ replyTo: message.replyTo, text: message.content.text });
           }
         },
       );
@@ -1598,7 +1590,6 @@ for (const recovery of [false, true]) {
       });
       for (const id of recovery ? ["first-ask"] : ["first-ask", "second-ask"]) {
         // Establish each ask's admission before adding its successor.
-        // oxlint-disable-next-line no-await-in-loop
         await receiver.send(id, {
           text: `Question ${id}`,
           expectsReply: true,
@@ -1607,7 +1598,6 @@ for (const recovery of [false, true]) {
             : { delivery: "queue", queueMode: "replace", threadId: id }),
         });
         // Broker acknowledgement alone does not prove native staging.
-        // oxlint-disable-next-line no-await-in-loop
         await waitFor(
           async () => (await receiver.status()).includes(`Question ${id}`),
           "staged ask",
@@ -1645,8 +1635,8 @@ for (const recovery of [false, true]) {
       );
       assert.deepEqual(
         replies,
-        ["first-ask"],
-        "trigger-last must not switch the implicit reply to a follower ask",
+        [{ replyTo: "first-ask", text: "Answer the selected first ask" }],
+        "only the selected ask receives a reply, and unconsumed input receives no failure reply",
       );
       const intercom = registeredTool(receiver.session, "intercom");
       const pending = await intercom.execute(
@@ -1774,19 +1764,15 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
   const calls = asker.faux.state.callCount;
   for (const reload of [false, true]) {
     if (reload) {
-      // oxlint-disable-next-line no-await-in-loop
       await asker.session.reload();
     }
-    // oxlint-disable-next-line no-await-in-loop
     await asker.send("reply-before", {
       text: "Duplicate answered reply",
       replyTo: firstReceived.id,
       delivery: "passive",
     });
     const barrier = `reply-dedup-${reload}`;
-    // oxlint-disable-next-line no-await-in-loop
     await asker.send(barrier, { text: "Ordered receive barrier", delivery: "passive" });
-    // oxlint-disable-next-line no-await-in-loop
     await waitFor(() => asker.visible(barrier).length === 1, "reply replay processed");
     assert.equal(asker.visible("reply-before").length, 0);
     assert.equal(asker.faux.state.callCount, calls);
@@ -2557,7 +2543,6 @@ for (const stopReason of ["stop", "length"] as const) {
       const pages: string[] = [];
       do {
         // Pages are independently fetched over the real broker and pinned to one native entry.
-        // oxlint-disable-next-line no-await-in-loop
         const result = await executeIntercom(reader, {
           action: "last",
           to: targetName,
@@ -2587,7 +2572,6 @@ for (const stopReason of ["stop", "length"] as const) {
         if (pages.length === 1) {
           release.resolve();
           // The newer native final must publish before the next pinned read.
-          // oxlint-disable-next-line no-await-in-loop
           await held;
         }
         if (page.nextOffset === undefined) {
@@ -2710,7 +2694,6 @@ nodeTest(
       { messageId: "passive", text: "passive breadcrumb", delivery: "passive" as const },
     ]) {
       // Superseding progress depends on accepting the previous send first.
-      // oxlint-disable-next-line no-await-in-loop
       assert.equal((await sender.send("restart-parent", message)).accepted, true);
     }
     const snapshotPromise = receiveResume(seed.child);
@@ -2733,11 +2716,9 @@ nodeTest(
     for (const mode of ["fork", "new"]) {
       const fresh = restartFixture(t, mode, path.join(root, `restart-${mode}`), ready.sessionFile);
       // These processes share a broker target and must not overlap.
-      // oxlint-disable-next-line no-await-in-loop
       const [result] = await fresh.result;
       assert.ok(result !== undefined, "expected a fresh restart result");
       // Release the previous native process before starting its successor.
-      // oxlint-disable-next-line no-await-in-loop
       await fresh.exited;
       assert.notEqual(result.sessionId, ready.sessionId);
       assert.equal(
@@ -2766,11 +2747,9 @@ nodeTest(
         ready.sessionFile,
       );
       // The second resume must read the journal produced by the first resume.
-      // oxlint-disable-next-line no-await-in-loop
       const [result] = await resumed.result;
       assert.ok(result !== undefined, "expected a resumed restart result");
       // Do not overlap native processes that own the same saved session.
-      // oxlint-disable-next-line no-await-in-loop
       await resumed.exited;
       assert.equal(result.sessionId, ready.sessionId);
       const resumedPassive = record(result.provenance.passive);
@@ -3076,7 +3055,6 @@ nodeTest(
         settled = true;
       });
       // Finish this delivered request before admitting the next action.
-      // oxlint-disable-next-line no-await-in-loop
       const [from, input] = array(await received).map(record);
       assert.ok(from !== undefined && input !== undefined, "expected a delivered ask frame");
       assert.equal(at(input, "content", "text"), `safe ${action}`);
@@ -3084,7 +3062,6 @@ nodeTest(
         assert.equal(input.expectsReply, true);
         peer.updatePresence({ name: "renamed-duplicate" });
         // The mutable name must not replace the broker identity pinned by the ask.
-        // oxlint-disable-next-line no-await-in-loop
         await waitFor(
           async () =>
             (await peer.listSessions()).some(
@@ -3092,14 +3069,12 @@ nodeTest(
             ),
           "renamed ask recipient",
         );
-        // oxlint-disable-next-line no-await-in-loop
         await impostor.send(text(from.id), {
           messageId: "wrong-ask-sender",
           text: "Same display name is not the pinned sender",
           replyTo: text(input.id),
           passive: true,
         });
-        // oxlint-disable-next-line no-await-in-loop
         await peer.send(text(from.id), {
           messageId: "wrong-ask-correlation",
           text: "Pinned sender but a different question",
@@ -3107,7 +3082,6 @@ nodeTest(
           passive: true,
         });
         // Real native publication proves both guards processed their input before this negative.
-        // oxlint-disable-next-line no-await-in-loop
         await waitFor(
           () =>
             receiver.visible("wrong-ask-sender").length === 1 &&
@@ -3116,14 +3090,12 @@ nodeTest(
         );
         assert.equal(settled, false);
         // The observed correlation is required before replying.
-        // oxlint-disable-next-line no-await-in-loop
         await peer.send(text(from.id), { text: "Exact correlated reply", replyTo: text(input.id) });
         peer.updatePresence({ name: "duplicate" });
       } else {
         assert.equal(input.delivery, "steer");
       }
       // Do not overlap the next tool action with this reply waiter.
-      // oxlint-disable-next-line no-await-in-loop
       assert.notEqual((await sending).isError, true);
     }
     await waitFor(
@@ -3132,12 +3104,10 @@ nodeTest(
       "restored duplicate names",
     );
     for (const action of ["send", "ask"] as const) {
-      // oxlint-disable-next-line no-await-in-loop
       await assert.rejects(
         executeIntercom(receiver, { action, to: short.slice(0, 7), message: "unsafe" }),
         /too short/,
       );
-      // oxlint-disable-next-line no-await-in-loop
       await assert.rejects(
         executeIntercom(receiver, { action, to: "duplicate", message: "ambiguous" }),
         /matches multiple sessions/,
@@ -3145,7 +3115,6 @@ nodeTest(
     }
     await collision.connect({ name: short, cwd: root, model: "fixture" });
     for (const action of ["send", "ask"] as const) {
-      // oxlint-disable-next-line no-await-in-loop
       await assert.rejects(
         executeIntercom(receiver, { action, to: short, message: "collision" }),
         /matches multiple sessions/,
@@ -3343,20 +3312,17 @@ nodeTest(
         settled = true;
       });
       // Observe actual delivery before replying to this ask.
-      // oxlint-disable-next-line no-await-in-loop
       const [from, input] = array(await request).map(record);
       assert.ok(from !== undefined && input !== undefined, "expected a delivered ask frame");
       assert.equal(input.delivery, delivery);
       assert.equal(input.expectsReply, true);
       assert.equal(settled, false);
       // The next ask must not race this correlated reply.
-      // oxlint-disable-next-line no-await-in-loop
       await asker.sender.send(text(from.id), {
         text: `Answer ${delivery}`,
         replyTo: text(input.id),
       });
       // Release the sole waiter before admitting the next delivery mode.
-      // oxlint-disable-next-line no-await-in-loop
       assert.match(JSON.stringify((await asking).content), new RegExp(`Answer ${delivery}`));
     }
     assert.equal(asker.faux.state.callCount, 0);
@@ -3588,6 +3554,85 @@ for (const scenario of ["already-replied", "agent-settled", "non-error"] as cons
   });
 }
 
+nodeTest("native delayed input cannot revive an already-replied ask", async (t) => {
+  const releaseWork = gate(t);
+  const releaseQuestion = gate(t);
+  const recipient = await makeSession(t, "replied-before-delivery", { hasUI: true });
+  let working = false;
+  let questionStarted = false;
+  const replies: ReadonlyInput<Message>[] = [];
+  recipient.sender.on(
+    "message",
+    (_from: ReadonlyInput<SessionInfo>, message: ReadonlyInput<Message>) => {
+      replies.push(message);
+    },
+  );
+  recipient.faux.setResponses([
+    async () => {
+      working = true;
+      await releaseWork.promise;
+      return fauxAssistantMessage("Original work finished");
+    },
+    async () => {
+      questionStarted = true;
+      await releaseQuestion.promise;
+      return fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "Failure after the question was already answered",
+      });
+    },
+  ]);
+  const running = recipient.session.prompt("Work before the question");
+  await waitFor(() => working, "held native work");
+  await recipient.send("retired-question", {
+    text: "A decision that can be answered before delivery",
+    expectsReply: true,
+    delivery: "queue",
+    queueMode: "replace",
+    threadId: "decision",
+  });
+  await waitFor(
+    () => at(provenance(recipient, "retired-question"), "receipt", "queued") === true,
+    "recipient staged the question",
+  );
+  assert.equal(recipient.visible("retired-question").length, 0);
+  await executeIntercom(recipient, {
+    action: "reply",
+    replyTo: "retired-question",
+    message: "Answer before native delivery",
+  });
+  await waitFor(() => replies.length === 1, "first correlated reply");
+  assert.match(
+    JSON.stringify(await executeIntercom(recipient, { action: "pending" })),
+    /No unresolved inbound asks/,
+  );
+  releaseWork.resolve();
+  await waitFor(() => questionStarted, "delayed question entered a native turn");
+  for (const target of [{}, { replyTo: "retired-question" }]) {
+    await assert.rejects(
+      executeIntercom(recipient, { action: "reply", message: "Duplicate answer", ...target }),
+      (error: unknown) => at(error, "details", "reasonCode") === "no_pending_reply",
+    );
+  }
+  releaseQuestion.resolve();
+  await running;
+  await recipient.session.waitForIdle();
+  const control = once(recipient.sender, "message");
+  await executeIntercom(recipient, {
+    action: "send",
+    to: "sender-replied-before-delivery",
+    message: "Reply-check barrier",
+  });
+  await control;
+  assert.deepEqual(
+    replies
+      .filter((reply) => reply.replyTo === "retired-question")
+      .map((reply) => reply.content.text),
+    ["Answer before native delivery"],
+  );
+  assert.deepEqual(recipient.errors, []);
+});
+
 for (const hasUI of [false, true]) {
   nodeTest(
     `native replace asks retire superseded pending questions and wake once after ${hasUI ? "UI tool" : "print provider"} work settles`,
@@ -3628,7 +3673,6 @@ for (const hasUI of [false, true]) {
       await waitFor(() => started, "held native work");
       for (const id of ["old-question", "latest-question"]) {
         // Supersession requires the old question to be admitted first.
-        // oxlint-disable-next-line no-await-in-loop
         await receiver.send(id, {
           text: id,
           expectsReply: true,
@@ -3724,7 +3768,6 @@ nodeTest(
       },
     ]) {
       // Validate one public tool invocation before the next reuses its session.
-      // oxlint-disable-next-line no-await-in-loop
       await assert.rejects(executeIntercom(receiver, params), (error: unknown) => {
         if (expected !== undefined) {
           assert.match(text(property(error, "message")), expected);
@@ -3775,7 +3818,6 @@ nodeTest(
       text(receiver.sender.sessionId).slice(0, 3),
     ]) {
       // Each rejected reply must leave both asks pending for the next target form.
-      // oxlint-disable-next-line no-await-in-loop
       await assert.rejects(
         executeIntercom(receiver, {
           action: "reply",
@@ -4085,14 +4127,12 @@ for (const foreground of [false, true]) {
         const deadline = Date.now() + 12000;
         while (true) {
           // Complete each real broker observation before retrying it.
-          // oxlint-disable-next-line no-await-in-loop
           const sessions = await receiver.sender.listSessions();
           if (sessions.some((peer) => peer.name === name)) {
             break;
           }
           assert.ok(Date.now() < deadline, "retry chain must reconnect without a foreground tool");
           // Back off only after the preceding broker read.
-          // oxlint-disable-next-line no-await-in-loop
           await sleep(25);
         }
         const after = receiver.contextRequest("pi-intercom:context-query", { version: 1 });

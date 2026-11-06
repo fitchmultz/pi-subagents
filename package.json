@@ -1,6 +1,6 @@
 {
   "name": "@fitchmultz/pi-subagents",
-  "version": "0.52.16",
+  "version": "0.52.18",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "license": "MIT",
   "type": "module",
@@ -68,8 +68,10 @@
     "lint:agent": "oxlint --type-aware --deny-warnings --format=agent .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "ci": "npm run lint && npm run format:check && npm run typecheck && npm run check:size && npm run smoke:package && npm run smoke:install && npm run test:all",
-    "smoke:real-pi": "node scripts/real-pi-smoke.mjs"
+    "ci": "node quality/acceptance.ts",
+    "smoke:real-pi": "node scripts/real-pi-smoke.mjs",
+    "check:quality": "node quality/check.ts",
+    "typecheck:declarations": "node quality/declarations.ts"
   },
   "pi": {
     "extensions": [
@@ -110,9 +112,10 @@
     "@earendil-works/pi-tui": "1.5.0",
     "@types/node": "24.19.2",
     "@types/sinon": "22.0.2",
-    "oxfmt": "0.75.0",
-    "oxlint": "1.90.0",
-    "oxlint-tsgolint": "7.0.2005",
+    "oxc-parser": "0.157.0",
+    "oxfmt": "0.76.0",
+    "oxlint": "1.91.0",
+    "oxlint-tsgolint": "7.0.2006",
     "sinon": "22.1.0",
     "type-fest": "5.10.0",
     "typebox": "1.4.3",

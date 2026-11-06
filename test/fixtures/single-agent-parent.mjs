@@ -6,10 +6,14 @@ import { pathToFileURL } from "node:url";
 import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import childProcess, { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { mock } from "node:test";
 import { registeredSession } from "../support/native-readiness.ts";
+import { loadNativeAI } from "../support/native-host.ts";
+import { loadSDK } from "../../src/agent/host.ts";
 import { Type } from "typebox";
 import { Assert } from "typebox/value";
-import { hasErrorCode, isRecord } from "../../src/shared/unknown.ts";
+import { hasErrorCode, isRecord, isUnknownArray } from "../../src/shared/unknown.ts";
+/** @import * as Storage from "../../src/agent/storage.ts" */
 
 const [root = "", repo = "", sdkRoot = "", phase = ""] = process.argv.slice(2);
 const cwd = path.join(root, "project"),
@@ -72,18 +76,12 @@ if (phase === "dropped-hints") {
   process.env.SINGLE_AGENT_DROP_HINTS = "1";
   const watch = fs.watch;
   // A real watcher whose change listener never runs.
-  // oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for the patch
-  fs.watch = /** @type {typeof fs.watch} */ (
-    (
-      /** @type {Parameters<typeof fs.watch>[0]} */ target,
-      /** @type {import("node:fs").WatchOptions | undefined} */ options,
-    ) => {
-      lostHints.watches++;
-      // oxlint-disable-next-line eslint/no-empty-function
-      return watch(target, options ?? {}, () => {});
-    }
-  );
-  // oxlint-enable typescript/no-unsafe-type-assertion
+  fs.watch = (target, options) => {
+    lostHints.watches++;
+    return watch(target, typeof options === "function" ? {} : (options ?? {}), () => {
+      // Intentionally discard native change hints; recovery must observe publication.
+    });
+  };
   syncBuiltinESMExports();
 }
 if (phase.startsWith("legacy-")) {
@@ -92,27 +90,30 @@ if (phase.startsWith("legacy-")) {
     recursive: true,
   });
 }
-/** @type {typeof import("@earendil-works/pi-coding-agent") & {
- *   readWorkingSession: (sessionFile: string) => { leafId: string },
- *   resolveModelReference?: (ref: string) => unknown,
- *   writeWorkingSession?: (sessionFile: string, entries: unknown[]) => string,
- * }} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
-const aiRoot = path.dirname(
-  findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))) ??
-    "",
+const sdk = await loadSDK(sdkRoot);
+const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await loadNativeAI(sdkRoot);
+/** @type {typeof import("../../src/agent/index.ts")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
+const agentModule = await import(pathToFileURL(path.join(repo, "dist/agent/index.js")).href);
+const agents = agentModule.default;
+// These modules are already dependencies of the compiled entry; keep one typed namespace per artifact.
+/** @type {typeof import("../../src/agent/process.ts")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
+const { ensureActor, ownIdentity } = await import(
+  pathToFileURL(path.join(repo, "dist/agent/process.js")).href
 );
-/** @type {typeof import("@earendil-works/pi-ai")} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
-const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(
-  pathToFileURL(path.join(aiRoot, "dist/index.js")).href
+/** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
+const { nativePeerId } = await import(
+  pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
 );
-/** @type {typeof import("../../src/agent/index.ts")["default"]} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment, typescript/no-unsafe-member-access
-const agents = (await import(pathToFileURL(path.join(repo, "dist/agent/index.js")).href)).default;
+/** @type {typeof Storage} */
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
+const { enqueue, write } = await import(
+  pathToFileURL(path.join(repo, "dist/agent/storage.js")).href
+);
 /** @type {typeof import("../../src/pi-intercom/index.ts") | undefined} */
-// oxlint-disable-next-line typescript/no-unsafe-assignment
+// oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
 const intercomModule = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
   ? await import(pathToFileURL(path.join(repo, "dist/pi-intercom/index.js")).href)
   : undefined;
@@ -382,7 +383,6 @@ const until = async (/** @type {() => boolean} */ predicate, /** @type {string} 
   while (!predicate()) {
     assert.ok(Date.now() < deadline, why);
     // Poll an actual native/filesystem publication, never elapsed time as proof.
-    // oxlint-disable-next-line no-await-in-loop
     await delay(20);
   }
 };
@@ -448,7 +448,7 @@ const notices = () =>
     .filter((entry) => entry.customType === "agent-completion");
 const call = async (
   /** @type {string} */ name,
-  /** @type {Record<string, unknown>} */ args,
+  /** @type {import("@earendil-works/pi-ai").JsonObject} */ args,
   /** @type {string} */ id,
   /** @type {import("@earendil-works/pi-ai").FauxResponseStep} */ response = fauxAssistantMessage(
     "PARENT_LITERAL_FINISHED",
@@ -461,8 +461,7 @@ const call = async (
           type: "toolCall",
           id,
           name,
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- tool arguments stay dynamic
-          arguments: /** @type {import("@earendil-works/pi-ai").JsonObject} */ (args),
+          arguments: args,
         },
       ],
       {
@@ -496,7 +495,7 @@ const runsTool = () => {
 };
 // Observe the canonical completion the parent actually receives, then inspect without a model turn.
 const settled = async (
-  /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<any> | string} */ receipt,
+  /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<unknown> | string} */ receipt,
   /** @type {string} */ why = "canonical native completion reaches the parent",
 ) => {
   if (typeof receipt !== "string" && receipt.isError === true) {
@@ -514,7 +513,7 @@ const settled = async (
 };
 const childRegistered = async (/** @type {string} */ id) => {
   /** @type {typeof import("../../src/pi-intercom/broker/client.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
   const { IntercomClient } = await import(
     pathToFileURL(path.join(repo, "dist/pi-intercom/broker/client.js")).href
   );
@@ -522,7 +521,7 @@ const childRegistered = async (/** @type {string} */ id) => {
   try {
     await registeredSession(
       probe,
-      readValidated(LaunchSchema, path.join(runDir(id), "launch.json")).sessionId ?? "",
+      readValidated(LaunchSchema, path.join(runDir(id), "launch.json")).sessionId,
       {
         observer: {
           name: "registration-probe",
@@ -573,6 +572,7 @@ const isCompletionIdentity = (value) => {
   const completion = value.completion;
   return (
     (value.id === undefined || typeof value.id === "string") &&
+    (value.receipt === undefined || typeof value.receipt === "string") &&
     (completion === undefined || (isRecord(completion) && typeof completion.key === "string"))
   );
 };
@@ -590,11 +590,7 @@ const readValidated = (schema, file) => parseValidated(schema, fs.readFileSync(f
  * Journal lines are dynamically shaped; readers validate the entries they select.
  * @param {string} text
  */
-const parseJournalLine = (text) =>
-  /** @type {{ type?: string, customType?: string, details?: { id?: string } }} */ (
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- journal lines are dynamically shaped
-    JSON.parse(text)
-  );
+const parseJournalLine = (text) => parseValidated(PhysicalEntrySchema, text);
 /**
  * @template {import("typebox").TSchema} S
  * @param {S} schema
@@ -617,22 +613,8 @@ const ShellRecordSchema = Type.Object({
   identity: Type.Optional(Type.String()),
   clock: Type.Optional(Type.Object({ namespace: Type.String() })),
 });
-/** A run's recorded launch metadata. */
-const LaunchSchema = Type.Object({
-  id: Type.Optional(Type.String()),
-  sessionId: Type.Optional(Type.String()),
-  sessionFile: Type.Optional(Type.String()),
-  prompt: Type.Optional(Type.String()),
-  model: Type.Optional(Type.String()),
-  thinking: Type.Optional(Type.String()),
-  pid: Type.Optional(Type.Integer()),
-  identity: Type.Optional(Type.String()),
-  trusted: Type.Optional(Type.Boolean()),
-  provider: Type.Optional(Type.String()),
-  parent: Type.Optional(Type.String()),
-  cwd: Type.Optional(Type.String()),
-  context: Type.Optional(Type.Unknown()),
-});
+/** Use the owning launch contract after clearing inherited child-host environment. */
+const { launchSchema: LaunchSchema } = await import("../../src/agent/contracts.ts");
 /** The agent_runs tool records run inventories in its result details. */
 const RunResultDetailsSchema = Type.Object({
   id: Type.String(),
@@ -924,6 +906,9 @@ const SessionHeaderSchema = Type.Object({
 const PhysicalEntrySchema = Type.Object({
   type: Type.Optional(Type.String()),
   id: Type.Optional(Type.String()),
+  customType: Type.Optional(Type.String()),
+  details: Type.Optional(Type.Unknown()),
+  message: Type.Optional(Type.Object({ role: Type.Optional(Type.String()) })),
 });
 const publishedFiles = (/** @type {string} */ directory) =>
   fs.readdirSync(directory).filter((name) => name.endsWith(".json"));
@@ -935,16 +920,11 @@ async function parkedAuthority(/** @type {string} */ parked) {
   const authority = readValidated(ParkedAuthoritySchema, parked);
   const original = fs.readFileSync(authority.state);
   assert.equal(authority.digest, createHash("sha256").update(original).digest("hex"));
-  /** @type {typeof import("../../src/shared/parking.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const { PARKED_HISTORY } = await import(
-    pathToFileURL(path.join(repo, "dist/shared/parking.js")).href
-  );
-  /** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const { nativePeerId } = await import(
-    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
-  );
+  /** @type {unknown} */
+  const parkingModule = await import(pathToFileURL(path.join(repo, "dist/shared/parking.js")).href);
+  assert.ok(isRecord(parkingModule));
+  const { PARKED_HISTORY } = parkingModule;
+  assert.ok(typeof PARKED_HISTORY === "string");
   const history = () => {
     /** @type {Promise<{ getBranch: () => unknown }> | { getBranch: () => unknown } | undefined} */
     let found;
@@ -968,6 +948,7 @@ async function parkedAuthority(/** @type {string} */ parked) {
   const tampered = Buffer.from(original);
   tampered[at] = "y".charCodeAt(0);
   fs.writeFileSync(authority.state, tampered);
+  assert.ok(sdk.readWorkingSession !== undefined, "parked history requires native working state");
   assert.equal(sdk.readWorkingSession(authority.state).leafId, authority.leafId);
   await assert.rejects(async () => history(), /not this child's saved generation/);
   fs.writeFileSync(authority.state, original);
@@ -987,19 +968,13 @@ async function failedWake(
   /** @type {string} */ childCwd,
   /** @type {string} */ runId,
 ) {
-  /** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const { nativePeerId } = await import(
-    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
-  );
   const launch = readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"));
-  const peer = nativePeerId(launch.sessionId ?? "");
+  const peer = nativePeerId(launch.sessionId);
   const unavailable = `${childCwd}-unavailable`;
   fs.renameSync(childCwd, unavailable);
   try {
     for (const id of ["first", "second"]) {
       // Each ask must finish before the next explicit wake.
-      // oxlint-disable-next-line no-await-in-loop
       const failure = await call(
         "intercom",
         { action: "ask", to: peer, message: `wake-outcome-${id}` },
@@ -1031,23 +1006,18 @@ async function failedWake(
   );
   assert.equal(retry.isError, false, JSON.stringify(retry));
   await until(
-    () => intercomTexts(launch.sessionFile ?? "").includes("wake-outcome-retry"),
+    () => intercomTexts(launch.sessionFile).includes("wake-outcome-retry"),
     "restored child publishes retained input",
   );
   assert.deepEqual(
-    intercomTexts(launch.sessionFile ?? "").filter((text) => text.startsWith("wake-outcome-")),
+    intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-outcome-")),
     ["wake-outcome-first", "wake-outcome-second", "wake-outcome-retry"],
   );
 }
 async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */ runId) {
-  /** @type {typeof import("../../src/pi-intercom/session-targets.ts")} */
-  // oxlint-disable-next-line typescript/no-unsafe-assignment
-  const { nativePeerId } = await import(
-    pathToFileURL(path.join(repo, "dist/pi-intercom/session-targets.js")).href
-  );
   const launch = readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"));
   const saved = readValidated(ParkedRunSchema, parked);
-  const peer = nativePeerId(launch.sessionId ?? "");
+  const peer = nativePeerId(launch.sessionId);
   fs.unlinkSync(sdkLink);
   fs.mkdirSync(sdkLink);
   fs.writeFileSync(
@@ -1085,11 +1055,6 @@ async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */
     const witness = readValidated(WitnessSchema, witnessFile);
     assert.deepEqual(witness.beforeOpen, { actorToken: failed.token, parkedToken: saved.token });
     const originalState = fs.readFileSync(saved.state);
-    /** @type {typeof import("../../src/agent/process.ts")} */
-    // oxlint-disable-next-line typescript/no-unsafe-assignment
-    const { ensureActor, ownIdentity } = await import(
-      pathToFileURL(path.join(repo, "dist/agent/process.js")).href
-    );
     const base = path.dirname(runDir(currentRunId()));
     for (const beforeOpen of [
       undefined,
@@ -1097,17 +1062,7 @@ async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */
       { actorToken: failed.token, parkedToken: "another-parked-generation" },
     ]) {
       fs.writeFileSync(witnessFile, JSON.stringify({ ...witness, beforeOpen }));
-      // oxlint-disable-next-line no-await-in-loop
-      await assert.rejects(
-        ensureActor(
-          base,
-          /** @type {import("../../src/agent/contracts.ts").Launch} */ (
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-            /** @type {unknown} */ (launch)
-          ),
-        ),
-        /another actor generation/,
-      );
+      await assert.rejects(ensureActor(base, launch), /another actor generation/);
       assert.deepEqual(
         readValidated(ActorIdentitySchema, processFile),
         failed,
@@ -1120,13 +1075,7 @@ async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */
       // A matching token is not enough while its current process may still be alive.
       const live = { ...ownIdentity(), token: failed.token };
       fs.writeFileSync(processFile, JSON.stringify(live));
-      await ensureActor(
-        base,
-        /** @type {import("../../src/agent/contracts.ts").Launch} */ (
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-          /** @type {unknown} */ (launch)
-        ),
-      );
+      await ensureActor(base, launch);
       assert.equal(fs.readFileSync(processFile, "utf8"), JSON.stringify(live));
       assert.deepEqual(fs.readFileSync(saved.state), originalState);
     } finally {
@@ -1144,15 +1093,17 @@ async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */
   );
   assert.equal(retry.isError, false, JSON.stringify(retry));
   await until(
-    () => intercomTexts(launch.sessionFile ?? "").includes("wake-sdk-retry"),
+    () => intercomTexts(launch.sessionFile).includes("wake-sdk-retry"),
     "restored child publishes retained input",
   );
   assert.deepEqual(
-    intercomTexts(launch.sessionFile ?? "").filter((text) => text.startsWith("wake-sdk-")),
+    intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-sdk-")),
     ["wake-sdk-original", "wake-sdk-retry"],
   );
 }
 let runId = seed?.runId;
+/** @type {Promise<void> | undefined} */
+let heldLegacyPrompt;
 try {
   if (phase.startsWith("launch-preparation-")) {
     const faultFile = path.join(root, "preparation-fault.json");
@@ -1180,35 +1131,33 @@ try {
       const writeFile = fs.writeFileSync;
       const base = path.dirname(runDir(currentRunId()));
       let faults = 0;
-      // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
-      fs.writeFileSync = /** @type {typeof fs.writeFileSync} */ (
-        (file, body, options) => {
-          if (
-            typeof file === "string" &&
-            typeof body === "string" &&
-            file.startsWith(base + path.sep) &&
-            file.endsWith(".jsonl") &&
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-            /** @type {{ flag?: string | number } | undefined} */ (options)?.flag === "wx" &&
-            faults === 0
-          ) {
-            faults++;
-            const header = parseValidated(SessionHeaderSchema, body.split("\n")[0] ?? "");
-            assert.equal(header.type, "session");
-            assert.equal(header.cwd, cwd);
-            assert.notEqual(header.id, manager.getSessionId());
-            // Fail the real prepared native session write after partial filesystem progress.
-            const retained = phase === "launch-preparation-fork-failure" ? body : body.slice(0, 17);
-            writeFile(file, retained, options);
-            writeFile(faultFile, JSON.stringify({ file, retained }));
-            if (phase === "launch-preparation-crash") {
-              process.kill(process.pid, "SIGKILL");
-            }
-            throw Object.assign(new Error("CONTROLLED_NATIVE_PREPARATION_EIO"), { code: "EIO" });
+      fs.writeFileSync = (file, body, options) => {
+        if (
+          typeof file === "string" &&
+          typeof body === "string" &&
+          file.startsWith(base + path.sep) &&
+          file.endsWith(".jsonl") &&
+          typeof options === "object" &&
+          options !== null &&
+          options.flag === "wx" &&
+          faults === 0
+        ) {
+          faults++;
+          const header = parseValidated(SessionHeaderSchema, body.split("\n")[0] ?? "");
+          assert.equal(header.type, "session");
+          assert.equal(header.cwd, cwd);
+          assert.notEqual(header.id, manager.getSessionId());
+          // Fail the real prepared native session write after partial filesystem progress.
+          const retained = phase === "launch-preparation-fork-failure" ? body : body.slice(0, 17);
+          writeFile(file, retained, options);
+          writeFile(faultFile, JSON.stringify({ file, retained }));
+          if (phase === "launch-preparation-crash") {
+            process.kill(process.pid, "SIGKILL");
           }
-          writeFile(file, body, options);
+          throw Object.assign(new Error("CONTROLLED_NATIVE_PREPARATION_EIO"), { code: "EIO" });
         }
-      );
+        writeFile(file, body, options);
+      };
       syncBuiltinESMExports();
       try {
         const failed = await call(
@@ -1330,11 +1279,6 @@ try {
     const directory = runDir(id);
     const base = path.dirname(directory);
     const launch = readValidated(LaunchSchema, path.join(directory, "launch.json"));
-    /** @type {{ enqueue: (base: string, launch: unknown, action: string, command: Record<string, unknown>) => string, write: (file: string, value: unknown, exclusive?: boolean) => void }} */
-    // oxlint-disable-next-line typescript/no-unsafe-assignment
-    const { enqueue, write } = await import(
-      pathToFileURL(path.join(repo, "dist/agent/storage.js")).href
-    );
     const ids = Array.from({ length: 8 }, () =>
       enqueue(base, launch, "steer", { prompt: "x".repeat(4096) }),
     );
@@ -1349,27 +1293,20 @@ try {
     const pid = firstRequest().pid;
     const ticks = () => actorTicks().filter((tick) => tick.pid === pid).length;
     const actorScans = () => polls().filter((poll) => poll.pid === pid).length;
-    const ownerScans = { count: 0 };
-    const readdir = fs.readdirSync;
-    // oxlint-disable typescript/no-unsafe-type-assertion -- narrowing the fs overloads for the patch
-    fs.readdirSync = /** @type {typeof fs.readdirSync} */ (
-      (listed, ...args) => {
-        ownerScans.count += listed === base ? 1 : 0;
-        // oxlint-disable-next-line typescript/no-unsafe-argument
-        return readdir(listed, .../** @type {any[]} */ (args));
-      }
-    );
+    const readdir = mock.method(fs, "readdirSync");
+    const ownerScans = () =>
+      readdir.mock.calls.filter((record) => record.arguments[0] === base).length;
     syncBuiltinESMExports();
     // Idle reconciliation is change-driven: the actor keeps only its liveness tick.
     const settledTick = ticks();
     await until(() => ticks() > settledTick, "real actor liveness tick after admissions");
-    const idle = { ticks: ticks(), actor: actorScans(), owner: ownerScans.count };
+    const idle = { ticks: ticks(), actor: actorScans(), owner: ownerScans() };
     await until(() => ticks() >= idle.ticks + 3, "three more real actor liveness ticks");
     const idleScans = {
       actorCommandScans: actorScans() - idle.actor,
-      parentCompletionScans: ownerScans.count - idle.owner,
+      parentCompletionScans: ownerScans() - idle.owner,
     };
-    fs.readdirSync = readdir;
+    readdir.mock.restore();
     syncBuiltinESMExports();
     console.log("idle reconciliation scans:", JSON.stringify(idleScans));
     assert.deepEqual(idleScans, { actorCommandScans: 0, parentCompletionScans: 0 });
@@ -1377,7 +1314,6 @@ try {
     const rescan = async (/** @type {number} */ count) => {
       for (let index = 0; index < count; index++) {
         const probe = enqueue(base, launch, "steer", { prompt: "PROBE" });
-        // oxlint-disable-next-line no-await-in-loop
         await until(
           () => fs.existsSync(path.join(directory, "admissions", `${probe}.json`)),
           "a new command wakes a real actor scan",
@@ -1677,44 +1613,31 @@ try {
       open: fs.openSync,
       read: fs.readSync,
       close: fs.closeSync,
-      readdir: fs.readdirSync,
     };
+    const readdir = mock.method(fs, "readdirSync");
     const commandDescriptors = new Set();
     const io = { scans: 0, opens: 0, reads: 0, bytes: 0, maxReadBytes: 0 };
-    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion, typescript/no-unsafe-argument -- narrowing the fs overloads for the patch
-    fs.readdirSync = /** @type {typeof fs.readdirSync} */ (
-      (directory, ...args) => {
-        if (directory === commands) {
-          io.scans++;
-        }
-        return original.readdir(directory, .../** @type {any[]} */ (args));
+    fs.openSync = (file, ...args) => {
+      const fd = original.open(file, ...args);
+      if (typeof file === "string" && path.dirname(file) === commands) {
+        commandDescriptors.add(fd);
+        io.opens++;
       }
-    );
-    fs.openSync = /** @type {typeof fs.openSync} */ (
-      (file, ...args) => {
-        const fd = original.open(file, ...args);
-        if (typeof file === "string" && path.dirname(file) === commands) {
-          commandDescriptors.add(fd);
-          io.opens++;
-        }
-        return fd;
+      return fd;
+    };
+    fs.readSync = (
+      fd,
+      /** @type {[buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: import("node:fs").ReadPosition | null] | [buffer: NodeJS.ArrayBufferView, options?: import("node:fs").ReadOptions | undefined]} */ ...args
+    ) => {
+      // Arity selects the declared native overload without changing any forwarded arguments.
+      const bytes = args.length === 4 ? original.read(fd, ...args) : original.read(fd, ...args);
+      if (commandDescriptors.has(fd)) {
+        io.reads++;
+        io.bytes += bytes;
+        io.maxReadBytes = Math.max(io.maxReadBytes, bytes);
       }
-    );
-    fs.readSync = /** @type {typeof fs.readSync} */ (
-      (fd, ...args) => {
-        const bytes = original.read(
-          fd,
-          .../** @type {[NodeJS.ArrayBufferView, number, number, number | null]} */ (args),
-        );
-        if (commandDescriptors.has(fd)) {
-          io.reads++;
-          io.bytes += bytes;
-          io.maxReadBytes = Math.max(io.maxReadBytes, bytes);
-        }
-        return bytes;
-      }
-    );
-    // oxlint-enable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion, typescript/no-unsafe-argument
+      return bytes;
+    };
     fs.closeSync = (fd) => {
       commandDescriptors.delete(fd);
       original.close(fd);
@@ -1728,10 +1651,11 @@ try {
         openSync: original.open,
         readSync: original.read,
         closeSync: original.close,
-        readdirSync: original.readdir,
       });
+      readdir.mock.restore();
       syncBuiltinESMExports();
     }
+    io.scans = readdir.mock.calls.filter((record) => record.arguments[0] === commands).length;
     console.log("inventory command I/O:", JSON.stringify(io));
     const text = inventory.content
       .map((block) => (block.type === "text" ? block.text : ""))
@@ -1814,13 +1738,11 @@ try {
     for (const [reference, model, thinking, override, effective = thinking] of selections) {
       const prompt = `MODEL_SELECTION:${reference ?? ""}:${override ?? "inherited"}`;
       const selected = `single-agent-fixture/${reference ?? ""}`;
-      // oxlint-disable-next-line no-await-in-loop
       const launched = await call(
         "delegate",
         { prompt, model: selected, ...(override !== undefined ? { thinking: override } : {}) },
         prompt,
       );
-      // oxlint-disable-next-line no-await-in-loop
       const receipt = await settled(launched);
       assert.equal(receipt.isError, false, JSON.stringify(receipt));
       assert.equal(runDetails(receipt).model, `single-agent-fixture/${model ?? ""}`);
@@ -1839,7 +1761,7 @@ try {
     const base = path.join(agentDir, "sessions/agent-runs", manager.getSessionId());
     const before = fs.readdirSync(base).sort();
     const requestCount = requests().length;
-    /** @type {{ model: string, thinking?: unknown, error: RegExp }[]} */
+    /** @type {{ model: string, thinking?: string | boolean | number, error: RegExp }[]} */
     const rejections = [
       ...[
         "single-agent-fixture/literal",
@@ -1863,7 +1785,6 @@ try {
         : []),
     ];
     for (const { error, ...input } of rejections) {
-      // oxlint-disable-next-line no-await-in-loop
       const rejected = await call(
         "delegate",
         { prompt: "REJECTED_SELECTION", ...input },
@@ -2076,7 +1997,7 @@ try {
         });
       const before = effects();
       const model = "single-agent-fixture/literal-model";
-      /** @type {[string, Record<string, unknown>][]} */
+      /** @type {[string, import("@earendil-works/pi-ai").JsonObject][]} */
       const retiredCalls = [
         ["delegate", { prompt: "RETIRED_BLOCKING_LAUNCH", model, async: false }],
         ["delegate", { prompt: "RETIRED_ASYNC_FLAG", model, async: true }],
@@ -2084,7 +2005,6 @@ try {
         ["agent_runs", { action: "continue", id: runId, prompt: "RETIRED_WAIT", async: false }],
       ];
       for (const [index, [tool, args]] of retiredCalls.entries()) {
-        // oxlint-disable-next-line no-await-in-loop
         const rejected = await call(tool, args, `retired-blocking-${index}`);
         assert.equal(rejected.isError, true, JSON.stringify(rejected));
         assert.match(contentText(rejected), new RegExp(`^Validation failed for tool "${tool}"`));
@@ -2108,14 +2028,6 @@ try {
     await session.waitForIdle();
     const first = requestFor("PARK_FIRST");
     if (phase === "park-shells") {
-      /** @type {typeof import("../../src/agent/process.ts")} */
-      // oxlint-disable-next-line typescript/no-unsafe-assignment
-      const { ownIdentity } = await import(
-        pathToFileURL(path.join(repo, "dist/agent/process.js")).href
-      );
-      /** @type {{ write: (file: string, value: unknown, exclusive?: boolean) => void }} */
-      // oxlint-disable-next-line typescript/no-unsafe-assignment
-      const { write } = await import(pathToFileURL(path.join(repo, "dist/agent/storage.js")).href);
       const actor = readActorIdentity(runDir(currentRunId()));
       const ledger = path.join(runDir(currentRunId()), "shells", actor.token);
       const sleepers = Array.from({ length: 3 }, () =>
@@ -2342,7 +2254,7 @@ try {
     assert.match(noticeContent(), /: stopped\./);
     const inspection = await call(
       "agent_runs",
-      { action: "inspect", id: runId },
+      { action: "inspect", id: currentRunId() },
       `inspect-${phase}`,
     );
     assert.equal(runDetails(inspection).completed, true);
@@ -2507,20 +2419,10 @@ try {
           if (process.platform === "android") {
             // A controller clock correction must not disprove a live native owner.
             const claim = fs.readFileSync(processFile);
-            /** @type {typeof import("../../src/agent/process.ts")} */
-            // oxlint-disable-next-line typescript/no-unsafe-assignment
-            const { ensureActor } = await import(
-              pathToFileURL(path.join(repo, "dist/agent/process.js")).href
-            );
             Date.now = () => now() + 300000;
             await ensureActor(
               path.dirname(runDir(currentRunId())),
-              /** @type {import("../../src/agent/contracts.ts").Launch} */ (
-                // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-                /** @type {unknown} */ (
-                  readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json"))
-                )
-              ),
+              readValidated(LaunchSchema, path.join(runDir(currentRunId()), "launch.json")),
             );
             assert.deepEqual(
               fs.readFileSync(processFile),
@@ -2704,7 +2606,7 @@ try {
     const prompt = "RECOVER_QUEUED_SHELL_CONTINUATION";
     const blocked = await call(
       "agent_runs",
-      { action: "continue", id: runId, prompt },
+      { action: "continue", id: currentRunId(), prompt },
       "continue-before-orphan-stop",
     );
     assert.equal(blocked.isError, true, JSON.stringify(blocked));
@@ -2719,7 +2621,7 @@ try {
     assert.equal(fs.existsSync(path.join(directory, "admissions", `${pending}.json`)), false);
     const stillBlocked = await call(
       "agent_runs",
-      { action: "continue", id: runId, prompt },
+      { action: "continue", id: currentRunId(), prompt },
       "retry-while-orphan-shell-is-live",
     );
     assert.equal(stillBlocked.isError, true, JSON.stringify(stillBlocked));
@@ -2749,7 +2651,7 @@ try {
         fs.utimesSync(processFile, actorPublishedAt, actorPublishedAt);
         const reusedActorContinue = await call(
           "agent_runs",
-          { action: "continue", id: runId, prompt },
+          { action: "continue", id: currentRunId(), prompt },
           "reused-actor-pid-cannot-mask-owned-shell",
         );
         assert.equal(reusedActorContinue.isError, true, JSON.stringify(reusedActorContinue));
@@ -2791,10 +2693,9 @@ try {
       ].entries()) {
         fs.writeFileSync(recordFile, JSON.stringify(mutation));
         // Every denial follows the actual controller processing the corrupted ledger.
-        // oxlint-disable-next-line no-await-in-loop
         const denied = await call(
           "agent_runs",
-          { action: "stop", id: runId },
+          { action: "stop", id: currentRunId() },
           `bad-shell-${index}`,
         );
         assert.equal(denied.isError, true, JSON.stringify(denied));
@@ -2836,7 +2737,11 @@ try {
       }
       const foreignBytes = birthProof ? fs.readFileSync(foreign) : undefined;
       fs.writeFileSync(recordFile, JSON.stringify(shell));
-      const stopped = await call("agent_runs", { action: "stop", id: runId }, "orphan-stop");
+      const stopped = await call(
+        "agent_runs",
+        { action: "stop", id: currentRunId() },
+        "orphan-stop",
+      );
       assert.equal(stopped.isError, false, JSON.stringify(stopped));
       assert.equal(
         runDetails(stopped).stopRequest,
@@ -2865,14 +2770,18 @@ try {
       assert.equal(fs.existsSync(path.join(directory, "stop-acknowledged.json")), false);
       assert.equal(fs.existsSync(path.join(directory, "result.json")), false);
       await survives("unrelated process survives completed cold Stop");
-      const reused = await call("agent_runs", { action: "stop", id: runId }, "stale-only-stop");
+      const reused = await call(
+        "agent_runs",
+        { action: "stop", id: currentRunId() },
+        "stale-only-stop",
+      );
       assert.equal(reused.isError, false, JSON.stringify(reused));
       assert.equal(runDetails(reused).stopRequest, undefined);
       assert.match(runDetails(reused).note ?? "", /No matching live actor or owned shell/);
       await survives("reused PID survives Stop of its stale claim");
       const distinct = await call(
         "agent_runs",
-        { action: "continue", id: runId, prompt: "DO_NOT_REPLACE_QUEUED_PROMPT" },
+        { action: "continue", id: currentRunId(), prompt: "DO_NOT_REPLACE_QUEUED_PROMPT" },
         "refuse-distinct-prompt-after-orphan-stop",
       );
       assert.equal(distinct.isError, true, JSON.stringify(distinct));
@@ -2900,13 +2809,12 @@ try {
         [processFile, /Actor launch is ambiguous/],
       ];
       for (const [file, expected] of retries) {
-        // oxlint-disable-next-line no-await-in-loop
         await retryWithout(file ?? "", expected);
       }
       const recovered = await settled(
         await call(
           "agent_runs",
-          { action: "continue", id: runId, prompt },
+          { action: "continue", id: currentRunId(), prompt },
           "retry-queued-prompt-after-orphan-stop",
         ),
       );
@@ -2981,7 +2889,11 @@ try {
       JSON.stringify({ ...identity, identity: "different process birth" }),
     );
     try {
-      const denied = await call("agent_runs", { action: "stop", id: runId }, "mismatched-stop");
+      const denied = await call(
+        "agent_runs",
+        { action: "stop", id: currentRunId() },
+        "mismatched-stop",
+      );
       assert.equal(denied.isError, true);
       process.kill(identity.pid, 0);
       process.kill(family.pid, 0);
@@ -3041,7 +2953,7 @@ try {
         }
         return sent;
       };
-      stop = await call("agent_runs", { action: "stop", id: runId }, "cold-stop");
+      stop = await call("agent_runs", { action: "stop", id: currentRunId() }, "cold-stop");
     } finally {
       process.kill = kill;
       try {
@@ -3074,7 +2986,11 @@ try {
       readValidated(ResultSchema, path.join(runDir(currentRunId()), "result.json")).status,
       "stopped",
     );
-    const inspected = await call("agent_runs", { action: "inspect", id: runId }, "stopped-inspect");
+    const inspected = await call(
+      "agent_runs",
+      { action: "inspect", id: currentRunId() },
+      "stopped-inspect",
+    );
     assert.equal(runDetails(inspected).process?.live, false);
     assert.equal(
       runDetails(inspected).process?.exitKnown,
@@ -3094,7 +3010,7 @@ try {
     const continued = await settled(
       await call(
         "agent_runs",
-        { action: "continue", id: runId, prompt: "INSPECT_INTERRUPTED_WORK" },
+        { action: "continue", id: currentRunId(), prompt: "INSPECT_INTERRUPTED_WORK" },
         "resume-stopped-child",
       ),
     );
@@ -3141,7 +3057,7 @@ try {
     assert.notEqual(observed.pid, seed?.childPid);
     assert.match(JSON.stringify(observed.context), /EXACT untouched prompt Ω/);
     const startsBefore = new Set(requests().map((request) => request.pid)).size;
-    fs.renameSync(saved.sessionFile ?? "", `${saved.sessionFile ?? ""}.held`);
+    fs.renameSync(saved.sessionFile, `${saved.sessionFile}.held`);
     try {
       const denied = await call(
         "agent_runs",
@@ -3151,7 +3067,7 @@ try {
       assert.equal(denied.isError, true);
       assert.equal(new Set(requests().map((request) => request.pid)).size, startsBefore);
     } finally {
-      fs.renameSync(`${saved.sessionFile ?? ""}.held`, saved.sessionFile ?? "");
+      fs.renameSync(`${saved.sessionFile}.held`, saved.sessionFile);
     }
     const savedLaunch = path.join(runDir(runDetails(receipt).id), "launch.json");
     fs.renameSync(savedLaunch, savedLaunch + ".held");
@@ -3260,7 +3176,6 @@ try {
               : fauxAssistantMessage("PARENT_HELD_COMPLETE");
           }
           // The explicit provider release or abort settles the actual native run.
-          // oxlint-disable-next-line no-await-in-loop
           await delay(10);
         }
         return fauxAssistantMessage("PARENT_ABORTED", { stopReason: "aborted" });
@@ -3574,8 +3489,7 @@ try {
         },
       ]);
       // The parent prompt is intentionally held pending for the whole phase.
-      // oxlint-disable-next-line typescript/no-floating-promises
-      void session.prompt("Hold native parent before legacy queue consumption");
+      heldLegacyPrompt = session.prompt("Hold native parent before legacy queue consumption");
       await entered.promise;
       fs.mkdirSync(path.dirname(hint), { recursive: true });
       fs.writeFileSync(hint, JSON.stringify(result));
@@ -3648,7 +3562,7 @@ try {
     // Legacy-again finds its earlier receipt; sessionless adds one completed user turn.
     /** @type {Record<string, number>} */
     const calls = { "legacy-again": 0, "legacy-sessionless": 3 };
-    assert.equal(/** @type {{ callCount: number }} */ (faux.state).callCount, calls[phase] ?? 1);
+    assert.equal(faux.state.callCount, calls[phase] ?? 1);
     assert.equal(
       manager
         .getEntries()
@@ -3854,7 +3768,6 @@ try {
     try {
       for (const [code, refuse] of refusals) {
         refuse();
-        // oxlint-disable-next-line no-await-in-loop
         const refused = await call(
           "agent_runs",
           { action: "continue", id, prompt },
@@ -3953,7 +3866,7 @@ try {
         LaunchSchema,
         path.join(runDir(runDetails(first).id), "launch.json"),
       );
-      const header = fs.readFileSync(inherited.sessionFile ?? "", "utf8").split("\n")[0];
+      const header = fs.readFileSync(inherited.sessionFile, "utf8").split("\n")[0];
       assert.equal(
         fs.realpathSync(parseValidated(SessionHeaderSchema, header ?? "").cwd ?? ""),
         fs.realpathSync(child),
@@ -3974,7 +3887,7 @@ try {
           "agent_runs",
           {
             action: "continue",
-            id: runId,
+            id: currentRunId(),
             prompt: "CWD_READ_AFTER_REOPEN",
           },
           "reopen-child-d",
@@ -4071,7 +3984,6 @@ try {
         );
       }
       // Every assertion follows the actual target loader and provider completing.
-      // oxlint-disable-next-line no-await-in-loop
       const launched = await call(
         "delegate",
         {
@@ -4081,7 +3993,6 @@ try {
         },
         `trust-${decision}`,
       );
-      // oxlint-disable-next-line no-await-in-loop
       const result = await settled(launched);
       assert.equal(result.isError, false, JSON.stringify(result));
       assert.equal(
@@ -4116,7 +4027,8 @@ try {
     const before = fs.readFileSync(file, "utf8");
     const lines = before.trimEnd().split("\n").map(parseJournalLine);
     const physicalNotice = lines.find(
-      (entry) => entry.type === "custom_message" && entry.details?.id === runId,
+      (entry) =>
+        entry.type === "custom_message" && isRecord(entry.details) && entry.details.id === runId,
     );
     assert.ok(physicalNotice !== undefined, "expected the mutated physical receipt");
     const validatedNotice = parseValidated(CompletionNoticeSchema, physicalNotice);
@@ -4184,18 +4096,11 @@ try {
     assert.notEqual(fs.readFileSync(source).at(-1), 10);
     const resultFile = path.join(runDir(currentRunId()), "result.json");
     const pendingBytes = fs.readFileSync(resultFile);
-    const open = fs.openSync;
-    /** @type {{ count: number }} */
-    const usageReads = { count: 0 };
-    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
-    fs.openSync = /** @type {typeof fs.openSync} */ (
-      (file, flags, ...args) => {
-        if (file === source && flags === "r") {
-          usageReads.count++;
-        }
-        return open(file, flags, ...args);
-      }
-    );
+    const open = mock.method(fs, "openSync");
+    const usageReads = () =>
+      open.mock.calls.filter(
+        (record) => record.arguments[0] === source && record.arguments[1] === "r",
+      ).length;
     syncBuiltinESMExports();
     try {
       // List while the journal still withholds its LF. Listing waits on live-actor `ps` checks,
@@ -4218,7 +4123,7 @@ try {
         pendingBytes,
         "native metadata inventory cannot repair pending accounting",
       );
-      assert.equal(usageReads.count, 0, "metadata-only reads never open the child usage journal");
+      assert.equal(usageReads(), 0, "metadata-only reads never open the child usage journal");
       fs.appendFileSync(source, "\n");
       const inspected = await raw.execute(
         "pending-accounting-inspect",
@@ -4226,15 +4131,11 @@ try {
         new AbortController().signal,
       );
       assert.equal(runDetails(inspected).result?.accountingPending, undefined);
-      assert.ok(
-        // oxlint-disable-next-line typescript/no-unnecessary-condition -- tsc types the annotated counter as number
-        usageReads.count > 0,
-        "explicit native inspection still reads and repairs accounting",
-      );
+      assert.ok(usageReads() > 0, "explicit native inspection still reads and repairs accounting");
       assert.notDeepEqual(fs.readFileSync(resultFile), pendingBytes);
       assert.equal(session.getSessionStats().cost, 0, "inspection is not finalized collection");
     } finally {
-      fs.openSync = open;
+      open.mock.restore();
       syncBuiltinESMExports();
     }
     const repaired = await call("agent_runs", { action: "inspect", id: runId }, "repaired-usage");
@@ -4488,7 +4389,6 @@ try {
       /** @type {{ content: unknown } | undefined} */
       let downstream;
       // The second Stop observes the first Stop's published process exit.
-      // oxlint-disable-next-line no-await-in-loop
       const stopped = await call("agent_runs", { action: "stop", id: runId }, stopId, (context) => {
         downstream = structuredClone(
           context.messages.findLast(
@@ -4560,20 +4460,14 @@ try {
       assert.deepEqual(emitted.result.details, stopped.details);
       const persistedEntry = sdk.SessionManager.open(manager.getSessionFile() ?? "")
         .getEntries()
-        .find((entry) => isToolResultEntry(entry) && entry.message.toolCallId === stopId);
+        .filter(isToolResultEntry)
+        .find((entry) => entry.message.toolCallId === stopId);
       assert.ok(persistedEntry !== undefined, "expected the persisted stop receipt");
-      // oxlint-disable typescript/no-unsafe-type-assertion -- persisted stop receipts carry the tool-result message
-      const persisted = /** @type {import("@earendil-works/pi-ai").ToolResultMessage} */ (
-        /** @type {import("@earendil-works/pi-coding-agent").SessionMessageEntry} */ (
-          persistedEntry
-        ).message
-      );
-      // oxlint-enable typescript/no-unsafe-type-assertion
+      const persisted = persistedEntry.message;
       assert.deepEqual(persisted.content, stopped.content);
       assert.deepEqual(persisted.details, JSON.parse(JSON.stringify(stopped.details)));
       if (state === "live") {
         // Exit publication must precede the next registered Stop.
-        // oxlint-disable-next-line no-await-in-loop
         await until(
           () =>
             fs.existsSync(
@@ -4665,13 +4559,11 @@ try {
     assert.deepEqual(
       usageDetails(warm).result.contributions.map((part) => [part.id, part.usage]),
       appended
-        .map(
-          (entry) =>
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-            /** @type {import("@earendil-works/pi-coding-agent").SessionEntry} */ (entry),
-        )
-        .filter(isAssistantEntry)
-        .map((entry) => [`${runDetails(first).sessionId}:${entry.id}`, childTurnUsage]),
+        .filter((entry) => entry.type === "message" && entry.message?.role === "assistant")
+        .map((entry) => {
+          assert.ok(entry.id !== undefined, "expected a published assistant entry id");
+          return [`${runDetails(first).sessionId}:${entry.id}`, childTurnUsage];
+        }),
       "the resident continuation records exactly its appended native turns",
     );
     const warmReads = journalReads().slice(coldReads.length);
@@ -4873,44 +4765,32 @@ try {
       "completed",
       "process exit is independent of the canonical workflow result",
     );
-    /** @type {typeof childProcess.spawn} */
-    const spawnActor = childProcess.spawn;
-    /** @type {import("node:child_process").ChildProcess[]} */
-    const replacements = [];
-    /**
-     * @param {string} command
-     * @param {string[] | undefined} spawnArgs
-     * @param {import("node:child_process").SpawnOptions | undefined} spawnOptions
-     * @returns {import("node:child_process").ChildProcess}
-     */
-    const patchedSpawn = (command, spawnArgs, spawnOptions) => {
-      const child = spawnActor(command, spawnArgs ?? [], spawnOptions ?? {});
-      if (spawnArgs?.[0]?.endsWith("/agent/runner.js") === true) {
-        replacements.push(child);
-      }
-      return child;
-    };
-    // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
-    childProcess.spawn = /** @type {typeof childProcess.spawn} */ (
-      /** @type {unknown} */ (patchedSpawn)
-    );
-    // oxlint-enable typescript/no-unsafe-type-assertion
+    const spawnActor = mock.method(childProcess, "spawn");
+    const replacements = () =>
+      spawnActor.mock.calls.flatMap((record) => {
+        const child = record.result;
+        // Native spawn also accepts options as its second argument, or no second argument.
+        /** @type {unknown} */
+        const args = record.arguments[1];
+        return isUnknownArray(args) &&
+          typeof args[0] === "string" &&
+          args[0].endsWith("/agent/runner.js") &&
+          child !== undefined
+          ? [child]
+          : [];
+      });
     syncBuiltinESMExports();
     try {
       const ids = ["parallel-continue-one", "parallel-continue-two"];
       const prompts = ["HOLD:parallelfirst", "PARALLEL_SECOND_DISTINCT_LITERAL"];
       faux.setResponses([
         fauxAssistantMessage(
-          ids.map(
-            (id, index) =>
-              // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
-              /** @type {import("@earendil-works/pi-ai").FauxContentBlock} */ ({
-                type: "toolCall",
-                id,
-                name: "agent_runs",
-                arguments: { action: "continue", id: original, prompt: prompts[index] ?? "" },
-              }),
-          ),
+          ids.map((id, index) => ({
+            type: "toolCall",
+            id,
+            name: "agent_runs",
+            arguments: { action: "continue", id: original, prompt: prompts[index] ?? "" },
+          })),
           { stopReason: "toolUse" },
         ),
         fauxAssistantMessage("PARALLEL_NATIVE_BATCH_COMPLETE"),
@@ -4941,7 +4821,7 @@ try {
       assert.match(JSON.stringify(secondReceipt.content), /awaiting native admission.*retry/i);
       await until(
         () =>
-          replacements.every((child) => nativeStarts().some((entry) => entry.pid === child.pid)),
+          replacements().every((child) => nativeStarts().some((entry) => entry.pid === child.pid)),
         "every actually spawned replacement reaches native SDK session startup",
       );
       const owners = new Set(
@@ -4956,7 +4836,11 @@ try {
         1,
         "parallel native calls acquire exactly one native actor owner per journal",
       );
-      assert.equal(replacements.length, 1, "exactly one replacement process was actually spawned");
+      assert.equal(
+        replacements().length,
+        1,
+        "exactly one replacement process was actually spawned",
+      );
       await until(
         () => requests().some((r) => r.prompt === prompts[0]),
         "replacement actor actually starts tracked work",
@@ -4985,7 +4869,7 @@ try {
         path.join(runDir(original), "actor.lock/process.json"),
       );
       const ready = readValidated(ReadySchema, path.join(runDir(original), "ready.json"));
-      assert.equal(identity.pid, replacements[0]?.pid);
+      assert.equal(identity.pid, replacements()[0]?.pid);
       assert.equal(ready.pid, identity.pid);
       assert.equal(ready.token, identity.token);
       assert.notEqual(identity.pid, oldPid);
@@ -5017,7 +4901,7 @@ try {
           {
             action: "continue",
             id: original,
-            prompt: prompts[1],
+            prompt: prompts[1] ?? "",
           },
           "retry-distinct-parallel-prompt",
         ),
@@ -5032,7 +4916,7 @@ try {
         readValidated(SuccessorSchema, path.join(runDir(first), "successor.json")).id,
         runDetails(retry).id,
       );
-      assert.equal(replacements.length, 1, "explicit retry keeps the same native actor owner");
+      assert.equal(replacements().length, 1, "explicit retry keeps the same native actor owner");
       assert.deepEqual(
         requests()
           .filter((r) => r.prompt !== undefined && prompts.includes(r.prompt))
@@ -5057,11 +4941,11 @@ try {
         1,
       );
     } finally {
-      childProcess.spawn = spawnActor;
+      spawnActor.mock.restore();
       syncBuiltinESMExports();
       fs.writeFileSync(path.join(root, "release-parallelfirst"), "release");
       await Promise.all(
-        replacements.map((child) => {
+        replacements().map((child) => {
           /** @type {{ promise: Promise<void>, resolve: () => void }} */
           const childExited = Promise.withResolvers();
           if (child.exitCode !== null || child.signalCode !== null) {
@@ -5079,9 +4963,10 @@ try {
     const originalTimeout = globalThis.setTimeout;
     if (phase === "generation") {
       /**
-       * @param {(...args: unknown[]) => void} callback
+       * @template {unknown[]} Args
+       * @param {(...args: Args) => void} callback
        * @param {Parameters<typeof setTimeout>[1]} ms
-       * @param {...unknown} args
+       * @param {Args} args
        */
       const patchedTimeout = (callback, ms, ...args) =>
         originalTimeout(() => {
@@ -5090,9 +4975,7 @@ try {
             fs.writeFileSync(path.join(root, "escalation-processed"), "done");
           }
         }, ms);
-      // oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion
-      globalThis.setTimeout = /** @type {typeof setTimeout} */ (patchedTimeout);
-      // oxlint-enable typescript/no-unsafe-type-assertion
+      mock.method(globalThis, "setTimeout", patchedTimeout);
     }
     const first = await call(
       "delegate",
@@ -5101,7 +4984,7 @@ try {
     );
     const id = runDetails(first).id;
     await until(() => requests().some((r) => r.prompt === "HOLD:boundary"), "old turn starts");
-    /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<any> | undefined} */
+    /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<unknown> | undefined} */
     let stopped;
     if (phase === "generation") {
       const oldPid = firstRequest().pid;
@@ -5367,7 +5250,6 @@ try {
       });
       Object.assign(process.env, malformed);
       try {
-        // oxlint-disable-next-line no-await-in-loop
         await packageLoader.reload();
       } finally {
         delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
@@ -5448,7 +5330,6 @@ try {
     assert.notEqual(runDetails(second).id, runDetails(first).id);
     const requestFile = path.join(root, "requests.jsonl");
     for (const stage of ["prefix", "body"]) {
-      // oxlint-disable-next-line no-await-in-loop
       await until(
         () => fs.existsSync(path.join(root, `request-${stage}`)),
         `native provider has written the request ${stage} without LF`,
@@ -5562,7 +5443,6 @@ try {
       offset = runDetails(long).output?.nextOffset;
     while (offset !== undefined) {
       // Each next page depends on the preceding native tool receipt's byte cursor.
-      // oxlint-disable-next-line no-await-in-loop
       const page = await call(
         "agent_runs",
         { action: "inspect", id: runDetails(long).id, offset },
@@ -5597,13 +5477,10 @@ try {
     assert.deepEqual(emitted.result.details, failedLaunch.details);
     const reopenedEntry = sdk.SessionManager.open(manager.getSessionFile() ?? "")
       .getEntries()
-      .find((entry) => isToolResultEntry(entry) && entry.message.toolCallId === "model-failure");
+      .filter(isToolResultEntry)
+      .find((entry) => entry.message.toolCallId === "model-failure");
     assert.ok(reopenedEntry !== undefined, "expected the reopened failure receipt");
-    const reopened = /** @type {import("@earendil-works/pi-ai").ToolResultMessage} */ (
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-      /** @type {import("@earendil-works/pi-coding-agent").SessionMessageEntry} */ (reopenedEntry)
-        .message
-    );
+    const reopened = reopenedEntry.message;
     assert.equal(reopened.isError, emitted.isError);
     assert.deepEqual(reopened.content, emitted.result.content);
     assert.deepEqual(reopened.details, JSON.parse(JSON.stringify(emitted.result.details)));
@@ -5639,8 +5516,12 @@ try {
   assert.deepEqual(errors, []);
   assert.equal(networkRequests, 0);
 } finally {
-  await session.abort();
-  await runtime.dispose();
+  try {
+    await session.abort();
+    await heldLegacyPrompt;
+  } finally {
+    await runtime.dispose();
+  }
   fs.writeFileSync(
     path.join(root, `${phase}-evidence.json`),
     JSON.stringify({

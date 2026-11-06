@@ -59,11 +59,9 @@ async function brokerFixture(t: TestContext) {
 async function waitFor(check: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000;
   // Every observation finishes before the next readiness poll.
-  // oxlint-disable-next-line no-await-in-loop
   while (!(await check())) {
     assert.ok(Date.now() < deadline, "broker did not publish the expected state");
     // Back off after the actual observation, not instead of it.
-    // oxlint-disable-next-line no-await-in-loop
     await sleep(5);
   }
 }
@@ -85,7 +83,6 @@ nodeTest(
     const receiver = await fixture.client("large-receiver");
     for (const delivery of ["steer", "queue"] as const) {
       // Both immediate forwarding and replace staging must validate the expanded frame.
-      // oxlint-disable-next-line no-await-in-loop
       const result = await sender.send("large-receiver", {
         text: "x".repeat(MAX_FRAME_SIZE_BYTES - 350_000),
         delivery,
@@ -137,7 +134,6 @@ nodeTest(
     });
     for (let index = 0; index < 101; index++) {
       // Preserve admission order independently for every thread.
-      // oxlint-disable-next-line no-await-in-loop
       const result = await sender.send("replace-receiver", {
         messageId: `thread-${index}`,
         text: `update ${index}`,
