@@ -80,6 +80,11 @@ npm and attached to the matching GitHub release.
 
 ## Isolation and safety
 
+Parent attachment keeps one binding through detached, waiting, attaching and
+attached phases. The existing shutdown signal closes the owner. Managed
+readiness can attach only its own still-current waiting binding; shutdown joins
+admitted publication before releasing the matching generation.
+
 Every test/smoke broker uses a short, explicit `PI_INTERCOM_RUNTIME_DIR` owned by
 the fixture. Do not touch `/tmp/pi-intercom-<uid>` to test namespace behavior on a
 workstation with active sessions. Tests for the default path inspect it without

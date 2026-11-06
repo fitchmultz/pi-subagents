@@ -120,9 +120,13 @@ nodeTest(
     );
 
     // Another unready replacement whose user quits releases the launcher-owned children.
-    const quitting = await worker(t, "handoff", { owner, ready: Promise.resolve(false) });
+    const lateReady = Promise.withResolvers<boolean>();
+    const quitting = await worker(t, "handoff", { owner, ready: lateReady.promise });
     await quitting.start();
     await quitting.shutdown("release");
+    lateReady.resolve(true);
+    await lateReady.promise;
+    await Promise.resolve();
     assert.deepEqual(
       { attached: attachment("handoff")?.attached, generation: attachment("handoff")?.generation },
       { attached: false, generation },
