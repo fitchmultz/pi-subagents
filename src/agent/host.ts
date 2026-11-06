@@ -9,6 +9,25 @@ import { readIntercomLineage } from "../pi-intercom/identity.ts";
 
 export { errorMessage as errorText } from "../shared/unknown.ts";
 
+/** Native fork lifetime owner; structural detection keeps official Pi supported. */
+export interface ManagedHost {
+  readonly owner: { readonly pid: number };
+  readonly ready: Promise<boolean>;
+}
+export function managedHost(context: SDK.ExtensionContext): ManagedHost | undefined {
+  const host: unknown = Reflect.get(context, "managedHost");
+  if (typeof host !== "object" || host === null) {
+    return undefined;
+  }
+  const owner: unknown = Reflect.get(host, "owner");
+  const pid: unknown =
+    typeof owner === "object" && owner !== null ? Reflect.get(owner, "pid") : undefined;
+  const ready: unknown = Reflect.get(host, "ready");
+  return typeof pid === "number" && Number.isSafeInteger(pid) && ready instanceof Promise
+    ? { owner: { pid }, ready: ready.then((accepted) => accepted === true) }
+    : undefined;
+}
+
 /** A launcher may still own children while handing off or replacing a worker. */
 export function retainsChildren(event: object): boolean {
   const disposition: unknown = Reflect.get(event, "disposition");
