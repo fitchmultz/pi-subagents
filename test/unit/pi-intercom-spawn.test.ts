@@ -13,6 +13,7 @@ import { once } from "node:events";
 import { Worker } from "node:worker_threads";
 import { syncBuiltinESMExports } from "node:module";
 import { brokerPidRecord, isBrokerPidReused } from "../../src/pi-intercom/broker/pid.ts";
+import { acquireSpawnClaim } from "../../src/pi-intercom/broker/spawn-claim.ts";
 import { fileURLToPath } from "node:url";
 import { assertRecord } from "../support/assertions.ts";
 import {
@@ -75,6 +76,20 @@ nodeTest("legacy numeric live process remains ambiguous and blocking", async () 
     assert.equal(readFileSync(pidPath, "utf8"), String(process.pid));
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+nodeTest("an unreadable broker PID record cannot authorize another broker", async () => {
+  fs.mkdirSync(pidDir, { recursive: true });
+  const pidPath = path.join(pidDir, "broker.pid");
+  writeFileSync(pidPath, String(process.pid), { mode: 0o600 });
+  fs.chmodSync(pidPath, 0);
+  try {
+    assert.throws(() => readFileSync(pidPath), { code: "EACCES" });
+    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
+  } finally {
+    fs.chmodSync(pidPath, 0o600);
+    rmSync(pidDir, { recursive: true, force: true });
   }
 });
 
@@ -149,6 +164,23 @@ nodeTest(
         ),
         true,
       );
+      const claimPath = path.join(dir, "broker.spawn.lock");
+      const release = acquireSpawnClaim(claimPath);
+      assert.ok(release !== undefined);
+      try {
+        const claim = readFileSync(claimPath, "utf8").split("\n");
+        assert.equal(claim[0], pid);
+        assert.ok(Number.isFinite(Number(claim[1])));
+        assert.equal(claim[2], line, "startup claim publishes the verified native birth");
+        assert.equal(acquireSpawnClaim(claimPath), undefined, "matching live birth stays owned");
+      } finally {
+        release();
+      }
+      writeFileSync(claimPath, `${pid}\n0\nlinux-v1 ${otherBoot} ${namespace} ${clock} ${start}\n`);
+      const reclaimed = acquireSpawnClaim(claimPath);
+      reclaimed?.();
+      assert.ok(reclaimed !== undefined, "proven-replaced birth permits reclaim, not lock age");
+      assert.equal(fs.existsSync(claimPath), false);
       t.mock.method(process, "kill", () => {
         throw Object.assign(new Error("not permitted"), { code: "EPERM" });
       });
