@@ -2,8 +2,23 @@
 
 ## [Unreleased]
 
+## 0.52.18 - 2026-11-06
+
+<!-- npm-release:unreleased:start -->
+
 - Keep replied or retired asks out of reply attribution when their queued input reaches a later native turn.
 - Preserve unanswered queued asks through abort recovery without sending a premature recipient-failure reply.
+- Preserve live or uncertain broker startup ownership; reclaim only exited spawn owners and release only the acquired claim.
+
+<!-- npm-release:unreleased:end -->
+
+- Keep retired asks out of native reply attribution (#341) ([27a93f9](https://github.com/fitchmultz/pi-subagents/commit/27a93f9bc52aaa9e454ffc593017b66b01461bc4))
+
+### What's Changed
+
+- Keep retired asks out of native reply attribution by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/341
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.17...v0.52.18
 
 ## 0.52.17 - 2026-11-05
 
