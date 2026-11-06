@@ -211,6 +211,53 @@ nodeTest("build.mjs: restores a killed publisher's last-good dist before a faili
   }),
 );
 
+nodeTest(
+  "build.mjs: retains ambiguous previous builds after cleanup failure and publisher death",
+  () =>
+    withFixture(async (dir) => {
+      assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "older" })).code, 0);
+      const published = await runBuild(
+        dir,
+        { TSC_STUB_MARKER: "last-good", BUILD_SWAP_FAULT: "previous-rm" },
+        faultArgs(),
+      );
+      assert.equal(published.code, 0);
+      assert.match(published.stderr, /synthetic previous cleanup failure/);
+      const older = stagingDirs(dir).filter((name) => name.endsWith(".previous"));
+      assert.equal(older.length, 1, "failed cleanup left a real retired build");
+      const killed = spawnSync(
+        process.execPath,
+        [...faultArgs(), buildScript, join(dir, "node_modules/typescript/bin/tsc")],
+        {
+          cwd: dir,
+          env: { ...process.env, BUILD_SWAP_FAULT: "kill-after-retire-keep-previous" },
+          encoding: "utf8",
+        },
+      );
+      assert.equal(killed.signal, "SIGKILL", killed.stderr);
+      assert.equal(existsSync(join(dir, "dist")), false);
+      const previous = stagingDirs(dir)
+        .filter((name) => name.endsWith(".previous"))
+        .sort();
+      assert.equal(previous.length, 2);
+      const contents = previous.map((name) => readFileSync(join(dir, name, "index.js"), "utf8"));
+      const failed = await runBuild(dir, { TSC_STUB_FAIL: "1" });
+      assert.notEqual(failed.code, 0);
+      assert.match(failed.stderr, /Multiple stranded previous builds/);
+      assert.equal(existsSync(join(dir, "dist")), false, "do not guess which build was last");
+      assert.deepEqual(
+        stagingDirs(dir)
+          .filter((name) => name.endsWith(".previous"))
+          .sort(),
+        previous,
+      );
+      assert.deepEqual(
+        previous.map((name) => readFileSync(join(dir, name, "index.js"), "utf8")),
+        contents,
+      );
+    }),
+);
+
 nodeTest("build.mjs: warns and continues when stranded staging cannot be removed", () =>
   withFixture(async (dir) => {
     const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;

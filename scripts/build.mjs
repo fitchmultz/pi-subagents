@@ -82,24 +82,43 @@ async function recoverPrevious(/** @type {string} */ previous, /** @type {string
   await discardStaging(previous);
 }
 
-async function recoverStrandedBuilds(/** @type {string} */ cwd) {
+/**
+ * @param {string} cwd
+ * @param {import("node:fs").Dirent} entry
+ * @returns {{ path: string, kind: "staging" | "previous" } | undefined}
+ */
+function strandedBuild(cwd, entry) {
   // Signal 0 proves only that the owner was gone at probe time. Pid reuse
   // between this probe and removal is inherent to pid-based reaping.
-  for (const entry of await readdir(cwd, { withFileTypes: true })) {
-    const match = /^dist\.staging\.(\d+)(\.previous)?$/.exec(entry.name);
-    if (!match || !entry.isDirectory()) {
-      continue;
-    }
-    const ownerPid = Number(match[1]);
-    if (ownerPid === process.pid || !isOwnerGone(ownerPid)) {
-      continue;
-    }
-    const stranded = join(cwd, entry.name);
+  const match = /^dist\.staging\.(\d+)(\.previous)?$/.exec(entry.name);
+  if (!match || !entry.isDirectory()) {
+    return;
+  }
+  const ownerPid = Number(match[1]);
+  if (ownerPid === process.pid || !isOwnerGone(ownerPid)) {
+    return;
+  }
+  return { path: join(cwd, entry.name), kind: match[2] === undefined ? "staging" : "previous" };
+}
+
+async function recoverStrandedBuilds(/** @type {string} */ cwd) {
+  const stranded = (await readdir(cwd, { withFileTypes: true })).flatMap((entry) => {
+    const build = strandedBuild(cwd, entry);
+    return build ? [build] : [];
+  });
+  const dist = join(cwd, "dist");
+  const previous = stranded.filter((entry) => entry.kind === "previous");
+  if (previous.length > 1 && !(await hasPublishedDist(dist))) {
+    throw new Error(
+      `Multiple stranded previous builds with no published dist; all retained for inspection: ${previous.map((entry) => entry.path).join(", ")}`,
+    );
+  }
+  for (const entry of stranded) {
     // A previous tree is complete rollback material, not an abandoned partial emit.
-    if (match[2] !== undefined) {
-      await recoverPrevious(stranded, join(cwd, "dist"));
+    if (entry.kind === "previous") {
+      await recoverPrevious(entry.path, dist);
     } else {
-      await discardStaging(stranded);
+      await discardStaging(entry.path);
     }
   }
 }

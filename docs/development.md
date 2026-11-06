@@ -28,6 +28,8 @@ exits after retiring the previous build, the next build restores that complete
 tree before compiling. A failed compile therefore leaves the last-good runtime
 available. Recovery preserves a concurrently published `dist` and never reaps
 live or uncertain staging owners.
+If several stranded previous trees exist with no published `dist`, recovery
+reports their paths and retains all of them rather than guessing which was last.
 
 ## Native Android/Termux
 
