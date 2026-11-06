@@ -86,6 +86,11 @@ admits no new Run work. Run, Steer and Stop payloads are action-specific;
 guidance always carries a prompt and new Stops always name the actor token.
 Historical unbound Stops remain readable and receive stale admission receipts.
 
+Parking returns resident, exit-with-parked-authority or exit-after-failed-save.
+Both exit outcomes have disposed the native runtime and must exit the actor;
+neither permits a second ordinary disposal. Restore tracks unopened, opening
+and adopted phases, keeping the exact saved cut with the phase that owns it.
+
 Smoke child cleanup treats leader exit and pipe closure separately. Pipe draining
 has waiting, draining and closed phases. Closing it cancels its deadlines and
 detaches its listeners, so later events cannot restart cleanup.

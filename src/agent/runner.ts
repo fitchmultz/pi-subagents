@@ -12,7 +12,7 @@ import {
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
-import { Parking, type Runtime } from "./parking.ts";
+import { Parking, type ParkOutcome, type Runtime } from "./parking.ts";
 import { UsageIndex } from "./usage.ts";
 import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
@@ -49,7 +49,7 @@ class Actor {
   private stopping = false;
   private stopDeadline?: NodeJS.Timeout;
   private nextParentCheck = 0;
-  private parking = false;
+  private parking: ParkOutcome = "resident";
   private readonly parent = new ParentCheck();
   // Raised when durable commands may need admission: change hints and stop.
   private readonly wake = new Wake();
@@ -381,7 +381,7 @@ class Actor {
     } finally {
       clearInterval(watch);
     }
-    return this.parking;
+    return this.parking !== "resident";
   }
   private failure(error: unknown, unopened?: string): void {
     const launch = this.work.kind === "running" ? this.work.launch : this.initial;
@@ -493,7 +493,7 @@ class Actor {
     process.off("SIGTERM", this.stop);
     process.off("SIGINT", this.stop);
     const observation: ObservationStats | undefined = this.observation?.close();
-    if (!this.parking) {
+    if (this.parking === "resident") {
       await runtime?.dispose();
     }
     if (this.stopping) {
@@ -505,7 +505,7 @@ class Actor {
       errors: this.errors,
       ...(observation === undefined ? {} : { observation }),
     });
-    if (this.parking) {
+    if (this.parking !== "resident") {
       // Parked authority requires actual exit; no leftover extension handle may keep it alive.
       process.exit();
     }
