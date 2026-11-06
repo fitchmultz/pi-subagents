@@ -8,12 +8,13 @@ import {
   type Command,
   type Launch,
   type Result,
+  type AccountingState,
 } from "./contracts.ts";
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { Parking, type ParkOutcome, type Runtime } from "./parking.ts";
-import { UsageIndex } from "./usage.ts";
+import { accountingFields, UsageIndex } from "./usage.ts";
 import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
@@ -102,10 +103,7 @@ class Actor {
       owner: launch.owner,
       status: completionStatus(this.stopping, message, error),
       endedAt: Date.now(),
-      ...(accounting.accountingError === undefined && terminal?.id !== undefined
-        ? { terminalEntryId: terminal.id }
-        : {}),
-      ...accounting,
+      ...accountingFields(accounting),
       ...(failure !== undefined ? { error: failure } : {}),
     };
     fs.writeFileSync(path.join(runDirectory(this.base, launch.id), "output.txt"), output, {
@@ -113,20 +111,21 @@ class Actor {
     });
     write(path.join(runDirectory(this.base, launch.id), "result.json"), result);
   }
-  private usage(
-    launch: Launch,
-    baseline: ReadonlySet<string>,
-    terminal?: string,
-  ): Pick<Result, "contributions" | "accountingError" | "accountingPending"> {
+  private usage(launch: Launch, baseline: ReadonlySet<string>, terminal?: string): AccountingState {
     try {
-      return { contributions: this.accounting.read(launch, baseline, terminal) };
-    } catch (error) {
       return {
-        accountingError: errorText(error),
-        ...(terminal !== undefined
-          ? { accountingPending: { terminalCandidate: terminal, baseline: [...baseline] } }
-          : {}),
+        kind: "verified",
+        contributions: this.accounting.read(launch, baseline, terminal),
+        terminalEntryId: terminal,
       };
+    } catch (error) {
+      return terminal === undefined
+        ? { kind: "unavailable", error: errorText(error), terminalEntryId: undefined }
+        : {
+            kind: "pending",
+            error: errorText(error),
+            pending: { terminalCandidate: terminal, baseline: [...baseline] },
+          };
     }
   }
   private output(message: AssistantMessage | undefined): string {

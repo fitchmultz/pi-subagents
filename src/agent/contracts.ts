@@ -93,6 +93,23 @@ export const resultSchema = Type.Object({
   ),
 });
 export type Result = Static<typeof resultSchema>;
+export type AccountingState =
+  | { readonly kind: "unrecorded"; readonly terminalEntryId: string | undefined }
+  | {
+      readonly kind: "verified";
+      readonly contributions: Contribution[];
+      readonly terminalEntryId: string | undefined;
+    }
+  | {
+      readonly kind: "pending";
+      readonly pending: NonNullable<Result["accountingPending"]>;
+      readonly error: string | undefined;
+    }
+  | {
+      readonly kind: "unavailable";
+      readonly error: string;
+      readonly terminalEntryId: string | undefined;
+    };
 export const commandMetadataSchema = Type.Object({
   id: Type.String(),
   runId: Type.String(),
