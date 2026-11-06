@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
+- Give bridge wake and presence schedulers explicit timer, running, and stopped ownership while retaining durable wake policy.
 - Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
 
 ## 0.52.18 - 2026-11-06

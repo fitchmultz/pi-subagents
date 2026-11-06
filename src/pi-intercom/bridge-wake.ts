@@ -15,6 +15,12 @@ interface Candidate {
   readonly entry: PendingNotification;
 }
 
+type DeliveryPhase =
+  | { readonly kind: "idle" }
+  | { readonly kind: "scheduled"; readonly timer: NodeJS.Timeout }
+  | { readonly kind: "running" | "running-dirty"; readonly task: Promise<void> }
+  | { readonly kind: "stopped"; readonly task: Promise<void> };
+
 function actionable(entry: PendingNotification): boolean {
   const message = entry.message;
   if (entry.acknowledged || message.passive === true || message.delivery === "passive") {
@@ -39,9 +45,7 @@ export class WakeDeliveries {
   private readonly allowed: (identity: Identity) => boolean;
   private readonly deliveries = new Map<string, Delivery>();
   private readonly controller = new AbortController();
-  private timer?: NodeJS.Timeout;
-  private running?: Promise<void> | undefined;
-  private dirty = false;
+  private phase: DeliveryPhase = { kind: "idle" };
   private storageBackoff = 15000;
 
   constructor(stateDir: string | undefined, allowed: (identity: Identity) => boolean) {
@@ -83,10 +87,17 @@ export class WakeDeliveries {
     } catch {
       // The scheduled storage recovery fails closed; never let an event bypass durable admission.
     }
-    if (this.running) {
-      this.dirty = true;
-    } else {
-      this.schedule(Date.now());
+    const phase = this.phase;
+    switch (phase.kind) {
+      case "running":
+        this.phase = { kind: "running-dirty", task: phase.task };
+        return;
+      case "running-dirty":
+      case "stopped":
+        return;
+      case "idle":
+      case "scheduled":
+        this.schedule(Date.now());
     }
   }
 
@@ -101,31 +112,40 @@ export class WakeDeliveries {
   }
 
   private schedule(deadline: number): void {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(
-      () => {
-        this.dirty = false;
-        let next = Infinity;
-        this.running = this.deliver()
-          .then((due) => {
-            next = due;
-            this.storageBackoff = 15000;
-            return;
-          })
-          .catch(() => {
-            log("wake_delivery", { result: "storage_unavailable" });
-            next = Date.now() + this.storageBackoff;
-            this.storageBackoff = Math.min(this.storageBackoff * 2, 300000);
-          })
-          .finally(() => {
-            this.running = undefined;
-            if (!this.controller.signal.aborted && (this.dirty || Number.isFinite(next))) {
-              this.schedule(this.dirty ? Date.now() : next);
-            }
-          });
-      },
+    if (this.phase.kind === "scheduled") {
+      clearTimeout(this.phase.timer);
+    }
+    const timer = setTimeout(
+      () => this.startDelivery(),
       Math.max(0, Math.min(deadline - Date.now(), 0x7fffffff)),
     );
+    this.phase = { kind: "scheduled", timer };
+  }
+
+  private startDelivery(): void {
+    let next = Infinity;
+    const task = this.deliver()
+      .then((due) => {
+        next = due;
+        this.storageBackoff = 15000;
+        return;
+      })
+      .catch(() => {
+        log("wake_delivery", { result: "storage_unavailable" });
+        next = Date.now() + this.storageBackoff;
+        this.storageBackoff = Math.min(this.storageBackoff * 2, 300000);
+      })
+      .finally(() => {
+        if (this.phase.kind === "stopped") {
+          return;
+        }
+        const dirty = this.phase.kind === "running-dirty";
+        this.phase = { kind: "idle" };
+        if (dirty || Number.isFinite(next)) {
+          this.schedule(dirty ? Date.now() : next);
+        }
+      });
+    this.phase = { kind: "running", task };
   }
 
   private authorized(delivery: Delivery): boolean {
@@ -267,14 +287,26 @@ export class WakeDeliveries {
     this.changed(false);
   }
 
-  async stop(): Promise<void> {
-    this.controller.abort();
-    clearTimeout(this.timer);
-    await this.running;
-    for (const delivery of this.deliveries.values()) {
-      delivery.mailbox.close();
+  stop(): Promise<void> {
+    const phase = this.phase;
+    if (phase.kind === "stopped") {
+      return phase.task;
     }
-    this.deliveries.clear();
-    this.state?.close();
+    if (phase.kind === "scheduled") {
+      clearTimeout(phase.timer);
+    }
+    const running =
+      phase.kind === "running" || phase.kind === "running-dirty" ? phase.task : undefined;
+    const task = Promise.resolve(running).then(() => {
+      for (const delivery of this.deliveries.values()) {
+        delivery.mailbox.close();
+      }
+      this.deliveries.clear();
+      this.state?.close();
+      return;
+    });
+    this.phase = { kind: "stopped", task };
+    this.controller.abort();
+    return task;
   }
 }
