@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
 - Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
 - Centralize broker request settlement and close multipart snapshot readers after completion or failure.
 
