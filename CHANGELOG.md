@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Keep replied or retired asks out of reply attribution when their queued input reaches a later native turn.
+
 ## 0.52.17 - 2026-11-05
 
 <!-- npm-release:unreleased:start -->
