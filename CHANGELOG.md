@@ -8,6 +8,7 @@
 
 - Make post-exit pipe cleanup terminal across waiting, draining and closed phases so later pipe events cannot restart smoke child cleanup.
 - Distinguish parked and failed actor exit outcomes; both have disposed the native runtime, exit the actor and permit no second ordinary disposal.
+- Bind native intercom context identity to inactive, live or invalidated lifecycle state; invalidated transport cleanup retains the session ID until cleared, separate from transport connection and native tool activity.
 
 <!-- npm-release:unreleased:end -->
 
@@ -18,6 +19,7 @@
 - fix: preserve live and uncertain broker startup ownership by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/342
 - refactor: make post-exit pipe cleanup terminal by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/346
 - refactor: distinguish parked and failed actor exit outcomes by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/348
+- refactor: bind intercom context identity to lifecycle state by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/351
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.18...v0.52.19
 
