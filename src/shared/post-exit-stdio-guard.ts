@@ -19,6 +19,7 @@ interface ChildWithPipedStdio {
   readonly stdout: ChildProcess["stdout"];
   readonly stderr: ChildProcess["stderr"];
   readonly on: ChildProcess["on"];
+  readonly off: ChildProcess["off"];
 }
 
 interface ChildWithKill {
@@ -356,13 +357,17 @@ export function attachChildProcessLifecycle(
 }
 
 function attachPostExitStdioGuard(child: ChildWithPipedStdio): () => void {
-  let exited = false;
+  let state:
+    | { readonly kind: "waiting" }
+    | { readonly kind: "draining"; idle: NodeJS.Timeout | undefined; readonly hard: NodeJS.Timeout }
+    | { readonly kind: "closed" } = { kind: "waiting" };
   let stdoutEnded = false;
   let stderrEnded = false;
-  let idleTimer: NodeJS.Timeout | undefined;
-  let hardTimer: NodeJS.Timeout | undefined;
 
   const destroyUnendedStdio = () => {
+    if (state.kind !== "draining") {
+      return;
+    }
     if (!stdoutEnded) {
       try {
         child.stdout?.destroy();
@@ -377,55 +382,58 @@ function attachPostExitStdioGuard(child: ChildWithPipedStdio): () => void {
         // The process has exited; failed pipe destruction must not prevent other cleanup.
       }
     }
-  };
-
-  const clearTimers = () => {
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = undefined;
-    }
-    if (hardTimer) {
-      clearTimeout(hardTimer);
-      hardTimer = undefined;
-    }
+    cleanup();
   };
 
   const armIdleTimer = () => {
-    if (!exited) {
+    if (state.kind !== "draining") {
       return;
     }
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-    }
-    idleTimer = setTimeout(destroyUnendedStdio, 2000);
-    idleTimer.unref();
+    clearTimeout(state.idle);
+    state.idle = setTimeout(destroyUnendedStdio, 2000);
+    state.idle.unref();
   };
-
-  child.stdout?.on("data", armIdleTimer);
-  child.stderr?.on("data", armIdleTimer);
-  child.stdout?.on("end", () => {
+  const stdoutEnd = () => {
     stdoutEnded = true;
     if (stderrEnded) {
-      clearTimers();
+      cleanup();
     }
-  });
-  child.stderr?.on("end", () => {
+  };
+  const stderrEnd = () => {
     stderrEnded = true;
     if (stdoutEnded) {
-      clearTimers();
+      cleanup();
     }
-  });
-  child.on("exit", () => {
-    exited = true;
-    armIdleTimer();
-    if (hardTimer) {
+  };
+  const exited = () => {
+    if (state.kind !== "waiting") {
       return;
     }
-    hardTimer = setTimeout(destroyUnendedStdio, 8000);
-    hardTimer.unref();
-  });
-  child.on("close", clearTimers);
-  child.on("error", clearTimers);
-
-  return clearTimers;
+    const hard = setTimeout(destroyUnendedStdio, 8000);
+    hard.unref();
+    state = { kind: "draining", idle: undefined, hard };
+    armIdleTimer();
+  };
+  function cleanup(): void {
+    if (state.kind === "draining") {
+      clearTimeout(state.idle);
+      clearTimeout(state.hard);
+    }
+    state = { kind: "closed" };
+    child.stdout?.off("data", armIdleTimer);
+    child.stderr?.off("data", armIdleTimer);
+    child.stdout?.off("end", stdoutEnd);
+    child.stderr?.off("end", stderrEnd);
+    child.off("exit", exited);
+    child.off("close", cleanup);
+    child.off("error", cleanup);
+  }
+  child.stdout?.on("data", armIdleTimer);
+  child.stderr?.on("data", armIdleTimer);
+  child.stdout?.on("end", stdoutEnd);
+  child.stderr?.on("end", stderrEnd);
+  child.on("exit", exited);
+  child.on("close", cleanup);
+  child.on("error", cleanup);
+  return cleanup;
 }
