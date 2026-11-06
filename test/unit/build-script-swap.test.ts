@@ -185,7 +185,7 @@ nodeTest("build.mjs: reaps dead-pid staging and keeps live-pid staging", () =>
   }),
 );
 
-nodeTest("build.mjs: restores a killed publisher's last-good dist before a failing compile", () =>
+nodeTest("build.mjs: preserves a killed publisher's last-good tree through a failing compile", () =>
   withFixture(async (dir) => {
     assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "last-good" })).code, 0);
     const saved = readFileSync(join(dir, "dist/index.js"), "utf8");
@@ -205,9 +205,16 @@ nodeTest("build.mjs: restores a killed publisher's last-good dist before a faili
     const failed = await runBuild(dir, { TSC_STUB_FAIL: "1" });
     assert.notEqual(failed.code, 0);
     assert.match(failed.stderr, /stub-tsc: induced failure/);
-    assert.ok(existsSync(join(dir, "dist")), "recover the last-good tree before compiling again");
-    assert.equal(readFileSync(join(dir, "dist/index.js"), "utf8"), saved);
-    assert.deepEqual(stagingDirs(dir), []);
+    assert.match(failed.stderr, /Previous build retained for recovery:/);
+    assert.equal(
+      existsSync(join(dir, "dist")),
+      false,
+      "recovery does not invent a published winner",
+    );
+    assert.equal(readFileSync(join(previous, "index.js"), "utf8"), saved);
+    assert.deepEqual(stagingDirs(dir), [`dist.staging.${killed.pid}.previous`]);
+    assert.equal((await runBuild(dir)).code, 0);
+    assert.deepEqual(stagingDirs(dir), [], "only a complete new publication retires old backups");
   }),
 );
 
@@ -243,7 +250,8 @@ nodeTest(
       const contents = previous.map((name) => readFileSync(join(dir, name, "index.js"), "utf8"));
       const failed = await runBuild(dir, { TSC_STUB_FAIL: "1" });
       assert.notEqual(failed.code, 0);
-      assert.match(failed.stderr, /Multiple stranded previous builds/);
+      assert.match(failed.stderr, /stub-tsc: induced failure/);
+      assert.match(failed.stderr, /Previous build retained for recovery:/);
       assert.equal(existsSync(join(dir, "dist")), false, "do not guess which build was last");
       assert.deepEqual(
         stagingDirs(dir)
@@ -255,6 +263,8 @@ nodeTest(
         previous.map((name) => readFileSync(join(dir, name, "index.js"), "utf8")),
         contents,
       );
+      assert.equal((await runBuild(dir)).code, 0);
+      assert.deepEqual(stagingDirs(dir), []);
     }),
 );
 

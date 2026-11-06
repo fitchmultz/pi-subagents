@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Restore a stranded last-good build before compiling again after a publisher exits in the replacement gap.
+- Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
 
 ## 0.52.18 - 2026-11-06
 

@@ -24,12 +24,10 @@ Run narrow owner-boundary tests locally through `scripts/run-tests.mjs`. Full
 complete suites. Keep the strict Oxlint/Oxfmt rules; see [code quality](code-quality.md).
 
 Builds compile into process-owned staging before replacing `dist`. If a publisher
-exits after retiring the previous build, the next build restores that complete
-tree before compiling. A failed compile therefore leaves the last-good runtime
-available. Recovery preserves a concurrently published `dist` and never reaps
-live or uncertain staging owners.
-If several stranded previous trees exist with no published `dist`, recovery
-reports their paths and retains all of them rather than guessing which was last.
+exits after retiring the previous build, later builds preserve its complete
+`.previous` tree until a new complete build publishes. A failed build reports
+the retained recovery paths. Recovery never promotes an older backup into a
+concurrent publisher's retirement gap or reaps live or uncertain owners.
 
 ## Native Android/Termux
 

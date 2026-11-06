@@ -67,21 +67,6 @@ async function hasPublishedDist(/** @type {string} */ path) {
   }
 }
 
-async function recoverPrevious(/** @type {string} */ previous, /** @type {string} */ dist) {
-  if (!(await hasPublishedDist(dist))) {
-    try {
-      await rename(previous, dist);
-      return;
-    } catch (error) {
-      // A concurrent publisher can close the gap while recovery is renaming.
-      if (!(await hasPublishedDist(dist))) {
-        throw error;
-      }
-    }
-  }
-  await discardStaging(previous);
-}
-
 /**
  * @param {string} cwd
  * @param {import("node:fs").Dirent} entry
@@ -101,26 +86,18 @@ function strandedBuild(cwd, entry) {
   return { path: join(cwd, entry.name), kind: match[2] === undefined ? "staging" : "previous" };
 }
 
-async function recoverStrandedBuilds(/** @type {string} */ cwd) {
+async function reapStrandedBuilds(/** @type {string} */ cwd) {
   const stranded = (await readdir(cwd, { withFileTypes: true })).flatMap((entry) => {
     const build = strandedBuild(cwd, entry);
     return build ? [build] : [];
   });
-  const dist = join(cwd, "dist");
-  const previous = stranded.filter((entry) => entry.kind === "previous");
-  if (previous.length > 1 && !(await hasPublishedDist(dist))) {
-    throw new Error(
-      `Multiple stranded previous builds with no published dist; all retained for inspection: ${previous.map((entry) => entry.path).join(", ")}`,
-    );
-  }
   for (const entry of stranded) {
-    // A previous tree is complete rollback material, not an abandoned partial emit.
-    if (entry.kind === "previous") {
-      await recoverPrevious(entry.path, dist);
-    } else {
+    if (entry.kind === "staging") {
       await discardStaging(entry.path);
     }
   }
+  // Never promote rollback material into another live publisher's retirement gap.
+  return stranded.filter((entry) => entry.kind === "previous").map((entry) => entry.path);
 }
 
 async function compileProject(
@@ -247,13 +224,24 @@ async function publishStaging(/** @type {string} */ stagingDir, /** @type {strin
 async function main() {
   const cwd = process.cwd();
   const compiler = compilerInvocation(process.argv[2]);
-  await recoverStrandedBuilds(cwd);
+  const previous = await reapStrandedBuilds(cwd);
   // Pid-scoped staging isolates concurrent emits; only a complete tree publishes.
   const stagingDir = join(cwd, `dist.staging.${process.pid}`);
   await rm(stagingDir, RM_OPTIONS);
   await rm(`${stagingDir}.previous`, RM_OPTIONS);
-  await compileToStaging(cwd, stagingDir, compiler);
-  await publishStaging(stagingDir, join(cwd, "dist"));
+  try {
+    await compileToStaging(cwd, stagingDir, compiler);
+    await publishStaging(stagingDir, join(cwd, "dist"));
+  } catch (error) {
+    for (const retained of previous.filter(existsSync)) {
+      console.warn(`Previous build retained for recovery: ${retained}`);
+    }
+    throw error;
+  }
+  // A complete published winner now replaces these older rollback candidates.
+  for (const retired of previous) {
+    await discardStaging(retired);
+  }
 }
 
 main().catch((/** @type {unknown} */ error) => {
