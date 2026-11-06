@@ -67,21 +67,37 @@ async function hasPublishedDist(/** @type {string} */ path) {
   }
 }
 
-async function reapStrandedStaging(/** @type {string} */ cwd) {
+/**
+ * @param {string} cwd
+ * @param {import("node:fs").Dirent} entry
+ * @returns {{ path: string, kind: "staging" | "previous" } | undefined}
+ */
+function strandedBuild(cwd, entry) {
   // Signal 0 proves only that the owner was gone at probe time. Pid reuse
   // between this probe and removal is inherent to pid-based reaping.
-  for (const entry of await readdir(cwd, { withFileTypes: true })) {
-    const match = /^dist\.staging\.(\d+)(?:\.previous)?$/.exec(entry.name);
-    if (!match || !entry.isDirectory()) {
-      continue;
-    }
-    const ownerPid = Number(match[1]);
-    if (ownerPid === process.pid || !isOwnerGone(ownerPid)) {
-      continue;
-    }
-    // Reap abandoned trees sequentially to bound filesystem removal pressure.
-    await discardStaging(join(cwd, entry.name));
+  const match = /^dist\.staging\.(\d+)(\.previous)?$/.exec(entry.name);
+  if (!match || !entry.isDirectory()) {
+    return;
   }
+  const ownerPid = Number(match[1]);
+  if (ownerPid === process.pid || !isOwnerGone(ownerPid)) {
+    return;
+  }
+  return { path: join(cwd, entry.name), kind: match[2] === undefined ? "staging" : "previous" };
+}
+
+async function reapStrandedBuilds(/** @type {string} */ cwd) {
+  const stranded = (await readdir(cwd, { withFileTypes: true })).flatMap((entry) => {
+    const build = strandedBuild(cwd, entry);
+    return build ? [build] : [];
+  });
+  for (const entry of stranded) {
+    if (entry.kind === "staging") {
+      await discardStaging(entry.path);
+    }
+  }
+  // Never promote rollback material into another live publisher's retirement gap.
+  return stranded.filter((entry) => entry.kind === "previous").map((entry) => entry.path);
 }
 
 async function compileProject(
@@ -208,13 +224,24 @@ async function publishStaging(/** @type {string} */ stagingDir, /** @type {strin
 async function main() {
   const cwd = process.cwd();
   const compiler = compilerInvocation(process.argv[2]);
-  await reapStrandedStaging(cwd);
+  const previous = await reapStrandedBuilds(cwd);
   // Pid-scoped staging isolates concurrent emits; only a complete tree publishes.
   const stagingDir = join(cwd, `dist.staging.${process.pid}`);
   await rm(stagingDir, RM_OPTIONS);
   await rm(`${stagingDir}.previous`, RM_OPTIONS);
-  await compileToStaging(cwd, stagingDir, compiler);
-  await publishStaging(stagingDir, join(cwd, "dist"));
+  try {
+    await compileToStaging(cwd, stagingDir, compiler);
+    await publishStaging(stagingDir, join(cwd, "dist"));
+  } catch (error) {
+    for (const retained of previous.filter(existsSync)) {
+      console.warn(`Previous build retained for recovery: ${retained}`);
+    }
+    throw error;
+  }
+  // A complete published winner now replaces these older rollback candidates.
+  for (const retired of previous) {
+    await discardStaging(retired);
+  }
 }
 
 main().catch((/** @type {unknown} */ error) => {

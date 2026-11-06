@@ -21,6 +21,26 @@ function failPublish(fault) {
 
 /** @type {Record<string, () => void>} */
 const faults = {
+  "kill-after-retire-keep-previous"() {
+    faults["previous-rm"]?.();
+    faults["kill-after-retire"]?.();
+  },
+  "previous-rm"() {
+    fsPromises.rm = async (path, options) => {
+      if (String(path).endsWith(".previous") && fs.existsSync(path)) {
+        throw new Error("synthetic previous cleanup failure");
+      }
+      return originalRm(path, options);
+    };
+  },
+  "kill-after-retire"() {
+    fsPromises.rename = async (from, to) => {
+      await originalRename(from, to);
+      if (basename(String(from)) === "dist" && String(to).endsWith(".previous")) {
+        process.kill(process.pid, "SIGKILL");
+      }
+    };
+  },
   "stale-rm"() {
     const locked = (/** @type {import("node:fs").PathLike} */ path) =>
       basename(String(path)) === process.env.LOCKED_STAGING_NAME;
