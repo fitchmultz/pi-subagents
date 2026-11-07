@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- Share saved-run admission and completion interpretation between continuation and inspection, preserving exact-prompt retry and exclusive successor claims.
-
 ## 0.52.22 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
