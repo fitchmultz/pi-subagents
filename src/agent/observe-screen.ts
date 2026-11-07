@@ -241,10 +241,12 @@ export class ObserverScreen extends VStack {
     if (!reading) {
       return false;
     }
-    reading.following = reading.following && reading.scroll.isFollowingEnd;
+    reading.observeScroll();
     if (!reading.following && !force) {
       reading.transcript.observe(this.client);
-      reading.pending ||= changed;
+      if (changed) {
+        reading.markPending();
+      }
       return false;
     }
     const client =
@@ -252,7 +254,6 @@ export class ObserverScreen extends VStack {
     const applied = reading.transcript.sync(client);
     if (reading.following) {
       reading.scroll.scrollToEnd();
-      reading.pending = false;
     }
     return applied;
   }
@@ -323,9 +324,7 @@ export class ObserverScreen extends VStack {
     this.focus = "conversation";
     this.reading.transcript.resume();
     this.connect();
-    this.reading.following = true;
-    this.reading.scroll.scrollToEnd();
-    this.reading.transcript.latest();
+    this.reading.follow();
     this.flush(true);
   }
   private confirm(): void {
@@ -462,8 +461,7 @@ export class ObserverScreen extends VStack {
   override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
     const result = this.frame ? dispatchLayoutMouse(this, this.frame, event) : undefined;
     const reading = this.visible();
-    if (reading?.following === true && !reading.scroll.isFollowingEnd) {
-      reading.following = false;
+    if (reading?.observeScroll() === true) {
       this.structure();
     }
     return result;
