@@ -24,6 +24,13 @@ function integer(value: unknown): number {
   return value;
 }
 
+type WakeReservation =
+  | { readonly kind: "deferred"; readonly until: number }
+  | { readonly kind: "reserved"; readonly post: (action: () => Promise<void>) => Promise<void> };
+type AttemptPhase =
+  | { readonly kind: "idle" | "posting" | "settlementPending" | "closed" }
+  | Extract<WakeReservation, { readonly kind: "reserved" }>;
+
 /** One helper ledger, independent of identity, certificate, URL and credential rotation. */
 export class WakeState {
   private readonly db: DatabaseSync;
@@ -32,7 +39,7 @@ export class WakeState {
   private readonly inode: number;
   private readonly device: number;
   private readonly owner: WakeOwner;
-  private finishing = false;
+  private phase: AttemptPhase = { kind: "idle" };
 
   constructor(stateDir: string) {
     this.stateDir = stateDir;
@@ -212,14 +219,37 @@ export class WakeState {
     this.db.prepare("DELETE FROM wake_batches WHERE bucket=?").run(bucket);
   }
 
-  /** Persist quota and uncertainty BEFORE dispatch. Returning a deadline means no attempt admitted. */
-  reserve(bucket: string): number | undefined {
+  /** Persist quota and uncertainty before exposing a single-use POST reservation. */
+  reserve(bucket: string): WakeReservation {
     this.retrySettlement();
-    return this.transaction(() => this.reservation(bucket));
+    if (this.phase.kind !== "idle") {
+      throw new Error("A wake reservation is already active or its owner is closed.");
+    }
+    const until = this.transaction(() => this.reservation(bucket));
+    if (until !== undefined) {
+      return { kind: "deferred", until };
+    }
+    const reservation: Extract<WakeReservation, { readonly kind: "reserved" }> = {
+      kind: "reserved",
+      post: async (action) => {
+        if (this.phase !== reservation) {
+          throw new Error("This wake reservation is no longer available.");
+        }
+        this.phase = { kind: "posting" };
+        try {
+          await action();
+        } finally {
+          // Completion, rejection and abort all start the durable expiry window here.
+          this.settle();
+        }
+      },
+    };
+    this.phase = reservation;
+    return reservation;
   }
 
   retrySettlement(): void {
-    if (this.finishing) {
+    if (this.phase.kind === "settlementPending") {
       this.settle();
     }
   }
@@ -238,10 +268,10 @@ export class WakeState {
   }
 
   /** A failed settlement stays open and must be retried before this owner can dispatch again. */
-  settle(): void {
-    this.finishing = true;
+  private settle(): void {
+    this.phase = { kind: "settlementPending" };
     this.transaction(() => this.finishOwner(this.owner.name));
-    this.finishing = false;
+    this.phase = { kind: "idle" };
   }
 
   private finishOwner(owner: string): void {
@@ -314,6 +344,7 @@ export class WakeState {
     try {
       this.settle();
     } finally {
+      this.phase = { kind: "closed" };
       this.db.close();
       this.owner.close();
     }
