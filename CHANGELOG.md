@@ -3,8 +3,24 @@
 ## [Unreleased]
 
 - Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
+
+## 0.52.20 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+
 - Give bridge wake and presence schedulers explicit timer, running, and stopped ownership while retaining durable wake policy.
 - Centralize broker request settlement and close multipart snapshot readers after completion or failure.
+
+<!-- npm-release:unreleased:end -->
+
+- refactor: centralize request settlement and snapshot phases (#354) ([335c7e2](https://github.com/fitchmultz/pi-subagents/commit/335c7e269936467672f7e8d70cc67bf875a0a1c6))
+
+### What's Changed
+
+- refactor: centralize broker request settlement by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/354
+- refactor: make bridge scheduler ownership explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/355
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.19...v0.52.20
 
 ## 0.52.19 - 2026-11-07
 
