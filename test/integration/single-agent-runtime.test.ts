@@ -124,6 +124,8 @@ for (const phase of [
   "receipt",
   "receipt-sessionless",
   "model-selection",
+  "thinking-selection",
+  "thinking-clamping",
   "thinking",
   "continuation",
   "lineage",

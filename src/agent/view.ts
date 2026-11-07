@@ -15,7 +15,7 @@ import {
 import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
-import { readCanonicalResult, readResult } from "./usage.ts";
+import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import { Type } from "./typebox.ts";
 
 const commandMetadataSchema = Type.Pick(commandSchema, ["id", "runId", "action", "createdAt"]);
@@ -72,18 +72,20 @@ function toolResult(value: unknown, text: string): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
 }
 function receiptResult(result: Result | undefined) {
-  return result === undefined
-    ? undefined
-    : {
-        id: result.id,
-        owner: result.owner,
-        status: result.status,
-        endedAt: result.endedAt,
-        terminalEntryId: result.terminalEntryId,
-        error: result.error,
-        accountingError: result.accountingError,
-        accountingPending: result.accountingPending,
-      };
+  if (result === undefined) {
+    return;
+  }
+  const { contributions: _contributions, ...accounting } = accountingFields(
+    accountingState(result),
+  );
+  return {
+    id: result.id,
+    owner: result.owner,
+    status: result.status,
+    endedAt: result.endedAt,
+    error: result.error,
+    ...accounting,
+  };
 }
 /** `observed` holds batched liveness by actor token; any other actor gets a fresh check. */
 function processView(base: string, launch: Launch, observed?: ReadonlyMap<string, boolean>) {

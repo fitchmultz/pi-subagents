@@ -202,17 +202,52 @@ class SnapshotRecords<T extends { readonly topic: string }> {
   }
 }
 
-interface PreparedTopicChange {
-  readonly topic?: TopicUpdate;
-  readonly subscription?: TopicSubscription;
-  readonly unsubscribe?: string;
-  readonly publication?: TopicUpdate;
-  readonly restore: boolean;
-  readonly changed: boolean;
-  readonly bytes: number;
+type PreparedTopicChange =
+  | { readonly kind: "unchanged"; readonly restore: false }
+  | { readonly kind: "normalize"; readonly restore: true }
+  | {
+      readonly kind: "publish";
+      readonly restore: false;
+      readonly topic: TopicUpdate;
+      readonly bytes: number;
+    }
+  | {
+      readonly kind: "restore-topic";
+      readonly restore: true;
+      readonly topic: TopicUpdate;
+      readonly bytes: number;
+    }
+  | {
+      readonly kind: "subscription";
+      readonly restore: boolean;
+      readonly subscription: TopicSubscription;
+      readonly bytes: number;
+    }
+  | { readonly kind: "unsubscribe"; readonly restore: false; readonly topic: string };
+
+const UNCHANGED: PreparedTopicChange = { kind: "unchanged", restore: false };
+
+function updatedTopic(prepared: PreparedTopicChange) {
+  return prepared.kind === "publish" || prepared.kind === "restore-topic" ? prepared : undefined;
 }
 
-const UNCHANGED: PreparedTopicChange = { restore: false, changed: false, bytes: 0 };
+function subscriptionKey(prepared: PreparedTopicChange): string | undefined {
+  switch (prepared.kind) {
+    case "subscription":
+      return prepared.subscription.topic;
+    case "unsubscribe":
+      return prepared.topic;
+    case "unchanged":
+    case "normalize":
+    case "publish":
+    case "restore-topic":
+      return undefined;
+  }
+}
+
+export function preparedPublication(prepared: PreparedTopicChange): TopicUpdate | undefined {
+  return prepared.kind === "publish" ? prepared.topic : undefined;
+}
 
 /** Keep committed records indexed; restores validate only new bytes and cached envelope maxima. */
 export class TopicSnapshot {
@@ -236,62 +271,64 @@ export class TopicSnapshot {
       throw new Error("Topic snapshots unavailable for this client");
     }
     const mutation = topicMutation(change);
-    const base = { restore: change.action === "restore", changed: true, bytes: 0 };
     switch (mutation.kind) {
       case "publication":
-        return this.preparePublication(mutation, base);
+        return this.preparePublication(mutation);
       case "subscription":
         return {
-          ...base,
+          kind: "subscription",
+          restore: change.action === "restore",
           subscription: mutation.subscription,
           bytes: intercomMessageSizeBytes(mutation.subscription),
         };
       case "unsubscribe":
-        return { ...base, unsubscribe: mutation.topic };
+        return { kind: "unsubscribe", restore: false, topic: mutation.topic };
     }
   }
 
   private preparePublication(
     mutation: Extract<TopicMutation, { readonly kind: "publication" }>,
-    base: PreparedTopicChange,
   ): PreparedTopicChange {
     const previous = this.topics.get(mutation.topic.topic);
     const update = publicationUpdate(mutation.topic, previous, mutation.publish);
     if (!mutation.publish && (previous?.revision ?? 0) >= update.revision) {
-      return base;
+      return { kind: "normalize", restore: true };
     }
     return {
-      ...base,
+      ...(mutation.publish
+        ? ({ kind: "publish", restore: false } as const)
+        : ({ kind: "restore-topic", restore: true } as const)),
       topic: update,
       bytes: intercomMessageSizeBytes(update),
-      ...(mutation.publish ? { publication: update } : {}),
     };
   }
 
   snapshot(info: SessionInfo, prepared = UNCHANGED): SessionInfo {
-    const topics = this.topics.valuesAfter(prepared.topic?.topic, prepared.topic, prepared.changed);
+    const topic = updatedTopic(prepared)?.topic;
+    const subscription = prepared.kind === "subscription" ? prepared.subscription : undefined;
+    const changed = prepared.kind !== "unchanged";
+    const topics = this.topics.valuesAfter(topic?.topic, topic, changed);
     const subscriptions = this.subscriptions.valuesAfter(
-      prepared.subscription?.topic ?? prepared.unsubscribe,
-      prepared.subscription,
-      prepared.changed,
+      subscriptionKey(prepared),
+      subscription,
+      changed,
     );
     return {
       ...info,
       ...(topics !== undefined ? { topics } : {}),
       ...(subscriptions !== undefined ? { subscriptions } : {}),
-      ...(prepared.publication ? { lastIntercomActivity: Date.now() } : {}),
+      ...(preparedPublication(prepared) ? { lastIntercomActivity: Date.now() } : {}),
     };
   }
 
   validateRestore(info: SessionInfo, prepared: PreparedTopicChange, requestId: string): void {
     snapshotFrames(requestId, [{ ...info, topics: [], subscriptions: [] }], true);
-    const topicBytes = this.topics.maximumAfter(
-      prepared.topic?.topic,
-      prepared.topic ? prepared.bytes : 0,
-    );
+    const topic = updatedTopic(prepared);
+    const subscription = prepared.kind === "subscription" ? prepared : undefined;
+    const topicBytes = this.topics.maximumAfter(topic?.topic.topic, topic?.bytes ?? 0);
     const subscriptionBytes = this.subscriptions.maximumAfter(
-      prepared.subscription?.topic,
-      prepared.subscription ? prepared.bytes : 0,
+      subscription?.subscription.topic,
+      subscription?.bytes ?? 0,
     );
     for (const [field, bytes] of [
       ["topics", topicBytes],
@@ -311,16 +348,24 @@ export class TopicSnapshot {
   }
 
   commit(prepared: PreparedTopicChange): void {
-    if (prepared.changed) {
-      this.topics.accept();
-      this.subscriptions.accept();
+    if (prepared.kind === "unchanged") {
+      return;
     }
-    if (prepared.topic) {
-      this.topics.set(prepared.topic, prepared.bytes);
-    } else if (prepared.subscription) {
-      this.subscriptions.set(prepared.subscription, prepared.bytes);
-    } else if (prepared.unsubscribe !== undefined) {
-      this.subscriptions.delete(prepared.unsubscribe);
+    this.topics.accept();
+    this.subscriptions.accept();
+    switch (prepared.kind) {
+      case "publish":
+      case "restore-topic":
+        this.topics.set(prepared.topic, prepared.bytes);
+        return;
+      case "subscription":
+        this.subscriptions.set(prepared.subscription, prepared.bytes);
+        return;
+      case "unsubscribe":
+        this.subscriptions.delete(prepared.topic);
+        return;
+      case "normalize":
+        return;
     }
   }
 }

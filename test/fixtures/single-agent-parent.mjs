@@ -955,9 +955,11 @@ async function parkedAuthority(/** @type {string} */ parked) {
   assert.equal(starts(), 1, "parked reads never wake the child");
 }
 function intercomTexts(/** @type {string} */ sessionFile) {
+  // The actor is still writing; only LF-terminated records have been published.
   return fs
     .readFileSync(sessionFile, "utf8")
     .split("\n")
+    .slice(0, -1)
     .filter(Boolean)
     .map(parseJournalLine)
     .filter((entry) => entry.type === "custom_message" && entry.customType === "intercom_message")
@@ -1711,30 +1713,45 @@ try {
         ),
       );
     }
-  } else if (phase === "model-selection") {
+  } else if (
+    phase === "model-selection" ||
+    phase === "thinking-selection" ||
+    phase === "thinking-clamping"
+  ) {
     const nativeSuffix = typeof sdk.resolveModelReference === "function";
-    const selections = [
-      ["literal-model", "literal-model", "high"],
-      ["literal-model", "literal-model", "low", "low"],
-      ["literal-model", "literal-model", "minimal", "minimal"],
-      ["literal-model", "literal-model", "medium", "medium"],
-      ["literal-model", "literal-model", "high", "high"],
-      ["literal-model", "literal-model", "xhigh", "xhigh", "high"],
-      ["literal-model", "literal-model", "max", "max", "high"],
-      ["literal-model:high", "literal-model:high", "high"],
-      ["literal-model:exacto", "literal-model:exacto", "high"],
-      ["literal-model:high", "literal-model:high", "low", "low"],
-      ["literal-model:exacto", "literal-model:exacto", "off", "off"],
-      ...(nativeSuffix
-        ? [
-            ["literal-model:low", "literal-model", "low"],
-            ["literal-model:off", "literal-model", "off"],
-            ["nested/model:medium", "nested/model", "medium"],
-            ["literal-model:medium", "literal-model", "medium", "medium"],
-            ["LITERAL-MODEL", "literal-model", "low", "low"],
-          ]
-        : []),
-    ];
+    // Each phase keeps at most six native launches within the existing 35s fixture budget.
+    const selections = {
+      "model-selection": [
+        ["literal-model", "literal-model", "high"],
+        ["literal-model:high", "literal-model:high", "high"],
+        ["literal-model:exacto", "literal-model:exacto", "high"],
+        ...(nativeSuffix
+          ? [
+              ["literal-model:low", "literal-model", "low"],
+              ["literal-model:off", "literal-model", "off"],
+              ["nested/model:medium", "nested/model", "medium"],
+            ]
+          : []),
+      ],
+      "thinking-selection": [
+        ["literal-model", "literal-model", "low", "low"],
+        ["literal-model", "literal-model", "minimal", "minimal"],
+        ["literal-model", "literal-model", "medium", "medium"],
+        ["literal-model", "literal-model", "high", "high"],
+        ["literal-model:high", "literal-model:high", "low", "low"],
+        ["literal-model:exacto", "literal-model:exacto", "off", "off"],
+      ],
+      "thinking-clamping": [
+        ["literal-model", "literal-model", "xhigh", "xhigh", "high"],
+        ["literal-model", "literal-model", "max", "max", "high"],
+        ...(nativeSuffix
+          ? [
+              ["literal-model:medium", "literal-model", "medium", "medium"],
+              ["LITERAL-MODEL", "literal-model", "low", "low"],
+            ]
+          : []),
+      ],
+    }[phase];
     for (const [reference, model, thinking, override, effective = thinking] of selections) {
       const prompt = `MODEL_SELECTION:${reference ?? ""}:${override ?? "inherited"}`;
       const selected = `single-agent-fixture/${reference ?? ""}`;

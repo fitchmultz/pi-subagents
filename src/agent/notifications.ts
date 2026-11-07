@@ -6,7 +6,7 @@ import { readOutputPage } from "../shared/output-page.ts";
 import { journalStamp } from "../shared/native-journal.ts";
 import type { Launch, Result } from "./contracts.ts";
 import { launchAt, list, runDirectory } from "./storage.ts";
-import { readCanonicalResult, readResult } from "./usage.ts";
+import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 
 function isStringSet(value: unknown): value is Set<string> {
   if (!(value instanceof Set)) {
@@ -160,7 +160,7 @@ function unchangedPending(pending: Loaded | undefined): boolean {
 function load(base: string, id: string, owner: string): Loaded {
   const launch = launchAt(base, id, owner);
   const result = readCanonicalResult(base, launch);
-  if (result?.accountingPending === undefined) {
+  if (accountingState(result).kind !== "pending") {
     return { launch, result };
   }
   // Only pending runs need this pre-read stamp to observe concurrent publication.
@@ -169,7 +169,7 @@ function load(base: string, id: string, owner: string): Loaded {
   return { launch, result: readResult(base, launch), journal };
 }
 function cacheableResult(loaded: Loaded): boolean {
-  return loaded.result?.accountingPending === undefined || loaded.journal !== undefined;
+  return accountingState(loaded.result).kind !== "pending" || loaded.journal !== undefined;
 }
 interface Scan {
   readonly base: string;
@@ -198,7 +198,7 @@ function completedRun({ base, owner, known, settled }: Scan, id: string): Comple
   const order = { endedAt: loaded.result.endedAt, createdAt: loaded.launch.createdAt };
   // Pending accounting retries on child changes, even after the completion receipt.
   // Ordinary settled history retains its launch/result-only idle probes.
-  const pending = loaded.result.accountingPending === undefined ? undefined : loaded;
+  const pending = accountingState(loaded.result).kind === "pending" ? loaded : undefined;
   if (launch !== undefined && result !== undefined && cacheableResult(loaded)) {
     settled.set(id, { launch, result, pending, ...order });
   }
@@ -216,7 +216,7 @@ function completed(base: string, owner: string, awaited: Set<string>): Completed
     const run = completedRun(scan, id);
     if (run === undefined) {
       awaited.add(path.join(runDirectory(base, id), "result.json"));
-    } else if (run.loaded?.result?.accountingPending !== undefined) {
+    } else if (run.loaded && accountingState(run.loaded.result).kind === "pending") {
       awaited.add(run.loaded.launch.sessionFile);
     }
     return run ?? [];
