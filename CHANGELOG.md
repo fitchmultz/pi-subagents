@@ -13,6 +13,7 @@
 
 - refactor: make observer connection readiness explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/373
 - refactor: preserve send uncertainty and ask ownership by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/371
+- refactor: scope observer inventory to its attachment by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/375
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.23...v0.52.24
 
