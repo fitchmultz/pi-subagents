@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 - Share explicit completion-delivery decisions between canonical and legacy results while keeping native file and memory receipts distinct.
 
 ## 0.52.20 - 2026-11-07
