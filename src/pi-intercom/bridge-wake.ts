@@ -211,19 +211,14 @@ export class WakeDeliveries {
         next = Math.min(next, due);
         continue;
       }
-      const deferred = state.reserve(key);
-      if (deferred !== undefined) {
-        next = Math.min(next, deferred);
+      const reservation = state.reserve(key);
+      if (reservation.kind === "deferred") {
+        next = Math.min(next, reservation.until);
         continue;
       }
       // ponytail: two cold Macs can each admit one wake. Literal cross-Mac single admission
       // requires a neutral quota authority governing every writer, not a URL hash or HTTP 2xx.
-      try {
-        await this.post(candidate);
-      } finally {
-        // Expiry starts after response/error/abort, never before COMMIT or connect/TLS.
-        state.settle();
-      }
+      await reservation.post(() => this.post(candidate));
       // Re-read ACKs and all groups after transport I/O; a snapshot must not wake already consumed mail.
       return Date.now();
     }
