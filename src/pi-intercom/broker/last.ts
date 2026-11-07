@@ -100,7 +100,7 @@ interface LastPeer {
   readonly info: SessionInfo;
   readonly lastMessages: boolean;
   readonly receiptReads: boolean;
-  readonly parked?: { readonly closed: boolean } | undefined;
+  readonly parked?: { readonly kind: "fenced" | "parked" } | undefined;
 }
 interface PendingLast {
   readonly fromId: string;
@@ -117,7 +117,7 @@ function exitedRefusal(
   query: NativeReadQuery,
   via?: LastPeer,
 ): string | undefined {
-  if (target.parked?.closed !== true) {
+  if (target.parked?.kind !== "parked") {
     return undefined;
   }
   // No loaded journal owner answers receipts, with or without its main.

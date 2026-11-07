@@ -17,12 +17,18 @@ interface WakeAttempt {
   readonly count: number;
   retry: boolean;
 }
-interface Parked {
+type WakeState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "waking"; readonly attempt: WakeAttempt };
+type Parked = {
   readonly retained: Retained;
-  /** The fenced actor's socket closed: input waits for its restored replacement. */
-  closed: boolean;
-  attempt?: WakeAttempt | undefined;
   lastFailure?: string | undefined;
+} & ({ readonly kind: "fenced" } | { readonly kind: "parked"; wake: WakeState });
+
+function wakeAttempt(parked: Parked | undefined): WakeAttempt | undefined {
+  return parked?.kind === "parked" && parked.wake.kind === "waking"
+    ? parked.wake.attempt
+    : undefined;
 }
 export interface ParkablePeer {
   readonly socket: net.Socket;
@@ -78,10 +84,10 @@ export class ParkedSessions<T extends ParkablePeer> {
   private park(socket: net.Socket, id: string, on: boolean): void {
     const session = this.sessions.get(id);
     if (on && session?.parking === true) {
-      session.parked ??= { retained: [], closed: false };
+      session.parked ??= { kind: "fenced", retained: [] };
       // Frames already written to this socket precede the acknowledgement.
       writeMessage(socket, { type: "parked" });
-    } else if (!on && session?.parked?.closed === false) {
+    } else if (!on && session?.parked?.kind === "fenced") {
       const { retained } = session.parked;
       session.parked = undefined;
       this.flush(id, retained);
@@ -95,7 +101,7 @@ export class ParkedSessions<T extends ParkablePeer> {
     for (const [index, { from, message }] of retained.entries()) {
       const session = this.sessions.get(id);
       if (this.deliver(id, from, message) !== null && session?.socket.writable === false) {
-        session.parked = { retained: retained.slice(index), closed: false };
+        session.parked = { kind: "fenced", retained: retained.slice(index) };
         return;
       }
     }
@@ -129,7 +135,7 @@ export class ParkedSessions<T extends ParkablePeer> {
   }
   private registeredWake(previous?: T): void {
     const main = previous && this.main(previous);
-    const attempt = previous?.parked?.attempt;
+    const attempt = wakeAttempt(previous?.parked);
     if (reachable(main) && attempt?.owner === main.socket) {
       writeMessage(main.socket, { type: "wake_registered", requestId: attempt.id });
     }
@@ -148,10 +154,13 @@ export class ParkedSessions<T extends ParkablePeer> {
     };
   }
   /** A transport handoff, not a departure: no session_left and queued input stays. */
-  closed(session: T): boolean {
-    const { parked } = session;
-    if (parked) {
-      parked.closed = true;
+  closed(id: string): boolean {
+    const session = this.sessions.get(id);
+    const parked = session?.parked;
+    if (session && parked) {
+      if (parked.kind === "fenced") {
+        session.parked = { ...parked, kind: "parked", wake: { kind: "idle" } };
+      }
       this.wake(session);
     }
     return parked !== undefined;
@@ -162,7 +171,7 @@ export class ParkedSessions<T extends ParkablePeer> {
    */
   get exited(): boolean {
     return [...this.sessions.values()].every(
-      ({ parked }) => parked?.closed === true && parked.retained.length === 0,
+      ({ parked }) => parked?.kind === "parked" && parked.retained.length === 0,
     );
   }
   retain(target: T | undefined, from: SessionInfo, message: Message): boolean {
@@ -185,7 +194,7 @@ export class ParkedSessions<T extends ParkablePeer> {
   /** Reads of an exited parked child go to its main, which answers from captured history. */
   reader(id: string): T | undefined {
     const child = this.sessions.get(id);
-    return child?.parked?.closed === true ? this.main(child) : undefined;
+    return child?.parked?.kind === "parked" ? this.main(child) : undefined;
   }
   // Passive breadcrumbs and topic updates wait for a genuine wake; they never spawn the child.
   private wake(child: T): void {
@@ -193,7 +202,7 @@ export class ParkedSessions<T extends ParkablePeer> {
     const parked = child.parked;
     if (
       !reachable(main) ||
-      parked?.closed !== true ||
+      parked?.kind !== "parked" ||
       !parked.retained.some(({ message }) => this.waking(message))
     ) {
       return;
@@ -202,8 +211,9 @@ export class ParkedSessions<T extends ParkablePeer> {
       writeMessage(main.socket, { type: "wake", sessionId: child.info.id });
       return;
     }
-    if (parked.attempt?.owner === main.socket) {
-      parked.attempt.retry = true;
+    const current = wakeAttempt(parked);
+    if (current?.owner === main.socket) {
+      current.retry = true;
       return;
     }
     const attempt = {
@@ -212,7 +222,7 @@ export class ParkedSessions<T extends ParkablePeer> {
       count: parked.retained.length,
       retry: false,
     };
-    parked.attempt = attempt;
+    parked.wake = { kind: "waking", attempt };
     writeMessage(main.socket, { type: "wake", sessionId: child.info.id, requestId: attempt.id });
   }
   private waking(message: Message): boolean {
@@ -223,18 +233,16 @@ export class ParkedSessions<T extends ParkablePeer> {
   /** Only the main sent this request can report it, and only while that child stays parked. */
   private respond(owner: T, msg: UnknownRecord): void {
     const { id, result } = wakeResponse(msg);
-    const child = [...this.sessions.values()].find(
-      (peer) =>
-        peer.parked?.attempt?.id === id &&
-        peer.parked.attempt.owner === owner.socket &&
-        this.main(peer) === owner,
-    );
+    const child = [...this.sessions.values()].find((peer) => {
+      const attempt = wakeAttempt(peer.parked);
+      return attempt?.id === id && attempt.owner === owner.socket && this.main(peer) === owner;
+    });
     const parked = child?.parked;
-    const attempt = parked?.attempt;
-    if (!child || !parked || !attempt) {
+    const attempt = wakeAttempt(parked);
+    if (!child || parked?.kind !== "parked" || !attempt) {
       return;
     }
-    parked.attempt = undefined;
+    parked.wake = { kind: "idle" };
     if (result.status === "failed") {
       parked.lastFailure = result.reason;
       for (const retained of parked.retained.slice(0, attempt.count)) {
