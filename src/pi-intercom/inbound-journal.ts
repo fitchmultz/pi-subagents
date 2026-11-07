@@ -29,10 +29,20 @@ type Replies = Readonly<
   Pick<ReplyTracker, "expireSender" | "listPending" | "markReplied" | "recordIncomingMessage">
 >;
 
+type MessageState =
+  | {
+      readonly kind: "queued";
+      readonly entry: PendingInboundMessage & { readonly stage: "queued" };
+    }
+  | {
+      readonly kind: "handoff" | "queue-owned";
+      readonly entry: PendingInboundMessage & { readonly stage: "native" };
+    }
+  | { readonly kind: "retired" };
+
 export class InboundJournal {
-  private readonly pending = new Map<string, PendingInboundMessage>();
-  private readonly native = new Set<string>();
-  private readonly consumed = new Set<string>();
+  private readonly messages = new Map<string, MessageState>();
+  private pendingCount = 0;
   private reconciledLeaf: string | null = null;
   private readonly pi: ExtensionAPI;
   private readonly lifecycle: Lifecycle;
@@ -124,7 +134,7 @@ export class InboundJournal {
   }
   peerLeft(id: string): void {
     for (const pending of this.replies.listPending()) {
-      if (pending.from.id === id && this.pending.get(pending.message.id)?.stage !== "queued") {
+      if (pending.from.id === id && this.get(pending.message.id)?.stage !== "queued") {
         this.retire(pending.message.id);
       }
     }
@@ -137,22 +147,23 @@ export class InboundJournal {
     }
   }
   get size(): number {
-    return this.pending.size;
+    return this.pendingCount;
   }
   entries(): readonly PendingInboundMessage[] {
-    return [...this.pending.values()];
+    return [...this.messages.values()].flatMap((state) =>
+      state.kind === "retired" ? [] : [state.entry],
+    );
   }
   queued(): readonly PendingInboundMessage[] {
     return this.entries().filter((entry) => entry.stage === "queued");
   }
   get(id: string): PendingInboundMessage | undefined {
-    return this.pending.get(id);
+    const state = this.messages.get(id);
+    return state?.kind === "retired" ? undefined : state?.entry;
   }
   owns(entry: InboundMessageEntry): boolean {
     const id = entry.message.id;
-    return "stage" in entry
-      ? this.pending.get(id) === entry
-      : !this.pending.has(id) && !this.consumed.has(id);
+    return "stage" in entry ? this.get(id) === entry : !this.messages.has(id);
   }
   checkpoint(update: InboundCheckpoint): void {
     const sessionId = this.lifecycle.currentSessionId;
@@ -164,18 +175,29 @@ export class InboundJournal {
     this.replies.markReplied(id);
     this.checkpoint({ messageId: id, stage });
   }
+  private transition(id: string, next: MessageState): void {
+    const previous = this.messages.get(id);
+    if (previous !== undefined && previous.kind !== "retired") {
+      this.pendingCount--;
+    }
+    if (next.kind !== "retired") {
+      this.pendingCount++;
+    }
+    this.messages.set(id, next);
+  }
   consume(id: string): void {
-    this.consumed.add(id);
-    this.pending.delete(id);
-    this.native.delete(id);
+    this.transition(id, { kind: "retired" });
   }
   clearNative(): void {
-    this.native.clear();
+    for (const [id, state] of this.messages) {
+      if (state.kind === "queue-owned") {
+        this.transition(id, { kind: "handoff", entry: state.entry });
+      }
+    }
   }
   reset(): void {
-    this.pending.clear();
-    this.native.clear();
-    this.consumed.clear();
+    this.messages.clear();
+    this.pendingCount = 0;
     this.reconciledLeaf = null;
   }
   keep(entry: PendingInboundMessage): void {
@@ -185,7 +207,7 @@ export class InboundJournal {
       entry.message.threadId !== undefined &&
       entry.message.threadId !== ""
     ) {
-      for (const pending of this.pending.values()) {
+      for (const pending of this.queued()) {
         if (
           pending.stage === "queued" &&
           pending.from.id === entry.from.id &&
@@ -195,7 +217,20 @@ export class InboundJournal {
         }
       }
     }
-    this.pending.set(entry.message.id, entry);
+    this.store(entry);
+  }
+  private store(entry: PendingInboundMessage): void {
+    if (entry.stage === "queued") {
+      this.transition(entry.message.id, {
+        kind: "queued",
+        entry: { ...entry, stage: "queued" },
+      });
+      return;
+    }
+    this.transition(entry.message.id, {
+      kind: this.messages.get(entry.message.id)?.kind === "queue-owned" ? "queue-owned" : "handoff",
+      entry: { ...entry, stage: "native" },
+    });
   }
   private supersede(id: string): void {
     this.consume(id);
@@ -205,7 +240,7 @@ export class InboundJournal {
     if (entry.stage === stage) {
       return;
     }
-    this.pending.set(entry.message.id, { ...entry, stage });
+    this.store({ ...entry, stage });
     this.checkpoint({ messageId: entry.message.id, stage });
   }
   remember(
@@ -213,7 +248,7 @@ export class InboundJournal {
     stage: PendingInboundMessage["stage"],
     flushDelivery: PendingInboundMessage["flushDelivery"],
   ): void {
-    const pending = this.pending.get(entry.message.id);
+    const pending = this.get(entry.message.id);
     if (pending) {
       this.setStage(pending, stage);
       return;
@@ -223,12 +258,15 @@ export class InboundJournal {
     this.checkpoint({ entry: saved });
   }
   markNative(id: string): void {
-    this.native.add(id);
+    const state = this.messages.get(id);
+    if (state?.kind === "handoff") {
+      this.transition(id, { kind: "queue-owned", entry: state.entry });
+    }
   }
   reload(): void {
-    for (const entry of this.pending.values()) {
+    for (const entry of this.entries()) {
       if (entry.stage === "native") {
-        this.native.add(entry.message.id);
+        this.markNative(entry.message.id);
       }
     }
   }
@@ -238,8 +276,8 @@ export class InboundJournal {
     }
   }
   unconsumed(): readonly PendingInboundMessage[] {
-    return this.entries().filter(
-      (entry) => entry.stage === "native" && !this.native.has(entry.message.id),
+    return [...this.messages.values()].flatMap((state) =>
+      state.kind === "handoff" ? [state.entry] : [],
     );
   }
   private restoreCheckpoint(data: unknown): void {
@@ -252,7 +290,7 @@ export class InboundJournal {
         data.entry.message,
         data.entry.receivedAt,
       );
-      if (!this.consumed.has(data.entry.message.id)) {
+      if (this.messages.get(data.entry.message.id)?.kind !== "retired") {
         this.keep({ ...data.entry });
       }
       return;
@@ -266,17 +304,16 @@ export class InboundJournal {
       this.replies.markReplied(data.messageId);
       return;
     }
-    const pending = this.pending.get(data.messageId);
+    const pending = this.get(data.messageId);
     if (pending) {
-      this.pending.set(data.messageId, { ...pending, stage: data.stage });
+      this.store({ ...pending, stage: data.stage });
     }
   }
   private restoreEntry(item: SessionEntry): void {
     if (item.type === "custom_message") {
       const id = inboundIdFromCustomMessage(item);
       if (id !== undefined) {
-        this.consumed.add(id);
-        this.pending.delete(id);
+        this.consume(id);
       }
       return;
     }
@@ -309,7 +346,11 @@ export class InboundJournal {
     }
   }
   *restore(ctx: ExtensionContext, generation: number): Generator<void, void> {
-    this.consumed.clear();
+    for (const [id, state] of this.messages) {
+      if (state.kind === "retired") {
+        this.messages.delete(id);
+      }
+    }
     const leaf = ctx.sessionManager.getLeafId();
     for (const metadata of ctx.sessionManager.getEntries()) {
       yield;
@@ -352,7 +393,7 @@ export class InboundJournal {
   }
   reconcileConsumed(ctx: ExtensionContext, fullScan = false): void {
     const leaf = ctx.sessionManager.getLeafId();
-    if (this.pending.size > 0) {
+    if (this.size > 0) {
       for (const metadata of this.recentEntries(ctx, fullScan)) {
         if (
           metadata.type !== "custom_message" ||
@@ -363,13 +404,7 @@ export class InboundJournal {
         const entry = ctx.sessionManager.getEntry(metadata.id) ?? metadata;
         const id = inboundIdFromCustomMessage(entry);
         if (id !== undefined) {
-          this.consumed.add(id);
-        }
-      }
-      for (const id of this.pending.keys()) {
-        if (this.consumed.has(id)) {
-          this.pending.delete(id);
-          this.native.delete(id);
+          this.consume(id);
         }
       }
     }

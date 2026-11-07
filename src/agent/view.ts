@@ -7,7 +7,6 @@ import {
   admissionSchema,
   commandMetadataSchema,
   exitSchema,
-  successorSchema,
   wakeFailureSchema,
   type Launch,
   type Result,
@@ -16,6 +15,7 @@ import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
+import { runAdmission, runState, runStatus } from "./run-state.ts";
 interface Guidance {
   id: string;
   runId: string;
@@ -155,15 +155,9 @@ function metadata(
   const directory = runDirectory(base, launch.id);
   const process = processView(base, launch, options.observed);
   const outputFile = path.join(directory, "output.txt");
-  const admission = read(
-    path.join(conversation(base, launch), "admissions", `${launch.id}.json`),
-    admissionSchema,
-  );
-  const status =
-    result?.status ??
-    (process.live && read(path.join(directory, "successor.json"), successorSchema) === undefined
-      ? "running"
-      : "interrupted");
+  const admission = runAdmission(base, launch);
+  const state = runState(result, admission);
+  const status = runStatus(base, launch, state, process.live);
   return {
     id: launch.id,
     owner: launch.owner,
@@ -174,7 +168,7 @@ function metadata(
     model: `${launch.provider}/${launch.model}`,
     thinking: launch.thinking,
     context: launch.context,
-    admission: admission ? "admitted" : "pending",
+    admission,
     status,
     completed: result !== undefined,
     result,
