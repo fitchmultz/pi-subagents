@@ -15,6 +15,8 @@
 - refactor: centralize inbound message ownership states by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/367
 - refactor: name mailbox payload and storage phases by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/365
 - refactor: make bridge retirement outcomes explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/369
+- refactor: bind wake attempts to parked broker peers by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/360
+- refactor: name live observation publication states by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/372
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.22...v0.52.23
 
