@@ -9,6 +9,7 @@ import { test as nodeTest, type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { writeFrame } from "../../src/pi-intercom/broker/framing.ts";
 import { agentObservationSocketPath } from "../../src/pi-intercom/broker/paths.ts";
+import { ObservationClient } from "../../src/agent/observe-client.ts";
 import { observationText, SIZES } from "../fixtures/observation-content.ts";
 import { record } from "../support/assertions.ts";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
@@ -344,6 +345,24 @@ nodeTest(
     assert.equal(observed.frames, 1);
     const stats = record((await started.stop()).observation);
     assert.ok(Number(stats.flushes) <= 1, `idle flushes: ${JSON.stringify(stats.flushes)}`);
+  },
+);
+
+nodeTest(
+  "closing an observation client drops readiness before its socket close event",
+  { timeout: 60_000 },
+  async (t) => {
+    const started = await child(t, { prompt: "OBS_TEXT" });
+    const notified = Promise.withResolvers<null>();
+    const client = new ObservationClient(started.identity(), "detail", () =>
+      notified.resolve(null),
+    );
+    t.after(() => client.close());
+    await notified.promise;
+    assert.equal(client.connected, true, "a real native baseline established readiness");
+    client.close();
+    assert.equal(client.closed, true);
+    assert.equal(client.connected, false, "a closing socket is no longer a connected viewer");
   },
 );
 
