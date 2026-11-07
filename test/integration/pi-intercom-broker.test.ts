@@ -211,6 +211,7 @@ for (const outcome of [
   "receipt",
   "identity",
   "disconnect",
+  "timeout",
 ] as const) {
   nodeTest(`multipart client snapshots stay private through ${outcome}`, async (t) => {
     isolatedAgent(t);
@@ -328,6 +329,39 @@ for (const outcome of [
       "actual following-message delivery proves partial rows were consumed privately",
     );
     assertDefined(socket);
+    if (outcome === "timeout") {
+      await assert.rejects(result, { code: "list_timeout" });
+      await settlement;
+      const expiredId = requestId;
+      const nextBarrier = once(client, "message");
+      let nextSettled = false;
+      const next = client.listSessions().then((rows) => {
+        nextSettled = true;
+        return rows;
+      });
+      await nextBarrier;
+      assert.notEqual(requestId, expiredId);
+      const lateBarrier = once(client, "message");
+      writeMessage(socket, {
+        type: "sessions",
+        requestId: expiredId,
+        sessions: [{ ...identity, name: "expired snapshot" }],
+        more: false,
+      });
+      writeMessage(socket, {
+        type: "message",
+        from: identity,
+        message: { id: "after-expiry", timestamp: 2, content: { text: "late frame processed" } },
+      });
+      await lateBarrier;
+      assert.equal(nextSettled, false, "an expired response cannot complete a later request");
+      writeMessage(socket, { type: "sessions", requestId, sessions: [], more: false });
+      assert.deepEqual(await next, [
+        { ...identity, status: "busy", topics: [first], subscriptions: [] },
+      ]);
+      assert.deepEqual(errors, []);
+      return;
+    }
     if (outcome === "disconnect") {
       socket.destroy();
     } else if (outcome === "broker-error") {
