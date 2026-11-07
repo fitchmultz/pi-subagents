@@ -78,44 +78,41 @@ nodeTest(
   },
 );
 
-nodeTest(
-  "framing drops an oversized read but retains the unprocessed tail after parse or handler errors",
-  () => {
-    for (const failure of ["size", "parse", "handler", "empty"] as const) {
-      const errors: Error[] = [];
-      const messages: unknown[] = [];
-      const reader = createMessageReader(
-        (message) => {
-          if (message === "throw") {
-            throw new Error("handler failure");
-          }
-          messages.push(message);
-        },
-        (error) => {
-          errors.push(error);
-        },
-      );
-      const invalid = Buffer.alloc(4);
-      invalid.writeUInt32BE(MAX_FRAME_SIZE_BYTES + 1);
-      const bad = { size: invalid, parse: frame("{"), handler: frame('"throw"'), empty: frame("") };
-      const wire = Buffer.concat([bad[failure], frame('{"retained":true}')]);
-      reader(wire.subarray(0, 2));
-      reader(wire.subarray(2));
-      assert.deepEqual(messages, []);
-      assert.equal(errors.length, 1);
-      const expectedError =
-        failure === "size" ? /frame too large/ : /Failed to (?:parse|handle) intercom message/;
-      const [failureError] = errors;
-      assert.ok(failureError !== undefined, "expected one framing error");
-      assert.match(failureError.message, expectedError);
-      reader(Buffer.alloc(0));
-      assert.deepEqual(messages, failure === "size" ? [] : [{ retained: true }]);
-      reader(frame('{"fresh":true}'));
-      assert.deepEqual(messages[messages.length - 1], { fresh: true });
-      assert.equal(errors.length, 1);
-    }
-  },
-);
+nodeTest("framing remains failed after oversized, malformed or rejected frames", () => {
+  for (const failure of ["size", "parse", "handler", "empty"] as const) {
+    const errors: Error[] = [];
+    const messages: unknown[] = [];
+    const reader = createMessageReader(
+      (message) => {
+        if (message === "throw") {
+          throw new Error("handler failure");
+        }
+        messages.push(message);
+      },
+      (error) => {
+        errors.push(error);
+      },
+    );
+    const invalid = Buffer.alloc(4);
+    invalid.writeUInt32BE(MAX_FRAME_SIZE_BYTES + 1);
+    const bad = { size: invalid, parse: frame("{"), handler: frame('"throw"'), empty: frame("") };
+    const wire = Buffer.concat([bad[failure], frame('{"retained":true}')]);
+    reader(wire.subarray(0, 2));
+    reader(wire.subarray(2));
+    assert.deepEqual(messages, []);
+    assert.equal(errors.length, 1);
+    const expectedError =
+      failure === "size" ? /frame too large/ : /Failed to (?:parse|handle) intercom message/;
+    const [failureError] = errors;
+    assert.ok(failureError !== undefined, "expected one framing error");
+    assert.match(failureError.message, expectedError);
+    reader(Buffer.alloc(0));
+    assert.deepEqual(messages, []);
+    reader(frame('{"fresh":true}'));
+    assert.deepEqual(messages, []);
+    assert.equal(errors.length, 1);
+  }
+});
 
 nodeTest("framing validates and writes the same single JSON encoding", (t) => {
   const socket = new Socket();
