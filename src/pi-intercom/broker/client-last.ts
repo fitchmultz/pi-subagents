@@ -18,6 +18,7 @@ import {
   type SessionInfo,
 } from "../types.ts";
 import { writeMessage } from "./framing.ts";
+import { PendingRequests } from "./pending-requests.ts";
 
 /** A peer's read of this session or, for a main, of its exited `parked` child. */
 export function lastRequest(msg: UnknownRecord): {
@@ -46,35 +47,25 @@ export class LastMessageRequests {
   constructor(timeoutMs: number) {
     this.timeoutMs = timeoutMs;
   }
-  private readonly pending = new Map<
-    string,
-    {
-      readonly resolve: (result: NativeReadResult) => void;
-      readonly reject: (error: Readonly<Error>) => void;
-      readonly timer: NodeJS.Timeout;
-    }
-  >();
+  private readonly pending = new PendingRequests<{
+    readonly resolve: (result: NativeReadResult) => void;
+    readonly reject: (error: Readonly<Error>) => void;
+  }>();
 
   fail(error: Readonly<Error>): void {
     this.lastMessages = false;
     this.receiptReads = false;
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(error);
-    }
-    this.pending.clear();
+    this.pending.fail(error);
   }
 
   receive(message: UnknownRecord): void {
     if (typeof message.requestId !== "string" || !isNativeReadResult(message.result)) {
       throw new Error("Invalid last-message response");
     }
-    const pending = this.pending.get(message.requestId);
+    const pending = this.pending.take(message.requestId);
     if (!pending) {
       return;
     }
-    clearTimeout(pending.timer);
-    this.pending.delete(message.requestId);
     pending.resolve(message.result);
   }
 
@@ -100,18 +91,16 @@ export class LastMessageRequests {
     }
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
-      const timer = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new Error("Last-message read timeout"));
-      }, this.timeoutMs);
-      timer.unref();
-      this.pending.set(requestId, { resolve, reject, timer });
+      this.pending.set(
+        requestId,
+        { resolve, reject },
+        this.timeoutMs,
+        () => new Error("Last-message read timeout"),
+      );
       try {
         writeMessage(socket, { type: "last_request", requestId, to, query });
       } catch (error) {
-        clearTimeout(timer);
-        this.pending.delete(requestId);
-        reject(new Error(errorMessage(error)));
+        this.pending.take(requestId)?.reject(new Error(errorMessage(error)));
       }
     });
   }

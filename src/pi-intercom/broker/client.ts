@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { writeMessage } from "./framing.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
+import { PendingRequests } from "./pending-requests.ts";
 import { LastMessageRequests, lastRequest } from "./client-last.ts";
 import { ParkRequests } from "./client-park.ts";
 import { WakeMessages } from "./client-wake.ts";
@@ -70,18 +71,15 @@ export class IntercomClient extends EventEmitter {
   readonly wakes = new WakeMessages(this, () => this.requireActiveSocket());
   private guardedDeliverySupported = false;
   private readonly lastRequests: LastMessageRequests;
-  private readonly pendingSends = new Map<
-    string,
-    { readonly resolve: (r: SendResult) => void; readonly reject: (e: Readonly<Error>) => void }
-  >();
-  private readonly pendingLists = new Map<
-    string,
-    {
-      readonly resolve: (snapshot: SessionSnapshot) => void;
-      readonly reject: (e: Readonly<Error>) => void;
-      readonly reader: SnapshotReader;
-    }
-  >();
+  private readonly pendingSends = new PendingRequests<{
+    readonly resolve: (r: SendResult) => void;
+    readonly reject: (e: Readonly<Error>) => void;
+  }>();
+  private readonly pendingLists = new PendingRequests<{
+    readonly resolve: (snapshot: SessionSnapshot) => void;
+    readonly reject: (e: Readonly<Error>) => void;
+    readonly reader: SnapshotReader;
+  }>();
   private connecting = false;
   private disconnecting = false;
   private readonly sendTimeoutMs: number;
@@ -96,14 +94,8 @@ export class IntercomClient extends EventEmitter {
 
   private failPending(error: Readonly<Error>): void {
     this.lastRequests.fail(error);
-    for (const pending of this.pendingSends.values()) {
-      pending.reject(error);
-    }
-    this.pendingSends.clear();
-    for (const pending of this.pendingLists.values()) {
-      pending.reject(error);
-    }
-    this.pendingLists.clear();
+    this.pendingSends.fail(error);
+    this.pendingLists.fail(error);
   }
 
   get sessionId(): string | null {
@@ -301,12 +293,11 @@ export class IntercomClient extends EventEmitter {
     if (type !== "delivered" && typeof reason !== "string") {
       throw new Error(`Invalid ${errorMessage(type)} message`);
     }
-    const pending = this.pendingSends.get(messageId);
+    const pending = this.pendingSends.take(messageId);
     // Late responses are harmless after the caller has timed out.
     if (!pending) {
       return;
     }
-    this.pendingSends.delete(messageId);
     pending.resolve({
       id: messageId,
       accepted: type !== "delivery_failed",
@@ -330,14 +321,12 @@ export class IntercomClient extends EventEmitter {
       return;
     }
     if (typeof error === "string") {
-      this.pendingLists.delete(requestId);
-      pending.reject(new Error(error));
+      this.pendingLists.take(requestId)?.reject(new Error(error));
       return;
     }
     pending.reader.append(sessions, receipts);
     if (more !== true) {
-      this.pendingLists.delete(requestId);
-      pending.resolve(pending.reader.finish());
+      this.pendingLists.take(requestId)?.resolve(pending.reader.finish());
     }
   }
 
@@ -396,8 +385,8 @@ export class IntercomClient extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
+      const reader = new SnapshotReader();
       const wrappedResolve = (snapshot: SessionSnapshot) => {
-        clearTimeout(timeout);
         try {
           // Commit confirmed subscriptions before handling a following message in the same read.
           onAccepted?.(snapshot);
@@ -407,23 +396,19 @@ export class IntercomClient extends EventEmitter {
         }
       };
       const wrappedReject = (error: Readonly<Error>) => {
-        clearTimeout(timeout);
+        reader.fail();
         reject(error);
       };
-      const timeout = setTimeout(() => {
-        if (this.pendingLists.has(requestId)) {
-          this.pendingLists.delete(requestId);
-          wrappedReject(
-            Object.assign(new Error("List sessions timeout"), { code: "list_timeout" }),
-          );
-        }
-      }, this.listTimeoutMs);
-      timeout.unref();
-      this.pendingLists.set(requestId, {
-        resolve: wrappedResolve,
-        reject: wrappedReject,
-        reader: new SnapshotReader(),
-      });
+      this.pendingLists.set(
+        requestId,
+        {
+          resolve: wrappedResolve,
+          reject: wrappedReject,
+          reader,
+        },
+        this.listTimeoutMs,
+        () => Object.assign(new Error("List sessions timeout"), { code: "list_timeout" }),
+      );
       try {
         writeMessage(socket, {
           type: "list",
@@ -432,9 +417,7 @@ export class IntercomClient extends EventEmitter {
           ...(change ? { change } : {}),
         });
       } catch (error) {
-        clearTimeout(timeout);
-        this.pendingLists.delete(requestId);
-        reject(toError(error));
+        this.pendingLists.take(requestId)?.reject(toError(error));
       }
     });
   }
@@ -456,7 +439,7 @@ export class IntercomClient extends EventEmitter {
     }
 
     const messageId = options.messageId ?? (options.guard ? "" : randomUUID());
-    if (this.pendingSends.has(messageId)) {
+    if (this.pendingSends.get(messageId)) {
       return Promise.reject(new Error("Message ID already has a pending send"));
     }
     const message: Message = {
@@ -482,22 +465,12 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(new Error("Invalid message format"));
     }
     return new Promise((resolve, reject) => {
-      const wrappedResolve = (result: SendResult) => {
-        clearTimeout(timeout);
-        resolve(result);
-      };
-      const wrappedReject = (error: Readonly<Error>) => {
-        clearTimeout(timeout);
-        reject(error);
-      };
-      const timeout = setTimeout(() => {
-        if (this.pendingSends.has(messageId)) {
-          this.pendingSends.delete(messageId);
-          wrappedReject(new Error("Send timeout"));
-        }
-      }, this.sendTimeoutMs);
-      timeout.unref();
-      this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
+      this.pendingSends.set(
+        messageId,
+        { resolve, reject },
+        this.sendTimeoutMs,
+        () => new Error("Send timeout"),
+      );
 
       try {
         writeMessage(socket, {
@@ -506,9 +479,7 @@ export class IntercomClient extends EventEmitter {
           message: this._topicsSupported ? compactTopicMessage(message) : message,
         });
       } catch (error) {
-        clearTimeout(timeout);
-        this.pendingSends.delete(messageId);
-        reject(toError(error));
+        this.pendingSends.take(messageId)?.reject(toError(error));
       }
     });
   }

@@ -488,7 +488,7 @@ class AgentRuntime {
       name: "delegate",
       label: "Delegate",
       description:
-        "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
+        "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Optional thinking overrides inherited effort for this child. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
       parameters: delegateSchema,
       exposure: this.child ? "hidden" : "direct",
       renderResult: renderCompactResult,
