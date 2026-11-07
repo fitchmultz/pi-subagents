@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.24 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor: name observation client and channel phases (#373) ([4d75ea6](https://github.com/fitchmultz/pi-subagents/commit/4d75ea6a2004b2ae30871346c2fee78aca7a3fe5))
+
+### What's Changed
+
+- refactor: make observer connection readiness explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/373
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.23...v0.52.24
+
 ## 0.52.23 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
