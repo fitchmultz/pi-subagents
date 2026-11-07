@@ -237,6 +237,19 @@ nodeTest(
         { kind: "deferred", until: now + 7200000 },
         "abandoned attempts count from observed owner exit, not reservation",
       );
+      const recovered = new DatabaseSync(join(root, "wake-quota.sqlite"), { readOnly: true });
+      try {
+        assert.deepEqual(
+          recovered
+            .prepare("SELECT settledAt FROM wake_attempts ORDER BY sequence")
+            .all()
+            .map((row) => row.settledAt),
+          Array<number>(20).fill(now + 3600000),
+          "every exited helper settles from this recovery observation",
+        );
+      } finally {
+        recovered.close();
+      }
       state.close();
       clock.setSystemTime(now + 7199999);
       state = new WakeState(root);
