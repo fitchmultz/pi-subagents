@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Join broker socket acquisition during disconnect, share repeated close work, and make registration and parking acknowledgement ownership explicit.
+
 ## 0.52.20 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
