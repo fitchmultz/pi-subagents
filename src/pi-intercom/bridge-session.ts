@@ -28,6 +28,17 @@ export interface SessionOwner {
   readonly losses: (fp: string) => number;
 }
 
+type RetirementOutcome = { readonly kind: "open" | "retired" | "failed" };
+type SessionPhase =
+  | { readonly kind: "new" | "active" }
+  | { readonly kind: "connecting"; readonly task: Promise<void> }
+  | {
+      readonly kind: "retiring";
+      readonly reason: Fault;
+      readonly task: Promise<RetirementOutcome>;
+    }
+  | { readonly kind: "retired" | "retirement-failed"; readonly reason: Fault };
+
 export class Session {
   readonly generation = randomUUID();
   readonly identity: Identity;
@@ -40,12 +51,8 @@ export class Session {
   private readonly requests = new Set<AbortController>();
   private readonly inbox: Mailbox;
   private inboxChanged = new AbortController();
-  private closed = false;
-  private connecting?: Promise<void>;
-  private disconnecting?: Promise<void> | undefined;
-  private retirement?: Promise<void>;
+  private phase: SessionPhase = { kind: "new" };
   private lease?: NodeJS.Timeout;
-  private closeReason: Fault = new Fault(503, "broker_unavailable", "Broker connection failed.");
 
   constructor(owner: SessionOwner, identity: Identity, expires: number) {
     this.owner = owner;
@@ -58,22 +65,29 @@ export class Session {
     this.client.on("disconnected", () =>
       this.close(new Fault(503, "broker_disconnected", "Broker disconnected.")),
     );
-    this.client.on("_registered", () => {
-      // Socket acquisition is not abortable: retire a cancelled generation before any application write.
-      if (this.closed) {
-        this.disconnect().catch((error: unknown) => this.cleanupFailed(error));
-      }
-    });
     this.client.on("message", (from: SessionInfo, message: Message) => this.receive(from, message));
     this.touch();
   }
 
   guard(signal?: AbortSignal): void {
     signal?.throwIfAborted();
-    if (this.closed) {
-      throw this.closeReason;
+    const reason = this.closeReason;
+    if (reason) {
+      throw reason;
     }
     this.authorize();
+  }
+  private get closeReason(): Fault | undefined {
+    switch (this.phase.kind) {
+      case "retiring":
+      case "retired":
+      case "retirement-failed":
+        return this.phase.reason;
+      case "new":
+      case "connecting":
+      case "active":
+        return undefined;
+    }
   }
   authorize(): void {
     if (!this.owner.allowed(this.identity)) {
@@ -135,10 +149,7 @@ export class Session {
       },
       id,
     );
-    if (this.closed) {
-      await this.disconnect();
-      return;
-    }
+    this.guard();
     if (this.client.sessionId !== id) {
       const fault = new Fault(
         409,
@@ -153,64 +164,92 @@ export class Session {
   }
   private async connect(signal: AbortSignal): Promise<void> {
     this.guard(signal);
-    this.connecting ??= this.establish().catch((error: unknown) => {
-      if (!this.closed) {
-        this.close(
-          error instanceof Fault
-            ? error
-            : new Fault(
-                503,
-                "broker_unavailable",
-                "Local broker is unavailable; bridge does not start it.",
-              ),
-        );
-      }
-      throw error;
-    });
-    await wait(this.connecting, signal);
+    if (this.phase.kind === "new") {
+      const task = Promise.resolve()
+        .then(() => this.establish())
+        .then(() => {
+          if (this.phase.kind === "connecting" && this.phase.task === task) {
+            this.phase = { kind: "active" };
+          }
+          return;
+        })
+        .catch((error: unknown) => {
+          if (this.phase.kind === "connecting" && this.phase.task === task) {
+            this.close(
+              error instanceof Fault
+                ? error
+                : new Fault(
+                    503,
+                    "broker_unavailable",
+                    "Local broker is unavailable; bridge does not start it.",
+                  ),
+            );
+          }
+          throw error;
+        });
+      this.phase = { kind: "connecting", task };
+    }
+    if (this.phase.kind === "connecting") {
+      await wait(this.phase.task, signal);
+    }
     this.guard(signal);
   }
-  private disconnect(): Promise<void> {
-    this.disconnecting ??= this.client.disconnect().finally(() => {
-      this.disconnecting = undefined;
-    });
-    return this.disconnecting;
-  }
-  private cleanupFailed(_error: unknown): void {
+  private cleanupFailed(): void {
     // Never log caught broker details or remove an unsuccessfully retired generation.
     log("session_cleanup", { ...this.fields(), result: "failed" });
   }
-  private async retire(): Promise<void> {
-    await this.disconnect();
-    try {
-      await this.connecting;
-    } catch {
-      // The original request receives the connection failure; teardown must still close a late socket.
+  private async retire(
+    connecting: Promise<void> | undefined,
+    reason: Readonly<Fault>,
+  ): Promise<void> {
+    // The transport owns late socket acquisition; join it once alongside bridge setup.
+    const [, disconnected] = await Promise.allSettled([connecting, this.client.disconnect()]);
+    if (disconnected.status === "rejected") {
+      throw new Error("Broker disconnect failed.");
     }
-    await this.disconnect();
     this.owner.lost(this.identity.fingerprint256, this.inbox.close());
     this.owner.retired(this.identity.fingerprint256, this.generation);
-    log("session_closed", { ...this.fields(), result: this.closeReason.code });
+    log("session_closed", { ...this.fields(), result: reason.code });
   }
   close(fault: Readonly<Fault>): void {
-    if (this.closed) {
+    if (this.closeReason) {
       return;
     }
-    this.closed = true;
-    this.closeReason = fault;
+    const connecting = this.phase.kind === "connecting" ? this.phase.task : undefined;
+    const task = Promise.resolve().then(async (): Promise<RetirementOutcome> => {
+      try {
+        await this.retire(connecting, fault);
+        this.phase = { kind: "retired", reason: fault };
+        return { kind: "retired" };
+      } catch {
+        this.phase = { kind: "retirement-failed", reason: fault };
+        this.cleanupFailed();
+        return { kind: "failed" };
+      }
+    });
+    this.phase = { kind: "retiring", reason: fault, task };
     clearTimeout(this.lease);
     for (const controller of this.requests) {
       controller.abort(fault);
     }
-    // Retain the generation until acquisition/registration AND final disconnect settle.
-    this.retirement = this.retire().catch((caught: unknown) => this.cleanupFailed(caught));
   }
-  async settled(): Promise<void> {
-    await this.retirement;
+  settled(): Promise<RetirementOutcome> {
+    switch (this.phase.kind) {
+      case "retiring":
+        return this.phase.task;
+      case "retired":
+        return Promise.resolve({ kind: "retired" });
+      case "retirement-failed":
+        return Promise.resolve({ kind: "failed" });
+      case "new":
+      case "connecting":
+      case "active":
+        return Promise.resolve({ kind: "open" });
+    }
   }
 
   private receive(from: SessionInfo, message: Message): void {
-    if (this.closed) {
+    if (this.closeReason) {
       return;
     }
     try {
@@ -265,7 +304,7 @@ export class Session {
     this.presence();
   }
   private presence(): void {
-    if (this.closed) {
+    if (this.closeReason) {
       return;
     }
     this.client.updatePresence(this.inbox.presence());

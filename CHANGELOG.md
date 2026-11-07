@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Distinguish bridge session retirement from successful or failed cleanup, and join the transport's owned socket acquisition once.
 - Join broker socket acquisition during disconnect, share repeated close work, and make registration and parking acknowledgement ownership explicit.
 - Make socket framing failures terminal and represent JSONL record parsing as blank, reading, or invalid without changing publication policies.
 - Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
