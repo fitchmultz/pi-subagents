@@ -67,7 +67,7 @@ export class ActorObservation {
   private inode?: number;
   private unsubscribe?: (() => void) | undefined;
   private timer?: NodeJS.Timeout | undefined;
-  private closed = false;
+  private phase: "opening" | "listening" | "disabled" | "closed" = "opening";
   /** The actor's run is in progress, including native work before and after the agent loop. */
   private running = false;
   private lastContent = -Infinity;
@@ -135,6 +135,12 @@ export class ActorObservation {
     this.socketPath = socketPath;
     fs.chmodSync(socketPath, 0o600);
     this.inode = fs.lstatSync(socketPath).ino;
+    if (this.phase === "opening") {
+      this.phase = "listening";
+    }
+  }
+  private get closed(): boolean {
+    return this.phase === "disabled" || this.phase === "closed";
   }
   /** Native callbacks run inline before persistence: assign references, never throw or await. */
   private native(apply: () => void): void {
@@ -365,7 +371,7 @@ export class ActorObservation {
   private fail(error: unknown): void {
     this.stats.error ??= errorMessage(error);
     if (!this.closed) {
-      this.closed = true;
+      this.phase = "disabled";
       console.error(`Child observation disabled: ${this.stats.error}`);
       // Teardown leaves the native callback that observed the fault.
       setImmediate(() => this.release());
@@ -399,7 +405,7 @@ export class ActorObservation {
   }
   /** Idempotent. Releases observation only; never stops or signals the actor's work. */
   close(): ObservationStats {
-    this.closed = true;
+    this.phase = "closed";
     this.release();
     const { events, toolEvents, progressUpdates, projections, unavailable, settled, evicted } =
       this.state;
