@@ -23,8 +23,11 @@ import {
   AskDeliveryError,
   failureDetails,
   RecoveryError,
+  sendErrorFacts,
+  sendRecoveryGuidance,
   WakeFailedError,
   type RecoveryAction,
+  type SendProgress,
 } from "./tool-results.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
 
@@ -62,6 +65,23 @@ export class IntercomOutbound {
   private markActivity(): void {
     this.owners.lifecycle.markActivity();
     this.owners.connection.syncStatus();
+  }
+  private sendFailure(error: unknown, progress: SendProgress): ToolResultLike {
+    const facts = sendErrorFacts(error, progress);
+    return toolError(
+      `Failed to send: ${errorMessage(error)}`,
+      failureDetails(
+        error instanceof RecoveryError ? error.code : "send_failed",
+        [
+          { action: "list" },
+          {
+            action: "send",
+            guidance: sendRecoveryGuidance(facts, "message"),
+          },
+        ],
+        { error: true, ...facts },
+      ),
+    );
   }
   private deliveryFailure(to: string, result: SendResult): ToolResultLike {
     return toolError(
@@ -142,6 +162,7 @@ export class IntercomOutbound {
     if (to === undefined) {
       return toolError("Missing 'to' or 'message' parameter");
     }
+    let progress: SendProgress = { kind: "not-sent" };
     try {
       const target = (await resolveConnectedTarget(active, to)) ?? to;
       if (target === active.sessionId) {
@@ -151,23 +172,15 @@ export class IntercomOutbound {
         return toolText("Message cancelled by user");
       }
       const options = { ...sendOptions(params), passive: params.passive === true };
+      progress = { kind: "unconfirmed" };
       const result = await active.send(target, options);
+      progress = { kind: "acknowledged", result };
       if (!result.accepted) {
         return this.deliveryFailure(to, result);
       }
       return this.sent(to, params, result);
     } catch (error) {
-      return toolError(
-        `Failed to send: ${errorMessage(error)}`,
-        failureDetails(
-          error instanceof RecoveryError ? error.code : "send_failed",
-          [
-            { action: "list" },
-            { action: "send", guidance: "Retry with an exact active recipient target." },
-          ],
-          { error: true },
-        ),
-      );
+      return this.sendFailure(error, progress);
     }
   }
   private busyAsk(to: string, result: SendResult): ToolResultLike {
@@ -221,7 +234,11 @@ export class IntercomOutbound {
       `**Reply from ${to}:**\n${text}${attachments !== undefined && attachments.length > 0 ? formatAttachments(attachments) : ""}`,
     );
   }
-  private askFailure(error: unknown, to: string, questionId: string | undefined): ToolResultLike {
+  private askFailure(
+    error: unknown,
+    input: { readonly to: string; readonly questionId?: string; readonly progress: SendProgress },
+  ): ToolResultLike {
+    const { to, questionId, progress } = input;
     if (error instanceof WakeFailedError) {
       return toolError(
         `The parked child could not be woken: ${error.message} Your ask is still queued and may arrive after a later wake. Check the recipient before sending it again.`,
@@ -238,6 +255,7 @@ export class IntercomOutbound {
       const result = this.deliveryFailure(to, error.result);
       return { ...result, details: { ...result.details, error: true } };
     }
+    const facts = sendErrorFacts(error, progress);
     return toolError(
       `Failed: ${errorMessage(error)}`,
       failureDetails(
@@ -247,12 +265,13 @@ export class IntercomOutbound {
           { action: "list" },
           {
             action: "send",
-            guidance: "Check the recipient before retrying; the original ask may still be seen.",
+            guidance: sendRecoveryGuidance(facts, "ask"),
           },
         ],
         {
           error: true,
           ...(questionId !== undefined && questionId !== "" ? { messageId: questionId } : {}),
+          ...facts,
         },
       ),
     );
@@ -327,14 +346,15 @@ export class IntercomOutbound {
     if (to === undefined) {
       return toolError("Missing 'to' or 'message' parameter");
     }
-    if (this.owners.wait.waiting) {
-      return toolError("Already waiting for a reply");
-    }
-    if (this.isCancelled(signal)) {
-      return toolError("Cancelled");
-    }
     let questionId: string | undefined;
+    let progress: SendProgress = { kind: "not-sent" };
     try {
+      if (this.owners.wait.waiting) {
+        throw new Error("Already waiting for a reply");
+      }
+      if (this.isCancelled(signal)) {
+        throw new Error("Cancelled");
+      }
       const prepared = await this.prepareAsk(active, to, signal);
       if ("error" in prepared) {
         return prepared.error;
@@ -343,10 +363,12 @@ export class IntercomOutbound {
       questionId = randomUUID();
       const options = sendOptions(params);
       const record = (result: SendResult) => {
+        progress = { kind: "acknowledged", result };
         this.recordSent(to, options, result);
         this.owners.connection.syncStatus();
       };
       if (health?.acceptsAsks === false && options.delivery === undefined) {
+        progress = { kind: "unconfirmed" };
         return await this.sendBusy(active, { target, to, questionId, options, record });
       }
       const reply = await this.owners.wait.transact(active, {
@@ -354,11 +376,18 @@ export class IntercomOutbound {
         questionId,
         options,
         signal,
+        onSending: () => {
+          progress = { kind: "unconfirmed" };
+        },
         onSent: record,
       });
       return this.askReply(to, reply, questionId);
     } catch (error) {
-      return this.askFailure(error, to, questionId);
+      return this.askFailure(error, {
+        to,
+        ...(questionId === undefined ? {} : { questionId }),
+        progress,
+      });
     }
   }
   async reply(active: IntercomTransport, params: IntercomToolParams): Promise<ToolResultLike> {
@@ -367,16 +396,19 @@ export class IntercomOutbound {
     if (body === "") {
       return toolError("Missing 'message' parameter");
     }
+    let progress: SendProgress = { kind: "not-sent" };
     try {
       const target = this.owners.replies.resolveReplyTarget({ to, replyTo });
       if (target.from.id === active.sessionId) {
         return toolError("Cannot message the current session");
       }
+      progress = { kind: "unconfirmed" };
       const result = await active.send(target.from.id, {
         text: body,
         attachments,
         replyTo: target.message.id,
       });
+      progress = { kind: "acknowledged", result };
       const sender = target.from.name ?? target.from.id;
       if (!result.accepted) {
         return toolError(
@@ -406,7 +438,7 @@ export class IntercomOutbound {
       this.recordSent(sender, { text: body, replyTo: target.message.id }, result);
       return this.replySent(sender, target.message.id, result);
     } catch (error) {
-      return this.replyFailure(error, replyTo);
+      return this.replyFailure(error, replyTo, progress);
     }
   }
   private replySent(sender: string, replyTo: string, result: SendResult): ToolResultLike {
@@ -425,7 +457,11 @@ export class IntercomOutbound {
       },
     );
   }
-  private replyFailure(error: unknown, replyTo: string | undefined): ToolResultLike {
+  private replyFailure(
+    error: unknown,
+    replyTo: string | undefined,
+    progress: SendProgress,
+  ): ToolResultLike {
     const reason = error instanceof RecoveryError ? error.code : "reply_failed";
     const actions: readonly RecoveryAction[] =
       reason === "no_pending_reply"
@@ -443,6 +479,7 @@ export class IntercomOutbound {
       failureDetails(reason, actions, {
         error: true,
         ...((replyTo ?? "") !== "" ? { replyTo } : {}),
+        ...sendErrorFacts(error, progress),
       }),
     );
   }

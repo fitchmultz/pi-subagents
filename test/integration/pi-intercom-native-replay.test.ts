@@ -29,7 +29,11 @@ import type { ExtensionAPI, ExtensionContext, AgentSession } from "@earendil-wor
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import type { ReadonlyDeep as ReadonlyInput } from "type-fest";
 import { Type } from "typebox";
-import { createMessageReader, writeMessage } from "../../src/pi-intercom/broker/framing.ts";
+import {
+  createMessageReader,
+  MAX_FRAME_SIZE_BYTES,
+  writeMessage,
+} from "../../src/pi-intercom/broker/framing.ts";
 import {
   getBrokerSocketPath,
   prepareBrokerSocketPath,
@@ -1710,6 +1714,9 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
   };
   await completedAsk("before");
 
+  const intercom = asker.session.agent.state.tools.find((tool) => tool.name === "intercom");
+  assertDefined(intercom);
+  const executions = t.mock.method(intercom, "execute");
   asker.faux.setResponses([
     fauxAssistantMessage([ask("contender-a"), ask("contender-b")], { stopReason: "toolUse" }),
     fauxAssistantMessage("Concurrent asks handled"),
@@ -1728,6 +1735,16 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
   const [rejectedAsk] = rejected;
   assert.ok(rejectedAsk !== undefined, "expected the rejected contender result");
   assert.match(JSON.stringify(rejectedAsk.content), /Already waiting for a reply/);
+  const rejection = executions.mock.calls.find(
+    (call) => call.arguments[0] === rejectedAsk.toolCallId,
+  );
+  assertDefined(rejection);
+  await assert.rejects(Promise.resolve(rejection.result), (error: unknown) => {
+    assert.equal(at(error, "details", "deliveryUnknown"), false);
+    assert.equal(at(error, "details", "accepted"), false);
+    assert.equal(at(error, "details", "delivered"), false);
+    return true;
+  });
   assert.equal(received.length, 2, "only one concurrent ask may reach the peer");
   const [firstReceived, winner] = received;
   assert.ok(firstReceived !== undefined && winner !== undefined, "expected both concurrent asks");
@@ -3253,6 +3270,101 @@ nodeTest(
 );
 
 nodeTest(
+  "native send preserves delivery uncertainty and its original ID after a lost acknowledgement",
+  async (t) => {
+    const sender = await makeSession(t, "lost-send-ack");
+    await assert.rejects(
+      executeIntercom(sender, {
+        action: "send",
+        to: "sender-lost-send-ack",
+        message: "x".repeat(MAX_FRAME_SIZE_BYTES),
+      }),
+      (error: unknown) => {
+        assert.match(text(property(error, "message")), /message too large/);
+        assert.equal(at(error, "details", "accepted"), false);
+        assert.equal(at(error, "details", "delivered"), false);
+        assert.equal(at(error, "details", "deliveryUnknown"), false);
+        assert.doesNotMatch(
+          JSON.stringify(at(error, "details", "nextActions")),
+          /may still arrive/,
+        );
+        return true;
+      },
+    );
+    const originalWrite: unknown = Reflect.get(net.Socket.prototype, "write");
+    assert.ok(typeof originalWrite === "function");
+    const held: Buffer[] = [];
+    let release: (() => void) | undefined;
+    t.after(() => release?.());
+    t.mock.method(
+      net.Socket.prototype,
+      "write",
+      function (this: net.Socket, ...args: Parameters<net.Socket["write"]>) {
+        const chunk = args[0];
+        if (
+          release === undefined &&
+          Buffer.isBuffer(chunk) &&
+          chunk.subarray(4).toString().includes('"type":"send"') &&
+          chunk.subarray(4).toString().includes("Send with a lost acknowledgement")
+        ) {
+          const emit = this.emit.bind(this);
+          let released = false;
+          t.mock.method(this, "emit", (event: string | symbol, ...values: unknown[]) => {
+            if (!released && event === "data" && Buffer.isBuffer(values[0])) {
+              held.push(values[0]);
+              return true;
+            }
+            return Reflect.apply(emit, this, [event, ...values]) === true;
+          });
+          release = () => {
+            released = true;
+            for (const data of held.splice(0)) {
+              emit("data", data);
+            }
+          };
+        }
+        return Reflect.apply(originalWrite, this, args) === true;
+      },
+    );
+    const received = once(sender.sender, "message");
+    const sending = executeIntercom(sender, {
+      action: "send",
+      to: "sender-lost-send-ack",
+      message: "Send with a lost acknowledgement",
+    }).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    const question = record(array(await received)[1]);
+    assert.equal(at(question, "content", "text"), "Send with a lost acknowledgement");
+    const settled = await sending;
+    assert.ok("error" in settled);
+    assertDefined(release);
+    assert.ok(held.length > 0, "the actual broker acknowledgement reached the held socket");
+    const details = record(record(settled.error).details);
+    assert.equal(details.deliveryUnknown, true);
+    assert.equal(details.messageId, question.id);
+    assert.equal(Object.hasOwn(details, "accepted"), false);
+    assert.equal(Object.hasOwn(details, "delivered"), false);
+    assert.match(JSON.stringify(details.nextActions), /before retrying/);
+
+    release();
+    const nextReceived = once(sender.sender, "message");
+    const next = await executeIntercom(sender, {
+      action: "send",
+      to: "sender-lost-send-ack",
+      message: "Send after the late acknowledgement",
+    });
+    const nextMessage = record(array(await nextReceived)[1]);
+    assert.equal(at(nextMessage, "content", "text"), "Send after the late acknowledgement");
+    assert.equal(record(next.details).messageId, nextMessage.id);
+    assert.notEqual(nextMessage.id, question.id);
+    assert.equal(record(next.details).accepted, true);
+    assert.deepEqual(sender.errors, []);
+  },
+);
+
+nodeTest(
   "native ordinary asks honor busy capability and explicit steer/queue without claiming consumption",
   async (t) => {
     const asker = await makeSession(t, "busy-capability-asker");
@@ -3315,6 +3427,38 @@ nodeTest(
   },
 );
 
+function assertOrdinaryAskError(input: {
+  outcome: "timeout" | "disconnect" | "cancel" | "failure-marker";
+  error: unknown;
+  questionId: unknown;
+}): void {
+  const { outcome, questionId } = input;
+  const error = record(input.error);
+  const details = record(error.details);
+  if (outcome !== "failure-marker") {
+    assert.equal(details.deliveryUnknown, false);
+    assert.equal(details.accepted, true);
+    assert.equal(details.delivered, true);
+    assert.equal(details.messageId, questionId);
+  }
+  if (outcome === "timeout" || outcome === "failure-marker") {
+    assert.equal(
+      details.reasonCode,
+      outcome === "timeout" ? "reply_timeout" : "recipient_turn_failed",
+    );
+    assert.equal(outcome === "timeout" ? details.messageId : details.replyTo, questionId);
+    assert.deepEqual(
+      records(details.nextActions).map((action) => action.action),
+      outcome === "timeout" ? ["status", "list", "send"] : ["status", "send"],
+    );
+  } else {
+    assert.match(
+      text(error.message),
+      outcome === "cancel" ? /Cancelled/ : /Reply peer disconnected/,
+    );
+  }
+}
+
 for (const outcome of [
   "timeout",
   "disconnect",
@@ -3373,24 +3517,7 @@ for (const outcome of [
         assert.match(JSON.stringify(settled.value.content), /is only ordinary text/);
       } else {
         assert.ok("error" in settled);
-        const error = record(settled.error);
-        if (outcome === "timeout" || outcome === "failure-marker") {
-          const details = record(error.details);
-          assert.equal(
-            details.reasonCode,
-            outcome === "timeout" ? "reply_timeout" : "recipient_turn_failed",
-          );
-          assert.equal(outcome === "timeout" ? details.messageId : details.replyTo, question.id);
-          assert.deepEqual(
-            records(details.nextActions).map((action) => action.action),
-            outcome === "timeout" ? ["status", "list", "send"] : ["status", "send"],
-          );
-        } else {
-          assert.match(
-            text(error.message),
-            outcome === "cancel" ? /Cancelled/ : /Reply peer disconnected/,
-          );
-        }
+        assertOrdinaryAskError({ error: settled.error, outcome, questionId: question.id });
       }
       if (outcome === "disconnect") {
         await asker.sender.connect({
@@ -3760,6 +3887,12 @@ nodeTest(
         if (reason !== undefined) {
           assert.equal(at(error, "details", "reasonCode"), reason);
           const nextActions = records(at(error, "details", "nextActions"));
+          if (reason === "ambiguous_target" || reason === "no_pending_reply") {
+            assert.equal(at(error, "details", "accepted"), false);
+            assert.equal(at(error, "details", "delivered"), false);
+            assert.equal(at(error, "details", "deliveryUnknown"), false);
+            assert.doesNotMatch(JSON.stringify(nextActions), /may still (?:arrive|be seen)/);
+          }
           if (actions === undefined) {
             assert.ok(nextActions.length > 0);
           } else {
@@ -3829,6 +3962,9 @@ nodeTest(
       }),
       (error: unknown) => {
         assert.equal(at(error, "details", "reasonCode"), "reply_failed");
+        assert.equal(at(error, "details", "deliveryUnknown"), false);
+        assert.equal(at(error, "details", "accepted"), false);
+        assert.equal(at(error, "details", "delivered"), false);
         assert.deepEqual(
           records(at(error, "details", "nextActions")).map((action) => action.action),
           ["pending", "list"],

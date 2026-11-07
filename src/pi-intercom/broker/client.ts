@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import type net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage } from "./framing.ts";
+import { SendError, sendPacket } from "./client-send.ts";
 import { BrokerConnection, connectBrokerSocket } from "./connection.ts";
 import { SnapshotReader } from "./snapshot-reader.ts";
 import { PendingRequests } from "./pending-requests.ts";
@@ -16,12 +17,9 @@ import {
   type UnknownRecord,
 } from "../../shared/unknown.ts";
 import {
-  compactTopicMessage,
   normalizeMessage,
   normalizeSessionInfo,
   type SessionInfo,
-  type Message,
-  type MessageDelivery,
   type TopicUpdate,
   type TopicChange,
   type SessionSnapshot,
@@ -33,6 +31,7 @@ import {
   type ReceiptResult,
 } from "../types.ts";
 export type { SendResult } from "../types.ts";
+export { SendError };
 
 /** Default delivery-ack timeout for `send` (broker acknowledges quickly). */
 const DEFAULT_SEND_TIMEOUT_MS = 8000;
@@ -48,19 +47,6 @@ export interface IntercomClientOptions {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(errorMessage(error));
-}
-
-function messageDelivery(options: SendOptions): MessageDelivery | undefined {
-  if (options.delivery !== undefined) {
-    return options.delivery;
-  }
-  if (options.passive === true) {
-    return "passive";
-  }
-  if (options.expectsReply === true) {
-    return;
-  }
-  return "steer";
 }
 
 type ClientPhase =
@@ -460,54 +446,40 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  send(to: string, options: SendOptions): Promise<SendResult> {
+  async send(to: string, options: SendOptions): Promise<SendResult> {
+    const messageId = options.messageId ?? (options.guard ? "" : randomUUID());
     let socket: net.Socket;
     try {
       socket = this.requireSendSocket(options);
     } catch (error) {
-      return Promise.reject(toError(error));
+      throw new SendError({ kind: "not-sent", messageId }, toError(error));
     }
 
-    const messageId = options.messageId ?? (options.guard ? "" : randomUUID());
     if (this.pendingSends.get(messageId)) {
-      return Promise.reject(new Error("Message ID already has a pending send"));
+      throw new SendError(
+        { kind: "unconfirmed", messageId },
+        new Error("Message ID already has a pending send"),
+      );
     }
-    const message: Message = {
-      id: messageId,
-      timestamp: Date.now(),
-      replyTo: options.replyTo,
-      expectsReply: options.expectsReply,
-      guard: options.guard,
-      replyHint: options.replyHint,
-      ...(options.human ? { human: options.human } : {}),
-      ...(options.topic ? { topic: options.topic } : {}),
-      delivery: messageDelivery(options),
-      queueMode: options.queueMode,
-      threadId: options.threadId,
-      passive: options.passive,
-      content: {
-        text: options.text,
-        attachments: options.attachments,
-      },
-    };
-
-    if ((options.guard || options.replyHint) && normalizeMessage(message) === null) {
-      return Promise.reject(new Error("Invalid message format"));
-    }
-    return new Promise((resolve, reject) => {
+    const packet = sendPacket({
+      to,
+      messageId,
+      options,
+      topicsSupported: this._topicsSupported,
+    });
+    return await new Promise((resolve, reject) => {
       this.pendingSends.set(
         messageId,
-        { resolve, reject },
+        {
+          resolve,
+          reject: (error) => reject(new SendError({ kind: "unconfirmed", messageId }, error)),
+        },
         this.sendTimeoutMs,
         () => new Error("Send timeout"),
       );
 
       try {
-        writeMessage(socket, {
-          type: "send",
-          to,
-          message: this._topicsSupported ? compactTopicMessage(message) : message,
-        });
+        writeMessage(socket, packet);
       } catch (error) {
         this.pendingSends.take(messageId)?.reject(toError(error));
       }
