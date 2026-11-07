@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Make socket framing failures terminal and represent JSONL record parsing as blank, reading, or invalid without changing publication policies.
+- Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 
 ## 0.52.20 - 2026-11-07
 
