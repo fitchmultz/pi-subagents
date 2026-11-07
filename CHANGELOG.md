@@ -3,10 +3,33 @@
 ## [Unreleased]
 
 - Separate fenced broker peers from disconnected parked peers, with wake attempts owned only by the parked state.
+- Bind each durable wake reservation to one POST and its required settlement, preserving retryable settlement failures and crash uncertainty.
+
+## 0.52.21 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+
+- Join broker socket acquisition during disconnect, share repeated close work, and make registration and parking acknowledgement ownership explicit.
 - Make socket framing failures terminal and represent JSONL record parsing as blank, reading, or invalid without changing publication policies.
 - Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
+- Name absent, launcher-only, live, exited, and uncertain actor claims while keeping shell evidence and signal-time birth checks separate.
 - Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 - Share explicit completion-delivery decisions between canonical and legacy results while keeping native file and memory receipts distinct.
+
+<!-- npm-release:unreleased:end -->
+
+- refactor: give staged replacement delivery one owner (#358) ([f292627](https://github.com/fitchmultz/pi-subagents/commit/f292627a357a5eb99cc9ad2e7a1e9b9622eaa082))
+
+### What's Changed
+
+- refactor: give staged replacement delivery one owner by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/358
+- refactor: make actor work and command payload states explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/345
+- refactor: share completion delivery decisions by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/357
+- refactor: make framing and JSONL record states explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/359
+- refactor: share process claim inspection by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/364
+- refactor: own socket acquisition through joined disconnect by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/362
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.20...v0.52.21
 
 ## 0.52.20 - 2026-11-07
 

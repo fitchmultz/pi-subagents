@@ -14,7 +14,6 @@ import {
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
 import {
-  attachmentSchema,
   parkedSchema,
   processSchema,
   wakeFailureSchema,
@@ -49,12 +48,19 @@ function probe(identity: ClaimedProcess): boolean | undefined {
   }
   return identity.identity === "unverified" ? true : undefined;
 }
+function presence(identity: ClaimedProcess): "live" | "exited" | "uncertain" {
+  const probed = probe(identity);
+  if (probed !== undefined) {
+    return probed ? "uncertain" : "exited";
+  }
+  if (readChildProcessIdentity(identity.pid) === identity.identity) {
+    return "live";
+  }
+  return replaced(identity) ? "exited" : "uncertain";
+}
 export function alive(identity: ClaimedProcess): boolean {
-  // Only a proven different birth disproves a live PID; ambiguous identities stay possibly owned.
-  return (
-    probe(identity) ??
-    (readChildProcessIdentity(identity.pid) === identity.identity || !replaced(identity))
-  );
+  // Uncertain identity remains possibly owned; only death/replacement authorizes reuse.
+  return presence(identity) !== "exited";
 }
 /** Routine `alive` without waiting on `ps`; signals still use the synchronous proof. */
 export async function observeAlive(identities: readonly ClaimedProcess[]): Promise<boolean[]> {
@@ -67,51 +73,6 @@ export async function observeAlive(identities: readonly ClaimedProcess[]): Promi
     );
   }
   return verdicts;
-}
-/**
- * A child's routine parent check, one observation at a time. A dead parent detaches the child
- * only while its check is current and the attachment generation is unchanged: a newer parent
- * may adopt the child meanwhile.
- */
-export class ParentCheck {
-  private current?: object | undefined;
-  /**
-   * Reads the attachment synchronously, so an unreadable one still fails the caller at once.
-   * Missing or released attachments detach immediately; a check in flight makes this a no-op.
-   */
-  check(file: string, detached: () => void): Promise<void> {
-    if (this.current !== undefined) {
-      return Promise.resolve();
-    }
-    const attachment = published(file, read(file, attachmentSchema));
-    if (attachment === undefined || !attachment.attached) {
-      detached();
-      return Promise.resolve();
-    }
-    const check = {};
-    this.current = check;
-    const settle = async () => {
-      try {
-        const [live] = await observeAlive([attachment]);
-        if (
-          this.current === check &&
-          live !== true &&
-          read(file, attachmentSchema)?.generation === attachment.generation
-        ) {
-          detached();
-        }
-      } finally {
-        if (this.current === check) {
-          this.current = undefined;
-        }
-      }
-    };
-    return settle();
-  }
-  /** A check settling later no longer acts. */
-  cancel(): void {
-    this.current = undefined;
-  }
 }
 function replaced(identity: ClaimedProcess): boolean {
   return (
@@ -131,6 +92,42 @@ export function ownIdentity(pid = process.pid): Omit<ProcessIdentity, "token"> {
 export function actor(base: string, launch: Launch): OwnedProcess | undefined {
   const file = path.join(conversation(base, launch), "actor.lock", "process.json");
   return published(file, read(file, processSchema));
+}
+type ActorClaim =
+  | { readonly kind: "absent" | "launcher-only"; readonly process: undefined }
+  | { readonly kind: "actor-live" | "actor-exited"; readonly process: OwnedProcess }
+  | { readonly kind: "uncertain"; readonly process: OwnedProcess | undefined };
+
+export function possiblyLive(claim: ActorClaim | undefined): boolean {
+  return (
+    claim?.kind === "actor-live" || (claim?.kind === "uncertain" && claim.process !== undefined)
+  );
+}
+
+/** Launcher claims do not prove actor identity; shell ownership is checked separately. */
+export function inspectActorClaim(base: string, launch: Launch): ActorClaim {
+  const process = actor(base, launch);
+  if (process !== undefined) {
+    switch (presence(process)) {
+      case "live":
+        return { kind: "actor-live", process };
+      case "exited":
+        return { kind: "actor-exited", process };
+      case "uncertain":
+        return { kind: "uncertain", process };
+    }
+  }
+  const lock = path.join(conversation(base, launch), "actor.lock");
+  if (!fs.existsSync(lock)) {
+    return { kind: "absent", process: undefined };
+  }
+  return {
+    kind:
+      read(path.join(lock, "claim.json"), processSchema) === undefined
+        ? "uncertain"
+        : "launcher-only",
+    process: undefined,
+  };
 }
 function childEnvironment(launch: Launch): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -299,8 +296,9 @@ export async function ensureActor(
   await awaitStopping(dir, actor(base, launch), signal);
   signal?.throwIfAborted();
   // Another parallel tool may replace the claim while this invocation yields.
-  const existing = actor(base, launch);
-  if (existing && alive(existing)) {
+  const claim = inspectActorClaim(base, launch);
+  const existing = claim.process;
+  if (possiblyLive(claim)) {
     return;
   }
   parkFailure(base, launch, existing);
@@ -438,7 +436,7 @@ export function requestStop(
       return false;
     }
   };
-  const identity = actor(base, launch);
+  const identity = inspectActorClaim(base, launch).process;
   const targets = identity ? [identity, ...shells(base, launch, identity.token)] : [];
   // Interactive Stop validates the whole set; shutdown reports and skips only ambiguous targets.
   const live = targets.filter((target) => attempt(() => verifyProcess(target)));
