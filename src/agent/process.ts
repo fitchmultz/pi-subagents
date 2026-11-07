@@ -444,7 +444,7 @@ export function requestStop(
   const live = targets.filter((target) => attempt(() => verifyProcess(target)));
   const command =
     identity && live.includes(identity)
-      ? enqueue(base, launch, "stop", { actorToken: identity.token })
+      ? enqueue(base, launch, { action: "stop", actorToken: identity.token })
       : undefined;
   if (identity && live.length > 0) {
     write(path.join(conversation(base, launch), `stopping-${identity.token}.json`), {

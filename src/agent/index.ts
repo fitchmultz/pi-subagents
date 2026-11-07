@@ -324,7 +324,7 @@ class AgentRuntime {
       executionCwd: executionCwd(this.pi, context),
     });
     this.checkMain();
-    enqueue(this.base, launch, "run");
+    enqueue(this.base, launch, { action: "run" });
     await ensureActor(this.base, launch, this.shutdown.signal);
     return renderReceipt(this.base, launch, this.ctx, {
       receipt: "launch",
@@ -385,7 +385,7 @@ class AgentRuntime {
     }
     const identity = actor(this.base, launch);
     if (!completed && identity && alive(identity)) {
-      const command = enqueue(this.base, launch, "steer", { prompt: input.prompt });
+      const command = enqueue(this.base, launch, { action: "steer", prompt: input.prompt });
       return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",
         command,
@@ -400,7 +400,7 @@ class AgentRuntime {
       });
     }
     // Retain successor claims on ambiguous after-launch failures: no replay.
-    enqueue(this.base, next, "run");
+    enqueue(this.base, next, { action: "run" });
     await ensureActor(this.base, next, this.shutdown.signal);
     return renderReceipt(this.base, next, this.ctx, { receipt: "continuation" });
   }
@@ -417,7 +417,7 @@ class AgentRuntime {
     });
     if (created) {
       // The durable adoption claim survives ambiguous after-launch failures.
-      enqueue(this.base, launch, "run");
+      enqueue(this.base, launch, { action: "run" });
       await ensureActor(this.base, launch, this.shutdown.signal);
     }
     return renderReceipt(this.base, launch, this.ctx, {
