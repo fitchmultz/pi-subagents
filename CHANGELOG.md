@@ -21,6 +21,10 @@
 
 - refactor: give staged replacement delivery one owner by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/358
 - refactor: make actor work and command payload states explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/345
+- refactor: share completion delivery decisions by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/357
+- refactor: make framing and JSONL record states explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/359
+- refactor: share process claim inspection by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/364
+- refactor: own socket acquisition through joined disconnect by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/362
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.20...v0.52.21
 
