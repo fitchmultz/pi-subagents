@@ -4,6 +4,7 @@
 
 - Make socket framing failures terminal and represent JSONL record parsing as blank, reading, or invalid without changing publication policies.
 - Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
+- Name absent, launcher-only, live, exited, and uncertain actor claims while keeping shell evidence and signal-time birth checks separate.
 - Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 - Share explicit completion-delivery decisions between canonical and legacy results while keeping native file and memory receipts distinct.
 

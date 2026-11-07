@@ -12,11 +12,11 @@ import {
   ensureActor,
   observeAlive,
   ownIdentity,
-  ParentCheck,
   shells,
   signalProcess,
 } from "../../src/agent/process.ts";
 import { write } from "../../src/agent/storage.ts";
+import { ParentCheck } from "../../src/agent/parent-check.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 
 nodeTest(
