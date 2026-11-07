@@ -180,7 +180,7 @@ export function savedContinuation(options: {
   context: ExtensionContext;
   base: string;
   agentDir: string;
-}): { launch: Launch; created: boolean } {
+}): { launch: Launch; kind: "created" | "existing" } {
   const { id, prompt, context, base, agentDir } = options;
   safeId(id);
   const owner = context.sessionManager.getSessionId();
@@ -192,7 +192,7 @@ export function savedContinuation(options: {
   const mapping = path.join(base, `legacy-${id}.json`);
   const adopted = read(mapping, successorSchema);
   if (adopted) {
-    return { launch: launchAt(base, adopted.id, owner), created: false };
+    return { launch: launchAt(base, adopted.id, owner), kind: "existing" };
   }
   const snapshot = frozenSnapshot(source, context, owned);
   const nextId = randomUUID();
@@ -224,7 +224,7 @@ export function savedContinuation(options: {
         cause: error,
       });
     }
-    return { launch: launchAt(base, winner.id, owner), created: false };
+    return { launch: launchAt(base, winner.id, owner), kind: "existing" };
   }
-  return { launch, created: true };
+  return { launch, kind: "created" };
 }
