@@ -10,7 +10,7 @@ import { Duplex } from "node:stream";
 import { useFakeTimers } from "sinon";
 import { WakeState } from "../../src/pi-intercom/bridge-wake-state.ts";
 import { Mailbox } from "../../src/pi-intercom/bridge-mailbox.ts";
-import { exec, start, stop } from "../support/intercom-bridge.ts";
+import { exec, start, stop, type BridgeProcess } from "../support/intercom-bridge.ts";
 
 // SQLite owns admission accounting; HTTPS/broker lifecycle is covered in wake-budget/delivery.
 nodeTest(
@@ -24,32 +24,32 @@ nodeTest(
       const legacy = new Mailbox(root, "AA".repeat(32), true);
       legacy.close();
       state = new WakeState(root);
-      assert.equal(
+      assert.deepEqual(
         state.reserve("first-url"),
-        1800003600000,
+        { kind: "deferred", until: 1800003600000 },
         "prior audit has no reliable attempt timestamps",
       );
       state.close();
       state = new WakeState(root);
       clock.setSystemTime(1799999999000);
-      assert.equal(
+      assert.deepEqual(
         state.reserve("rotated-url"),
-        1800000000000,
+        { kind: "deferred", until: 1800000000000 },
         "rollback cannot expire prior reservations early",
       );
       clock.setSystemTime(1800003599999);
-      assert.equal(state.reserve("second-bot"), 1800003600000);
+      assert.deepEqual(state.reserve("second-bot"), { kind: "deferred", until: 1800003600000 });
       clock.setSystemTime(1800003600000);
       assert.equal(
-        state.reserve("second-bot"),
-        undefined,
+        state.reserve("second-bot").kind,
+        "reserved",
         "budget expiry admits pending recovery without another hour delay",
       );
       state.close();
       state = new WakeState(root);
-      assert.equal(
+      assert.deepEqual(
         state.reserve("second-bot"),
-        1800003630000,
+        { kind: "deferred", until: 1800003630000 },
         "crash uncertainty survives reopen before POST",
       );
     } finally {
@@ -102,20 +102,21 @@ nodeTest(
       ]);
       state = new WakeState(root);
       for (let index = 0; index < 15; index++) {
-        assert.equal(
-          state.reserve(`url-${index}`),
-          undefined,
-          "known remaining capacity wakes without first-hour hold",
+        const reservation = state.reserve(`url-${index}`);
+        assert.ok(
+          reservation.kind === "reserved",
+          "known remaining capacity has no first-hour hold",
         );
+        await reservation.post(() => Promise.resolve());
       }
       assert.ok(
-        typeof state.reserve("twenty-first") === "number",
+        state.reserve("twenty-first").kind === "deferred",
         "three recorded plus two unknown plus fifteen new attempts exhaust allowance",
       );
       state.close();
       state = new WakeState(root);
       assert.ok(
-        typeof state.reserve("restart-url") === "number",
+        state.reserve("restart-url").kind === "deferred",
         "preflight is consumed only at initial ledger creation",
       );
     } finally {
@@ -173,17 +174,24 @@ nodeTest(
       } finally {
         migrated.close();
       }
-      assert.equal(state.reserve("rotated"), now + 3600000);
+      assert.deepEqual(state.reserve("rotated"), { kind: "deferred", until: now + 3600000 });
       state.close();
       clock.setSystemTime(now + 1800000);
       state = new WakeState(root);
-      assert.equal(state.reserve("another-listener"), now + 3600000, "reopen cannot reseed usage");
+      assert.deepEqual(
+        state.reserve("another-listener"),
+        { kind: "deferred", until: now + 3600000 },
+        "reopen cannot reseed usage",
+      );
       clock.setSystemTime(now + 3599999);
-      assert.equal(state.reserve("another-listener"), now + 3600000);
+      assert.deepEqual(state.reserve("another-listener"), {
+        kind: "deferred",
+        until: now + 3600000,
+      });
       clock.setSystemTime(now + 3600000);
       assert.equal(
-        state.reserve("another-listener"),
-        undefined,
+        state.reserve("another-listener").kind,
+        "reserved",
         "retained work eventually resumes",
       );
     } finally {
@@ -195,38 +203,61 @@ nodeTest(
 );
 
 nodeTest(
-  "a live shared listener never ages out open attempts; SIGKILL recovery retains one full hour",
+  "live shared listeners never age out open attempts; SIGKILL recovery retains one full hour",
   async () => {
     const root = mkdtempSync("/tmp/pib-owner-");
     const now = 1800000000000;
     const clock = useFakeTimers({ now, toFake: ["Date"] });
     let state: WakeState | undefined;
-    const child = start(
-      "test/fixtures/intercom-wake-window.ts",
-      ["hold", root, String(now)],
-      process.env,
-    );
+    const children: BridgeProcess[] = [];
     try {
-      await child.wait(/owner_holding_twenty/);
+      for (let index = 0; index < 20; index++) {
+        const child = start(
+          "test/fixtures/intercom-wake-window.ts",
+          ["hold", root, String(now)],
+          process.env,
+        );
+        children.push(child);
+        await child.wait(/owner_holding/);
+      }
       state = new WakeState(root);
       clock.setSystemTime(now + 3600000);
-      assert.equal(state.reserve("other-listener"), now + 3630000, "live owner has no expiry");
-      const exited = once(child.child, "close");
-      child.child.kill("SIGKILL");
-      await exited;
-      assert.equal(
+      assert.deepEqual(
         state.reserve("other-listener"),
-        now + 7200000,
+        { kind: "deferred", until: now + 3630000 },
+        "live owner has no expiry",
+      );
+      for (const child of children) {
+        const exited = once(child.child, "close");
+        child.child.kill("SIGKILL");
+        await exited;
+      }
+      assert.deepEqual(
+        state.reserve("other-listener"),
+        { kind: "deferred", until: now + 7200000 },
         "abandoned attempts count from observed owner exit, not reservation",
       );
+      const recovered = new DatabaseSync(join(root, "wake-quota.sqlite"), { readOnly: true });
+      try {
+        assert.deepEqual(
+          recovered
+            .prepare("SELECT settledAt FROM wake_attempts ORDER BY sequence")
+            .all()
+            .map((row) => row.settledAt),
+          Array<number>(20).fill(now + 3600000),
+          "every exited helper settles from this recovery observation",
+        );
+      } finally {
+        recovered.close();
+      }
       state.close();
       clock.setSystemTime(now + 7199999);
       state = new WakeState(root);
-      assert.equal(state.reserve("new-listener"), now + 7200000);
+      assert.deepEqual(state.reserve("new-listener"), { kind: "deferred", until: now + 7200000 });
       clock.setSystemTime(now + 7200000);
-      assert.equal(state.reserve("new-listener"), undefined);
+      assert.equal(state.reserve("new-listener").kind, "reserved");
     } finally {
-      await stop(child.child);
+      await Promise.all(children.map((child) => stop(child.child)));
       state?.close();
       clock.restore();
       rmSync(root, { recursive: true, force: true });
@@ -236,21 +267,25 @@ nodeTest(
 
 nodeTest(
   "failed completion writes remain open and retry durably before a subsequent reservation",
-  () => {
+  async () => {
     const root = mkdtempSync("/tmp/pib-settle-");
     const now = 1800000000000;
     const clock = useFakeTimers({ now, toFake: ["Date"] });
     const state = new WakeState(root);
     const path = join(root, "wake-quota.sqlite");
     try {
-      assert.equal(state.reserve("first"), undefined);
+      const reservation = state.reserve("first");
+      assert.ok(reservation.kind === "reserved");
       clock.setSystemTime(now + 500);
       chmodSync(path, 0o644);
-      assert.throws(() => state.settle(), /mode 0600/);
+      await assert.rejects(
+        reservation.post(() => Promise.resolve()),
+        /mode 0600/,
+      );
       assert.throws(() => state.reserve("second"), /mode 0600/);
       chmodSync(path, 0o600);
       clock.setSystemTime(now + 3600000);
-      assert.equal(state.reserve("second"), undefined);
+      assert.equal(state.reserve("second").kind, "reserved");
       const db = new DatabaseSync(path, { readOnly: true });
       try {
         const rows = db.prepare("SELECT settledAt FROM wake_attempts ORDER BY sequence").all();
@@ -350,8 +385,8 @@ nodeTest(
       );
       reader.exec("COMMIT");
       assert.equal(
-        observer.reserve("existing-listener"),
-        undefined,
+        observer.reserve("existing-listener").kind,
+        "reserved",
         "retained listener still works",
       );
     } finally {

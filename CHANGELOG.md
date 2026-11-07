@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Bind each durable wake reservation to one POST and its required settlement, preserving retryable settlement failures and crash uncertainty.
+
 ## 0.52.21 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
