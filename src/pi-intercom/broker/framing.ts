@@ -90,10 +90,15 @@ class MessageBuffer {
   }
 }
 
+type FrameState =
+  | { readonly kind: "header" }
+  | { readonly kind: "payload"; readonly length: number }
+  | { readonly kind: "failed" };
+
 /**
  * Create a message reader that handles partial reads.
  * Calls onMessage for each complete message received.
- * Protocol or handler errors are reported to onError so the caller can close the socket.
+ * Protocol or handler errors end reading and are reported so the caller can close the socket.
  */
 export function createMessageReader(
   onMessage: (msg: unknown) => void,
@@ -101,32 +106,39 @@ export function createMessageReader(
   limit = MAX_FRAME_SIZE_BYTES,
 ): (data: Buffer) => void {
   const buffer = new MessageBuffer();
-  let length: number | undefined;
+  let state: FrameState = { kind: "header" };
+  const fail = (error: Readonly<Error>) => {
+    state = { kind: "failed" };
+    buffer.clear();
+    onError(error);
+  };
 
   return (data: Buffer) => {
+    if (state.kind === "failed") {
+      return;
+    }
     buffer.append(data);
 
-    while (buffer.length >= (length ?? 4)) {
-      if (length === undefined) {
-        length = buffer.read(4).readUInt32BE(0);
+    while (buffer.length >= (state.kind === "payload" ? state.length : 4)) {
+      if (state.kind === "header") {
+        const length = buffer.read(4).readUInt32BE(0);
         if (length > limit) {
-          onError(new Error(`Intercom frame too large (${length} bytes; max ${limit})`));
-          buffer.clear();
-          length = undefined;
+          fail(new Error(`Intercom frame too large (${length} bytes; max ${limit})`));
           return;
         }
+        state = { kind: "payload", length };
         continue;
       }
 
-      const payload = buffer.read(length);
-      length = undefined;
+      const payload = buffer.read(state.length);
+      state = { kind: "header" };
 
       let msg: unknown;
       try {
         msg = JSON.parse(payload.toString("utf-8"));
       } catch (error) {
         const message = errorMessage(error);
-        onError(new Error(`Failed to parse intercom message: ${message}`, { cause: error }));
+        fail(new Error(`Failed to parse intercom message: ${message}`, { cause: error }));
         return;
       }
 
@@ -134,7 +146,7 @@ export function createMessageReader(
         onMessage(msg);
       } catch (error) {
         const message = errorMessage(error);
-        onError(new Error(`Failed to handle intercom message: ${message}`, { cause: error }));
+        fail(new Error(`Failed to handle intercom message: ${message}`, { cause: error }));
         return;
       }
     }
