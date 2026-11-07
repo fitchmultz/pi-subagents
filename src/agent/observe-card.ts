@@ -110,35 +110,88 @@ export function assistant(content: ViewedBlock[], streaming: boolean): Assistant
   };
 }
 
+type ToolPhase = "Preparing tool call" | "Running" | "Awaiting journal publication";
+type LiveContent =
+  | {
+      readonly kind: "assistant";
+      readonly component: InstanceType<typeof AssistantMessageComponent>;
+      readonly status: InstanceType<typeof Text>;
+      readonly blocks: ViewedBlock[];
+      readonly ended: boolean;
+    }
+  | {
+      readonly kind: "tool";
+      readonly component: InstanceType<typeof ToolExecutionComponent>;
+      readonly status: InstanceType<typeof Text>;
+      arguments: unknown;
+      progress:
+        | { readonly kind: "unseen" }
+        | { readonly kind: "shown"; readonly value: unknown; readonly phase: ToolPhase };
+    };
+type CardDisplay =
+  | { readonly kind: "loading" }
+  | { readonly kind: "live"; readonly preview: LiveContent }
+  | {
+      readonly kind: "published";
+      readonly page: number;
+      readonly pages: number;
+      readonly tool: InstanceType<typeof ToolExecutionComponent> | undefined;
+    };
+type CardContent = CardDisplay | { readonly kind: "unavailable"; readonly previous: CardDisplay };
+
 export class Card implements Component {
   id: string;
-  readonly content = new Container();
+  private readonly content = new Container();
   readonly footer = new Container();
-  assistant?: InstanceType<typeof AssistantMessageComponent>;
-  status?: InstanceType<typeof Text>;
-  blocks?: ViewedBlock[];
-  ended?: boolean;
-  value?: unknown;
-  tool?: InstanceType<typeof ToolExecutionComponent>;
   selected = false;
   expanded = false;
-  ready = false;
-  page = 0;
-  pages = 1;
+  private state: CardContent = { kind: "loading" };
   private cache?: { width: number; lines: string[] } | undefined;
-  private arguments?: unknown;
-  private phase = "";
   constructor(id: string) {
     this.id = id;
+    this.content.addChild(new Text("Loading published content…", 0, 0));
+  }
+  private get display(): CardDisplay {
+    return this.state.kind === "unavailable" ? this.state.previous : this.state;
+  }
+  get ready(): boolean {
+    return this.display.kind === "published";
+  }
+  get page(): number {
+    const display = this.display;
+    return display.kind === "published" ? display.page : 0;
+  }
+  get pages(): number {
+    const display = this.display;
+    return display.kind === "published" ? display.pages : 1;
+  }
+  get tool(): InstanceType<typeof ToolExecutionComponent> | undefined {
+    const display = this.display;
+    if (display.kind === "published") {
+      return display.tool;
+    }
+    return display.kind === "live" && display.preview.kind === "tool"
+      ? display.preview.component
+      : undefined;
+  }
+  private setLive(preview: LiveContent): void {
+    const display: CardDisplay = { kind: "live", preview };
+    this.state =
+      this.state.kind === "unavailable" ? { kind: "unavailable", previous: display } : display;
+  }
+  unavailable(message: string): void {
+    this.state = { kind: "unavailable", previous: this.display };
+    this.footer.clear();
+    this.footer.addChild(new Text(`Content unavailable: ${message}`, 0, 0));
+    this.invalidate();
   }
   publish(page: ConversationPage, args: unknown, options: CardOptions): void {
+    const previousTool = this.tool;
     this.content.clear();
     this.footer.clear();
-    this.ready = true;
-    this.page = page.page;
-    this.pages = page.pages;
     const { message } = page;
     const content = blocks(message.content);
+    let tool: InstanceType<typeof ToolExecutionComponent> | undefined;
     if (message.role === "assistant") {
       this.content.addChild(
         new AssistantMessageComponent(assistant(content, false), options.hideThinking),
@@ -147,7 +200,7 @@ export class Card implements Component {
         this.content.addChild(new Text(message.errorMessage, 0, 0));
       }
     } else if (message.role === "toolResult") {
-      this.publishTool(message, args, options);
+      tool = this.publishTool(message, args, options, previousTool);
     } else {
       this.content.addChild(
         new Text(
@@ -157,15 +210,24 @@ export class Card implements Component {
         ),
       );
     }
+    this.state = { kind: "published", page: page.page, pages: page.pages, tool };
+    this.cache = undefined;
   }
-  private publishTool(message: Record<string, unknown>, args: unknown, options: CardOptions): void {
-    this.tool ??= nativeTool(
-      typeof message.toolName === "string" ? message.toolName : "tool",
-      typeof message.toolCallId === "string" ? message.toolCallId : this.id,
-      args ?? {},
-      options,
-    );
-    this.tool.updateResult({
+  private publishTool(
+    message: Record<string, unknown>,
+    args: unknown,
+    options: CardOptions,
+    previous: InstanceType<typeof ToolExecutionComponent> | undefined,
+  ): InstanceType<typeof ToolExecutionComponent> {
+    const tool =
+      previous ??
+      nativeTool(
+        typeof message.toolName === "string" ? message.toolName : "tool",
+        typeof message.toolCallId === "string" ? message.toolCallId : this.id,
+        args ?? {},
+        options,
+      );
+    tool.updateResult({
       content: blocks(message.content)
         .filter((part) => part.type === "text")
         .map((part) =>
@@ -173,53 +235,78 @@ export class Card implements Component {
         ),
       isError: message.isError === true,
     });
-    this.tool.setExpanded(this.expanded);
-    this.content.addChild(this.tool);
+    tool.setExpanded(this.expanded);
+    this.content.addChild(tool);
     this.footer.addChild(
       new Text("Arguments are a bounded preview. Exact call in Details journal.", 0, 0),
     );
+    return tool;
   }
-  private configureTool(value: ViewedTool, options: CardOptions): void {
-    if (!this.tool) {
-      this.tool = nativeTool(value.name, value.id, projected(value.args) ?? {}, options);
-      this.tool.setExpanded(this.expanded);
-      this.content.addChild(this.tool);
-      this.status = new Text("", 0, 0);
-      this.content.addChild(this.status);
+  private configureTool(
+    value: ViewedTool,
+    options: CardOptions,
+  ): Extract<LiveContent, { kind: "tool" }> {
+    const display = this.display;
+    if (display.kind === "live" && display.preview.kind === "tool") {
+      return display.preview;
     }
-    if (this.arguments !== value.args) {
-      this.tool.updateArgs(projected(value.args) ?? {});
-      this.arguments = value.args;
-      this.cache = undefined;
-    }
+    const component =
+      this.tool ?? nativeTool(value.name, value.id, projected(value.args) ?? {}, options);
+    component.setExpanded(this.expanded);
+    const status = new Text("", 0, 0);
+    this.content.clear();
+    this.content.addChild(component);
+    this.content.addChild(status);
+    const live: Extract<LiveContent, { kind: "tool" }> = {
+      kind: "tool",
+      component,
+      status,
+      arguments: value.args,
+      progress: { kind: "unseen" },
+    };
+    this.setLive(live);
+    this.cache = undefined;
+    return live;
   }
   updateTool(value: ViewedTool, options: CardOptions, preparing: boolean): void {
-    this.configureTool(value, options);
+    const live = this.configureTool(value, options);
     const ended = value.end !== undefined;
     const source = value.end ?? { result: value.partial, isError: false };
-    let phase = preparing ? "Preparing tool call" : "Running";
+    let phase: ToolPhase = preparing ? "Preparing tool call" : "Running";
     if (ended) {
       phase = "Awaiting journal publication";
     }
-    if (this.value !== source.result || this.phase !== phase) {
+    if (live.arguments !== value.args) {
+      live.component.updateArgs(projected(value.args) ?? {});
+      live.arguments = value.args;
+      this.cache = undefined;
+    }
+    if (
+      live.progress.kind === "unseen" ||
+      live.progress.value !== source.result ||
+      live.progress.phase !== phase
+    ) {
       if (source.result !== undefined) {
-        this.preview(source.result, source.isError, !ended);
+        this.preview(live.component, source.result, source.isError, !ended);
       }
-      this.status?.setText(phase);
-      this.phase = phase;
-      this.value = source.result;
-      this.ended = ended;
+      live.status.setText(phase);
+      live.progress = { kind: "shown", value: source.result, phase };
       this.cache = undefined;
     }
   }
-  private preview(value: unknown, isError: boolean, partial: boolean): void {
+  private preview(
+    tool: InstanceType<typeof ToolExecutionComponent>,
+    value: unknown,
+    isError: boolean,
+    partial: boolean,
+  ): void {
     const result = projected(value) ?? {
       content: [
         { type: "text", text: "Live preview unavailable; full result appears after publication." },
       ],
     };
     if (isRecord(result)) {
-      this.tool?.updateResult(
+      tool.updateResult(
         {
           content: blocks(result.content)
             .filter((part) => part.type === "text")
@@ -233,22 +320,33 @@ export class Card implements Component {
     }
   }
   stream(message: { blocks: ViewedBlock[]; ended: boolean }, hideThinking: boolean): void {
-    if (!this.assistant) {
-      this.assistant = new AssistantMessageComponent(undefined, hideThinking);
-      this.status = new Text("", 0, 0);
-      this.content.addChild(this.assistant);
-      this.content.addChild(this.status);
-    }
-    if (this.matches(message.blocks, message.ended)) {
+    const display = this.display;
+    const live =
+      display.kind === "live" && display.preview.kind === "assistant" ? display.preview : undefined;
+    if (live && this.matches(live, message.blocks, message.ended)) {
       return;
     }
-    this.assistant.updateContent(
+    const { component, status } = live ?? {
+      component: new AssistantMessageComponent(undefined, hideThinking),
+      status: new Text("", 0, 0),
+    };
+    if (!live) {
+      this.content.clear();
+      this.content.addChild(component);
+      this.content.addChild(status);
+    }
+    component.updateContent(
       assistant(message.blocks.filter(Boolean), !message.ended),
       !message.ended,
     );
-    this.status?.setText(message.ended ? "Awaiting journal publication" : "In progress");
-    this.blocks = message.blocks.slice();
-    this.ended = message.ended;
+    status.setText(message.ended ? "Awaiting journal publication" : "In progress");
+    this.setLive({
+      kind: "assistant",
+      component,
+      status,
+      blocks: message.blocks.slice(),
+      ended: message.ended,
+    });
     this.cache = undefined;
   }
   invalidate(): void {
@@ -266,17 +364,22 @@ export class Card implements Component {
     }
     return this.cache.lines;
   }
-  private matches(content: ViewedBlock[], ended: boolean): boolean {
+  private matches(
+    live: Extract<LiveContent, { kind: "assistant" }>,
+    content: ViewedBlock[],
+    ended: boolean,
+  ): boolean {
     return (
-      this.ended === ended &&
-      this.blocks?.length === content.length &&
-      content.every((block, index) => this.blocks?.[index] === block)
+      live.ended === ended &&
+      live.blocks.length === content.length &&
+      content.every((block, index) => live.blocks[index] === block)
     );
   }
   toggle(): void {
-    if (this.tool) {
+    const tool = this.tool;
+    if (tool) {
       this.expanded = !this.expanded;
-      this.tool.setExpanded(this.expanded);
+      tool.setExpanded(this.expanded);
       this.cache = undefined;
     }
   }

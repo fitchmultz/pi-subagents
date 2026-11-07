@@ -7,7 +7,6 @@ import { test as nodeTest, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   Container,
-  Marked,
   ProcessTerminal,
   stripTerminalSequences,
   TuiAltScreen,
@@ -126,39 +125,6 @@ async function until(
 }
 function requests(root: string): number {
   return fs.readFileSync(path.join(root, "requests.jsonl"), "utf8").trim().split("\n").length;
-}
-
-/** Counts the selected host's Markdown parses, the expensive native work behind each render. */
-function markdownParses() {
-  const lexer = spy(Marked.prototype, "lexer");
-  const count = (marker: string) =>
-    lexer.getCalls().filter((call) => call.args[0].includes(marker)).length;
-  // The host's own streaming component decides whether an unchanged run keeps its parse.
-  const probe = new sdk.AssistantMessageComponent(undefined, false);
-  for (const text of ["PROBE_ANSWER", "PROBE_ANSWER grows"]) {
-    probe.updateContent(
-      fauxAssistantMessage([
-        { type: "thinking", thinking: "PROBE_THINKING" },
-        { type: "text", text },
-      ]),
-      true,
-    );
-    probe.render(46);
-  }
-  const reused = count("PROBE_THINKING") === 1;
-  return {
-    lexer,
-    count,
-    assertReused(parses: number) {
-      if (reused) {
-        assert.equal(
-          parses,
-          1,
-          "answer updates reuse the unchanged native thinking parse, as native Pi streaming does",
-        );
-      }
-    },
-  };
 }
 
 function actorExited(pid: number): boolean {
@@ -757,8 +723,8 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       terminal.width = 46;
       terminal.resize?.();
       terminal.clear();
-      const parses = markdownParses();
-      t.after(() => parses.lexer.restore());
+      const updates = spy(sdk.AssistantMessageComponent.prototype, "updateContent");
+      t.after(() => updates.restore());
       fs.writeFileSync(path.join(root, "release-child"), "release");
       await until(
         () => terminal.text().includes("CHILD_STREAM_START"),
@@ -776,14 +742,24 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         "the live answer keeps growing below its completed thinking",
         visible,
       );
-      const thinking = parses.count("CHILD_THINKING_FACT");
-      assert.ok(parses.count("CHILD_STREAM_START") > 1, "several answer revisions have rendered");
+      const streamed = updates
+        .getCalls()
+        .filter((call) =>
+          call.args[0].content.some(
+            (block) => block.type === "text" && block.text.includes("CHILD_STREAM_START"),
+          ),
+        );
+      assert.ok(streamed.length > 1, "several answer revisions reached the native component");
       assert.doesNotMatch(
         fs.readFileSync(journalFile, "utf8"),
         /CHILD_FINAL_FACT/,
         "the parse count covers only the live message",
       );
-      parses.assertReused(thinking);
+      assert.equal(
+        new Set(streamed.map((call): unknown => call.thisValue)).size,
+        1,
+        "answer revisions reuse one native assistant component",
+      );
       await until(
         () =>
           terminal.text().includes("CHILD_TOOL_ERROR_FACT") &&
