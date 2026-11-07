@@ -186,7 +186,7 @@ export class Viewer {
     const item = `{"id":${JSON.stringify(tool.id)},${fields.join(",")}}`;
     if (fields.length > 0 && frame.take(item)) {
       frame.tools.push(item);
-      this.tools.set(tool.id, { rev: tool.rev, ended: tool.ended !== undefined });
+      this.tools.set(tool.id, { rev: tool.rev, ended: tool.kind === "awaiting-publication" });
     }
   }
   private toolFields(tool: LiveTool, state: LiveState): string[] {
@@ -198,15 +198,17 @@ export class Viewer {
     if (tool.rev > (cursor?.rev ?? 0)) {
       fields.push(`"partial":{"rev":${tool.rev},"value":${tool.projectedPartial(state.project)}}`);
     }
-    if (tool.ended !== undefined && cursor?.ended !== true) {
-      const result = tool.projectedResult(state.project);
-      fields.push(`"end":{"isError":${tool.ended.isError},"result":${result}}`);
+    if (cursor?.ended !== true) {
+      const end = tool.projectedEnd(state.project);
+      if (end !== undefined) {
+        fields.push(`"end":{"isError":${end.isError},"result":${end.json}}`);
+      }
     }
     return fields;
   }
   private message(frame: Frame, state: LiveState): string | undefined {
     const live = state.message;
-    if (live === undefined || live.message === undefined) {
+    if (live === undefined) {
       return undefined;
     }
     const reset = this.key !== live.key;
@@ -217,9 +219,10 @@ export class Viewer {
       this.ended = false;
     }
     const content = live.message.content;
-    const changed = reset || content.length !== this.count || live.ended !== this.ended;
+    const ended = live.kind === "awaiting-publication";
+    const changed = reset || content.length !== this.count || ended !== this.ended;
     this.count = content.length;
-    this.ended = live.ended;
+    this.ended = ended;
     const limit = Math.min(content.length, BLOCKS);
     this.blocks.length = Math.min(this.blocks.length, limit);
     this.appendBlocks(frame, state, content, limit);
@@ -227,7 +230,7 @@ export class Viewer {
       return undefined;
     }
     // An ended message stays live until its session entry is found and handed over.
-    return `{"key":${live.key},"reset":${reset},"ended":${live.ended},"count":${content.length},"blocks":[${frame.blocks.join(",")}]}`;
+    return `{"key":${live.key},"reset":${reset},"ended":${ended},"count":${content.length},"blocks":[${frame.blocks.join(",")}]}`;
   }
   /** Refill the frame from live content blocks, reusing cursors by block identity. */
   private appendBlocks(

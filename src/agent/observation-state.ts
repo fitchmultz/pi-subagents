@@ -24,8 +24,8 @@ const WRITING = { text: "writing", thinking: "thinking", toolCall: "calling" } a
 /** A live in-flight assistant message: a transient native reference, never a receipt. */
 export interface LiveMessage {
   readonly key: number;
-  message: AssistantMessage | undefined;
-  ended: boolean;
+  readonly kind: "streaming" | "awaiting-publication";
+  readonly message: AssistantMessage;
 }
 /** A native message found in the session tree: `[seq, entry id, live message key, tool call id]`. */
 export interface Settlement {
@@ -33,39 +33,68 @@ export interface Settlement {
   readonly json: string;
 }
 
+interface ToolProgress {
+  readonly value: unknown;
+  readonly rev: number;
+  json?: string;
+}
+type ToolPhase =
+  | { readonly kind: "running"; readonly progress: ToolProgress }
+  | {
+      readonly kind: "awaiting-publication";
+      readonly progress: ToolProgress;
+      readonly isError: boolean;
+      readonly result: unknown;
+      json?: string;
+    };
+
 export class LiveTool {
-  partial?: unknown;
-  rev = 0;
-  ended?: { readonly isError: boolean; readonly result: unknown };
+  private phase: ToolPhase = { kind: "running", progress: { value: undefined, rev: 0 } };
   readonly id: string;
   readonly name: string;
   readonly args: unknown;
   private argsJson?: string;
-  private partialJson?: { readonly rev: number; readonly json: string };
-  private resultJson?: string;
   constructor(id: string, name: string, args: unknown) {
     this.id = id;
     this.name = name;
     this.args = args;
   }
+  get kind(): ToolPhase["kind"] {
+    return this.phase.kind;
+  }
+  get rev(): number {
+    return this.phase.progress.rev;
+  }
   /** Replaceable progress: only the latest reference is projected at the next flush. */
   progress(value: unknown): void {
-    this.partial = value;
-    this.rev++;
+    if (this.phase.kind === "running") {
+      this.phase = {
+        kind: "running",
+        progress: { value, rev: this.phase.progress.rev + 1 },
+      };
+    }
+  }
+  finish(isError: boolean, result: unknown): void {
+    this.phase = { kind: "awaiting-publication", progress: this.phase.progress, isError, result };
   }
   projectedArgs(project: (value: unknown) => string): string {
     this.argsJson ??= project(this.args);
     return this.argsJson;
   }
   projectedPartial(project: (value: unknown) => string): string {
-    if (this.partialJson?.rev !== this.rev) {
-      this.partialJson = { rev: this.rev, json: project(this.partial) };
-    }
-    return this.partialJson.json;
+    const progress = this.phase.progress;
+    progress.json ??= project(progress.value);
+    return progress.json;
   }
-  projectedResult(project: (value: unknown) => string): string {
-    this.resultJson ??= project(this.ended?.result);
-    return this.resultJson;
+  projectedEnd(
+    project: (value: unknown) => string,
+  ): { readonly isError: boolean; readonly json: string } | undefined {
+    const phase = this.phase;
+    if (phase.kind === "running") {
+      return;
+    }
+    phase.json ??= project(phase.result);
+    return { isError: phase.isError, json: phase.json };
   }
 }
 
@@ -138,15 +167,17 @@ export class LiveState {
     }
   }
   private assistant(type: MessageEvent["type"], message: AssistantMessage): void {
-    let live = this.message;
-    if (type === "message_start" || live === undefined) {
+    let key = this.message?.key;
+    if (type === "message_start" || key === undefined) {
       // A previous message still here was never found in the session tree.
-      this.evicted += live === undefined ? 0 : 1;
-      live = { key: ++this.nextKey, message, ended: false };
-      this.message = live;
+      this.evicted += key === undefined ? 0 : 1;
+      key = ++this.nextKey;
     }
-    live.message = message;
-    live.ended = type === "message_end";
+    this.message = {
+      key,
+      kind: type === "message_end" ? "awaiting-publication" : "streaming",
+      message,
+    };
     this.version++;
   }
   tool(event: ToolEvent): void {
@@ -162,7 +193,7 @@ export class LiveState {
       tool?.progress(event.partialResult);
       this.progressUpdates++;
     } else if (tool) {
-      tool.ended = { isError: event.isError, result: event.result };
+      tool.finish(event.isError, event.result);
       this.activityVersion++;
     }
   }
@@ -254,7 +285,7 @@ export class LiveState {
   /** Sampled from public native state, so compact peers never need token-rate events. */
   activity(busy: boolean): string {
     const { session } = this;
-    const running = [...this.tools.values()].filter((tool) => tool.ended === undefined);
+    const running = [...this.tools.values()].filter((tool) => tool.kind === "running");
     const streaming = session.state.streamingMessage;
     const content = streaming?.role === "assistant" ? streaming.content : undefined;
     const last = content?.at(-1)?.type;
