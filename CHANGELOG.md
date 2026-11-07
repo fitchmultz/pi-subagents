@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
+- Share saved-run admission and completion interpretation between continuation and inspection, preserving exact-prompt retry and exclusive successor claims.
 
 ## 0.52.20 - 2026-11-07
 

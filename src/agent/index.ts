@@ -27,14 +27,11 @@ import {
 } from "./host.ts";
 import { serveParked } from "./parking.ts";
 import {
-  resultSchema,
   attachmentSchema,
-  admissionSchema,
   commandSchema,
   type Attachment,
   type Launch,
   type ProcessIdentity,
-  type Result,
 } from "./contracts.ts";
 import { delegateSchema, runsSchema, type DelegateInput, type RunsInput } from "./tool-schemas.ts";
 import {
@@ -56,6 +53,7 @@ import { legacyDirectory, reconcileLegacy } from "./legacy.ts";
 import { pathStamp } from "./wake.ts";
 import { CompletionWatches } from "./completion-watches.ts";
 import { savedContinuation } from "./saved.ts";
+import { continuationDecision, readRunState } from "./run-state.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
@@ -337,20 +335,6 @@ class AgentRuntime {
       .sort((a, b) => a.createdAt - b.createdAt);
     return renderInventory(this.base, all, this.ctx, input);
   }
-  private continuationResult(launch: Launch): Result | "pending" | undefined {
-    const result = read(path.join(runDirectory(this.base, launch.id), "result.json"), resultSchema);
-    if (result) {
-      return result;
-    }
-    const admission = read(
-      path.join(conversation(this.base, launch), "admissions", `${launch.id}.json`),
-      admissionSchema,
-    );
-    if (!admission || admission.id !== launch.id || admission.action !== "run") {
-      return "pending";
-    }
-    return;
-  }
   private async retryContinuation(launch: Launch, input: RunsInput) {
     const identity = actor(this.base, launch);
     const command = read(
@@ -379,12 +363,17 @@ class AgentRuntime {
     if (!fs.existsSync(launch.sessionFile)) {
       throw new Error("Missing saved native session; no process was launched.");
     }
-    const completed = this.continuationResult(launch);
-    if (completed === "pending") {
+    const state = readRunState(this.base, launch);
+    if (state.kind === "saved-unadmitted") {
       return this.retryContinuation(launch, input);
     }
     const identity = actor(this.base, launch);
-    if (!completed && identity && alive(identity)) {
+    if (
+      continuationDecision(
+        state,
+        state.kind === "admitted" && identity !== undefined && alive(identity),
+      ) === "guidance"
+    ) {
       const command = enqueue(this.base, launch, "steer", { prompt: input.prompt });
       return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",
@@ -408,20 +397,20 @@ class AgentRuntime {
     if (input.prompt === undefined) {
       throw new Error("continue requires the entire new prompt.");
     }
-    const { launch, created } = savedContinuation({
+    const { launch, kind } = savedContinuation({
       id: input.id,
       prompt: input.prompt,
       context,
       base: this.base,
       agentDir: this.agentDir,
     });
-    if (created) {
+    if (kind === "created") {
       // The durable adoption claim survives ambiguous after-launch failures.
       enqueue(this.base, launch, "run");
       await ensureActor(this.base, launch, this.shutdown.signal);
     }
     return renderReceipt(this.base, launch, this.ctx, {
-      receipt: created ? "continuation" : "existing-successor",
+      receipt: kind === "created" ? "continuation" : "existing-successor",
     });
   }
   private async runs(input: RunsInput, context: ExtensionContext) {
