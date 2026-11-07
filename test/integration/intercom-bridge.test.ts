@@ -1425,15 +1425,20 @@ nodeTest(
       assert.deepEqual(record(first.wake).messages, []);
       const second = await run(`
       const restored = mailbox.pendingNotifications();
-      mailbox.notificationAccepted("notice");
-      mailbox.notificationAccepted("ask");
+      mailbox.retireNotification("notice");
+      mailbox.retireNotification("ask");
       const from = {id:"saved-sender",cwd:"/fixture",model:"fixture"};
       const replay = mailbox.add({from,message:{id:"notice",timestamp:3,content:{text:"do not resurrect"}}});
       mailbox.add({from,message:{id:"notify-first",timestamp:4,content:{text:"reverse order"}}});
-      mailbox.notificationAccepted("notify-first");
+      mailbox.retireNotification("notify-first");
       const stillUnread = mailbox.page(0,256);
       mailbox.ack(["notify-first"]);
-      console.log(JSON.stringify({restored,replay,stillUnread,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
+      mailbox.add({from,message:{id:"ack-first",timestamp:5,content:{text:"retained legacy intent"}}});
+      mailbox.remove("ack-first");
+      const retained = mailbox.pendingNotifications();
+      mailbox.retireNotification("ack-first");
+      const retainedReplay = mailbox.add({from,message:{id:"ack-first",timestamp:6,content:{text:"do not resurrect"}}});
+      console.log(JSON.stringify({restored,replay,stillUnread,retained,retainedReplay,inbox:mailbox.page(0,256),wake:mailbox.pendingNotifications()}));
     `);
       assert.deepEqual(record(second.restored), record(first.wake));
       assert.equal(second.replay, "duplicate");
@@ -1441,6 +1446,12 @@ nodeTest(
         messages(record(second.stillUnread)).map((item) => item.message.id),
         ["notify-first"],
       );
+      const retained = record(second.retained).messages;
+      assert.ok(Array.isArray(retained));
+      assert.equal(retained.length, 1);
+      assert.equal(record(retained[0]).acknowledged, true);
+      assert.equal(envelope(retained[0]).message.content.text, "retained legacy intent");
+      assert.equal(second.retainedReplay, "duplicate");
       assert.deepEqual(messages(record(second.inbox)), []);
       assert.deepEqual(record(second.wake).messages, []);
       const group = ["group-1", "group-2", "group-3"];

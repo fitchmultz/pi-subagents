@@ -309,12 +309,15 @@ class Bridge {
     for (const socket of this.sockets) {
       socket.destroy();
     }
-    await Promise.all([
-      ...this.handlers,
-      ...sessions.map((session) => session.settled()),
+    const [settlements] = await Promise.all([
+      Promise.all(sessions.map((session) => session.settled())),
+      Promise.all(this.handlers),
       this.presence?.stop(),
       this.deliveries.stop(),
     ]);
+    if (settlements.some((outcome) => outcome.kind !== "retired")) {
+      throw new Error("Bridge session cleanup failed.");
+    }
     log("shutdown", { result: "closed" });
   }
   private admission(req: IncomingMessage): {
