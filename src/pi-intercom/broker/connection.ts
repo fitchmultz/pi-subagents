@@ -43,16 +43,20 @@ interface ConnectionHandlers {
   readonly closed: (error: Readonly<Error>, expected: boolean) => void;
 }
 
+type ConnectionPhase =
+  | { readonly kind: "acquired" | "active" | "failed" | "closed" }
+  | {
+      readonly kind: "registering";
+      readonly resolve: () => void;
+      readonly reject: (error: Readonly<Error>) => void;
+      readonly timer: NodeJS.Timeout;
+    }
+  | { readonly kind: "closing"; readonly task: Promise<void>; readonly registered: boolean };
+
 /** One socket owns registration, read/error listeners, and graceful shutdown. */
 export class BrokerConnection {
-  private registered = false;
-  private closing = false;
+  private phase: ConnectionPhase = { kind: "acquired" };
   private failure: Readonly<Error> | null = null;
-  private registration: {
-    readonly resolve: () => void;
-    readonly reject: (error: Readonly<Error>) => void;
-  } | null = null;
-  private registrationTimer: NodeJS.Timeout | null = null;
   private readonly reader: (data: Buffer) => void;
 
   readonly socket: net.Socket;
@@ -69,12 +73,9 @@ export class BrokerConnection {
 
   start(registration: unknown): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.registration = { resolve, reject };
-      this.registrationTimer = setTimeout(
-        () => this.failRegistration(new Error("Connection timeout")),
-        10000,
-      );
-      this.registrationTimer.unref();
+      const timer = setTimeout(() => this.failRegistration(new Error("Connection timeout")), 10000);
+      timer.unref();
+      this.phase = { kind: "registering", resolve, reject, timer };
       try {
         writeMessage(this.socket, registration);
       } catch (error) {
@@ -84,23 +85,28 @@ export class BrokerConnection {
   }
 
   confirmRegistration(): void {
-    this.registered = true;
-    const pending = this.registration;
-    this.clearRegistration();
-    pending?.resolve();
+    const pending = this.takeRegistration();
+    if (pending !== undefined) {
+      this.phase = { kind: "active" };
+      pending.resolve();
+    }
   }
 
-  private clearRegistration(): void {
-    if (this.registrationTimer) {
-      clearTimeout(this.registrationTimer);
+  private takeRegistration() {
+    const pending = this.phase;
+    if (pending.kind !== "registering") {
+      return;
     }
-    this.registrationTimer = null;
-    this.registration = null;
+    clearTimeout(pending.timer);
+    this.phase = { kind: "acquired" };
+    return pending;
   }
 
   private failRegistration(error: Readonly<Error>): void {
-    const pending = this.registration;
-    this.clearRegistration();
+    const pending = this.takeRegistration();
+    if (this.phase.kind !== "closing") {
+      this.phase = { kind: "failed" };
+    }
     this.failure = error;
     this.socket.destroy();
     pending?.reject(error);
@@ -127,19 +133,23 @@ export class BrokerConnection {
   };
 
   private readonly onClose = (): void => {
-    const pending = this.registration;
-    this.clearRegistration();
+    const closing = this.phase.kind === "closing";
+    const pending = this.takeRegistration();
+    this.phase = { kind: "closed" };
     this.socket.off("data", this.reader);
     this.socket.off("error", this.onError);
     this.socket.off("close", this.onClose);
     pending?.reject(new Error("Connection closed before registration"));
-    this.handlers.closed(this.failure ?? new Error("Client disconnected"), this.closing);
+    this.handlers.closed(this.failure ?? new Error("Client disconnected"), closing);
   };
+
+  private get registered(): boolean {
+    return this.phase.kind === "active" || (this.phase.kind === "closing" && this.phase.registered);
+  }
 
   isActive(): boolean {
     return (
-      this.registered &&
-      !this.closing &&
+      this.phase.kind === "active" &&
       !this.socket.destroyed &&
       !this.socket.writableEnded &&
       this.socket.writable
@@ -147,15 +157,18 @@ export class BrokerConnection {
   }
 
   disconnect(): Promise<void> {
-    this.closing = true;
+    const phase = this.phase;
+    if (phase.kind === "closing") {
+      return phase.task;
+    }
+    if (phase.kind === "closed") {
+      return Promise.resolve();
+    }
+    const pending = this.takeRegistration();
+    pending?.reject(new Error("Client disconnected before registration"));
     this.failure = null;
-    return new Promise((resolve) => {
-      let settled = false;
+    const task = new Promise<void>((resolve) => {
       const finish = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
         clearTimeout(timeout);
         this.socket.off("close", finish);
         this.socket.off("error", onError);
@@ -169,12 +182,18 @@ export class BrokerConnection {
       }, 2000);
       this.socket.once("close", finish);
       this.socket.once("error", onError);
-      try {
+    });
+    this.phase = { kind: "closing", task, registered: phase.kind === "active" };
+    try {
+      if (phase.kind === "active" || phase.kind === "registering") {
         writeMessage(this.socket, { type: "unregister" });
         this.socket.end();
-      } catch {
+      } else {
         this.socket.destroy();
       }
-    });
+    } catch {
+      this.socket.destroy();
+    }
+    return task;
   }
 }
