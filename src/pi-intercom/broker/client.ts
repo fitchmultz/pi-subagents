@@ -63,6 +63,10 @@ function messageDelivery(options: SendOptions): MessageDelivery | undefined {
   return "steer";
 }
 
+type ClientPhase =
+  | { readonly kind: "idle" | "connected" }
+  | { readonly kind: "connecting" | "closing"; readonly task: Promise<void> };
+
 export class IntercomClient extends EventEmitter {
   private connection: BrokerConnection | null = null;
   private _sessionId: string | null = null;
@@ -80,8 +84,7 @@ export class IntercomClient extends EventEmitter {
     readonly reject: (e: Readonly<Error>) => void;
     readonly reader: SnapshotReader;
   }>();
-  private connecting = false;
-  private disconnecting = false;
+  private phase: ClientPhase = { kind: "idle" };
   private readonly sendTimeoutMs: number;
   private readonly listTimeoutMs: number;
 
@@ -111,13 +114,13 @@ export class IntercomClient extends EventEmitter {
   isConnected(): boolean {
     return (
       (this._sessionId ?? "").length > 0 &&
-      !this.disconnecting &&
+      this.phase.kind !== "closing" &&
       this.connection?.isActive() === true
     );
   }
 
   private requireActiveSocket(): net.Socket {
-    if (this.disconnecting) {
+    if (this.phase.kind === "closing") {
       throw new Error("Client disconnecting");
     }
     const connection = this.connection;
@@ -131,60 +134,71 @@ export class IntercomClient extends EventEmitter {
   }
 
   async connect(session: Omit<SessionInfo, "id">, requestedId?: string): Promise<void> {
-    if (this.connection || this.connecting) {
+    if (this.connection || this.phase.kind !== "idle") {
       throw new Error("Already connected");
     }
-    this.connecting = true;
+    const task = this.establish(session, requestedId);
+    this.phase = { kind: "connecting", task };
     try {
-      const socket = await connectBrokerSocket();
-      const connection = new BrokerConnection(socket, {
-        message: (message) => this.handleBrokerMessage(message),
-        error: (error) => {
-          this.emit("error", error);
-        },
-        closed: (error, expected) => {
-          if (this.connection !== connection) {
-            return;
-          }
-          const established = this._sessionId !== null;
-          this.connection = null;
-          this._sessionId = null;
-          this._topicsSupported = false;
-          this.parking.settle(false);
-          this.guardedDeliverySupported = false;
-          this.wakes.supported = false;
-          this.disconnecting = false;
-          this.failPending(error);
-          if (established && !expected) {
-            this.emit("disconnected", error);
-          }
-        },
-      });
-      this.connection = connection;
-      const { topics, subscriptions, ...identity } = session;
-      try {
-        await connection.start({
-          type: "register",
-          session: identity,
-          requestedId,
-          topicFrames: true,
-          lastMessages: true,
-          parking: true,
-          receiptReads: 1,
-          guardedDelivery: 1,
-          ...this.wakes.registration(),
-        });
-      } catch (error) {
-        if (this.connection === connection) {
-          this.connection = null;
-        }
-        throw error;
-      }
-      if (this.supportsTopics) {
-        await this.restoreTopics(topics, subscriptions);
-      }
+      await task;
     } finally {
-      this.connecting = false;
+      if (this.phase.kind === "connecting" && this.phase.task === task) {
+        this.phase = { kind: this.isConnected() ? "connected" : "idle" };
+      }
+    }
+  }
+
+  private async establish(session: Omit<SessionInfo, "id">, requestedId?: string): Promise<void> {
+    const socket = await connectBrokerSocket();
+    const connection = new BrokerConnection(socket, {
+      message: (message) => this.handleBrokerMessage(message),
+      error: (error) => {
+        this.emit("error", error);
+      },
+      closed: (error, expected) => {
+        if (this.connection !== connection) {
+          return;
+        }
+        const established = this._sessionId !== null;
+        this.connection = null;
+        this._sessionId = null;
+        this._topicsSupported = false;
+        this.parking.settle(false);
+        this.guardedDeliverySupported = false;
+        this.wakes.supported = false;
+        if (this.phase.kind === "connected") {
+          this.phase = { kind: "idle" };
+        }
+        this.failPending(error);
+        if (established && !expected) {
+          this.emit("disconnected", error);
+        }
+      },
+    });
+    this.connection = connection;
+    if (this.phase.kind === "closing") {
+      await connection.disconnect();
+      throw new Error("Client disconnecting");
+    }
+    const { topics, subscriptions, ...identity } = session;
+    try {
+      await connection.start({
+        type: "register",
+        session: identity,
+        requestedId,
+        topicFrames: true,
+        lastMessages: true,
+        parking: true,
+        receiptReads: 1,
+        guardedDelivery: 1,
+        ...this.wakes.registration(),
+      });
+    } catch (error) {
+      await connection.disconnect();
+      throw error;
+    }
+    if (this.supportsTopics) {
+      await this.restoreTopics(topics, subscriptions);
     }
   }
 
@@ -334,14 +348,30 @@ export class IntercomClient extends EventEmitter {
     return this.parking.request(() => this.requireActiveSocket(), on);
   }
 
-  async disconnect(): Promise<void> {
-    const connection = this.connection;
-    if (!connection) {
-      return;
+  disconnect(): Promise<void> {
+    const phase = this.phase;
+    if (phase.kind === "closing") {
+      return phase.task;
     }
-    this.disconnecting = true;
+    const connecting = phase.kind === "connecting" ? phase.task : undefined;
+    const task = Promise.resolve().then(() => this.close(connecting));
+    this.phase = { kind: "closing", task };
+    return task;
+  }
+
+  private async close(connecting: Promise<void> | undefined): Promise<void> {
     this.failPending(new Error("Client disconnected"));
-    await connection.disconnect();
+    try {
+      await this.connection?.disconnect();
+      try {
+        await connecting;
+      } catch {
+        // The connect caller owns acquisition failure; close still joins any acquired socket.
+      }
+      await this.connection?.disconnect();
+    } finally {
+      this.phase = { kind: "idle" };
+    }
   }
 
   listSessions(): Promise<SessionInfo[]> {
@@ -495,7 +525,7 @@ export class IntercomClient extends EventEmitter {
     readonly subscriptions?: SessionInfo["subscriptions"] | undefined;
     readonly topics?: readonly TopicUpdate[] | undefined;
   }): void {
-    if (this.disconnecting) {
+    if (this.phase.kind === "closing") {
       return;
     }
 

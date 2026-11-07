@@ -16,13 +16,15 @@ export interface JournalOptions {
   readonly stringChunk?: StringChunk | undefined;
 }
 
+type RecordState =
+  | { readonly kind: "blank" | "reading" }
+  | { readonly kind: "invalid"; readonly error: unknown };
+
 /** Byte-framed JSONL. Publication framing is independent of malformed-record tolerance. */
 export class JournalFrames {
   private projection: JsonProjection;
   private decoder = new TextDecoder("utf8", { fatal: true });
-  private error: unknown;
-  private failed = false;
-  private nonblank = false;
+  private state: RecordState = { kind: "blank" };
   private start: number;
   offset: number;
   private readonly policy: JournalPolicy;
@@ -48,20 +50,20 @@ export class JournalFrames {
     return new JsonProjection(this.select, this.options.stringChunk);
   }
   private part(bytes: Buffer): void {
-    if (!this.nonblank && bytes.some((byte) => ![9, 10, 13, 32].includes(byte))) {
-      this.nonblank = true;
+    if (this.state.kind === "invalid") {
+      return;
     }
-    if (!this.failed) {
-      try {
-        this.projection.write(this.decoder.decode(bytes, { stream: true }));
-      } catch (error) {
-        this.failed = true;
-        this.error = error;
-      }
+    if (this.state.kind === "blank" && bytes.some((byte) => ![9, 10, 13, 32].includes(byte))) {
+      this.state = { kind: "reading" };
+    }
+    try {
+      this.projection.write(this.decoder.decode(bytes, { stream: true }));
+    } catch (error) {
+      this.state = { kind: "invalid", error };
     }
   }
   private finishRecord(end: number): JournalRecord | undefined {
-    if (!this.nonblank || this.failed) {
+    if (this.state.kind !== "reading") {
       return undefined;
     }
     try {
@@ -72,17 +74,16 @@ export class JournalFrames {
       }
       return { value, start: this.start, end };
     } catch (error) {
-      this.failed = true;
-      this.error = error;
+      this.state = { kind: "invalid", error };
       return undefined;
     }
   }
   private commit(end: number): void {
     const start = this.start;
     const record = this.finishRecord(end);
-    const failed = this.failed;
-    const error = this.error;
-    if (failed && this.policy !== "inspect") {
+    const state = this.state;
+    if (state.kind === "invalid" && this.policy !== "inspect") {
+      const { error } = state;
       throw new SyntaxError(`Invalid JSONL record at byte ${start}: ${errorDescription(error)}`, {
         cause: error,
       });
@@ -90,10 +91,8 @@ export class JournalFrames {
     this.start = end;
     this.projection = this.newProjection();
     this.decoder = new TextDecoder("utf8", { fatal: true });
-    this.error = undefined;
-    this.failed = false;
-    this.nonblank = false;
-    if (!failed && record) {
+    this.state = { kind: "blank" };
+    if (record) {
       this.record(record);
     }
   }
@@ -110,7 +109,7 @@ export class JournalFrames {
   }
   finish(): number {
     if (this.requireNewline) {
-      if (this.policy === "strict" && this.nonblank) {
+      if (this.policy === "strict" && this.state.kind !== "blank") {
         throw new SyntaxError(`Unpublished JSONL record at byte ${this.start}: newline required`);
       }
     } else if (this.offset > this.start) {
