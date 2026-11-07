@@ -34,8 +34,9 @@ import {
   shouldReplaceDelivery,
 } from "./snapshots.ts";
 
+import { ReplaceDeliveries } from "./replace-deliveries.ts";
+
 const PID_PATH = join(getBrokerRuntimeDir(), "broker.pid");
-const REPLACE_DELIVERY_DELAY_MS = 1500;
 
 interface ConnectedSession extends ParkablePeer {
   info: SessionInfo;
@@ -45,18 +46,11 @@ interface ConnectedSession extends ParkablePeer {
   readonly receiptReads: boolean;
 }
 
-interface PendingReplaceDelivery {
-  readonly fromId: string;
-  readonly toId: string;
-  readonly message: Message;
-  readonly timer: NodeJS.Timeout;
-}
-
 class IntercomBroker {
   private readonly sessions = new Map<string, ConnectedSession>();
   private readonly lastMessages = new LastMessageRelay(this.sessions);
   private readonly parking = new ParkedSessions(this.sessions, this.deliverMessage.bind(this));
-  private readonly pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
+  private readonly replacements = new ReplaceDeliveries(this.deliverMessage.bind(this));
   private readonly server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private readonly socketPath: string;
@@ -201,7 +195,7 @@ class IntercomBroker {
     this.lastMessages.disconnected(sessionId);
     if (!this.parking.closed(session)) {
       this.sessions.delete(sessionId);
-      this.clearPendingReplaceDeliveries(sessionId);
+      this.replacements.disconnected(sessionId);
       this.broadcast({ type: "session_left", sessionId }, session.info);
     }
     this.scheduleShutdownCheck();
@@ -417,10 +411,6 @@ class IntercomBroker {
     };
   }
 
-  private replaceKey(fromId: string, toId: string, threadId: string): string {
-    return `${fromId}\0${toId}\0${threadId}`;
-  }
-
   private queueReplaceDelivery(
     fromId: string,
     toId: string,
@@ -431,17 +421,7 @@ class IntercomBroker {
     if (validationError !== null) {
       return { id: message.id, accepted: false, delivered: false, reason: validationError };
     }
-    const key = this.replaceKey(fromId, toId, message.threadId ?? "");
-    const existing = this.pendingReplaceDeliveries.get(key);
-    if (existing) {
-      clearTimeout(existing.timer);
-    }
-    const timer = setTimeout(() => {
-      this.pendingReplaceDeliveries.delete(key);
-      this.deliverMessage(toId, from, message);
-    }, REPLACE_DELIVERY_DELAY_MS);
-    timer.unref();
-    this.pendingReplaceDeliveries.set(key, { fromId, toId, message, timer });
+    this.replacements.stage(fromId, toId, from, message);
     return {
       id: message.id,
       accepted: true,
@@ -449,18 +429,6 @@ class IntercomBroker {
       queued: true,
       reason: "Queued for replace-mode delivery",
     };
-  }
-
-  private clearPendingReplaceDeliveries(sessionId: string): void {
-    for (const [key, pending] of this.pendingReplaceDeliveries) {
-      if (
-        pending.toId === sessionId ||
-        (pending.fromId === sessionId && pending.message.expectsReply === true)
-      ) {
-        clearTimeout(pending.timer);
-        this.pendingReplaceDeliveries.delete(key);
-      }
-    }
   }
 
   /** One admission rule; retained input is checked as the uncompacted envelope any later

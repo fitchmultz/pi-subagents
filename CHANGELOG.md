@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
+
 ## 0.52.19 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
