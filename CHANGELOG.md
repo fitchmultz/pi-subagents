@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Separate fenced broker peers from disconnected parked peers, with wake attempts owned only by the parked state.
+- Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 
 ## 0.52.20 - 2026-11-07
 

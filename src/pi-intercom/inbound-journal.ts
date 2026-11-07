@@ -191,12 +191,15 @@ export class InboundJournal {
           pending.from.id === entry.from.id &&
           pending.message.threadId === entry.message.threadId
         ) {
-          this.consume(pending.message.id);
-          this.replies.markReplied(pending.message.id);
+          this.supersede(pending.message.id);
         }
       }
     }
     this.pending.set(entry.message.id, entry);
+  }
+  private supersede(id: string): void {
+    this.consume(id);
+    this.replies.markReplied(id);
   }
   setStage(entry: PendingInboundMessage, stage: PendingInboundMessage["stage"]): void {
     if (entry.stage === stage) {
