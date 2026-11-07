@@ -28,19 +28,29 @@ function queuedAdmissions(): Set<string> {
   return queued;
 }
 const admissions = queuedAdmissions();
-function hold(owner: string, id: string): boolean {
-  const key = `${owner}/${id}`;
-  if (admissions.has(key)) {
-    return false;
-  }
-  admissions.add(key);
-  return true;
+function hold(owner: string, id: string): void {
+  admissions.add(`${owner}/${id}`);
 }
 export function release(owner: string, id: string): void {
   admissions.delete(`${owner}/${id}`);
 }
-export function isHeld(owner: string, id: string): boolean {
-  return admissions.has(`${owner}/${id}`);
+type DeliveryDecision =
+  | { readonly kind: "published"; readonly where: "file" | "memory" }
+  | { readonly kind: "held" | "deliverable" };
+
+/** Canonical result readers establish availability before deciding delivery. */
+function deliveryDecision(receipt: "file" | "memory" | undefined, held: boolean): DeliveryDecision {
+  return receipt === undefined
+    ? { kind: held ? "held" : "deliverable" }
+    : { kind: "published", where: receipt };
+}
+
+export function completionDelivery(
+  owner: string,
+  id: string,
+  receipt: "file" | "memory" | undefined,
+): DeliveryDecision {
+  return deliveryDecision(receipt, admissions.has(`${owner}/${id}`));
 }
 /** Returns whether any admission was released for reconciliation. */
 export function settle(owner: string, pending: boolean): boolean {
@@ -243,14 +253,24 @@ export function notifications(ctx: ExtensionContext, base: string, owner: string
   const awaited = new Set<string>();
   const runs = completed(base, owner, awaited);
   const receipts = runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager, owner);
+  const where = ctx.sessionManager.getSessionFile() === undefined ? "memory" : "file";
   for (const run of runs) {
-    const key = `${owner}/${run.id}`;
-    if (receipts?.get(run.id) !== undefined) {
-      admissions.delete(key);
-      continue;
+    const state = completionDelivery(
+      owner,
+      run.id,
+      receipts?.get(run.id) === undefined ? undefined : where,
+    );
+    switch (state.kind) {
+      case "published":
+        release(owner, run.id);
+        continue;
+      case "held":
+        continue;
+      case "deliverable":
+        break;
     }
-    const loaded = admissions.has(key) ? undefined : (run.loaded ?? load(base, run.id, owner));
-    if (loaded?.result !== undefined) {
+    const loaded = run.loaded ?? load(base, run.id, owner);
+    if (loaded.result !== undefined) {
       notices.push(notification(base, loaded.launch, loaded.result));
     }
   }

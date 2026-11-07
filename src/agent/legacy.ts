@@ -7,7 +7,7 @@ import { journalStamp } from "../shared/native-journal.ts";
 import { receiptId } from "./receipts.ts";
 import { resolveTempRootDir } from "../shared/types.ts";
 import { isRecord } from "../shared/unknown.ts";
-import { release, isHeld, type Completion } from "./notifications.ts";
+import { release, completionDelivery, type Completion } from "./notifications.ts";
 import { missing } from "./storage.ts";
 
 interface LegacyInput {
@@ -135,13 +135,13 @@ function published(ctx: ExtensionContext, input: LegacyInput): "file" | "memory"
 }
 function notification(ctx: ExtensionContext, input: LegacyInput): Completion | undefined {
   const identity = `legacy:${input.id}:${input.key}`;
-  const where = published(ctx, input);
-  if (where !== undefined) {
+  const state = completionDelivery(input.owner, identity, published(ctx, input));
+  if (state.kind === "published") {
     release(input.owner, identity);
     // Retire only an unchanged recovery input whose receipt is LF-published in the session file.
     // An in-memory receipt stops redelivery but never removes the saved input.
     if (
-      where === "file" &&
+      state.where === "file" &&
       journalStamp(fs.lstatSync(input.file, { bigint: true })) === input.stamp &&
       fs.readFileSync(input.file, "utf8") === input.raw
     ) {
@@ -149,7 +149,7 @@ function notification(ctx: ExtensionContext, input: LegacyInput): Completion | u
     }
     return;
   }
-  if (isHeld(input.owner, identity)) {
+  if (state.kind === "held") {
     return;
   }
   return {
