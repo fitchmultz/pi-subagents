@@ -3,7 +3,22 @@
 ## [Unreleased]
 
 - Separate fenced broker peers from disconnected parked peers, with wake attempts owned only by the parked state.
+
+## 0.52.22 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+
 - Bind each durable wake reservation to one POST and its required settlement, preserving retryable settlement failures and crash uncertainty.
+
+<!-- npm-release:unreleased:end -->
+
+- refactor: bind wake reservations to one settled attempt (#366) ([9bd60f9](https://github.com/fitchmultz/pi-subagents/commit/9bd60f92a4630ca9300ed9c4c06bc48758077a40))
+
+### What's Changed
+
+- refactor: bind wake reservations to one settled attempt by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/366
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.21...v0.52.22
 
 ## 0.52.21 - 2026-11-07
 
