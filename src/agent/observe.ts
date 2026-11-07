@@ -23,63 +23,34 @@ type Roots = Map<string, ReturnType<typeof actor>>;
 type Commit = (live: ReadonlyMap<string, boolean>) => void;
 type WidgetSnapshot = { status: string; rows: readonly ObserverRow[]; more: number; error: string };
 
+type InventoryPhase =
+  | { readonly kind: "checking" | "ready" | "disposed" }
+  | { readonly kind: "error"; readonly message: string };
+type ScanPhase = { readonly kind: "idle" } | { readonly kind: "running"; rescan: boolean };
+
 class Observer {
-  private ctx?: ExtensionContext | undefined;
-  private owner = "";
-  private base = "";
+  private readonly ctx: ExtensionContext;
+  private readonly owner: string;
+  private readonly base: string;
+  private phase: InventoryPhase = { kind: "checking" };
   private timer?: NodeJS.Timeout | undefined;
-  private scanning?: Promise<void> | undefined;
-  private rescan = false;
+  private scanning: ScanPhase = { kind: "idle" };
   private close?: (() => void) | undefined;
   private refresh?: (() => void) | undefined;
   private readonly rows = new Map<string, ObserverRow>();
   private readonly peers = new Map<string, { token: string; client: ObservationClient }>();
   private watcher?: fs.FSWatcher | undefined;
-  private widgetVisible = false;
-  private widgetSignature = "";
-  private widgetRender?: ((snapshot: WidgetSnapshot) => void) | undefined;
+  private widgetCache?:
+    | {
+        signature: string;
+        readonly render: (snapshot: WidgetSnapshot) => void;
+      }
+    | undefined;
   private readonly launches = new Map<string, Launch>();
   private readonly finished = new Set<string>();
   private pending: string[] = [];
-  private error = "";
   private total = 0;
-  private readonly pi: ExtensionAPI;
-  constructor(pi: ExtensionAPI) {
-    this.pi = pi;
-  }
-  private dispose(): void {
-    clearInterval(this.timer);
-    this.timer = undefined;
-    this.scanning = undefined;
-    this.rescan = false;
-    this.watcher?.close();
-    this.watcher = undefined;
-    for (const peer of this.peers.values()) {
-      peer.client.close();
-    }
-    this.peers.clear();
-    this.widgetVisible = false;
-    this.widgetSignature = "";
-    this.widgetRender = undefined;
-    this.close?.();
-    this.close = undefined;
-    this.refresh = undefined;
-    this.ctx?.ui.setWidget(STATUS_KEY, undefined);
-    this.ctx = undefined;
-    this.rows.clear();
-    this.launches.clear();
-    this.finished.clear();
-    this.pending = [];
-    this.owner = "";
-    this.base = "";
-    this.error = "";
-    this.total = 0;
-  }
-  private attach(ctx: ExtensionContext): void {
-    this.dispose();
-    if (ctx.mode !== "tui" || isChild()) {
-      return;
-    }
+  constructor(ctx: ExtensionContext) {
     this.ctx = ctx;
     this.owner = ctx.sessionManager.getSessionId();
     this.base = ownerDirectory(path.resolve(getPiAgentDir()), this.owner);
@@ -107,6 +78,31 @@ class Observer {
       /* Sparse native execution events still wake inventory without an idle poll. */
     }
     this.scan();
+  }
+  dispose(): void {
+    if (this.phase.kind === "disposed") {
+      return;
+    }
+    this.phase = { kind: "disposed" };
+    clearInterval(this.timer);
+    this.timer = undefined;
+    this.scanning = { kind: "idle" };
+    this.watcher?.close();
+    this.watcher = undefined;
+    for (const peer of this.peers.values()) {
+      peer.client.close();
+    }
+    this.peers.clear();
+    this.widgetCache = undefined;
+    this.close?.();
+    this.close = undefined;
+    this.refresh = undefined;
+    this.ctx.ui.setWidget(STATUS_KEY, undefined);
+    this.rows.clear();
+    this.launches.clear();
+    this.finished.clear();
+    this.pending = [];
+    this.total = 0;
   }
   private launch(id: string): Launch {
     const launch = this.launches.get(id) ?? launchAt(this.base, id, this.owner);
@@ -148,7 +144,7 @@ class Observer {
       return this.load(id, roots);
     } catch (error) {
       this.rows.set(id, { id, name: id, status: "unavailable", live: false, createdAt: 0 });
-      this.error = plainText(errorText(error));
+      this.phase = { kind: "error", message: plainText(errorText(error)) };
       return undefined;
     }
   }
@@ -170,43 +166,48 @@ class Observer {
       if (this.pending.length === 0) {
         this.pending = ids.filter((id) => !this.finished.has(id));
       }
-      this.error = "";
+      this.phase = { kind: this.rows.size < this.total ? "checking" : "ready" };
       return this.pending.splice(0, 50).flatMap((id) => this.loadVisible(id, roots) ?? []);
     } catch (error) {
-      this.error = plainText(errorText(error));
+      this.phase = { kind: "error", message: plainText(errorText(error)) };
       return [];
     }
   }
   /** One scan at a time; triggers during a scan coalesce into one follow-up. */
   private scan(): void {
-    if (this.scanning !== undefined) {
-      this.rescan = true;
+    if (this.phase.kind === "disposed") {
       return;
     }
-    const scanning = this.update()
+    if (this.scanning.kind === "running") {
+      this.scanning.rescan = true;
+      return;
+    }
+    const scanning: Extract<ScanPhase, { kind: "running" }> = { kind: "running", rescan: false };
+    this.scanning = scanning;
+    void this.update()
       .catch((error: unknown) => {
-        this.error = plainText(errorText(error));
+        if (this.phase.kind === "disposed") {
+          return;
+        }
+        this.phase = { kind: "error", message: plainText(errorText(error)) };
         this.widget();
       })
       .finally(() => {
         if (this.scanning !== scanning) {
           return;
         }
-        this.scanning = undefined;
-        if (this.rescan) {
-          this.rescan = false;
+        this.scanning = { kind: "idle" };
+        if (scanning.rescan) {
           this.scan();
         }
       });
-    this.scanning = scanning;
   }
   private async update(): Promise<void> {
-    const ctx = this.ctx;
     const roots: Roots = new Map();
     const commits = this.loadBatch(roots);
     const claims = [...roots].flatMap(([root, identity]) => (identity ? [{ root, identity }] : []));
     const verdicts = await observeAlive(claims.map(({ identity }) => identity));
-    if (this.ctx !== ctx) {
+    if (this.phase.kind === "disposed") {
       return;
     }
     const live = new Map(
@@ -217,6 +218,9 @@ class Observer {
     );
     for (const commit of commits) {
       commit(live);
+    }
+    if (this.phase.kind !== "error") {
+      this.phase = { kind: this.rows.size < this.total ? "checking" : "ready" };
     }
     this.activity();
     this.widget();
@@ -273,38 +277,36 @@ class Observer {
   }
   private widget(): void {
     const ctx = this.ctx;
-    if (!ctx) {
+    if (this.phase.kind === "disposed") {
       return;
     }
     const rows = this.strip();
-    if (rows.length === 0 && this.rows.size === this.total && this.error.length === 0) {
-      if (this.widgetVisible) {
+    if (rows.length === 0 && this.phase.kind === "ready") {
+      if (this.widgetCache) {
         ctx.ui.setWidget(STATUS_KEY, undefined);
       }
-      this.widgetVisible = false;
-      this.widgetSignature = "";
+      this.widgetCache = undefined;
       return;
     }
     const visible = rows.slice(0, 4);
     const more = rows.length - visible.length;
-    const snapshot = { status: this.status(), rows: visible, more, error: this.error };
+    const snapshot = { status: this.status(), rows: visible, more, error: this.error() };
     const signature = JSON.stringify(snapshot);
-    if (signature === this.widgetSignature) {
+    if (signature === this.widgetCache?.signature) {
       return;
     }
-    this.widgetSignature = signature;
-    if (this.widgetVisible) {
-      this.widgetRender?.(snapshot);
+    if (this.widgetCache) {
+      this.widgetCache.signature = signature;
+      this.widgetCache.render(snapshot);
       return;
     }
-    this.widgetVisible = true;
     ctx.ui.setWidget(
       STATUS_KEY,
       (tui, theme) => {
         const content = new Container();
         let shown: WidgetSnapshot = snapshot;
         const open = (id: string) => {
-          if (ctx !== this.ctx) {
+          if (this.phase.kind === "disposed") {
             return;
           }
           void this.show(id, ctx).catch((error: unknown) => {
@@ -334,10 +336,13 @@ class Observer {
           }
         };
         build();
-        this.widgetRender = (next) => {
-          shown = next;
-          build();
-          tui.requestRender();
+        this.widgetCache = {
+          signature,
+          render: (next) => {
+            shown = next;
+            build();
+            tui.requestRender();
+          },
         };
         return {
           render: (width) => content.render(width),
@@ -350,9 +355,15 @@ class Observer {
   }
   private status(): string {
     const active = [...this.rows.values()].filter((row) => row.live).length;
-    const checking = this.rows.size < this.total;
-    const error = this.error.length > 0 ? " · inventory error" : "";
+    const checking = this.checking();
+    const error = this.phase.kind === "error" ? " · inventory error" : "";
     return `Agents: ${active}${checking ? "+" : ""} active${checking ? " (checking…)" : ""} · ${this.total} runs${error} · /agents`;
+  }
+  private checking(): boolean {
+    return this.phase.kind === "checking" || this.rows.size < this.total;
+  }
+  private error(): string {
+    return this.phase.kind === "error" ? this.phase.message : "";
   }
   private inventory(): ObserverRow[] {
     return [...this.rows.values()]
@@ -409,13 +420,13 @@ class Observer {
       },
     };
   }
-  private async show(args: string, ctx: ExtensionContext): Promise<void> {
+  async show(args: string, ctx: ExtensionContext): Promise<void> {
     if (ctx.mode !== "tui" || isChild()) {
       ctx.ui.notify("/agents is a read-only interactive main-session view.", "info");
       return;
     }
     const { ObserverScreen } = await import("./observe-screen.ts");
-    if (ctx.sessionManager.getSessionId() !== this.owner || !this.ctx) {
+    if (ctx.sessionManager.getSessionId() !== this.owner || this.phase.kind === "disposed") {
       return;
     }
     this.close?.();
@@ -425,10 +436,10 @@ class Observer {
         const screen = new ObserverScreen({
           data: {
             inventory: () => this.inventory(),
-            checking: () => this.rows.size < this.total,
+            checking: () => this.checking(),
             row: (id) => this.rows.get(id),
             status: () => this.status(),
-            error: () => this.error,
+            error: () => this.error(),
             watch: (id) => this.watch(id),
           },
           tui,
@@ -454,27 +465,38 @@ class Observer {
       },
     );
   }
-  register(): void {
-    this.pi.on("session_start", (_event, ctx) => this.attach(ctx));
-    this.pi.on("session_shutdown", () => this.dispose());
-    this.pi.on("tool_execution_end", (event) => {
-      if (
-        this.ctx &&
-        this.watcher === undefined &&
-        (event.toolName === "delegate" || event.toolName === "agent_runs")
-      ) {
-        this.scan();
-      }
-    });
-    this.pi.registerCommand("agents", {
-      description:
-        "List this parent's children; /agents <run-id or unique 8+ prefix> watches native activity read-only",
-      handler: (args, ctx) => this.show(args, ctx),
-    });
+  toolEnded(name: string): void {
+    if (this.watcher === undefined && (name === "delegate" || name === "agent_runs")) {
+      this.scan();
+    }
   }
 }
 export default function observe(pi: ExtensionAPI): void {
-  if (!isChild()) {
-    new Observer(pi).register();
+  if (isChild()) {
+    return;
   }
+  let observer: Observer | undefined;
+  const dispose = () => {
+    observer?.dispose();
+    observer = undefined;
+  };
+  pi.on("session_start", (_event, ctx) => {
+    dispose();
+    if (ctx.mode === "tui" && !isChild()) {
+      observer = new Observer(ctx);
+    }
+  });
+  pi.on("session_shutdown", dispose);
+  pi.on("tool_execution_end", (event) => observer?.toolEnded(event.toolName));
+  pi.registerCommand("agents", {
+    description:
+      "List this parent's children; /agents <run-id or unique 8+ prefix> watches native activity read-only",
+    handler: async (args, ctx) => {
+      if (!observer) {
+        ctx.ui.notify("/agents is a read-only interactive main-session view.", "info");
+        return;
+      }
+      await observer.show(args, ctx);
+    },
+  });
 }
