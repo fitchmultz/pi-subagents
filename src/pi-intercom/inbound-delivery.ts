@@ -37,11 +37,24 @@ interface DeliveryHooks {
   readonly syncStatus: () => void;
   readonly reporter: BackgroundReporter;
 }
+type TaskSlot =
+  | { readonly kind: "idle" }
+  | { readonly kind: "owned"; readonly task: Promise<void> };
+interface DeliveryWork {
+  restoration: TaskSlot;
+  batch: TaskSlot;
+}
+type DeliveryPhase = DeliveryWork &
+  ({ readonly kind: "active" } | { readonly kind: "draining"; readonly task: Promise<void> });
+
 /** Owns cooperative inbound batches, restoration and the flush timer. */
 export class InboundDeliveryOwner {
   private timer: NodeJS.Timeout | null = null;
-  private restoreTask: Promise<void> | undefined;
-  private batchTask: Promise<void> | undefined;
+  private phase: DeliveryPhase = {
+    kind: "active",
+    restoration: { kind: "idle" },
+    batch: { kind: "idle" },
+  };
   private readonly pi: ExtensionAPI;
   private readonly lifecycle: Lifecycle;
   private readonly journal: Journal;
@@ -53,7 +66,10 @@ export class InboundDeliveryOwner {
     this.hooks = hooks;
   }
   get restoring(): Promise<void> | undefined {
-    return this.restoreTask;
+    return this.phase.restoration.kind === "owned" ? this.phase.restoration.task : undefined;
+  }
+  private get batchTask(): Promise<void> | undefined {
+    return this.phase.batch.kind === "owned" ? this.phase.batch.task : undefined;
   }
   get batching(): boolean {
     return this.batchTask !== undefined;
@@ -64,27 +80,41 @@ export class InboundDeliveryOwner {
       this.timer = null;
     }
   }
-  async drain(): Promise<void> {
+  drain(): Promise<void> {
+    const phase = this.phase;
+    if (phase.kind === "draining") {
+      return phase.task;
+    }
     this.clearTimer();
-    await Promise.allSettled([this.restoreTask, this.batchTask]);
-    this.clearTimer();
+    const task = Promise.allSettled([this.restoring, this.batchTask]).then(() => {
+      this.clearTimer();
+      if (this.phase.kind === "draining" && this.phase.task === task) {
+        this.phase = {
+          kind: "active",
+          restoration: this.phase.restoration,
+          batch: this.phase.batch,
+        };
+      }
+      return;
+    });
+    this.phase = { kind: "draining", restoration: phase.restoration, batch: phase.batch, task };
+    return task;
   }
   reset(): void {
-    this.restoreTask = undefined;
-    this.batchTask = undefined;
+    this.phase = { kind: "active", restoration: { kind: "idle" }, batch: { kind: "idle" } };
     this.clearTimer();
   }
   async start(ctx: ExtensionContext, reason: string, generation: number): Promise<void> {
     this.journal.reset();
     this.hooks.replies.reset();
     const task = Promise.resolve().then(() => this.restore(ctx, generation));
-    this.restoreTask = task;
+    this.phase.restoration = { kind: "owned", task };
     await task;
     if (!this.lifecycle.live(ctx, generation)) {
       return;
     }
-    if (this.restoreTask === task) {
-      this.restoreTask = undefined;
+    if (this.restoring === task) {
+      this.phase.restoration = { kind: "idle" };
     }
     if (reason === "reload") {
       this.journal.reload();
@@ -138,12 +168,12 @@ export class InboundDeliveryOwner {
     }
     // Native appends emit subscribers synchronously; publish ownership first.
     const task = Promise.resolve().then(deliver);
-    this.batchTask = task;
+    this.phase.batch = { kind: "owned", task };
     const finish = () => {
       if (this.batchTask !== task) {
         return;
       }
-      this.batchTask = undefined;
+      this.phase.batch = { kind: "idle" };
       if (
         this.lifecycle.generation === generation &&
         this.lifecycle.live() &&
