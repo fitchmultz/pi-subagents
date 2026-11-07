@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.21 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+
 - Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
+
+<!-- npm-release:unreleased:end -->
+
+- refactor: give staged replacement delivery one owner (#358) ([f292627](https://github.com/fitchmultz/pi-subagents/commit/f292627a357a5eb99cc9ad2e7a1e9b9622eaa082))
+
+### What's Changed
+
+- refactor: give staged replacement delivery one owner by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/358
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.20...v0.52.21
 
 ## 0.52.20 - 2026-11-07
 
