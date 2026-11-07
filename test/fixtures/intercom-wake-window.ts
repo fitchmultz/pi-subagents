@@ -172,10 +172,8 @@ if (mode === "reader") {
 } else if (mode === "hold") {
   Date.now = () => Number(cert);
   const state = new WakeState(root);
-  for (let index = 0; index < 20; index++) {
-    assert.equal(state.reserve(`listener-${index}`), undefined);
-  }
-  writeSync(1, "owner_holding_twenty\n");
+  assert.equal(state.reserve(`listener-${process.pid}`).kind, "reserved");
+  writeSync(1, "owner_holding\n");
   await delay(60000);
   state.close();
 } else if (mode === "publish") {
@@ -203,7 +201,7 @@ if (mode === "reader") {
     nativeExec.call(this, sql);
   };
   const state = new WakeState(root);
-  assert.equal(state.reserve("new-listener"), undefined);
+  assert.equal(state.reserve("new-listener").kind, "reserved");
   writeSync(1, "owner_admitted\n");
   await delay(60000);
   state.close();
