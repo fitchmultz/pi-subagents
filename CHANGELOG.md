@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Join broker socket acquisition during disconnect, share repeated close work, and make registration and parking acknowledgement ownership explicit.
+- Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 
 ## 0.52.20 - 2026-11-07
 
