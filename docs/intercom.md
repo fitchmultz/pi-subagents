@@ -137,6 +137,12 @@ An ordinary send is non-blocking. Its response means broker acceptance, not
 recipient journal persistence, model consumption, reply, or task completion. A
 lost transport response can be uncertain; do not blindly replay side effects.
 
+When a local transport send loses its acknowledgement, the tool error retains the
+original `messageId` and reports `deliveryUnknown:true`. It omits `accepted` and
+`delivered` because neither outcome is confirmed. Local validation failures before
+dispatch report `deliveryUnknown:false`, `accepted:false`, and `delivered:false`.
+Neither path retries the message automatically.
+
 `ask` waits for a correlated reply and has a bounded timeout. Prefer `send` unless
 the sender genuinely must remain alive waiting for a decision. If an ordinary ask
 finds a peer advertising `acceptsAsks:false`, the sender still reports `peer_busy`

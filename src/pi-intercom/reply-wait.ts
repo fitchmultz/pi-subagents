@@ -12,6 +12,9 @@ interface ReplyWaiter {
   readonly resolve: (message: Message) => void;
   readonly reject: (error: Readonly<Error>) => void;
 }
+type ReplyPhase =
+  | { readonly kind: "idle" }
+  | { readonly kind: "sending" | "waiting"; readonly waiter: ReplyWaiter };
 export interface ReplyWaitOptions {
   readonly from: string;
   readonly replyTo: string;
@@ -26,12 +29,15 @@ export interface AskTransaction {
 }
 /** One correlated blocking wait; admitted before send so a fast reply cannot race it. */
 export class ReplyWait {
-  private waiter: ReplyWaiter | null = null;
+  private phase: ReplyPhase = { kind: "idle" };
   private readonly lifecycle: Lifecycle;
   private readonly timeoutMs: number;
   constructor(lifecycle: Lifecycle, timeoutMs: number) {
     this.lifecycle = lifecycle;
     this.timeoutMs = timeoutMs;
+  }
+  private get waiter(): ReplyWaiter | null {
+    return this.phase.kind === "idle" ? null : this.phase.waiter;
   }
   get waiting(): boolean {
     return this.waiter !== null;
@@ -65,7 +71,7 @@ export class ReplyWait {
     waiter.resolve(message);
     return true;
   }
-  wait(options: ReplyWaitOptions): Promise<Message> {
+  private wait(options: ReplyWaitOptions): Promise<Message> {
     if (this.waiter) {
       throw new Error("Already waiting for a reply");
     }
@@ -87,7 +93,7 @@ export class ReplyWait {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", onAbort);
         if (this.waiter?.replyTo === replyTo) {
-          this.waiter = null;
+          this.phase = { kind: "idle" };
         }
       };
       const onAbort = () => {
@@ -95,7 +101,7 @@ export class ReplyWait {
         reject(new Error("Cancelled"));
       };
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.waiter = {
+      const waiter: ReplyWaiter = {
         from,
         replyTo,
         resolve: (message) => {
@@ -107,6 +113,7 @@ export class ReplyWait {
           reject(error);
         },
       };
+      this.phase = { kind: "sending", waiter };
     });
   }
   async transact(activeClient: IntercomTransport, transaction: AskTransaction): Promise<Message> {
@@ -127,6 +134,9 @@ export class ReplyWait {
       });
       if (!result.accepted) {
         throw new AskDeliveryError(result);
+      }
+      if (this.phase.kind === "sending" && this.phase.waiter.replyTo === questionId) {
+        this.phase = { kind: "waiting", waiter: this.phase.waiter };
       }
       this.lifecycle.markActivity();
       onSent(result);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SendResult } from "./broker/client.ts";
+import { SendError, type SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
 import {
   resolveConnectedTarget,
@@ -62,6 +62,17 @@ export class IntercomOutbound {
   private markActivity(): void {
     this.owners.lifecycle.markActivity();
     this.owners.connection.syncStatus();
+  }
+  private sendErrorFacts(error: unknown): Readonly<Record<string, unknown>> {
+    if (!(error instanceof SendError)) {
+      return {};
+    }
+    const { kind, messageId } = error.outcome;
+    return {
+      messageId,
+      deliveryUnknown: kind === "unconfirmed",
+      ...(kind === "not-sent" ? { accepted: false, delivered: false } : {}),
+    };
   }
   private deliveryFailure(to: string, result: SendResult): ToolResultLike {
     return toolError(
@@ -163,9 +174,13 @@ export class IntercomOutbound {
           error instanceof RecoveryError ? error.code : "send_failed",
           [
             { action: "list" },
-            { action: "send", guidance: "Retry with an exact active recipient target." },
+            {
+              action: "send",
+              guidance:
+                "Check the recipient before retrying; the original message may still arrive.",
+            },
           ],
-          { error: true },
+          { error: true, ...this.sendErrorFacts(error) },
         ),
       );
     }
@@ -253,6 +268,7 @@ export class IntercomOutbound {
         {
           error: true,
           ...(questionId !== undefined && questionId !== "" ? { messageId: questionId } : {}),
+          ...this.sendErrorFacts(error),
         },
       ),
     );
@@ -443,6 +459,7 @@ export class IntercomOutbound {
       failureDetails(reason, actions, {
         error: true,
         ...((replyTo ?? "") !== "" ? { replyTo } : {}),
+        ...this.sendErrorFacts(error),
       }),
     );
   }

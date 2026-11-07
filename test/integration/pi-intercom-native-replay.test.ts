@@ -3268,6 +3268,83 @@ nodeTest(
 );
 
 nodeTest(
+  "native send preserves delivery uncertainty and its original ID after a lost acknowledgement",
+  async (t) => {
+    const sender = await makeSession(t, "lost-send-ack");
+    const originalWrite: unknown = Reflect.get(net.Socket.prototype, "write");
+    assert.ok(typeof originalWrite === "function");
+    const held: Buffer[] = [];
+    let release: (() => void) | undefined;
+    t.after(() => release?.());
+    t.mock.method(
+      net.Socket.prototype,
+      "write",
+      function (this: net.Socket, ...args: Parameters<net.Socket["write"]>) {
+        const chunk = args[0];
+        if (
+          release === undefined &&
+          Buffer.isBuffer(chunk) &&
+          chunk.subarray(4).toString().includes('"type":"send"') &&
+          chunk.subarray(4).toString().includes("Send with a lost acknowledgement")
+        ) {
+          const emit = this.emit.bind(this);
+          let released = false;
+          t.mock.method(this, "emit", (event: string | symbol, ...values: unknown[]) => {
+            if (!released && event === "data" && Buffer.isBuffer(values[0])) {
+              held.push(values[0]);
+              return true;
+            }
+            return Reflect.apply(emit, this, [event, ...values]) === true;
+          });
+          release = () => {
+            released = true;
+            for (const data of held.splice(0)) {
+              emit("data", data);
+            }
+          };
+        }
+        return Reflect.apply(originalWrite, this, args) === true;
+      },
+    );
+    const received = once(sender.sender, "message");
+    const sending = executeIntercom(sender, {
+      action: "send",
+      to: "sender-lost-send-ack",
+      message: "Send with a lost acknowledgement",
+    }).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    const question = record(array(await received)[1]);
+    assert.equal(at(question, "content", "text"), "Send with a lost acknowledgement");
+    const settled = await sending;
+    assert.ok("error" in settled);
+    assertDefined(release);
+    assert.ok(held.length > 0, "the actual broker acknowledgement reached the held socket");
+    const details = record(record(settled.error).details);
+    assert.equal(details.deliveryUnknown, true);
+    assert.equal(details.messageId, question.id);
+    assert.equal(Object.hasOwn(details, "accepted"), false);
+    assert.equal(Object.hasOwn(details, "delivered"), false);
+    assert.match(JSON.stringify(details.nextActions), /before retrying/);
+
+    release();
+    const nextReceived = once(sender.sender, "message");
+    const next = await executeIntercom(sender, {
+      action: "send",
+      to: "sender-lost-send-ack",
+      message: "Send after the late acknowledgement",
+    });
+    const nextMessage = record(array(await nextReceived)[1]);
+    assert.equal(at(nextMessage, "content", "text"), "Send after the late acknowledgement");
+    assert.equal(record(next.details).messageId, nextMessage.id);
+    assert.notEqual(nextMessage.id, question.id);
+    assert.equal(record(next.details).accepted, true);
+    assert.deepEqual(sender.errors, []);
+  },
+);
+
+nodeTest(
   "native ordinary asks honor busy capability and explicit steer/queue without claiming consumption",
   async (t) => {
     const asker = await makeSession(t, "busy-capability-asker");
