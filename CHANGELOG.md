@@ -16,6 +16,7 @@
 ### What's Changed
 
 - refactor: give staged replacement delivery one owner by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/358
+- refactor: make actor work and command payload states explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/345
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.20...v0.52.21
 
