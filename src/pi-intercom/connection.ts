@@ -43,8 +43,10 @@ export class IntercomConnection {
   private parked: IntercomClient | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
-  private connecting: Promise<IntercomTransport> | null = null;
-  private connectingGeneration: number | null = null;
+  private connecting: {
+    readonly task: Promise<IntercomTransport>;
+    readonly generation: number;
+  } | null = null;
   private attempt = 0;
   private readonly lifecycle: Lifecycle;
   private readonly config: IntercomConfig;
@@ -352,8 +354,8 @@ export class IntercomConnection {
     if (!ctx || generation !== this.lifecycle.generation) {
       throw new Error("Intercom shutting down");
     }
-    if (this.connecting && this.connectingGeneration === generation) {
-      return this.connecting;
+    if (this.connecting?.generation === generation) {
+      return this.connecting.task;
     }
     if (this.client?.isConnected() === true) {
       return this.client;
@@ -365,8 +367,7 @@ export class IntercomConnection {
     this.clearReconnect();
     // Publish ownership before registration, which can synchronously invoke subscribers.
     const attempt = Promise.resolve().then(() => this.connect(ctx, generation, sessionId));
-    this.connecting = attempt;
-    this.connectingGeneration = generation;
+    this.connecting = { task: attempt, generation };
     return await this.finishAttempt(attempt, ctx, generation);
   }
   private async finishAttempt(
@@ -381,9 +382,8 @@ export class IntercomConnection {
       retry = this.lifecycle.live(ctx, generation) !== null;
       throw error;
     } finally {
-      if (this.connecting === attempt) {
+      if (this.connecting?.task === attempt) {
         this.connecting = null;
-        this.connectingGeneration = null;
       }
       if (retry) {
         this.scheduleReconnect();
@@ -394,7 +394,7 @@ export class IntercomConnection {
     this.clearTimers();
     this.cancelWakes();
     // The bounded launcher attempt is joined before socket shutdown.
-    await Promise.allSettled([this.connecting]);
+    await Promise.allSettled([this.connecting?.task]);
     if (this.client) {
       await this.client.disconnect();
       this.client = null;
