@@ -30,6 +30,10 @@ interface Hydration {
   controller: AbortController;
 }
 
+type HydrationPhase =
+  | { readonly kind: "idle" }
+  | { readonly kind: "reading"; readonly job: Hydration };
+
 /** One mounted conversation page. Frozen cards are never mutated while the reader is above live. */
 export class ObserverTranscript extends Container {
   readonly journal: ConversationJournal;
@@ -50,10 +54,8 @@ export class ObserverTranscript extends Container {
   private readonly changed: (event: TranscriptChange) => void;
   private readonly loaded: () => void;
   private paused = false;
-  private hydration?: Promise<void> | undefined;
-  private active?: Hydration | undefined;
+  private hydration: HydrationPhase = { kind: "idle" };
   private readonly jobs = new Map<string, Hydration>();
-  private readonly pending = new Map<string, PageRequest>();
   version = 0;
   constructor(options: {
     file: string;
@@ -122,9 +124,10 @@ export class ObserverTranscript extends Container {
   }
   pause(): void {
     this.paused = true;
-    this.active?.controller.abort();
+    if (this.hydration.kind === "reading") {
+      this.hydration.job.controller.abort();
+    }
     this.jobs.clear();
-    this.pending.clear();
   }
   resume(): void {
     if (!this.paused) {
@@ -148,9 +151,6 @@ export class ObserverTranscript extends Container {
       card = this.cards.get(live) ?? new Card(id);
       this.cards.delete(live);
       card.id = id;
-      if (!card.tool && !card.assistant) {
-        card.content.addChild(new Text("Loading published content…", 0, 0));
-      }
       this.cards.set(id, card);
     }
     if (!card.ready) {
@@ -158,50 +158,50 @@ export class ObserverTranscript extends Container {
     }
     return card;
   }
-  private current({ card, request, controller }: Hydration): boolean {
+  private current(job: Hydration): boolean {
+    const { card, controller } = job;
     return (
       !controller.signal.aborted &&
       this.cards.get(card.id) === card &&
-      this.pending.get(card.id) === request
+      this.jobs.get(card.id) === job
     );
   }
   private load(entry: NativeRecord, card: Card, request: PageRequest): void {
-    if (this.paused || this.pending.get(card.id) === request) {
+    if (this.paused || this.jobs.get(card.id)?.request === request) {
       return;
     }
-    this.pending.set(card.id, request);
     this.pages.set(card.id, request);
-    this.jobs.set(card.id, { entry, card, request, controller: new AbortController() });
-    if (this.active?.card === card) {
-      this.active.controller.abort();
+    if (this.hydration.kind === "reading" && this.hydration.job.card === card) {
+      if (this.jobs.get(card.id) === this.hydration.job) {
+        this.jobs.delete(card.id);
+      }
+      this.hydration.job.controller.abort();
     }
+    this.jobs.set(card.id, { entry, card, request, controller: new AbortController() });
     this.drain();
   }
   private drain(): void {
     const job = this.jobs.values().next().value;
-    if (this.hydration || this.paused || !job) {
+    if (this.hydration.kind === "reading" || this.paused || !job) {
       return;
     }
-    this.jobs.delete(job.card.id);
     const { card } = job;
-    this.active = job;
-    this.hydration = this.hydrate(job)
+    this.hydration = { kind: "reading", job };
+    void this.hydrate(job)
       .catch((error: unknown) => {
         if (!this.current(job)) {
           return;
         }
-        this.pending.delete(card.id);
-        card.footer.clear();
-        card.footer.addChild(
-          new Text(`Content unavailable: ${plainText(errorMessage(error))}`, 0, 0),
-        );
-        card.invalidate();
+        this.jobs.delete(card.id);
+        card.unavailable(plainText(errorMessage(error)));
         this.version++;
         this.loaded();
       })
       .finally(() => {
-        this.hydration = undefined;
-        this.active = undefined;
+        if (this.jobs.get(card.id) === job) {
+          this.jobs.delete(card.id);
+        }
+        this.hydration = { kind: "idle" };
         this.drain();
       });
   }
@@ -227,7 +227,7 @@ export class ObserverTranscript extends Container {
     }
     this.durable(card.id, page, call?.arguments);
     this.pages.set(card.id, { requested: page.page });
-    this.pending.delete(card.id);
+    this.jobs.delete(card.id);
     this.version++;
     if (request.navigation === undefined) {
       this.loaded();
@@ -241,11 +241,10 @@ export class ObserverTranscript extends Container {
       if (!mounted.has(id)) {
         this.cards.delete(id);
         this.jobs.delete(id);
-        this.pending.delete(id);
       }
     }
-    if (this.active && !mounted.has(this.active.card.id)) {
-      this.active.controller.abort();
+    if (this.hydration.kind === "reading" && !mounted.has(this.hydration.job.card.id)) {
+      this.hydration.job.controller.abort();
     }
     for (const choices of [this.pages, this.expanded]) {
       for (const id of choices.keys()) {
