@@ -74,14 +74,32 @@ function decode(value: unknown): Envelope {
   return { from, message };
 }
 
+type StoredPayload =
+  | { readonly kind: "unacked" | "acked-notification"; readonly envelope: Envelope }
+  | { readonly kind: "tombstone" };
+
+function storedPayload(candidate: unknown, acked: number): StoredPayload {
+  const value = isRecord(candidate) ? candidate : {};
+  if (acked === 1 && value.notified !== 0) {
+    return { kind: "tombstone" };
+  }
+  const envelope = decode(
+    typeof value.envelope === "string" ? value.envelope : JSON.stringify(candidate),
+  );
+  return { kind: acked === 1 ? "acked-notification" : "unacked", envelope };
+}
+
+type MailboxPhase =
+  | { readonly kind: "open" | "degraded" | "closed" }
+  | { readonly kind: "failed"; readonly fault: Fault };
+
 /** Persistent payloads leave only ID tombstones after acknowledgement, preventing replay resurrection. */
 export class Mailbox {
   private readonly db?: DatabaseSync | undefined;
   private readonly entries = new Map<string, Entry>();
   private bytes = 0;
   private sequence = 0;
-  private failure?: Fault;
-  private admissionFailed = false;
+  private phase: MailboxPhase = { kind: "open" };
   private readonly notifications: boolean;
 
   constructor(stateDir: string | undefined, fingerprint: string, notifications = false) {
@@ -95,10 +113,16 @@ export class Mailbox {
   get persistent(): boolean {
     return this.db !== undefined;
   }
-  private stored<T>(action: () => T): T {
-    if (this.failure) {
-      throw this.failure;
+  private requireOpen(): void {
+    if (this.phase.kind === "failed") {
+      throw this.phase.fault;
     }
+    if (this.phase.kind === "closed") {
+      throw new Fault(507, "mailbox_storage_failed", "Mailbox is closed.");
+    }
+  }
+  private stored<T>(action: () => T): T {
+    this.requireOpen();
     try {
       return action();
     } catch (error) {
@@ -108,6 +132,7 @@ export class Mailbox {
     }
   }
   add(envelope: Envelope): "stored" | "duplicate" | "lost" {
+    this.requireOpen();
     if (!this.db) {
       return this.addVolatile(envelope);
     }
@@ -127,22 +152,23 @@ export class Mailbox {
             Date.now(),
             this.notifications ? 0 : 1,
           );
-        this.admissionFailed = false;
+        this.phase = { kind: "open" };
         return inserted.changes === 0 ? "duplicate" : "stored";
       } catch {
-        this.admissionFailed = true;
+        this.phase = { kind: "degraded" };
         try {
           db.prepare(
             "UPDATE losses SET count=MIN(count+1,9007199254740991) WHERE singleton=1",
           ).run();
         } catch {
-          this.failure = new Fault(
+          const fault = new Fault(
             507,
             "mailbox_storage_failed",
             "Mailbox admission and loss recording failed; loss count is not durable.",
             { lossRecorded: false },
           );
-          throw this.failure;
+          this.phase = { kind: "failed", fault };
+          throw fault;
         }
         return "lost";
       }
@@ -167,6 +193,7 @@ export class Mailbox {
     return "stored";
   }
   get(id: string): Envelope | undefined {
+    this.requireOpen();
     if (!this.db) {
       return this.entries.get(id);
     }
@@ -177,6 +204,7 @@ export class Mailbox {
     });
   }
   remove(id: string): void {
+    this.requireOpen();
     if (this.db) {
       const db = this.db;
       this.stored(() =>
@@ -203,7 +231,7 @@ export class Mailbox {
         for (const id of ids) {
           const entry = this.get(id);
           if (entry) {
-            this.notificationAccepted(id);
+            this.retireNotification(id);
             this.remove(id);
             acked.push(id);
           }
@@ -222,7 +250,8 @@ export class Mailbox {
   pendingNotifications(after = 0, limit = INBOX_COUNT): NotificationPage {
     return this.readPage(after, limit, true);
   }
-  notificationAccepted(id: string): void {
+  retireNotification(id: string): void {
+    this.requireOpen();
     const db = this.db;
     if (db) {
       this.stored(() =>
@@ -261,14 +290,18 @@ export class Mailbox {
           hasMore = true;
           break;
         }
-        const envelope = decode(
-          isRecord(candidate) && typeof candidate.envelope === "string"
-            ? candidate.envelope
-            : JSON.stringify(candidate),
-        );
+        const payload = storedPayload(candidate, row.acked);
+        if (payload.kind === "tombstone") {
+          throw new Fault(507, "mailbox_storage_failed", "Mailbox page contains a tombstone.");
+        }
+        const { envelope } = payload;
         messages.push(
           notifications
-            ? { ...envelope, receivedAt: row.receivedAt, acknowledged: row.acked === 1 }
+            ? {
+                ...envelope,
+                receivedAt: row.receivedAt,
+                acknowledged: payload.kind === "acked-notification",
+              }
             : envelope,
         );
         bytes += row.bytes;
@@ -281,7 +314,7 @@ export class Mailbox {
     if (this.db) {
       return this.db
         .prepare(
-          `SELECT sequence,bytes,receivedAt,acked,envelope FROM mailbox WHERE ${notifications ? "notified=0" : "acked=0"} AND sequence>? ORDER BY sequence LIMIT ?`,
+          `SELECT sequence,bytes,receivedAt,acked,notified,envelope FROM mailbox WHERE ${notifications ? "notified=0" : "acked=0"} AND sequence>? ORDER BY sequence LIMIT ?`,
         )
         .iterate(after, limit + 1);
     }
@@ -290,6 +323,7 @@ export class Mailbox {
       : [...this.entries.values()].filter((entry) => entry.sequence > after).slice(0, limit + 1);
   }
   status(volatileLosses: number): UnknownRecord {
+    this.requireOpen();
     const db = this.db;
     const lostMessages = db
       ? this.stored(() => db.prepare("SELECT count FROM losses WHERE singleton=1").get()?.count)
@@ -304,6 +338,7 @@ export class Mailbox {
     };
   }
   presence(): { readonly pendingAsks: number; readonly acceptsAsks: boolean } {
+    this.requireOpen();
     const db = this.db;
     if (!db) {
       return {
@@ -320,14 +355,18 @@ export class Mailbox {
       if (typeof pendingAsks !== "number") {
         throw new Fault(507, "mailbox_storage_failed", "Stored ask counter is invalid.");
       }
-      return { pendingAsks, acceptsAsks: !this.admissionFailed };
+      return { pendingAsks, acceptsAsks: this.phase.kind !== "degraded" };
     });
   }
   close(): number {
+    if (this.phase.kind === "closed") {
+      return 0;
+    }
     this.db?.close();
     const discarded = this.entries.size;
     this.entries.clear();
     this.bytes = 0;
+    this.phase = { kind: "closed" };
     return discarded;
   }
 }

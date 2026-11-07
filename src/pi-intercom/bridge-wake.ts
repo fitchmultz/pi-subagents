@@ -167,7 +167,7 @@ export class WakeDeliveries {
           return entry;
         }
         // Retire only notification intent. Payload/reply obligations require actual ACK/reply.
-        delivery.mailbox.notificationAccepted(entry.message.id);
+        delivery.mailbox.retireNotification(entry.message.id);
       }
       after = Number(page.nextCursor);
     } while (page.hasMore);
