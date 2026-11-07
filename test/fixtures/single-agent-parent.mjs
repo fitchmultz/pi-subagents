@@ -1282,7 +1282,7 @@ try {
     const base = path.dirname(directory);
     const launch = readValidated(LaunchSchema, path.join(directory, "launch.json"));
     const ids = Array.from({ length: 8 }, () =>
-      enqueue(base, launch, "steer", { prompt: "x".repeat(4096) }),
+      enqueue(base, launch, { action: "steer", prompt: "x".repeat(4096) }),
     );
     const receipts = ids.map((command) => path.join(directory, "admissions", `${command}.json`));
     await until(
@@ -1315,7 +1315,7 @@ try {
     // Each new durable command must wake at least one real actor scan before its admission.
     const rescan = async (/** @type {number} */ count) => {
       for (let index = 0; index < count; index++) {
-        const probe = enqueue(base, launch, "steer", { prompt: "PROBE" });
+        const probe = enqueue(base, launch, { action: "steer", prompt: "PROBE" });
         await until(
           () => fs.existsSync(path.join(directory, "admissions", `${probe}.json`)),
           "a new command wakes a real actor scan",

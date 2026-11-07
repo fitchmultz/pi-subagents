@@ -119,18 +119,31 @@ export function latest(base: string, initial: Launch): Launch {
 export function conversation(base: string, launch: Launch): string {
   return runDirectory(base, launch.rootId);
 }
+/** Metadata only: replacing command bytes invalidates the actor's parsed-command cache. */
+export function commandIdentity(file: string): string | undefined {
+  try {
+    const stat = fs.statSync(file, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch (error) {
+    if (missing(error)) {
+      return;
+    }
+    throw error;
+  }
+}
 export function enqueue(
   base: string,
   launch: Launch,
-  action: Command["action"],
-  options: Pick<Command, "prompt" | "actorToken"> = {},
+  input:
+    | { readonly action: "run" }
+    | { readonly action: "steer"; readonly prompt: string }
+    | { readonly action: "stop"; readonly actorToken: string },
 ): string {
-  const id = action === "run" ? launch.id : randomUUID();
+  const id = input.action === "run" ? launch.id : randomUUID();
   const command: Command = {
     id,
     runId: launch.id,
-    action,
-    ...options,
+    ...input,
     createdAt: Date.now(),
   };
   write(path.join(conversation(base, launch), "commands", `${id}.json`), command, true);

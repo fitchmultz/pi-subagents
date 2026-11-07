@@ -176,7 +176,7 @@ export class ObservedChild {
     };
   }
   run(): void {
-    enqueue(this.base, this.launch, "run");
+    enqueue(this.base, this.launch, { action: "run" });
   }
   file(name: string): string {
     return path.join(this.root, name);
