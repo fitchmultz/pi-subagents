@@ -2,12 +2,17 @@
 
 ## [Unreleased]
 
+- Represent actor work as idle or running with its exact launch and task; validate command payloads by action.
 - Give broker-staged replacement messages one timer owner and name recipient-side supersession before native handoff.
 - Share saved-run admission and completion interpretation between continuation and inspection, preserving exact-prompt retry and exclusive successor claims.
 
 ## 0.52.20 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
+
+- Give bridge wake and presence schedulers explicit timer, running, and stopped ownership while retaining durable wake policy.
+- Centralize broker request settlement and close multipart snapshot readers after completion or failure.
+
 <!-- npm-release:unreleased:end -->
 
 - refactor: centralize request settlement and snapshot phases (#354) ([335c7e2](https://github.com/fitchmultz/pi-subagents/commit/335c7e269936467672f7e8d70cc67bf875a0a1c6))
@@ -29,10 +34,8 @@
 - Bind parent attachment to explicit detached, waiting, attaching and attached phases; managed readiness attaches only its own still-current waiting binding and shutdown joins admitted publication before releasing the matching generation.
 - Add optional `delegate.thinking` to select child effort independently of the parent on all supported hosts, including official Pi 1.5.0. Omission keeps inherited effort. Native model suffixes must agree with an explicit field. Pi still clamps effort to model capabilities; guidance and saved continuations retain the child's saved effort.
 - Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
-- Give bridge wake and presence schedulers explicit timer, running, and stopped ownership while retaining durable wake policy.
 - Make directory-watch availability and the coalesced wake's single-owner contract explicit without changing polling fallback.
 - Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
-- Centralize broker request settlement and close multipart snapshot readers after completion or failure.
 - Give prepared topic transactions action-specific payloads while preserving validate-before-commit and stale-restore normalization.
 
 <!-- npm-release:unreleased:end -->

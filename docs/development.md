@@ -86,6 +86,12 @@ npm and attached to the matching GitHub release.
 
 ## Isolation and safety
 
+Actor command admission keeps execution separate from native session activity.
+Execution is either idle or running with one launch and task. A stopping actor
+admits no new Run work. Run, Steer and Stop payloads are action-specific;
+guidance always carries a prompt and new Stops always name the actor token.
+Historical unbound Stops remain readable and receive stale admission receipts.
+
 Parent attachment keeps one binding through detached, waiting, attaching and
 attached phases. The existing shutdown signal closes the owner. Managed
 readiness can attach only its own still-current waiting binding; shutdown joins

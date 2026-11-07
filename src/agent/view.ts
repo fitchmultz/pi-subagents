@@ -5,7 +5,7 @@ import { readOutputPage } from "../shared/output-page.ts";
 import { actor, alive, observeAlive } from "./process.ts";
 import {
   admissionSchema,
-  commandSchema,
+  commandMetadataSchema,
   exitSchema,
   wakeFailureSchema,
   type Launch,
@@ -15,10 +15,7 @@ import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
-import { Type } from "./typebox.ts";
 import { runAdmission, runState, runStatus } from "./run-state.ts";
-
-const commandMetadataSchema = Type.Pick(commandSchema, ["id", "runId", "action", "createdAt"]);
 interface Guidance {
   id: string;
   runId: string;
