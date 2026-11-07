@@ -10,6 +10,7 @@ if (process.argv[2] === "suspend") {
   const broker = process.argv[3];
   assert.ok(broker !== undefined && broker !== "");
   const marker = join(runtime, "suspended-candidate.json");
+  // Existence is the parent's readiness witness; never expose a partially written JSON record.
   writeFileSync(
     `${marker}.tmp`,
     JSON.stringify({ launcher: process.ppid, candidate: process.pid }),

@@ -12,6 +12,7 @@ delegate({
   name: "optional-readable-name",
   cwd: "/optional/working/directory",
   model: "provider/model",
+  thinking: "low",
   context: "fresh",
 });
 ```
@@ -21,19 +22,27 @@ canned profile. `name` is an optional display name, not a unique identity or rol
 Omitted cwd/model inherit the invoking session's effective selection. A supplied
 model must be available; there is no hidden alternate-model retry catalog.
 
+`thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+It overrides parent effort for this child without changing the parent. It works
+with an omitted model or a literal model ID on every supported host, including
+official Pi 1.5.0. Omission preserves inherited effort. Pi applies its native
+model-capability clamping; the launch receipt records the requested value, not
+proof of the child's effective effort.
+
 On hosts exporting Pi's native `resolveModelReference`, `model` also accepts
 `provider/model:thinking` (for example `provider/model:low` or `provider/model:off`).
-The explicit suffix overrides inherited thinking for that child only. Literal
+The explicit suffix overrides inherited thinking for that child only. If both
+`thinking` and a suffix specify effort, they must match or the launch fails. Literal
 model IDs take precedence, including IDs containing colons or additional slashes;
 unknown IDs and invalid suffixes fail without fuzzy matching or another provider.
 Native resolution follows Pi's case-insensitive ID matching. Pi still applies the
 selected model's native thinking capabilities.
 
 Official Pi, including 1.5.0, does not export that resolver. Older fork runtimes also
-lack the export. Those hosts retain
-case-sensitive literal-ID overrides and inherited thinking; suffix requests fail with an upgrade
-message rather than being parsed by an extension-side replacement. This requires
-a host with the public resolver export, not merely a matching version number.
+lack the export. Those hosts retain case-sensitive literal-ID overrides and
+support the `thinking` field. Suffix requests fail with an upgrade message rather
+than being parsed by an extension-side replacement. Suffix support requires a
+host with the public resolver export, not merely a matching version number.
 
 Fresh context is the default. Fork uses the native conversation, including
 historical tool calls and results; restricting a child's authority does not erase
@@ -58,6 +67,8 @@ tool or programmatic invocation of `delegate` or `agent_runs`.
 
 Saved runs belong to the native main session that launched them, not its cwd,
 project, display name, or a different session forked from its history.
+Live guidance and saved-run successors keep the child's saved effort even if the
+parent's effort has changed.
 
 | Action     | Purpose                                                                              |
 | ---------- | ------------------------------------------------------------------------------------ |

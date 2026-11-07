@@ -555,6 +555,7 @@ const RequestRecordSchema = Type.Object({
   pid: Type.Integer(),
   model: Type.Optional(Type.String()),
   thinking: Type.Optional(Type.String()),
+  nativeThinking: Type.String(),
   root: Type.Optional(Type.String()),
   parent: Type.Optional(Type.String()),
   cwd: Type.Optional(Type.String()),
@@ -1712,31 +1713,61 @@ try {
         ),
       );
     }
-  } else if (phase === "model-selection") {
+  } else if (
+    phase === "model-selection" ||
+    phase === "thinking-selection" ||
+    phase === "thinking-clamping"
+  ) {
     const nativeSuffix = typeof sdk.resolveModelReference === "function";
-    const selections = [
-      ["literal-model", "literal-model", "high"],
-      ["literal-model:high", "literal-model:high", "high"],
-      ["literal-model:exacto", "literal-model:exacto", "high"],
-      ...(nativeSuffix
-        ? [
-            ["literal-model:low", "literal-model", "low"],
-            ["literal-model:off", "literal-model", "off"],
-            ["nested/model:medium", "nested/model", "medium"],
-          ]
-        : []),
-    ];
-    for (const [reference, model, thinking] of selections) {
-      const prompt = `MODEL_SELECTION:${reference ?? ""}`;
+    // Each phase keeps at most six native launches within the existing 35s fixture budget.
+    const selections = {
+      "model-selection": [
+        ["literal-model", "literal-model", "high"],
+        ["literal-model:high", "literal-model:high", "high"],
+        ["literal-model:exacto", "literal-model:exacto", "high"],
+        ...(nativeSuffix
+          ? [
+              ["literal-model:low", "literal-model", "low"],
+              ["literal-model:off", "literal-model", "off"],
+              ["nested/model:medium", "nested/model", "medium"],
+            ]
+          : []),
+      ],
+      "thinking-selection": [
+        ["literal-model", "literal-model", "low", "low"],
+        ["literal-model", "literal-model", "minimal", "minimal"],
+        ["literal-model", "literal-model", "medium", "medium"],
+        ["literal-model", "literal-model", "high", "high"],
+        ["literal-model:high", "literal-model:high", "low", "low"],
+        ["literal-model:exacto", "literal-model:exacto", "off", "off"],
+      ],
+      "thinking-clamping": [
+        ["literal-model", "literal-model", "xhigh", "xhigh", "high"],
+        ["literal-model", "literal-model", "max", "max", "high"],
+        ...(nativeSuffix
+          ? [
+              ["literal-model:medium", "literal-model", "medium", "medium"],
+              ["LITERAL-MODEL", "literal-model", "low", "low"],
+            ]
+          : []),
+      ],
+    }[phase];
+    for (const [reference, model, thinking, override, effective = thinking] of selections) {
+      const prompt = `MODEL_SELECTION:${reference ?? ""}:${override ?? "inherited"}`;
       const selected = `single-agent-fixture/${reference ?? ""}`;
-      const launched = await call("delegate", { prompt, model: selected }, prompt);
+      const launched = await call(
+        "delegate",
+        { prompt, model: selected, ...(override !== undefined ? { thinking: override } : {}) },
+        prompt,
+      );
       const receipt = await settled(launched);
       assert.equal(receipt.isError, false, JSON.stringify(receipt));
       assert.equal(runDetails(receipt).model, `single-agent-fixture/${model ?? ""}`);
       assert.equal(runDetails(receipt).thinking, thinking);
       const request = requestFor(prompt);
       assert.equal(request.model, model);
-      assert.equal(request.thinking ?? "off", thinking);
+      assert.equal(request.thinking ?? "off", effective);
+      assert.equal(request.nativeThinking, effective, "native session applies or clamps effort");
       const launch = readValidated(
         LaunchSchema,
         path.join(runDir(runDetails(receipt).id), "launch.json"),
@@ -1747,16 +1778,38 @@ try {
     const base = path.join(agentDir, "sessions/agent-runs", manager.getSessionId());
     const before = fs.readdirSync(base).sort();
     const requestCount = requests().length;
-    for (const model of [
-      "single-agent-fixture/literal",
-      "missing-provider/literal-model",
-      "single-agent-fixture/literal-model:invalid",
-      ...(!nativeSuffix ? ["single-agent-fixture/literal-model:low"] : []),
-    ]) {
-      const rejected = await call("delegate", { prompt: "REJECTED_MODEL", model }, model);
+    /** @type {{ model: string, thinking?: string | boolean | number, error: RegExp }[]} */
+    const rejections = [
+      ...[
+        "single-agent-fixture/literal",
+        "missing-provider/literal-model",
+        "single-agent-fixture/literal-model:invalid",
+        ...(!nativeSuffix ? ["single-agent-fixture/literal-model:low"] : []),
+      ].map((model) => ({ model, error: /Model .*unavailable/ })),
+      ...["invalid", "HIGH", "", false, 7].map((thinking) => ({
+        model: "single-agent-fixture/literal-model",
+        thinking,
+        error: /thinking:/,
+      })),
+      ...(nativeSuffix
+        ? [
+            {
+              model: "single-agent-fixture/literal-model:low",
+              thinking: "high",
+              error: /thinking conflicts/,
+            },
+          ]
+        : []),
+    ];
+    for (const { error, ...input } of rejections) {
+      const rejected = await call(
+        "delegate",
+        { prompt: "REJECTED_SELECTION", ...input },
+        `rejected-${input.model}-${JSON.stringify(input.thinking)}`,
+      );
       assert.equal(rejected.isError, true, JSON.stringify(rejected));
-      assert.match(JSON.stringify(rejected.content), /Model .*unavailable/);
-      if (!nativeSuffix) {
+      assert.match(JSON.stringify(rejected.content), error);
+      if (!nativeSuffix && input.thinking === undefined) {
         assert.match(
           JSON.stringify(rejected.content),
           /If you intended a thinking suffix, update Pi/,
@@ -1767,6 +1820,126 @@ try {
     }
     assert.equal(session.model?.id, "parent-model");
     assert.equal(session.thinkingLevel, "high");
+  } else if (phase === "thinking") {
+    const model = session.model;
+    assert.ok(model !== undefined);
+    const fresh = await settled(
+      await call("delegate", { prompt: "THINKING:fresh", thinking: "low" }, "thinking-fresh"),
+    );
+    assert.equal(fresh.isError, false, JSON.stringify(fresh));
+    assert.equal(requestFor("THINKING:fresh").nativeThinking, "low");
+    assert.equal(session.model, model);
+    assert.equal(session.thinkingLevel, "high", "fresh launch never changes parent effort");
+    const inherited = await settled(
+      await call("delegate", { prompt: "THINKING:inherited" }, "thinking-inherited"),
+    );
+    assert.equal(inherited.isError, false, JSON.stringify(inherited));
+    assert.equal(requestFor("THINKING:inherited").nativeThinking, "high");
+    const live = await call(
+      "delegate",
+      { prompt: "HOLD:first", thinking: "off", context: "fork" },
+      "thinking-live",
+    );
+    assert.equal(live.isError, false, JSON.stringify(live));
+    await until(
+      () => requests().some((request) => request.prompt === "HOLD:first"),
+      "native child starts with thinking off",
+    );
+    assert.equal(requestFor("HOLD:first").nativeThinking, "off");
+    assert.equal(session.model, model);
+    assert.equal(session.thinkingLevel, "high", "fork launch never changes parent effort");
+    session.setThinkingLevel("medium");
+    const guidance = await call(
+      "agent_runs",
+      { action: "continue", id: runDetails(live).id, prompt: "THINKING:guidance" },
+      "thinking-guidance",
+    );
+    assert.equal(runDetails(guidance).receipt, "guidance");
+    const admission = path.join(
+      runDir(runDetails(live).id),
+      "admissions",
+      `${runDetails(guidance).command ?? ""}.json`,
+    );
+    await until(() => fs.existsSync(admission), "native actor admits guidance before release");
+    assert.equal(readValidated(AdmissionSchema, admission).state, "accepted");
+    fs.writeFileSync(path.join(root, "release-first"), "release");
+    await settled(live);
+    assert.equal(requestFor("THINKING:guidance").nativeThinking, "off");
+    assert.equal(session.thinkingLevel, "medium");
+    session.setThinkingLevel("high");
+    const continued = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: runDetails(live).id, prompt: "THINKING:successor" },
+        "thinking-successor",
+      ),
+    );
+    assert.equal(continued.isError, false, JSON.stringify(continued));
+    assert.notEqual(runDetails(continued).id, runDetails(live).id);
+    assert.equal(runDetails(continued).sessionId, runDetails(live).sessionId);
+    assert.equal(runDetails(continued).thinking, "off");
+    assert.equal(requestFor("THINKING:successor").nativeThinking, "off");
+    assert.equal(session.thinkingLevel, "high");
+    const oldPid = requestFor("THINKING:successor").pid;
+    assert.equal(oldPid, requestFor("HOLD:first").pid, "warm successor reuses the actor");
+    const directory = runDir(runDetails(live).id);
+    const oldActor = readActorIdentity(directory);
+    await childRegistered(runDetails(live).id);
+    const stopped = await call(
+      "agent_runs",
+      { action: "stop", id: runDetails(continued).id },
+      "thinking-stop-before-cold",
+    );
+    assert.equal(stopped.isError, false, JSON.stringify(stopped));
+    await until(() => {
+      try {
+        process.kill(oldPid, 0);
+        return false;
+      } catch (error) {
+        return hasErrorCode(error, "ESRCH");
+      }
+    }, "warm actor actually exits before cold continuation");
+    await until(
+      () => fs.existsSync(path.join(directory, `exit-${oldActor.token}.json`)),
+      "launcher publishes the warm actor's observed exit",
+    );
+    const exited = await call(
+      "agent_runs",
+      { action: "inspect", id: runDetails(continued).id },
+      "thinking-predecessor-exit",
+    );
+    assert.equal(runDetails(exited).process?.live, false);
+    assert.equal(runDetails(exited).process?.exitKnown, true);
+    assert.equal(runDetails(exited).process?.exit?.pid, oldPid);
+    session.setThinkingLevel("medium");
+    const cold = await settled(
+      await call(
+        "agent_runs",
+        { action: "continue", id: runDetails(continued).id, prompt: "THINKING:cold-successor" },
+        "thinking-cold-successor",
+      ),
+    );
+    assert.equal(cold.isError, false, JSON.stringify(cold));
+    assert.notEqual(runDetails(cold).id, runDetails(continued).id);
+    assert.equal(runDetails(cold).sessionId, runDetails(live).sessionId);
+    assert.notEqual(requestFor("THINKING:cold-successor").pid, oldPid);
+    assert.equal(runDetails(cold).thinking, "off");
+    assert.equal(requestFor("THINKING:cold-successor").nativeThinking, "off");
+    assert.equal(session.model, model);
+    assert.equal(session.thinkingLevel, "medium", "cold continuation leaves parent unchanged");
+    console.log(
+      JSON.stringify({
+        phase,
+        parentThinking: session.thinkingLevel,
+        coldPredecessorExit: runDetails(exited).process?.exit,
+        requests: requests().map(({ prompt, pid, model: selected, nativeThinking }) => ({
+          prompt,
+          pid,
+          model: selected,
+          nativeThinking,
+        })),
+      }),
+    );
   } else if (phase === "seed" || phase === "receipt" || phase === "receipt-sessionless") {
     const prompt = "HOLD:first\n  EXACT untouched prompt Ω\n";
     const receipt = await call(

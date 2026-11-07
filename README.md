@@ -14,6 +14,7 @@ delegate({
   prompt:
     "Inspect the authentication changes. Return concrete defects with file and line evidence. Do not edit files.",
   name: "auth-review",
+  thinking: "low",
 });
 ```
 
@@ -22,6 +23,9 @@ arrives later as a notification. Do other work or end the turn; do not poll.
 `context: "fresh"` is the default; `context: "fork"` preserves the native
 conversation, including prior tool results. There is no hidden role prompt,
 report-writing suffix, profile selection, or model fallback catalog.
+Optional `thinking` sets the child's effort without changing the parent. Omit it
+to inherit parent effort. Pi clamps the request to the child's model capabilities.
+Guidance and saved continuations keep the child's saved effort.
 
 ```js
 agent_runs({ action: "list" });
