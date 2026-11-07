@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.25 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor: own observer hydration and card content phases (#377) ([169918e](https://github.com/fitchmultz/pi-subagents/commit/169918e78bfa54cc7d59525855f4e2104eb8287f))
+
+### What's Changed
+
+- refactor: own observer hydration and card content phases by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/377
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.24...v0.52.25
+
 ## 0.52.24 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
