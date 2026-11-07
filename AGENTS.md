@@ -7,6 +7,8 @@
 - Expected values must be independent of the code under test. Observe actual
   publication/readiness before checking negative outcomes; a sleep is not proof
   that the owner processed the input.
+- Run tests for behavior the change can affect, and reuse still-valid results.
+  Prefer deleting tests whose setup guarantees success over counting them as coverage.
 - Use `npm run ci` in hosted CI for full validation. Keep local checks narrow.
   Never edit source or tests while checks run in this checkout.
   Qualify official Pi and the intended fork separately;
