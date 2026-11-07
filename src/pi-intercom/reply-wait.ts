@@ -25,6 +25,7 @@ export interface AskTransaction {
   readonly questionId: string;
   readonly options: Parameters<IntercomClient["send"]>[1];
   readonly signal?: AbortSignal | undefined;
+  readonly onSending: () => void;
   readonly onSent: (result: SendResult) => void;
 }
 /** One correlated blocking wait; admitted before send so a fast reply cannot race it. */
@@ -117,7 +118,7 @@ export class ReplyWait {
     });
   }
   async transact(activeClient: IntercomTransport, transaction: AskTransaction): Promise<Message> {
-    const { to, questionId, options, signal, onSent } = transaction;
+    const { to, questionId, options, signal, onSending, onSent } = transaction;
     const reply = this.wait({ from: to, replyTo: questionId, signal });
     // A delivery failure may reject before its reply branch is joined.
     reply.catch(() => {
@@ -127,6 +128,7 @@ export class ReplyWait {
       if (signal?.aborted === true) {
         throw new Error("Cancelled");
       }
+      onSending();
       const result = await activeClient.send(to, {
         ...options,
         messageId: questionId,

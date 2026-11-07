@@ -1714,6 +1714,9 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
   };
   await completedAsk("before");
 
+  const intercom = asker.session.agent.state.tools.find((tool) => tool.name === "intercom");
+  assertDefined(intercom);
+  const executions = t.mock.method(intercom, "execute");
   asker.faux.setResponses([
     fauxAssistantMessage([ask("contender-a"), ask("contender-b")], { stopReason: "toolUse" }),
     fauxAssistantMessage("Concurrent asks handled"),
@@ -1732,6 +1735,16 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
   const [rejectedAsk] = rejected;
   assert.ok(rejectedAsk !== undefined, "expected the rejected contender result");
   assert.match(JSON.stringify(rejectedAsk.content), /Already waiting for a reply/);
+  const rejection = executions.mock.calls.find(
+    (call) => call.arguments[0] === rejectedAsk.toolCallId,
+  );
+  assertDefined(rejection);
+  await assert.rejects(Promise.resolve(rejection.result), (error: unknown) => {
+    assert.equal(at(error, "details", "deliveryUnknown"), false);
+    assert.equal(at(error, "details", "accepted"), false);
+    assert.equal(at(error, "details", "delivered"), false);
+    return true;
+  });
   assert.equal(received.length, 2, "only one concurrent ask may reach the peer");
   const [firstReceived, winner] = received;
   assert.ok(firstReceived !== undefined && winner !== undefined, "expected both concurrent asks");
@@ -3414,6 +3427,38 @@ nodeTest(
   },
 );
 
+function assertOrdinaryAskError(input: {
+  outcome: "timeout" | "disconnect" | "cancel" | "failure-marker";
+  error: unknown;
+  questionId: unknown;
+}): void {
+  const { outcome, questionId } = input;
+  const error = record(input.error);
+  const details = record(error.details);
+  if (outcome !== "failure-marker") {
+    assert.equal(details.deliveryUnknown, false);
+    assert.equal(details.accepted, true);
+    assert.equal(details.delivered, true);
+    assert.equal(details.messageId, questionId);
+  }
+  if (outcome === "timeout" || outcome === "failure-marker") {
+    assert.equal(
+      details.reasonCode,
+      outcome === "timeout" ? "reply_timeout" : "recipient_turn_failed",
+    );
+    assert.equal(outcome === "timeout" ? details.messageId : details.replyTo, questionId);
+    assert.deepEqual(
+      records(details.nextActions).map((action) => action.action),
+      outcome === "timeout" ? ["status", "list", "send"] : ["status", "send"],
+    );
+  } else {
+    assert.match(
+      text(error.message),
+      outcome === "cancel" ? /Cancelled/ : /Reply peer disconnected/,
+    );
+  }
+}
+
 for (const outcome of [
   "timeout",
   "disconnect",
@@ -3472,24 +3517,7 @@ for (const outcome of [
         assert.match(JSON.stringify(settled.value.content), /is only ordinary text/);
       } else {
         assert.ok("error" in settled);
-        const error = record(settled.error);
-        if (outcome === "timeout" || outcome === "failure-marker") {
-          const details = record(error.details);
-          assert.equal(
-            details.reasonCode,
-            outcome === "timeout" ? "reply_timeout" : "recipient_turn_failed",
-          );
-          assert.equal(outcome === "timeout" ? details.messageId : details.replyTo, question.id);
-          assert.deepEqual(
-            records(details.nextActions).map((action) => action.action),
-            outcome === "timeout" ? ["status", "list", "send"] : ["status", "send"],
-          );
-        } else {
-          assert.match(
-            text(error.message),
-            outcome === "cancel" ? /Cancelled/ : /Reply peer disconnected/,
-          );
-        }
+        assertOrdinaryAskError({ error: settled.error, outcome, questionId: question.id });
       }
       if (outcome === "disconnect") {
         await asker.sender.connect({
@@ -3934,6 +3962,9 @@ nodeTest(
       }),
       (error: unknown) => {
         assert.equal(at(error, "details", "reasonCode"), "reply_failed");
+        assert.equal(at(error, "details", "deliveryUnknown"), false);
+        assert.equal(at(error, "details", "accepted"), false);
+        assert.equal(at(error, "details", "delivered"), false);
         assert.deepEqual(
           records(at(error, "details", "nextActions")).map((action) => action.action),
           ["pending", "list"],

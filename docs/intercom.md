@@ -141,7 +141,10 @@ When a local transport send loses its acknowledgement, the tool error retains th
 original `messageId` and reports `deliveryUnknown:true`. It omits `accepted` and
 `delivered` because neither outcome is confirmed. Local validation failures before
 dispatch report `deliveryUnknown:false`, `accepted:false`, and `delivered:false`.
-Neither path retries the message automatically.
+Neither path retries the message automatically. If an ask is acknowledged but its
+reply wait later times out, is cancelled, or loses its peer, the error preserves
+the broker's `accepted` and `delivered` fields and reports `deliveryUnknown:false`.
+A rejected concurrent ask that never reaches the transport is not sent.
 
 `ask` waits for a correlated reply and has a bounded timeout. Prefer `send` unless
 the sender genuinely must remain alive waiting for a decision. If an ordinary ask
