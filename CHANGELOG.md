@@ -4,6 +4,20 @@
 
 - Make socket framing failures terminal and represent JSONL record parsing as blank, reading, or invalid without changing publication policies.
 
+## 0.52.20 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor: centralize request settlement and snapshot phases (#354) ([335c7e2](https://github.com/fitchmultz/pi-subagents/commit/335c7e269936467672f7e8d70cc67bf875a0a1c6))
+
+### What's Changed
+
+- refactor: centralize broker request settlement by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/354
+- refactor: make bridge scheduler ownership explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/355
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.19...v0.52.20
+
 ## 0.52.19 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
