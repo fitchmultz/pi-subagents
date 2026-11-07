@@ -23,6 +23,12 @@ Run narrow owner-boundary tests locally through `scripts/run-tests.mjs`. Full
 `npm run ci` belongs in hosted CI and includes package/install smokes and the
 complete suites. Keep the strict Oxlint/Oxfmt rules; see [code quality](code-quality.md).
 
+Builds compile into process-owned staging before replacing `dist`. If a publisher
+exits after retiring the previous build, later builds preserve its complete
+`.previous` tree until a new complete build publishes. A failed build reports
+the retained recovery paths. Recovery never promotes an older backup into a
+concurrent publisher's retirement gap or reaps live or uncertain owners.
+
 ## Native Android/Termux
 
 Use app-private storage, not Android's shared `/sdcard` filesystem. No Termux app
@@ -89,6 +95,11 @@ Parking returns resident, exit-with-parked-authority or exit-after-failed-save.
 Both exit outcomes have disposed the native runtime and must exit the actor;
 neither permits a second ordinary disposal. Restore tracks unopened, opening
 and adopted phases, keeping the exact saved cut with the phase that owns it.
+
+Directory watches distinguish unarmed, armed-to-one-inode and polling-only
+availability. Missing paths can be armed later; unsupported or failed native
+watches keep the existing polling fallback. Each coalesced Wake has one waiting
+owner loop.
 
 Smoke child cleanup treats leader exit and pipe closure separately. Pipe draining
 has waiting, draining and closed phases. Closing it cancels its deadlines and

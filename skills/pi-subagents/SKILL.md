@@ -14,6 +14,7 @@ profile discovery, loader, role body, chain DSL, or nested delegation.
 delegate({
   prompt: "Complete assignment with constraints and expected output",
   name: "short-name",
+  thinking: "low",
 });
 ```
 
@@ -23,12 +24,14 @@ expected result, and stop boundary. Do not rely on a hidden profile to add them.
 
 Fresh context is default; `context:"fork"` preserves the native conversation,
 including prior tool results. A forked child still cannot delegate. Optional
-`cwd` and `model` are explicit launch overrides; do not change global auth/model
-settings to implement an override.
+`cwd`, `model`, and `thinking` are explicit launch overrides; do not change global
+auth/model settings to implement an override. `thinking` accepts `off`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, or `max`. Omit it to inherit the parent's effort.
+Pi clamps the child's effort to its model capabilities without changing the parent.
 `model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
 exports it; a literal model ID wins before suffix parsing. Without that host API,
-use a literal ID with inherited thinking or upgrade Pi. Never retry another model
-silently.
+use `thinking` with an omitted model or literal ID. If both the field and a native
+suffix supply effort, they must match. Never retry another model silently.
 
 Every launch, continuation and guidance call returns a receipt; no tool waits for
 child completion. Continue useful independent work; when child evidence gates the
@@ -45,6 +48,7 @@ invocation exits after its final turn and stops any remaining children.
 - `inspect` reads a run by ID; follow returned offsets for complete output.
 - `continue` takes a complete follow-up `prompt` and keeps the saved child chat.
   Active work receives guidance; completed work gets an immutable successor.
+  Both keep the child's saved effort, independent of later parent changes.
 - `stop` requests termination. Inspect actual process evidence; request acceptance
   does not prove actor or command exit.
 

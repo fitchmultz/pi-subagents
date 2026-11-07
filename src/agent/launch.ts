@@ -8,6 +8,16 @@ import type { DelegateInput } from "./tool-schemas.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
 import { runDirectory, write } from "./storage.ts";
 
+function selectedThinking(
+  requested: ThinkingLevel | undefined,
+  inherited: ThinkingLevel,
+  suffix?: ThinkingLevel,
+): ThinkingLevel {
+  if (requested !== undefined && suffix !== undefined && requested !== suffix) {
+    throw new Error("thinking conflicts with the model's thinking suffix.");
+  }
+  return suffix ?? requested ?? inherited;
+}
 function selectedModel(
   input: DelegateInput,
   context: ExtensionContext,
@@ -18,7 +28,7 @@ function selectedModel(
     if (!context.model) {
       throw new Error("No selected model; no fallback was used.");
     }
-    return { model: context.model, thinking };
+    return { model: context.model, thinking: selectedThinking(input.thinking, thinking) };
   }
   const slash = input.model.indexOf("/");
   if (slash < 1) {
@@ -29,7 +39,7 @@ function selectedModel(
     input.model.slice(slash + 1),
   );
   if (model) {
-    return { model, thinking };
+    return { model, thinking: selectedThinking(input.thinking, thinking) };
   }
   if (typeof sdk.resolveModelReference !== "function") {
     throw new Error(
@@ -49,7 +59,10 @@ function selectedModel(
   if (resolved.status !== "resolved") {
     throw new Error(`Model ${input.model} is unavailable; no fallback was used.`);
   }
-  return { model: resolved.model, thinking: resolved.thinkingLevel ?? thinking };
+  return {
+    model: resolved.model,
+    thinking: selectedThinking(input.thinking, thinking, resolved.thinkingLevel),
+  };
 }
 function targetTrust(
   sdk: Awaited<ReturnType<typeof loadSDK>>,
