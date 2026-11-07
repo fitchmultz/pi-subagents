@@ -193,7 +193,7 @@ class IntercomBroker {
       return;
     }
     this.lastMessages.disconnected(sessionId);
-    if (!this.parking.closed(session)) {
+    if (!this.parking.closed(sessionId)) {
       this.sessions.delete(sessionId);
       this.replacements.disconnected(sessionId);
       this.broadcast({ type: "session_left", sessionId }, session.info);
