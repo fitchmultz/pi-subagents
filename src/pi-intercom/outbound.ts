@@ -40,6 +40,15 @@ interface OutboundOwners {
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
 }
+type SendErrorFacts =
+  | { readonly deliveryUnknown: true; readonly messageId?: string }
+  | {
+      readonly deliveryUnknown: false;
+      readonly messageId?: string;
+      readonly accepted: false;
+      readonly delivered: false;
+    };
+
 export class IntercomOutbound {
   private readonly owners: OutboundOwners;
   private readonly config: IntercomConfig;
@@ -63,16 +72,31 @@ export class IntercomOutbound {
     this.owners.lifecycle.markActivity();
     this.owners.connection.syncStatus();
   }
-  private sendErrorFacts(error: unknown): Readonly<Record<string, unknown>> {
-    if (!(error instanceof SendError)) {
-      return {};
-    }
-    const { kind, messageId } = error.outcome;
-    return {
-      messageId,
-      deliveryUnknown: kind === "unconfirmed",
-      ...(kind === "not-sent" ? { accepted: false, delivered: false } : {}),
-    };
+  private sendErrorFacts(error: unknown, fallback: SendError["outcome"]["kind"]): SendErrorFacts {
+    const kind = error instanceof SendError ? error.outcome.kind : fallback;
+    const identity = error instanceof SendError ? { messageId: error.outcome.messageId } : {};
+    return kind === "not-sent"
+      ? { ...identity, deliveryUnknown: false, accepted: false, delivered: false }
+      : { ...identity, deliveryUnknown: true };
+  }
+  private sendFailure(error: unknown, fallback: SendError["outcome"]["kind"]): ToolResultLike {
+    const facts = this.sendErrorFacts(error, fallback);
+    return toolError(
+      `Failed to send: ${errorMessage(error)}`,
+      failureDetails(
+        error instanceof RecoveryError ? error.code : "send_failed",
+        [
+          { action: "list" },
+          {
+            action: "send",
+            guidance: facts.deliveryUnknown
+              ? "Check the recipient before retrying; the original message may still arrive."
+              : "Retry with an exact active recipient target.",
+          },
+        ],
+        { error: true, ...facts },
+      ),
+    );
   }
   private deliveryFailure(to: string, result: SendResult): ToolResultLike {
     return toolError(
@@ -153,14 +177,19 @@ export class IntercomOutbound {
     if (to === undefined) {
       return toolError("Missing 'to' or 'message' parameter");
     }
+    let target: string;
     try {
-      const target = (await resolveConnectedTarget(active, to)) ?? to;
+      target = (await resolveConnectedTarget(active, to)) ?? to;
       if (target === active.sessionId) {
         return toolError("Cannot message the current session");
       }
       if (!(await this.confirm(params, ctx))) {
         return toolText("Message cancelled by user");
       }
+    } catch (error) {
+      return this.sendFailure(error, "not-sent");
+    }
+    try {
       const options = { ...sendOptions(params), passive: params.passive === true };
       const result = await active.send(target, options);
       if (!result.accepted) {
@@ -168,21 +197,7 @@ export class IntercomOutbound {
       }
       return this.sent(to, params, result);
     } catch (error) {
-      return toolError(
-        `Failed to send: ${errorMessage(error)}`,
-        failureDetails(
-          error instanceof RecoveryError ? error.code : "send_failed",
-          [
-            { action: "list" },
-            {
-              action: "send",
-              guidance:
-                "Check the recipient before retrying; the original message may still arrive.",
-            },
-          ],
-          { error: true, ...this.sendErrorFacts(error) },
-        ),
-      );
+      return this.sendFailure(error, "unconfirmed");
     }
   }
   private busyAsk(to: string, result: SendResult): ToolResultLike {
@@ -253,6 +268,7 @@ export class IntercomOutbound {
       const result = this.deliveryFailure(to, error.result);
       return { ...result, details: { ...result.details, error: true } };
     }
+    const facts = this.sendErrorFacts(error, questionId === undefined ? "not-sent" : "unconfirmed");
     return toolError(
       `Failed: ${errorMessage(error)}`,
       failureDetails(
@@ -262,13 +278,15 @@ export class IntercomOutbound {
           { action: "list" },
           {
             action: "send",
-            guidance: "Check the recipient before retrying; the original ask may still be seen.",
+            guidance: facts.deliveryUnknown
+              ? "Check the recipient before retrying; the original ask may still be seen."
+              : "Retry with an exact active recipient target.",
           },
         ],
         {
           error: true,
           ...(questionId !== undefined && questionId !== "" ? { messageId: questionId } : {}),
-          ...this.sendErrorFacts(error),
+          ...facts,
         },
       ),
     );
@@ -459,7 +477,7 @@ export class IntercomOutbound {
       failureDetails(reason, actions, {
         error: true,
         ...((replyTo ?? "") !== "" ? { replyTo } : {}),
-        ...this.sendErrorFacts(error),
+        ...this.sendErrorFacts(error, error instanceof RecoveryError ? "not-sent" : "unconfirmed"),
       }),
     );
   }

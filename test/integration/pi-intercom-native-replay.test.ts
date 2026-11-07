@@ -29,7 +29,11 @@ import type { ExtensionAPI, ExtensionContext, AgentSession } from "@earendil-wor
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import type { ReadonlyDeep as ReadonlyInput } from "type-fest";
 import { Type } from "typebox";
-import { createMessageReader, writeMessage } from "../../src/pi-intercom/broker/framing.ts";
+import {
+  createMessageReader,
+  MAX_FRAME_SIZE_BYTES,
+  writeMessage,
+} from "../../src/pi-intercom/broker/framing.ts";
 import {
   getBrokerSocketPath,
   prepareBrokerSocketPath,
@@ -3256,6 +3260,24 @@ nodeTest(
   "native send preserves delivery uncertainty and its original ID after a lost acknowledgement",
   async (t) => {
     const sender = await makeSession(t, "lost-send-ack");
+    await assert.rejects(
+      executeIntercom(sender, {
+        action: "send",
+        to: "sender-lost-send-ack",
+        message: "x".repeat(MAX_FRAME_SIZE_BYTES),
+      }),
+      (error: unknown) => {
+        assert.match(text(property(error, "message")), /message too large/);
+        assert.equal(at(error, "details", "accepted"), false);
+        assert.equal(at(error, "details", "delivered"), false);
+        assert.equal(at(error, "details", "deliveryUnknown"), false);
+        assert.doesNotMatch(
+          JSON.stringify(at(error, "details", "nextActions")),
+          /may still arrive/,
+        );
+        return true;
+      },
+    );
     const originalWrite: unknown = Reflect.get(net.Socket.prototype, "write");
     assert.ok(typeof originalWrite === "function");
     const held: Buffer[] = [];
@@ -3837,6 +3859,12 @@ nodeTest(
         if (reason !== undefined) {
           assert.equal(at(error, "details", "reasonCode"), reason);
           const nextActions = records(at(error, "details", "nextActions"));
+          if (reason === "ambiguous_target" || reason === "no_pending_reply") {
+            assert.equal(at(error, "details", "accepted"), false);
+            assert.equal(at(error, "details", "delivered"), false);
+            assert.equal(at(error, "details", "deliveryUnknown"), false);
+            assert.doesNotMatch(JSON.stringify(nextActions), /may still (?:arrive|be seen)/);
+          }
           if (actions === undefined) {
             assert.ok(nextActions.length > 0);
           } else {
