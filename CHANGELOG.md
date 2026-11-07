@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- Separate fenced broker peers from disconnected parked peers, with wake attempts owned only by the parked state.
-
 ## 0.52.22 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
