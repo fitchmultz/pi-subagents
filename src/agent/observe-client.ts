@@ -85,43 +85,74 @@ export interface ViewedTool {
   end?: { result: unknown; isError: boolean };
 }
 
+type ChannelPhase =
+  | { readonly kind: "empty" }
+  | { readonly kind: "current"; readonly client: ObservationClient }
+  | {
+      readonly kind: "connecting";
+      readonly previous: ObservationClient | undefined;
+      readonly client: ObservationClient;
+    };
+
 export class ObservationChannel {
-  current?: ObservationClient | undefined;
-  private pending?: ObservationClient | undefined;
+  private phase: ChannelPhase = { kind: "empty" };
   private readonly changed: () => void;
   constructor(changed: () => void) {
     this.changed = changed;
   }
+  get current(): ObservationClient | undefined {
+    const phase = this.phase;
+    switch (phase.kind) {
+      case "empty":
+        return;
+      case "current":
+        return phase.client;
+      case "connecting":
+        return phase.previous;
+      default: {
+        const exhaustive: never = phase;
+        return exhaustive;
+      }
+    }
+  }
   get connecting(): boolean {
-    return this.pending !== undefined;
+    return this.phase.kind === "connecting";
+  }
+  private retain(client: ObservationClient | undefined): void {
+    this.phase = client === undefined ? { kind: "empty" } : { kind: "current", client };
   }
   connect(identity: ObservationIdentity): void {
-    if (this.pending || this.current?.connected === true) {
+    if (this.connecting || this.current?.connected === true) {
       return;
     }
     const client = new ObservationClient(identity, "detail", () => {
-      if (this.pending !== client && this.current !== client) {
+      const phase = this.phase;
+      const pending = phase.kind === "connecting" ? phase.client : undefined;
+      if (pending !== client && this.current !== client) {
         return;
       }
-      if (this.pending === client && client.connected) {
-        this.current = client;
-        this.pending = undefined;
-      }
-      if (this.pending === client && client.closed) {
-        this.pending = undefined;
+      if (phase.kind === "connecting" && phase.client === client) {
+        if (client.connected) {
+          this.retain(client);
+        } else if (client.closed) {
+          this.retain(phase.previous);
+        }
       }
       this.changed();
     });
-    this.pending = client;
+    this.phase = { kind: "connecting", previous: this.current, client };
   }
   pause(): void {
-    this.current?.close();
-    this.pending?.close();
-    this.pending = undefined;
+    const current = this.current;
+    current?.close();
+    if (this.phase.kind === "connecting") {
+      this.phase.client.close();
+    }
+    this.retain(current);
   }
   clear(): void {
     this.pause();
-    this.current = undefined;
+    this.phase = { kind: "empty" };
   }
 }
 
@@ -130,14 +161,13 @@ export class ObservationClient {
   activity = "Connecting";
   model = "";
   thinking = "";
-  connected = false;
-  closed = false;
+  private phase: "connecting" | "awaiting-baseline" | "ready" | "closing" | "closed" = "connecting";
   revision = 0;
   leaf?: string | null;
   message?: { key: number; ended: boolean; blocks: ViewedBlock[] } | undefined;
   readonly tools = new Map<string, ViewedTool>();
   private readonly handovers: Array<Static<typeof settlementSchema>> = [];
-  private seq = -1;
+  private seq = 0;
   private chars = 0;
   private readonly socket: net.Socket;
   private readonly identity: ObservationIdentity;
@@ -161,6 +191,10 @@ export class ObservationClient {
     }
     this.socket = net.createConnection(file);
     this.socket.on("connect", () => {
+      if (this.phase !== "connecting") {
+        return;
+      }
+      this.phase = "awaiting-baseline";
       writeFrame(this.socket, JSON.stringify({ t: "hello", v: 1, ...identity, level }));
     });
     this.socket.on(
@@ -170,29 +204,37 @@ export class ObservationClient {
           try {
             this.receive(frame);
           } catch {
-            this.socket.destroy();
+            this.close();
           }
         },
         () => {
-          this.socket.destroy();
+          this.close();
         },
         256 * 1024,
       ),
     );
     this.socket.on("error", () => {
-      this.socket.destroy();
+      this.close();
     });
     this.socket.on("close", () => {
-      this.closed = true;
-      this.connected = false;
+      this.phase = "closed";
       this.changed();
     });
   }
+  get connected(): boolean {
+    return this.phase === "ready";
+  }
+  get closed(): boolean {
+    return this.phase === "closing" || this.phase === "closed";
+  }
   private receive(value: unknown): void {
+    if (this.closed) {
+      return;
+    }
     Assert(frameSchema, value);
     if (value.t === "snapshot") {
       this.baseline(value);
-    } else if (this.seq < 0) {
+    } else if (this.phase !== "ready") {
       throw new Error("Observation before baseline.");
     } else if (value.t === "delta") {
       this.delta(value);
@@ -212,7 +254,7 @@ export class ObservationClient {
     }
     this.leaf = value.leafId;
     this.seq = value.seq;
-    this.connected = true;
+    this.phase = "ready";
     this.message = undefined;
     this.tools.clear();
     this.handovers.length = 0;
@@ -312,7 +354,9 @@ export class ObservationClient {
     }
   }
   close(): void {
-    this.closed = true;
-    this.socket.destroy();
+    if (!this.closed) {
+      this.phase = "closing";
+      this.socket.destroy();
+    }
   }
 }
