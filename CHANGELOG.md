@@ -2,11 +2,38 @@
 
 ## [Unreleased]
 
+## 0.52.19 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+
+- Make post-exit pipe cleanup terminal across waiting, draining and closed phases so later pipe events cannot restart smoke child cleanup.
+- Distinguish parked and failed actor exit outcomes; both have disposed the native runtime, exit the actor and permit no second ordinary disposal.
+- Bind native intercom context identity to inactive, live or invalidated lifecycle state; invalidated transport cleanup retains the session ID until cleared, separate from transport connection and native tool activity.
+- Bind parent attachment to explicit detached, waiting, attaching and attached phases; managed readiness attaches only its own still-current waiting binding and shutdown joins admitted publication before releasing the matching generation.
 - Add optional `delegate.thinking` to select child effort independently of the parent on all supported hosts, including official Pi 1.5.0. Omission keeps inherited effort. Native model suffixes must agree with an explicit field. Pi still clamps effort to model capabilities; guidance and saved continuations retain the child's saved effort.
 - Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
 - Make directory-watch availability and the coalesced wake's single-owner contract explicit without changing polling fallback.
 - Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
 - Give prepared topic transactions action-specific payloads while preserving validate-before-commit and stale-restore normalization.
+
+<!-- npm-release:unreleased:end -->
+
+- fix: preserve live and uncertain broker startup ownership (#342) ([f6147dd](https://github.com/fitchmultz/pi-subagents/commit/f6147dd7a31775e8499a6fd77b4185d6d918d646))
+
+### What's Changed
+
+- fix: preserve live and uncertain broker startup ownership by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/342
+- refactor: make post-exit pipe cleanup terminal by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/346
+- refactor: distinguish parked and failed actor exit outcomes by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/348
+- refactor: bind intercom context identity to lifecycle state by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/351
+- refactor: bind parent attachment to explicit lifecycle phases by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/349
+- fix: preserve last-good builds across interrupted publication by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/343
+- refactor: make child accounting outcomes explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/352
+- refactor: make directory watch availability explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/350
+- refactor: make prepared topic transactions explicit by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/353
+- Add explicit child thinking to delegate by @tribble in https://github.com/fitchmultz/pi-subagents/pull/338
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.18...v0.52.19
 
 ## 0.52.18 - 2026-11-06
 

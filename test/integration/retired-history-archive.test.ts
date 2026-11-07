@@ -400,9 +400,10 @@ async function hold(
     [
       "--input-type=module",
       "-e",
-      `import {DatabaseSync} from 'node:sqlite'; import {writeFileSync, openSync, readSync, closeSync} from 'node:fs';
+      `import {DatabaseSync} from 'node:sqlite'; import {writeFileSync, renameSync, openSync, readSync, closeSync} from 'node:fs';
 ${writable ? "const db = new DatabaseSync(process.argv[1]); db.exec(\"BEGIN IMMEDIATE; INSERT INTO fixture VALUES ('held writer')\");" : 'const fd = openSync(process.argv[1], "r"); readSync(fd, Buffer.alloc(1), 0, 1, 0);'}
-writeFileSync(process.argv[2], "SQLITE_HELD\\n");
+writeFileSync(process.argv[2] + ".tmp", "SQLITE_HELD\\n");
+renameSync(process.argv[2] + ".tmp", process.argv[2]);
 process.stdin.resume(); process.stdin.once('end', () => {${writable ? "db.close();" : "closeSync(fd);"}});`,
       join(root, "agent", "history-index", "run-timing.sqlite"),
       ready,
