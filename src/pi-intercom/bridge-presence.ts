@@ -18,11 +18,15 @@ interface PresenceOwner {
   readonly restored: (identity: Identity, expires: number) => void;
 }
 
+type PresencePhase =
+  | { readonly kind: "idle" }
+  | { readonly kind: "scheduled"; readonly timer: NodeJS.Timeout }
+  | { readonly kind: "running"; readonly task: Promise<void> }
+  | { readonly kind: "stopped"; readonly task: Promise<void> };
+
 export class PersistentPresence {
   private readonly registrations = new Map<string, Registration>();
-  private stopped = false;
-  private timer?: NodeJS.Timeout;
-  private running?: Promise<void> | undefined;
+  private phase: PresencePhase = { kind: "idle" };
   private readonly owner: PresenceOwner;
 
   constructor(owner: PresenceOwner) {
@@ -88,22 +92,30 @@ export class PersistentPresence {
   }
 
   start(): void {
-    if (!this.stopped && !this.running) {
-      clearTimeout(this.timer);
-      this.timer = setTimeout(() => {
-        this.running = this.maintain().finally(() => {
-          this.running = undefined;
-          if (!this.stopped) {
-            this.timer = setTimeout(() => this.start(), 15000);
-          }
-        });
-      }, 0);
+    if (this.phase.kind === "running" || this.phase.kind === "stopped") {
+      return;
     }
+    this.schedule(0);
+  }
+
+  private schedule(delay: number): void {
+    if (this.phase.kind === "scheduled") {
+      clearTimeout(this.phase.timer);
+    }
+    const timer = setTimeout(() => {
+      const task = this.maintain().finally(() => {
+        if (this.phase.kind !== "stopped") {
+          this.schedule(15000);
+        }
+      });
+      this.phase = { kind: "running", task };
+    }, delay);
+    this.phase = { kind: "scheduled", timer };
   }
 
   private async maintain(): Promise<void> {
     for (const registration of this.registrations.values()) {
-      if (this.stopped) {
+      if (this.phase.kind === "stopped") {
         return;
       }
       const identity = this.owner.clients().get(registration.fingerprint);
@@ -125,9 +137,16 @@ export class PersistentPresence {
     }
   }
 
-  async stop(): Promise<void> {
-    this.stopped = true;
-    clearTimeout(this.timer);
-    await this.running;
+  stop(): Promise<void> {
+    const phase = this.phase;
+    if (phase.kind === "stopped") {
+      return phase.task;
+    }
+    if (phase.kind === "scheduled") {
+      clearTimeout(phase.timer);
+    }
+    const task = phase.kind === "running" ? phase.task : Promise.resolve();
+    this.phase = { kind: "stopped", task };
+    return task;
   }
 }
