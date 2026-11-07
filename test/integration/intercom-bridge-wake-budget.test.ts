@@ -287,7 +287,7 @@ nodeTest(
       `${f.credential(0).fingerprint256.replaceAll(":", "").toUpperCase()}.sqlite`,
     );
     const locked = new DatabaseSync(mailboxPath);
-    locked.exec("BEGIN IMMEDIATE");
+    locked.exec("PRAGMA busy_timeout=1000; BEGIN EXCLUSIVE");
     const release = delay(900).then(() => {
       locked.exec("COMMIT");
       timings.lockReleaseMs = performance.now() - started;
