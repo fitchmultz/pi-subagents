@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.23 - 2026-11-07
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor: share saved run admission and continuation states (#363) ([3302b23](https://github.com/fitchmultz/pi-subagents/commit/3302b23cbfcda0892df7c7378540ba3ba472f5ee))
+
+### What's Changed
+
+- refactor: share saved run admission and continuation states by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/363
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.22...v0.52.23
+
 ## 0.52.22 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
