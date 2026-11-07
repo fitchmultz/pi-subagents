@@ -3,14 +3,16 @@ import type { Watch } from "./observe-client.ts";
 import { ObserverTranscript, type EntryAnchor } from "./observe-transcript.ts";
 import { ScrollView } from "./observe-layout.ts";
 
+type ReadPosition =
+  | { readonly kind: "following" }
+  | { readonly kind: "frozen"; pending: boolean; destination: EntryAnchor | undefined };
+
 export class Reading {
   readonly watch: Watch;
   readonly transcript: ObserverTranscript;
   readonly scroll: InstanceType<typeof ScrollView>;
-  following = true;
-  pending = false;
+  private position: ReadPosition = { kind: "following" };
   width = 0;
-  destination?: EntryAnchor | undefined;
   private readonly changed: (kind: "history" | "content") => void;
   constructor(
     watch: Watch,
@@ -30,13 +32,13 @@ export class Reading {
       sessionId,
       cwd,
       changed: (event) => {
-        this.following = false;
+        this.freeze();
         if (event.kind === "history") {
           this.history(event.direction);
           return;
         }
         if (event.kind === "content") {
-          this.destination = { id: event.id, offset: 0, end: event.direction === -1 };
+          this.navigate({ id: event.id, offset: 0, end: event.direction === -1 });
         }
         this.changed("content");
       },
@@ -49,11 +51,41 @@ export class Reading {
       scrollbar: "always",
     });
   }
+  get following(): boolean {
+    return this.position.kind === "following";
+  }
+  get pending(): boolean {
+    return this.position.kind === "frozen" && this.position.pending;
+  }
+  private freeze(): void {
+    if (this.position.kind === "following") {
+      this.position = { kind: "frozen", pending: false, destination: undefined };
+    }
+  }
+  private navigate(destination: EntryAnchor): void {
+    this.position = { kind: "frozen", pending: this.pending, destination };
+  }
+  observeScroll(): boolean {
+    if (this.following && !this.scroll.isFollowingEnd) {
+      this.freeze();
+      return true;
+    }
+    return false;
+  }
+  markPending(): void {
+    if (this.position.kind === "frozen") {
+      this.position.pending = true;
+    }
+  }
+  follow(): void {
+    this.position = { kind: "following" };
+    this.scroll.scrollToEnd();
+    this.transcript.latest();
+  }
   anchor(): EntryAnchor | undefined {
-    return (
-      this.destination ??
-      (this.following ? undefined : this.transcript.anchor(this.scroll.scrollTop))
-    );
+    return this.position.kind === "following"
+      ? undefined
+      : (this.position.destination ?? this.transcript.anchor(this.scroll.scrollTop));
   }
   resize(width: number): boolean {
     const changed = this.width >= 100 !== width >= 100;
@@ -65,14 +97,16 @@ export class Reading {
     const top = line - (anchor.end === true ? this.scroll.viewportHeight : 0);
     const row = line <= 1 && anchor.end !== true && this.scroll.scrollTop === 0;
     this.scroll.scrollTo(row ? 0 : top, { disableFollow: true });
-    this.destination = undefined;
+    if (this.position.kind === "frozen") {
+      this.position.destination = undefined;
+    }
   }
   scrollBy(lines: number): void {
-    this.following = false;
+    this.freeze();
     this.scroll.scrollTo(this.scroll.scrollTop + lines, { disableFollow: true });
   }
   page(direction: -1 | 1): void {
-    this.following = false;
+    this.freeze();
     const height = Math.max(1, this.scroll.viewportHeight);
     if (this.transcript.contentPage(this.scroll.scrollTop, height, direction)) {
       return;
@@ -87,10 +121,10 @@ export class Reading {
   private history(direction: -1 | 1): void {
     const id = this.transcript.history(direction);
     if (id !== undefined) {
-      this.destination = {
+      this.navigate({
         id,
         offset: direction < 0 ? -Math.max(1, this.scroll.viewportHeight) : 1,
-      };
+      });
       this.changed("history");
     }
   }
