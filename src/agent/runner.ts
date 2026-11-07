@@ -11,7 +11,8 @@ import {
   type AccountingState,
 } from "./contracts.ts";
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
-import { ownIdentity, ParentCheck, shells, signalProcess } from "./process.ts";
+import { ownIdentity, shells, signalProcess } from "./process.ts";
+import { ParentCheck } from "./parent-check.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { Parking, type ParkOutcome, type Runtime } from "./parking.ts";
 import { accountingFields, UsageIndex } from "./usage.ts";
