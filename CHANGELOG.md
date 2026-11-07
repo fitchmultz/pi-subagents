@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- Name mailbox payload, retained notification, and tombstone states, with explicit open, degraded, failed, and closed storage ownership.
-
 ## 0.52.22 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
