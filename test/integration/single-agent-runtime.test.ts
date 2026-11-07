@@ -41,7 +41,7 @@ function run(root: string, phase: string, killed = false): string {
     `${phase}: ${result.stderr}\n${result.stdout}`,
   );
   assert.equal(result.status, killed ? null : 0, `${phase}: ${result.stderr}\n${result.stdout}`);
-  if (phase === "command-polling" || phase === "usage") {
+  if (phase === "command-polling" || phase === "usage" || phase === "thinking") {
     console.log(result.stdout.trim());
   }
   return result.stderr;
@@ -124,6 +124,9 @@ for (const phase of [
   "receipt",
   "receipt-sessionless",
   "model-selection",
+  "thinking-selection",
+  "thinking-clamping",
+  "thinking",
   "continuation",
   "lineage",
   "queue-drop",

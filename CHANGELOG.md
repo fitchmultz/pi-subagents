@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add optional `delegate.thinking` to select child effort independently of the parent on all supported hosts, including official Pi 1.5.0. Omission keeps inherited effort. Native model suffixes must agree with an explicit field. Pi still clamps effort to model capabilities; guidance and saved continuations retain the child's saved effort.
 - Represent child accounting as unrecorded, verified, pending or unavailable while keeping execution status and saved result formats unchanged.
 - Make directory-watch availability and the coalesced wake's single-owner contract explicit without changing polling fallback.
 - Preserve stranded last-good builds until a complete replacement publishes, and report retained recovery paths when a later build fails.
