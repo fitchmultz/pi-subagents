@@ -8,8 +8,8 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  actor,
-  alive,
+  inspectActorClaim,
+  possiblyLive,
   ensureActor,
   ownIdentity,
   parkFailure,
@@ -336,14 +336,14 @@ class AgentRuntime {
     return renderInventory(this.base, all, this.ctx, input);
   }
   private async retryContinuation(launch: Launch, input: RunsInput) {
-    const identity = actor(this.base, launch);
+    const claim = inspectActorClaim(this.base, launch);
     const command = read(
       path.join(conversation(this.base, launch), "commands", `${launch.id}.json`),
       commandSchema,
     );
     if (
       input.prompt !== launch.prompt ||
-      (identity && alive(identity)) ||
+      possiblyLive(claim) ||
       command?.id !== launch.id ||
       command.runId !== launch.id ||
       command.action !== "run"
@@ -367,13 +367,8 @@ class AgentRuntime {
     if (state.kind === "saved-unadmitted") {
       return this.retryContinuation(launch, input);
     }
-    const identity = actor(this.base, launch);
-    if (
-      continuationDecision(
-        state,
-        state.kind === "admitted" && identity !== undefined && alive(identity),
-      ) === "guidance"
-    ) {
+    const claim = state.kind === "admitted" ? inspectActorClaim(this.base, launch) : undefined;
+    if (continuationDecision(state, possiblyLive(claim)) === "guidance") {
       const command = enqueue(this.base, launch, { action: "steer", prompt: input.prompt });
       return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",

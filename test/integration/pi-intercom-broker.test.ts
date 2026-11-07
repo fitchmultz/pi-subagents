@@ -447,6 +447,68 @@ for (const outcome of [
 }
 
 nodeTest(
+  "disconnect joins an acquiring socket and repeated close leaves no registered peer",
+  { timeout: 15000 },
+  async (t) => {
+    isolatedAgent(t);
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.on("error", () => {
+        // Closing acquisition may reset the peer before registration.
+      });
+      socket.on(
+        "data",
+        createMessageReader(
+          (value) => {
+            const message = record(value);
+            if (message.type === "register") {
+              writeMessage(socket, { type: "registered", sessionId: "closing-client" });
+            } else if (message.type === "unregister") {
+              socket.end();
+            }
+          },
+          () => socket.destroy(),
+        ),
+      );
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(prepareBrokerSocketPath(), resolve);
+    });
+    const client = new IntercomClient();
+    client.on("error", () => {
+      // This case deliberately closes acquisition before registration.
+    });
+    t.after(async () => {
+      await client.disconnect();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    });
+    const acquired = once(server, "connection");
+    const connecting = client.connect({ cwd: "/closing", model: "fixture" }).then(
+      () => "connected",
+      () => "cancelled",
+    );
+    const closing = client.disconnect();
+    await acquired;
+    await Promise.all([closing, client.disconnect()]);
+    await connecting;
+    assert.equal(
+      client.isConnected(),
+      false,
+      "late acquisition cannot register after close resolves",
+    );
+    assert.equal(client.sessionId, null);
+    await client.disconnect();
+  },
+);
+
+nodeTest(
   "last-message frames correlate concurrent pages without using direct-message delivery",
   async (t) => {
     isolatedAgent(t);
