@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Make socket framing failures terminal and represent JSONL record parsing as blank, reading, or invalid without changing publication policies.
+
 ## 0.52.19 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
