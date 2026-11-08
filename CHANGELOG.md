@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.26 - 2026-11-08
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- test: preview with apply_patch now that the editor removed preview_patch (#380) ([b05c313](https://github.com/fitchmultz/pi-subagents/commit/b05c313dbf88416eb29621e283a474bbc31d1f1b))
+
+### What's Changed
+
+- test: preview with apply_patch now that the editor removed preview_patch by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/380
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.25...v0.52.26
+
 ## 0.52.25 - 2026-11-07
 
 <!-- npm-release:unreleased:start -->
