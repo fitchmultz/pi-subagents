@@ -36,17 +36,26 @@ interface LastRequest {
   readonly query: NativeReadQuery;
   readonly parked?: SessionInfo;
 }
+type AttemptState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "shutdown"; readonly task: Promise<IntercomTransport> | undefined }
+  | {
+      readonly kind: "deferred" | "backoff";
+      readonly generation: number;
+      readonly timer: NodeJS.Timeout;
+    }
+  | {
+      readonly kind: "connecting";
+      readonly generation: number;
+      readonly task: Promise<IntercomTransport>;
+    };
+
 /** Owns socket registration, coalesced connects and the reconnect/startup timers. */
 export class IntercomConnection {
   private client: IntercomClient | null = null;
   /** The transport whose broker retains this actor's input while it parks. */
   private parked: IntercomClient | null = null;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private startupTimer: NodeJS.Timeout | null = null;
-  private connecting: {
-    readonly task: Promise<IntercomTransport>;
-    readonly generation: number;
-  } | null = null;
+  private acquisition: AttemptState = { kind: "idle" };
   private attempt = 0;
   private readonly lifecycle: Lifecycle;
   private readonly config: IntercomConfig;
@@ -88,26 +97,15 @@ export class IntercomConnection {
     this.clearTimers();
     this.scheduleStartup(ctx, generation);
   }
-  private clearStartup(): void {
-    if (this.startupTimer) {
-      clearTimeout(this.startupTimer);
-      this.startupTimer = null;
-    }
-  }
-  private clearReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
   clearTimers(): void {
-    this.clearStartup();
-    this.clearReconnect();
+    if (this.acquisition.kind === "deferred" || this.acquisition.kind === "backoff") {
+      clearTimeout(this.acquisition.timer);
+      this.acquisition = { kind: "idle" };
+    }
   }
   private scheduleStartup(ctx: ExtensionContext, generation: number): void {
-    this.clearStartup();
-    this.startupTimer = setTimeout(() => {
-      this.startupTimer = null;
+    const timer = setTimeout(() => {
+      this.acquisition = { kind: "idle" };
       if (!this.lifecycle.live(ctx, generation)) {
         return;
       }
@@ -119,17 +117,23 @@ export class IntercomConnection {
         this.scheduleReconnect();
       });
     }, 0);
-    this.startupTimer.unref();
+    this.acquisition = { kind: "deferred", generation, timer };
+    timer.unref();
   }
   private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.connecting || !this.lifecycle.live()) {
+    if (
+      this.acquisition.kind === "backoff" ||
+      this.acquisition.kind === "connecting" ||
+      !this.lifecycle.live()
+    ) {
       return;
     }
+    this.clearTimers();
     const generation = this.lifecycle.generation;
     const delays = [1000, 2000, 5000, 10000, 30000];
     const delay = delays[Math.min(this.attempt, delays.length - 1)] ?? 30000;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
+    const timer = setTimeout(() => {
+      this.acquisition = { kind: "idle" };
       if (this.lifecycle.generation !== generation || !this.lifecycle.live()) {
         return;
       }
@@ -138,7 +142,8 @@ export class IntercomConnection {
         /* ensure owns the next retry after settlement. */
       });
     }, delay);
-    this.reconnectTimer.unref();
+    this.acquisition = { kind: "backoff", generation, timer };
+    timer.unref();
   }
   syncIdentity(sessionId: string): void {
     if (this.client && this.lifecycle.live()) {
@@ -294,7 +299,7 @@ export class IntercomConnection {
       this.cancelWakes();
       this.client = null;
       this.lifecycle.transport(null);
-      this.clearReconnect();
+      this.clearTimers();
       this.scheduleReconnect();
     });
     next.on("error", () => {
@@ -354,8 +359,8 @@ export class IntercomConnection {
     if (!ctx || generation !== this.lifecycle.generation) {
       throw new Error("Intercom shutting down");
     }
-    if (this.connecting?.generation === generation) {
-      return this.connecting.task;
+    if (this.acquisition.kind === "connecting" && this.acquisition.generation === generation) {
+      return this.acquisition.task;
     }
     if (this.client?.isConnected() === true) {
       return this.client;
@@ -364,10 +369,10 @@ export class IntercomConnection {
     if (sessionId === null) {
       throw new Error("Intercom runtime not initialized");
     }
-    this.clearReconnect();
+    this.clearTimers();
     // Publish ownership before registration, which can synchronously invoke subscribers.
     const attempt = Promise.resolve().then(() => this.connect(ctx, generation, sessionId));
-    this.connecting = { task: attempt, generation };
+    this.acquisition = { kind: "connecting", task: attempt, generation };
     return await this.finishAttempt(attempt, ctx, generation);
   }
   private async finishAttempt(
@@ -382,8 +387,8 @@ export class IntercomConnection {
       retry = this.lifecycle.live(ctx, generation) !== null;
       throw error;
     } finally {
-      if (this.connecting?.task === attempt) {
-        this.connecting = null;
+      if (this.acquisition.kind === "connecting" && this.acquisition.task === attempt) {
+        this.acquisition = { kind: "idle" };
       }
       if (retry) {
         this.scheduleReconnect();
@@ -393,8 +398,13 @@ export class IntercomConnection {
   async shutdown(): Promise<void> {
     this.clearTimers();
     this.cancelWakes();
+    const task =
+      this.acquisition.kind === "connecting" || this.acquisition.kind === "shutdown"
+        ? this.acquisition.task
+        : undefined;
+    this.acquisition = { kind: "shutdown", task };
     // The bounded launcher attempt is joined before socket shutdown.
-    await Promise.allSettled([this.connecting?.task]);
+    await Promise.allSettled([task]);
     if (this.client) {
       await this.client.disconnect();
       this.client = null;
