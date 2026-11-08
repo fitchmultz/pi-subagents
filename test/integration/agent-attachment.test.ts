@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { test as nodeTest } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { spy } from "sinon";
+import { spy, stub } from "sinon";
 import agents from "../../src/agent/index.ts";
 import { attachmentSchema } from "../../src/agent/contracts.ts";
 import { ownerDirectory, read, write } from "../../src/agent/storage.ts";
@@ -15,6 +15,113 @@ import { createNativeSessionFixture } from "../support/native-session.ts";
 import { usageLaunch } from "../support/agent-launch.ts";
 import { record } from "../support/assertions.ts";
 import { until } from "../support/observation-child.ts";
+
+for (const recover of [true, false]) {
+  nodeTest(
+    `a failed native attachment ${recover ? "can attach after filesystem recovery" : "can shut down without replaying its error"}`,
+    async (t) => {
+      const root = fs.mkdtempSync(path.join(tmpdir(), "agent-attachment-recovery-"));
+      const manager = SessionManager.create(root, path.join(root, "sessions"));
+      const base = ownerDirectory(getPiAgentDir(), manager.getSessionId());
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.writeFileSync(base, "Attachment directory is temporarily unavailable.");
+      const native = await createNativeSessionFixture({
+        cwd: root,
+        agentDir: getPiAgentDir(),
+        sessionManager: manager,
+        configure: agents,
+        bindExtensions: false,
+      });
+      const errors: string[] = [];
+      const unsubscribe = native.session.extensionRunner.onError((error) => {
+        errors.push(`${error.event}: ${error.error}`);
+      });
+      t.after(async () => {
+        fs.rmSync(base, { recursive: true, force: true });
+        await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+        unsubscribe();
+        await native.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+      });
+      await native.session.bindExtensions({ mode: "print" });
+      assert.equal(errors.length, 1);
+      assert.match(errors[0] ?? "", /session_start: EEXIST:/);
+      const reported = [...errors];
+      fs.unlinkSync(base);
+      if (recover) {
+        await native.session.extensionRunner.emit({ type: "session_start", reason: "resume" });
+        const attachment = read(path.join(base, "attachment.json"), attachmentSchema);
+        assert.ok(attachment, "the next start publishes a new attachment");
+        assert.equal(attachment.attached, true);
+        const runs = native.session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+        assert.ok(runs);
+        const listed = record((await runs.execute("recovered-list", { action: "list" })).details);
+        assert.equal(listed.total, 0, "the recovered runtime admits normal controls");
+      }
+      await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      assert.deepEqual(
+        errors,
+        reported,
+        "the completed failure must not poison later lifecycle work",
+      );
+      if (recover) {
+        assert.equal(read(path.join(base, "attachment.json"), attachmentSchema)?.attached, false);
+      }
+    },
+  );
+}
+
+nodeTest("shutdown releases ownership published by a failed attachment", async (t) => {
+  const root = fs.mkdtempSync(path.join(tmpdir(), "agent-attachment-published-"));
+  const manager = SessionManager.create(root, path.join(root, "sessions"));
+  const base = ownerDirectory(getPiAgentDir(), manager.getSessionId());
+  const file = path.join(base, "attachment.json");
+  const native = await createNativeSessionFixture({
+    cwd: root,
+    agentDir: getPiAgentDir(),
+    sessionManager: manager,
+    configure: agents,
+    bindExtensions: false,
+  });
+  const errors: string[] = [];
+  const unsubscribe = native.session.extensionRunner.onError((error) => {
+    errors.push(`${error.event}: ${error.error}`);
+  });
+  t.after(async () => {
+    await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    unsubscribe();
+    await native.dispose();
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const remove = fs.rmSync;
+  const cleanup = stub(fs, "rmSync").callsFake((target, options) => {
+    remove(target, options);
+    if (typeof target === "string" && target.startsWith(`${file}.`) && target.endsWith(".tmp")) {
+      throw new Error("Attachment cleanup failed after publication.");
+    }
+  });
+  syncBuiltinESMExports();
+  try {
+    await native.session.bindExtensions({ mode: "print" });
+  } finally {
+    cleanup.restore();
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(errors, ["session_start: Attachment cleanup failed after publication."]);
+  const attachment = read(file, attachmentSchema);
+  assert.ok(attachment, "the real atomic write published ownership before cleanup failed");
+  assert.equal(attachment.attached, true);
+  await native.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  assert.deepEqual(errors, ["session_start: Attachment cleanup failed after publication."]);
+  const released = read(file, attachmentSchema);
+  assert.equal(released?.attached, false);
+  assert.equal(
+    released.generation,
+    attachment.generation,
+    "release retains the failed attempt's generation",
+  );
+});
 
 nodeTest(
   "native session_start publishes ownership without scanning runs, then tools and timer recover the backlog",
