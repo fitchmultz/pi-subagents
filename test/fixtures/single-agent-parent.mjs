@@ -2047,7 +2047,7 @@ try {
     if (phase === "park-shells") {
       const actor = readActorIdentity(runDir(currentRunId()));
       const ledger = path.join(runDir(currentRunId()), "shells", actor.token);
-      const sleepers = Array.from({ length: 3 }, () =>
+      const sleepers = Array.from({ length: 4 }, () =>
         spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
           detached: true,
           stdio: "ignore",
@@ -2087,8 +2087,21 @@ try {
           const file = path.join(root, "shell-polls.jsonl");
           return fs.existsSync(file) ? shellPolls() : [];
         };
+        const advance = async (/** @type {number} */ elapsed) => {
+          fs.writeFileSync(path.join(root, "advance-clock"), String(elapsed));
+          await until(
+            () =>
+              fs.existsSync(path.join(root, "clock-advanced")) &&
+              fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === String(elapsed),
+            `the actor checks its clock at offset ${elapsed}`,
+          );
+        };
         fs.writeFileSync(path.join(root, "advance-clock"), "");
-        await until(() => polls().length > 0, "the due-idle actor validates its shell set");
+        await until(
+          () => polls().some((poll) => poll.scans > 0 && poll.opens.includes("live.json")),
+          "the idle actor validates its live owned shell",
+        );
+        await advance(0);
         const from = polls().length;
         await until(() => polls().length >= from + 3, "three completed live-shell parking checks");
         assert.ok(
@@ -2128,12 +2141,78 @@ try {
           claim("replacement.json", claims[2]);
           claim("renamed.json", claims[0]);
         }, "replacement.json");
+        const clearing = polls().length;
         await stop(sleepers[2]);
+        await until(
+          () =>
+            polls()
+              .slice(clearing)
+              .some((poll) => poll.scans > 0 && poll.opens.includes("replacement.json")),
+          "the actor observes the last owned shell has exited",
+        );
+        const resident = () => {
+          for (const name of ["actor.lock/parking.json", "parked.json", "park-failed.json"]) {
+            assert.equal(
+              fs.existsSync(path.join(runDir(currentRunId()), name)),
+              false,
+              `a fresh five-minute shell-free interval is required before ${name}`,
+            );
+          }
+        };
+        resident();
+        let cleared = polls().length;
+        await advance(299999);
+        resident();
+        assert.equal(polls().length, cleared, "shell-free idle does not rescan historical shells");
+
+        const entering = polls().length;
+        faux.setResponses([fauxAssistantMessage("PARK_SHELL_NOTICE")]);
+        const continued = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt: "HOLD:parkshells" },
+          "park-short-shell",
+        );
+        assert.equal(continued.isError, false, JSON.stringify(continued));
+        await until(
+          () => requests().some((request) => request.prompt === "HOLD:parkshells"),
+          "the native actor enters the turn its shell will outlive",
+        );
+        claim("short.json", claims[3]);
+        fs.writeFileSync(path.join(root, "release-parkshells"), "");
+        await until(() => notices().length === 2, "the shell-owning turn completes");
+        await session.waitForIdle();
+        await until(
+          () =>
+            polls()
+              .slice(entering)
+              .some((poll) => poll.scans > 0 && poll.opens.includes("short.json")),
+          "the idle actor discovers its shell before the five-minute deadline",
+        );
+        await advance(539999);
+        const exiting = polls().length;
+        await stop(sleepers[3]);
+        await until(
+          () =>
+            polls()
+              .slice(exiting)
+              .some((poll) => poll.scans > 0 && poll.opens.includes("short.json")),
+          "the actor observes its short-lived shell exit before the original idle deadline",
+        );
+        resident();
+        cleared = polls().length;
+        await advance(599999);
+        resident();
+        await advance(839998);
+        resident();
+        assert.equal(polls().length, cleared, "the renewed interval does not rescan shell history");
+        await advance(839999);
       } finally {
         await Promise.all(sleepers.map(stop));
       }
     }
-    fs.writeFileSync(path.join(root, "advance-clock"), "");
+    if (phase !== "park-shells") {
+      fs.writeFileSync(path.join(root, "advance-clock"), "");
+    }
     const parked = path.join(runDir(currentRunId()), "parked.json");
     if (phase === "park-orphan") {
       // This owner dies while the child's native save is blocked (official Pi stays resident).
