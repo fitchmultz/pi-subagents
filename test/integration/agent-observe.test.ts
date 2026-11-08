@@ -111,15 +111,12 @@ class CaptureTerminal extends ProcessTerminal {
     this.output = "";
   }
 }
-const trace = { wait: "", started: 0, anchor: "" };
 async function until(
   check: () => boolean,
   reason: string,
   detail?: () => string,
   timeout = 15000,
 ): Promise<void> {
-  trace.wait = reason;
-  trace.started = performance.now();
   const deadline = Date.now() + timeout;
   while (!check()) {
     assert.ok(Date.now() < deadline, `${reason}\n${detail?.() ?? ""}`);
@@ -327,19 +324,25 @@ async function exerciseReading(options: {
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
   const overlays = spy(screen, "showOverlay");
   options.t.after(() => overlays.restore());
+  const renderHydrated = () => {
+    const overlay = overlays.lastCall;
+    assertDefined(overlay);
+    const transcript = components(overlay.args[0]).find(observesNativeProgress);
+    assertDefined(transcript);
+    // Paging placeholders can skip the target before its native journal read publishes.
+    if (transcript.children.some((card) => "ready" in card && card.ready !== true)) {
+      return false;
+    }
+    screen.renderNow();
+    return true;
+  };
   let sent = 0;
   const keyUntil = (key: string, text: string, repeats = 1) =>
     until(
       () => {
-        const overlay = overlays.lastCall;
-        assertDefined(overlay);
-        const transcript = components(overlay.args[0]).find(observesNativeProgress);
-        assertDefined(transcript);
-        // Paging placeholders can skip the target before its native journal read publishes.
-        if (transcript.children.some((card) => "ready" in card && card.ready !== true)) {
+        if (!renderHydrated()) {
           return false;
         }
-        screen.renderNow();
         if (shown().includes(text)) {
           return true;
         }
@@ -466,14 +469,13 @@ async function exerciseReading(options: {
   terminal.click(screen, "Load earlier activity");
   await until(
     () =>
+      renderHydrated() &&
       [...shown().matchAll(/HISTORY_(\d+)/g)].some((match) => Number(match[1]) < Number(overlap)),
     "resize resumes mouse history hydration above a taller-than-viewport overlap card",
     shown,
     5000,
   );
   const resizedAnchor = shown().match(/HISTORY_\d+/)?.[0];
-  trace.anchor = resizedAnchor ?? "";
-  console.error(`ANCHOR ${performance.now().toFixed(1)} ${resizedAnchor}\n${shown()}`);
   assertDefined(resizedAnchor);
   terminal.width = 60;
   terminal.resize?.();
@@ -1446,8 +1448,6 @@ nodeTest(
         if (t.signal.aborted) {
           t.diagnostic(
             `Cancelled observer-cache state: ${JSON.stringify({
-              trace,
-              now: performance.now(),
               screen: view instanceof TuiAltScreen ? view.getScreenLines() : [],
               terminalTail: terminal.output.slice(-8192),
               opens: opened().slice(-20),
