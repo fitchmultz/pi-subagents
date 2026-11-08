@@ -120,10 +120,13 @@ export function run(db: DatabaseSync): void { exec.call(db, "CREATE TABLE actual
     join(import.meta.dirname, "../fixtures/single-agent-provider.mjs"),
     "utf8",
   );
-  const bridge = fixture.slice(
-    fixture.indexOf("    /**\n     * The fork"),
-    fixture.indexOf("    // Once the test asks"),
+  const start = fixture.indexOf("    /**\n     * The fork");
+  const end = fixture.indexOf("    const now = performance.now.bind(performance);", start);
+  assert.ok(
+    start >= 0 && end > start,
+    "the native save-event declarations must precede the fixture clock",
   );
+  const bridge = fixture.slice(start, end);
   const event = `export function register(/** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ pi) {
 ${bridge}
 return onParkSave;

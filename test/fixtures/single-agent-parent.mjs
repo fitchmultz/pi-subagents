@@ -2087,8 +2087,15 @@ try {
           const file = path.join(root, "shell-polls.jsonl");
           return fs.existsSync(file) ? shellPolls() : [];
         };
-        fs.writeFileSync(path.join(root, "advance-clock"), "600000");
+        fs.writeFileSync(path.join(root, "advance-clock"), "");
         await until(() => polls().length > 0, "the due-idle actor validates its shell set");
+        fs.writeFileSync(path.join(root, "advance-clock"), "0");
+        await until(
+          () =>
+            fs.existsSync(path.join(root, "clock-advanced")) &&
+            fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "0",
+          "the actor pins its clock after observing a live shell",
+        );
         const from = polls().length;
         await until(() => polls().length >= from + 3, "three completed live-shell parking checks");
         assert.ok(
@@ -2148,16 +2155,16 @@ try {
         };
         resident();
         const cleared = polls().length;
-        fs.writeFileSync(path.join(root, "advance-clock"), "899999");
+        fs.writeFileSync(path.join(root, "advance-clock"), "299999");
         await until(
-          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "899999",
+          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "299999",
           "the actor checks eligibility just before five shell-free minutes",
         );
         resident();
         assert.equal(polls().length, cleared, "shell-free idle does not rescan historical shells");
-        fs.writeFileSync(path.join(root, "advance-clock"), "900000");
+        fs.writeFileSync(path.join(root, "advance-clock"), "300000");
         await until(
-          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "900000",
+          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "300000",
           "the actor checks eligibility after five full shell-free minutes",
         );
       } finally {

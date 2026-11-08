@@ -169,6 +169,7 @@ export default async function fixture(
     const now = performance.now.bind(performance);
     const advanced = path.join(root, "advance-clock");
     /** @type {number | undefined} */ let from;
+    /** @type {number | undefined} */ let pinned;
     // A real save participant appends during preparation, changing the leaf being captured.
     let saves = 0;
     onParkSave("working_session_save", async (event) => {
@@ -195,10 +196,13 @@ export default async function fixture(
       if (parkClock === "park-shells" && fs.existsSync(advanced)) {
         from ??= now();
         const elapsed = fs.readFileSync(advanced, "utf8");
-        queueMicrotask(() => {
-          fs.writeFileSync(path.join(root, "clock-advanced"), elapsed);
-        });
-        return from + Number(elapsed);
+        if (elapsed !== "") {
+          pinned ??= from + (now() - from) * 1000;
+          queueMicrotask(() => {
+            fs.writeFileSync(path.join(root, "clock-advanced"), elapsed);
+          });
+          return pinned + Number(elapsed);
+        }
       }
       from ??= fs.existsSync(advanced) ? now() : undefined;
       if (from !== undefined && now() - from > 1200) {

@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- fix: require a fresh five-minute shell-free idle period after owned shell activity before parking a child.
-
 ## 0.52.26 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->
