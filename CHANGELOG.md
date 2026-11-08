@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- Recover parent attachment after a failed startup attempt and release matching ownership during shutdown.
-
 ## 0.52.26 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->
