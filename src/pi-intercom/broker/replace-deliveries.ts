@@ -21,10 +21,22 @@ export class ReplaceDeliveries {
 
   stage(fromId: string, toId: string, from: SessionInfo, message: Message): void {
     const key = `${fromId}\0${toId}\0${message.threadId ?? ""}`;
-    this.take(key);
+    this.supersede(fromId, toId, message);
     const timer = setTimeout(() => this.flush(key), REPLACE_DELIVERY_DELAY_MS);
     timer.unref();
     this.pending.set(key, { fromId, toId, from, message, timer });
+  }
+
+  /** Call only after admission; rejected successors leave accepted input intact. */
+  supersede(fromId: string, toId: string, message: Message): void {
+    if (
+      message.delivery === "queue" &&
+      message.queueMode === "replace" &&
+      message.threadId !== undefined &&
+      message.threadId.length > 0
+    ) {
+      this.take(`${fromId}\0${toId}\0${message.threadId}`);
+    }
   }
 
   private take(key: string): StagedDelivery | undefined {

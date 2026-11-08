@@ -972,8 +972,50 @@ nodeTest(
       main.on("wake", (id: string) => {
         wakes.push(id);
       });
+      child.updatePresence({ status: "idle" });
+      await child.listSessions();
+      const replacement = {
+        delivery: "queue",
+        queueMode: "replace",
+        threadId: "park-transition",
+      } as const;
+      const routed: string[] = [];
+      child.on("message", (_from: SessionInfo, message: Message) => {
+        routed.push(message.content.text);
+      });
+      assert.equal(
+        (
+          await sender.send(childId, {
+            ...replacement,
+            text: "stale before parking",
+          })
+        ).queued,
+        true,
+      );
+      assert.equal(await child.park(), true);
+      const latest = await sender.send(childId, {
+        ...replacement,
+        text: "latest while parked",
+      });
+      assert.deepEqual([latest.accepted, latest.delivered, latest.queued], [true, false, true]);
+      main.updatePresence({ status: "idle" });
+      await main.listSessions();
+      const window = once(main, "message");
+      assert.equal(
+        (
+          await sender.send(text(main.sessionId), {
+            ...replacement,
+            text: "later staged window",
+          })
+        ).queued,
+        true,
+      );
+      await window;
+      await child.park(false);
+      await child.listSessions();
       await child.updateTopics({ action: "publish", topic: topic("status") });
       assert.equal(await child.park(), true);
+      assert.deepEqual(routed, ["latest while parked"]);
       const crumb = await sender.send(childId, { text: "breadcrumb", passive: true });
       assert.deepEqual([crumb.accepted, crumb.delivered, crumb.queued], [true, false, true]);
       // Parked input passes the same final-envelope admission as resident delivery: this send

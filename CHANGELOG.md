@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- fix: supersede older replace-mode input when an accepted update switches to direct or parked delivery, while preserving accepted input when a successor is rejected.
+
 ## 0.52.26 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->
