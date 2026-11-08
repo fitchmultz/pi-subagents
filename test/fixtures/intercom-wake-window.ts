@@ -88,7 +88,7 @@ async function window(): Promise<void> {
       }),
       "stored",
     );
-    deliveries.changed();
+    deliveries.changed("mailbox-commit");
     return id;
   };
   let child: ReturnType<typeof spawn> | undefined;
@@ -139,7 +139,7 @@ async function window(): Promise<void> {
       assert.ok(id !== undefined, "expected an id per mailbox");
       assert.deepEqual(record(box.ack([id])).acked, [id]);
     }
-    deliveries.changed();
+    deliveries.changed("mailbox-commit");
     // Only idle time is jumped; both clocks advance normally during COMMIT, TLS and dispatch.
     offset += first + hour - 2300 - Date.now();
     const [firstBox] = boxes;

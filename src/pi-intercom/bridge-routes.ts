@@ -22,6 +22,19 @@ export type Operation =
       readonly expectsReply?: boolean | undefined;
     };
 type Route = Operation["route"];
+
+export function cancellationScopeFor(route: Route): "request" | "session" {
+  switch (route) {
+    case "GET /v1/inbox":
+      return "request";
+    case "GET /v1/list":
+    case "POST /v1/register":
+    case "POST /v1/ack":
+    case "POST /v1/send":
+      return "session";
+  }
+}
+
 const fields = {
   "GET /v1/list": [],
   "GET /v1/inbox": [],

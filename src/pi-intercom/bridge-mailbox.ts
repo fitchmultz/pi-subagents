@@ -203,7 +203,7 @@ export class Mailbox {
       return row ? decode(row.envelope) : undefined;
     });
   }
-  remove(id: string): void {
+  private remove(id: string): void {
     this.requireOpen();
     if (this.db) {
       const db = this.db;

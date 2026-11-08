@@ -1405,6 +1405,7 @@ nodeTest(
             "-e",
             `
       import { Mailbox } from ${JSON.stringify(module)};
+      import { DatabaseSync } from "node:sqlite";
       const mailbox = new Mailbox(${JSON.stringify(root)}, ${JSON.stringify("A".repeat(64))}, true);
       ${script}
       mailbox.close();
@@ -1434,7 +1435,13 @@ nodeTest(
       const stillUnread = mailbox.page(0,256);
       mailbox.ack(["notify-first"]);
       mailbox.add({from,message:{id:"ack-first",timestamp:5,content:{text:"retained legacy intent"}}});
-      mailbox.remove("ack-first");
+      // Legacy storage can retain notification intent after the payload was ACKed.
+      const db = new DatabaseSync(${JSON.stringify(join(root, `${"A".repeat(64)}.sqlite`))});
+      try {
+        db.prepare("UPDATE mailbox SET acked=1 WHERE id=?").run("ack-first");
+      } finally {
+        db.close();
+      }
       const retained = mailbox.pendingNotifications();
       mailbox.retireNotification("ack-first");
       const retainedReplay = mailbox.add({from,message:{id:"ack-first",timestamp:6,content:{text:"do not resurrect"}}});
