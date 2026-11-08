@@ -15,6 +15,7 @@
 - fix: recover parent attachment after startup failure (2/7) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/387
 - refactor: make owned child cleanup phases explicit (7/7) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/384
 - fix: supersede replace deliveries across routing changes (1/7) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/386
+- fix: restart parking eligibility after owned shell activity (4/7) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/385
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.27...v0.52.28
 
