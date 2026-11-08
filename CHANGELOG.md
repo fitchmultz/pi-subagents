@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## 0.52.29 - 2026-11-08
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix: reconcile observer visibility on resize (3/7) (#389) ([ffcdd47](https://github.com/fitchmultz/pi-subagents/commit/ffcdd47222106faac7e76f33107bb631dfa7ad6b))
+
+### What's Changed
+
+- fix: reconcile observer visibility on resize (3/7) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/389
+- test: keep pinned parking intervals exact (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/391
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.28...v0.52.29
+
 ## 0.52.28 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->
