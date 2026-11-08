@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- refactor: make owned child cleanup phases and timer ownership explicit while preserving native process-group cleanup.
-
 ## 0.52.26 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->
