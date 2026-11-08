@@ -111,12 +111,15 @@ class CaptureTerminal extends ProcessTerminal {
     this.output = "";
   }
 }
+const trace = { wait: "", started: 0, anchor: "" };
 async function until(
   check: () => boolean,
   reason: string,
   detail?: () => string,
   timeout = 15000,
 ): Promise<void> {
+  trace.wait = reason;
+  trace.started = performance.now();
   const deadline = Date.now() + timeout;
   while (!check()) {
     assert.ok(Date.now() < deadline, `${reason}\n${detail?.() ?? ""}`);
@@ -469,6 +472,8 @@ async function exerciseReading(options: {
     5000,
   );
   const resizedAnchor = shown().match(/HISTORY_\d+/)?.[0];
+  trace.anchor = resizedAnchor ?? "";
+  console.error(`ANCHOR ${performance.now().toFixed(1)} ${resizedAnchor}\n${shown()}`);
   assertDefined(resizedAnchor);
   terminal.width = 60;
   terminal.resize?.();
@@ -1441,6 +1446,8 @@ nodeTest(
         if (t.signal.aborted) {
           t.diagnostic(
             `Cancelled observer-cache state: ${JSON.stringify({
+              trace,
+              now: performance.now(),
               screen: view instanceof TuiAltScreen ? view.getScreenLines() : [],
               terminalTail: terminal.output.slice(-8192),
               opens: opened().slice(-20),
