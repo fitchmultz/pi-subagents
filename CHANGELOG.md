@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.27 - 2026-11-08
+
+<!-- npm-release:unreleased:start -->
+
 - Group Intercom startup, backoff, in-flight acquisition, and shutdown into one private attempt state while preserving connection and retry policy.
+
+<!-- npm-release:unreleased:end -->
+
+- refactor: own Intercom connection acquisition phases (5/7) (#383) ([bd69ce3](https://github.com/fitchmultz/pi-subagents/commit/bd69ce3da7038a773399a31403b130a807fee34c))
+
+### What's Changed
+
+- refactor: own Intercom connection acquisition phases (5/7) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/383
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.26...v0.52.27
 
 ## 0.52.26 - 2026-11-08
 
