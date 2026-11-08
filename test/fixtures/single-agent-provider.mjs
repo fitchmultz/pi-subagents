@@ -197,7 +197,8 @@ export default async function fixture(
         from ??= now();
         const elapsed = fs.readFileSync(advanced, "utf8");
         if (elapsed !== "") {
-          pinned ??= from + (now() - from) * 1000;
+          // Integer origins keep pinned idle intervals exact across floating-point boundaries.
+          pinned ??= Math.ceil(from + (now() - from) * 1000);
           queueMicrotask(() => {
             fs.writeFileSync(path.join(root, "clock-advanced"), elapsed);
           });
