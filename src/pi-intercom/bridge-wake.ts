@@ -71,17 +71,17 @@ export class WakeDeliveries {
     });
     // Startup restores every certificate proof synchronously before the scheduled reconciliation.
     // An empty first fingerprint must not clear another retained fingerprint's durable cold batch.
-    this.changed(false);
+    this.changed("membership-change");
   }
 
-  changed(reconcile = true): void {
+  changed(event: "membership-change" | "mailbox-commit"): void {
     if (this.controller.signal.aborted) {
       return;
     }
     try {
       // ACK may be followed by fresh mail before the event timer runs. Clear completed batches now
       // so a new obligation does not inherit a completed batch's uncertainty/backoff.
-      if (reconcile) {
+      if (event === "mailbox-commit") {
         this.reconcile();
       }
     } catch {
@@ -270,7 +270,7 @@ export class WakeDeliveries {
     delivery?.controller.abort();
     delivery?.mailbox.close();
     // Membership removal alone is not an ACK. Reload restores proof-backed replacements first.
-    this.changed(false);
+    this.changed("membership-change");
   }
 
   reload(): void {
@@ -279,7 +279,7 @@ export class WakeDeliveries {
         this.drop(fp);
       }
     }
-    this.changed(false);
+    this.changed("membership-change");
   }
 
   stop(): Promise<void> {

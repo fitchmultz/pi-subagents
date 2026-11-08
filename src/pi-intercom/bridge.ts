@@ -8,7 +8,7 @@ import { getBrokerSocketPath } from "./broker/paths.ts";
 import { loadConfig, sameListener, type Config, type Identity } from "./bridge-config.ts";
 import { Fault, fingerprint, log } from "./bridge-protocol.ts";
 import { Session } from "./bridge-session.ts";
-import { operationFor, routeFor } from "./bridge-routes.ts";
+import { cancellationScopeFor, operationFor, routeFor } from "./bridge-routes.ts";
 import { reply, replyFault } from "./bridge-http.ts";
 import { PersistentPresence } from "./bridge-presence.ts";
 import { WakeDeliveries } from "./bridge-wake.ts";
@@ -143,7 +143,7 @@ class Bridge {
         {
           stateDir: this.config.stateDir,
           notifications: identity.wake !== undefined,
-          mailboxChanged: () => this.deliveries.changed(),
+          mailboxChanged: () => this.deliveries.changed("mailbox-commit"),
           allowed: (candidate) => this.allowed(candidate),
           lost: (fp, count) => this.lost(fp, count),
           losses: (fp) => this.losses.get(fp) ?? 0,
@@ -288,7 +288,7 @@ class Bridge {
     }
     // Retire stale sessions before publishing replacement delivery membership for the same pin.
     this.presence?.restoreAll();
-    this.deliveries.changed();
+    this.deliveries.changed("mailbox-commit");
   }
   private stop(): void {
     this.shutdown().catch(() => {
@@ -353,9 +353,9 @@ class Bridge {
     let controller: AbortController | undefined;
     let deadline: NodeJS.Timeout | undefined;
     let peer: string | undefined;
-    let readOnlyInbox = false;
+    let cancellationScope: ReturnType<typeof cancellationScopeFor> = "session";
     const cancel = (fault: Readonly<Fault>) =>
-      readOnlyInbox ? controller?.abort(fault) : session?.close(fault);
+      cancellationScope === "request" ? controller?.abort(fault) : session?.close(fault);
     const abort = () =>
       cancel(
         new Fault(499, "client_aborted", "HTTP client disconnected; delivery may be unknown."),
@@ -382,7 +382,7 @@ class Bridge {
     try {
       const { identity, expires } = this.admission(req);
       const route = routeFor(req);
-      readOnlyInbox = route === "GET /v1/inbox";
+      cancellationScope = cancellationScopeFor(route);
       session = this.session(identity, expires);
       controller = session.begin();
       const signal = controller.signal;
