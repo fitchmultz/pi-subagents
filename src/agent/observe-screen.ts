@@ -41,11 +41,16 @@ interface ScreenOptions {
   hideThinking: boolean;
 }
 
+type ReadingVisibility =
+  | { readonly kind: "empty" }
+  | { readonly kind: "visible" | "hidden"; readonly reading: Reading };
+
 /** Native layout, cards and scrolling; all controls affect local reading state only. */
 export class ObserverScreen extends VStack {
   private selected: string;
   private readonly list = new ChildList((id) => this.open(id));
   private reading?: Reading | undefined;
+  private visibility: ReadingVisibility = { kind: "empty" };
   private readonly connection = new ObservationChannel(() => this.schedule());
   private get client(): ObservationClient | undefined {
     return this.connection.current;
@@ -93,22 +98,14 @@ export class ObserverScreen extends VStack {
             }
           },
         });
-      this.reading?.transcript.pause();
-      this.connection.clear();
-      clearTimeout(this.timer);
-      this.timer = undefined;
-      clearImmediate(this.indexer);
-      this.indexer = undefined;
       this.saved.delete(watch.launch.id);
       this.saved.set(watch.launch.id, reading);
       this.reading = reading;
       this.details = undefined;
-      reading.transcript.resume();
       this.selected = watch.launch.id;
       this.focus = "conversation";
       this.failure = "";
-      this.connect();
-      this.index();
+      this.reconcileVisibility();
       this.structure();
       this.options.tui.requestRender();
       for (const key of this.saved.keys()) {
@@ -125,6 +122,31 @@ export class ObserverScreen extends VStack {
     return this.focus === "conversation" || (this.reading?.width ?? 0) >= 100
       ? this.reading
       : undefined;
+  }
+  private reconcileVisibility(): void {
+    const previous = this.visibility;
+    const reading = this.reading;
+    const visible = this.failure.length > 0 ? undefined : this.visible();
+    const replaced = (previous.kind === "empty" ? undefined : previous.reading) !== reading;
+    if (previous.kind === "visible" && (replaced || !visible)) {
+      previous.reading.transcript.pause();
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      clearImmediate(this.indexer);
+      this.indexer = undefined;
+      this.connection.pause();
+    }
+    if (replaced) {
+      this.connection.clear();
+    }
+    this.visibility = reading
+      ? { kind: visible ? "visible" : "hidden", reading }
+      : { kind: "empty" };
+    if (visible) {
+      visible.transcript.resume();
+      this.connect();
+      this.index();
+    }
   }
   private connect(): void {
     const reading = this.visible();
@@ -225,7 +247,7 @@ export class ObserverScreen extends VStack {
     } catch (error) {
       this.failure = plainText(errorMessage(error));
       this.saved.delete(this.reading?.watch.launch.id ?? "");
-      this.reading?.transcript.pause();
+      this.reconcileVisibility();
       return true;
     }
   }
@@ -258,25 +280,16 @@ export class ObserverScreen extends VStack {
     return applied;
   }
   update(): void {
-    if (!this.visible()) {
-      this.connection.pause();
-      this.reading?.transcript.pause();
-    }
-    this.connect();
+    this.reconcileVisibility();
     this.flush();
   }
   private back(): void {
     if (this.details) {
       this.details = undefined;
     } else if (this.reading) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-      clearImmediate(this.indexer);
-      this.indexer = undefined;
-      this.connection.clear();
-      this.reading.transcript.pause();
       this.reading = undefined;
       this.focus = "list";
+      this.reconcileVisibility();
     } else {
       this.options.done();
       return;
@@ -322,8 +335,7 @@ export class ObserverScreen extends VStack {
       return;
     }
     this.focus = "conversation";
-    this.reading.transcript.resume();
-    this.connect();
+    this.reconcileVisibility();
     this.reading.follow();
     this.flush(true);
   }
@@ -338,14 +350,7 @@ export class ObserverScreen extends VStack {
   }
   private switchFocus(): void {
     this.focus = this.focus === "list" && this.reading ? "conversation" : "list";
-    if (!this.visible()) {
-      this.connection.pause();
-      this.reading?.transcript.pause();
-    } else {
-      this.reading?.transcript.resume();
-      this.connect();
-      this.index();
-    }
+    this.reconcileVisibility();
   }
   private toggleDetails(): void {
     this.details =
@@ -439,7 +444,9 @@ export class ObserverScreen extends VStack {
   override render(width: number): string[] {
     const reading = this.reading;
     const anchor = reading?.anchor();
-    if (reading?.resize(width) === true) {
+    const resized = reading?.resize(width);
+    this.reconcileVisibility();
+    if (resized === true) {
       this.structure();
     }
     const frame = () =>
@@ -468,12 +475,10 @@ export class ObserverScreen extends VStack {
   }
   dispose(): void {
     this.closed = true;
+    this.reading = undefined;
+    this.reconcileVisibility();
     clearTimeout(this.timer);
     clearImmediate(this.indexer);
-    this.connection.clear();
-    for (const reading of this.saved.values()) {
-      reading.transcript.pause();
-    }
     this.saved.clear();
   }
 }
