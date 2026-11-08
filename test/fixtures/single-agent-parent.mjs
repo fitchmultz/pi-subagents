@@ -2047,7 +2047,7 @@ try {
     if (phase === "park-shells") {
       const actor = readActorIdentity(runDir(currentRunId()));
       const ledger = path.join(runDir(currentRunId()), "shells", actor.token);
-      const sleepers = Array.from({ length: 3 }, () =>
+      const sleepers = Array.from({ length: 4 }, () =>
         spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
           detached: true,
           stdio: "ignore",
@@ -2087,15 +2087,21 @@ try {
           const file = path.join(root, "shell-polls.jsonl");
           return fs.existsSync(file) ? shellPolls() : [];
         };
+        const advance = async (/** @type {number} */ elapsed) => {
+          fs.writeFileSync(path.join(root, "advance-clock"), String(elapsed));
+          await until(
+            () =>
+              fs.existsSync(path.join(root, "clock-advanced")) &&
+              fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === String(elapsed),
+            `the actor checks its clock at offset ${elapsed}`,
+          );
+        };
         fs.writeFileSync(path.join(root, "advance-clock"), "");
-        await until(() => polls().length > 0, "the due-idle actor validates its shell set");
-        fs.writeFileSync(path.join(root, "advance-clock"), "0");
         await until(
-          () =>
-            fs.existsSync(path.join(root, "clock-advanced")) &&
-            fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "0",
-          "the actor pins its clock after observing a live shell",
+          () => polls().some((poll) => poll.scans > 0 && poll.opens.includes("live.json")),
+          "the idle actor validates its live owned shell",
         );
+        await advance(0);
         const from = polls().length;
         await until(() => polls().length >= from + 3, "three completed live-shell parking checks");
         assert.ok(
@@ -2154,19 +2160,52 @@ try {
           }
         };
         resident();
-        const cleared = polls().length;
-        fs.writeFileSync(path.join(root, "advance-clock"), "299999");
-        await until(
-          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "299999",
-          "the actor checks eligibility just before five shell-free minutes",
-        );
+        let cleared = polls().length;
+        await advance(299999);
         resident();
         assert.equal(polls().length, cleared, "shell-free idle does not rescan historical shells");
-        fs.writeFileSync(path.join(root, "advance-clock"), "300000");
-        await until(
-          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "300000",
-          "the actor checks eligibility after five full shell-free minutes",
+
+        const entering = polls().length;
+        faux.setResponses([fauxAssistantMessage("PARK_SHELL_NOTICE")]);
+        const continued = await call(
+          "agent_runs",
+          { action: "continue", id: runId, prompt: "HOLD:parkshells" },
+          "park-short-shell",
         );
+        assert.equal(continued.isError, false, JSON.stringify(continued));
+        await until(
+          () => requests().some((request) => request.prompt === "HOLD:parkshells"),
+          "the native actor enters the turn its shell will outlive",
+        );
+        claim("short.json", claims[3]);
+        fs.writeFileSync(path.join(root, "release-parkshells"), "");
+        await until(() => notices().length === 2, "the shell-owning turn completes");
+        await session.waitForIdle();
+        await until(
+          () =>
+            polls()
+              .slice(entering)
+              .some((poll) => poll.scans > 0 && poll.opens.includes("short.json")),
+          "the idle actor discovers its shell before the five-minute deadline",
+        );
+        await advance(539999);
+        const exiting = polls().length;
+        await stop(sleepers[3]);
+        await until(
+          () =>
+            polls()
+              .slice(exiting)
+              .some((poll) => poll.scans > 0 && poll.opens.includes("short.json")),
+          "the actor observes its short-lived shell exit before the original idle deadline",
+        );
+        resident();
+        cleared = polls().length;
+        await advance(599999);
+        resident();
+        await advance(839998);
+        resident();
+        assert.equal(polls().length, cleared, "the renewed interval does not rescan shell history");
+        await advance(839999);
       } finally {
         await Promise.all(sleepers.map(stop));
       }

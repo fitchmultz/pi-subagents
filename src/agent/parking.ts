@@ -164,7 +164,7 @@ export function parkedState(
 /** One actor generation's idle parking and exact restore; commands stay with the runner. */
 export class Parking {
   private restore: RestorePhase = { kind: "unopened" };
-  private since = 0;
+  private since: number | undefined;
   private leaf?: string | null;
   private shell?: string | undefined;
   private readonly base: string;
@@ -237,16 +237,19 @@ export class Parking {
   private eligible(session: AgentSession, busy: boolean): boolean {
     const now = performance.now();
     const leaf = session.sessionManager.getLeafId();
-    if (busy || !session.isIdle || leaf !== this.leaf) {
+    if (leaf !== this.leaf) {
       this.leaf = leaf;
-      this.since = now;
+      this.since = undefined;
+    }
+    if (busy || !session.isIdle) {
+      this.since = undefined;
       return false;
     }
     const hadShell = this.shell !== undefined;
-    if (!hadShell && now - this.since < PARK_AFTER_MS) {
+    if (this.since !== undefined && !hadShell && now - this.since < PARK_AFTER_MS) {
       return false;
     }
-    if (this.hasShell() || hadShell) {
+    if (this.hasShell() || hadShell || this.since === undefined) {
       this.since = now;
       return false;
     }
