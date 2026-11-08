@@ -41,11 +41,16 @@ interface ScreenOptions {
   hideThinking: boolean;
 }
 
+type ReadingVisibility =
+  | { readonly kind: "empty" }
+  | { readonly kind: "visible" | "hidden" | "failed"; readonly reading: Reading };
+
 /** Native layout, cards and scrolling; all controls affect local reading state only. */
 export class ObserverScreen extends VStack {
   private selected: string;
   private readonly list = new ChildList((id) => this.open(id));
   private reading?: Reading | undefined;
+  private visibility: ReadingVisibility = { kind: "empty" };
   private readonly connection = new ObservationChannel(() => this.schedule());
   private get client(): ObservationClient | undefined {
     return this.connection.current;
@@ -55,6 +60,7 @@ export class ObserverScreen extends VStack {
   private focus: "list" | "conversation" = "list";
   private details?: Details | undefined;
   private failure = "";
+  private selectionFailure = "";
   private timer?: NodeJS.Timeout | undefined;
   private indexer?: NodeJS.Immediate | undefined;
   private lastFlush = -Infinity;
@@ -88,27 +94,20 @@ export class ObserverScreen extends VStack {
             }
           },
           loaded: () => {
-            if (this.visible() === reading) {
+            if (this.activeReading() === reading) {
               this.schedule();
             }
           },
         });
-      this.reading?.transcript.pause();
-      this.connection.clear();
-      clearTimeout(this.timer);
-      this.timer = undefined;
-      clearImmediate(this.indexer);
-      this.indexer = undefined;
       this.saved.delete(watch.launch.id);
       this.saved.set(watch.launch.id, reading);
       this.reading = reading;
       this.details = undefined;
-      reading.transcript.resume();
       this.selected = watch.launch.id;
       this.focus = "conversation";
       this.failure = "";
-      this.connect();
-      this.index();
+      this.selectionFailure = "";
+      this.reconcileVisibility();
       this.structure();
       this.options.tui.requestRender();
       for (const key of this.saved.keys()) {
@@ -117,7 +116,7 @@ export class ObserverScreen extends VStack {
         }
       }
     } catch (error) {
-      this.failure = plainText(errorMessage(error));
+      this.selectionFailure = plainText(errorMessage(error));
       this.paint();
     }
   }
@@ -126,8 +125,40 @@ export class ObserverScreen extends VStack {
       ? this.reading
       : undefined;
   }
+  private reconcileVisibility(): void {
+    const previous = this.visibility;
+    const reading = this.reading;
+    let kind: ReadingVisibility["kind"] = "hidden";
+    if (this.failure.length > 0) {
+      kind = "failed";
+    } else if (this.visible()) {
+      kind = "visible";
+    }
+    const replaced = (previous.kind === "empty" ? undefined : previous.reading) !== reading;
+    if (previous.kind === "visible" && (replaced || kind !== "visible")) {
+      previous.reading.transcript.pause();
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      clearImmediate(this.indexer);
+      this.indexer = undefined;
+      this.connection.pause();
+    }
+    if (replaced) {
+      this.connection.clear();
+    }
+    this.visibility = reading ? { kind, reading } : { kind: "empty" };
+    const visible = this.activeReading();
+    if (visible) {
+      visible.transcript.resume();
+      this.connect();
+      this.index();
+    }
+  }
+  private activeReading(): Reading | undefined {
+    return this.visibility.kind === "visible" ? this.visibility.reading : undefined;
+  }
   private connect(): void {
-    const reading = this.visible();
+    const reading = this.activeReading();
     if (!reading) {
       return;
     }
@@ -143,19 +174,18 @@ export class ObserverScreen extends VStack {
     }
   }
   private index(): void {
-    const reading = this.visible();
+    const reading = this.activeReading();
     if (
       !reading ||
       reading.transcript.journal.native.indexed ||
       this.indexer !== undefined ||
-      this.failure.length > 0 ||
       this.closed
     ) {
       return;
     }
     this.indexer = setImmediate(() => {
       this.indexer = undefined;
-      if (this.visible() !== reading) {
+      if (this.activeReading() !== reading) {
         return;
       }
       try {
@@ -163,6 +193,8 @@ export class ObserverScreen extends VStack {
         this.index();
       } catch (error) {
         this.failure = plainText(errorMessage(error));
+        this.saved.delete(reading.watch.launch.id);
+        this.reconcileVisibility();
       }
       this.schedule();
     });
@@ -192,6 +224,7 @@ export class ObserverScreen extends VStack {
         : undefined,
       this.selected,
       this.failure,
+      this.selectionFailure,
       this.reading?.transcript.version,
     ]);
     return { revision, status, signature };
@@ -225,19 +258,19 @@ export class ObserverScreen extends VStack {
     } catch (error) {
       this.failure = plainText(errorMessage(error));
       this.saved.delete(this.reading?.watch.launch.id ?? "");
-      this.reading?.transcript.pause();
+      this.reconcileVisibility();
       return true;
     }
   }
   private wait(): void {
-    const reading = this.visible();
+    const reading = this.activeReading();
     const live = this.options.data.row(this.selected)?.live === true;
-    if (reading && this.failure.length === 0 && reading.transcript.waiting && live) {
+    if (reading && reading.transcript.waiting && live) {
       this.schedule();
     }
   }
   private refreshReading(force: boolean, changed: boolean): boolean {
-    const reading = this.visible();
+    const reading = this.activeReading();
     if (!reading) {
       return false;
     }
@@ -258,25 +291,16 @@ export class ObserverScreen extends VStack {
     return applied;
   }
   update(): void {
-    if (!this.visible()) {
-      this.connection.pause();
-      this.reading?.transcript.pause();
-    }
-    this.connect();
+    this.reconcileVisibility();
     this.flush();
   }
   private back(): void {
     if (this.details) {
       this.details = undefined;
     } else if (this.reading) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-      clearImmediate(this.indexer);
-      this.indexer = undefined;
-      this.connection.clear();
-      this.reading.transcript.pause();
       this.reading = undefined;
       this.focus = "list";
+      this.reconcileVisibility();
     } else {
       this.options.done();
       return;
@@ -322,8 +346,7 @@ export class ObserverScreen extends VStack {
       return;
     }
     this.focus = "conversation";
-    this.reading.transcript.resume();
-    this.connect();
+    this.reconcileVisibility();
     this.reading.follow();
     this.flush(true);
   }
@@ -338,14 +361,7 @@ export class ObserverScreen extends VStack {
   }
   private switchFocus(): void {
     this.focus = this.focus === "list" && this.reading ? "conversation" : "list";
-    if (!this.visible()) {
-      this.connection.pause();
-      this.reading?.transcript.pause();
-    } else {
-      this.reading?.transcript.resume();
-      this.connect();
-      this.index();
-    }
+    this.reconcileVisibility();
   }
   private toggleDetails(): void {
     this.details =
@@ -426,8 +442,10 @@ export class ObserverScreen extends VStack {
         minSize: 1,
       });
     }
-    const error = this.failure.length > 0 ? this.failure : this.options.data.error();
-    if (error.length > 0) {
+    const error = [this.failure, this.selectionFailure, this.options.data.error()].find(
+      (message) => message.length > 0,
+    );
+    if (error !== undefined) {
       this.addChild(new TruncatedText(this.options.theme.fg("warning", error), 0, 0), { basis: 1 });
     }
     appendHints(this, {
@@ -439,7 +457,9 @@ export class ObserverScreen extends VStack {
   override render(width: number): string[] {
     const reading = this.reading;
     const anchor = reading?.anchor();
-    if (reading?.resize(width) === true) {
+    const resized = reading?.resize(width);
+    this.reconcileVisibility();
+    if (resized === true) {
       this.structure();
     }
     const frame = () =>
@@ -468,12 +488,10 @@ export class ObserverScreen extends VStack {
   }
   dispose(): void {
     this.closed = true;
+    this.reading = undefined;
+    this.reconcileVisibility();
     clearTimeout(this.timer);
     clearImmediate(this.indexer);
-    this.connection.clear();
-    for (const reading of this.saved.values()) {
-      reading.transcript.pause();
-    }
     this.saved.clear();
   }
 }

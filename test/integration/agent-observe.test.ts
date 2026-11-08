@@ -219,6 +219,82 @@ async function firstPageNavigation(
   );
 }
 
+async function resizeLiveReading(options: {
+  terminal: CaptureTerminal;
+  visible: () => string;
+}): Promise<void> {
+  const { terminal, visible } = options;
+  terminal.clear();
+  terminal.width = 120;
+  terminal.resize?.();
+  await until(
+    () => visible().includes("CHILD_TEXT_LIVE"),
+    "the wide live frame is rendered",
+    visible,
+  );
+  terminal.send("\t");
+  await until(
+    () => visible().includes("tab conversation") && visible().includes("CHILD_TEXT_LIVE"),
+    "wide list focus keeps the live reading visible",
+    visible,
+  );
+  terminal.clear();
+  terminal.width = 60;
+  terminal.resize?.();
+  await until(
+    () => visible().includes("enter open") && !visible().includes("CHILD_TEXT_LIVE"),
+    "resize alone hides a live reading with list focus",
+    visible,
+  );
+  terminal.clear();
+  terminal.width = 120;
+  terminal.resize?.();
+  await until(
+    () => visible().includes("CHILD_TEXT_LIVE") && visible().includes("tab conversation"),
+    "resize alone restores the live reading without changing focus",
+    visible,
+  );
+  terminal.send("\t");
+}
+
+function publishUnavailable(options: { directory: string; launch: object }): void {
+  const { directory, launch } = options;
+  write(path.join(directory, "launch.json"), {
+    ...launch,
+    id: "foreign-owner",
+    rootId: "foreign-owner",
+    owner: "another-native-parent",
+  });
+}
+
+async function rejectUnavailableSelection(options: {
+  terminal: CaptureTerminal;
+  screen: TUI | undefined;
+  directory: string;
+  launch: object;
+  content: string;
+}): Promise<void> {
+  const { terminal, screen, directory, content } = options;
+  if (!(screen instanceof TuiAltScreen)) {
+    return;
+  }
+  const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
+  publishUnavailable(options);
+  await until(
+    () => shown().includes("unavailable"),
+    "the wide side list publishes the unavailable run",
+    shown,
+  );
+  terminal.click(screen, "unavailable");
+  await until(
+    () => shown().includes("Saved child metadata is unavailable or belongs to another parent."),
+    "the rejected selection displays its error",
+    shown,
+  );
+  assert.ok(shown().includes(content), "failed selection keeps the healthy reading on screen");
+  fs.rmSync(directory, { recursive: true });
+}
+
 async function exerciseReading(options: {
   t: TestContext;
   terminal: CaptureTerminal;
@@ -227,6 +303,7 @@ async function exerciseReading(options: {
   session: sdk.AgentSession;
   a: ReturnType<typeof usageLaunch>;
   b: ReturnType<typeof usageLaunch>;
+  journalReads: () => number;
 }): Promise<void> {
   const { terminal, screen, a, b } = options;
   const native = sdk.SessionManager.open(a.sessionFile);
@@ -363,14 +440,69 @@ async function exerciseReading(options: {
   );
   const overlap = shown().match(/HISTORY_(\d+)/)?.[1];
   assert.ok(overlap !== undefined && Number(overlap) > 0, shown());
+  terminal.width = 60;
+  terminal.resize?.();
+  await until(
+    () => visibleWidth(screen.getScreenLines()[0] ?? "") === 60,
+    "the frozen reading renders at 60 columns",
+  );
+  terminal.send("\t");
+  await until(
+    () => shown().includes("enter open") && !shown().includes("Load earlier activity"),
+    "narrow list focus hides the frozen reading",
+    shown,
+  );
+  terminal.width = 120;
+  terminal.resize?.();
+  await until(
+    () => shown().includes("Load earlier activity") && shown().includes(`HISTORY_${overlap}`),
+    "widening reveals the same frozen anchor without changing list focus",
+    shown,
+  );
+  assert.match(shown(), /tab conversation/);
   terminal.click(screen, "Load earlier activity");
   await until(
     () =>
       [...shown().matchAll(/HISTORY_(\d+)/g)].some((match) => Number(match[1]) < Number(overlap)),
-    "mouse history navigation reveals activity above a taller-than-viewport overlap card",
+    "resize resumes mouse history hydration above a taller-than-viewport overlap card",
     shown,
     5000,
   );
+  const resizedAnchor = shown().match(/HISTORY_\d+/)?.[0];
+  assertDefined(resizedAnchor);
+  terminal.width = 60;
+  terminal.resize?.();
+  await until(
+    () => shown().includes("enter open") && !shown().includes(resizedAnchor),
+    "shrinking with list focus hides the reading without another focus key",
+    shown,
+  );
+  const hiddenReads = options.journalReads();
+  write(path.join(path.dirname(b.sessionFile), "result.json"), {
+    id: b.id,
+    owner: b.owner,
+    status: "stopped",
+    endedAt: 1,
+  });
+  await until(
+    () => shown().includes("stopped · reader-b"),
+    "the hidden screen processes the owner's published inventory update",
+    shown,
+  );
+  assert.equal(
+    options.journalReads(),
+    hiddenReads,
+    "owner updates do not open the hidden reading's native journal",
+  );
+  terminal.width = 120;
+  terminal.resize?.();
+  await until(
+    () => shown().includes(resizedAnchor),
+    "revealing the reading again preserves its frozen entry",
+    shown,
+  );
+  assert.match(shown(), /Reading earlier|New activity below/);
+  terminal.send("\t");
   await keyUntil("\x1b[B", "Load later activity", 25);
   terminal.click(screen, "Load later activity");
   await until(
@@ -380,6 +512,61 @@ async function exerciseReading(options: {
     5000,
   );
   assert.match(shown(), /Reading earlier|New activity below/);
+  terminal.height = 32;
+  terminal.resize?.();
+  terminal.send("\x1b[F");
+  await until(() => shown().includes("LATEST_TAIL"), "return to the live end", shown);
+  const unavailable = {
+    directory: path.join(path.dirname(path.dirname(a.sessionFile)), "foreign-owner"),
+    launch: a,
+  };
+  await rejectUnavailableSelection({
+    terminal,
+    screen,
+    ...unavailable,
+    content: "LATEST_TAIL",
+  });
+  native.appendMessage(fauxAssistantMessage("AFTER_REJECTED_SELECTION"));
+  await until(
+    () => shown().includes("AFTER_REJECTED_SELECTION"),
+    "failed selection does not pause hydration of the displayed healthy reading",
+    shown,
+    5000,
+  );
+  fs.renameSync(a.sessionFile, `${a.sessionFile}.replaced`);
+  fs.copyFileSync(`${a.sessionFile}.replaced`, a.sessionFile);
+  await until(
+    () => shown().includes("Native journal was replaced or truncated; reopen this conversation."),
+    "a genuine reading failure remains visible",
+    shown,
+  );
+  const failedReads = options.journalReads();
+  publishUnavailable(unavailable);
+  await until(
+    () => shown().includes("unavailable"),
+    "the failed reading processes another published owner update",
+    shown,
+  );
+  assert.equal(
+    options.journalReads(),
+    failedReads,
+    "owner updates do not open a genuinely failed reading's journal",
+  );
+  fs.rmSync(unavailable.directory, { recursive: true });
+  terminal.click(screen, "running · reader-a");
+  await until(
+    () =>
+      shown().includes("AFTER_REJECTED_SELECTION") &&
+      !shown().includes("Native journal was replaced or truncated"),
+    "reopening rebuilds the failed reading instead of resuming its invalid journal",
+    shown,
+  );
+  native.appendMessage(fauxAssistantMessage("AFTER_REOPENED_READING"));
+  await until(
+    () => shown().includes("AFTER_REOPENED_READING"),
+    "the reopened reading hydrates new published content",
+    shown,
+  );
   assert.equal(
     options.session.isStreaming,
     false,
@@ -648,6 +835,14 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       const launch = record(JSON.parse(fs.readFileSync(path.join(runDir, "launch.json"), "utf8")));
       assert.ok(typeof launch.sessionFile === "string");
       const journalFile = launch.sessionFile;
+      await resizeLiveReading({ terminal, visible });
+      await rejectUnavailableSelection({
+        terminal,
+        screen: view,
+        directory: path.join(base, "foreign-owner"),
+        launch,
+        content: "CHILD_TEXT_LIVE",
+      });
       fs.writeFileSync(path.join(root, "progress-child"), "1");
       await until(
         () => visible().includes("LIVE_PROGRESS_1"),
@@ -1478,6 +1673,15 @@ nodeTest(
     const b = { ...publish("reader-b", false), name: "reader-b" };
     write(path.join(base, a.id, "launch.json"), a);
     write(path.join(base, b.id, "launch.json"), b);
-    await exerciseReading({ t, terminal, screen, mode, session: runtime.session, a, b });
+    await exerciseReading({
+      t,
+      terminal,
+      screen,
+      mode,
+      session: runtime.session,
+      a,
+      b,
+      journalReads: () => opened().filter((file) => file === a.sessionFile).length,
+    });
   },
 );

@@ -50,6 +50,7 @@ export class ObserverTranscript extends Container {
   private mounted: Card[] = [];
   waiting = false;
   private revision = "";
+  private client?: ObservationClient | undefined;
   private readonly display: CardOptions;
   private readonly changed: (event: TranscriptChange) => void;
   private readonly loaded: () => void;
@@ -83,10 +84,11 @@ export class ObserverTranscript extends Container {
   private refresh(client?: ObservationClient): boolean {
     this.observe(client);
     const revision = `${this.journal.native.records.length}:${client?.revision ?? -1}:${this.before ?? ""}`;
-    if (revision === this.revision) {
+    if (revision === this.revision && client === this.client) {
       return false;
     }
     this.revision = revision;
+    this.client = client;
     return true;
   }
   sync(client?: ObservationClient): boolean {
