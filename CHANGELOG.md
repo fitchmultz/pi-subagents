@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-- refactor: name bridge wake membership and mailbox events, make route cancellation scope explicit, and keep mailbox removal private to atomic ACKs.
-
 ## 0.52.26 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->
