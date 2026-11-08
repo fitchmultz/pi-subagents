@@ -141,7 +141,10 @@ nodeTest(
       }
     });
     const calls: Array<readonly [string, ToolCall["arguments"]]> = [
-      ["preview_patch", { input: "*** Begin Patch\n*** Add File: planned\n+never\n*** End Patch" }],
+      [
+        "apply_patch",
+        { input: "*** Begin Patch\n*** Add File: planned\n+never\n*** End Patch", preview: true },
+      ],
       [
         "write_files",
         { files: [{ path: "a", content: "preview\n", mode: "replace" }], preview: true },
