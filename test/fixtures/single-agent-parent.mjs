@@ -2087,7 +2087,7 @@ try {
           const file = path.join(root, "shell-polls.jsonl");
           return fs.existsSync(file) ? shellPolls() : [];
         };
-        fs.writeFileSync(path.join(root, "advance-clock"), "");
+        fs.writeFileSync(path.join(root, "advance-clock"), "600000");
         await until(() => polls().length > 0, "the due-idle actor validates its shell set");
         const from = polls().length;
         await until(() => polls().length >= from + 3, "three completed live-shell parking checks");
@@ -2128,12 +2128,45 @@ try {
           claim("replacement.json", claims[2]);
           claim("renamed.json", claims[0]);
         }, "replacement.json");
+        const clearing = polls().length;
         await stop(sleepers[2]);
+        await until(
+          () =>
+            polls()
+              .slice(clearing)
+              .some((poll) => poll.scans > 0 && poll.opens.includes("replacement.json")),
+          "the actor observes the last owned shell has exited",
+        );
+        const resident = () => {
+          for (const name of ["actor.lock/parking.json", "parked.json", "park-failed.json"]) {
+            assert.equal(
+              fs.existsSync(path.join(runDir(currentRunId()), name)),
+              false,
+              `a fresh five-minute shell-free interval is required before ${name}`,
+            );
+          }
+        };
+        resident();
+        const cleared = polls().length;
+        fs.writeFileSync(path.join(root, "advance-clock"), "899999");
+        await until(
+          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "899999",
+          "the actor checks eligibility just before five shell-free minutes",
+        );
+        resident();
+        assert.equal(polls().length, cleared, "shell-free idle does not rescan historical shells");
+        fs.writeFileSync(path.join(root, "advance-clock"), "900000");
+        await until(
+          () => fs.readFileSync(path.join(root, "clock-advanced"), "utf8") === "900000",
+          "the actor checks eligibility after five full shell-free minutes",
+        );
       } finally {
         await Promise.all(sleepers.map(stop));
       }
     }
-    fs.writeFileSync(path.join(root, "advance-clock"), "");
+    if (phase !== "park-shells") {
+      fs.writeFileSync(path.join(root, "advance-clock"), "");
+    }
     const parked = path.join(runDir(currentRunId()), "parked.json");
     if (phase === "park-orphan") {
       // This owner dies while the child's native save is blocked (official Pi stays resident).

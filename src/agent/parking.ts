@@ -220,7 +220,7 @@ export class Parking {
   }
   /** Both exit outcomes have disposed the runtime; only one publishes parked authority. */
   async park(runtime: Runtime, actor: Resident): Promise<ParkOutcome> {
-    if (!actor.pi || !this.due(runtime.session, actor.busy) || this.hasShell()) {
+    if (!actor.pi || !this.eligible(runtime.session, actor.busy)) {
       return "resident";
     }
     const hold = await this.prepare(runtime, actor.pi, actor);
@@ -233,15 +233,24 @@ export class Parking {
     }
     return this.shell !== undefined;
   }
-  /** Final idle: no run, turn, journal change or viewer since the period began. */
-  private due(session: AgentSession, busy: boolean): boolean {
+  /** Final idle: no run, turn, journal change, viewer or owned shell for the full period. */
+  private eligible(session: AgentSession, busy: boolean): boolean {
+    const now = performance.now();
     const leaf = session.sessionManager.getLeafId();
     if (busy || !session.isIdle || leaf !== this.leaf) {
       this.leaf = leaf;
-      this.since = performance.now();
+      this.since = now;
       return false;
     }
-    return performance.now() - this.since >= PARK_AFTER_MS;
+    const hadShell = this.shell !== undefined;
+    if (!hadShell && now - this.since < PARK_AFTER_MS) {
+      return false;
+    }
+    if (this.hasShell() || hadShell) {
+      this.since = now;
+      return false;
+    }
+    return true;
   }
   /**
    * Fence broker input, then hold a settled sleep-ready cut of the same quiet idle leaf. Any

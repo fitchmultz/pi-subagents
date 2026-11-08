@@ -165,8 +165,7 @@ export default async function fixture(
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- QX-006: the selected fork implements this native save participation event.
         /** @type {unknown} */ (pi.on.bind(pi))
       );
-    // Once the test asks, the actual runner's clock runs 1000x faster, so its idle period
-    // elapses after whatever settling the runner still does.
+    // Parking scenarios accelerate the runner's clock; park-shells pins exact idle boundaries.
     const now = performance.now.bind(performance);
     const advanced = path.join(root, "advance-clock");
     /** @type {number | undefined} */ let from;
@@ -193,6 +192,14 @@ export default async function fixture(
       });
     });
     performance.now = () => {
+      if (parkClock === "park-shells" && fs.existsSync(advanced)) {
+        from ??= now();
+        const elapsed = fs.readFileSync(advanced, "utf8");
+        queueMicrotask(() => {
+          fs.writeFileSync(path.join(root, "clock-advanced"), elapsed);
+        });
+        return from + Number(elapsed);
+      }
       from ??= fs.existsSync(advanced) ? now() : undefined;
       if (from !== undefined && now() - from > 1200) {
         // The runner itself has now read a clock 20 accelerated minutes past the request.
