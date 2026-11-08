@@ -43,7 +43,7 @@ interface ScreenOptions {
 
 type ReadingVisibility =
   | { readonly kind: "empty" }
-  | { readonly kind: "visible" | "hidden"; readonly reading: Reading };
+  | { readonly kind: "visible" | "hidden" | "failed"; readonly reading: Reading };
 
 /** Native layout, cards and scrolling; all controls affect local reading state only. */
 export class ObserverScreen extends VStack {
@@ -60,6 +60,7 @@ export class ObserverScreen extends VStack {
   private focus: "list" | "conversation" = "list";
   private details?: Details | undefined;
   private failure = "";
+  private selectionFailure = "";
   private timer?: NodeJS.Timeout | undefined;
   private indexer?: NodeJS.Immediate | undefined;
   private lastFlush = -Infinity;
@@ -93,7 +94,7 @@ export class ObserverScreen extends VStack {
             }
           },
           loaded: () => {
-            if (this.visible() === reading) {
+            if (this.activeReading() === reading) {
               this.schedule();
             }
           },
@@ -105,6 +106,7 @@ export class ObserverScreen extends VStack {
       this.selected = watch.launch.id;
       this.focus = "conversation";
       this.failure = "";
+      this.selectionFailure = "";
       this.reconcileVisibility();
       this.structure();
       this.options.tui.requestRender();
@@ -114,7 +116,7 @@ export class ObserverScreen extends VStack {
         }
       }
     } catch (error) {
-      this.failure = plainText(errorMessage(error));
+      this.selectionFailure = plainText(errorMessage(error));
       this.paint();
     }
   }
@@ -126,9 +128,14 @@ export class ObserverScreen extends VStack {
   private reconcileVisibility(): void {
     const previous = this.visibility;
     const reading = this.reading;
-    const visible = this.failure.length > 0 ? undefined : this.visible();
+    let kind: ReadingVisibility["kind"] = "hidden";
+    if (this.failure.length > 0) {
+      kind = "failed";
+    } else if (this.visible()) {
+      kind = "visible";
+    }
     const replaced = (previous.kind === "empty" ? undefined : previous.reading) !== reading;
-    if (previous.kind === "visible" && (replaced || !visible)) {
+    if (previous.kind === "visible" && (replaced || kind !== "visible")) {
       previous.reading.transcript.pause();
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -139,17 +146,19 @@ export class ObserverScreen extends VStack {
     if (replaced) {
       this.connection.clear();
     }
-    this.visibility = reading
-      ? { kind: visible ? "visible" : "hidden", reading }
-      : { kind: "empty" };
+    this.visibility = reading ? { kind, reading } : { kind: "empty" };
+    const visible = this.activeReading();
     if (visible) {
       visible.transcript.resume();
       this.connect();
       this.index();
     }
   }
+  private activeReading(): Reading | undefined {
+    return this.visibility.kind === "visible" ? this.visibility.reading : undefined;
+  }
   private connect(): void {
-    const reading = this.visible();
+    const reading = this.activeReading();
     if (!reading) {
       return;
     }
@@ -165,19 +174,18 @@ export class ObserverScreen extends VStack {
     }
   }
   private index(): void {
-    const reading = this.visible();
+    const reading = this.activeReading();
     if (
       !reading ||
       reading.transcript.journal.native.indexed ||
       this.indexer !== undefined ||
-      this.failure.length > 0 ||
       this.closed
     ) {
       return;
     }
     this.indexer = setImmediate(() => {
       this.indexer = undefined;
-      if (this.visible() !== reading) {
+      if (this.activeReading() !== reading) {
         return;
       }
       try {
@@ -185,6 +193,8 @@ export class ObserverScreen extends VStack {
         this.index();
       } catch (error) {
         this.failure = plainText(errorMessage(error));
+        this.saved.delete(reading.watch.launch.id);
+        this.reconcileVisibility();
       }
       this.schedule();
     });
@@ -214,6 +224,7 @@ export class ObserverScreen extends VStack {
         : undefined,
       this.selected,
       this.failure,
+      this.selectionFailure,
       this.reading?.transcript.version,
     ]);
     return { revision, status, signature };
@@ -252,14 +263,14 @@ export class ObserverScreen extends VStack {
     }
   }
   private wait(): void {
-    const reading = this.visible();
+    const reading = this.activeReading();
     const live = this.options.data.row(this.selected)?.live === true;
-    if (reading && this.failure.length === 0 && reading.transcript.waiting && live) {
+    if (reading && reading.transcript.waiting && live) {
       this.schedule();
     }
   }
   private refreshReading(force: boolean, changed: boolean): boolean {
-    const reading = this.visible();
+    const reading = this.activeReading();
     if (!reading) {
       return false;
     }
@@ -431,8 +442,10 @@ export class ObserverScreen extends VStack {
         minSize: 1,
       });
     }
-    const error = this.failure.length > 0 ? this.failure : this.options.data.error();
-    if (error.length > 0) {
+    const error = [this.failure, this.selectionFailure, this.options.data.error()].find(
+      (message) => message.length > 0,
+    );
+    if (error !== undefined) {
       this.addChild(new TruncatedText(this.options.theme.fg("warning", error), 0, 0), { basis: 1 });
     }
     appendHints(this, {
