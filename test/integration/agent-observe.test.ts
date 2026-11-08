@@ -324,19 +324,25 @@ async function exerciseReading(options: {
   const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
   const overlays = spy(screen, "showOverlay");
   options.t.after(() => overlays.restore());
+  const renderHydrated = () => {
+    const overlay = overlays.lastCall;
+    assertDefined(overlay);
+    const transcript = components(overlay.args[0]).find(observesNativeProgress);
+    assertDefined(transcript);
+    // Paging placeholders can skip the target before its native journal read publishes.
+    if (transcript.children.some((card) => "ready" in card && card.ready !== true)) {
+      return false;
+    }
+    screen.renderNow();
+    return true;
+  };
   let sent = 0;
   const keyUntil = (key: string, text: string, repeats = 1) =>
     until(
       () => {
-        const overlay = overlays.lastCall;
-        assertDefined(overlay);
-        const transcript = components(overlay.args[0]).find(observesNativeProgress);
-        assertDefined(transcript);
-        // Paging placeholders can skip the target before its native journal read publishes.
-        if (transcript.children.some((card) => "ready" in card && card.ready !== true)) {
+        if (!renderHydrated()) {
           return false;
         }
-        screen.renderNow();
         if (shown().includes(text)) {
           return true;
         }
@@ -463,6 +469,7 @@ async function exerciseReading(options: {
   terminal.click(screen, "Load earlier activity");
   await until(
     () =>
+      renderHydrated() &&
       [...shown().matchAll(/HISTORY_(\d+)/g)].some((match) => Number(match[1]) < Number(overlap)),
     "resize resumes mouse history hydration above a taller-than-viewport overlap card",
     shown,
