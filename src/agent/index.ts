@@ -69,7 +69,7 @@ type AttachmentState =
   | { readonly kind: "detached" }
   | { readonly kind: "waiting"; readonly binding: AttachmentBinding }
   | {
-      readonly kind: "attaching" | "attached";
+      readonly kind: "attaching" | "attached" | "failed";
       readonly binding: AttachmentBinding;
       readonly generation: string;
     };
@@ -94,7 +94,7 @@ class AgentRuntime {
   // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
   private observed = new Map<string, string>();
   private probe?: NodeJS.Timeout;
-  private reset: Promise<void> = Promise.resolve();
+  private attachmentTail: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
   private readonly child = isChild();
   private readonly agentDir = path.resolve(getPiAgentDir());
@@ -110,7 +110,9 @@ class AgentRuntime {
     return this.attachment.binding;
   }
   private get ctx(): ExtensionContext | undefined {
-    return this.attachment.kind === "attaching" || this.attachment.kind === "attached"
+    return this.attachment.kind === "attaching" ||
+      this.attachment.kind === "attached" ||
+      this.attachment.kind === "failed"
       ? this.attachment.binding.context
       : undefined;
   }
@@ -197,8 +199,7 @@ class AgentRuntime {
       this.attachment.kind === "attaching" ||
       this.child
     ) {
-      this.reset = this.reset.then(() => this.attach(binding));
-      return this.reset;
+      return this.queueAttachment(binding);
     }
     // Attach and publish only after the launcher retires rollback: an unready replacement
     // must neither adopt children nor append completions to a journal it may abandon.
@@ -208,8 +209,7 @@ class AgentRuntime {
     host.ready
       .then((accepted) => {
         if (accepted && !this.shutdown.signal.aborted && this.attachment === waiting) {
-          this.reset = this.reset.then(() => this.attach(binding));
-          return this.reset;
+          return this.queueAttachment(binding);
         }
         return null;
       })
@@ -221,48 +221,63 @@ class AgentRuntime {
   private ownerIdentity(): Omit<ProcessIdentity, "token"> {
     return ownIdentity(this.binding.host?.owner.pid);
   }
+  private queueAttachment(binding: AttachmentBinding): Promise<void> {
+    const attempt = this.attachmentTail.then(() => this.attach(binding));
+    this.attachmentTail = attempt.catch(() => {
+      // The caller receives this attempt's failure; later lifecycle work only joins settlement.
+    });
+    return attempt;
+  }
   private async attach(binding: AttachmentBinding): Promise<void> {
     this.unwatch();
     const attaching: AttachmentState = { kind: "attaching", binding, generation: randomUUID() };
     this.attachment = attaching;
-    if (this.child) {
+    try {
+      if (this.child) {
+        this.attachment = { ...attaching, kind: "attached" };
+        return;
+      }
+      await fs.promises.mkdir(binding.base, { recursive: true, mode: 0o700 });
+      write(path.join(binding.base, "attachment.json"), {
+        ...ownIdentity(binding.host?.owner.pid),
+        generation: attaching.generation,
+        attached: true,
+      });
+      if (this.shutdown.signal.aborted) {
+        return;
+      }
       this.attachment = { ...attaching, kind: "attached" };
-      return;
+      // Recovery and watch setup stay off the awaited startup path.
+      this.timer = setTimeout(this.scan, 200).unref();
+      this.probe = setInterval(this.recover, 1000).unref();
+    } catch (error) {
+      this.attachment = { ...attaching, kind: "failed" };
+      throw error;
     }
-    await fs.promises.mkdir(binding.base, { recursive: true, mode: 0o700 });
-    write(path.join(binding.base, "attachment.json"), {
-      ...ownIdentity(binding.host?.owner.pid),
-      generation: attaching.generation,
-      attached: true,
-    });
-    if (this.shutdown.signal.aborted) {
-      return;
-    }
-    this.attachment = { ...attaching, kind: "attached" };
-    // Recovery and watch setup stay off the awaited startup path.
-    this.timer = setTimeout(this.scan, 200).unref();
-    this.probe = setInterval(this.recover, 1000).unref();
   }
   private async dispose(retain: boolean): Promise<void> {
     this.reporter.shutdown();
     this.unwatch();
     this.shutdown.abort();
-    await this.reset;
-    if (!retain && !this.child && this.attachment.kind !== "detached") {
-      const file = path.join(this.base, "attachment.json");
-      const attachment = read(file, attachmentSchema);
-      if (attachment !== undefined && this.releases(attachment)) {
-        write(file, {
-          ...this.ownerIdentity(),
-          generation: attachment.generation,
-          attached: false,
-        });
-        await stopChildren(this.base, this.owner, (message) =>
-          this.reporter.report(undefined, message),
-        );
+    try {
+      await this.attachmentTail;
+      if (!retain && !this.child && this.attachment.kind !== "detached") {
+        const file = path.join(this.base, "attachment.json");
+        const attachment = read(file, attachmentSchema);
+        if (attachment !== undefined && this.releases(attachment)) {
+          write(file, {
+            ...this.ownerIdentity(),
+            generation: attachment.generation,
+            attached: false,
+          });
+          await stopChildren(this.base, this.owner, (message) =>
+            this.reporter.report(undefined, message),
+          );
+        }
       }
+    } finally {
+      this.attachment = { kind: "detached" };
     }
-    this.attachment = { kind: "detached" };
   }
   private releases(attachment: Attachment): boolean {
     const state = this.attachment;
@@ -274,6 +289,7 @@ class AgentRuntime {
         return attachment.attached && attachment.pid === state.binding.host?.owner.pid;
       case "attaching":
       case "attached":
+      case "failed":
         return attachment.generation === state.generation;
     }
   }
@@ -308,7 +324,8 @@ class AgentRuntime {
     context: ExtensionContext,
   ) {
     this.checkMain();
-    await this.reset;
+    await this.attachmentTail;
+    this.checkMain();
     if (signal?.aborted === true) {
       throw new Error("Delegation cancelled before launch.");
     }
@@ -410,7 +427,8 @@ class AgentRuntime {
   }
   private async runs(input: RunsInput, context: ExtensionContext) {
     this.checkMain();
-    await this.reset;
+    await this.attachmentTail;
+    this.checkMain();
     if (input.action === "list") {
       return this.list(input);
     }
