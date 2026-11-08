@@ -261,20 +261,19 @@ function activityEvent(type: string | undefined): boolean {
   );
 }
 class OwnedChildLifecycle implements ChildProcessLifecycle {
-  private closed = false;
-  private exited = false;
-  private isStopping = false;
-  private isSettledCleanup = false;
+  private phase:
+    | { readonly kind: "monitoring" }
+    | { readonly kind: "settlement-delay"; readonly timer: NodeJS.Timeout }
+    | { readonly kind: "terminating"; readonly escalation: NodeJS.Timeout | undefined }
+    | { readonly kind: "closed"; readonly stopping: boolean } = { kind: "monitoring" };
+  private settlementSignalAccepted = false;
   private exit?: AgentProcessExit;
-  private drainTimer?: NodeJS.Timeout | undefined;
-  private escalationTimer?: NodeJS.Timeout | undefined;
   private readonly child: ChildWithPipedStdio & ChildWithKill;
   private readonly clearStdioGuard: () => void;
   constructor(child: ChildWithPipedStdio & ChildWithKill) {
     this.child = child;
     this.clearStdioGuard = attachPostExitStdioGuard(child);
     child.on("exit", (code, signal) => {
-      this.exited = true;
       this.exit = { pid: child.pid, code, signal, at: Date.now() };
       this.clearTimers();
       // The leader may exit before resistant descendants release inherited stdio.
@@ -288,62 +287,70 @@ class OwnedChildLifecycle implements ChildProcessLifecycle {
     });
   }
   private clearDrain(): void {
-    clearTimeout(this.drainTimer);
-    this.drainTimer = undefined;
+    if (this.phase.kind === "settlement-delay") {
+      clearTimeout(this.phase.timer);
+      this.phase = { kind: "monitoring" };
+    }
   }
   private clearTimers(): void {
     this.clearDrain();
-    clearTimeout(this.escalationTimer);
-    this.escalationTimer = undefined;
+    if (this.phase.kind === "terminating") {
+      clearTimeout(this.phase.escalation);
+      this.phase = { kind: "terminating", escalation: undefined };
+    }
   }
   private signalTree(): boolean {
-    // Pi print mode uses SIGTERM to dispose its own detached tool processes.
-    const sent = trySignalChildTree(this.child, "SIGTERM");
-    this.escalationTimer = setTimeout(() => {
+    const escalation = setTimeout(() => {
       if (isChildTreeAlive(this.child)) {
         trySignalChildTree(this.child, "SIGKILL");
       }
     }, 3000);
-    this.escalationTimer.unref();
-    return sent;
+    escalation.unref();
+    this.phase = { kind: "terminating", escalation };
+    // Pi print mode uses SIGTERM to dispose its own detached tool processes.
+    return trySignalChildTree(this.child, "SIGTERM");
   }
   readonly terminate = (): void => {
     // Cancellation overrides pending or already-started successful settlement cleanup.
-    this.isSettledCleanup = false;
+    this.settlementSignalAccepted = false;
     this.clearDrain();
-    if (!this.closed && !this.isStopping) {
-      this.isStopping = true;
+    if (this.phase.kind === "monitoring") {
       this.signalTree();
     }
   };
   private dispose(): void {
-    this.closed = true;
     this.clearTimers();
+    this.phase = { kind: "closed", stopping: this.stopping };
     this.clearStdioGuard();
   }
   get stopping(): boolean {
-    return this.isStopping;
+    return (
+      this.phase.kind === "terminating" || (this.phase.kind === "closed" && this.phase.stopping)
+    );
   }
   get agentProcessExit(): AgentProcessExit | undefined {
     return this.exit;
   }
   get settledCleanup(): boolean {
-    return this.isSettledCleanup;
+    return this.settlementSignalAccepted;
   }
   readonly observeEvent = (type: string | undefined): void => {
-    if (this.closed || this.exited || this.isStopping) {
+    if (
+      this.phase.kind === "closed" ||
+      this.exit !== undefined ||
+      this.phase.kind === "terminating"
+    ) {
       return;
     }
     if (type === "agent_settled") {
-      if (this.drainTimer) {
+      if (this.phase.kind === "settlement-delay") {
         return;
       }
-      this.drainTimer = setTimeout(() => {
-        this.drainTimer = undefined;
-        this.isStopping = true;
-        this.isSettledCleanup = this.signalTree();
+      const timer = setTimeout(() => {
+        this.settlementSignalAccepted = this.signalTree();
       }, 1000);
-      this.drainTimer.unref();
+      timer.unref();
+      this.phase = { kind: "settlement-delay", timer };
     } else if (activityEvent(type)) {
       this.clearDrain();
     }
