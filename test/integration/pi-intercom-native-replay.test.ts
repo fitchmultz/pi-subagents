@@ -2932,8 +2932,29 @@ nodeTest(
       fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
       fauxAssistantMessage("Milestone handled"),
     ]);
+    await waitFor(
+      async () =>
+        (await supervisor.sender.listSessions()).some(
+          (peer) => peer.name === "milestone-supervisor" && peer.status === "idle",
+        ),
+      "idle supervisor presence",
+    );
+    const idleReceipt = await supervisor.send("idle-milestone", {
+      text: "Stale finding staged before native work",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "material-progress",
+    });
+    assert.equal(idleReceipt.queued, true);
     const running = supervisor.session.prompt("Work before the milestone");
     await waitFor(() => toolStarted, "busy supervisor tool");
+    await waitFor(
+      async () =>
+        (await supervisor.sender.listSessions()).some(
+          (peer) => peer.name === "milestone-supervisor" && peer.status === "tool:hold",
+        ),
+      "busy supervisor presence",
+    );
     const now = Date.now;
     try {
       Date.now = () => now() - 120_000;
@@ -2958,10 +2979,35 @@ nodeTest(
       async () => (await supervisor.status()).includes("Root cause confirmed"),
       "coalesced latest milestone",
     );
+    supervisor.sender.updatePresence({ status: "idle" });
+    await supervisor.sender.listSessions();
+    const window = once(supervisor.sender, "message");
+    assert.equal(
+      (
+        await supervisor.sender.send(text(supervisor.sender.sessionId), {
+          text: "Later broker replacement window",
+          delivery: "queue",
+          queueMode: "replace",
+          threadId: "window-barrier",
+        })
+      ).queued,
+      true,
+    );
+    await window;
+    await supervisor.send("routing-barrier", {
+      text: "Ordered native receive after the broker window",
+      delivery: "passive",
+    });
+    await waitFor(
+      async () => (await supervisor.status()).includes("routing-barrier"),
+      "native receive after the broker window",
+    );
     const staged = await supervisor.status();
     assert.match(staged, /queued; not yet delivered to model/);
     assert.match(staged, /Root cause confirmed/);
     assert.doesNotMatch(staged, /Old finding/);
+    assert.doesNotMatch(staged, /Stale finding staged before native work/);
+    assert.equal(supervisor.visible("idle-milestone").length, 0);
     assert.equal(supervisor.visible("old-milestone").length, 0);
     assert.equal(supervisor.visible("latest-milestone").length, 0);
     await supervisor.send("old-milestone", {
@@ -2991,6 +3037,7 @@ nodeTest(
       "milestone settlement",
     );
     assert.equal(supervisor.visible("old-milestone").length, 0);
+    assert.equal(supervisor.visible("idle-milestone").length, 0);
     assert.equal(supervisor.visible("latest-milestone").length, 1);
     assert.equal(
       supervisor.faux.state.callCount,

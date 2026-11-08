@@ -80,7 +80,23 @@ nodeTest(
       cwd: "c".repeat(300_000),
       model: "m".repeat(100_000),
     });
-    const receiver = await fixture.client("large-receiver");
+    const receiver = await fixture.client("large-receiver", { status: "idle" });
+    const received: string[] = [];
+    receiver.on("message", (_from: SessionInfo, message: Message) => {
+      received.push(message.id);
+    });
+    assert.equal(
+      (
+        await sender.send("large-receiver", {
+          messageId: "accepted-before-rejection",
+          text: "Keep this accepted update",
+          delivery: "queue",
+          queueMode: "replace",
+          threadId: "oversize",
+        })
+      ).queued,
+      true,
+    );
     for (const delivery of ["steer", "queue"] as const) {
       // Both immediate forwarding and replace staging must validate the expanded frame.
       const result = await sender.send("large-receiver", {
@@ -95,13 +111,87 @@ nodeTest(
       assert.ok(result.queued === undefined, "oversized sends never report queueing");
       assert.match(result.reason ?? "", /message too large/i);
     }
-    const received = once(receiver, "message");
+    receiver.updatePresence({ status: "busy" });
+    await waitFor(
+      async () =>
+        (await sender.listSessions()).find((peer) => peer.id === receiver.sessionId)?.status ===
+        "busy",
+    );
+    const rejected = await sender.send("large-receiver", {
+      text: "x".repeat(MAX_FRAME_SIZE_BYTES - 350_000),
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "oversize",
+    });
+    assert.equal(rejected.accepted, false);
+    assert.match(rejected.reason ?? "", /message too large/i);
+    const healthy = once(receiver, "message");
     assert.equal(
       (await sender.send("large-receiver", { text: "healthy after rejection" })).accepted,
       true,
     );
-    const delivered = record(array(await received)[1]);
+    const delivered = record(array(await healthy)[1]);
     assert.equal(record(delivered.content).text, "healthy after rejection");
+    await waitFor(() => received.includes("accepted-before-rejection"));
+  },
+);
+
+nodeTest(
+  "accepted replacements supersede staged input across idle-to-busy routing without crossing keys",
+  async (t) => {
+    const fixture = await brokerFixture(t);
+    const sender = await fixture.client("route-sender");
+    const other = await fixture.client("other-sender");
+    const receiver = await fixture.client("route-receiver", { status: "idle" });
+    const second = await fixture.client("other-receiver", { status: "idle" });
+    const received: string[] = [];
+    const secondReceived: string[] = [];
+    receiver.on("message", (_from: SessionInfo, message: Message) => {
+      received.push(message.id);
+    });
+    second.on("message", (_from: SessionInfo, message: Message) => {
+      secondReceived.push(message.id);
+    });
+    const input = {
+      text: "Replaceable update",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "route-thread",
+    } as const;
+    for (const [from, to, id, threadId] of [
+      [sender, "route-receiver", "staged-old", "route-thread"],
+      [other, "route-receiver", "other-sender", "route-thread"],
+      [sender, "route-receiver", "other-thread", "separate-thread"],
+      [sender, "other-receiver", "other-recipient", "route-thread"],
+    ] as const) {
+      assert.equal((await from.send(to, { ...input, messageId: id, threadId })).queued, true);
+    }
+    receiver.updatePresence({ status: "busy" });
+    await waitFor(
+      async () =>
+        (await sender.listSessions()).find((peer) => peer.id === receiver.sessionId)?.status ===
+        "busy",
+    );
+    const latest = await sender.send("route-receiver", {
+      ...input,
+      messageId: "direct-latest",
+    });
+    assert.deepEqual([latest.accepted, latest.delivered, latest.queued], [true, true, undefined]);
+    // A later independent replacement window proves the old timer's deadline has passed.
+    assert.equal(
+      (
+        await sender.send("other-receiver", {
+          ...input,
+          messageId: "window-barrier",
+          threadId: "barrier",
+        })
+      ).queued,
+      true,
+    );
+    await waitFor(() => secondReceived.includes("window-barrier"));
+    await waitFor(() => received.includes("other-thread"));
+    assert.deepEqual(received, ["direct-latest", "other-sender", "other-thread"]);
+    assert.deepEqual(secondReceived, ["other-recipient", "window-barrier"]);
   },
 );
 

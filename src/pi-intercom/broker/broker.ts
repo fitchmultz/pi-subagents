@@ -386,14 +386,16 @@ class IntercomBroker {
       return this.queueReplaceDelivery(fromId, toId, from, message);
     }
     const reason = this.deliverMessage(toId, from, message);
-    const queued = reason === null && target?.parked !== undefined;
+    if (reason !== null) {
+      return { id: message.id, accepted: false, delivered: false, reason };
+    }
+    this.replacements.supersede(fromId, toId, message);
+    const queued = target?.parked !== undefined;
     return {
       id: message.id,
-      accepted: reason === null,
-      delivered: reason === null && !queued,
-      ...(queued ? { queued } : {}),
-      ...(queued ? { reason: this.parking.queueReason(target, message.id) } : {}),
-      ...(reason !== null ? { reason } : {}),
+      accepted: true,
+      delivered: !queued,
+      ...(queued ? { queued, reason: this.parking.queueReason(target, message.id) } : {}),
     };
   }
 
