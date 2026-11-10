@@ -44,8 +44,10 @@ invocation exits after its final turn and stops any remaining children.
 
 ## Controls
 
-- `agent_runs({action:"list"})` discovers this native main's saved runs.
-- `inspect` reads a run by ID; follow returned offsets for complete output.
+- `agent_runs({action:"list"})` discovers this native main's saved runs: one
+  line per run, running first, then newest first.
+- `inspect` reads a run by ID and states every field of it; follow returned
+  offsets for complete output.
 - `continue` takes a complete follow-up `prompt` and keeps the saved child chat.
   Active work receives guidance; completed work gets an immutable successor.
   Both keep the child's saved effort, independent of later parent changes.

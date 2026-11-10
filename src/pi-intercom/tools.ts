@@ -59,7 +59,7 @@ export class IntercomTools {
     const scope = params.scope ?? "all";
     switch (params.action) {
       case "list":
-        return await this.owners.inspection.list(active, scope);
+        return await this.owners.inspection.list(active, scope, params.to);
       case "status":
         return await this.owners.inspection.status(active, scope, ctx);
       case "pending":

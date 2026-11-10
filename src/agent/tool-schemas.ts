@@ -33,3 +33,8 @@ export const runsSchema = Type.Object(
   { additionalProperties: false },
 );
 export type RunsInput = Static<typeof runsSchema>;
+/**
+ * A codemode script receives `structuredContent` from a tool that declares an output schema.
+ * Only `list` sets it, to its JSON inventory; the other actions resolve to their model text.
+ */
+export const runsOutputSchema = Type.String();

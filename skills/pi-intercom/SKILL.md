@@ -10,7 +10,8 @@ workflow UI, or topic registry.
 
 1. Use `intercom({action:"list"})` before choosing a peer. Default discovery spans
    projects and agent directories under the same OS user; optional
-   `scope:"project"` filters to this repository and its worktrees.
+   `scope:"project"` filters to this repository and its worktrees, and optional
+   `to` keeps the peers whose name or ID contains it.
 2. Pick the exact displayed target. Names are not unique; resolve ambiguity rather
    than guessing. The current session is not a peer target.
 3. Choose the lightest operation. The lightest is no message: do not send

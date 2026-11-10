@@ -78,8 +78,14 @@ parent's effort has changed.
 | `stop`     | Request termination; inspect the actual process outcome afterward.                   |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
-infer them from display names. `list` returns at most 50 metadata summaries per
-page; follow `nextOffset` to continue. Output is retrieved only by explicit
+infer them from display names. `list` returns at most 50 runs per page: running
+runs first, then newest first. The model reads one line per run (ID, status, end
+time, model, name) and the `offset` of the next page. A run with a recorded wake
+failure is marked on its line. The order can change between pages when a run
+starts or settles. The tool details keep the complete metadata summaries with
+`nextOffset`, and a codemode script receives those same summaries as a JSON
+string. `inspect` states every field of one run, including its cwd, lineage,
+native session, guidance and output file. Output is retrieved only by explicit
 inspection, not embedded in every inventory row. Inspection of large output returns a continuation
 offset; follow that offset until complete. The saved native session and full
 output remain available independently of the preview.
@@ -118,7 +124,8 @@ normal message, ask or continuation restores the exact saved state into a new
 process, which then receives retained messages in order. If the final save
 fails, the child records `park-failed.json` and nothing restarts implicitly;
 retained messages stay queued and continuing reports the failure. A failed wake
-is recorded as the run's `lastWakeFailure` in `agent_runs list` and `inspect`.
+is recorded as the run's `lastWakeFailure`: `agent_runs list` marks the run and
+`inspect` states the failure.
 This is a historical failure, not a claim about the child's current state. A
 later active message requests another wake. The saved working directory must be
 available; no other directory is substituted. A pre-existing ambiguous actor

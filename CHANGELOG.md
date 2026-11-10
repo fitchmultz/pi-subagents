@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 - Tell agents when not to send an Intercom message. The tool description, the `list` delivery hint, the `pi-intercom` skill and the Intercom guide now say: do not send acknowledgements, a send to an idle peer costs it a full model request, and `delivery:"passive"` is for receipts and FYI that need no action. Delivery modes and the steer default are unchanged.
+- `agent_runs list` now gives the model one line per run (ID, status, end time, model, name) instead of every field as indented JSON, with running runs first and then the newest. A real page of 50 runs went from 66.8 KB to 6.7 KB. The tool details keep the complete summaries, and a codemode script still receives them as the same JSON string, in the new order. `inspect` now states every field of a run, including cwd, lineage, native session and output file.
+- `intercom list` prints the delivery guidance once instead of under every peer, and `to` filters the list by name or ID. A real list of 46 sessions went from 18.4 KB to 11.7 KB.
 
 ## 0.52.29 - 2026-11-08
 

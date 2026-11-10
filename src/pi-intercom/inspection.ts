@@ -37,14 +37,18 @@ export class IntercomInspection {
     });
     return toolText(`**Pending asks:**\n${lines.join("\n")}`);
   }
-  async list(active: IntercomTransport, scope: IntercomSessionScope): Promise<ToolResultLike> {
+  async list(
+    active: IntercomTransport,
+    scope: IntercomSessionScope,
+    query?: string,
+  ): Promise<ToolResultLike> {
     try {
       const id = active.sessionId;
       if (id === null || id === "") {
         throw new Error("Current intercom session id is unavailable.");
       }
       const all = await active.listSessions();
-      return toolText(formatSessionListSections(all, id, scope), {
+      return toolText(formatSessionListSections(all, id, scope, query), {
         sessionCount: sessionsForScope(all, id, scope).length,
       });
     } catch (error) {

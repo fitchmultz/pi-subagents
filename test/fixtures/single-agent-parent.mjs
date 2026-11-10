@@ -348,6 +348,10 @@ const services = await sdk.createAgentSessionServices({
           toolEnds.push(structuredClone(event));
         });
       },
+      // The inventory phase reads the list through a real script, as agents do.
+      ...(phase === "inventory"
+        ? [sdk.createCodemodeExtension({ mode: "on", models: false })]
+        : []),
     ],
     additionalExtensionPaths: cwdOwner !== undefined ? [cwdOwner] : [],
   },
@@ -691,6 +695,26 @@ const RunsInventorySchema = Type.Object({
   ),
   nextOffset: Type.Optional(Type.Integer()),
   total: Type.Optional(Type.Integer()),
+});
+/** The digest the inventory phase's codemode script returns for its parsed list result. */
+const ScriptInventorySchema = Type.Object({
+  type: Type.String(),
+  bytes: Type.Integer(),
+  total: Type.Integer(),
+  offset: Type.Integer(),
+  nextOffset: Type.Optional(Type.Integer()),
+  ids: Type.Array(Type.String()),
+  guidance: Type.Array(Type.Array(Type.Unknown())),
+  fields: Type.Array(Type.String()),
+  running: Type.Object({
+    id: Type.String(),
+    name: Type.Optional(Type.String()),
+    status: Type.String(),
+    completed: Type.Boolean(),
+    process: Type.Object({ live: Type.Boolean() }),
+  }),
+  hasOutput: Type.Boolean(),
+  hasPrompt: Type.Boolean(),
 });
 const runsDetails = (/** @type {{ details?: unknown }} */ receipt) => {
   Assert(RunsInventorySchema, receipt.details);
@@ -1528,7 +1552,23 @@ try {
       "the actor actually armed a watch that lost hints",
     );
   } else if (phase === "inventory") {
-    const saved = [];
+    // A real running child, older than every saved run below.
+    const held = await call(
+      "delegate",
+      {
+        prompt: "HOLD:inventory",
+        name: "held inventory",
+        model: "single-agent-fixture/literal-model",
+      },
+      "inventory-running-launch",
+    );
+    assert.equal(held.isError, false, JSON.stringify(held));
+    const heldId = runDetails(held).id;
+    await until(
+      () => requests().some((request) => request.prompt === "HOLD:inventory"),
+      "the held child reaches the actual native provider",
+    );
+    const later = Date.now() + 60_000;
     for (let index = 0; index < 51; index++) {
       const id = `inventory-${index}`;
       fs.mkdirSync(runDir(id), { recursive: true });
@@ -1550,9 +1590,8 @@ try {
         model: "literal-model",
         thinking: "high",
         trusted: true,
-        createdAt: index,
+        createdAt: later + index,
       };
-      saved.push(launch);
       fs.writeFileSync(path.join(runDir(id), "launch.json"), JSON.stringify(launch));
       if (index > 0 && index < 50) {
         fs.writeFileSync(
@@ -1566,7 +1605,7 @@ try {
           id,
           owner: manager.getSessionId(),
           status: "completed",
-          endedAt: index,
+          endedAt: index * 1000,
           contributions: [],
         }),
       );
@@ -1662,40 +1701,138 @@ try {
     const text = inventory.content
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("\n");
-    assert.ok(
-      Buffer.byteLength(text) < 100 * 1024,
-      `metadata inventory was ${Buffer.byteLength(text)} bytes`,
-    );
     assert.equal(io.scans, 1, "one shared conversation scan, not one per continuation");
     assert.equal(io.opens, 100, "each guidance record is opened once for the entire page");
     assert.ok(io.reads <= 600, `bounded command read calls: ${io.reads}`);
     assert.ok(io.maxReadBytes <= 64 * 1024, `bounded individual reads: ${io.maxReadBytes}`);
     assert.ok(io.bytes >= 100 * 256 * 1024, "the actual large command spool was read");
     assert.ok(io.bytes < 100 * (256 * 1024 + 1024), `command bytes read: ${io.bytes}`);
-    const page = parseValidated(RunsInventorySchema, text);
-    assert.equal(page.total, 51);
-    assert.equal(page.runs.length, 50);
+    // Running first, then newest first: the held child precedes 51 newer settled runs.
+    const settledRow = (/** @type {number} */ index) =>
+      `inventory-${index} completed 1970-01-01T00:00:${String(index).padStart(2, "0")}Z single-agent-fixture/literal-model (unnamed)`;
+    const columns =
+      "running first, then newest first. Columns: id, status, end time (UTC), model, name.";
+    const inspectHint = "Every field of one run: agent_runs inspect id=<id>.";
+    assert.equal(
+      text,
+      [
+        `Agent runs 1-50 of 52: ${columns}`,
+        `Next page: agent_runs list offset=50. ${inspectHint}`,
+        `${heldId} running - single-agent-fixture/literal-model "held inventory"`,
+        ...Array.from({ length: 49 }, (_, position) => settledRow(50 - position)),
+      ].join("\n"),
+      "the model reads one line per run",
+    );
+    const firstPageIds = [
+      heldId,
+      ...Array.from({ length: 49 }, (_, position) => `inventory-${50 - position}`),
+    ];
+    const firstPageGuidance = firstPageIds.map((id) => expectedGuidance.get(id) ?? []);
+    const page = runsDetails(inventory);
+    assert.equal(page.total, 52);
     assert.equal(page.nextOffset, 50);
     assert.deepEqual(
       page.runs.map((run) => run.id),
-      saved.slice(0, 50).map((run) => run.id),
+      firstPageIds,
     );
     assert.equal(
       page.runs.every((run) => !("output" in run)),
       true,
       "list never embeds output pages",
     );
-    assert.equal(text.includes("INVENTORY_OUTPUT_"), false);
-    assert.equal(text.includes("GUIDANCE_PROMPT_MUST_NOT_APPEAR:"), false);
     assert.deepEqual(
       page.runs.map((run) => run.guidance),
-      Array.from({ length: 50 }, (_, index) => expectedGuidance.get(`inventory-${index}`)),
-      "model-visible metadata preserves pending, accepted and stale guidance for each run",
+      firstPageGuidance,
+      "list details preserve pending, accepted and stale guidance for each run",
+    );
+    // A script still receives the complete JSON inventory, not the model's lines.
+    session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
+    const scripted = await call(
+      "codemode",
+      {
+        code: [
+          'const raw = await tools.agent_runs({ action: "list" });',
+          "const page = JSON.parse(raw);",
+          "return {",
+          "  type: typeof raw,",
+          "  bytes: raw.length,",
+          "  total: page.total,",
+          "  offset: page.offset,",
+          "  nextOffset: page.nextOffset,",
+          "  ids: page.runs.map((run) => run.id),",
+          "  guidance: page.runs.map((run) => run.guidance),",
+          "  fields: Object.keys(page.runs[1]).sort(),",
+          "  running: page.runs[0],",
+          '  hasOutput: raw.includes("INVENTORY_OUTPUT_"),',
+          '  hasPrompt: raw.includes("GUIDANCE_PROMPT_MUST_NOT_APPEAR:"),',
+          "};",
+        ].join("\n"),
+      },
+      "inventory-script",
+    );
+    assert.equal(scripted.isError, false, JSON.stringify(scripted));
+    const scriptText = scripted.content
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("");
+    const script = parseValidated(
+      ScriptInventorySchema,
+      scriptText.slice(scriptText.indexOf("Output:\n") + "Output:\n".length),
+    );
+    assert.ok(script.bytes < 100 * 1024, `metadata inventory was ${script.bytes} bytes`);
+    assert.deepEqual(
+      { ...script, running: undefined, bytes: undefined },
+      {
+        type: "string",
+        bytes: undefined,
+        total: 52,
+        offset: 0,
+        nextOffset: 50,
+        ids: firstPageIds,
+        guidance: firstPageGuidance,
+        // inventory-50 has no predecessor, name or wake failure.
+        fields: [
+          "admission",
+          "completed",
+          "context",
+          "cwd",
+          "guidance",
+          "id",
+          "model",
+          "nativeReceipt",
+          "outputFile",
+          "owner",
+          "process",
+          "result",
+          "rootId",
+          "sessionFile",
+          "sessionId",
+          "status",
+          "thinking",
+        ],
+        running: undefined,
+        hasOutput: false,
+        hasPrompt: false,
+      },
+      "a script that parses the list keeps every summary field",
+    );
+    assert.deepEqual(
+      {
+        id: script.running.id,
+        name: script.running.name,
+        status: script.running.status,
+        completed: script.running.completed,
+        live: script.running.process.live,
+      },
+      { id: heldId, name: "held inventory", status: "running", completed: false, live: true },
     );
     const last = await call("agent_runs", { action: "list", offset: 50 }, "inventory-next-page");
+    assert.equal(
+      last.content.map((block) => (block.type === "text" ? block.text : "")).join("\n"),
+      [`Agent runs 51-52 of 52: ${columns}`, inspectHint, settledRow(1), settledRow(0)].join("\n"),
+    );
     assert.deepEqual(
       runsDetails(last).runs.map((run) => run.id),
-      ["inventory-50"],
+      ["inventory-1", "inventory-0"],
     );
     assert.equal(runsDetails(last).nextOffset, undefined);
     const inspected = await call(
@@ -1705,14 +1842,26 @@ try {
     );
     assert.equal(runDetails(inspected).output?.text ?? "", "INVENTORY_OUTPUT_0:" + "x".repeat(13));
     assert.equal(runDetails(inspected).output?.nextOffset, 32);
+    const inspectedText = inspected.content
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("\n");
     for (const guidance of expectedGuidance.get("inventory-0") ?? []) {
-      assert.ok(
-        inspected.content.some(
-          (block) =>
-            block.type === "text" && block.text.includes(`${guidance.id}: ${guidance.state}`),
-        ),
-      );
+      assert.ok(inspectedText.includes(`${guidance.id}: ${guidance.state}`));
     }
+    // Inspection states every field that the list no longer prints.
+    for (const line of [
+      "Agent run inventory-0: completed; admission pending; process not observed live.",
+      "Name (unnamed); model single-agent-fixture/literal-model; thinking high; context fresh; ended 1970-01-01T00:00:00Z.",
+      `Cwd: ${cwd}`,
+      `Owner ${manager.getSessionId()}; root run inventory-0; predecessor none; native session native-inventory-0.`,
+      `Native journal: ${path.join(runDir("inventory-0"), "native.jsonl")}`,
+      `Output file: ${path.join(runDir("inventory-0"), "output.txt")}`,
+    ]) {
+      assert.ok(inspectedText.split("\n").includes(line), `inspection states: ${line}`);
+    }
+    faux.setResponses([fauxAssistantMessage("INVENTORY_COMPLETION_PROCESSED")]);
+    fs.writeFileSync(path.join(root, "release-inventory"), "release");
+    await settled(held);
   } else if (
     phase === "model-selection" ||
     phase === "thinking-selection" ||

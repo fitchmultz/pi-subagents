@@ -2468,6 +2468,21 @@ nodeTest(
     assert.match(list, /group-main/);
     assert.match(list, /group-sibling/);
     assert.doesNotMatch(list, /other-main|other-child/);
+    // The child's peers: its main, its sibling, and the sibling's and its own fixture senders.
+    const listed = (await executeIntercom(child, { action: "list" })).content[0]?.text ?? "";
+    assert.equal(listed.split("\n• ").length - 1, 5, "the child and its four peers");
+    assert.equal(listed.split("**Delivery:**").length - 1, 1, "one delivery hint for all peers");
+    assert.equal(listed.split("↳").length - 1, 1, "only the current session keeps its own hint");
+    const filtered =
+      (await executeIntercom(child, { action: "list", to: "GROUP-MAIN" })).content[0]?.text ?? "";
+    assert.match(
+      filtered,
+      /\*\*Other sessions matching "GROUP-MAIN" \(1 of 4; omit `to` to list all\):\*\*\n• group-main \(/,
+    );
+    assert.doesNotMatch(filtered, /sibling/);
+    const unmatched =
+      (await executeIntercom(child, { action: "list", to: "absent" })).content[0]?.text ?? "";
+    assert.match(unmatched, /matching "absent" \(0 of 4; omit `to` to list all\):\*\*$/);
     const mains = JSON.stringify(await executeIntercom(main, { action: "list" }));
     assert.match(mains, /other-main/);
     assert.doesNotMatch(mains, /other-child/);
