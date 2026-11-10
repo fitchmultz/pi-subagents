@@ -18,6 +18,7 @@ intercom({ action: "list" });
 intercom({ action: "list", children: true });
 intercom({ action: "list", scope: "project" });
 intercom({ action: "list", to: "reviewer" });
+intercom({ action: "list", device: "all" });
 intercom({ action: "status" });
 ```
 
@@ -25,6 +26,8 @@ Default discovery includes every eligible connected session under the same OS
 user, across cwd, Git worktrees, projects, HOME settings, and Pi agent directories.
 `scope:"project"` is an optional convenience filter, not an authority boundary.
 The list does not enumerate all OS processes or disconnected native sessions.
+With `device`, `list` prints the main sessions of the owner's
+[other devices](#main-sessions-on-other-devices) instead.
 
 `list` and `status` print the current session and then two blocks:
 
@@ -137,6 +140,137 @@ are immutable UUIDs supplied by the sender. An optional lowercase SHA-256
 contract. The native message renders a generic
 publication hint separately from an ordinary ask. No product-specific tool is
 hard-coded, no pending ask is created, and a hint does not prove a reply exists.
+
+## Main sessions on other devices
+
+```js
+intercom({ action: "list", device: "all" });
+intercom({ action: "list", device: "laptop" });
+intercom({ action: "list", device: "laptop", to: "review" });
+```
+
+A main session can list the main sessions on the owner's other devices. `device`
+is one configured device name, or `all` for every configured device. The answer
+has one block per device and no session of this device:
+
+```text
+**Main sessions on laptop (2):**
+• api-fix@laptop (pi-7e8f9@laptop) — Native session cwd: /work/api (model-b) [idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:2h ago]
+• web-build@laptop (pi-0a1b2@laptop) — Native session cwd: /work/web (model-a) [tool:bash, state:busy, accepts_asks:false, pending_asks:0, last_intercom_activity:none, last_seen:5s ago]
+
+**Main sessions on desk (0):** no Pi session is connected there.
+
+**phone:** unreachable (connect to host phone port 22: Operation timed out)
+
+**old-box:** not listed: its pi-subagents has no cross-device command; update pi-subagents there
+
+**Other devices:** list only. send, ask and last reach the sessions of this device.
+```
+
+- A row has the fields of a local main row. Its name and its ID end in `@device`.
+  Ages are measured on the clock of the listed device.
+- Only Pi main sessions are listed. The children and the bridge identities of
+  the other device are left out.
+- `to` keeps the sessions whose name or ID contains that text, as in a local
+  list. A text copied from a row can keep its `@device` ending: it matches that
+  row on that device. `scope` and `children` cannot be combined with `device`.
+- The list is the only cross-device action. `send`, `ask`, `reply` and `last`
+  reach the sessions of this device.
+- Only a main session can use `device`. A child gets a refusal, and its main
+  handles anything that involves another device. Like the group rules, this is a
+  coordination rule, not a sandbox against code that runs as the same user.
+- Without `device`, `list` contacts no other device.
+
+| Block text                                                 | Meaning                                                                                              |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `(0): no Pi session is connected there`                    | The device answered. No broker runs there, or no Pi main is connected to it.                         |
+| `unreachable (…)`                                          | `ssh` could not connect or log in. The text in parentheses is the last line that `ssh` printed.      |
+| `not listed: its pi-subagents has no cross-device command` | The device answered. This package is not installed there, or its version is older than this command. |
+| `not listed: node is not on the PATH of its SSH commands`  | The device answered. Its shell did not find `node` for a command that `ssh` runs without a terminal. |
+| `not listed: …`                                            | Any other failure, with the last line of its error text.                                             |
+
+### Device names
+
+Device names come from `intercom/config.json` under `PI_CODING_AGENT_DIR`
+(normally `~/.pi/agent/intercom/config.json`):
+
+```json
+{
+  "device": "desk",
+  "otherDevices": ["laptop", "phone"]
+}
+```
+
+| Key            | Value                                                                                                                                                      |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `device`       | The name of this device: the SSH alias that the other devices use for it.                                                                                  |
+| `otherDevices` | The other devices: the SSH aliases that this device uses for them. An entry equal to `device` is skipped, so the same list can be written on every device. |
+
+A name consists of letters, digits, `.`, `_` and `-`, and starts with a letter
+or a digit. No device is reachable until both keys are set: a list with `device`
+then answers that no devices are configured and names this file and both keys.
+A session reads the file when it starts or reloads.
+
+### How a device is reached
+
+For each device, the tool runs one `ssh` command. With `all`, the commands run
+at the same time.
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 <device> '<command>'
+```
+
+`<command>` is the same for every device. It runs the first installed copy of
+this package's `dist/pi-intercom/remote-cli.js` under the home directory, and
+exits with status 44 when there is none:
+
+```sh
+test -f ~/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js && exec node ~/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js; test -f ~/.pi/agent/npm/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js && exec node ~/.pi/agent/npm/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js; exit 44
+```
+
+The other device needs:
+
+- SSH login with a key and without a prompt, under the alias in `otherDevices`.
+- This package, installed by Pi from Git or from npm in the default agent
+  directory `~/.pi/agent`.
+- `node` on the `PATH` of a command that `ssh` runs without a terminal.
+
+`remote-cli.js` reads one JSON request from stdin and prints one JSON reply
+line on stdout. The reply is wrapped here for reading:
+
+```json
+{ "version": 1, "command": "list", "origin": "desk" }
+```
+
+```json
+{
+  "version": 1,
+  "now": 1794350610543,
+  "sessions": [
+    {
+      "id": "pi-…",
+      "name": "api-fix",
+      "cwd": "/work/api",
+      "model": "model-b",
+      "status": "idle",
+      "acceptsAsks": true,
+      "pendingAsks": 0,
+      "lastSeen": 1794343410543
+    }
+  ]
+}
+```
+
+A failure is `{ "version": 1, "error": "…" }` with exit status 1.
+
+The command joins the running broker of its device as a main named
+`intercom-list@<origin>`, lists, and leaves. It never starts a broker: without a
+running broker it answers with an empty list. No listener, service or port is
+added on any device.
+
+For each listed main, these fields leave its device, inside the SSH connection:
+ID, name, cwd, model, project ID, status, `acceptsAsks`, `pendingAsks`,
+`lastSeen` and `lastIntercomActivity`.
 
 ## Send, ask, and reply
 

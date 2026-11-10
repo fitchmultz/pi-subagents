@@ -28,6 +28,7 @@ export interface IntercomToolParams {
   readonly action: "list" | "send" | "ask" | "reply" | "pending" | "status" | "last";
   readonly scope?: IntercomSessionScope;
   readonly children?: boolean;
+  readonly device?: string;
   readonly to?: string;
   readonly message?: string;
   readonly attachments?: readonly Attachment[];

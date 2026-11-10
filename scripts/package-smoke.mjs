@@ -117,6 +117,26 @@ function installProduction(/** @type {{ filename?: string, files?: { path: strin
   ];
 }
 
+/** The command other devices run over SSH answers from a runtime-only install without a broker. */
+function verifyRemoteCommand(/** @type {string} */ packageRoot) {
+  const result = spawnSync(
+    process.execPath,
+    [join(packageRoot, "dist/pi-intercom/remote-cli.js")],
+    {
+      cwd: root,
+      env: { ...process.env, PI_INTERCOM_RUNTIME_DIR: join(root, "ic") },
+      encoding: "utf8",
+      input: JSON.stringify({ version: 1, command: "list", origin: "package-smoke" }),
+      timeout: 120_000,
+    },
+  );
+  assert.equal(result.status, 0, `remote-cli.js\n${result.error ?? ""}\n${result.stderr}`);
+  /** @type {unknown} */
+  const reply = JSON.parse(result.stdout);
+  assert.ok(isRecord(reply) && typeof reply.now === "number", result.stdout);
+  assert.deepEqual({ ...reply, now: 0 }, { version: 1, now: 0, sessions: [] });
+}
+
 function verifyDeclarations(/** @type {string} */ consumerDir) {
   const contract = join(consumerDir, "public-client.test-d.ts");
   cpSync(new URL("../test/fixtures/intercom-client-contract.test-d.ts", import.meta.url), contract);
@@ -151,6 +171,7 @@ async function verifyRuntime(
   const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
   verifyManifest(manifest);
   verifyDeclarations(consumerDir);
+  verifyRemoteCommand(packageRoot);
   // compat-host verifies this specifier resolves to the selected native graph.
   const sdk = await import("@earendil-works/pi-coding-agent");
   /** @type {typeof import("../src/agent/host.ts")} */
@@ -273,6 +294,7 @@ try {
     "dist/agent/runner.js",
     "dist/pi-intercom/broker/broker.js",
     "dist/pi-intercom/bridge.js",
+    "dist/pi-intercom/remote-cli.js",
     "src/index.ts",
     "src/agent/index.ts",
     "scripts/prepare.mjs",

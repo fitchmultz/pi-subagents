@@ -41,6 +41,16 @@ or read a foreign group's agents—even with an exact ID. Only mains delegate;
 there is one level. Cwd and agentDir do not define groups. These are coordination
 rules, not a sandbox against other code running as the same OS user.
 
+## Other devices
+
+A main can list the main sessions on the owner's other devices:
+`intercom({action:"list", device:"all"})`, or one device name. The answer has one
+block per device, with rows written `name@device`, and no session of this device.
+A device can also be unreachable, have no Pi session, or lack the command; its
+block says which. This is a list only: `send`, `ask` and `last` reach the
+sessions of this device. A child cannot use `device`. If no devices are
+configured, the tool names the file and the keys to set.
+
 ## Delivery and paging
 
 Default `send` steers at the next tool boundary or wakes an idle peer. Explicit

@@ -43,6 +43,7 @@ import { registeredSession, waitFor } from "../support/native-readiness.ts";
 import {
   assertDefined,
   array,
+  readJson,
   record,
   records,
   strings,
@@ -3906,6 +3907,189 @@ for (const hasUI of [false, true]) {
   );
 }
 
+/** A stand-in `ssh` on PATH: it records each call, then runs the remote command line itself. */
+function standInDevices(t: TestContext) {
+  const fixture = path.join(root, "devices");
+  const bin = path.join(fixture, "bin");
+  const cli = path.join(
+    fixture,
+    "home/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom",
+  );
+  // Short, like every socket directory; never created, so no broker can be running in it.
+  const quietRuntime = path.join(text(process.env.PI_INTERCOM_RUNTIME_DIR), "quiet");
+  for (const directory of [bin, cli, path.join(fixture, "old-home")]) {
+    mkdirSync(directory, { recursive: true });
+  }
+  // The installed command of a device: this checkout's source, at the installed path.
+  writeFileSync(path.join(cli, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    path.join(cli, "remote-cli.js"),
+    `import ${JSON.stringify(pathToFileURL(path.join(repo, "src/pi-intercom/remote-cli.ts")).href)};\n`,
+  );
+  const scripts = {
+    node: `#!/bin/sh\nexec '${process.execPath}' "$@"\n`,
+    // `down` does not answer. `old` has no command installed. `quiet` runs no broker.
+    // `broken` has a socket directory that the command refuses.
+    ssh: `#!/bin/sh
+printf '%s\\n' "$*" >> '${fixture}/calls.log'
+eval "device=\\\${$(($# - 1))}"
+for command; do :; done
+case "$device" in
+  down) echo "ssh: connect to host down port 22: Operation timed out" >&2; exit 255 ;;
+  old) export HOME='${fixture}/old-home' ;;
+  quiet) export HOME='${fixture}/home' PI_INTERCOM_RUNTIME_DIR='${quietRuntime}' ;;
+  broken) export HOME='${fixture}/home' PI_INTERCOM_RUNTIME_DIR=relative ;;
+  *) export HOME='${fixture}/home' ;;
+esac
+tee "${fixture}/request-$device.json" | sh -c "$command" > "${fixture}/reply-$device.json"
+status=$?
+cat "${fixture}/reply-$device.json"
+exit $status
+`,
+  };
+  for (const [name, script] of Object.entries(scripts)) {
+    writeFileSync(path.join(bin, name), script);
+    chmodSync(path.join(bin, name), 0o755);
+  }
+  const previous = text(process.env.PATH);
+  process.env.PATH = `${bin}:${previous}`;
+  t.after(() => {
+    process.env.PATH = previous;
+  });
+  const callsLog = path.join(fixture, "calls.log");
+  return {
+    fixture,
+    quietRuntime,
+    calls: () => (existsSync(callsLog) ? readFileSync(callsLog, "utf8").trim().split("\n") : []),
+  };
+}
+
+nodeTest(
+  "native device list runs one ssh per configured device for a main and prints each outcome",
+  async (t) => {
+    const devices = standInDevices(t);
+    const config = { device: "home", otherDevices: ["peer", "quiet", "down", "old", "broken"] };
+    const main = await makeSession(t, "device-main", { config });
+    const rootSessionId = main.session.sessionManager.getSessionId();
+    const child = await makeSession(t, "device-child", {
+      config,
+      lineage: { rootSessionId, parentSessionId: rootSessionId },
+    });
+    const unset = await makeSession(t, "device-unset");
+    const bridge = new IntercomClient();
+    t.after(() => bridge.disconnect());
+    await bridge.connect(
+      { name: "bridge-bot", cwd: root, model: "remote-bridge" },
+      "remote-fixture-bridge",
+    );
+    const list = async (
+      caller: { readonly session: AgentSession },
+      params: Readonly<Record<string, unknown>>,
+    ) => (await executeIntercom(caller, { action: "list", ...params })).content[0]?.text ?? "";
+
+    // Without `device` the list is the local one, and nothing is run.
+    assert.match(await list(main, {}), /\*\*Other main sessions \(\d+\):\*\*\n/);
+    await assert.rejects(
+      list(child, { device: "all" }),
+      /Only a main session reaches other devices/,
+    );
+    await assert.rejects(list(unset, { device: "all" }), (error: unknown) => {
+      const message = text(property(error, "message"));
+      assert.ok(message.startsWith("No devices are configured."), message);
+      assert.ok(message.includes(path.join(agentDir, "intercom", "config.json")), message);
+      assert.ok(message.includes('"device"') && message.includes('"otherDevices"'), message);
+      return true;
+    });
+    await assert.rejects(list(main, { device: "home" }), /"home" is this device/);
+    await assert.rejects(
+      list(main, { device: "elsewhere" }),
+      /Unknown device "elsewhere". Use "all" or one of: peer, quiet, down, old, broken\./,
+    );
+    assert.deepEqual(devices.calls(), []);
+
+    const blocks = (await list(main, { device: "all" })).split("\n\n");
+    assert.equal(blocks.length, 6, "five devices and the closing line");
+    const [peer = "", quiet, down, old, broken, footer] = blocks;
+    // `peer` answers from this suite's broker: its mains, without the bridge identity, the
+    // child and the listing command itself.
+    const rows = peer.split("\n").slice(1);
+    assert.equal(peer.split("\n")[0], `**Main sessions on peer (${rows.length}):**`);
+    const mainRow = rows.find((row) => row.startsWith("• device-main@peer ("));
+    assertDefined(mainRow);
+    assert.match(
+      mainRow,
+      new RegExp(
+        `^• device-main@peer \\(pi-[0-9a-f]{5,}@peer\\) — Native session cwd: ${path.join(root, "device-main")} \\(\\S+\\) \\[idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:\\d+s ago\\]$`,
+      ),
+    );
+    assert.ok(rows.some((row) => row.startsWith("• device-unset@peer (")));
+    assert.ok(rows.some((row) => row.startsWith("• fixture-host@peer (")));
+    assert.doesNotMatch(peer, /bridge-bot|device-child|intercom-list|remote-/);
+    assert.equal(quiet, "**Main sessions on quiet (0):** no Pi session is connected there.");
+    const listedAt = Date.now();
+    const reply = (device: string) =>
+      record(readJson(path.join(devices.fixture, `reply-${device}.json`)));
+    // No broker runs for `quiet`: the command answers with an empty list and starts none.
+    const { now, ...quietReply } = reply("quiet");
+    assert.deepEqual(quietReply, { version: 1, sessions: [] });
+    assert.ok(numberValue(now) <= listedAt && numberValue(now) > listedAt - 60_000);
+    assert.equal(existsSync(devices.quietRuntime), false, "the command starts no broker");
+    // Only the fields of a row leave the device: no session root, incarnation or guard.
+    const sent = records(reply("peer").sessions).find((session) => session.name === "device-main");
+    assertDefined(sent);
+    assert.deepEqual(Object.keys(sent).toSorted(), [
+      "acceptsAsks",
+      "cwd",
+      "id",
+      "lastIntercomActivity",
+      "lastSeen",
+      "model",
+      "name",
+      "pendingAsks",
+      "projectId",
+      "status",
+    ]);
+    assert.equal(down, "**down:** unreachable (connect to host down port 22: Operation timed out)");
+    assert.equal(
+      old,
+      "**old:** not listed: its pi-subagents has no cross-device command; update pi-subagents there",
+    );
+    // An error that the command reports is shown. It is not read as "no sessions".
+    assert.equal(
+      broken,
+      "**broken:** not listed: PI_INTERCOM_RUNTIME_DIR must be an absolute short Unix socket directory.",
+    );
+    assert.equal(
+      footer,
+      "**Other devices:** list only. send, ask and last reach the sessions of this device.",
+    );
+    const installed = (store: string) =>
+      `~/.pi/agent/${store}/pi-subagents/dist/pi-intercom/remote-cli.js`;
+    const fromGit = installed("git/github.com/fitchmultz");
+    const fromNpm = installed("npm/node_modules/@fitchmultz");
+    const call = (device: string) =>
+      `-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 ${device} test -f ${fromGit} && exec node ${fromGit}; test -f ${fromNpm} && exec node ${fromNpm}; exit 44`;
+    assert.deepEqual(
+      devices.calls().toSorted(),
+      ["broken", "down", "old", "peer", "quiet"].map(call),
+    );
+    assert.equal(
+      readFileSync(path.join(devices.fixture, "request-peer.json"), "utf8"),
+      '{"version":1,"command":"list","origin":"home"}',
+    );
+
+    const one = await list(main, { device: "peer", to: "FIXTURE-HOST" });
+    assert.match(
+      one,
+      new RegExp(
+        `^\\*\\*Main sessions on peer matching "FIXTURE-HOST" \\(1 of ${rows.length}\\):\\*\\*\\n• fixture-host@peer \\([^\\n]+\\n\\n\\*\\*Other devices:`,
+      ),
+    );
+    assert.equal(devices.calls().length, 6, "one alias runs one ssh");
+    assert.deepEqual([main.errors, child.errors, unset.errors], [[], [], []]);
+  },
+);
+
 nodeTest(
   "native public tool rejects invalid delivery combinations and preserves recovery actions",
   async (t) => {
@@ -3946,6 +4130,16 @@ nodeTest(
       {
         params: { action: "status", children: true },
         expected: /'children' is only valid for action='list'/,
+        reason: undefined,
+      },
+      {
+        params: { action: "status", device: "all" },
+        expected: /'device' is only valid for action='list', without 'scope' and 'children'/,
+        reason: undefined,
+      },
+      {
+        params: { action: "list", device: "all", children: true },
+        expected: /'device' is only valid for action='list', without 'scope' and 'children'/,
         reason: undefined,
       },
       {

@@ -10,6 +10,9 @@ export const intercomSchema = Type.Object({
   children: Type.Optional(
     Type.Boolean({ description: "list: print child rows instead of a count" }),
   ),
+  device: Type.Optional(
+    Type.String({ description: "list: mains on another device (alias) or all" }),
+  ),
   to: Type.Optional(Type.String({ description: "Session name or ID" })),
   message: Type.Optional(Type.String()),
   attachments: Type.Optional(

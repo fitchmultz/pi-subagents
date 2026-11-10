@@ -21,6 +21,10 @@ export interface IntercomConfig {
   readonly sendTimeoutMs: number;
   /** Session list response timeout, in milliseconds (default: 5000). */
   readonly listTimeoutMs: number;
+  /** This device's SSH alias, as the owner's other devices know it. */
+  readonly device?: string | undefined;
+  /** SSH aliases of the owner's other devices. Unset: no other device is reachable. */
+  readonly otherDevices: readonly string[];
 }
 const defaults: IntercomConfig = {
   brokerCommand: process.execPath,
@@ -30,6 +34,7 @@ const defaults: IntercomConfig = {
   askTimeoutMs: 2 * 60 * 1000,
   sendTimeoutMs: 8000,
   listTimeoutMs: 5000,
+  otherDevices: [],
 };
 function configuredString(
   parsed: Readonly<Record<string, unknown>>,
@@ -94,8 +99,40 @@ function configuredTimeout(
   }
   return value;
 }
+/** A device name goes to `ssh` as the destination: it must not read as an option or a path. */
+export function isDeviceAlias(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9._-]*$/i.test(value);
+}
+function configuredDevice(parsed: Readonly<Record<string, unknown>>): string | undefined {
+  if (!Object.hasOwn(parsed, "device")) {
+    return defaults.device;
+  }
+  if (!isDeviceAlias(parsed.device)) {
+    throw new Error('"device" must be an SSH alias of letters, digits, ".", "_" and "-"');
+  }
+  return parsed.device;
+}
+function configuredOtherDevices(
+  parsed: Readonly<Record<string, unknown>>,
+  self: string | undefined,
+): readonly string[] {
+  if (!Object.hasOwn(parsed, "otherDevices")) {
+    return defaults.otherDevices;
+  }
+  const { otherDevices } = parsed;
+  if (!isUnknownArray(otherDevices) || !otherDevices.every(isDeviceAlias)) {
+    throw new Error(
+      '"otherDevices" must be an array of SSH aliases of letters, digits, ".", "_" and "-"',
+    );
+  }
+  // One list can be shared by every device: a device skips its own alias.
+  return otherDevices.filter((alias) => alias !== self);
+}
+export function intercomConfigPath(): string {
+  return join(getPiAgentDir(), "intercom", "config.json");
+}
 export function loadConfig(report: (message: string) => void = console.error): IntercomConfig {
-  const configPath = join(getPiAgentDir(), "intercom", "config.json");
+  const configPath = intercomConfigPath();
   if (!existsSync(configPath)) {
     return { ...defaults };
   }
@@ -104,6 +141,7 @@ export function loadConfig(report: (message: string) => void = console.error): I
     if (!isRecord(parsed)) {
       throw new Error("Config must be a JSON object");
     }
+    const device = configuredDevice(parsed);
     return {
       brokerCommand: brokerCommand(parsed),
       brokerArgs: configuredArgs(parsed),
@@ -113,6 +151,8 @@ export function loadConfig(report: (message: string) => void = console.error): I
       askTimeoutMs: configuredTimeout(parsed, "askTimeoutMs"),
       sendTimeoutMs: configuredTimeout(parsed, "sendTimeoutMs"),
       listTimeoutMs: configuredTimeout(parsed, "listTimeoutMs"),
+      device,
+      otherDevices: configuredOtherDevices(parsed, device),
     };
   } catch (error) {
     report(

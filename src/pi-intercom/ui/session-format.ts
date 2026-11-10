@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SessionInfo } from "../types.ts";
 import type { IntercomSessionScope } from "../runtime-types.ts";
+import type { DeviceListing } from "../devices.ts";
 import { filterProjectSessions, formatSessionTarget } from "../session-targets.ts";
 const PACKAGE_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 function shellQuote(value: string): string {
@@ -84,33 +85,37 @@ function healthTags(session: SessionInfo, now: number): readonly string[] {
   return tags;
 }
 interface RowOptions {
-  readonly currentCwd: string;
+  /** The caller's cwd. Absent for a session on another device: paths there are not comparable. */
+  readonly currentCwd?: string;
   readonly self: boolean;
   readonly duplicates: ReadonlySet<string>;
   readonly allSessions: readonly SessionInfo[];
   readonly now: number;
+  /** The alias of the other device that the session runs on: its targets end in `@device`. */
+  readonly device?: string;
+}
+function location(session: SessionInfo, options: RowOptions): string | undefined {
+  if (options.self) {
+    return "self";
+  }
+  return session.cwd === options.currentCwd ? "same native session cwd" : undefined;
 }
 function row(session: SessionInfo, options: RowOptions): string {
+  const at = options.device === undefined ? "" : `@${options.device}`;
   const name = session.name === undefined || session.name === "" ? "Unnamed session" : session.name;
   const duplicate =
     session.name !== undefined &&
     session.name !== "" &&
     options.duplicates.has(session.name.toLowerCase());
-  let location: string | undefined;
-  if (options.self) {
-    location = "self";
-  } else if (session.cwd === options.currentCwd) {
-    location = "same native session cwd";
-  }
+  const target = `${formatSessionTarget(session, options.allSessions)}${at}`;
   const tags = [
-    location,
+    location(session, options),
     session.status,
-    duplicate ? `target:${formatSessionTarget(session, options.allSessions)}` : undefined,
+    duplicate ? `target:${target}` : undefined,
     ...healthTags(session, options.now),
   ].filter((tag): tag is string => tag !== undefined && tag !== "");
-  const target = formatSessionTarget(session, options.allSessions);
   const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
-  return `• ${name} (${target}) — Native session cwd: ${session.cwd} (${session.model})${suffix}${options.self ? `\n  ↳ ${SELF_HINT}` : ""}`;
+  return `• ${name}${at} (${target}) — Native session cwd: ${session.cwd} (${session.model})${suffix}${options.self ? `\n  ↳ ${SELF_HINT}` : ""}`;
 }
 export function sessionsForScope(
   sessions: readonly SessionInfo[],
@@ -281,4 +286,35 @@ export function formatSessionListSections(
     .filter((lines) => lines.length > 0)
     .map((lines) => lines.join("\n"))
     .join("\n\n");
+}
+/** A row prints `name@device` and `id@device`, so a filter copied from a row can end in `@device`. */
+function withoutDevice(query: string, device: string): string {
+  const suffix = `@${device}`.toLowerCase();
+  return query.toLowerCase().endsWith(suffix) ? query.slice(0, -suffix.length) : query;
+}
+function deviceBlock(listing: DeviceListing, query: string): string {
+  if ("failure" in listing) {
+    return `**${listing.device}:** ${listing.failure}`;
+  }
+  const { device, sessions, now } = listing;
+  if (sessions.length === 0) {
+    return `**Main sessions on ${device} (0):** no Pi session is connected there.`;
+  }
+  const options = { self: false, duplicates: duplicateNames(sessions), allSessions: sessions, now };
+  const peers = matching(byProjectThenName(sessions), withoutDevice(query, device));
+  const count =
+    query === ""
+      ? `(${sessions.length})`
+      : `matching ${JSON.stringify(query)} (${peers.length} of ${sessions.length})`;
+  return [
+    `**Main sessions on ${device} ${count}:**`,
+    ...peers.map((peer) => row(peer, { ...options, device })),
+  ].join("\n");
+}
+/** One block per other device: its mains as `name@device`, with ages on that device's clock. */
+export function formatDeviceListings(listings: readonly DeviceListing[], query = ""): string {
+  return [
+    ...listings.map((listing) => deviceBlock(listing, query.trim())),
+    "**Other devices:** list only. send, ask and last reach the sessions of this device.",
+  ].join("\n\n");
 }
