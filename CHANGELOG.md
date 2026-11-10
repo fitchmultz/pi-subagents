@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- A child run now stays open while the child's own background work is pending, on a fitchmultz/pi fork whose sessions list that work (`AgentSession.getBackgroundWork()`). Children get the `background_command` tool there. A child can start a job or a codemode background script, end its turn and be woken by the result inside one run: the parent gets one completion, with the text the child wrote after the wake, instead of the interim text. `agent_runs list` marks a waiting run with `[waiting on "<description>"]`, `inspect` lists every item, `continue` on a waiting run guides it inside that run, and `stop` cancels the work before it aborts the child. A job that never ends keeps its run running until the job is cancelled or the run is stopped. Official Pi is unchanged: no `background_command` in children, and a run ends at the child's first idle.
+
 ## 0.52.30 - 2026-11-10
 
 <!-- npm-release:unreleased:start -->

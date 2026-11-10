@@ -48,14 +48,19 @@ export type WorkingState = [NativeWorkingState] extends [never]
   ? LocalWorkingState
   : NativeWorkingState;
 // Working sessions stay optional even when the selected graph declares them, so both hosts
-// keep one checked path. The native resolver is optional until official Pi exports it.
+// keep one checked path. The native resolver and the background command extension are
+// optional until official Pi exports them.
 type HostSDK = Omit<
   typeof SDK,
-  "readWorkingSession" | "writeWorkingSession" | "openWorkingSession"
+  | "readWorkingSession"
+  | "writeWorkingSession"
+  | "openWorkingSession"
+  | "createBackgroundCommandExtension"
 > & {
   readWorkingSession?: (file: string) => WorkingState;
   writeWorkingSession?: (file: string, state: WorkingState) => void;
   openWorkingSession?: (state: WorkingState) => SDK.SessionManager;
+  createBackgroundCommandExtension?: (options: { hostWaits: boolean }) => SDK.ExtensionFactory;
   resolveModelReference?: (
     request: { text: string; provider: string; thinkingSuffix: "strict"; fuzzy: false },
     models: readonly Model<Api>[],

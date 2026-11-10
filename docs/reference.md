@@ -81,7 +81,9 @@ All actions except `list` require `id`. Use IDs returned by the tools rather tha
 infer them from display names. `list` returns at most 50 runs per page: running
 runs first, then newest first. The model reads one line per run (ID, status, end
 time, model, name) and the `offset` of the next page. A run with a recorded wake
-failure is marked on its line. The order can change between pages when a run
+failure is marked on its line. A run stays `running` while its child waits on its
+own background work, and its line states what it waits on; see
+[Background work of a child](#background-work-of-a-child). The order can change between pages when a run
 starts or settles. The tool details keep the complete metadata summaries with
 `nextOffset`, and a codemode script receives those same summaries as a JSON
 string. `inspect` states every field of one run, including its cwd, lineage,
@@ -148,6 +150,41 @@ Resume the same parent and use `continue` with a new prompt to resume a saved
 child conversation. This does not replay interrupted tool calls or reconstruct
 an execution checkpoint: the child inspects the current work state. Saved
 journals and results are retained whether the child was active, stopped or done.
+
+### Background work of a child
+
+On a fitchmultz/pi fork whose sessions list their background work
+(`AgentSession.getBackgroundWork()`), a child has the `background_command` tool,
+and its run stays `running` while the child's own background work is pending:
+`background_command` jobs and codemode background scripts, which message the
+child when they end. A child can start such work, end its turn and be woken by
+the result, all inside one run. The run ends when the child is idle and lists no
+such work. The completion notice and the saved result then carry the text the
+child wrote after its last wake, and the run's usage covers every turn up to it.
+The actor checks once a second, so the result can follow the child's last turn by
+up to a second.
+
+While a run waits, `list` appends `[waiting on "<description>"]` to its line,
+with the first item and `+N more`, and `inspect` states since when it waits and
+every item with its ID. A job's description is its command preview. `continue`
+on a waiting run starts the child's next turn inside that run; it creates no
+successor, and the run then waits again. A waiting run is a run, so its child
+does not park.
+
+A job that never ends, such as a server or a watcher, keeps its run `running`
+until the child cancels the job or the parent stops the run. `stop` requests
+cancellation of every listed item and then aborts the child; the result is
+`stopped`. Parent exit stops children the same way. A job's cancellation is a
+request to its detached worker, which stops the shell's process tree whether or
+not the actor is still alive. An actor that is killed before it handles the stop
+leaves its jobs to end or to reach their own `timeout`; their logs stay under
+the child's session directory. A new actor for that child within about ten
+seconds of the kill does not list those jobs yet, so its run can end before they
+do.
+
+Official Pi has neither API. Its children have no `background_command`, and a
+run ends at the child's first idle: a child that ends its turn with a codemode
+background script pending completes with the text it wrote before the result.
 
 ### Evidence levels
 

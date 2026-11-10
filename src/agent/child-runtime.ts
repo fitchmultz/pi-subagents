@@ -9,6 +9,7 @@ import type { loadSDK, WorkingState } from "./host.ts";
 import { shellCommand } from "./process.ts";
 import { localCwdOwner } from "./cwd.ts";
 import type { ToolEvent } from "./observation-state.ts";
+import { backgroundCommands } from "./background-work.ts";
 
 function guard(pi: ExtensionAPI, directory: string, token: string): void {
   pi.on("tool_call", (event) => {
@@ -50,6 +51,7 @@ export function childRuntime(
     const settingsManager = sdk.SettingsManager.create(launch.cwd, launch.agentDir, {
       projectTrusted: launch.trusted,
     });
+    const jobs = backgroundCommands(sdk);
     const services = await sdk.createAgentSessionServices({
       ...restore,
       cwd: launch.cwd,
@@ -65,6 +67,7 @@ export function childRuntime(
           },
           { name: "tool_search", builtin: true, factory: sdk.createToolSearchExtension() },
           { name: "mcp", builtin: true, factory: sdk.createMcpExtension() },
+          ...(jobs ? [{ name: "background-command", builtin: true, factory: jobs }] : []),
           (pi) => {
             guard(pi, hooks.directory, hooks.token);
             pi.on("session_start", (_event, ctx) => {
