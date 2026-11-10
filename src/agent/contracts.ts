@@ -129,6 +129,12 @@ export const commandSchema = Type.Union([
 ]);
 export type Command = Static<typeof commandSchema>;
 export const successorSchema = Type.Object({ id: Type.String() });
+/** The unfinished background work an idle child session reported; its run stays open for it. */
+export const waitingSchema = Type.Object({
+  since: Type.Number(),
+  work: Type.Array(Type.Object({ id: Type.String(), description: Type.String() })),
+});
+export type Waiting = Static<typeof waitingSchema>;
 /** Authority to restore exact working state, valid only after the named actor has exited. */
 /** Exact parked authority: one exited generation's state bytes for this session and leaf. */
 export const parkedSchema = Type.Object({

@@ -48,6 +48,8 @@ invocation exits after its final turn and stops any remaining children.
   line per run, running first, then newest first.
 - `inspect` reads a run by ID and states every field of it; follow returned
   offsets for complete output.
+- A run stays `running` while its child waits on its own background work; `list`
+  and `inspect` show what it waits on, and `stop` cancels that work.
 - `continue` takes a complete follow-up `prompt` and keeps the saved child chat.
   Active work receives guidance; completed work gets an immutable successor.
   Both keep the child's saved effort, independent of later parent changes.

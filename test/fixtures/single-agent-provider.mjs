@@ -302,6 +302,7 @@ export default async function fixture(
         thinking: options?.reasoning,
         nativeThinking: pi.getThinkingLevel(),
         model: model.id,
+        tools: pi.getAllTools().map((tool) => tool.name),
       },
       options?.signal,
     );
@@ -414,12 +415,51 @@ export default async function fixture(
       result ? {} : { stopReason: "toolUse" },
     );
   };
+  // Starts work that ends only when the test releases it, then ends the turn at once.
+  const backgroundAnswer = (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+    /** @type {string} */ prompt,
+  ) => {
+    if (prompt === "BACKGROUND_GUIDED") {
+      return fauxAssistantMessage(`CHILD_LITERAL_RESULT:${prompt}`);
+    }
+    if (
+      context.messages.some(
+        (message) => message.role === "toolResult" && message.toolCallId === "background-start",
+      )
+    ) {
+      return fauxAssistantMessage("BACKGROUND_INTERIM");
+    }
+    const command = "while [ ! -e ../release-job ]; do sleep 0.05; done; echo JOB_DONE";
+    return fauxAssistantMessage(
+      [
+        prompt === "BACKGROUND_SCRIPT"
+          ? {
+              type: "toolCall",
+              id: "background-start",
+              name: "codemode",
+              arguments: {
+                code: `// @options: {"background": true}\nawait tools.bash({ command: ${JSON.stringify(command)} });\nreturn "SCRIPT_DONE";`,
+              },
+            }
+          : {
+              type: "toolCall",
+              id: "background-start",
+              name: "background_command",
+              arguments: { action: "start", command },
+            },
+      ],
+      { stopReason: "toolUse" },
+    );
+  };
   const answer = (
     /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
     /** @type {string | undefined} */ prompt,
   ) => {
-    if (prompt !== undefined && prompt.startsWith("CWD_")) {
-      return cwdAnswer(context, prompt);
+    if (prompt !== undefined && /^(CWD|BACKGROUND)_/.test(prompt)) {
+      return prompt.startsWith("CWD_")
+        ? cwdAnswer(context, prompt)
+        : backgroundAnswer(context, prompt);
     }
     if (prompt === "CUSTOM_BASH_LITERAL") {
       return customBashAnswer(context);

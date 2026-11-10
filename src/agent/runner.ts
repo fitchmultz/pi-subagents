@@ -1,47 +1,26 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   commandSchema,
   parkedSchema,
   type Command,
   type Launch,
   type Result,
-  type AccountingState,
 } from "./contracts.ts";
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, shells, signalProcess } from "./process.ts";
 import { ParentCheck } from "./parent-check.ts";
 import { errorText, loadSDK } from "./host.ts";
 import { Parking, type ParkOutcome, type Runtime } from "./parking.ts";
-import { accountingFields, UsageIndex } from "./usage.ts";
+import { UsageIndex } from "./usage.ts";
 import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
+import { BackgroundWait, endSession, reporting } from "./background-work.ts";
+import { saveResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 
-function completionStatus(
-  stopping: boolean,
-  message: AssistantMessage | undefined,
-  error: string | undefined,
-): Result["status"] {
-  if (stopping || message?.stopReason === "aborted") {
-    return "stopped";
-  }
-  if (error !== undefined || !message || message.stopReason === "error") {
-    return "failed";
-  }
-  return "completed";
-}
-/** The recorded failure: the launch error, the model's error, or the missing terminal message. */
-const failureReason = (
-  error: string | undefined,
-  message: AssistantMessage | undefined,
-): string | undefined =>
-  error ??
-  message?.errorMessage ??
-  (message ? undefined : "Native run produced no terminal assistant message.");
 class Actor {
   private work:
     | { readonly kind: "idle" }
@@ -61,9 +40,12 @@ class Actor {
   private readonly started = new Set<string>();
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
   private readonly validated = new Map<string, { identity: string; id: string }>();
-  // Every run of this conversation shares one native journal; later runs read only its suffix.
   private readonly accounting = new UsageIndex();
   private session?: AgentSession;
+  // Set while the current run stays open for its session's own background work.
+  private wait?: BackgroundWait | undefined;
+  // Stop's cancellation requests and abort; they need the live session.
+  private ended?: Promise<void> | undefined;
   private observation?: ActorObservation;
   private context?: { pi: ExtensionAPI; ctx: ExtensionContext };
   private readonly base: string;
@@ -77,66 +59,6 @@ class Actor {
   private get dir(): string {
     return runDirectory(this.base, this.initial.rootId);
   }
-  private response(baseline: ReadonlySet<string>) {
-    const session = this.session;
-    if (!session) {
-      throw new Error("Native child session is not ready.");
-    }
-    const terminal = session.sessionManager
-      .getBranch()
-      .findLast(
-        (entry) =>
-          !baseline.has(entry.id) && entry.type === "message" && entry.message.role === "assistant",
-      );
-    if (terminal?.type !== "message" || terminal.message.role !== "assistant") {
-      return;
-    }
-    return { id: terminal.id, message: terminal.message };
-  }
-  private saveResult(launch: Launch, baseline: ReadonlySet<string>, error?: string): void {
-    const terminal = this.response(baseline);
-    const message = terminal?.message;
-    const accounting = this.usage(launch, baseline, terminal?.id);
-    const output = this.output(message);
-    const failure = failureReason(error, message);
-    const result: Result = {
-      id: launch.id,
-      owner: launch.owner,
-      status: completionStatus(this.stopping, message, error),
-      endedAt: Date.now(),
-      ...accountingFields(accounting),
-      ...(failure !== undefined ? { error: failure } : {}),
-    };
-    fs.writeFileSync(path.join(runDirectory(this.base, launch.id), "output.txt"), output, {
-      mode: 0o600,
-    });
-    write(path.join(runDirectory(this.base, launch.id), "result.json"), result);
-  }
-  private usage(launch: Launch, baseline: ReadonlySet<string>, terminal?: string): AccountingState {
-    try {
-      return {
-        kind: "verified",
-        contributions: this.accounting.read(launch, baseline, terminal),
-        terminalEntryId: terminal,
-      };
-    } catch (error) {
-      return terminal === undefined
-        ? { kind: "unavailable", error: errorText(error), terminalEntryId: undefined }
-        : {
-            kind: "pending",
-            error: errorText(error),
-            pending: { terminalCandidate: terminal, baseline: [...baseline] },
-          };
-    }
-  }
-  private output(message: AssistantMessage | undefined): string {
-    return (
-      message?.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("\n") ?? ""
-    );
-  }
   private readonly stop = (): void => {
     if (this.stopping) {
       return;
@@ -148,9 +70,12 @@ class Actor {
       at: Date.now(),
       id: this.work.kind === "running" ? this.work.launch.id : undefined,
     });
-    this.session?.abort().catch((error: unknown) => {
-      this.errors.push(errorText(error));
-    });
+    this.wait?.end();
+    this.ended =
+      this.session &&
+      endSession(this.session, (error) => {
+        this.errors.push(errorText(error));
+      });
     this.stopShells("SIGTERM");
     // Parent death leaves no parent-side escalation timer to stop an uncooperative tool.
     this.stopDeadline = setTimeout(() => {
@@ -187,6 +112,10 @@ class Actor {
     session: AgentSession,
     baseline: ReadonlySet<string>,
   ): Promise<void> {
+    const save = (error?: string): void => {
+      const { accounting, stopping } = this;
+      saveResult(this.base, launch, { session, baseline, accounting, stopping, error });
+    };
     try {
       if (
         launch.provider !== this.initial.provider ||
@@ -196,11 +125,22 @@ class Actor {
         throw new Error("Continuation model snapshot changed unexpectedly.");
       }
       await session.prompt(launch.prompt, { expandPromptTemplates: false });
-      await session.waitForIdle();
-      this.saveResult(launch, baseline);
+      if (!this.stopping && reporting(session)) {
+        // The child's own background work can still wake it: its result is not final yet.
+        // No await since the prompt: guidance for the now idle session always finds the wait.
+        this.wait = new BackgroundWait(
+          session,
+          path.join(runDirectory(this.base, launch.id), "waiting.json"),
+        );
+        await this.wait.settled();
+      } else {
+        await session.waitForIdle();
+      }
+      save();
     } catch (error) {
-      this.saveResult(launch, baseline, errorText(error));
+      save(errorText(error));
     } finally {
+      this.wait = undefined;
       this.work = { kind: "idle" };
       this.observation?.working(false);
     }
@@ -264,7 +204,12 @@ class Actor {
       case "stop":
         return command.actorToken !== this.token;
       case "steer":
-        return this.work.kind !== "running" || session.isIdle || this.work.launch.id !== launch.id;
+        // An idle session takes guidance only while its run waits on background work.
+        return (
+          this.work.kind !== "running" ||
+          this.work.launch.id !== launch.id ||
+          (session.isIdle && this.wait === undefined)
+        );
       case "run":
         return false;
     }
@@ -278,6 +223,10 @@ class Actor {
         this.run(launch);
         return;
       case "steer":
+        if (session.isIdle && this.wait) {
+          this.wait.guide(command.prompt);
+          return;
+        }
         // Synchronous native queue admission cannot turn into an idle prompt after an await.
         session.agent.steer({
           role: "user",
@@ -490,6 +439,9 @@ class Actor {
     }
   }
   private async finish(runtime: Runtime | undefined): Promise<void> {
+    // Stop's cancellations need the session's job monitor, which disposal ends. The signal
+    // handlers stay until then: the stopping parent's SIGTERM must not end this process first.
+    await this.ended;
     process.off("SIGTERM", this.stop);
     process.off("SIGINT", this.stop);
     const observation: ObservationStats | undefined = this.observation?.close();

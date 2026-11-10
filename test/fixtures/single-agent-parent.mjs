@@ -56,6 +56,8 @@ fs.writeFileSync(
     defaultProjectTrust: "always",
     retry: { enabled: false },
     compaction: { enabled: false },
+    // The host registers codemode inactive; this is how a user's children get it.
+    ...(phase === "background-script" ? { defaultTools: ["+codemode"] } : {}),
   }),
 );
 if (phase.startsWith("command-polling")) {
@@ -564,6 +566,7 @@ const RequestRecordSchema = Type.Object({
   parent: Type.Optional(Type.String()),
   cwd: Type.Optional(Type.String()),
   context: Type.Optional(Type.Unknown()),
+  tools: Type.Optional(Type.Array(Type.String())),
 });
 /**
  * @param {unknown} value
@@ -676,6 +679,12 @@ const RunResultDetailsSchema = Type.Object({
   ),
   context: Type.Optional(Type.Unknown()),
   guidance: Type.Optional(Type.Array(Type.Object({ state: Type.Optional(Type.String()) }))),
+  waiting: Type.Optional(
+    Type.Object({
+      since: Type.Number(),
+      work: Type.Array(Type.Object({ id: Type.String(), description: Type.String() })),
+    }),
+  ),
 });
 /** The validated agent_runs result details of a fixture tool result message. */
 const runDetails = (/** @type {{ details?: unknown }} */ receipt) => {
@@ -1126,6 +1135,240 @@ async function failedSdkWake(/** @type {string} */ parked, /** @type {string} */
     intercomTexts(launch.sessionFile).filter((text) => text.startsWith("wake-sdk-")),
     ["wake-sdk-original", "wake-sdk-retry"],
   );
+}
+/** A text entry of a child's native journal. */
+const ChildEntrySchema = Type.Object({
+  type: Type.Optional(Type.String()),
+  id: Type.Optional(Type.String()),
+  message: Type.Optional(
+    Type.Object({ role: Type.Optional(Type.String()), content: Type.Optional(Type.Unknown()) }),
+  ),
+});
+/** The published assistant entries of a run's native journal, with their text. */
+const childAssistants = (/** @type {string} */ id) =>
+  fs
+    .readFileSync(
+      readValidated(LaunchSchema, path.join(runDir(id), "launch.json")).sessionFile,
+      "utf8",
+    )
+    .split("\n")
+    .slice(0, -1)
+    .map((line) => parseValidated(ChildEntrySchema, line))
+    .filter((entry) => entry.type === "message" && entry.message?.role === "assistant")
+    .map((entry) => ({
+      id: entry.id,
+      text: (isUnknownArray(entry.message?.content) ? entry.message.content : [])
+        .map((block) => (isRecord(block) && typeof block.text === "string" ? block.text : ""))
+        .join(""),
+    }));
+const replyText = (/** @type {{ content: { type?: string, text?: string }[] }} */ reply) =>
+  reply.content.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("\n");
+// The fixture child holds its background work on this file; its shell runs in the project cwd.
+const backgroundCommand = "while [ ! -e ../release-job ]; do sleep 0.05; done; echo JOB_DONE";
+/** Official Pi: the child has no background_command, and its run ends at the first idle. */
+async function withoutBackgroundWork() {
+  const model = "single-agent-fixture/literal-model";
+  const done = await settled(
+    await call("delegate", { prompt: "BACKGROUND_JOB", model }, "background-launch"),
+  );
+  assert.equal(runDetails(done).status, "completed");
+  assert.equal(runDetails(done).output?.text ?? "", "BACKGROUND_INTERIM");
+  assert.equal(runDetails(done).waiting, undefined);
+  assert.equal(requestFor("BACKGROUND_JOB").tools?.includes("background_command"), false);
+  assert.equal(requests().length, 2, "nothing woke the child after its turn");
+}
+/** A waiting run as its parent sees it: the list row, the inspection and the absent result. */
+function backgroundRun(/** @type {string} */ id) {
+  const model = "single-agent-fixture/literal-model";
+  const signal = new AbortController().signal;
+  const inspect = () => runsTool().execute("background-inspect", { action: "inspect", id }, signal);
+  const row = async () =>
+    replyText(await runsTool().execute("background-list", { action: "list" }, signal))
+      .split("\n")
+      .find((line) => line.startsWith(`${id} `)) ?? "";
+  const escaped = (/** @type {string} */ text) => text.replaceAll(/[()[\]$.*|\\]/g, "\\$&");
+  const running = escaped(`${id} running - ${model} (unnamed) [waiting on `);
+  const waitingRow =
+    phase === "background-script"
+      ? new RegExp(`^${running}"[^"\\n]+"\\]$`)
+      : new RegExp(`^${running}${escaped(`${JSON.stringify(backgroundCommand)}]`)}$`);
+  return {
+    inspect,
+    /** The run's recorded wait, once the actor has published one newer than `after`. */
+    waiting: async (/** @type {number} */ after, /** @type {string} */ why) => {
+      for (const deadline = Date.now() + 15000; ;) {
+        const details = runDetails(await inspect());
+        if (details.waiting !== undefined && details.waiting.since > after) {
+          assert.match(await row(), waitingRow);
+          return details.waiting;
+        }
+        assert.ok(Date.now() < deadline, why);
+        await delay(20);
+      }
+    },
+    pending: () => {
+      assert.equal(fs.existsSync(path.join(runDir(id), "result.json")), false);
+      assert.equal(notices().length, 0);
+    },
+  };
+}
+/** Guidance for a waiting run is consumed inside that run, which then waits again. */
+async function guideBackgroundWork(
+  /** @type {string} */ id,
+  /** @type {ReturnType<typeof backgroundRun>} */ run,
+  /** @type {number} */ since,
+) {
+  const guided = await call(
+    "agent_runs",
+    { action: "continue", id, prompt: "BACKGROUND_GUIDED" },
+    "background-guidance",
+  );
+  assert.equal(runDetails(guided).receipt, "guidance");
+  await run.waiting(since, "the guided turn ends inside the run, which waits again");
+  run.pending();
+  assert.equal(requests().at(-1)?.prompt, "BACKGROUND_GUIDED");
+  assert.equal(
+    readValidated(
+      AdmissionSchema,
+      path.join(runDir(id), "admissions", `${runDetails(guided).command ?? ""}.json`),
+    ).state,
+    "accepted",
+  );
+  assert.equal(fs.existsSync(path.join(runDir(id), "successor.json")), false);
+}
+/** The whole run, wake included, is one result: its text and usage end at the last entry. */
+async function finishedBackgroundWork(
+  /** @type {string} */ id,
+  /** @type {RegExp} */ final,
+  /** @type {string[]} */ earlier,
+) {
+  const done = runDetails(await settled(id));
+  const output = done.output?.text ?? "";
+  assert.equal(done.status, "completed");
+  assert.match(output, final);
+  assert.equal(done.waiting, undefined);
+  assert.equal(fs.existsSync(path.join(runDir(id), "waiting.json")), false);
+  assert.equal(notices().length, 1, "one completion for the run");
+  assert.ok(completionNotice(id).startsWith(`Agent run ${id}: completed. \n${output}`));
+  const published = childAssistants(id);
+  assert.deepEqual(
+    published.map((entry) => entry.text),
+    [...earlier, output],
+  );
+  assert.equal(done.result?.terminalEntryId, published.at(-1)?.id);
+  assert.deepEqual(
+    done.result?.contributions?.map((entry) => entry.id),
+    published.map((entry) => `${done.sessionId}:${entry.id ?? ""}`),
+  );
+}
+/**
+ * A child that ends its turn while its own job or background script is pending keeps one run
+ * open: the parent gets one completion, with the text the child wrote after the wake.
+ */
+async function backgroundWork() {
+  const model = "single-agent-fixture/literal-model";
+  const prompt = phase === "background-script" ? "BACKGROUND_SCRIPT" : "BACKGROUND_JOB";
+  const id = runDetails(await call("delegate", { prompt, model }, "background-launch")).id;
+  const run = backgroundRun(id);
+  const first = await run.waiting(0, "the idle child's run waits on its background work");
+  run.pending();
+  assert.equal(first.work.length, 1);
+  const [item] = first.work;
+  assert.ok(item !== undefined);
+  assert.equal(requestFor(prompt).tools?.includes("background_command"), true);
+  assert.deepEqual(
+    replyText(await run.inspect())
+      .split("\n")
+      .slice(4, 6),
+    [
+      `Waiting since ${new Date(first.since).toISOString().slice(0, 19)}Z on the child's own background work; the run ends when it does, and stop cancels it:`,
+      `  ${item.id}: ${JSON.stringify(item.description)}`,
+    ],
+  );
+  if (phase === "background-stop") {
+    await stopBackgroundWork(id, item.id);
+    return;
+  }
+  const guided = phase === "background-guidance";
+  if (guided) {
+    await guideBackgroundWork(id, run, first.since);
+  }
+  fs.writeFileSync(path.join(root, "release-job"), "");
+  await finishedBackgroundWork(
+    id,
+    phase === "background-script"
+      ? /^CHILD_LITERAL_RESULT:Background run \S+ completed\.\n[^]*SCRIPT_DONE/
+      : new RegExp(
+          `^CHILD_LITERAL_RESULT:Background commands finished:\\n\\{"id":"${item.id}","status":"succeeded","exitCode":0,`,
+        ),
+    ["", "BACKGROUND_INTERIM", ...(guided ? ["CHILD_LITERAL_RESULT:BACKGROUND_GUIDED"] : [])],
+  );
+}
+/** Stop cancels the child's job before it aborts the session; the run's result is `stopped`. */
+async function stopBackgroundWork(/** @type {string} */ id, /** @type {string} */ job) {
+  const launch = readValidated(LaunchSchema, path.join(runDir(id), "launch.json"));
+  const state = () =>
+    readValidated(
+      Type.Object({ status: Type.String() }),
+      path.join(
+        path.dirname(launch.sessionFile),
+        "background-commands",
+        launch.sessionId,
+        job,
+        "state.json",
+      ),
+    ).status;
+  assert.equal(state(), "running");
+  const actor = readActorIdentity(runDir(id));
+  const exited = () => {
+    try {
+      process.kill(actor.pid, 0);
+      return false;
+    } catch (error) {
+      return hasErrorCode(error, "ESRCH");
+    }
+  };
+  const result = path.join(runDir(id), "result.json");
+  const started = performance.now();
+  /** @type {Record<string, number>} */
+  const elapsed = {};
+  const observe = () => {
+    for (const [name, seen] of [
+      ["result", fs.existsSync(result)],
+      ["jobCancelled", state() === "cancelled"],
+      ["actorExit", exited()],
+    ]) {
+      if (seen === true && elapsed[String(name)] === undefined) {
+        elapsed[String(name)] = Math.round(performance.now() - started);
+      }
+    }
+    return Object.keys(elapsed).length === 3;
+  };
+  const watch = setInterval(observe, 5);
+  try {
+    const stop = await call("agent_runs", { action: "stop", id }, "background-stop");
+    assert.equal(runDetails(stop).stopAcknowledged, false);
+    const stopped = runDetails(await settled(id, "Stop publishes the stopped result"));
+    assert.equal(stopped.result?.status, "stopped");
+    assert.equal(stopped.waiting, undefined);
+    assert.match(completionNotice(id), /: stopped\./);
+    await until(observe, "Stop cancels the child's job and its actor exits");
+  } finally {
+    clearInterval(watch);
+  }
+  assert.equal(state(), "cancelled");
+  assert.equal(fs.existsSync(path.join(root, "release-job")), false, "the job was never released");
+  assert.equal(notices().length, 1);
+  const exitFile = path.join(runDir(id), `exit-${actor.token}.json`);
+  await until(() => fs.existsSync(exitFile), "the parent records the actor's exit");
+  const exit = readValidated(
+    Type.Object({
+      code: Type.Union([Type.Integer(), Type.Null()]),
+      signal: Type.Union([Type.String(), Type.Null()]),
+    }),
+    exitFile,
+  );
+  console.log(JSON.stringify({ stopElapsedMs: elapsed, actorExit: exit }));
 }
 let runId = seed?.runId;
 /** @type {Promise<void> | undefined} */
@@ -5466,6 +5709,18 @@ try {
       assert.deepEqual(fs.readFileSync(path.join(runDir(id), name)), frozen[index]),
     );
     globalThis.setTimeout = originalTimeout;
+  } else if (phase.startsWith("background-")) {
+    // The selected SDK states the capability: official Pi has neither API.
+    const hostWaits =
+      typeof sdk.createBackgroundCommandExtension === "function" &&
+      typeof Reflect.get(sdk.AgentSession.prototype, "getBackgroundWork") === "function";
+    if (hostWaits) {
+      await backgroundWork();
+    } else if (phase === "background-job") {
+      await withoutBackgroundWork();
+    } else {
+      fs.writeFileSync(path.join(root, "background-work-unsupported"), "");
+    }
   } else if (phase === "lineage") {
     // A generated child carries its parent's native ID in both variables; nothing else boots.
     const lineage = (/** @type {string} */ rootId, /** @type {string} */ parentId) => ({

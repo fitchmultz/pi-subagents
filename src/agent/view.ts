@@ -7,9 +7,11 @@ import {
   admissionSchema,
   commandMetadataSchema,
   exitSchema,
+  waitingSchema,
   wakeFailureSchema,
   type Launch,
   type Result,
+  type Waiting,
 } from "./contracts.ts";
 import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
@@ -45,6 +47,8 @@ interface RunSummary {
   status: string;
   completed: boolean;
   result?: Pick<Result, "status" | "endedAt" | "error"> | undefined;
+  /** A running run that stays open for its child's own unfinished background work. */
+  waiting?: Waiting | undefined;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
   lastWakeFailure?: { at: number; reason: string } | undefined;
@@ -193,6 +197,8 @@ function metadata(
     status,
     completed: result !== undefined,
     result,
+    waiting:
+      status === "running" ? read(path.join(directory, "waiting.json"), waitingSchema) : undefined,
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     lastWakeFailure: read(
@@ -282,6 +288,11 @@ interface Inventory {
   nextOffset: number | undefined;
   total: number;
 }
+/** The first item in full; inspection lists the rest. */
+function waitingMark({ work }: Waiting): string {
+  const more = work.length > 1 ? ` +${work.length - 1} more` : "";
+  return `[waiting on ${JSON.stringify(work[0]?.description ?? "")}${more}]`;
+}
 function inventoryRow(run: RunSummary): string {
   return [
     run.id,
@@ -289,6 +300,7 @@ function inventoryRow(run: RunSummary): string {
     run.result ? utc(run.result.endedAt) : "-",
     run.model,
     run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
+    ...(run.waiting ? [waitingMark(run.waiting)] : []),
     ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
   ].join(" ");
 }
@@ -343,6 +355,14 @@ function exitText(details: RunView): string {
     ? `Process exit observed: code ${exit.code ?? "unknown"}, signal ${exit.signal ?? "none"}. Pid ${exit.pid} at ${utc(exit.at)}.`
     : "Process exit: unknown; run completion does not imply process exit.";
 }
+function waitingLines(waiting: Waiting | undefined): string[] {
+  return waiting === undefined
+    ? []
+    : [
+        `Waiting since ${utc(waiting.since)} on the child's own background work; the run ends when it does, and stop cancels it:`,
+        ...waiting.work.map((item) => `  ${item.id}: ${JSON.stringify(item.description)}`),
+      ];
+}
 function resultText(details: RunView): string {
   const page = details.output;
   const suffix =
@@ -355,6 +375,7 @@ function resultText(details: RunView): string {
   return [
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     identityText(details),
+    ...waitingLines(details.waiting),
     receiptText(details),
     exitText(details),
     details.lastWakeFailure

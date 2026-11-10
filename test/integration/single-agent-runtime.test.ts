@@ -41,7 +41,7 @@ function run(root: string, phase: string, killed = false): string {
     `${phase}: ${result.stderr}\n${result.stdout}`,
   );
   assert.equal(result.status, killed ? null : 0, `${phase}: ${result.stderr}\n${result.stdout}`);
-  if (phase === "command-polling" || phase === "usage" || phase === "thinking") {
+  if (["command-polling", "usage", "thinking", "background-stop"].includes(phase)) {
     console.log(result.stdout.trim());
   }
   return result.stderr;
@@ -82,6 +82,7 @@ async function cleanup(root: string): Promise<void> {
     "replacement",
     "foreground",
     "publication",
+    "job",
   ]) {
     fs.writeFileSync(path.join(root, `release-${name}`), "release");
   }
@@ -175,6 +176,29 @@ for (const phase of [
           /Agent wake:/,
           "background wake failures do not print into the parent",
         );
+      }
+    } finally {
+      await cleanup(root);
+    }
+  });
+}
+for (const phase of [
+  "background-job",
+  "background-script",
+  "background-guidance",
+  "background-stop",
+]) {
+  nodeTest(`single-agent native ${phase}`, { timeout: 60000 }, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-background-"));
+    try {
+      run(root, phase);
+      if (fs.existsSync(path.join(root, "background-work-unsupported"))) {
+        assert.notEqual(
+          process.env.PI_COMPAT_HOST,
+          "fork",
+          "the qualified fork lists a session's background work",
+        );
+        t.skip("the selected host cannot list a session's background work");
       }
     } finally {
       await cleanup(root);
