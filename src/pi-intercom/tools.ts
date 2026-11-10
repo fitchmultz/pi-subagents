@@ -101,7 +101,7 @@ export class IntercomTools {
         }
       }
       case "send":
-        return await this.owners.outbound.send(active, params, ctx);
+        return await this.owners.outbound.send(active, params, { ctx, signal });
       case "ask":
         return await this.owners.outbound.ask(active, params, signal);
       case "reply":

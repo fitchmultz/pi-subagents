@@ -110,7 +110,7 @@ export class IntercomOutbound {
   async send(
     active: IntercomTransport,
     params: IntercomToolParams,
-    ctx: ExtensionContext,
+    call: { readonly ctx: ExtensionContext; readonly signal: AbortSignal | undefined },
   ): Promise<ToolResultLike> {
     const to = this.messageTarget(params);
     if (to === undefined) {
@@ -123,7 +123,7 @@ export class IntercomOutbound {
       if (target === active.sessionId) {
         return toolError("Cannot message the current session");
       }
-      if (!(await this.confirm(params, ctx))) {
+      if (!(await this.confirm(params, call.ctx))) {
         return toolText("Message cancelled by user");
       }
       const options = { ...sendOptions(params), passive: params.passive === true };
@@ -131,7 +131,7 @@ export class IntercomOutbound {
       progress = { kind: "unconfirmed" };
       const result = await (local
         ? active.send(target, options)
-        : this.owners.devices.send(active, target, options));
+        : this.owners.devices.send(active, target, { options, signal: call.signal }));
       progress = { kind: "acknowledged", result };
       if (!result.accepted) {
         return deliveryFailure(to, result);

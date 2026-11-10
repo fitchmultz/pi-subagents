@@ -369,8 +369,12 @@ export class RemoteDevices {
    * Sends to a session of another device and returns that broker's receipt. Throws like a
    * local transport: a SendError says whether the device received anything.
    */
-  async send(sender: Sender, target: DeviceTarget, options: Options): Promise<SendResult> {
-    return (await this.deliver("send", { sender, target, options })).receipt;
+  async send(
+    sender: Sender,
+    target: DeviceTarget,
+    message: { readonly options: Options; readonly signal?: AbortSignal | undefined },
+  ): Promise<SendResult> {
+    return (await this.deliver("send", { sender, target, ...message })).receipt;
   }
   /**
    * Asks a session of another device and waits for its reply, up to the ask timeout. `onSent`
