@@ -8,8 +8,7 @@ import type { Message, SessionInfo, ReceiptQuery, ReceiptResult } from "./types.
 import type { NativeReadQuery } from "./broker/last.ts";
 import { readLastMessage, type NativeHistory } from "./last-message.ts";
 import { asError } from "./validation.ts";
-import { RecoveryError } from "./tool-results.ts";
-import { formatTargetOptions, resolveSessionTarget, nativePeerId } from "./session-targets.ts";
+import { nativePeerId } from "./session-targets.ts";
 import type { WakeResult } from "../shared/parking.ts";
 import type { BackgroundReporter } from "../shared/background-reporting.ts";
 
@@ -415,38 +414,5 @@ export class IntercomConnection {
       wake.abort();
     }
     this.wakes.clear();
-  }
-}
-export async function resolveConnectedTarget(
-  active: IntercomTransport,
-  name: string,
-): Promise<string | null> {
-  const sessions = await active.listSessions();
-  const resolution = resolveSessionTarget(sessions, name);
-  if (resolution.status === "found" && resolution.target) {
-    return resolution.target.id;
-  }
-  if (resolution.status === "ambiguous") {
-    throw new RecoveryError(
-      "ambiguous_target",
-      `Target "${name}" matches multiple sessions. Use one of these targets: ${formatTargetOptions(resolution.matches, sessions)}.`,
-    );
-  }
-  if (resolution.status === "prefix_too_short") {
-    throw new RecoveryError(
-      "ambiguous_target",
-      `Target "${name}" is too short. Use the displayed target from intercom list, such as ${formatTargetOptions(resolution.matches, sessions)}.`,
-    );
-  }
-  return null;
-}
-export async function resolvePeerHealth(
-  active: IntercomTransport,
-  id: string,
-): Promise<SessionInfo | null> {
-  try {
-    return (await active.listSessions()).find((session) => session.id === id) ?? null;
-  } catch {
-    return null; /* Unknown health must not skip an ordinary blocking reply. */
   }
 }

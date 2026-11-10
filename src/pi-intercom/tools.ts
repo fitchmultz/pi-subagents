@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { IntercomTransport } from "./transport.ts";
-import { resolveConnectedTarget, type IntercomConnection } from "./connection.ts";
+import { resolveConnectedTarget } from "./connected-target.ts";
+import type { IntercomConnection } from "./connection.ts";
 import type { IntercomOutbound } from "./outbound.ts";
 import type { IntercomInspection } from "./inspection.ts";
 import type { IntercomToolParams, ToolResultLike } from "./runtime-types.ts";

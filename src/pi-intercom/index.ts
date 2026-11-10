@@ -110,8 +110,12 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     wait,
     connection,
   });
-  const outbound = new IntercomOutbound({ pi, lifecycle, connection, replies, wait }, config);
-  const inspection = new IntercomInspection(journal, replies, new RemoteDevices(config, child));
+  const devices = new RemoteDevices(config, child);
+  const outbound = new IntercomOutbound(
+    { pi, lifecycle, connection, replies, wait, devices },
+    config,
+  );
+  const inspection = new IntercomInspection(journal, replies, devices);
   const tools = new IntercomTools({ connection, outbound, inspection });
   new IntercomSessionEvents(pi, {
     lifecycle,
