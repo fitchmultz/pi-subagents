@@ -33,7 +33,13 @@ import {
   type Launch,
   type ProcessIdentity,
 } from "./contracts.ts";
-import { delegateSchema, runsSchema, type DelegateInput, type RunsInput } from "./tool-schemas.ts";
+import {
+  delegateSchema,
+  runsOutputSchema,
+  runsSchema,
+  type DelegateInput,
+  type RunsInput,
+} from "./tool-schemas.ts";
 import {
   enqueue,
   latest,
@@ -346,12 +352,6 @@ class AgentRuntime {
       note: "Launch accepted, not completion or native receipt publication. Completion arrives as a notification; do other work or end the turn instead of polling.",
     });
   }
-  private list(input: RunsInput) {
-    const all = list(this.base)
-      .map((id) => launchAt(this.base, id, this.owner))
-      .sort((a, b) => a.createdAt - b.createdAt);
-    return renderInventory(this.base, all, this.ctx, input);
-  }
   private async retryContinuation(launch: Launch, input: RunsInput) {
     const claim = inspectActorClaim(this.base, launch);
     const command = read(
@@ -430,7 +430,8 @@ class AgentRuntime {
     await this.attachmentTail;
     this.checkMain();
     if (input.action === "list") {
-      return this.list(input);
+      const all = list(this.base).map((id) => launchAt(this.base, id, this.owner));
+      return renderInventory(this.base, all, this.ctx, input);
     }
     this.scan();
     if (input.id === undefined) {
@@ -504,6 +505,7 @@ class AgentRuntime {
       description:
         "Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation.",
       parameters: runsSchema,
+      outputSchema: runsOutputSchema,
       exposure: this.child ? "hidden" : "direct",
       renderResult: renderCompactResult,
       execute: runs,

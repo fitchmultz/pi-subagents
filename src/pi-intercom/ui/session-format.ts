@@ -55,21 +55,19 @@ function age(timestamp: number | undefined, now: number): string {
     ? `${formatDuration(Math.max(0, Math.floor((now - timestamp) / 1000)))} ago`
     : "none";
 }
-function guidance(session: SessionInfo, self: boolean): string {
-  if (self) {
-    return "self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks";
-  }
-  const state = sessionBusyState(session);
-  if (state === "idle") {
-    return "send defaults to steer and wakes; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
-  }
-  if (session.acceptsAsks === false) {
-    return "send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive discouraged";
-  }
-  if (state === "busy") {
-    return "send defaults to steer at the next tool boundary; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
-  }
-  return "state unknown; target is valid; send defaults to steer; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
+const SELF_HINT =
+  "self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks";
+/** Delivery guidance once per list. Each row's state and accepts_asks tags say which part applies. */
+function deliveryLegend(peers: readonly SessionInfo[]): string {
+  return [
+    "**Delivery:** send steers by default: it wakes an idle peer (a full model request for it) and reaches a busy peer at its next tool boundary. ask only if you must stay alive for a required reply. queue only for intentional delay. passive never wakes: use it for receipts and FYI that need no action.",
+    ...(peers.some((peer) => peer.acceptsAsks === false)
+      ? ["A default ask to an accepts_asks:false peer sends without waiting."]
+      : []),
+    ...(peers.some((peer) => sessionBusyState(peer) === "unknown")
+      ? ["A state:unknown peer is a valid target."]
+      : []),
+  ].join(" ");
 }
 function healthTags(session: SessionInfo, now: number): readonly string[] {
   const tags = [
@@ -112,7 +110,7 @@ function row(session: SessionInfo, options: RowOptions): string {
   ].filter((tag): tag is string => tag !== undefined && tag !== "");
   const target = formatSessionTarget(session, options.allSessions);
   const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
-  return `• ${name} (${target}) — Native session cwd: ${session.cwd} (${session.model})${suffix}\n  ↳ ${guidance(session, options.self)}`;
+  return `• ${name} (${target}) — Native session cwd: ${session.cwd} (${session.model})${suffix}${options.self ? `\n  ↳ ${SELF_HINT}` : ""}`;
 }
 export function sessionsForScope(
   sessions: readonly SessionInfo[],
@@ -127,10 +125,12 @@ function noPeers(hidden: number): string {
   }
   return `No other sessions connected. Start another intercom-enabled session with \`pi --name worker\`, then run \`intercom({ action: "list" })\` again. If you are dogfooding this local fork without installing it, start the peer with \`${localForkStartCommand()}\`.`;
 }
+/** `query` keeps the peers whose name or ID contains it, ignoring case. */
 export function formatSessionListSections(
   allSessions: readonly SessionInfo[],
   id: string,
   scope: IntercomSessionScope = "all",
+  query = "",
 ): string {
   const current = allSessions.find((session) => session.id === id);
   if (!current) {
@@ -139,6 +139,10 @@ export function formatSessionListSections(
   const scoped = sessionsForScope(allSessions, id, scope);
   const hidden = allSessions.length - scoped.length;
   const others = scoped.filter((session) => session.id !== id);
+  const wanted = query.trim().toLowerCase();
+  const shown = others.filter((session) =>
+    [session.name ?? "", session.id].some((value) => value.toLowerCase().includes(wanted)),
+  );
   const options = {
     currentCwd: current.cwd,
     duplicates: duplicateNames(allSessions),
@@ -146,7 +150,16 @@ export function formatSessionListSections(
     now: Date.now(),
   };
   const currentSection = `**Current session:**\n${row(current, { ...options, self: true })}`;
-  const otherSection = `**Other sessions:**\n${others.length === 0 ? noPeers(hidden) : others.map((session) => row(session, { ...options, self: false })).join("\n")}`;
+  const heading =
+    wanted === "" || others.length === 0
+      ? "**Other sessions:**"
+      : `**Other sessions matching ${JSON.stringify(query.trim())} (${shown.length} of ${others.length}; omit \`to\` to list all):**`;
+  const rows =
+    others.length === 0
+      ? [noPeers(hidden)]
+      : shown.map((peer) => row(peer, { ...options, self: false }));
+  const legend = shown.length === 0 ? [] : ["", deliveryLegend(shown)];
+  const otherSection = [heading, ...rows, ...legend].join("\n");
   const hint =
     hidden > 0
       ? `\n\n${hidden} session${hidden === 1 ? "" : "s"} in other projects hidden. Use \`intercom({ action: "list", scope: "all" })\` to show every reachable session.`

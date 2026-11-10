@@ -16,12 +16,17 @@ identical failures are reported once until the affected operation recovers.
 ```js
 intercom({ action: "list" });
 intercom({ action: "list", scope: "project" });
+intercom({ action: "list", to: "reviewer" });
 intercom({ action: "status" });
 ```
 
 Default discovery includes every eligible connected session under the same OS
 user, across cwd, Git worktrees, projects, HOME settings, and Pi agent directories.
 `scope:"project"` is an optional convenience filter, not an authority boundary.
+With `to`, `list` shows only the peers whose name or ID contains that text,
+ignoring case, and says how many peers it left out. Each peer is one line with its
+name, target, cwd, model and state. The delivery guidance is printed once after
+the peers, not under each one.
 The list does not enumerate all OS processes or disconnected native sessions.
 
 A main session and its children form a collaboration group. Main↔child and
@@ -132,6 +137,13 @@ intercom({
   `threadId` coalesces still-staged updates for that thread; messages already handed
   to Pi's native queue cannot be keyed-replaced.
 - Explicit **passive** is a non-waking breadcrumb, not a request for model work.
+  The recipient reads it at its next turn. Use it for receipts and FYI that need
+  no action.
+
+Do not send acknowledgements, thanks or receipts that need no action, and do not
+reply to a message that needs none. A default send to an idle recipient costs it
+a full model request. Send only what the recipient must act on or must know to
+avoid a mistake. A sender that needs proof a message was read uses `ask`.
 
 An ordinary send is non-blocking. Its response means broker acceptance, not
 recipient journal persistence, model consumption, reply, or task completion. A

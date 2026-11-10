@@ -10,11 +10,17 @@ workflow UI, or topic registry.
 
 1. Use `intercom({action:"list"})` before choosing a peer. Default discovery spans
    projects and agent directories under the same OS user; optional
-   `scope:"project"` filters to this repository and its worktrees.
+   `scope:"project"` filters to this repository and its worktrees, and optional
+   `to` keeps the peers whose name or ID contains it.
 2. Pick the exact displayed target. Names are not unique; resolve ambiguity rather
    than guessing. The current session is not a peer target.
-3. Choose the lightest operation:
+3. Choose the lightest operation. The lightest is no message: do not send
+   acknowledgements, thanks or receipts. Send only what the peer must act on or
+   must know to avoid a mistake. When a message you receive needs no action, do
+   not reply and do not restate it.
    - `send`: non-blocking guidance/corrections/blockers; default delivery steers.
+     A message to an idle peer costs it a full model request. If it needs no
+     action and must still be on record, use `delivery:"passive"`.
    - `last`: original last completed assistant text, without waking the peer.
    - `ask`: bounded correlated wait only when the sender must stay alive waiting.
    - `reply`: answer the active/sole pending ask, or specify `replyTo` when ambiguous.
@@ -35,9 +41,9 @@ rules, not a sandbox against other code running as the same OS user.
 ## Delivery and paging
 
 Default `send` steers at the next tool boundary or wakes an idle peer. Explicit
-`delivery:"queue"` intentionally defers. Explicit `delivery:"passive"` never wakes
-and is for breadcrumbs, not actionable work. Ordinary live agent guidance should
-not be passive.
+`delivery:"queue"` intentionally defers. Explicit `delivery:"passive"` never wakes;
+the peer reads the message at its next turn. Use it for receipts and FYI that need
+no action. Guidance the peer must act on should not be passive.
 
 `last` returns a stable entry ID and offsets. Follow its exact next-page call to
 retrieve all text; offsets are UTF-16 code units, not bytes. A read never sends a

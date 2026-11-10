@@ -27,6 +27,8 @@ interface Guidance {
 interface ToolReply {
   content: { type: "text"; text: string }[];
   details: unknown;
+  /** What a codemode script receives in place of the model text. */
+  structuredContent?: string;
   isError?: boolean;
 }
 interface RunSummary {
@@ -67,6 +69,9 @@ type Receipt =
 
 function toolResult(value: unknown, text: string): ToolReply {
   return { content: [{ type: "text" as const, text }], details: value };
+}
+function utc(at: number): string {
+  return `${new Date(at).toISOString().slice(0, 19)}Z`;
 }
 function receiptResult(result: Result | undefined) {
   if (result === undefined) {
@@ -142,6 +147,22 @@ function guidanceView(base: string, launches: readonly Launch[]): Map<string, Gu
   }
   return runs;
 }
+/** Batched actor liveness by actor token: one check per conversation. */
+async function observeActors(
+  base: string,
+  launches: readonly Launch[],
+): Promise<Map<string, boolean>> {
+  const identities = [
+    ...new Map(launches.map((launch) => [launch.rootId, actor(base, launch)])).values(),
+  ].filter((identity) => identity !== undefined);
+  const verdicts = await observeAlive(identities);
+  return new Map(
+    identities.flatMap((identity, index) => {
+      const verdict = verdicts[index];
+      return verdict === undefined ? [] : ([[identity.token, verdict]] as const);
+    }),
+  );
+}
 function metadata(
   base: string,
   launch: Launch,
@@ -190,16 +211,7 @@ async function summaries(
   ctx?: ExtensionContext,
 ): Promise<RunSummary[]> {
   const guidance = guidanceView(base, launches);
-  const identities = [
-    ...new Map(launches.map((launch) => [launch.rootId, actor(base, launch)])).values(),
-  ].filter((identity) => identity !== undefined);
-  const verdicts = await observeAlive(identities);
-  const observed = new Map(
-    identities.flatMap((identity, index) => {
-      const verdict = verdicts[index];
-      return verdict === undefined ? [] : ([[identity.token, verdict]] as const);
-    }),
-  );
+  const observed = await observeActors(base, launches);
   return launches.map((launch) => {
     const view = metadata(base, launch, readCanonicalResult(base, launch), {
       ctx,
@@ -244,6 +256,55 @@ export function renderReceipt(
   const model = { ...details, result: receiptResult(details.result) };
   return toolResult(details, JSON.stringify(model, null, 2));
 }
+/** Running runs first, then newest first. Only runs without a result need a liveness check. */
+async function inventoryOrder(base: string, launches: readonly Launch[]): Promise<Launch[]> {
+  const unsettled = launches.filter(
+    (launch) => !fs.existsSync(path.join(runDirectory(base, launch.id), "result.json")),
+  );
+  const observed = await observeActors(base, unsettled);
+  const running = new Set(
+    unsettled
+      .filter(
+        (launch) =>
+          metadata(base, launch, undefined, { guidance: [], observed }).status === "running",
+      )
+      .map((launch) => launch.id),
+  );
+  const newest = launches.toSorted((a, b) => b.createdAt - a.createdAt);
+  return [
+    ...newest.filter((launch) => running.has(launch.id)),
+    ...newest.filter((launch) => !running.has(launch.id)),
+  ];
+}
+interface Inventory {
+  runs: RunSummary[];
+  offset: number;
+  nextOffset: number | undefined;
+  total: number;
+}
+function inventoryRow(run: RunSummary): string {
+  return [
+    run.id,
+    run.status,
+    run.result ? utc(run.result.endedAt) : "-",
+    run.model,
+    run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
+    ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
+  ].join(" ");
+}
+function inventoryText({ runs, offset, nextOffset, total }: Inventory): string {
+  if (runs.length === 0) {
+    return total === 0
+      ? "No saved agent runs."
+      : `No agent runs at offset ${offset}; ${total} saved.`;
+  }
+  return [
+    `Agent runs ${offset + 1}-${offset + runs.length} of ${total}: running first, then newest first. Columns: id, status, end time (UTC), model, name.`,
+    `${nextOffset === undefined ? "" : `Next page: agent_runs list offset=${nextOffset}. `}Every field of one run: agent_runs inspect id=<id>.`,
+    ...runs.map(inventoryRow),
+  ].join("\n");
+}
+/** The model reads one line per run. Details and scripts keep every summary field as JSON. */
 export async function renderInventory(
   base: string,
   launches: readonly Launch[],
@@ -251,14 +312,25 @@ export async function renderInventory(
   input: Pick<RunsInput, "offset">,
 ): Promise<ToolReply> {
   const offset = input.offset ?? 0;
-  const runs = await summaries(base, launches.slice(offset, offset + 50), ctx);
-  const details = {
+  const ordered = await inventoryOrder(base, launches);
+  const runs = await summaries(base, ordered.slice(offset, offset + 50), ctx);
+  const details: Inventory = {
     runs,
     offset,
     nextOffset: offset + runs.length < launches.length ? offset + runs.length : undefined,
     total: launches.length,
   };
-  return toolResult(details, JSON.stringify(details, null, 2));
+  return {
+    ...toolResult(details, inventoryText(details)),
+    structuredContent: JSON.stringify(details, null, 2),
+  };
+}
+function identityText(details: RunView): string {
+  return [
+    `Name ${details.name === undefined ? "(unnamed)" : JSON.stringify(details.name)}; model ${details.model}; thinking ${details.thinking}; context ${details.context}; ${details.result ? `ended ${utc(details.result.endedAt)}` : "no result yet"}.`,
+    `Cwd: ${details.cwd}`,
+    `Owner ${details.owner}; root run ${details.rootId}; predecessor ${details.predecessor ?? "none"}; native session ${details.sessionId}.`,
+  ].join("\n");
 }
 function receiptText(details: RunView): string {
   return details.nativeReceipt !== null
@@ -266,8 +338,9 @@ function receiptText(details: RunView): string {
     : "Native completion receipt: not observed published; queue admission is not publication or model consumption.";
 }
 function exitText(details: RunView): string {
-  return details.process.exit
-    ? `Process exit observed: code ${details.process.exit.code ?? "unknown"}, signal ${details.process.exit.signal ?? "none"}.`
+  const { exit } = details.process;
+  return exit
+    ? `Process exit observed: code ${exit.code ?? "unknown"}, signal ${exit.signal ?? "none"}. Pid ${exit.pid} at ${utc(exit.at)}.`
     : "Process exit: unknown; run completion does not imply process exit.";
 }
 function resultText(details: RunView): string {
@@ -277,10 +350,11 @@ function resultText(details: RunView): string {
       ? `\n[Output continues: agent_runs inspect id=${details.id} offset=${page.nextOffset}; ${page.size} bytes total.]`
       : "";
   const guidance = details.guidance
-    .map((command) => `  ${command.id}: ${command.state}`)
+    .map((command) => `  ${command.id}: ${command.state} at ${utc(command.at)}`)
     .join("\n");
   return [
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
+    identityText(details),
     receiptText(details),
     exitText(details),
     details.lastWakeFailure
@@ -291,6 +365,7 @@ function resultText(details: RunView): string {
     details.result?.error ?? "",
     `${page?.text ?? ""}${suffix}`,
     `Native journal: ${details.sessionFile}`,
+    `Output file: ${details.outputFile}`,
   ].join("\n");
 }
 export function renderInspection(
