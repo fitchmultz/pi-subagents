@@ -3,6 +3,7 @@ import type {
   CreateAgentSessionRuntimeFactory,
   ExtensionAPI,
   ExtensionContext,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { Launch } from "./contracts.ts";
 import type { loadSDK, WorkingState } from "./host.ts";
@@ -10,6 +11,7 @@ import { shellCommand } from "./process.ts";
 import { localCwdOwner } from "./cwd.ts";
 import type { ToolEvent } from "./observation-state.ts";
 import { backgroundCommands } from "./background-work.ts";
+import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
 function guard(pi: ExtensionAPI, directory: string, token: string): void {
   pi.on("tool_call", (event) => {
@@ -27,6 +29,35 @@ function guard(pi: ExtensionAPI, directory: string, token: string): void {
     }
     return;
   });
+}
+/**
+ * Fork-only: settings with `toolExposure`, how the model reaches each tool. Official Pi has
+ * no such setting, so its children keep the exposure every tool registered with.
+ */
+type Exposing = SettingsManager & {
+  readonly applyOverrides: (overrides: { toolExposure: UnknownRecord }) => void;
+};
+function exposing(settings: SettingsManager): settings is Exposing {
+  return typeof Reflect.get(settings, "getToolExposure") === "function";
+}
+/**
+ * Gives this child the `subagents.toolExposure` map of its settings files on top of its own
+ * `toolExposure`, so a tool children rarely need can stay out of their requests and still be
+ * reached through `tool_search` and codemode. The host merges and validates the entries as it
+ * does for one more settings layer. Loading the settings drops overrides, so this must follow
+ * the creation of the services. An exact restore then puts back the settings it saved.
+ */
+function exposeChildTools(settings: SettingsManager): void {
+  if (!exposing(settings)) {
+    return;
+  }
+  // The project file last: its entries win and its patterns match first, as in `toolExposure`.
+  for (const layer of [settings.getGlobalSettings(), settings.getProjectSettings()]) {
+    const toolExposure = recordAt(recordAt(layer, "subagents"), "toolExposure");
+    if (toolExposure !== undefined) {
+      settings.applyOverrides({ toolExposure });
+    }
+  }
 }
 interface ChildHooks {
   readonly directory: string;
@@ -81,6 +112,7 @@ export function childRuntime(
         ],
       },
     });
+    exposeChildTools(services.settingsManager);
     const diagnostics = services.resourceLoader.getExtensions().errors;
     if (diagnostics.length > 0) {
       throw new Error(`Child extension load failed: ${JSON.stringify(diagnostics)}`);
