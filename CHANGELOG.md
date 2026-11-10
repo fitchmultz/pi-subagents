@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `intercom list` and `intercom status` print main sessions first, sorted by project and then by name, and then the child sessions of the caller's group as one line: how many, counted by state, and the call that prints their rows. `list` takes `children: true` to print one line per child, and `to` prints every child row it matches. Every child stays a valid target by name or ID. A real list of 87 sessions (11 mains, 76 children) went from 21.6 KB to 3.4 KB.
+
 ## 0.52.32 - 2026-11-10
 
 <!-- npm-release:unreleased:start -->

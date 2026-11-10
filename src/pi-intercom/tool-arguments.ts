@@ -95,6 +95,15 @@ function queueError(params: IntercomToolParams): ToolResultLike | undefined {
   }
   return;
 }
+function listingError(params: IntercomToolParams): ToolResultLike | undefined {
+  if (params.scope !== undefined && params.action !== "list" && params.action !== "status") {
+    return toolError("'scope' is only valid for action='list' or action='status'");
+  }
+  if (params.children !== undefined && params.action !== "list") {
+    return toolError("'children' is only valid for action='list'");
+  }
+  return;
+}
 export function validateIntercomArguments(params: IntercomToolParams): ToolResultLike | undefined {
   if (
     (params.entryId !== undefined || params.offset !== undefined || params.limit !== undefined) &&
@@ -102,10 +111,7 @@ export function validateIntercomArguments(params: IntercomToolParams): ToolResul
   ) {
     return toolError("'entryId', 'offset', and 'limit' are only valid for action='last'");
   }
-  if (params.scope !== undefined && params.action !== "list" && params.action !== "status") {
-    return toolError("'scope' is only valid for action='list' or action='status'");
-  }
-  return deliveryError(params) ?? queueError(params);
+  return listingError(params) ?? deliveryError(params) ?? queueError(params);
 }
 export function sendOptions(params: IntercomToolParams): {
   readonly text: string;

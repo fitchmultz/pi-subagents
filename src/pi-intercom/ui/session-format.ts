@@ -56,7 +56,7 @@ function age(timestamp: number | undefined, now: number): string {
     : "none";
 }
 const SELF_HINT =
-  "self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks";
+  "self target unavailable; choose a peer below; use pending/reply for inbound asks";
 /** Delivery guidance once per list. Each row's state and accepts_asks tags say which part applies. */
 function deliveryLegend(peers: readonly SessionInfo[]): string {
   return [
@@ -125,44 +125,160 @@ function noPeers(hidden: number): string {
   }
   return `No other sessions connected. Start another intercom-enabled session with \`pi --name worker\`, then run \`intercom({ action: "list" })\` again. If you are dogfooding this local fork without installing it, start the peer with \`${localForkStartCommand()}\`.`;
 }
-/** `query` keeps the peers whose name or ID contains it, ignoring case. */
+type PeerState = ReturnType<typeof sessionBusyState>;
+const PEER_STATES: readonly PeerState[] = ["idle", "busy", "unknown"];
+function stateCounts(sessions: readonly SessionInfo[]): string {
+  return PEER_STATES.map((state) => ({
+    state,
+    count: sessions.filter((session) => sessionBusyState(session) === state).length,
+  }))
+    .filter(({ count }) => count > 0)
+    .map(({ state, count }) => `${count} ${state}`)
+    .join(", ");
+}
+function projectKey(session: SessionInfo): string {
+  return session.projectId === undefined || session.projectId === ""
+    ? session.cwd
+    : session.projectId;
+}
+function compareText(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+}
+/** Same-project sessions sit together: projects by their first cwd, then sessions by name. */
+function byProjectThenName(sessions: readonly SessionInfo[]): readonly SessionInfo[] {
+  const firstCwd = new Map<string, string>();
+  for (const session of sessions) {
+    const known = firstCwd.get(projectKey(session));
+    if (known === undefined || session.cwd < known) {
+      firstCwd.set(projectKey(session), session.cwd);
+    }
+  }
+  return sessions
+    .map((session) => ({
+      session,
+      key: [
+        firstCwd.get(projectKey(session)) ?? session.cwd,
+        projectKey(session),
+        (session.name ?? "").toLowerCase(),
+        session.id,
+      ].join("\0"),
+    }))
+    .toSorted((left, right) => compareText(left.key, right.key))
+    .map(({ session }) => session);
+}
+function isChild(session: SessionInfo): boolean {
+  return session.parentSessionId !== undefined;
+}
+function matching(sessions: readonly SessionInfo[], query: string): readonly SessionInfo[] {
+  const wanted = query.toLowerCase();
+  return sessions.filter((session) =>
+    [session.name ?? "", session.id].some((value) => value.toLowerCase().includes(wanted)),
+  );
+}
+/** What a list prints. A child is a session with a parent; every other session is a main. */
+export interface SessionListView {
+  readonly scope?: IntercomSessionScope | undefined;
+  /** Keeps the peers whose name or ID contains it, ignoring case. */
+  readonly query?: string | undefined;
+  /** Prints every child row instead of the one-line summary. */
+  readonly children?: boolean | undefined;
+}
+interface BlockView {
+  /** The caller's own kind is labelled "Other": the caller is in neither block. */
+  readonly callerIsChild: boolean;
+  readonly scope: IntercomSessionScope;
+  readonly query: string;
+  readonly childRows: boolean;
+  readonly render: (session: SessionInfo) => string;
+}
+interface Block {
+  readonly lines: readonly string[];
+  /** The targets this block offers: the rows it prints and the children it only counts. */
+  readonly peers: readonly SessionInfo[];
+}
+function mainBlock(mains: readonly SessionInfo[], view: BlockView): Block {
+  const label = view.callerIsChild ? "Main sessions" : "Other main sessions";
+  const peers = matching(byProjectThenName(mains), view.query);
+  const heading =
+    view.query === ""
+      ? `**${label} (${mains.length}):**`
+      : `**${label} matching ${JSON.stringify(view.query)} (${peers.length} of ${mains.length}; omit \`to\` to list all):**`;
+  return { lines: [heading, ...peers.map(view.render)], peers };
+}
+/** One summary line unless the caller asks for the rows or `query` matches some. */
+function childBlock(children: readonly SessionInfo[], view: BlockView): Block {
+  const label = `${view.callerIsChild ? "Other child" : "Child"} sessions in your group`;
+  if (children.length === 0) {
+    return { lines: view.childRows ? [`**${label} (0):**`] : [], peers: [] };
+  }
+  if (view.query !== "") {
+    const peers = matching(children, view.query);
+    const heading = `**${label} matching ${JSON.stringify(view.query)} (${peers.length} of ${children.length}):**`;
+    return { lines: [heading, ...peers.map(view.render)], peers };
+  }
+  const heading = `**${label} (${children.length}: ${stateCounts(children)}):**`;
+  if (view.childRows) {
+    return { lines: [heading, ...children.map(view.render)], peers: children };
+  }
+  const call = `intercom({ action: "list", ${view.scope === "project" ? 'scope: "project", ' : ""}children: true })`;
+  return {
+    lines: [
+      `${heading} rows not printed; each is a valid target by name or ID. Print them with \`${call}\`, or only the matching ones with \`to\`.`,
+    ],
+    peers: children,
+  };
+}
+function hiddenHint(hidden: number): readonly string[] {
+  return hidden > 0
+    ? [
+        `${hidden} session${hidden === 1 ? "" : "s"} in other projects hidden. Use \`intercom({ action: "list", scope: "all" })\` to show every reachable session.`,
+      ]
+    : [];
+}
+/** Main sessions first, then the child sessions of the caller's group. */
 export function formatSessionListSections(
   allSessions: readonly SessionInfo[],
   id: string,
-  scope: IntercomSessionScope = "all",
-  query = "",
+  view: SessionListView = {},
 ): string {
   const current = allSessions.find((session) => session.id === id);
   if (!current) {
     throw new Error("Current session is missing from intercom session list.");
   }
+  const scope = view.scope ?? "all";
   const scoped = sessionsForScope(allSessions, id, scope);
   const hidden = allSessions.length - scoped.length;
   const others = scoped.filter((session) => session.id !== id);
-  const wanted = query.trim().toLowerCase();
-  const shown = others.filter((session) =>
-    [session.name ?? "", session.id].some((value) => value.toLowerCase().includes(wanted)),
-  );
   const options = {
     currentCwd: current.cwd,
     duplicates: duplicateNames(allSessions),
     allSessions,
     now: Date.now(),
   };
-  const currentSection = `**Current session:**\n${row(current, { ...options, self: true })}`;
-  const heading =
-    wanted === "" || others.length === 0
-      ? "**Other sessions:**"
-      : `**Other sessions matching ${JSON.stringify(query.trim())} (${shown.length} of ${others.length}; omit \`to\` to list all):**`;
-  const rows =
-    others.length === 0
-      ? [noPeers(hidden)]
-      : shown.map((peer) => row(peer, { ...options, self: false }));
-  const legend = shown.length === 0 ? [] : ["", deliveryLegend(shown)];
-  const otherSection = [heading, ...rows, ...legend].join("\n");
-  const hint =
-    hidden > 0
-      ? `\n\n${hidden} session${hidden === 1 ? "" : "s"} in other projects hidden. Use \`intercom({ action: "list", scope: "all" })\` to show every reachable session.`
-      : "";
-  return `${currentSection}\n\n${otherSection}${hint}`;
+  const blockView: BlockView = {
+    callerIsChild: isChild(current),
+    scope,
+    query: (view.query ?? "").trim(),
+    childRows: view.children === true,
+    render: (peer) => row(peer, { ...options, self: false }),
+  };
+  const mains = mainBlock(
+    others.filter((session) => !isChild(session)),
+    blockView,
+  );
+  const children = childBlock(others.filter(isChild), blockView);
+  const peers = [...mains.peers, ...children.peers];
+  return [
+    ["**Current session:**", row(current, { ...options, self: true })],
+    [...mains.lines, ...(others.length === 0 ? [noPeers(hidden)] : [])],
+    children.lines,
+    peers.length === 0 ? [] : [deliveryLegend(peers)],
+    hiddenHint(hidden),
+  ]
+    .filter((lines) => lines.length > 0)
+    .map((lines) => lines.join("\n"))
+    .join("\n\n");
 }

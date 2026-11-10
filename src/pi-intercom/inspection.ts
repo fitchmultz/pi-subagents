@@ -3,7 +3,11 @@ import type { IntercomTransport } from "./transport.ts";
 import type { InboundJournal } from "./inbound-journal.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import type { IntercomSessionScope, ToolResultLike } from "./runtime-types.ts";
-import { formatSessionListSections, sessionsForScope } from "./ui/session-format.ts";
+import {
+  formatSessionListSections,
+  sessionsForScope,
+  type SessionListView,
+} from "./ui/session-format.ts";
 import { formatSessionTarget } from "./session-targets.ts";
 import { pendingAskPreview } from "./message-format.ts";
 import { toolError, toolText } from "./tool-arguments.ts";
@@ -37,19 +41,15 @@ export class IntercomInspection {
     });
     return toolText(`**Pending asks:**\n${lines.join("\n")}`);
   }
-  async list(
-    active: IntercomTransport,
-    scope: IntercomSessionScope,
-    query?: string,
-  ): Promise<ToolResultLike> {
+  async list(active: IntercomTransport, view: SessionListView): Promise<ToolResultLike> {
     try {
       const id = active.sessionId;
       if (id === null || id === "") {
         throw new Error("Current intercom session id is unavailable.");
       }
       const all = await active.listSessions();
-      return toolText(formatSessionListSections(all, id, scope, query), {
-        sessionCount: sessionsForScope(all, id, scope).length,
+      return toolText(formatSessionListSections(all, id, view), {
+        sessionCount: sessionsForScope(all, id, view.scope ?? "all").length,
       });
     } catch (error) {
       return toolError(`Failed to list sessions: ${errorMessage(error)}`);
@@ -77,7 +77,7 @@ export class IntercomInspection {
           ? `\n\nPending inbound messages: ${pending.length}\n${lines.join("\n\n")}`
           : "\n\nPending inbound messages: 0";
       return toolText(
-        `**Intercom Status:**\nConnected: Yes\nSession ID: ${id}\nConnected sessions in scope: ${sessionsForScope(all, id, scope).length}\n\n${formatSessionListSections(all, id, scope)}${text}`,
+        `**Intercom Status:**\nConnected: Yes\nSession ID: ${id}\nConnected sessions in scope: ${sessionsForScope(all, id, scope).length}\n\n${formatSessionListSections(all, id, { scope })}${text}`,
       );
     } catch (error) {
       return toolError(`Failed to get status: ${errorMessage(error)}`);
