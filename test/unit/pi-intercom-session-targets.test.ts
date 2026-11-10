@@ -294,22 +294,23 @@ nodeTest(
       lastSeen: now - 5_000,
       lastIntercomActivity: 0,
     };
+    const laptop = {
+      device: "laptop",
+      now,
+      sessions: [
+        peer("pi-bbbbbbbb1", "web-build", "/work/web", busy),
+        peer("pi-aaaaaaaa1", "api-fix", "/work/api", {
+          status: "idle",
+          acceptsAsks: true,
+          pendingAsks: 1,
+          lastSeen: now - 7_200_000,
+          lastIntercomActivity: now - 120_000,
+        }),
+        peer("pi-cccccccc1", "Web-Build", "/work/web", busy),
+      ],
+    };
     const listings = [
-      {
-        device: "laptop",
-        now,
-        sessions: [
-          peer("pi-bbbbbbbb1", "web-build", "/work/web", busy),
-          peer("pi-aaaaaaaa1", "api-fix", "/work/api", {
-            status: "idle",
-            acceptsAsks: true,
-            pendingAsks: 1,
-            lastSeen: now - 7_200_000,
-            lastIntercomActivity: now - 120_000,
-          }),
-          peer("pi-cccccccc1", "Web-Build", "/work/web", busy),
-        ],
-      },
+      laptop,
       { device: "desk", now, sessions: [] },
       { device: "phone", failure: "unreachable (connect to host phone port 22: timed out)" },
       { device: "old-box", failure: "not listed: its pi-subagents has no cross-device command" },
@@ -346,5 +347,19 @@ nodeTest(
         footer,
       ].join("\n"),
     );
+    // A filter copied from a printed row ends in `@device` and finds that row on that device only.
+    for (const copied of ["api-fix@laptop", "PI-AAAAA@Laptop"]) {
+      assert.equal(
+        formatDeviceListings([laptop, { ...laptop, device: "desk" }], copied),
+        [
+          `**Main sessions on laptop matching ${JSON.stringify(copied)} (1 of 3):**`,
+          "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago]",
+          "",
+          `**Main sessions on desk matching ${JSON.stringify(copied)} (0 of 3):**`,
+          "",
+          footer,
+        ].join("\n"),
+      );
+    }
   },
 );

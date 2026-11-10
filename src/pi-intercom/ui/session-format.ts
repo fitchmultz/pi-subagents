@@ -287,6 +287,11 @@ export function formatSessionListSections(
     .map((lines) => lines.join("\n"))
     .join("\n\n");
 }
+/** A row prints `name@device` and `id@device`, so a filter copied from a row can end in `@device`. */
+function withoutDevice(query: string, device: string): string {
+  const suffix = `@${device}`.toLowerCase();
+  return query.toLowerCase().endsWith(suffix) ? query.slice(0, -suffix.length) : query;
+}
 function deviceBlock(listing: DeviceListing, query: string): string {
   if ("failure" in listing) {
     return `**${listing.device}:** ${listing.failure}`;
@@ -296,7 +301,7 @@ function deviceBlock(listing: DeviceListing, query: string): string {
     return `**Main sessions on ${device} (0):** no Pi session is connected there.`;
   }
   const options = { self: false, duplicates: duplicateNames(sessions), allSessions: sessions, now };
-  const peers = matching(byProjectThenName(sessions), query);
+  const peers = matching(byProjectThenName(sessions), withoutDevice(query, device));
   const count =
     query === ""
       ? `(${sessions.length})`

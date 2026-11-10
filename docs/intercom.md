@@ -172,7 +172,8 @@ has one block per device and no session of this device:
 - Only Pi main sessions are listed. The children and the bridge identities of
   the other device are left out.
 - `to` keeps the sessions whose name or ID contains that text, as in a local
-  list. `scope` and `children` cannot be combined with `device`.
+  list. A text copied from a row can keep its `@device` ending: it matches that
+  row on that device. `scope` and `children` cannot be combined with `device`.
 - The list is the only cross-device action. `send`, `ask`, `reply` and `last`
   reach the sessions of this device.
 - Only a main session can use `device`. A child gets a refusal, and its main
