@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Tell agents when not to send an Intercom message. The tool description, the `list` delivery hint, the `pi-intercom` skill and the Intercom guide now say: do not send acknowledgements, a send to an idle peer costs it a full model request, and `delivery:"passive"` is for receipts and FYI that need no action. Delivery modes and the steer default are unchanged.
+
 ## 0.52.29 - 2026-11-08
 
 <!-- npm-release:unreleased:start -->

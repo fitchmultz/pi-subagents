@@ -61,15 +61,15 @@ function guidance(session: SessionInfo, self: boolean): string {
   }
   const state = sessionBusyState(session);
   if (state === "idle") {
-    return "send defaults to steer and wakes; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
+    return "send defaults to steer and wakes; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive for receipts and FYI that need no action";
   }
   if (session.acceptsAsks === false) {
-    return "send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive discouraged";
+    return "send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive for receipts and FYI that need no action";
   }
   if (state === "busy") {
-    return "send defaults to steer at the next tool boundary; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
+    return "send defaults to steer at the next tool boundary; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive for receipts and FYI that need no action";
   }
-  return "state unknown; target is valid; send defaults to steer; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
+  return "state unknown; target is valid; send defaults to steer; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive for receipts and FYI that need no action";
 }
 function healthTags(session: SessionInfo, now: number): readonly string[] {
   const tags = [

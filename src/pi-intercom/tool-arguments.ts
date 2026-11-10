@@ -19,7 +19,7 @@ function deliveryError(params: IntercomToolParams): ToolResultLike | undefined {
   }
   if (delivery === "passive" && action !== "send") {
     return toolError(
-      "delivery='passive' is only valid for action='send'. Passive delivery is for human-visible breadcrumbs and is discouraged for agent-to-agent coordination; normal send defaults to steer. Use ask with delivery='steer' only when the sender must stay alive and cannot safely continue without the reply.",
+      "delivery='passive' is only valid for action='send'. Passive delivery never wakes the recipient: use it for receipts and FYI that need no action; normal send defaults to steer. Use ask with delivery='steer' only when the sender must stay alive and cannot safely continue without the reply.",
     );
   }
   const actionError = deliveryActionError(params);
@@ -85,7 +85,7 @@ function queueError(params: IntercomToolParams): ToolResultLike | undefined {
   const delivery = params.passive === true ? "passive" : params.delivery;
   if (queueMode !== undefined && delivery !== "queue") {
     return toolError(
-      "'queueMode' is only valid with delivery='queue'. Use queue only for intentionally deferred work; otherwise omit queueMode and use default-steered send for live agent coordination. Avoid passive for agent-to-agent coordination.",
+      "'queueMode' is only valid with delivery='queue'. Use queue only for intentionally deferred work; otherwise omit queueMode and use default-steered send for live agent coordination. Use passive only for receipts and FYI that need no action.",
       failureDetails(
         "invalid_queue_arguments",
         [{ action: "send", guidance: "Set delivery='queue', or omit queueMode and threadId." }],

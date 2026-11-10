@@ -132,6 +132,13 @@ intercom({
   `threadId` coalesces still-staged updates for that thread; messages already handed
   to Pi's native queue cannot be keyed-replaced.
 - Explicit **passive** is a non-waking breadcrumb, not a request for model work.
+  The recipient reads it at its next turn. Use it for receipts and FYI that need
+  no action.
+
+Do not send acknowledgements, thanks or receipts that need no action, and do not
+reply to a message that needs none. A default send to an idle recipient costs it
+a full model request. Send only what the recipient must act on or must know to
+avoid a mistake. A sender that needs proof a message was read uses `ask`.
 
 An ordinary send is non-blocking. Its response means broker acceptance, not
 recipient journal persistence, model consumption, reply, or task completion. A
