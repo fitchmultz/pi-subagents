@@ -186,6 +186,57 @@ Official Pi has neither API. Its children have no `background_command`, and a
 run ends at the child's first idle: a child that ends its turn with a codemode
 background script pending completes with the text it wrote before the result.
 
+### Tools a child declares
+
+`subagents.toolExposure` in Pi's `settings.json` is a `toolExposure` map for
+children only. It keeps tools that children rarely need out of their requests
+while the children can still reach them:
+
+```json
+{
+  "defaultTools": ["+tool_search"],
+  "subagents": {
+    "toolExposure": {
+      "macuse": "deferred",
+      "macuse_reset": "deferred",
+      "new_context": "deferred"
+    }
+  }
+}
+```
+
+With this example a child's requests do not declare the three tools. The child
+loads one with `tool_search`, which declares it from the next request on, and a
+codemode script calls one without loading it. Main sessions keep their own
+exposure. The package names no tools itself; unset, children are unchanged.
+
+The key needs a fitchmultz/pi fork with the `toolExposure` setting. Keys are
+tool names or `*` patterns and values are `direct`, `model-only`, `codemode`,
+`deferred` or `hidden`, with the meaning that setting gives them. Official Pi has
+no such setting: there the package does not read the key, and children declare
+the same tools with or without it.
+
+A child reads the key from its own settings files, when its process starts: the
+user file and, for a trusted project, the project file of its working directory.
+The map goes on top of the child's own `toolExposure`, as one more settings
+layer: an entry replaces a `toolExposure` entry with the same key, and its
+patterns match first. Between the two files the project's entries win the same
+way. Pi does not validate settings files. A value that is not a JSON object is
+skipped, and an entry whose value is not an exposure sets none.
+
+- `deferred` and `codemode` tools are reachable only while `tool_search` or
+  `codemode` is active in the child. Children have both tools, inactive until
+  `defaultTools` (`"+tool_search"`, `"+codemode"`) or an extension activates
+  them. With neither active the child cannot call the tool, and nothing reports
+  it: a child has no display for the warning Pi shows an interactive session.
+- A child keeps the tools its conversation already declared. A
+  `context: "fork"` child keeps the tools its main's conversation declared, and
+  a child that `continue` starts again keeps the tools it declared or loaded
+  before. The map decides the tools that conversation never declared.
+- A parked child wakes with the settings it was saved with, the map included.
+- If a child reloads its settings, Pi drops the map for that child and declares
+  the tools the map deferred. No tool becomes unreachable.
+
 ### Evidence levels
 
 Keep these facts distinct:

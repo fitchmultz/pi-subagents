@@ -102,7 +102,9 @@ Children use native Pi sessions and the selected host's SDK, resources, tools,
 project instructions, and model configuration. Optional `cwd` and `model`
 overrides belong to a launch; ordinary continuation reuses its saved conversation
 and launch configuration. No user agent Markdown files are edited or consulted
-as profiles.
+as profiles. On a fitchmultz/pi fork with the `toolExposure` setting,
+[`subagents.toolExposure`](docs/reference.md#tools-a-child-declares) keeps tools
+that children rarely need out of their requests.
 
 ## Migration and documentation
 

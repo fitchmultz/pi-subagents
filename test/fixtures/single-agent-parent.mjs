@@ -49,6 +49,40 @@ fs.writeFileSync(
   path.join(cwd, ".pi/agents/default.md"),
   "---\nname: default\n---\nOBSOLETE_PROFILE_BODY\n",
 );
+/**
+ * The child's settings files per phase, and whether its first request declares the probe tool
+ * on a host with the `toolExposure` setting. `subagents.toolExposure` holds entries for
+ * children only; they go on top of the child's own `toolExposure`.
+ * @type {Record<string, { user: object, project: object, declared: boolean }>}
+ */
+const exposureCases = {
+  "tool-exposure-unset": { user: {}, project: {}, declared: true },
+  "tool-exposure-deferred": {
+    user: { subagents: { toolExposure: { exposure_probe: "deferred" } } },
+    project: {},
+    declared: false,
+  },
+  "tool-exposure-precedence": {
+    user: {
+      toolExposure: { exposure_probe: "deferred" },
+      subagents: { toolExposure: { exposure_probe: "direct" } },
+    },
+    project: {},
+    declared: true,
+  },
+  // Both patterns match only the probe; the project file's pattern matches first.
+  "tool-exposure-project": {
+    user: { subagents: { toolExposure: { "exposure_*": "direct" } } },
+    project: { subagents: { toolExposure: { "exposure_p*": "deferred" } } },
+    declared: false,
+  },
+  "park-exposure": {
+    user: { subagents: { toolExposure: { exposure_probe: "deferred" } } },
+    project: {},
+    declared: false,
+  },
+};
+const exposure = exposureCases[phase];
 fs.writeFileSync(
   path.join(agentDir, "settings.json"),
   JSON.stringify({
@@ -58,8 +92,13 @@ fs.writeFileSync(
     compaction: { enabled: false },
     // The host registers codemode inactive; this is how a user's children get it.
     ...(phase === "background-script" ? { defaultTools: ["+codemode"] } : {}),
+    // tool_search is how a child loads a tool that its settings keep out of its requests.
+    ...(exposure ? { defaultTools: ["+tool_search"], ...exposure.user } : {}),
   }),
 );
+if (exposure) {
+  fs.writeFileSync(path.join(cwd, ".pi/settings.json"), JSON.stringify(exposure.project));
+}
 if (phase.startsWith("command-polling")) {
   process.env.SINGLE_AGENT_COMMAND_IO = "1";
 }
@@ -567,6 +606,7 @@ const RequestRecordSchema = Type.Object({
   cwd: Type.Optional(Type.String()),
   context: Type.Optional(Type.Unknown()),
   tools: Type.Optional(Type.Array(Type.String())),
+  declared: Type.Optional(Type.Array(Type.String())),
 });
 /**
  * @param {unknown} value
@@ -1176,6 +1216,30 @@ async function withoutBackgroundWork() {
   assert.equal(runDetails(done).waiting, undefined);
   assert.equal(requestFor("BACKGROUND_JOB").tools?.includes("background_command"), false);
   assert.equal(requests().length, 2, "nothing woke the child after its turn");
+}
+/**
+ * The requests of a child that was asked to call the probe tool. Where its settings defer the
+ * tool, the first request does not declare it, a tool_search load declares it and nothing
+ * else, and the same child then calls it. A host without the `toolExposure` setting ignores
+ * the key: every request declares the tool.
+ */
+function probeCalled(/** @type {boolean} */ declared) {
+  const hostExposes =
+    typeof Reflect.get(sdk.SettingsManager.prototype, "getToolExposure") === "function";
+  if (!hostExposes) {
+    fs.writeFileSync(path.join(root, "tool-exposure-unsupported"), "");
+  }
+  const sent = requests().filter((request) => request.prompt === "EXPOSURE_PROBE");
+  const [first = [], second = []] = sent.map((request) => request.declared ?? []);
+  assert.deepEqual(
+    sent.map((request) => request.declared?.includes("exposure_probe")),
+    declared || !hostExposes ? [true, true] : [false, true, true],
+  );
+  assert.equal(first.includes("tool_search"), true);
+  if (!first.includes("exposure_probe")) {
+    assert.deepEqual(second.toSorted(), [...first, "exposure_probe"].toSorted());
+  }
+  assert.match(JSON.stringify(sent.at(-1)?.context), /EXPOSURE_PROBE_CALLED/);
 }
 /** A waiting run as its parent sees it: the list row, the inspection and the absent result. */
 function backgroundRun(/** @type {string} */ id) {
@@ -2436,6 +2500,8 @@ try {
     await until(() => notices().length === 1, "first child completion publishes");
     await session.waitForIdle();
     const first = requestFor("PARK_FIRST");
+    // The woken child of park-exposure must still load the tool its saved settings defer.
+    const next = exposure === undefined ? "PARK_SECOND" : "EXPOSURE_PROBE";
     if (phase === "park-shells") {
       const actor = readActorIdentity(runDir(currentRunId()));
       const ledger = path.join(runDir(currentRunId()), "shells", actor.token);
@@ -2654,9 +2720,9 @@ try {
       // Official Pi cannot capture exact working state, so the actor stays resident.
       await until(() => fs.existsSync(path.join(root, "clock-advanced")), "idle period passes");
       faux.setResponses([fauxAssistantMessage("RESIDENT_NOTICE")]);
-      await call("agent_runs", { action: "continue", id: runId, prompt: "PARK_SECOND" }, "stay");
-      await until(() => requests().some((request) => request.prompt === "PARK_SECOND"), "turn");
-      const second = requestFor("PARK_SECOND");
+      await call("agent_runs", { action: "continue", id: runId, prompt: next }, "stay");
+      await until(() => requests().some((request) => request.prompt === next), "turn");
+      const second = requestFor(next);
       assert.equal(second.pid, first.pid);
       assert.deepEqual(
         ["parked.json", "park-failed.json"].filter((name) =>
@@ -2667,7 +2733,9 @@ try {
     } else {
       const outcome = path.join(
         runDir(currentRunId()),
-        ["park", "park-shells", "park-wake-outcome", "park-sdk-outcome"].includes(phase)
+        ["park", "park-shells", "park-wake-outcome", "park-sdk-outcome", "park-exposure"].includes(
+          phase,
+        )
           ? "parked.json"
           : "park-failed.json",
       );
@@ -2706,15 +2774,15 @@ try {
         faux.setResponses([fauxAssistantMessage("PARK_SECOND_NOTICE")]);
         const resumed = await call(
           "agent_runs",
-          { action: "continue", id: runId, prompt: "PARK_SECOND" },
+          { action: "continue", id: runId, prompt: next },
           "park-continue",
         );
         assert.equal(resumed.isError, false, JSON.stringify(resumed));
         await until(
-          () => requests().some((request) => request.prompt === "PARK_SECOND"),
+          () => requests().some((request) => request.prompt === next),
           "restored actor runs the next turn",
         );
-        const second = requestFor("PARK_SECOND");
+        const second = requestFor(next);
         assert.notEqual(second.pid, first.pid);
         assert.match(JSON.stringify(second.context), /CHILD_LITERAL_RESULT:PARK_FIRST/);
         assert.equal(requests().filter((request) => request.prompt === "PARK_FIRST").length, 1);
@@ -2729,6 +2797,10 @@ try {
           "save-handler entries survive restore",
         );
       }
+    }
+    if (exposure !== undefined) {
+      await until(() => notices().length === 2, "the continued child's turn completes");
+      probeCalled(exposure.declared);
     }
   } else if (phase.startsWith("crash-")) {
     faux.setResponses([fauxAssistantMessage("RECOVERY_NOTIFICATION")]);
@@ -5709,6 +5781,14 @@ try {
       assert.deepEqual(fs.readFileSync(path.join(runDir(id), name)), frozen[index]),
     );
     globalThis.setTimeout = originalTimeout;
+  } else if (exposure !== undefined) {
+    const launched = await call(
+      "delegate",
+      { prompt: "EXPOSURE_PROBE", model: "single-agent-fixture/literal-model" },
+      "exposure-launch",
+    );
+    assert.equal(runDetails(await settled(launched)).status, "completed");
+    probeCalled(exposure.declared);
   } else if (phase.startsWith("background-")) {
     // The selected SDK states the capability: official Pi has neither API.
     const hostWaits =

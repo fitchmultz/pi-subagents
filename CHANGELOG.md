@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Children can now get their own tool exposure. `subagents.toolExposure` in Pi's `settings.json` (user and trusted project file) is a `toolExposure` map for children only, on top of the child's own `toolExposure`. A tool set to `deferred` there is not declared in a child's requests and stays reachable: `tool_search` loads it and codemode scripts call it. This needs a fitchmultz/pi fork with the `toolExposure` setting and `tool_search` or `codemode` active in the child. Official Pi is unchanged: the key is not read there. Unset, nothing changes. See [Tools a child declares](docs/reference.md#tools-a-child-declares).
+
 ## 0.52.31 - 2026-11-10
 
 <!-- npm-release:unreleased:start -->

@@ -126,7 +126,7 @@ export default async function fixture(
   if (packageDir === undefined) {
     throw new Error("PI_PACKAGE_DIR is required");
   }
-  const { fauxProvider, fauxAssistantMessage } = await loadNativeAI(packageDir);
+  const { fauxProvider, fauxAssistantMessage, getCurrentTools } = await loadNativeAI(packageDir);
   const root = process.env.SINGLE_AGENT_TEST_ROOT;
   if (root === undefined) {
     throw new Error("SINGLE_AGENT_TEST_ROOT is required");
@@ -303,6 +303,7 @@ export default async function fixture(
         nativeThinking: pi.getThinkingLevel(),
         model: model.id,
         tools: pi.getAllTools().map((tool) => tool.name),
+        declared: getCurrentTools(context.messages).map((tool) => tool.name),
       },
       options?.signal,
     );
@@ -335,7 +336,7 @@ export default async function fixture(
         await delay(15);
       }
     }
-    return answer(context, prompt);
+    return prompt === "EXPOSURE_PROBE" ? exposureAnswer(context) : answer(context, prompt);
   };
   const cwdAnswer = (
     /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
@@ -452,6 +453,34 @@ export default async function fixture(
       { stopReason: "toolUse" },
     );
   };
+  // Calls the probe tool, after a tool_search load when the request does not declare it.
+  const exposureAnswer = (
+    /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
+  ) => {
+    const result = context.messages.findLast((message) => message.role === "toolResult");
+    if (result?.toolName === "exposure_probe") {
+      return fauxAssistantMessage(JSON.stringify(result.content));
+    }
+    const declared = getCurrentTools(context.messages).some(
+      (tool) => tool.name === "exposure_probe",
+    );
+    if (!declared && result !== undefined) {
+      return fauxAssistantMessage(`EXPOSURE_PROBE_UNREACHABLE:${JSON.stringify(result.content)}`);
+    }
+    return fauxAssistantMessage(
+      [
+        declared
+          ? { type: "toolCall", id: "exposure-call", name: "exposure_probe", arguments: {} }
+          : {
+              type: "toolCall",
+              id: "exposure-load",
+              name: "tool_search",
+              arguments: { query: "exposure_probe" },
+            },
+      ],
+      { stopReason: "toolUse" },
+    );
+  };
   const answer = (
     /** @type {import("@earendil-works/pi-ai").TranscriptContext} */ context,
     /** @type {string | undefined} */ prompt,
@@ -545,6 +574,18 @@ export default async function fixture(
         },
       },
     };
+  });
+  // A direct extension tool: every request declares it unless the settings say otherwise.
+  pi.registerTool({
+    name: "exposure_probe",
+    label: "Exposure probe",
+    description: "Return the exposure probe literal",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: () =>
+      Promise.resolve({
+        content: [{ type: "text", text: "EXPOSURE_PROBE_CALLED" }],
+        details: undefined,
+      }),
   });
   pi.registerTool({
     name: "nested_probe",

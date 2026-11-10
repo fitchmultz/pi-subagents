@@ -205,6 +205,29 @@ for (const phase of [
     }
   });
 }
+for (const phase of [
+  "tool-exposure-unset",
+  "tool-exposure-deferred",
+  "tool-exposure-precedence",
+  "tool-exposure-project",
+  "park-exposure",
+]) {
+  nodeTest(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-exposure-"));
+    try {
+      run(root, phase);
+      if (fs.existsSync(path.join(root, "tool-exposure-unsupported"))) {
+        assert.notEqual(
+          process.env.PI_COMPAT_HOST,
+          "fork",
+          "the qualified fork has the toolExposure setting",
+        );
+      }
+    } finally {
+      await cleanup(root);
+    }
+  });
+}
 for (const [phase, diagnostics] of [
   ["bash-shutdown-stale", 1],
   ["bash-shutdown-stale-exited", 1],
