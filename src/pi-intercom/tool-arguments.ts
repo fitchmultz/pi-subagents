@@ -102,6 +102,14 @@ function listingError(params: IntercomToolParams): ToolResultLike | undefined {
   if (params.children !== undefined && params.action !== "list") {
     return toolError("'children' is only valid for action='list'");
   }
+  if (
+    params.device !== undefined &&
+    (params.action !== "list" || params.scope !== undefined || params.children !== undefined)
+  ) {
+    return toolError(
+      "'device' is only valid for action='list', without 'scope' and 'children': it lists the main sessions of other devices",
+    );
+  }
   return;
 }
 export function validateIntercomArguments(params: IntercomToolParams): ToolResultLike | undefined {

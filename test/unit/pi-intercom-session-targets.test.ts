@@ -12,7 +12,10 @@ import {
   resolveSessionTarget,
   targetDisplayName,
 } from "../../src/pi-intercom/session-targets.ts";
-import { formatSessionListSections } from "../../src/pi-intercom/ui/session-format.ts";
+import {
+  formatDeviceListings,
+  formatSessionListSections,
+} from "../../src/pi-intercom/ui/session-format.ts";
 import type { SessionInfo } from "../../src/pi-intercom/types.ts";
 
 const sessions = [
@@ -268,6 +271,80 @@ nodeTest(
     assert.match(
       formatSessionListSections(mainsOnly, "lead0000-1", { children: true }),
       /\n\n\*\*Child sessions in your group \(0\):\*\*\n\n/,
+    );
+  },
+);
+
+nodeTest(
+  "formatDeviceListings prints one block per device: name@device rows, no sessions, each failure",
+  () => {
+    // A fixed device clock far from this machine's: ages must come from the device's `now`.
+    const now = 1_000_000_000;
+    const peer = (id: string, name: string, cwd: string, extra: Partial<SessionInfo>) => ({
+      id,
+      name,
+      cwd,
+      model: "fixture",
+      ...extra,
+    });
+    const busy = {
+      status: "tool:bash",
+      acceptsAsks: false,
+      pendingAsks: 0,
+      lastSeen: now - 5_000,
+      lastIntercomActivity: 0,
+    };
+    const listings = [
+      {
+        device: "laptop",
+        now,
+        sessions: [
+          peer("pi-bbbbbbbb1", "web-build", "/work/web", busy),
+          peer("pi-aaaaaaaa1", "api-fix", "/work/api", {
+            status: "idle",
+            acceptsAsks: true,
+            pendingAsks: 1,
+            lastSeen: now - 7_200_000,
+            lastIntercomActivity: now - 120_000,
+          }),
+          peer("pi-cccccccc1", "Web-Build", "/work/web", busy),
+        ],
+      },
+      { device: "desk", now, sessions: [] },
+      { device: "phone", failure: "unreachable (connect to host phone port 22: timed out)" },
+      { device: "old-box", failure: "not listed: its pi-subagents has no cross-device command" },
+    ];
+    const busyTags =
+      "state:busy, accepts_asks:false, pending_asks:0, last_intercom_activity:none, last_seen:5s ago";
+    const footer =
+      "**Other devices:** list only. send, ask and last reach the sessions of this device.";
+    assert.equal(
+      formatDeviceListings(listings),
+      [
+        "**Main sessions on laptop (3):**",
+        "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago]",
+        `• web-build@laptop (pi-bbbbb@laptop) — Native session cwd: /work/web (fixture) [tool:bash, target:pi-bbbbb@laptop, ${busyTags}]`,
+        `• Web-Build@laptop (pi-ccccc@laptop) — Native session cwd: /work/web (fixture) [tool:bash, target:pi-ccccc@laptop, ${busyTags}]`,
+        "",
+        "**Main sessions on desk (0):** no Pi session is connected there.",
+        "",
+        "**phone:** unreachable (connect to host phone port 22: timed out)",
+        "",
+        "**old-box:** not listed: its pi-subagents has no cross-device command",
+        "",
+        footer,
+      ].join("\n"),
+    );
+    assert.equal(
+      formatDeviceListings(listings.slice(0, 2), " API "),
+      [
+        '**Main sessions on laptop matching "API" (1 of 3):**',
+        "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago]",
+        "",
+        "**Main sessions on desk (0):** no Pi session is connected there.",
+        "",
+        footer,
+      ].join("\n"),
     );
   },
 );

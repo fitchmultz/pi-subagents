@@ -4,23 +4,28 @@ import type { InboundJournal } from "./inbound-journal.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import type { IntercomSessionScope, ToolResultLike } from "./runtime-types.ts";
 import {
+  formatDeviceListings,
   formatSessionListSections,
   sessionsForScope,
   type SessionListView,
 } from "./ui/session-format.ts";
+import type { RemoteDevices } from "./devices.ts";
 import { formatSessionTarget } from "./session-targets.ts";
 import { pendingAskPreview } from "./message-format.ts";
 import { toolError, toolText } from "./tool-arguments.ts";
 import { errorMessage } from "./validation.ts";
 type Journal = Readonly<Pick<InboundJournal, "entries" | "reconcileConsumed">>;
 type Replies = Readonly<Pick<ReplyTracker, "listPending">>;
+type Devices = Readonly<Pick<RemoteDevices, "list">>;
 
 export class IntercomInspection {
   private readonly journal: Journal;
   private readonly replies: Replies;
-  constructor(journal: Journal, replies: Replies) {
+  private readonly devices: Devices;
+  constructor(journal: Journal, replies: Replies, devices: Devices) {
     this.journal = journal;
     this.replies = replies;
+    this.devices = devices;
   }
   pending(): ToolResultLike {
     const asks = this.replies.listPending();
@@ -54,6 +59,23 @@ export class IntercomInspection {
     } catch (error) {
       return toolError(`Failed to list sessions: ${errorMessage(error)}`);
     }
+  }
+  /** The mains of the owner's other devices: `device` is one alias or "all". */
+  async listDevices(
+    device: string,
+    query: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<ToolResultLike> {
+    const result = await this.devices.list(device, signal);
+    if ("refusal" in result) {
+      return toolError(result.refusal);
+    }
+    return toolText(formatDeviceListings(result.listings, query), {
+      sessionCount: result.listings.reduce(
+        (count, listing) => count + ("sessions" in listing ? listing.sessions.length : 0),
+        0,
+      ),
+    });
   }
   async status(
     active: IntercomTransport,

@@ -10,6 +10,7 @@ import { IntercomConnection } from "./connection.ts";
 import { IntercomInbound } from "./inbound.ts";
 import { IntercomOutbound } from "./outbound.ts";
 import { IntercomInspection } from "./inspection.ts";
+import { RemoteDevices } from "./devices.ts";
 import { IntercomTools } from "./tools.ts";
 import { IntercomSessionEvents } from "./session-events.ts";
 import { registerIntercomTools } from "./tool-registration.ts";
@@ -49,7 +50,8 @@ function setupReporting(pi: ExtensionAPI) {
   const config = loadConfig((message) => {
     configError = message;
   });
-  const lifecycle = new IntercomLifecycle(pi, config, readIntercomLineage());
+  const lineage = readIntercomLineage();
+  const lifecycle = new IntercomLifecycle(pi, config, lineage);
   const reporter = new BackgroundReporter(() => lifecycle.live());
   let pendingConfigError = configError;
   pi.on("session_start", (_event, ctx) => {
@@ -64,11 +66,11 @@ function setupReporting(pi: ExtensionAPI) {
     }
   });
   pi.on("session_shutdown", () => reporter.shutdown());
-  return { config, lifecycle, reporter };
+  return { config, lifecycle, reporter, child: lineage !== undefined };
 }
 
 export default function piIntercomExtension(pi: ExtensionAPI): void {
-  const { config, lifecycle, reporter } = setupReporting(pi);
+  const { config, lifecycle, reporter, child } = setupReporting(pi);
   const replies = new ReplyTracker(config.askTimeoutMs);
   const journal = new InboundJournal(pi, lifecycle, replies);
   const wait = new ReplyWait(lifecycle, config.askTimeoutMs);
@@ -109,7 +111,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     connection,
   });
   const outbound = new IntercomOutbound({ pi, lifecycle, connection, replies, wait }, config);
-  const inspection = new IntercomInspection(journal, replies);
+  const inspection = new IntercomInspection(journal, replies, new RemoteDevices(config, child));
   const tools = new IntercomTools({ connection, outbound, inspection });
   new IntercomSessionEvents(pi, {
     lifecycle,

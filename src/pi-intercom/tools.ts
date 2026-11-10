@@ -33,12 +33,28 @@ function lastPage(result: Exclude<LastMessageResult, { readonly error: string }>
 interface ToolOwners {
   readonly connection: Readonly<Pick<IntercomConnection, "ensure" | "syncIdentity">>;
   readonly outbound: Readonly<Pick<IntercomOutbound, "send" | "ask" | "reply">>;
-  readonly inspection: Readonly<Pick<IntercomInspection, "list" | "status" | "pending">>;
+  readonly inspection: Readonly<
+    Pick<IntercomInspection, "list" | "listDevices" | "status" | "pending">
+  >;
 }
 export class IntercomTools {
   private readonly owners: ToolOwners;
   constructor(owners: ToolOwners) {
     this.owners = owners;
+  }
+  private async list(
+    active: IntercomTransport,
+    params: IntercomToolParams,
+    signal: AbortSignal | undefined,
+  ): Promise<ToolResultLike> {
+    if (params.device !== undefined) {
+      return await this.owners.inspection.listDevices(params.device, params.to, signal);
+    }
+    return await this.owners.inspection.list(active, {
+      scope: params.scope,
+      query: params.to,
+      children: params.children,
+    });
   }
   async execute(
     params: IntercomToolParams,
@@ -59,11 +75,7 @@ export class IntercomTools {
     const scope = params.scope ?? "all";
     switch (params.action) {
       case "list":
-        return await this.owners.inspection.list(active, {
-          scope,
-          query: params.to,
-          children: params.children,
-        });
+        return await this.list(active, params, signal);
       case "status":
         return await this.owners.inspection.status(active, scope, ctx);
       case "pending":
