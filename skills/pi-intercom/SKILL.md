@@ -8,10 +8,13 @@ description: "Discover eligible local Pi sessions, send guidance, ask/reply, or 
 The `intercom` tool is eager. There is no loader, separate child supervisor tool,
 workflow UI, or topic registry.
 
-1. Use `intercom({action:"list"})` before choosing a peer. Default discovery spans
-   projects and agent directories under the same OS user; optional
-   `scope:"project"` filters to this repository and its worktrees, and optional
-   `to` keeps the peers whose name or ID contains it.
+1. Use `intercom({action:"list"})` before choosing a peer. It prints the main
+   sessions first, then the child sessions of your group as one count line. A
+   child is a valid target by name or ID without its row; `children:true` prints
+   the rows. Default discovery spans projects and agent directories under the
+   same OS user; optional `scope:"project"` filters to this repository and its
+   worktrees, and optional `to` keeps the sessions whose name or ID contains it,
+   child rows included.
 2. Pick the exact displayed target. Names are not unique; resolve ambiguity rather
    than guessing. The current session is not a peer target.
 3. Choose the lightest operation. The lightest is no message: do not send

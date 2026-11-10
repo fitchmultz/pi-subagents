@@ -2464,28 +2464,51 @@ nodeTest(
     const otherChild = await makeSession(t, "other-child", {
       lineage: { rootSessionId: foreignRoot, parentSessionId: foreignRoot },
     });
-    const list = JSON.stringify(await executeIntercom(child, { action: "list" }));
-    assert.match(list, /group-main/);
-    assert.match(list, /group-sibling/);
-    assert.doesNotMatch(list, /other-main|other-child/);
-    // The child's peers: its main, its sibling, and the sibling's and its own fixture senders.
-    const listed = (await executeIntercom(child, { action: "list" })).content[0]?.text ?? "";
-    assert.equal(listed.split("\n• ").length - 1, 5, "the child and its four peers");
+    const listText = async (
+      caller: { readonly session: AgentSession },
+      params: Readonly<Record<string, unknown>> = {},
+    ) => (await executeIntercom(caller, { action: "list", ...params })).content[0]?.text ?? "";
+    // The child's group: its main, then three more children (its sibling and two fixture senders).
+    const listed = await listText(child);
+    assert.doesNotMatch(listed, /other-main|other-child/);
+    assert.match(listed, /\*\*Main sessions \(1\):\*\*\n• group-main \(/);
+    assert.match(listed, /\n\n\*\*Other child sessions in your group \(3: [^)]+\):\*\* /);
+    assert.equal(
+      listed.split("\n• ").length - 1,
+      2,
+      "the child and its main; children are counted",
+    );
     assert.equal(listed.split("**Delivery:**").length - 1, 1, "one delivery hint for all peers");
     assert.equal(listed.split("↳").length - 1, 1, "only the current session keeps its own hint");
-    const filtered =
-      (await executeIntercom(child, { action: "list", to: "GROUP-MAIN" })).content[0]?.text ?? "";
+    const withRows = await listText(child, { children: true });
+    assert.equal(withRows.split("\n• ").length - 1, 5, "the child, its main and three children");
+    assert.ok(
+      withRows.indexOf("\n• group-main (") < withRows.indexOf("\n• group-sibling ("),
+      "the main is listed before the children",
+    );
+    const siblings = await listText(child, { to: "GROUP-SIBLING" });
+    assert.match(
+      siblings,
+      /\*\*Main sessions matching "GROUP-SIBLING" \(0 of 1; omit `to` to list all\):\*\*\n\n\*\*Other child sessions in your group matching "GROUP-SIBLING" \(2 of 3\):\*\*\n• /,
+    );
+    assert.equal(siblings.split("\n• ").length - 1, 3, "the child and the two matching children");
+    const filtered = await listText(child, { to: "GROUP-MAIN" });
     assert.match(
       filtered,
-      /\*\*Other sessions matching "GROUP-MAIN" \(1 of 4; omit `to` to list all\):\*\*\n• group-main \(/,
+      /\*\*Main sessions matching "GROUP-MAIN" \(1 of 1; omit `to` to list all\):\*\*\n• group-main \(/,
     );
     assert.doesNotMatch(filtered, /sibling/);
-    const unmatched =
-      (await executeIntercom(child, { action: "list", to: "absent" })).content[0]?.text ?? "";
-    assert.match(unmatched, /matching "absent" \(0 of 4; omit `to` to list all\):\*\*$/);
-    const mains = JSON.stringify(await executeIntercom(main, { action: "list" }));
-    assert.match(mains, /other-main/);
-    assert.doesNotMatch(mains, /other-child/);
+    assert.match(await listText(child, { to: "absent" }), /matching "absent" \(0 of 3\):\*\*$/);
+    // The main's own four children are counted; another group's child is not reachable at all.
+    for (const view of [
+      await listText(main),
+      (await executeIntercom(main, { action: "status" })).content[0]?.text ?? "",
+    ]) {
+      assert.match(view, /\*\*Other main sessions \(\d+\):\*\*\n• /);
+      assert.match(view, /\n• other-main \(/);
+      assert.match(view, /\n\n\*\*Child sessions in your group \(4: [^)]+\):\*\* /);
+      assert.doesNotMatch(view, /other-child|• group-child|• group-sibling/);
+    }
     const registered = await child.sender.listSessions();
     const childPresence = registered.find((peer) => peer.name === "group-child");
     assertDefined(childPresence);
@@ -3919,6 +3942,11 @@ nodeTest(
         params: { action: "pending", delivery: "queue" },
         expected: /only valid for action='send' or action='ask'/,
         reason: "invalid_queue_arguments",
+      },
+      {
+        params: { action: "status", children: true },
+        expected: /'children' is only valid for action='list'/,
+        reason: undefined,
       },
       {
         params: { action: "send", to: "not-connected", message: "Missing target" },

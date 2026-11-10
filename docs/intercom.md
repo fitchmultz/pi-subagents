@@ -15,6 +15,7 @@ identical failures are reported once until the affected operation recovers.
 
 ```js
 intercom({ action: "list" });
+intercom({ action: "list", children: true });
 intercom({ action: "list", scope: "project" });
 intercom({ action: "list", to: "reviewer" });
 intercom({ action: "status" });
@@ -23,11 +24,31 @@ intercom({ action: "status" });
 Default discovery includes every eligible connected session under the same OS
 user, across cwd, Git worktrees, projects, HOME settings, and Pi agent directories.
 `scope:"project"` is an optional convenience filter, not an authority boundary.
-With `to`, `list` shows only the peers whose name or ID contains that text,
-ignoring case, and says how many peers it left out. Each peer is one line with its
-name, target, cwd, model and state. The delivery guidance is printed once after
-the peers, not under each one.
 The list does not enumerate all OS processes or disconnected native sessions.
+
+`list` and `status` print the current session and then two blocks:
+
+1. **Main sessions.** One line per main with its name, target, cwd, model and
+   state. Sessions of one repository and its worktrees sit together: the block is
+   sorted by project, then by name.
+2. **Child sessions of the caller's group.** One line in total: how many there
+   are, counted by state, and the call that prints their rows.
+   `list` with `children: true` prints one line per child instead.
+
+Every child is a valid target by name or ID whether or not its row is printed.
+With `to`, `list` keeps the sessions whose name or ID contains that text, ignoring
+case. It filters both blocks, says how many sessions each block holds in total,
+and prints every matching child row. The delivery guidance is printed once after
+the blocks.
+
+| Caller                | First block      | Second block                   |
+| --------------------- | ---------------- | ------------------------------ |
+| Main with children    | Every other main | Its own children, as a count   |
+| Main without children | Every other main | Absent                         |
+| Child                 | Its main         | The other children, as a count |
+
+A bridge identity is a main: it is a row in the first block of every main. It
+reads the mains through the bridge's own `list` route, not through this tool.
 
 A main session and its children form a collaboration group. Main↔child and
 sibling↔sibling communication works in both directions. Across groups, only

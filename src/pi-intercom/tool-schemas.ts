@@ -7,6 +7,9 @@ export const intercomSchema = Type.Object({
       description: "all (default) or project (repo and worktrees)",
     }),
   ),
+  children: Type.Optional(
+    Type.Boolean({ description: "list: print child rows instead of a count" }),
+  ),
   to: Type.Optional(Type.String({ description: "Session name or ID" })),
   message: Type.Optional(Type.String()),
   attachments: Type.Optional(

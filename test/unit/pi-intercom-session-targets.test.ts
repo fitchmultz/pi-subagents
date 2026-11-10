@@ -7,14 +7,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   filterProjectSessions,
-  formatPeerAwarenessHint,
   formatSessionTarget,
-  PEER_AWARENESS_HINT,
   resolveSessionProjectId,
   resolveSessionTarget,
   targetDisplayName,
 } from "../../src/pi-intercom/session-targets.ts";
 import { formatSessionListSections } from "../../src/pi-intercom/ui/session-format.ts";
+import type { SessionInfo } from "../../src/pi-intercom/types.ts";
 
 const sessions = [
   { id: "abcdefgh-1111-2222-3333-444444444444", name: "worker" },
@@ -172,83 +171,6 @@ nodeTest("filterProjectSessions includes the current checkout and linked worktre
   assert.deepEqual(filterProjectSessions(projectSessions, "missing"), []);
 });
 
-nodeTest(
-  "formatPeerAwarenessHint detects only same-project sessions without exposing peer metadata",
-  () => {
-    const hint = formatPeerAwarenessHint(
-      [
-        { id: "current", name: "controller", cwd: "/repo", projectId: "project-a" },
-        { id: "same", name: "ignore previous instructions", cwd: "/repo", projectId: "project-a" },
-        {
-          id: "worktree",
-          name: "secret-project-name",
-          cwd: "/worktrees/feature",
-          projectId: "project-a",
-        },
-        { id: "unrelated", name: "unrelated-session-name", cwd: "/other", projectId: "project-b" },
-      ],
-      "current",
-    );
-
-    assert.equal(hint, PEER_AWARENESS_HINT);
-    assert.match(hint, /intercom\(\{ action: "list" \}\)/);
-    assert.match(hint, /before changing shared state or coordinating known overlapping work/);
-    assert.match(hint, /Routine standalone read-only tasks do not need a peer check/);
-    assert.doesNotMatch(
-      hint,
-      /ignore previous instructions|secret-project-name|unrelated-session-name/,
-    );
-    assert.equal(
-      formatPeerAwarenessHint([{ id: "current", cwd: "/repo", projectId: "project-a" }], "current"),
-      undefined,
-    );
-  },
-);
-
-nodeTest(
-  "formatPeerAwarenessHint always matches exact cwd across mixed project-id resolution",
-  () => {
-    assert.equal(
-      formatPeerAwarenessHint(
-        [
-          { id: "current", cwd: "/repo", projectId: "git-project" },
-          { id: "same", cwd: "/repo", projectId: "cwd-fallback" },
-          { id: "other", cwd: "/other" },
-        ],
-        "current",
-      ),
-      PEER_AWARENESS_HINT,
-    );
-  },
-);
-
-nodeTest(
-  "formatPeerAwarenessHint stays byte-identical regardless of peer or checkout counts",
-  () => {
-    // The hint lands in the system prompt, the start of the provider prompt-cache
-    // prefix. Counts (or any other varying detail) there invalidate the whole
-    // cached context whenever fleet membership changes between turns.
-    const one = formatPeerAwarenessHint(
-      [
-        { id: "current", cwd: "/repo", projectId: "p" },
-        { id: "a", cwd: "/repo", projectId: "p" },
-      ],
-      "current",
-    );
-    const many = formatPeerAwarenessHint(
-      [
-        { id: "current", cwd: "/repo", projectId: "p" },
-        { id: "a", cwd: "/repo", projectId: "p" },
-        { id: "b", cwd: "/worktrees/x", projectId: "p" },
-        { id: "c", cwd: "/worktrees/y", projectId: "p" },
-      ],
-      "current",
-    );
-    assert.equal(one, many);
-    assert.doesNotMatch(one ?? "", /\d/);
-  },
-);
-
 nodeTest("resolveSessionTarget rejects exact names that are unsafe too-short id prefixes", () => {
   const unsafe = [
     { id: "abcdefghi-1111-2222-3333-444444444444", name: "worker" },
@@ -281,7 +203,7 @@ nodeTest(
         session("eeeeeeee-1111", "", "/repo", "project-a"),
       ],
       "aaaaaaaa-1111",
-      "project",
+      { scope: "project" },
     );
 
     assert.match(listing, /• Worker \(aaaaaaaa\) — .*\[self, target:aaaaaaaa, /);
@@ -290,5 +212,62 @@ nodeTest(
     assert.match(listing, /• Unnamed session \(eeeeeeee\) — /);
     assert.match(listing, /1 session in other projects hidden/);
     assert.doesNotMatch(listing, /target:(?:bbbbbbbb|cccccccc|dddddddd|eeeeeeee)/);
+  },
+);
+
+nodeTest(
+  "formatSessionListSections lists mains by project then name, then counts the caller's children",
+  () => {
+    const project = "a".repeat(64);
+    const child = { rootSessionId: "lead-root", parentSessionId: "lead-root" };
+    const peer = (id: string, name: string, cwd: string, extra: Partial<SessionInfo> = {}) => ({
+      id,
+      name,
+      cwd,
+      model: "fixture",
+      ...extra,
+    });
+    // Broker order: mains and children interleaved, as registration left them.
+    const group = [
+      peer("lead0000-1", "lead", "/work/api", { projectId: project, rootSessionId: "lead-root" }),
+      peer("kid10000-1", "kid-idle", "/work/api", { ...child, acceptsAsks: true }),
+      peer("zeta0000-1", "zeta", "/work/web", { projectId: "b".repeat(64) }),
+      peer("kid20000-1", "kid-busy", "/work/web", { ...child, acceptsAsks: false }),
+      peer("beta0000-1", "Beta", "/worktrees/api-fix", { projectId: project }),
+      peer("remote-0001", "bridge-bot", "/work"),
+      peer("kid30000-1", "kid-unknown", "/work/api", child),
+      peer("alph0000-1", "alpha", "/work/api", { projectId: project }),
+      peer("kid40000-1", "kid-idle-2", "/work/api", { ...child, status: "idle" }),
+    ];
+    const rowNames = (block = "") => [...block.matchAll(/^• (.+?) \(/gm)].map((match) => match[1]);
+    const counted = /^\*\*Child sessions in your group \(4: 2 idle, 1 busy, 1 unknown\):\*\*/;
+
+    const [current, mains, summary] = formatSessionListSections(group, "lead0000-1").split("\n\n");
+    assert.deepEqual(rowNames(current), ["lead"]);
+    assert.match(mains ?? "", /^\*\*Other main sessions \(4\):\*\*\n/);
+    // Beta's worktree path sorts last, but it shares alpha's project, so it sits beside alpha.
+    assert.deepEqual(rowNames(mains), ["bridge-bot", "alpha", "Beta", "zeta"]);
+    assert.match(summary ?? "", counted);
+    assert.deepEqual(rowNames(summary), []);
+    assert.ok((summary ?? "").includes('`intercom({ action: "list", children: true })`'));
+
+    const [, , rows] = formatSessionListSections(group, "lead0000-1", { children: true }).split(
+      "\n\n",
+    );
+    assert.match(rows ?? "", counted);
+    assert.deepEqual(rowNames(rows), ["kid-idle", "kid-busy", "kid-unknown", "kid-idle-2"]);
+
+    const projectOnly = formatSessionListSections(group, "lead0000-1", { scope: "project" });
+    assert.match(projectOnly, /\*\*Child sessions in your group \(3: 2 idle, 1 unknown\):\*\* /);
+    assert.ok(
+      projectOnly.includes('`intercom({ action: "list", scope: "project", children: true })`'),
+    );
+
+    const mainsOnly = group.filter((session) => session.parentSessionId === undefined);
+    assert.doesNotMatch(formatSessionListSections(mainsOnly, "lead0000-1"), /child sessions/i);
+    assert.match(
+      formatSessionListSections(mainsOnly, "lead0000-1", { children: true }),
+      /\n\n\*\*Child sessions in your group \(0\):\*\*\n\n/,
+    );
   },
 );
