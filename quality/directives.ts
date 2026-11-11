@@ -142,7 +142,7 @@ const sites: readonly Site[] = [
     id: "QX-004",
     rule: "typescript/no-unsafe-assignment",
     selector:
-      '<module>/{ enqueue, successor: createSuccessor, write, } = await import(pathToFileURL(path.join(repo, "dist/agent/storage.js")).href)',
+      '<module>/{ enqueue, write } = await import( pathToFileURL(path.join(repo, "dist/agent/storage.js")).href )',
   },
   {
     file: "test/fixtures/single-agent-parent.mjs",
