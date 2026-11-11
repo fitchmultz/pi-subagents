@@ -44,7 +44,7 @@ concurrency:
 
 env:
   CI: "true"
-  PI_AUTOMATION_REF: f407404914bf6d048e4d952c62711df5103cc7ef # main
+  PI_AUTOMATION_REF: 508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
@@ -73,9 +73,9 @@ jobs:
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
 
   resolve:
-    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@f407404914bf6d048e4d952c62711df5103cc7ef # main
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
     with:
-      automation-ref: f407404914bf6d048e4d952c62711df5103cc7ef # main
+      automation-ref: 508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
 
@@ -140,12 +140,13 @@ jobs:
           node-version: ">=24.21.0 <25"
           check-latest: true
           package-manager-cache: false
+      - uses: fitchmultz/.github/.github/actions/setup-linux-dns@508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
       - name: Install native test prerequisites
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
-            sudo apt-get update
-            sudo apt-get install -y fd-find ripgrep libcap2-bin lsof
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install -y fd-find ripgrep libcap2-bin lsof
             sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
           else
             brew install fd ripgrep
