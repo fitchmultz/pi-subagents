@@ -142,12 +142,6 @@ class AgentRuntime {
       throw new Error("Agent runtime is not attached.");
     }
   }
-  /** Rechecked after every await: an external abort() is invisible to narrowing. */
-  private refuseIfAborted(signal: AbortSignal | undefined, message: string): void {
-    if (signal?.aborted === true) {
-      throw new Error(message);
-    }
-  }
   private readonly wake = (): void => this.schedule.wake();
   private readonly recover = (): void => {
     for (const [file, seen] of this.observed) {
@@ -336,7 +330,9 @@ class AgentRuntime {
     this.checkMain();
     await this.attachmentTail;
     this.checkMain();
-    this.refuseIfAborted(signal, "Delegation cancelled before launch.");
+    if (signal?.aborted === true) {
+      throw new Error("Delegation cancelled before launch.");
+    }
     const launch = await prepareLaunch({
       input,
       context,
@@ -348,8 +344,6 @@ class AgentRuntime {
     });
     this.checkMain();
     enqueue(this.base, launch, { action: "run" });
-    // Cancellation after publication owns only the start; the queued run stays recoverable.
-    this.refuseIfAborted(signal, "Delegation cancelled after preparation; no run was started.");
     await ensureActor(this.base, launch, this.shutdown.signal);
     return renderReceipt(this.base, launch, this.ctx, {
       receipt: "launch",
