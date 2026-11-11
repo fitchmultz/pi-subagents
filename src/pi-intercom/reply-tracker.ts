@@ -94,8 +94,11 @@ function replyBySender(contexts: readonly IntercomContext[], to: string): Interc
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
   private readonly pendingTurnIds: string[] = [];
-  private currentTurnId: string | null = null;
-  private activeAgentId: string | null = null;
+  /** The ask attributed to the current turn, or only to the active agent between turns. */
+  private attribution:
+    | { readonly kind: "none" }
+    | { readonly kind: "turn"; readonly id: string }
+    | { readonly kind: "agent"; readonly id: string } = { kind: "none" };
   private readonly askTimeoutMs: number;
 
   constructor(askTimeoutMs = 10 * 60 * 1000) {
@@ -124,24 +127,28 @@ export class ReplyTracker {
 
   beginTurn(now = Date.now()): void {
     this.pruneExpired(now);
-    this.currentTurnId = this.pendingTurnIds.shift() ?? null;
-    if (this.currentTurnId !== null) {
-      this.activeAgentId = this.currentTurnId;
+    const next = this.pendingTurnIds.shift();
+    if (next !== undefined) {
+      this.attribution = { kind: "turn", id: next };
+    } else if (this.attribution.kind !== "none") {
+      this.attribution = { kind: "agent", id: this.attribution.id };
     }
   }
 
   currentTurn(): IntercomContext | null {
-    const id = this.currentTurnId ?? this.activeAgentId;
-    return id === null ? null : (this.pendingAsks.get(id) ?? null);
+    return this.attribution.kind === "none"
+      ? null
+      : (this.pendingAsks.get(this.attribution.id) ?? null);
   }
 
   endTurn(): void {
-    this.currentTurnId = null;
+    if (this.attribution.kind === "turn") {
+      this.attribution = { kind: "agent", id: this.attribution.id };
+    }
   }
 
   endAgent(): void {
-    this.currentTurnId = null;
-    this.activeAgentId = null;
+    this.attribution = { kind: "none" };
   }
 
   reset(): void {
@@ -169,13 +176,9 @@ export class ReplyTracker {
       }
     }
     expired += beforeQueued - this.pendingTurnIds.length;
-    if (this.currentTurnId !== null && expiring.has(this.currentTurnId)) {
-      this.currentTurnId = null;
-      expired += 1;
-    }
-    if (this.activeAgentId !== null && expiring.has(this.activeAgentId)) {
-      this.activeAgentId = null;
-      expired += 1;
+    if (this.attribution.kind !== "none" && expiring.has(this.attribution.id)) {
+      expired += this.attribution.kind === "turn" ? 2 : 1;
+      this.attribution = { kind: "none" };
     }
     return expired;
   }
@@ -200,9 +203,10 @@ export class ReplyTracker {
 
   /** Without an explicit target, the turn context wins, then a sole pending ask. */
   private implicitReplyTarget(pending: readonly IntercomContext[]): IntercomContext {
+    // Agent-only attribution does not pick an untargeted reply; it would bypass disambiguation.
     const current =
-      this.currentTurnId === null ? undefined : this.pendingAsks.get(this.currentTurnId);
-    if (current) {
+      this.attribution.kind === "turn" ? this.pendingAsks.get(this.attribution.id) : undefined;
+    if (current !== undefined) {
       return current;
     }
     const [solePending] = pending;
@@ -227,8 +231,7 @@ export class ReplyTracker {
   private hasTurnContext(messageId: string): boolean {
     return (
       this.pendingTurnIds.includes(messageId) ||
-      this.currentTurnId === messageId ||
-      this.activeAgentId === messageId
+      (this.attribution.kind !== "none" && this.attribution.id === messageId)
     );
   }
 
@@ -239,11 +242,8 @@ export class ReplyTracker {
         this.pendingTurnIds.splice(index, 1);
       }
     }
-    if (this.currentTurnId === messageId) {
-      this.currentTurnId = null;
-    }
-    if (this.activeAgentId === messageId) {
-      this.activeAgentId = null;
+    if (this.attribution.kind !== "none" && this.attribution.id === messageId) {
+      this.attribution = { kind: "none" };
     }
   }
 
