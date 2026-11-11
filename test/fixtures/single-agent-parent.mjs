@@ -875,6 +875,7 @@ const NestedResultSchema = Type.Object({ isError: Type.Boolean() });
 const JournalEntrySchema = Type.Object({
   type: Type.Optional(Type.String()),
   parentSession: Type.Optional(Type.String()),
+  cacheSessionId: Type.Optional(Type.String()),
   message: Type.Optional(Type.Object({ role: Type.Optional(Type.String()) })),
 });
 /** Subagent notify entries in a physical journal. */
@@ -1526,6 +1527,11 @@ try {
         .split("\n")
         .map((text) => parseValidated(JournalEntrySchema, text));
       assert.equal(journal[0]?.parentSession, manager.getSessionFile() ?? "");
+      assert.equal(
+        journal[0].cacheSessionId,
+        manager.getSessionId(),
+        "the fork sends providers the session id its copied conversation was cached under",
+      );
       assert.ok(journal.length > 1, "the unpublished fork includes inherited native entries");
       assert.ok(
         journal.some(

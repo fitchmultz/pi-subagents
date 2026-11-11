@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The session header of a `context: "fork"` child records `cacheSessionId`: the session id under which the copied conversation was sent to the provider. A fitchmultz/pi release that reads the field sends that id to providers, so the child's first request reads the copied conversation from the OpenAI prompt cache. Before, a fork child on an OpenAI route read almost none of it. A parent and its fork children now send their requests under one id.
+
 ## 0.52.34 - 2026-11-11
 
 <!-- npm-release:unreleased:start -->

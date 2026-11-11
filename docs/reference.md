@@ -49,6 +49,17 @@ historical tool calls and results; restricting a child's authority does not eras
 the parent's evidence. Native Pi system/tool instructions and applicable project
 resources still apply. Forking does not authorize nested delegation.
 
+A fork child has its own session id. Its session header also records, as
+`cacheSessionId`, the session id under which the copied conversation was sent to
+the provider. A fitchmultz/pi fork that reads the field sends that id to providers
+in place of the child's own, so the child's first request reads the copied
+conversation from the provider's prompt cache: OpenAI routes a request to a cache
+by session id. Other hosts ignore the field, and the child sends its own id; on
+OpenAI routes its first request then reads almost nothing from the cache. The
+main and its fork children send their requests under one id. OpenAI's guidance
+is about 15 requests per minute per key; above it some requests may be routed
+elsewhere and read less from the cache.
+
 The response acknowledges launch only. It does not claim a model response or
 completion, and no tool waits for child completion: the parent continues other
 work or ends its turn, and the completion notice resumes it. Aborting a parent reply
