@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
+import { commandSchema, type Command, type Launch } from "./contracts.ts";
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, shells, signalProcess } from "./process.ts";
 import { ParentCheck } from "./parent-check.ts";
@@ -12,7 +12,7 @@ import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
 import { BackgroundWait, endSession, reporting } from "./background-work.ts";
-import { saveResult } from "./run-result.ts";
+import { saveResult, saveTerminalResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { parkedToken } from "./generation.ts";
 
@@ -131,11 +131,10 @@ class Actor {
   }
   /** A run whose own save failed still ends with a terminal result and a recorded fault. */
   private observeBrokenRun(launch: Launch, error: unknown): void {
-    const reason = errorText(error);
-    this.errors.push(reason);
+    this.errors.push(errorText(error));
     process.exitCode = 1;
     try {
-      this.terminalResult(launch, reason);
+      saveTerminalResult(this.base, launch, this.stopping, errorText(error));
     } catch (failure) {
       this.errors.push(errorText(failure));
     }
@@ -390,23 +389,8 @@ class Actor {
           : {}),
       });
     }
-    this.terminalResult(launch, errorText(error));
+    saveTerminalResult(this.base, launch, this.stopping, errorText(error));
     process.exitCode = 1;
-  }
-  /** The run's terminal result, written only when nothing canonical exists yet. */
-  private terminalResult(launch: Launch, error: string): void {
-    const result: Result = {
-      id: launch.id,
-      owner: launch.owner,
-      status: this.stopping ? "stopped" : "failed",
-      endedAt: Date.now(),
-      error,
-    };
-    const directory = runDirectory(this.base, launch.id);
-    if (!fs.existsSync(path.join(directory, "result.json"))) {
-      fs.writeFileSync(path.join(directory, "output.txt"), "", { mode: 0o600 });
-      write(path.join(directory, "result.json"), result);
-    }
   }
   private async start(sdk: Awaited<ReturnType<typeof loadSDK>>, parked: Parking): Promise<Runtime> {
     const sessionManager = parked.open();
