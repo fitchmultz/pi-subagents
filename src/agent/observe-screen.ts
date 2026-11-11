@@ -41,16 +41,16 @@ interface ScreenOptions {
   hideThinking: boolean;
 }
 
-type ReadingVisibility =
-  | { readonly kind: "empty" }
-  | { readonly kind: "visible" | "hidden" | "failed"; readonly reading: Reading };
+/** What the layout shows, derived from the selection, focus and current failure. */
+type ScreenView = "empty" | "visible" | "hidden" | "failed";
 
 /** Native layout, cards and scrolling; all controls affect local reading state only. */
 export class ObserverScreen extends VStack {
   private selected: string;
   private readonly list = new ChildList((id) => this.open(id));
   private reading?: Reading | undefined;
-  private visibility: ReadingVisibility = { kind: "empty" };
+  /** The reading whose transcript, connection and index work are running, and its view then. */
+  private attached?: { readonly reading: Reading; readonly view: ScreenView } | undefined;
   private readonly connection = new ObservationChannel(() => this.schedule());
   private get client(): ObservationClient | undefined {
     return this.connection.current;
@@ -125,28 +125,35 @@ export class ObserverScreen extends VStack {
       ? this.reading
       : undefined;
   }
-  private reconcileVisibility(): void {
-    const previous = this.visibility;
-    const reading = this.reading;
-    let kind: ReadingVisibility["kind"] = "hidden";
-    if (this.failure.length > 0) {
-      kind = "failed";
-    } else if (this.visible()) {
-      kind = "visible";
+  private view(): ScreenView {
+    if (!this.reading) {
+      return "empty";
     }
-    const replaced = (previous.kind === "empty" ? undefined : previous.reading) !== reading;
-    if (previous.kind === "visible" && (replaced || kind !== "visible")) {
+    if (this.failure.length > 0) {
+      return "failed";
+    }
+    return this.visible() ? "visible" : "hidden";
+  }
+  private stopWork(): void {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    clearImmediate(this.indexer);
+    this.indexer = undefined;
+  }
+  private reconcileVisibility(): void {
+    const previous = this.attached;
+    const reading = this.reading;
+    const view = this.view();
+    const replaced = previous?.reading !== reading;
+    if (previous?.view === "visible" && (replaced || view !== "visible")) {
       previous.reading.transcript.pause();
-      clearTimeout(this.timer);
-      this.timer = undefined;
-      clearImmediate(this.indexer);
-      this.indexer = undefined;
+      this.stopWork();
       this.connection.pause();
     }
     if (replaced) {
       this.connection.clear();
     }
-    this.visibility = reading ? { kind, reading } : { kind: "empty" };
+    this.attached = reading ? { reading, view } : undefined;
     const visible = this.activeReading();
     if (visible) {
       visible.transcript.resume();
@@ -155,7 +162,7 @@ export class ObserverScreen extends VStack {
     }
   }
   private activeReading(): Reading | undefined {
-    return this.visibility.kind === "visible" ? this.visibility.reading : undefined;
+    return this.view() === "visible" ? this.reading : undefined;
   }
   private connect(): void {
     const reading = this.activeReading();
