@@ -33,6 +33,8 @@ interface Hydration {
 type HydrationPhase =
   | { readonly kind: "idle" }
   | { readonly kind: "reading"; readonly job: Hydration };
+/** The mounted page window: following live activity, or frozen above a named entry. */
+type Window = { readonly kind: "live" } | { readonly kind: "history"; readonly before: string };
 
 /** One mounted conversation page. Frozen cards are never mutated while the reader is above live. */
 export class ObserverTranscript extends Container {
@@ -41,7 +43,7 @@ export class ObserverTranscript extends Container {
   private readonly cards = new Map<string, Card>();
   private readonly pages = new Map<string, PageRequest>();
   private readonly expanded = new Set<string>();
-  private before?: string | undefined;
+  private window: Window = { kind: "live" };
   private start = 0;
   private stop = 0;
   private entries: NativeRecord[] = [];
@@ -83,7 +85,8 @@ export class ObserverTranscript extends Container {
   }
   private refresh(client?: ObservationClient): boolean {
     this.observe(client);
-    const revision = `${this.journal.native.records.length}:${client?.revision ?? -1}:${this.before ?? ""}`;
+    const anchor = this.window.kind === "history" ? this.window.before : "";
+    const revision = `${this.journal.native.records.length}:${client?.revision ?? -1}:${anchor}`;
     if (revision === this.revision && client === this.client) {
       return false;
     }
@@ -109,16 +112,16 @@ export class ObserverTranscript extends Container {
     this.mounted = [];
     for (const entry of selected.toReversed()) {
       this.mounted.unshift(
-        this.card(entry, this.before === undefined && entry === selected.at(-1)),
+        this.card(entry, this.window.kind === "live" && entry === selected.at(-1)),
       );
     }
     for (const card of this.mounted) {
       this.addChild(card);
     }
-    if (this.before === undefined) {
+    if (this.window.kind === "live") {
       this.live(client);
     }
-    if (this.before !== undefined) {
+    if (this.window.kind === "history") {
       this.historyRow("↓ Load later activity", 1);
     }
     this.evict();
@@ -348,9 +351,16 @@ export class ObserverTranscript extends Container {
     this.addChild(card);
   }
   private boundary(entries: NativeRecord[]): number {
-    const found = entries.findIndex((entry) => entry.value.id === this.before);
-    this.before = found < 0 ? undefined : this.before;
-    return this.before === undefined || found < 0 ? entries.length : found;
+    if (this.window.kind === "live") {
+      return entries.length;
+    }
+    const before = this.window.before;
+    const found = entries.findIndex((entry) => entry.value.id === before);
+    if (found < 0) {
+      this.window = { kind: "live" };
+      return entries.length;
+    }
+    return found;
   }
   private historyRow(label: string, direction: -1 | 1): void {
     this.addChild(
@@ -360,7 +370,7 @@ export class ObserverTranscript extends Container {
     );
   }
   history(direction: -1 | 1): string | undefined {
-    if ((direction < 0 && this.start === 0) || (direction > 0 && this.before === undefined)) {
+    if ((direction < 0 && this.start === 0) || (direction > 0 && this.window.kind === "live")) {
       return;
     }
     const anchor =
@@ -368,11 +378,12 @@ export class ObserverTranscript extends Container {
         ? this.mounted.at(0)
         : this.mounted.findLast((card) => this.journal.native.byId.has(card.id));
     const stop = direction < 0 ? this.start + 1 : this.stop + 23;
-    this.before = this.entries[stop]?.value.id;
+    const before = this.entries[stop]?.value.id;
+    this.window = before === undefined ? { kind: "live" } : { kind: "history", before };
     return anchor?.id;
   }
   latest(): void {
-    this.before = undefined;
+    this.window = { kind: "live" };
     const entry = this.entries.at(-1);
     if (!entry) {
       return;

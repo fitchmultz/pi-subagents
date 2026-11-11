@@ -64,6 +64,7 @@ import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
+import { CompletionSchedule } from "./completion-schedule.ts";
 
 interface AttachmentBinding {
   readonly context: ExtensionContext;
@@ -79,7 +80,6 @@ type AttachmentState =
       readonly binding: AttachmentBinding;
       readonly generation: string;
     };
-
 /** Legacy results are optional; their reconciliation reports an invalid configured root. */
 function legacyInput(): string[] {
   try {
@@ -88,18 +88,20 @@ function legacyInput(): string[] {
     return [];
   }
 }
+
 class AgentRuntime {
   private attachment: AttachmentState = { kind: "detached" };
   private readonly reporter = new BackgroundReporter(() => this.ctx);
-  // Polling remains only while change hints are unavailable or a reconciliation failed.
-  private timer?: NodeJS.Timeout;
-  private woken?: NodeJS.Immediate | undefined;
   // Change hints for the owner directory, legacy results and every awaited canonical file.
   private readonly watches: CompletionWatches;
+  // Polling remains only while change hints are unavailable or a reconciliation failed.
+  private readonly schedule = new CompletionSchedule(
+    () => this.scan(),
+    () => this.recover(),
+  );
   private awaited: ReadonlySet<string> = new Set();
   // Input stamps the last reconciliation saw; a one-second probe recovers dropped hints.
   private observed = new Map<string, string>();
-  private probe?: NodeJS.Timeout;
   private attachmentTail: Promise<void> = Promise.resolve();
   private readonly shutdown = new AbortController();
   private readonly child = isChild();
@@ -122,6 +124,10 @@ class AgentRuntime {
       ? this.attachment.binding.context
       : undefined;
   }
+  /** The process is shutting down; attachment cleanup and new work are closed. */
+  private get stopping(): boolean {
+    return this.shutdown.signal.aborted;
+  }
   private get base(): string {
     return this.binding.base;
   }
@@ -132,16 +138,11 @@ class AgentRuntime {
     if (isChild()) {
       throw new Error("Only a main session may delegate or control agent runs.");
     }
-    if (this.shutdown.signal.aborted || this.attachment.kind !== "attached") {
+    if (this.stopping || this.attachment.kind !== "attached") {
       throw new Error("Agent runtime is not attached.");
     }
   }
-  private readonly wake = (): void => {
-    this.woken ??= setImmediate(() => {
-      this.woken = undefined;
-      this.scan();
-    }).unref();
-  };
+  private readonly wake = (): void => this.schedule.wake();
   private readonly recover = (): void => {
     for (const [file, seen] of this.observed) {
       if (pathStamp(file) !== seen) {
@@ -151,8 +152,8 @@ class AgentRuntime {
     }
   };
   private readonly scan = (): void => {
-    clearTimeout(this.timer);
-    if (this.shutdown.signal.aborted || this.attachment.kind !== "attached" || this.child) {
+    this.schedule.cancelPoll();
+    if (this.stopping || this.attachment.kind !== "attached" || this.child) {
       return;
     }
     const { context } = this.attachment.binding;
@@ -176,23 +177,20 @@ class AgentRuntime {
     this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
     const next = this.watches.update(this.base, legacyInput(), this.awaited);
     if (!reconciled || next === "poll") {
-      this.timer = setTimeout(this.scan, 200).unref();
+      this.schedule.pollIn(200);
     } else if (next === "rescan") {
       // Publications before arming had no hint; reconcile once more after it.
       this.wake();
     }
   };
   private unwatch(): void {
-    clearTimeout(this.timer);
-    clearInterval(this.probe);
+    this.schedule.cancel();
     this.observed.clear();
-    clearImmediate(this.woken);
-    this.woken = undefined;
     this.watches.close();
     this.awaited = new Set();
   }
   private start(context: ExtensionContext): Promise<void> | undefined {
-    if (this.shutdown.signal.aborted) {
+    if (this.stopping) {
       return;
     }
     this.reporter.start();
@@ -214,7 +212,7 @@ class AgentRuntime {
     this.attachment = waiting;
     host.ready
       .then((accepted) => {
-        if (accepted && !this.shutdown.signal.aborted && this.attachment === waiting) {
+        if (accepted && !this.stopping && this.attachment === waiting) {
           return this.queueAttachment(binding);
         }
         return null;
@@ -249,13 +247,13 @@ class AgentRuntime {
         generation: attaching.generation,
         attached: true,
       });
-      if (this.shutdown.signal.aborted) {
+      if (this.stopping) {
         return;
       }
       this.attachment = { ...attaching, kind: "attached" };
       // Recovery and watch setup stay off the awaited startup path.
-      this.timer = setTimeout(this.scan, 200).unref();
-      this.probe = setInterval(this.recover, 1000).unref();
+      this.schedule.pollIn(200);
+      this.schedule.probeIn(1000);
     } catch (error) {
       this.attachment = { ...attaching, kind: "failed" };
       throw error;
