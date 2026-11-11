@@ -118,6 +118,11 @@ was lost from context, read its exact value from `launch.json` beside the run's
 reported `outputFile`; do not reconstruct or paraphrase it. For adopted legacy
 runs, retry using the canonical run ID returned by the existing-successor receipt,
 not the retired legacy handle.
+Cancellation before delegation preparation starts refuses the delegation.
+Cancellation during preparation is checked after the launch and Run command are
+saved: the actor is not started, and the same exact-prompt retry can start that
+queued run. Once actor startup begins, parent-turn cancellation does not retract
+the launch or stop the actor. Use Stop to cancel work handed to an actor.
 Guidance that arrives after its run settles is reported as stale rather than
 starting untracked work. Inspection text exposes the guidance command IDs and
 admission states, native receipt publication and separately known process exit.
