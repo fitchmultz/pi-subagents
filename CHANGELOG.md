@@ -2,8 +2,23 @@
 
 ## [Unreleased]
 
+## 0.52.33 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+
 - `intercom list` and `intercom status` print main sessions first, sorted by project and then by name, and then the child sessions of the caller's group as one line: how many, counted by state, and the call that prints their rows. `list` takes `children: true` to print one line per child, and `to` prints every child row it matches. Every child stays a valid target by name or ID. A real list of 87 sessions (11 mains, 76 children) went from 21.6 KB to 3.4 KB.
 - A main session can list the main sessions on the owner's other devices: `intercom({ action: "list", device: "all" })`, or `device` with one device name. The answer has one block per device, with each session written `name@device` and the fields of a local main row. A device that does not answer is listed as unreachable with the reason; a device without a Pi session or without this command says so. The tool runs one `ssh` command per device, all at the same time, and the packaged `dist/pi-intercom/remote-cli.js` on the other device joins its running broker for the list and leaves. No broker, service or port is started. Device names come from two new keys in `intercom/config.json`: `device` (this device's SSH alias) and `otherDevices` (the SSH aliases of the others); without them, a `device` list names the file and the keys to set. Only a main can use `device`, and without it `list` contacts no other device. This is a list only: `send`, `ask` and `last` reach the sessions of this device. See [Main sessions on other devices](docs/intercom.md#main-sessions-on-other-devices).
+
+<!-- npm-release:unreleased:end -->
+
+- feat: list main sessions first and count child sessions in intercom list (#400) ([d28f3d8](https://github.com/fitchmultz/pi-subagents/commit/d28f3d8d3bea64654d06ebd8bcceb4cb1e1c4c0f))
+
+### What's Changed
+
+- feat: list main sessions first and count child sessions in intercom list (1/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/400
+- feat: list the main sessions on the owner's other devices (2/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/401
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.32...v0.52.33
 
 ## 0.52.32 - 2026-11-10
 
