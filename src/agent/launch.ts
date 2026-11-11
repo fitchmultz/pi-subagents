@@ -84,6 +84,16 @@ function targetTrust(
   const settings = sdk.SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   return settings.getDefaultProjectTrust() === "always";
 }
+/**
+ * The session id whose provider prompt cache holds the invoking session's conversation.
+ * fitchmultz/pi records it as `cacheSessionId` in the header of a session that is itself a copy.
+ */
+function cacheSessionId(manager: ExtensionContext["sessionManager"]): string {
+  const header = manager.getHeader();
+  return header !== null && "cacheSessionId" in header && typeof header.cacheSessionId === "string"
+    ? header.cacheSessionId
+    : manager.getSessionId();
+}
 export async function prepareLaunch(options: {
   input: DelegateInput;
   context: ExtensionContext;
@@ -114,7 +124,13 @@ export async function prepareLaunch(options: {
   const inherited = input.context === "fork" ? context.sessionManager.getBranch() : [];
   const savedHeader =
     input.context === "fork"
-      ? { ...header, parentSession: context.sessionManager.getSessionFile() }
+      ? {
+          ...header,
+          parentSession: context.sessionManager.getSessionFile(),
+          // OpenAI routes a request to a cache by session id; the copied conversation is cached
+          // under the invoking session's. Hosts without `cacheSessionId` ignore the field.
+          cacheSessionId: cacheSessionId(context.sessionManager),
+        }
       : header;
   // Preserve the full native branch: no semantic tool filter or canned body.
   fs.writeFileSync(
