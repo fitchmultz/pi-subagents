@@ -687,15 +687,18 @@ an explicit deployment choice, not an automatic fallback to a split namespace.
 
 An unresponsive or missing socket is not permission to kill a possibly live
 owner. PID checks are conservative, including permission-denied cases. Linux
-records include native boot/namespace/start identity to reject proven PID reuse;
+records include native boot/namespace/start identity to reject proven PID reuse.
+macOS records use the shared process-group birth identity and a UTC birth strictly
+after the observed record publication time; Android uses the shared boot-qualified
+monotonic clock and conservative elapsed-age bound, never wall time;
 ambiguous legacy numeric PIDs remain blocking. A process is never killed merely
 to recover broker startup.
 
 Startup distinguishes absent, live and uncertain ownership. An unreadable or
 invalid PID record is uncertain, not permission to launch another broker.
 A startup claim stays owned while its process is live, regardless of age.
-Only a proven exited or replaced owner permits reclaiming it. Linux claims carry
-the same native process identity as broker PID records. Legacy or incomparable
+Only a proven exited or replaced owner permits reclaiming it. Claims carry
+the same native process identity and Android clock as broker PID records. Legacy or incomparable
 identities remain blocking; a timestamp alone cannot prove PID reuse.
 Each starter keeps the claim's
 file descriptor open and releases only the same device/inode, leaving a

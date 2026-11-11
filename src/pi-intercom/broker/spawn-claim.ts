@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hasErrorCode } from "../../shared/unknown.ts";
-import { brokerPidRecord, isLinuxProcessReplaced } from "./pid.ts";
+import { brokerPidRecord, isBrokerProcessReplaced } from "./pid.ts";
 
 type OwnerState = "live" | "exited" | "uncertain";
 
@@ -22,7 +22,9 @@ function ownerState(fd: number): OwnerState {
       return "uncertain";
     }
     process.kill(pid, 0);
-    return isLinuxProcessReplaced(pid, lines.slice(2).join("\n")) ? "exited" : "live";
+    return isBrokerProcessReplaced(pid, lines.slice(2).join("\n"), fstatSync(fd).mtimeMs)
+      ? "exited"
+      : "live";
   } catch (error) {
     return hasErrorCode(error, "ESRCH") ? "exited" : "uncertain";
   }

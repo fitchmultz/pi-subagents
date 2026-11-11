@@ -1,6 +1,6 @@
 import { execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
-import { isLinuxProcessReplaced, readLinuxProcess } from "../pi-intercom/broker/pid.ts";
+import { isLinuxProcessReplaced, readLinuxProcess } from "./linux-process.ts";
 import { hasErrorCode } from "./unknown.ts";
 
 const BIRTH_FIELDS = ["lstart=", "pgid="];
