@@ -54,6 +54,19 @@ function sameSecret(actual: unknown, expected: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+interface Endpoint {
+  readonly server: net.Server;
+  readonly socketPath: string;
+  readonly inode: number;
+}
+type ObservationPhase =
+  | { readonly kind: "opening" }
+  | ({ readonly kind: "listening" } & Endpoint)
+  | ({ readonly kind: "disabled"; readonly error: string } & {
+      readonly endpoint: Endpoint | undefined;
+    })
+  | { readonly kind: "closed" };
+
 /**
  * Actor-owned, read-only, push-only live view of the native child session. The actor is the sole
  * publisher; viewers can only connect, say hello once and read. The journal stays authoritative.
@@ -62,12 +75,9 @@ export class ActorObservation {
   private readonly state: LiveState;
   private readonly viewers = new Set<Viewer>();
   private readonly greeting = new Set<net.Socket>();
-  private server?: net.Server | undefined;
-  private socketPath?: string | undefined;
-  private inode?: number;
+  private phase: ObservationPhase = { kind: "opening" };
   private unsubscribe?: (() => void) | undefined;
   private timer?: NodeJS.Timeout | undefined;
-  private phase: "opening" | "listening" | "disabled" | "closed" = "opening";
   /** The actor's run is in progress, including native work before and after the agent loop. */
   private running = false;
   private lastContent = -Infinity;
@@ -128,19 +138,35 @@ export class ActorObservation {
       throw new Error("Observation endpoint already exists; refusing to replace it.");
     }
     const server = net.createServer(this.accept);
-    this.server = server;
     server.on("error", (error) => this.fail(error));
-    server.listen(socketPath);
-    await once(server, "listening");
-    this.socketPath = socketPath;
-    fs.chmodSync(socketPath, 0o600);
-    this.inode = fs.lstatSync(socketPath).ino;
-    if (this.phase === "opening") {
-      this.phase = "listening";
+    try {
+      server.listen(socketPath);
+      await once(server, "listening");
+      fs.chmodSync(socketPath, 0o600);
+      const endpoint = { server, socketPath, inode: fs.lstatSync(socketPath).ino };
+      if (this.phase.kind === "opening") {
+        this.phase = { kind: "listening", ...endpoint };
+      } else {
+        server.close();
+      }
+    } catch (error) {
+      server.close();
+      throw error;
     }
   }
   private get closed(): boolean {
-    return this.phase === "disabled" || this.phase === "closed";
+    return this.phase.kind === "disabled" || this.phase.kind === "closed";
+  }
+  private endpoint(): Endpoint | undefined {
+    switch (this.phase.kind) {
+      case "listening":
+        return this.phase;
+      case "disabled":
+        return this.phase.endpoint;
+      case "opening":
+      case "closed":
+        return undefined;
+    }
   }
   /** Native callbacks run inline before persistence: assign references, never throw or await. */
   private native(apply: () => void): void {
@@ -245,7 +271,7 @@ export class ActorObservation {
     }
     const viewer = new Viewer(socket, level);
     socket.on("drain", () => {
-      viewer.blocked = false;
+      viewer.drained();
       this.stats.drains++;
       this.schedule();
     });
@@ -371,42 +397,47 @@ export class ActorObservation {
   private fail(error: unknown): void {
     this.stats.error ??= errorMessage(error);
     if (!this.closed) {
-      this.phase = "disabled";
+      this.phase = { kind: "disabled", error: this.stats.error, endpoint: this.endpoint() };
       console.error(`Child observation disabled: ${this.stats.error}`);
       // Teardown leaves the native callback that observed the fault.
       setImmediate(() => this.release());
     }
   }
   /** Observation-only teardown; its own failures are recorded, never thrown into the actor. */
-  private release(): void {
+  private release(endpoint = this.endpoint()): void {
+    this.consumeEndpoint();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     clearTimeout(this.timer);
     this.timer = undefined;
     this.state.dispose();
     // The endpoint goes first: a disconnected viewer proves removal was already attempted.
-    const socketPath = this.socketPath;
-    this.socketPath = undefined;
     try {
       if (
-        socketPath !== undefined &&
-        fs.lstatSync(socketPath, { throwIfNoEntry: false })?.ino === this.inode
+        endpoint !== undefined &&
+        fs.lstatSync(endpoint.socketPath, { throwIfNoEntry: false })?.ino === endpoint.inode
       ) {
-        fs.unlinkSync(socketPath);
+        fs.unlinkSync(endpoint.socketPath);
       }
     } catch (error) {
       this.stats.error ??= `Observation endpoint removal failed: ${errorMessage(error)}`;
     }
-    this.server?.close();
-    this.server = undefined;
+    endpoint?.server.close();
     for (const socket of [...this.greeting, ...[...this.viewers].map((viewer) => viewer.socket)]) {
       socket.destroy();
     }
   }
+  /** Endpoint cleanup is one attempt: a failed unlink stays visible and is never retried. */
+  private consumeEndpoint(): void {
+    if (this.phase.kind === "disabled") {
+      this.phase = { kind: "disabled", error: this.phase.error, endpoint: undefined };
+    }
+  }
   /** Idempotent. Releases observation only; never stops or signals the actor's work. */
   close(): ObservationStats {
-    this.phase = "closed";
-    this.release();
+    const endpoint = this.endpoint();
+    this.phase = { kind: "closed" };
+    this.release(endpoint);
     const { events, toolEvents, progressUpdates, projections, unavailable, settled, evicted } =
       this.state;
     const counts = { events, toolEvents, progressUpdates, projections, unavailable };

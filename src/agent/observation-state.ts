@@ -117,10 +117,9 @@ export class LiveState {
   progressUpdates = 0;
   projections = 0;
   unavailable = 0;
-  private observing = false;
+  private phase: "observing" | "unobserved" | "disposed" = "unobserved";
   private nextKey = 0;
-  private queued = false;
-  private closed = false;
+  private settlement: "idle" | "queued" = "idle";
   private watermark: string | null;
   private readonly session: AgentSession;
   private readonly changed: () => void;
@@ -133,8 +132,11 @@ export class LiveState {
   }
   /** Start or stop the transient message view; tools persist across viewers. */
   observe(on: boolean): void {
+    if (this.phase === "disposed") {
+      return;
+    }
     this.resolve();
-    this.observing = on;
+    this.phase = on ? "observing" : "unobserved";
     this.message = undefined;
     this.settlements.length = 0;
     if (on) {
@@ -160,8 +162,8 @@ export class LiveState {
     if (event.message.role === "assistant") {
       this.assistant(event.type, event.message);
     }
-    if (event.type === "message_end" && !this.queued) {
-      this.queued = true;
+    if (event.type === "message_end" && this.settlement === "idle") {
+      this.settlement = "queued";
       // Native message_end listeners run just before the same job appends the entry.
       queueMicrotask(this.settle);
     }
@@ -211,9 +213,9 @@ export class LiveState {
     this.activityVersion++;
   }
   private readonly settle = (): void => {
-    this.queued = false;
+    this.settlement = "idle";
     try {
-      if (!this.closed && this.resolve()) {
+      if (this.phase !== "disposed" && this.resolve()) {
         this.changed();
       }
     } catch (error) {
@@ -227,9 +229,9 @@ export class LiveState {
    */
   resolve(): boolean {
     const { appended, departed } = this.appended();
-    this.evicted += departed && this.observing ? 1 : 0;
+    this.evicted += departed && this.phase === "observing" ? 1 : 0;
     for (const entry of appended) {
-      this.publish(entry, !departed && this.observing);
+      this.publish(entry, !departed && this.phase === "observing");
     }
     this.settlements.splice(0, Math.max(0, this.settlements.length - RETAINED.settlements));
     const changed = appended.length > 0;
@@ -271,7 +273,7 @@ export class LiveState {
     }
   }
   dispose(): void {
-    this.closed = true;
+    this.phase = "disposed";
   }
   readonly project = (value: unknown): string => {
     this.projections++;
