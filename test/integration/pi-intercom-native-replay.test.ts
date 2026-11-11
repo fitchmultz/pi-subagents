@@ -4304,6 +4304,8 @@ nodeTest(
     const journal = main.session.sessionManager
       .getEntries()
       .filter((entry) => entry.type === "custom")
+      // The host writes custom entries of its own, such as the fork's `pi.runtime` record.
+      .filter((entry) => entry.customType.startsWith("intercom_"))
       .map((entry) => [entry.customType, at(entry, "data", "to") ?? at(entry, "data", "from")]);
     assert.deepEqual(journal, [
       ["intercom_sent", "far-main@far"],
