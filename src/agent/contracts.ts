@@ -155,6 +155,7 @@ export const wakeFailureSchema = Type.Object({
     }),
   ),
 });
+export type WakeFailure = Static<typeof wakeFailureSchema>;
 export const readySchema = Type.Object({ token: Type.String() });
 export const exitSchema = Type.Object({
   pid: Type.Integer(),
@@ -162,6 +163,7 @@ export const exitSchema = Type.Object({
   signal: Type.Union([Type.String(), Type.Null()]),
   at: Type.Number(),
 });
+export type Exit = Static<typeof exitSchema>;
 export const admissionSchema = Type.Object({
   id: Type.String(),
   action: Type.String(),

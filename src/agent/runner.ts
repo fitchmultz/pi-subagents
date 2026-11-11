@@ -1,13 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  commandSchema,
-  parkedSchema,
-  type Command,
-  type Launch,
-  type Result,
-} from "./contracts.ts";
+import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, shells, signalProcess } from "./process.ts";
 import { ParentCheck } from "./parent-check.ts";
@@ -20,6 +14,7 @@ import { ActorObservation, type ObservationStats } from "./observation.ts";
 import { BackgroundWait, endSession, reporting } from "./background-work.ts";
 import { saveResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
+import { parkedToken } from "./generation.ts";
 
 interface LiveActor {
   readonly session: AgentSession;
@@ -367,12 +362,11 @@ class Actor {
       error: errorText(error),
     };
     const directory = runDirectory(this.base, launch.id);
-    if (fs.existsSync(path.join(this.dir, "parked.json"))) {
-      const parked = read(path.join(this.dir, "parked.json"), parkedSchema);
+    if (parkedToken(this.dir) !== undefined) {
       write(path.join(this.dir, `wake-failure-${this.token}.json`), {
         at: Date.now(),
         reason: errorText(error),
-        ...(unopened !== undefined && parked?.token === unopened
+        ...(unopened !== undefined && parkedToken(this.dir) === unopened
           ? { beforeOpen: { actorToken: this.token, parkedToken: unopened } }
           : {}),
       });
@@ -452,10 +446,10 @@ class Actor {
   async serve(): Promise<void> {
     let runtime: Runtime | undefined;
     let parked: Parking | undefined;
-    let parkedToken: string | undefined;
+    let parkedBeforeOpen: string | undefined;
     try {
       // Capture the old generation before SDK import or any native working-state operation.
-      parkedToken = read(path.join(this.dir, "parked.json"), parkedSchema)?.token;
+      parkedBeforeOpen = parkedToken(this.dir);
       const sdk = await loadSDK(this.initial.sdk);
       parked = new Parking(this.base, this.initial, this.token, sdk);
       runtime = await this.start(sdk, parked);
@@ -466,7 +460,7 @@ class Actor {
         await this.work.task;
       }
     } catch (error) {
-      this.failure(error, parked?.opened === true ? undefined : parkedToken);
+      this.failure(error, parked?.opened === true ? undefined : parkedBeforeOpen);
     } finally {
       await this.finish(runtime);
     }
