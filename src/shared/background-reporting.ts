@@ -7,21 +7,24 @@ import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 export class BackgroundReporter {
   private readonly episodes = new Map<string, string>();
   private readonly context: () => ExtensionContext | null | undefined;
-  private shuttingDown = false;
-  private headless = false;
+  /** Running uses the live context; shutdown selects the sink that is still safe. */
+  private phase:
+    | { readonly kind: "running" }
+    | { readonly kind: "shutdown"; readonly console: boolean } = { kind: "running" };
   constructor(context: () => ExtensionContext | null | undefined) {
     this.context = context;
   }
   start(): void {
-    this.shuttingDown = false;
+    this.phase = { kind: "running" };
   }
   shutdown(): void {
+    let console = false;
     try {
-      this.headless = this.context()?.hasUI === false;
+      console = this.context()?.hasUI === false;
     } catch {
-      this.headless = false;
+      console = false;
     }
-    this.shuttingDown = true;
+    this.phase = { kind: "shutdown", console };
   }
   recover(owner: string): void {
     this.episodes.delete(owner);
@@ -42,14 +45,14 @@ export class BackgroundReporter {
     if (this.repeated(owner, message)) {
       return;
     }
-    if (this.shuttingDown && this.headless) {
+    if (this.phase.kind === "shutdown" && this.phase.console) {
       console.error(message);
       this.published(owner, message);
       return;
     }
     try {
       const ctx = this.context();
-      if (!this.shuttingDown && ctx) {
+      if (this.phase.kind === "running" && ctx) {
         if (ctx.hasUI) {
           ctx.ui.notify(message, severity);
         } else {

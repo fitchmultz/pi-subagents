@@ -102,23 +102,28 @@ export function wait<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-let logBackpressure = false;
-let lostLogEvents = 0;
+type LogSink =
+  | { readonly kind: "writable" }
+  | { readonly kind: "backpressured"; readonly lost: number };
+let logSink: LogSink = { kind: "writable" };
 export function log(event: string, fields: UnknownRecord = {}): void {
-  if (logBackpressure) {
-    lostLogEvents = Math.min(Number.MAX_SAFE_INTEGER, lostLogEvents + 1);
+  if (logSink.kind === "backpressured") {
+    logSink = { kind: "backpressured", lost: Math.min(Number.MAX_SAFE_INTEGER, logSink.lost + 1) };
     return;
   }
-  logBackpressure = !process.stdout.write(
+  const writable = process.stdout.write(
     `${JSON.stringify({ timestamp: new Date().toISOString(), event, ...fields })}\n`,
   );
-  if (logBackpressure) {
+  if (!writable) {
+    logSink = { kind: "backpressured", lost: 0 };
     process.stdout.once("drain", () => {
-      logBackpressure = false;
-      if (lostLogEvents > 0) {
-        const lostEvents = lostLogEvents;
-        lostLogEvents = 0;
-        log("log_overflow", { result: "metadata_lost", lostEvents });
+      if (logSink.kind !== "backpressured") {
+        return;
+      }
+      const lost = logSink.lost;
+      logSink = { kind: "writable" };
+      if (lost > 0) {
+        log("log_overflow", { result: "metadata_lost", lostEvents: lost });
       }
     });
   }
