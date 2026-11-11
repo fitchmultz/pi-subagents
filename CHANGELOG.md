@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.35 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+
 - The session header of a `context: "fork"` child records `cacheSessionId`: the session id under which the copied conversation was sent to the provider. A fitchmultz/pi release that reads the field sends that id to providers, so the child's first request reads the copied conversation from the OpenAI prompt cache. Before, a fork child on an OpenAI route read almost none of it. A parent and its fork children now send their requests under one id.
+
+<!-- npm-release:unreleased:end -->
+
+- fix: record the cache session id in a fork child's session header (#405) ([1b842a9](https://github.com/fitchmultz/pi-subagents/commit/1b842a9850bac50ad65378da38f7d886ec9f5f49))
+
+### What's Changed
+
+- fix: record the cache session id in a fork child's session header by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/405
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.34...v0.52.35
 
 ## 0.52.34 - 2026-11-11
 
