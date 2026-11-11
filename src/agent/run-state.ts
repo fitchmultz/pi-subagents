@@ -3,8 +3,10 @@ import {
   admissionSchema,
   resultSchema,
   successorSchema,
+  waitingSchema,
   type Launch,
   type Result,
+  type Waiting,
 } from "./contracts.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 
@@ -12,6 +14,8 @@ type Admission = "pending" | "admitted";
 export type RunState =
   | { readonly kind: "saved-unadmitted" | "admitted" }
   | { readonly kind: "settled"; readonly result: Result };
+/** What a run's status can say; `unavailable` is an unreadable inventory row, not a run. */
+export type RunStatus = Result["status"] | "running" | "interrupted";
 
 /** Admission and result publication are separate durable facts. */
 export function runAdmission(base: string, launch: Launch): Admission {
@@ -49,12 +53,32 @@ export function continuationDecision(
   }
 }
 
-export function runStatus(base: string, launch: Launch, state: RunState, live: boolean): string {
-  if (state.kind === "settled") {
-    return state.result.status;
+/** A settled result owns the status. Otherwise only a live run without a successor is running. */
+export function runStatusOf(
+  result: Result | undefined,
+  live: boolean,
+  superseded: boolean,
+): RunStatus {
+  if (result !== undefined) {
+    return result.status;
   }
-  return live &&
-    read(path.join(runDirectory(base, launch.id), "successor.json"), successorSchema) === undefined
-    ? "running"
-    : "interrupted";
+  return live && !superseded ? "running" : "interrupted";
+}
+function hasSuccessor(base: string, launch: Launch): boolean {
+  return (
+    read(path.join(runDirectory(base, launch.id), "successor.json"), successorSchema) !== undefined
+  );
+}
+export function runStatus(base: string, launch: Launch, state: RunState, live: boolean): RunStatus {
+  return runStatusOf(
+    state.kind === "settled" ? state.result : undefined,
+    live,
+    hasSuccessor(base, launch),
+  );
+}
+/** The durable background work that keeps this run open; only a running run can wait. */
+export function runWaiting(base: string, launch: Launch, status: RunStatus): Waiting | undefined {
+  return status === "running"
+    ? read(path.join(runDirectory(base, launch.id), "waiting.json"), waitingSchema)
+    : undefined;
 }
