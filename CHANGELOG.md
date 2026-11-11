@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.36 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Wake the version workflow only for release events (#407) ([846ec6c](https://github.com/fitchmultz/pi-subagents/commit/846ec6c5036be3ba7318712cb3dcd7edfd649660))
+
+### What's Changed
+
+- Wake the version workflow only for release events by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/407
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.35...v0.52.36
+
 ## 0.52.35 - 2026-11-11
 
 <!-- npm-release:unreleased:start -->
