@@ -12,7 +12,6 @@ import {
   prepareBrokerSocketPath,
 } from "./paths.ts";
 import { isBrokerPidReused } from "./pid.ts";
-import { acquireSpawnClaim } from "./spawn-claim.ts";
 import { errorMessage, hasErrorCode } from "../../shared/unknown.ts";
 
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -86,61 +85,48 @@ export async function spawnBrokerIfNeeded(
     return;
   }
 
-  const release = acquireSpawnClaim(BROKER_SPAWN_LOCK);
-  if (release === undefined) {
-    await waitForBroker();
-    return;
-  }
+  await stopUnhealthyBrokerBeforeSpawn();
 
-  try {
-    if (await isBrokerRunning()) {
-      return;
-    }
-    await stopUnhealthyBrokerBeforeSpawn();
+  const brokerPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    import.meta.url.endsWith(".ts") ? "broker.ts" : "broker.js",
+  );
+  const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
+  const child = spawn(launch.command, launch.args, getBrokerSpawnOptions());
+  child.unref();
 
-    const brokerPath = join(
-      dirname(fileURLToPath(import.meta.url)),
-      import.meta.url.endsWith(".ts") ? "broker.ts" : "broker.js",
-    );
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
-    const child = spawn(launch.command, launch.args, getBrokerSpawnOptions());
-    child.unref();
-
-    await new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        child.off("error", onError);
-        child.off("exit", onExit);
-      };
-
-      const onError = (error: Readonly<Error>) => {
+  await new Promise<void>((resolve, reject) => {
+    let exit: string | undefined;
+    const cleanup = () => {
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    const onError = (error: Readonly<Error>) => {
+      cleanup();
+      reject(new Error(`Failed to spawn intercom broker: ${error.message}`, { cause: error }));
+    };
+    // A competing broker can win publication. Its healthy endpoint is success even
+    // when our candidate exits; the starter never owns or releases the broker's claim.
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      exit = signal === null ? `code ${code ?? "unknown"}` : `signal ${signal}`;
+      child.off("error", onError);
+    };
+    child.once("error", onError);
+    child.once("exit", onExit);
+    waitForBroker()
+      .then(() => {
         cleanup();
-        reject(new Error(`Failed to spawn intercom broker: ${error.message}`, { cause: error }));
-      };
-
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        resolve();
+      })
+      .catch((error: unknown) => {
         cleanup();
-        if (signal !== null) {
-          reject(new Error(`Intercom broker exited before startup with signal ${signal}`));
-          return;
-        }
-        reject(new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}`));
-      };
-
-      child.once("error", onError);
-      child.once("exit", onExit);
-      waitForBroker()
-        .then(() => {
-          cleanup();
-          resolve();
-        })
-        .catch((error: unknown) => {
-          cleanup();
-          reject(toError(error));
-        });
-    });
-  } finally {
-    release();
-  }
+        reject(
+          exit === undefined
+            ? toError(error)
+            : new Error(`${errorMessage(error)} Candidate exited with ${exit}.`, { cause: error }),
+        );
+      });
+  });
 }
 
 export async function isBrokerRunning(): Promise<boolean> {
@@ -249,7 +235,7 @@ function checkOneSocket(brokerSocket: string): Promise<boolean> {
   });
 }
 
-async function waitForBroker(timeoutMs = 5000): Promise<void> {
+export async function waitForBroker(timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     // Each probe must finish before the next to avoid parallel socket attempts.

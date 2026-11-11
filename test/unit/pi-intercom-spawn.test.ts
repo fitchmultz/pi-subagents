@@ -287,6 +287,39 @@ nodeTest(
   },
 );
 
+nodeTest(
+  "dead native claim owner is reclaimed and release preserves a replacement inode",
+  async () => {
+    fs.mkdirSync(pidDir, { recursive: true });
+    const claimPath = path.join(pidDir, "broker.spawn.lock");
+    const child = fork(path.join(projectRoot, "test/fixtures/broker-birth-owner.ts"), [claimPath], {
+      detached: true,
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    const exited = once(child, "exit");
+    try {
+      await once(child, "message");
+      assert.equal(Number.parseInt(readFileSync(claimPath, "utf8"), 10), child.pid);
+      assert.equal(acquireSpawnClaim(claimPath), undefined, "published live native owner blocks");
+      child.disconnect();
+      await exited;
+      const release = acquireSpawnClaim(claimPath);
+      assert.ok(release !== undefined, "proven exited owner is reclaimable");
+      fs.unlinkSync(claimPath);
+      writeFileSync(claimPath, "replacement claim\n");
+      release();
+      assert.equal(readFileSync(claimPath, "utf8"), "replacement claim\n");
+    } finally {
+      if (child.connected) {
+        child.disconnect();
+      }
+      await exited;
+      rmSync(pidDir, { recursive: true, force: true });
+    }
+  },
+);
+
 nodeTest("getBrokerLaunchSpec maps the legacy tsx default to native Node", () => {
   const spec = getBrokerLaunchSpec("/repo/broker.ts", "npx", ["--no-install", "tsx"]);
   assert.equal(spec.command, process.execPath);

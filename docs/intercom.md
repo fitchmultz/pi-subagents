@@ -656,7 +656,12 @@ the same runtime-root policy.
 The runtime directory is owned by the OS user, nonsymlink, and mode 0700; the
 socket is mode 0600. The broker starts on first use and exits after five seconds
 without connected sessions, unless a parked child still holds admitted input; that
-input waits for its main to return and wake the child. Concurrent startup uses the shared spawn lock.
+input waits for its main to return and wake the child. Concurrent publication uses
+the shared spawn lock, held by the broker process before it checks or changes
+endpoint files. Starters only launch detached candidates and wait for a healthy
+endpoint. A delayed candidate must acquire the same claim before publishing, even
+if its starter has exited or timed out. The broker releases its claim only after
+bind and PID publication finish (or startup fails).
 
 `PI_INTERCOM_RUNTIME_DIR` explicitly selects an isolated deployment. It must be
 an absolute private directory with a socket path within 100 UTF-8 bytes. Invalid
@@ -700,8 +705,9 @@ A startup claim stays owned while its process is live, regardless of age.
 Only a proven exited or replaced owner permits reclaiming it. Claims carry
 the same native process identity and Android clock as broker PID records. Legacy or incomparable
 identities remain blocking; a timestamp alone cannot prove PID reuse.
-Each starter keeps the claim's
-file descriptor open and releases only the same device/inode, leaving a
-replacement claim untouched.
+Each broker keeps the claim's file descriptor open and releases only the same
+device/inode, leaving a replacement claim untouched. Shutdown likewise removes
+only the socket inode it bound and the PID inode it published; a successor's
+endpoint files remain intact.
 
 Remote authenticated mail is separate: see [bridge setup](intercom-bridge.md).
