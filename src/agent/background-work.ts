@@ -32,6 +32,7 @@ export function backgroundCommands(
 }
 // The background_command monitor delivers once a second; a shorter wait learns nothing sooner.
 const POLL_MS = 1000;
+type WaitPhase = "waiting" | "ended" | "finished";
 /**
  * Keeps one run open while its session can still wake without new input: the run ends at the
  * first moment the session is idle, is not settling and lists no background work.
@@ -39,9 +40,9 @@ const POLL_MS = 1000;
 export class BackgroundWait {
   private readonly pause = new Wake();
   private readonly prompts: Promise<void>[] = [];
-  private stopped = false;
-  private recorded = "[]";
-  private since?: number | undefined;
+  private phase: WaitPhase = "waiting";
+  /** The durable record, or undefined when the run waits on nothing. */
+  private recorded?: Waiting | undefined;
   private readonly session: Reporting;
   private readonly file: string;
   /** `file` states what the run waits on while it waits; inventory and inspection read it. */
@@ -67,7 +68,9 @@ export class BackgroundWait {
   }
   /** Stop ends the wait; the stopping owner cancels the work and aborts the session. */
   end(): void {
-    this.stopped = true;
+    if (this.phase === "waiting") {
+      this.phase = "ended";
+    }
     this.pause.raise();
   }
   async settled(): Promise<void> {
@@ -76,6 +79,7 @@ export class BackgroundWait {
         await this.pause.sleep(POLL_MS);
       }
     } finally {
+      this.phase = "finished";
       this.record([]);
     }
   }
@@ -93,7 +97,7 @@ export class BackgroundWait {
     // No await between the list and these reads: the session marks a run active in the same
     // call that delivers a completion, so a wake cannot hide between them.
     const idle = this.session.isIdle && !this.session.isSettling && this.prompts.length === 0;
-    if (this.stopped || (idle && work.length === 0)) {
+    if (this.phase !== "waiting" || (idle && work.length === 0)) {
       return true;
     }
     this.record(this.session.isIdle ? work : []);
@@ -101,18 +105,16 @@ export class BackgroundWait {
   }
   private record(work: readonly BackgroundWork[]): void {
     const waiting = work.map(({ id, description }) => ({ id, description }));
-    const key = JSON.stringify(waiting);
-    if (key === this.recorded) {
+    if (JSON.stringify(waiting) === JSON.stringify(this.recorded?.work ?? [])) {
       return;
     }
-    this.recorded = key;
     if (waiting.length === 0) {
-      this.since = undefined;
+      this.recorded = undefined;
       fs.rmSync(this.file, { force: true });
       return;
     }
-    this.since ??= Date.now();
-    write(this.file, { since: this.since, work: waiting } satisfies Waiting);
+    this.recorded = { since: this.recorded?.since ?? Date.now(), work: waiting };
+    write(this.file, this.recorded satisfies Waiting);
   }
 }
 /**

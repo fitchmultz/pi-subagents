@@ -21,33 +21,42 @@ import { BackgroundWait, endSession, reporting } from "./background-work.ts";
 import { saveResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 
+interface LiveActor {
+  readonly session: AgentSession;
+  readonly context: { readonly pi: ExtensionAPI; readonly ctx: ExtensionContext };
+  readonly observation: ActorObservation;
+}
+type ActorPhase =
+  | { readonly kind: "unopened" }
+  | { readonly kind: "live"; readonly actor: LiveActor }
+  | { readonly kind: "finished" };
+type StopPhase =
+  | { readonly kind: "active" }
+  | { readonly kind: "stopping"; deadline?: NodeJS.Timeout; ended?: Promise<void> | undefined };
 class Actor {
   private work:
     | { readonly kind: "idle" }
-    | { readonly kind: "running"; readonly launch: Launch; readonly task: Promise<void> } = {
-    kind: "idle",
-  };
-  private stopping = false;
-  private stopDeadline?: NodeJS.Timeout;
+    | {
+        readonly kind: "running";
+        readonly launch: Launch;
+        readonly task: Promise<void>;
+        /** Set once the run stays open for the session's own background work. */
+        wait?: BackgroundWait | undefined;
+      } = { kind: "idle" };
+  private phase: ActorPhase = { kind: "unopened" };
+  private stopPhase: StopPhase = { kind: "active" };
   private nextParentCheck = 0;
-  private parking: ParkOutcome = "resident";
+  private parkOutcome: ParkOutcome = "resident";
   private readonly parent = new ParentCheck();
   // Raised when durable commands may need admission: change hints and stop.
   private readonly wake = new Wake();
   // A deferred run waits for an idle session, which has no command-file event.
-  private retry = false;
+  private deferredRun = false;
   private readonly errors: string[] = [];
   private readonly started = new Set<string>();
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
   private readonly validated = new Map<string, { identity: string; id: string }>();
   private readonly accounting = new UsageIndex();
-  private session?: AgentSession;
-  // Set while the current run stays open for its session's own background work.
-  private wait?: BackgroundWait | undefined;
-  // Stop's cancellation requests and abort; they need the live session.
-  private ended?: Promise<void> | undefined;
-  private observation?: ActorObservation;
-  private context?: { pi: ExtensionAPI; ctx: ExtensionContext };
   private readonly base: string;
   private readonly initial: Launch;
   private readonly token: string;
@@ -59,30 +68,48 @@ class Actor {
   private get dir(): string {
     return runDirectory(this.base, this.initial.rootId);
   }
+  private get stopping(): boolean {
+    return this.stopPhase.kind === "stopping";
+  }
+  private get actor(): LiveActor | undefined {
+    return this.phase.kind === "live" ? this.phase.actor : undefined;
+  }
+  private requireActor(): LiveActor {
+    const actor = this.actor;
+    if (!actor) {
+      throw new Error("Native child session is not ready.");
+    }
+    return actor;
+  }
   private readonly stop = (): void => {
     if (this.stopping) {
       return;
     }
-    this.stopping = true;
+    const actor = this.actor;
+    const work = this.work;
+    const ending: Extract<StopPhase, { kind: "stopping" }> = { kind: "stopping" };
+    this.stopPhase = ending;
     this.wake.raise();
     write(path.join(this.dir, `stopping-${this.token}.json`), { at: Date.now() });
     write(path.join(this.dir, "stop-acknowledged.json"), {
       at: Date.now(),
-      id: this.work.kind === "running" ? this.work.launch.id : undefined,
+      id: work.kind === "running" ? work.launch.id : undefined,
     });
-    this.wait?.end();
-    this.ended =
-      this.session &&
-      endSession(this.session, (error) => {
-        this.errors.push(errorText(error));
-      });
+    if (work.kind === "running") {
+      work.wait?.end();
+    }
+    ending.ended = actor
+      ? endSession(actor.session, (error) => {
+          this.errors.push(errorText(error));
+        })
+      : undefined;
     this.stopShells("SIGTERM");
     // Parent death leaves no parent-side escalation timer to stop an uncooperative tool.
-    this.stopDeadline = setTimeout(() => {
+    ending.deadline = setTimeout(() => {
       this.stopShells("SIGKILL");
       process.exit(1);
     }, 3000);
-    this.stopDeadline.unref();
+    ending.deadline.unref();
   };
   private stopShells(signal: NodeJS.Signals): void {
     try {
@@ -98,14 +125,11 @@ class Actor {
     }
   }
   private run(launch: Launch): void {
-    const session = this.session;
-    if (!session) {
-      throw new Error("Native child session is not ready.");
-    }
+    const { session } = this.requireActor();
     const baseline = new Set(session.sessionManager.getEntries().map((entry) => entry.id));
     const task = Promise.resolve().then(() => this.executeRun(launch, session, baseline));
     this.work = { kind: "running", launch, task };
-    this.observation?.working(true);
+    this.actor?.observation.working(true);
   }
   private async executeRun(
     launch: Launch,
@@ -128,11 +152,15 @@ class Actor {
       if (!this.stopping && reporting(session)) {
         // The child's own background work can still wake it: its result is not final yet.
         // No await since the prompt: guidance for the now idle session always finds the wait.
-        this.wait = new BackgroundWait(
+        const wait = new BackgroundWait(
           session,
           path.join(runDirectory(this.base, launch.id), "waiting.json"),
         );
-        await this.wait.settled();
+        const running = this.work;
+        if (running.kind === "running" && running.launch.id === launch.id) {
+          running.wait = wait;
+        }
+        await wait.settled();
       } else {
         await session.waitForIdle();
       }
@@ -140,9 +168,8 @@ class Actor {
     } catch (error) {
       save(errorText(error));
     } finally {
-      this.wait = undefined;
       this.work = { kind: "idle" };
-      this.observation?.working(false);
+      this.actor?.observation.working(false);
     }
   }
   private commandLaunch(command: Command): Launch | undefined {
@@ -164,10 +191,7 @@ class Actor {
     return launch;
   }
   private accept(command: Command): void {
-    const session = this.session;
-    if (!session) {
-      throw new Error("Native child session is not ready.");
-    }
+    const { session } = this.requireActor();
     const receipt = path.join(this.dir, "admissions", `${command.id}.json`);
     const launch = this.commandLaunch(command);
     if (!launch) {
@@ -177,7 +201,7 @@ class Actor {
       command.action === "run" &&
       (this.stopping || this.work.kind === "running" || !session.isIdle)
     ) {
-      this.retry = true;
+      this.deferredRun = true;
       return;
     }
     this.started.add(command.id);
@@ -208,7 +232,7 @@ class Actor {
         return (
           this.work.kind !== "running" ||
           this.work.launch.id !== launch.id ||
-          (session.isIdle && this.wait === undefined)
+          (session.isIdle && this.work.wait === undefined)
         );
       case "run":
         return false;
@@ -223,8 +247,8 @@ class Actor {
         this.run(launch);
         return;
       case "steer":
-        if (session.isIdle && this.wait) {
-          this.wait.guide(command.prompt);
+        if (session.isIdle && this.work.kind === "running" && this.work.wait) {
+          this.work.wait.guide(command.prompt);
           return;
         }
         // Synchronous native queue admission cannot turn into an idle prompt after an await.
@@ -275,7 +299,7 @@ class Actor {
         this.errors.push(errorText(error));
       });
     }
-    return this.stopping && this.work.kind === "idle" && (this.session?.isIdle ?? true);
+    return this.stopping && this.work.kind === "idle" && (this.actor?.session.isIdle ?? true);
   }
   /** Durable command readiness, not elapsed time, defines admission. */
   private async admitCommands(runtime: Runtime, parked: Parking): Promise<void> {
@@ -286,14 +310,14 @@ class Actor {
       while (!this.shouldExit()) {
         // Each liveness tick also rechecks the directory for change hints the OS dropped.
         const watch = commands.ensure();
-        if ((this.wake.take() || this.retry || watch !== "watching") && !this.stopping) {
-          this.retry = false;
+        if ((this.wake.take() || this.deferredRun || watch !== "watching") && !this.stopping) {
+          this.deferredRun = false;
           this.pending().forEach((command) => this.accept(command));
         }
         if (await this.park(runtime, parked)) {
           return;
         }
-        const polling = this.retry || this.stopping || watch === "unwatched";
+        const polling = this.deferredRun || this.stopping || watch === "unwatched";
         const tick = Math.max(1, this.nextParentCheck - performance.now());
         await this.wake.sleep(polling ? 100 : tick);
       }
@@ -306,16 +330,17 @@ class Actor {
   /** Parks a final-idle actor; the parent/stop owner stays live while preparation awaits. */
   private async park(runtime: Runtime, parked: Parking): Promise<boolean> {
     const owner = new AbortController();
+    const actor = this.actor;
     const watch = setInterval(() => {
       if (this.shouldExit() || this.stopping) {
         owner.abort();
       }
     }, 100);
     try {
-      this.parking = await parked.park(runtime, {
+      this.parkOutcome = await parked.park(runtime, {
         signal: owner.signal,
-        pi: this.context?.pi,
-        busy: this.stopping || this.work.kind === "running" || this.observation?.watched === true,
+        pi: actor?.context.pi,
+        busy: this.stopping || this.work.kind === "running" || actor?.observation.watched === true,
         // Raced commands and viewers keep this actor resident; the loop admits after release.
         quiet: () => {
           const queued = this.pending().some((command) => this.commandLaunch(command));
@@ -323,14 +348,14 @@ class Actor {
             this.wake.raise();
           }
           const idle = this.work.kind === "idle" && !this.stopping;
-          return !queued && idle && this.observation?.watched !== true;
+          return !queued && idle && actor?.observation.watched !== true;
         },
         errors: this.errors,
       });
     } finally {
       clearInterval(watch);
     }
-    return this.parking !== "resident";
+    return this.parkOutcome !== "resident";
   }
   private failure(error: unknown, unopened?: string): void {
     const launch = this.work.kind === "running" ? this.work.launch : this.initial;
@@ -360,14 +385,15 @@ class Actor {
   }
   private async start(sdk: Awaited<ReturnType<typeof loadSDK>>, parked: Parking): Promise<Runtime> {
     const sessionManager = parked.open();
+    let started: LiveActor["context"] | undefined;
     const factory = childRuntime(sdk, this.initial, {
       directory: this.dir,
       token: this.token,
       saved: parked.saved,
       started: (pi, ctx) => {
-        this.context = { pi, ctx };
+        started = { pi, ctx };
       },
-      tool: (event) => this.observation?.tool(event),
+      tool: (event) => this.actor?.observation.tool(event),
     });
     const runtime = await sdk.createAgentSessionRuntime(factory, {
       cwd: this.initial.cwd,
@@ -375,7 +401,8 @@ class Actor {
       sessionManager,
     });
     try {
-      await this.ready(runtime, parked);
+      // `session_start` fires during bindExtensions, after this call starts.
+      await this.ready(runtime, parked, () => started);
     } catch (error) {
       // A runtime that never became ready is still disposed, so the failed actor exits.
       await runtime.dispose();
@@ -383,27 +410,33 @@ class Actor {
     }
     return runtime;
   }
-  private async ready(runtime: Runtime, parked: Parking): Promise<void> {
-    this.session = runtime.session;
-    await this.session.bindExtensions({
+  private async ready(
+    runtime: Runtime,
+    parked: Parking,
+    started: () => LiveActor["context"] | undefined,
+  ): Promise<void> {
+    const { session } = runtime;
+    await session.bindExtensions({
       mode: "print",
       onError: (error) => {
         this.errors.push(error.error);
       },
     });
-    if (!this.context) {
+    const context = started();
+    if (!context) {
       throw new Error("Child extension context is unavailable.");
     }
-    initializeCwd(this.context.pi, this.context.ctx, this.initial.cwd, this.dir);
+    initializeCwd(context.pi, context.ctx, this.initial.cwd, this.dir);
     if (this.initial.name !== undefined && !parked.saved) {
-      this.session.sessionManager.appendSessionInfo(this.initial.name);
+      session.sessionManager.appendSessionInfo(this.initial.name);
     }
     // Optional live view, bound before readiness; its faults never change native execution.
-    this.observation = await ActorObservation.open(this.session, {
+    const observation = await ActorObservation.open(session, {
       token: this.token,
       rootId: this.initial.rootId,
-      sessionId: this.session.sessionManager.getSessionId(),
+      sessionId: session.sessionManager.getSessionId(),
     });
+    this.phase = { kind: "live", actor: { session, context, observation } };
     write(path.join(this.dir, "actor.lock", "process.json"), {
       ...ownIdentity(),
       token: this.token,
@@ -411,7 +444,7 @@ class Actor {
     write(path.join(this.dir, "ready.json"), {
       pid: process.pid,
       token: this.token,
-      sessionId: this.session.sessionManager.getSessionId(),
+      sessionId: session.sessionManager.getSessionId(),
       at: Date.now(),
     });
     parked.adopt();
@@ -441,23 +474,25 @@ class Actor {
   private async finish(runtime: Runtime | undefined): Promise<void> {
     // Stop's cancellations need the session's job monitor, which disposal ends. The signal
     // handlers stay until then: the stopping parent's SIGTERM must not end this process first.
-    await this.ended;
+    const actor = this.actor;
+    await (this.stopPhase.kind === "stopping" ? this.stopPhase.ended : undefined);
     process.off("SIGTERM", this.stop);
     process.off("SIGINT", this.stop);
-    const observation: ObservationStats | undefined = this.observation?.close();
-    if (this.parking === "resident") {
+    const observation: ObservationStats | undefined = actor?.observation.close();
+    if (this.parkOutcome === "resident") {
       await runtime?.dispose();
     }
     if (this.stopping) {
       this.stopShells("SIGKILL");
     }
-    clearTimeout(this.stopDeadline);
+    clearTimeout(this.stopPhase.kind === "stopping" ? this.stopPhase.deadline : undefined);
     write(path.join(this.dir, `shutdown-${this.token}.json`), {
       at: Date.now(),
       errors: this.errors,
       ...(observation === undefined ? {} : { observation }),
     });
-    if (this.parking !== "resident") {
+    this.phase = { kind: "finished" };
+    if (this.parkOutcome !== "resident") {
       // Parked authority requires actual exit; no leftover extension handle may keep it alive.
       process.exit();
     }
