@@ -186,12 +186,13 @@ function receiptOf(value: unknown): SendResult | undefined {
   };
 }
 
-/** What a device did with a message: the broker's receipt, then the answer or why none came. */
-interface Delivery {
-  readonly receipt: SendResult;
-  readonly reply?: Message | undefined;
-  readonly noReply?: Error | undefined;
-}
+/** What one remote command established, decided once from its exit and reply line. */
+type Exchange =
+  | { readonly kind: "not-sent"; readonly error: Error }
+  | { readonly kind: "unknown"; readonly error: Error }
+  | { readonly kind: "answered"; readonly receipt: SendResult; readonly reply: Message }
+  | { readonly kind: "accepted"; readonly receipt: SendResult }
+  | { readonly kind: "unanswered"; readonly receipt: SendResult; readonly reason: Error };
 
 /** A SendError says whether the device received the message: `not-sent`, or `unconfirmed`. */
 function notSent(messageId: string, cause: Readonly<Error>): SendError {
@@ -202,22 +203,33 @@ function unknown(messageId: string, words: string): SendError {
 }
 
 /** Why a message request got no reply line. */
-function unanswered(device: string, messageId: string, exit: Exit, signal?: AbortSignal): Error {
+function unanswered(
+  device: string,
+  messageId: string,
+  exit: Exit,
+  signal?: AbortSignal,
+): Extract<Exchange, { kind: "not-sent" | "unknown" }> {
   if (signal?.aborted === true) {
     return exit.requested
-      ? unknown(messageId, "Cancelled")
-      : notSent(messageId, new Error("Cancelled"));
+      ? { kind: "unknown", error: unknown(messageId, "Cancelled") }
+      : { kind: "not-sent", error: notSent(messageId, new Error("Cancelled")) };
   }
   const { reason, unreachable, ran } = noReply(exit);
   return ran
-    ? unknown(
-        messageId,
-        `Delivery unknown: ${device} gave no answer after the request was handed over (${reason}). ${CHECK_FIRST}`,
-      )
-    : notSent(
-        messageId,
-        new Error(`Not sent to ${device}: ${unreachable ? `unreachable (${reason})` : reason}`),
-      );
+    ? {
+        kind: "unknown",
+        error: unknown(
+          messageId,
+          `Delivery unknown: ${device} gave no answer after the request was handed over (${reason}). ${CHECK_FIRST}`,
+        ),
+      }
+    : {
+        kind: "not-sent",
+        error: notSent(
+          messageId,
+          new Error(`Not sent to ${device}: ${unreachable ? `unreachable (${reason})` : reason}`),
+        ),
+      };
 }
 
 /** Why an ask ended on the receipt of its question: the wait for the reply was cut off. */
@@ -229,33 +241,58 @@ function lostReply(device: string, exit: Exit, signal?: AbortSignal): Error {
   );
 }
 
-/** What the device's reply line says about a message. Throws when it was not delivered. */
-function delivery(device: string, messageId: string, reply: Reply): Delivery {
+/** What the device's reply line says, including an accepted ask whose reply was lost. */
+function exchange(options: {
+  readonly device: string;
+  readonly messageId: string;
+  readonly expectsReply: boolean;
+  readonly exit: Exit;
+  readonly signal: AbortSignal | undefined;
+  readonly reply: Reply;
+}): Exchange {
+  const { device, messageId, expectsReply, exit, signal, reply } = options;
   const receipt = receiptOf(reply.receipt);
   if (typeof reply.error !== "string") {
     if (receipt === undefined) {
-      throw unknown(
-        messageId,
-        `Delivery unknown: ${device} gave an unreadable answer. ${CHECK_FIRST}`,
-      );
+      return {
+        kind: "unknown",
+        error: unknown(
+          messageId,
+          `Delivery unknown: ${device} gave an unreadable answer. ${CHECK_FIRST}`,
+        ),
+      };
     }
-    return { receipt, reply: normalizeMessage(reply.reply) ?? undefined };
+    const message = normalizeMessage(reply.reply) ?? undefined;
+    if (message !== undefined) {
+      return { kind: "answered", receipt, reply: message };
+    }
+    return expectsReply
+      ? { kind: "unanswered", receipt, reason: lostReply(device, exit, signal) }
+      : { kind: "accepted", receipt };
   }
   if (receipt !== undefined) {
-    return { receipt, noReply: refusal(reply.error, reply.code) };
+    return expectsReply
+      ? { kind: "unanswered", receipt, reason: refusal(reply.error, reply.code) }
+      : { kind: "accepted", receipt };
   }
   if (reply.deliveryUnknown === true) {
-    throw unknown(
-      messageId,
-      `Delivery unknown: ${device} did not confirm the delivery (${reply.error}). ${CHECK_FIRST}`,
-    );
+    return {
+      kind: "unknown",
+      error: unknown(
+        messageId,
+        `Delivery unknown: ${device} did not confirm the delivery (${reply.error}). ${CHECK_FIRST}`,
+      ),
+    };
   }
-  throw notSent(
-    messageId,
-    UNSUPPORTED.test(reply.error)
-      ? new Error(`Not sent to ${device}: ${OLDER}`)
-      : refusal(reply.error, reply.code),
-  );
+  return {
+    kind: "not-sent",
+    error: notSent(
+      messageId,
+      UNSUPPORTED.test(reply.error)
+        ? new Error(`Not sent to ${device}: ${OLDER}`)
+        : refusal(reply.error, reply.code),
+    ),
+  };
 }
 
 /** The device's own words, with the recovery code that a local refusal of that kind carries. */
@@ -349,7 +386,7 @@ export class RemoteDevices {
       readonly options: Options;
       readonly signal?: AbortSignal | undefined;
     },
-  ): Promise<Delivery & { readonly lost: () => Error }> {
+  ): Promise<Exchange> {
     const { sender, target, options, signal } = input;
     const messageId = options.messageId ?? randomUUID();
     let from: SessionInfo | undefined;
@@ -376,13 +413,16 @@ export class RemoteDevices {
     };
     const exit = await run(target.device, message, signal);
     const reply = replyOf(exit);
-    if (reply === undefined) {
-      throw unanswered(target.device, messageId, exit, signal);
-    }
-    return {
-      ...delivery(target.device, messageId, reply),
-      lost: () => lostReply(target.device, exit, signal),
-    };
+    return reply === undefined
+      ? unanswered(target.device, messageId, exit, signal)
+      : exchange({
+          device: target.device,
+          messageId,
+          expectsReply: command === "ask",
+          exit,
+          signal,
+          reply,
+        });
   }
   /**
    * Sends to a session of another device and returns that broker's receipt. Throws like a
@@ -393,7 +433,11 @@ export class RemoteDevices {
     target: DeviceTarget,
     message: { readonly options: Options; readonly signal?: AbortSignal | undefined },
   ): Promise<SendResult> {
-    return (await this.deliver("send", { sender, target, ...message })).receipt;
+    const result = await this.deliver("send", { sender, target, ...message });
+    if (result.kind === "not-sent" || result.kind === "unknown") {
+      throw result.error;
+    }
+    return result.receipt;
   }
   /**
    * Asks a session of another device and waits for its reply, up to the ask timeout. `onSent`
@@ -408,24 +452,24 @@ export class RemoteDevices {
       readonly onSent: (receipt: SendResult) => void;
     },
   ): Promise<Message> {
-    const {
-      receipt,
-      reply,
-      noReply: failure,
-      lost,
-    } = await this.deliver("ask", {
+    const result = await this.deliver("ask", {
       sender,
       target,
       options: request.options,
       signal: request.signal,
     });
-    if (!receipt.accepted) {
-      throw new AskDeliveryError(receipt);
+    if (result.kind === "not-sent" || result.kind === "unknown") {
+      throw result.error;
     }
-    request.onSent(receipt);
-    if (reply === undefined) {
-      throw failure ?? lost();
+    if (!result.receipt.accepted) {
+      throw new AskDeliveryError(result.receipt);
     }
-    return reply;
+    request.onSent(result.receipt);
+    if (result.kind === "answered") {
+      return result.reply;
+    }
+    throw result.kind === "unanswered"
+      ? result.reason
+      : new Error(`The ask to ${target.device} was accepted without a reply or a reason.`);
   }
 }
