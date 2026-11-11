@@ -36,8 +36,8 @@ class Observer {
   private phase: InventoryPhase = { kind: "checking" };
   private timer?: NodeJS.Timeout | undefined;
   private scanning: ScanPhase = { kind: "idle" };
-  private close?: (() => void) | undefined;
-  private refresh?: (() => void) | undefined;
+  /** The open overlay, or undefined while no screen reads this inventory. */
+  private screen?: { readonly close: () => void; readonly refresh: () => void } | undefined;
   private readonly rows = new Map<string, ObserverRow>();
   private readonly peers = new Map<string, { token: string; client: ObservationClient }>();
   private watcher?: fs.FSWatcher | undefined;
@@ -95,9 +95,8 @@ class Observer {
     }
     this.peers.clear();
     this.widgetCache = undefined;
-    this.close?.();
-    this.close = undefined;
-    this.refresh = undefined;
+    this.screen?.close();
+    this.screen = undefined;
     this.ctx.ui.setWidget(STATUS_KEY, undefined);
     this.rows.clear();
     this.launches.clear();
@@ -225,7 +224,7 @@ class Observer {
     }
     this.activity();
     this.widget();
-    this.refresh?.();
+    this.screen?.refresh();
     const periodic = this.pending.length > 0 || [...this.rows.values()].some((row) => row.live);
     if (periodic && !this.timer) {
       this.timer = setInterval(() => this.scan(), 1000);
@@ -430,7 +429,7 @@ class Observer {
     if (ctx.sessionManager.getSessionId() !== this.owner || this.phase.kind === "disposed") {
       return;
     }
-    this.close?.();
+    this.screen?.close();
     this.scan();
     await ctx.ui.custom<boolean>(
       (tui, theme, keys, done) => {
@@ -450,13 +449,11 @@ class Observer {
           selected: args.trim(),
           hideThinking: SettingsManager.create(ctx.cwd, getPiAgentDir()).getHideThinkingBlock(),
         });
-        this.close = () => done(true);
-        this.refresh = () => screen.update();
+        this.screen = { close: () => done(true), refresh: () => screen.update() };
         const dispose = screen.dispose.bind(screen);
         screen.dispose = () => {
           dispose();
-          this.close = undefined;
-          this.refresh = undefined;
+          this.screen = undefined;
         };
         return screen;
       },
