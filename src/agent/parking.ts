@@ -272,19 +272,25 @@ export class Parking {
     // A launcher that enqueues after this marker waits for exit, then wakes the saved state.
     const marker = parkingMarker(this.dir);
     write(marker, { at: Date.now() });
-    const hold = await cut(pi, session, {
-      quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
-      errors,
-      signal,
-    });
-    // Revalidate after the awaited fence and save, immediately before the irreversible commit.
-    if (hold?.sleepReady === true && quiet()) {
-      return hold;
+    let hold: WorkingHold | undefined;
+    let committed = false;
+    try {
+      hold = await cut(pi, session, {
+        quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
+        errors,
+        signal,
+      });
+      // Revalidate after the awaited fence and save, immediately before the irreversible commit.
+      if (hold?.sleepReady === true && quiet()) {
+        committed = true;
+        return hold;
+      }
+      return undefined;
+    } finally {
+      if (!committed) {
+        await rollbackParking(marker, hold, pi, errors);
+      }
     }
-    await hold?.release();
-    await fence(pi, false);
-    fs.rmSync(marker, { force: true });
-    return undefined;
   }
   /** Commit: native strict exit, then capture; failure leaves no parked authority. */
   private async commit(
@@ -336,6 +342,30 @@ export class Parking {
     } finally {
       await hold.release();
     }
+  }
+}
+/** Releases an uncommitted parking preparation's hold, fence and marker together; the
+ * commit consumes their ownership instead, so this must not run once it returned. */
+async function rollbackParking(
+  marker: string,
+  hold: WorkingHold | undefined,
+  pi: ExtensionAPI,
+  errors: string[],
+): Promise<void> {
+  try {
+    await hold?.release();
+  } catch (error) {
+    errors.push(errorText(error));
+  }
+  try {
+    await fence(pi, false);
+  } catch (error) {
+    errors.push(errorText(error));
+  }
+  try {
+    fs.rmSync(marker, { force: true });
+  } catch (error) {
+    errors.push(errorText(error));
   }
 }
 interface Runs {
