@@ -1,8 +1,9 @@
 /**
  * The command that another device of the same owner runs here over SSH.
  *
- * It reads one JSON request from stdin, prints one JSON reply line on stdout and exits: status 0
- * for a result, 1 for a reply with `error`. It joins this device's running broker as a
+ * It reads one JSON request from stdin, prints its JSON reply as the last line on stdout and
+ * exits: status 0 for a result, 1 for a reply with `error`. A waiting `ask` first prints the
+ * receipt of its question, then empty lines. It joins this device's running broker as a
  * short-lived main. It never starts a broker: without one, no Pi session is open here.
  */
 import { createHash, randomUUID } from "node:crypto";
@@ -130,6 +131,11 @@ function listed(session: SessionInfo): RemoteSession {
 }
 
 type Input = Readonly<Record<string, unknown>>;
+
+/** One line of the answer. The caller reads the last one. */
+function print(reply: RemoteReply): void {
+  process.stdout.write(`${JSON.stringify(reply)}\n`);
+}
 
 /** The Pi mains of this device. A client without lineage cannot see a child. */
 async function list(request: RemoteRequest): Promise<RemoteReply> {
@@ -282,6 +288,9 @@ async function askHere({ client, request, peer, track }: Dispatch): Promise<Remo
     onSent: (result) => {
       receipt = result;
       track({ kind: "acknowledged", result });
+      // The caller learns of the delivery now. A connection that is lost during the wait
+      // then costs the reply, not the knowledge that the question arrived.
+      print({ version: 1, receipt: result });
     },
   });
   if (receipt === undefined) {
@@ -378,9 +387,9 @@ async function answer(input: string): Promise<RemoteReply> {
   }
 }
 
-const reply = await answer(await text(process.stdin));
 process.stdout.on("error", () => {
   // The caller is gone; nobody reads the reply.
 });
-process.stdout.write(`${JSON.stringify(reply)}\n`);
+const reply = await answer(await text(process.stdin));
+print(reply);
 process.exitCode = "error" in reply ? 1 : 0;

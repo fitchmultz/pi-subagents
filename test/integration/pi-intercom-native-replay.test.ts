@@ -3945,10 +3945,11 @@ process.exitCode = 1;
   );
   const scripts = {
     node: `#!/bin/sh\nexec '${process.execPath}' "$@"\n`,
-    // \`down\` does not answer. \`old\` has no command installed and \`older\` one that only lists.
-    // \`quiet\` runs no broker. \`broken\` has a socket directory that the command refuses.
-    // \`far\` is a device with its own broker. \`drop\` is \`far\` behind a connection that is
-    // lost once the device has the request: the command runs, and its reply never arrives.
+    // `down` does not answer. `old` has no command installed and `older` one that only lists.
+    // `quiet` runs no broker. `broken` has a socket directory that the command refuses.
+    // `far` is a device with its own broker. `drop` and `fade` are `far` behind a connection
+    // that is lost while the command runs: `drop` once the device has the request, and
+    // `fade` after the first line of its answer.
     ssh: `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> '${fixture}/calls.log'
 device="\${@: -2:1}"
@@ -3960,7 +3961,7 @@ case "$device" in
   older) export HOME='${fixture}/older-home' ;;
   quiet) export PI_INTERCOM_RUNTIME_DIR='${quietRuntime}' ;;
   broken) export PI_INTERCOM_RUNTIME_DIR=relative ;;
-  far | drop) export PI_INTERCOM_RUNTIME_DIR='${farRuntime}' ;;
+  far | drop | fade) export PI_INTERCOM_RUNTIME_DIR='${farRuntime}' ;;
 esac
 remote() {
   tee -a "${fixture}/request-$device.json" | sh -c "$command" | tee "${fixture}/reply-$device.json"
@@ -3968,12 +3969,22 @@ remote() {
   echo >> "${fixture}/request-$device.json"
   return "$status"
 }
-if [ "$device" = drop ]; then
-  remote | head -n 1
-  echo "Connection to drop closed by remote host." >&2
-  exit 255
-fi
-remote
+# Passes each line on at once, then closes the connection.
+lines() {
+  local left="$1" line
+  while [ "$left" -gt 0 ] && IFS= read -r line; do
+    printf '%s\\n' "$line"
+    left=$((left - 1))
+  done
+}
+# The line that says the device answers, and for \`fade\` one more.
+case "$device" in
+  drop) remote | lines 1 ;;
+  fade) remote | lines 2 ;;
+  *) remote; exit ;;
+esac
+echo "Connection to $device closed by remote host." >&2
+exit 255
 `,
   };
   for (const [name, script] of Object.entries(scripts)) {
@@ -4384,7 +4395,7 @@ nodeTest(
     const far = await farDevice(t, devices, "far-quiet");
     const config = {
       device: "home",
-      otherDevices: ["far", "down", "old", "older", "quiet", "drop"],
+      otherDevices: ["far", "down", "old", "older", "quiet", "drop", "fade"],
     };
     const main = await makeSession(t, "home-sender", { config });
     const hasty = await makeSession(t, "home-hasty", {
@@ -4490,6 +4501,20 @@ nodeTest(
     assert.equal(far.visible(text(lostAsk.details.messageId)).length, 1);
     // The command saw its caller leave and left too, which retires the question on far.
     await waitFor(() => noPendingAsk(far), "the abandoned question retired on far");
+    // Lost during the wait: the device had already confirmed the question, so that is known.
+    const lostReply = await failureOf(
+      executeIntercom(main, { action: "ask", to: "far-quiet@fade", message }),
+    );
+    assert.equal(
+      lostReply.message,
+      "Failed: The ask reached fade, and the connection was lost before a reply came (Connection to fade closed by remote host.).",
+    );
+    assert.deepEqual(
+      [lostReply.details.accepted, lostReply.details.delivered, lostReply.details.deliveryUnknown],
+      [true, true, false],
+    );
+    assert.equal(far.visible(text(lostReply.details.messageId)).length, 1);
+    await waitFor(() => noPendingAsk(far), "the unanswered question retired on far");
 
     // No reply in time: the ask was delivered, and far is told that nobody waits any more.
     const late = await failureOf(

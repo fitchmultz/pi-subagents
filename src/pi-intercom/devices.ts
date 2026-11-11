@@ -133,11 +133,18 @@ function noReply({ error, stderr, requested }: Exit): {
   if (error?.code === SSH_FAILED) {
     return { reason: words === "" ? "ssh failed" : words, unreachable: true, ran: requested };
   }
-  return {
-    reason: words === "" ? (error?.message ?? "unreadable reply") : words,
-    unreachable: false,
-    ran: requested,
-  };
+  return { reason: words === "" ? stopped(error) : words, unreachable: false, ran: requested };
+}
+
+/** How `ssh` ended when it printed no reason. An `execFile` message repeats the command line. */
+function stopped(error: ExecFileException | null): string {
+  if (typeof error?.signal === "string") {
+    return `ssh was stopped by ${error.signal}`;
+  }
+  if (typeof error?.code === "number") {
+    return `exit status ${error.code}`;
+  }
+  return error?.message ?? "unreadable reply";
 }
 
 function sessionsOf(reply: Reply): readonly SessionInfo[] | undefined {
@@ -211,6 +218,15 @@ function unanswered(device: string, messageId: string, exit: Exit, signal?: Abor
         messageId,
         new Error(`Not sent to ${device}: ${unreachable ? `unreachable (${reason})` : reason}`),
       );
+}
+
+/** Why an ask ended on the receipt of its question: the wait for the reply was cut off. */
+function lostReply(device: string, exit: Exit, signal?: AbortSignal): Error {
+  return new Error(
+    signal?.aborted === true
+      ? "Cancelled"
+      : `The ask reached ${device}, and the connection was lost before a reply came (${noReply(exit).reason}).`,
+  );
 }
 
 /** What the device's reply line says about a message. Throws when it was not delivered. */
@@ -333,7 +349,7 @@ export class RemoteDevices {
       readonly options: Options;
       readonly signal?: AbortSignal | undefined;
     },
-  ): Promise<Delivery> {
+  ): Promise<Delivery & { readonly lost: () => Error }> {
     const { sender, target, options, signal } = input;
     const messageId = options.messageId ?? randomUUID();
     let from: SessionInfo | undefined;
@@ -363,7 +379,10 @@ export class RemoteDevices {
     if (reply === undefined) {
       throw unanswered(target.device, messageId, exit, signal);
     }
-    return delivery(target.device, messageId, reply);
+    return {
+      ...delivery(target.device, messageId, reply),
+      lost: () => lostReply(target.device, exit, signal),
+    };
   }
   /**
    * Sends to a session of another device and returns that broker's receipt. Throws like a
@@ -393,6 +412,7 @@ export class RemoteDevices {
       receipt,
       reply,
       noReply: failure,
+      lost,
     } = await this.deliver("ask", {
       sender,
       target,
@@ -404,7 +424,7 @@ export class RemoteDevices {
     }
     request.onSent(receipt);
     if (reply === undefined) {
-      throw failure ?? new Error(`${target.device} gave an unreadable reply.`);
+      throw failure ?? lost();
     }
     return reply;
   }
