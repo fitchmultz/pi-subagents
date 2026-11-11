@@ -40,7 +40,7 @@ export class NativeJournal {
   stamp: string;
   end: number;
   readonly file: string;
-  private readonly identity: string;
+  private observed: fs.BigIntStats;
   private offset = 0;
   private readonly frames: JournalFrames;
   constructor(
@@ -75,8 +75,8 @@ export class NativeJournal {
     );
     try {
       const stat = fs.fstatSync(fd, { bigint: true });
+      this.observed = stat;
       this.stamp = journalStamp(stat);
-      this.identity = `${stat.dev}:${stat.ino}`;
       this.end = Number(stat.size);
       this.index(fd, Math.min(this.end, options.readBytes ?? Infinity));
       this.checkInitial(stat, fs.fstatSync(fd, { bigint: true }), policy);
@@ -90,9 +90,7 @@ export class NativeJournal {
   private checkInitial(before: fs.BigIntStats, after: fs.BigIntStats, policy: JournalPolicy): void {
     if (
       journalStamp(after) !== this.stamp &&
-      (policy !== "live" ||
-        after.size < before.size ||
-        `${after.dev}:${after.ino}` !== this.identity)
+      (policy !== "live" || !nativeAppend(before, after, this.records[0]?.value))
     ) {
       throw new Error("Journal changed while indexing; refresh history.");
     }
@@ -118,20 +116,27 @@ export class NativeJournal {
   get indexed(): boolean {
     return this.offset === this.end;
   }
+  private checkGeneration(stat: fs.BigIntStats): void {
+    if (
+      journalStamp(stat) !== this.stamp &&
+      !nativeAppend(this.observed, stat, this.records[0]?.value)
+    ) {
+      throw new Error("Native journal was replaced or truncated; reopen this conversation.");
+    }
+  }
   /** Incremental, LF-published indexing. Append work is budgeted independently of paint. */
   refresh(bytes = 256 * 1024): boolean {
     const fd = fs.openSync(this.file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     try {
       const stat = fs.fstatSync(fd, { bigint: true });
-      if (`${stat.dev}:${stat.ino}` !== this.identity || Number(stat.size) < this.offset) {
-        throw new Error("Native journal was replaced or truncated; reopen this conversation.");
-      }
+      this.checkGeneration(stat);
       if (journalStamp(stat) === this.stamp && this.indexed) {
         return false;
       }
       const previous = this.records.length;
       this.end = Number(stat.size);
       this.index(fd, Math.min(this.end, this.offset + bytes));
+      this.observed = stat;
       this.stamp = journalStamp(stat);
       return previous !== this.records.length;
     } finally {
@@ -149,7 +154,8 @@ export class NativeJournal {
     let stream: fs.ReadStream | undefined;
     try {
       const stat = fs.fstatSync(fd, { bigint: true });
-      if (`${stat.dev}:${stat.ino}` !== this.identity || Number(stat.size) < record.end) {
+      this.checkGeneration(stat);
+      if (Number(stat.size) < record.end) {
         throw new Error("Native journal was replaced or truncated.");
       }
       let value: UnknownRecord | undefined;

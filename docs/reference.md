@@ -399,6 +399,9 @@ Use Up/Down to select, Enter to watch, and Escape to return/close (the displayed
 hints follow Pi's configured selection keys). `/agents <exact-run-id>` opens that
 run directly. Children and print/RPC modes do not install a watcher.
 
+If native opening migrates an older-format journal, an existing reader rejects its
+changed generation. Reopen the conversation to index the migrated journal.
+
 These views read this native owner's metadata and bounded published journal entries;
 they never dispatch, continue, stop, send messages or trigger a model turn.
 Published assistant text/tool calls may precede a running tool's result. Partial

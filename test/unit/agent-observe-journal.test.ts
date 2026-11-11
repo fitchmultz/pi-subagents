@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test as nodeTest } from "node:test";
 import { ConversationJournal } from "../../src/agent/journal-tail.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "observe-journal-"));
@@ -17,6 +18,51 @@ function fixture() {
 function entry(id: string, parentId: string | null, message: unknown): string {
   return `${JSON.stringify({ type: "message", id, parentId, message })}\n`;
 }
+
+nodeTest(
+  "native migration invalidates older journal offsets before refresh or projection",
+  async () => {
+    const { root, file } = fixture();
+    try {
+      fs.writeFileSync(
+        file,
+        [
+          {
+            type: "session",
+            id: "child-session",
+            version: 1,
+            timestamp: new Date(0).toISOString(),
+            cwd: root,
+          },
+          {
+            type: "message",
+            timestamp: new Date(1).toISOString(),
+            message: { role: "user", content: "legacy user text", timestamp: 1 },
+          },
+          {
+            type: "message",
+            timestamp: new Date(2).toISOString(),
+            message: { role: "user", content: "second old entry", timestamp: 2 },
+          },
+        ]
+          .map((value) => JSON.stringify(value))
+          .join("\n") + "\n",
+      );
+      const journal = new ConversationJournal(file, "child-session");
+      const old = journal.entries()[0];
+      assert.ok(old !== undefined, "the older-format journal was indexed before native opening");
+      assert.equal(SessionManager.open(file, root).getHeader()?.version, 3);
+      await assert.rejects(journal.page(old), /replaced or truncated/);
+      assert.throws(() => journal.native.refresh(), /replaced or truncated/);
+      const reopened = new ConversationJournal(file, "child-session");
+      const current = reopened.entries()[0];
+      assert.ok(current !== undefined);
+      assert.equal((await reopened.page(current)).message.content, "legacy user text");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 nodeTest(
   "selected native conversation indexes only published appends and retains branch ancestry",
