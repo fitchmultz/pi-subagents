@@ -118,6 +118,11 @@ was lost from context, read its exact value from `launch.json` beside the run's
 reported `outputFile`; do not reconstruct or paraphrase it. For adopted legacy
 runs, retry using the canonical run ID returned by the existing-successor receipt,
 not the retired legacy handle.
+Cancelling the delegating turn before its launch is published cancels the
+delegation outright. Cancellation after publication declines only the start:
+the queued run waits unadmitted and the same exact-prompt retry starts it.
+Asynchronous work already handed to an actor is never stopped by a
+parent-turn cancellation.
 Guidance that arrives after its run settles is reported as stale rather than
 starting untracked work. Inspection text exposes the guidance command IDs and
 admission states, native receipt publication and separately known process exit.
