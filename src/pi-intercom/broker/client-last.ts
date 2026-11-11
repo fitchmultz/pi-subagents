@@ -40,9 +40,6 @@ export function lastRequest(msg: UnknownRecord): {
 }
 
 export class LastMessageRequests {
-  /** Negotiated at registration; a failed connection supports neither. */
-  lastMessages = false;
-  receiptReads = false;
   private readonly timeoutMs: number;
   constructor(timeoutMs: number) {
     this.timeoutMs = timeoutMs;
@@ -53,8 +50,6 @@ export class LastMessageRequests {
   }>();
 
   fail(error: Readonly<Error>): void {
-    this.lastMessages = false;
-    this.receiptReads = false;
     this.pending.fail(error);
   }
 
@@ -69,16 +64,31 @@ export class LastMessageRequests {
     pending.resolve(message.result);
   }
 
-  async last(socket: net.Socket, to: string, query: LastMessageQuery): Promise<LastMessageResult> {
-    const result = await this.request(socket, to, query);
+  async last(
+    socket: net.Socket,
+    to: string,
+    query: LastMessageQuery,
+    supported: ReadCapabilities,
+  ): Promise<LastMessageResult> {
+    const result = await this.request(socket, to, query, supported);
     return isLastMessageResult(result) ? result : { error: "Invalid last-message response" };
   }
-  async receipt(socket: net.Socket, to: string, query: ReceiptQuery): Promise<ReceiptResult> {
-    const result = await this.request(socket, to, query);
+  async receipt(
+    socket: net.Socket,
+    to: string,
+    query: ReceiptQuery,
+    supported: ReadCapabilities,
+  ): Promise<ReceiptResult> {
+    const result = await this.request(socket, to, query, supported);
     return isReceiptResult(result) ? result : { error: "Invalid receipt response" };
   }
-  private request(socket: net.Socket, to: string, query: unknown): Promise<NativeReadResult> {
-    if (!this.lastMessages) {
+  private request(
+    socket: net.Socket,
+    to: string,
+    query: unknown,
+    supported: ReadCapabilities,
+  ): Promise<NativeReadResult> {
+    if (!supported.lastMessages) {
       return Promise.reject(
         new Error("This broker does not support last-message reads; reload after it exits."),
       );
@@ -86,7 +96,7 @@ export class LastMessageRequests {
     if (!isNativeReadQuery(query)) {
       return Promise.reject(new Error("Invalid last-message query"));
     }
-    if ("messageId" in query && !this.receiptReads) {
+    if ("messageId" in query && !supported.receiptReads) {
       return Promise.reject(new Error("publication_unavailable"));
     }
     return new Promise((resolve, reject) => {
@@ -104,4 +114,9 @@ export class LastMessageRequests {
       }
     });
   }
+}
+/** What a broker advertised in its registration for read-only history. */
+export interface ReadCapabilities {
+  readonly lastMessages: boolean;
+  readonly receiptReads: boolean;
 }

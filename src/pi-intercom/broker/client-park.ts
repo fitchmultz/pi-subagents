@@ -3,7 +3,6 @@ import { writeMessage } from "./framing.ts";
 
 /** Parking negotiation and its single outstanding broker acknowledgement. */
 export class ParkRequests {
-  supported = false;
   private state:
     | { readonly kind: "idle" }
     | {
@@ -19,17 +18,17 @@ export class ParkRequests {
     }
   }
   /** True once the broker retains later input; false when it cannot or the socket closed. */
-  request(socket: () => net.Socket, on: boolean): Promise<boolean> {
+  request(socket: () => net.Socket, on: boolean, supported: boolean): Promise<boolean> {
     if (on && this.state.kind === "pending") {
       return this.state.promise;
     }
     const { promise, resolve, reject } = Promise.withResolvers<boolean>();
     this.settle(false);
-    if (on && this.supported) {
+    if (on && supported) {
       this.state = { kind: "pending", promise, resolve };
     }
     try {
-      if (this.supported) {
+      if (supported) {
         writeMessage(socket(), { type: on ? "park" : "unpark" });
       }
       if (this.state.kind === "idle") {

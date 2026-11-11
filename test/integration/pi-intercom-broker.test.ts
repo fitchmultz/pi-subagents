@@ -1177,20 +1177,20 @@ nodeTest(
     await main.listSessions();
     assert.equal(wakes.length, 1, "the second input waits behind the in-flight wake");
 
-    attacker.wakes.respond(text(request), { status: "failed", reason: "forged failure" });
+    attacker.respondWake(text(request), { status: "failed", reason: "forged failure" });
     await attacker.listSessions();
     await sender.listSessions();
     assert.deepEqual(failures, [], "another peer cannot report the owner's wake outcome");
 
     const firstFailure = once(sender, "wake_failed");
     const retry = once(main, "wake_request");
-    main.wakes.respond(text(request), { status: "failed", reason: "saved directory unavailable" });
+    main.respondWake(text(request), { status: "failed", reason: "saved directory unavailable" });
     assert.deepEqual(await firstFailure, [childId, first.id, "saved directory unavailable"]);
     const retryRequest = array(await retry);
     assert.equal(retryRequest[0], childId);
     const retryId = text(retryRequest[1]);
     const otherFailure = once(other, "wake_failed");
-    main.wakes.respond(text(retryId), { status: "failed", reason: "saved directory unavailable" });
+    main.respondWake(text(retryId), { status: "failed", reason: "saved directory unavailable" });
     assert.deepEqual(await otherFailure, [childId, second.id, "saved directory unavailable"]);
     await main.listSessions();
     assert.equal(wakes.length, 2, "a failed wake does not spin without new input");
@@ -1206,7 +1206,7 @@ nodeTest(
     assert.match(text(third.reason), /last wake failed: saved directory unavailable/);
     assert.match(text(third.reason), /may still arrive/);
     const thirdId = text(array(await thirdWake)[1]);
-    main.wakes.respond(thirdId, { status: "failed", reason: "saved directory unavailable" });
+    main.respondWake(thirdId, { status: "failed", reason: "saved directory unavailable" });
     await main.listSessions();
     await legacy.listSessions();
     assert.deepEqual(unnegotiated, [], "a non-negotiating sender receives no unknown notice");
@@ -1234,7 +1234,7 @@ nodeTest(
     await flushed;
     assert.deepEqual(received, ["first ask", "second ask", "third ask", "fourth message"]);
     const prior = failures.length;
-    main.wakes.respond(fourthId, { status: "failed", reason: "stale failure" });
+    main.respondWake(fourthId, { status: "failed", reason: "stale failure" });
     await main.listSessions();
     await sender.listSessions();
     assert.equal(failures.length, prior, "a late result cannot report failure after registration");
