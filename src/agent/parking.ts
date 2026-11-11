@@ -2,17 +2,17 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  exitSchema,
-  parkedSchema,
-  readySchema,
-  wakeFailureSchema,
-  type Launch,
-  type Parked,
-} from "./contracts.ts";
+import type { Launch, Parked } from "./contracts.ts";
 import { errorText, loadSDK, type WorkingState } from "./host.ts";
-import { conversation, latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
+import { conversation, latest, launchAt, list, runDirectory, write } from "./storage.ts";
 import { actor as claimedActor, alive, shell, shells, wakeActor } from "./process.ts";
+import {
+  generation,
+  parkedAuthority,
+  parkedToken,
+  parkingMarker,
+  wakeFailureReason,
+} from "./generation.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import {
   isHistoryRequest,
@@ -144,7 +144,7 @@ export function parkedState(
   launch: Launch,
   restore: Restore | undefined,
 ): { readonly state: string; readonly saved: WorkingState } | undefined {
-  const parked = read(path.join(dir, "parked.json"), parkedSchema);
+  const parked = parkedAuthority(dir);
   if (!parked) {
     return undefined;
   }
@@ -270,7 +270,7 @@ export class Parking {
       return undefined;
     }
     // A launcher that enqueues after this marker waits for exit, then wakes the saved state.
-    const marker = path.join(this.dir, "actor.lock", "parking.json");
+    const marker = parkingMarker(this.dir);
     write(marker, { at: Date.now() });
     const hold = await cut(pi, session, {
       quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
@@ -304,7 +304,7 @@ export class Parking {
     } catch (error) {
       errors.push(errorText(error));
     }
-    if (read(this.file, parkedSchema)?.token !== this.token) {
+    if (parkedToken(this.dir) !== this.token) {
       // Truthful boundary: retained input stays queued and nothing restarts implicitly.
       write(path.join(this.dir, "park-failed.json"), { token: this.token, errors });
       return "exit-failed";
@@ -387,22 +387,6 @@ function unavailableCwd(cwd: string): string | undefined {
   return undefined;
 }
 
-function exitedWake(
-  dir: string,
-  identity: NonNullable<ReturnType<typeof claimedActor>>,
-  legacy: boolean,
-): string | undefined {
-  const exit = read(path.join(dir, `exit-${identity.token}.json`), exitSchema);
-  if (!exit && alive(identity)) {
-    return undefined;
-  }
-  const failure = read(path.join(dir, `wake-failure-${identity.token}.json`), wakeFailureSchema);
-  return (
-    failure?.reason ??
-    `Actor exited before ${legacy ? "readiness" : "intercom registration"} (code ${exit?.code ?? "unknown"}, signal ${exit?.signal ?? "unknown"}). See ${path.join(dir, "runner.log")}.`
-  );
-}
-
 /** A spawned actor is only requested until its own readiness or exit is observed. */
 async function awaitWake(
   base: string,
@@ -422,14 +406,15 @@ async function awaitWake(
       signal.throwIfAborted();
       wake.take();
       watch.ensure();
-      if (
-        legacy &&
-        read(path.join(dir, "ready.json"), readySchema)?.token === identity.token &&
-        !fs.existsSync(path.join(dir, "parked.json"))
-      ) {
+      const evidence = generation(dir, identity.token);
+      if (legacy && evidence.ready && !evidence.parkedFile) {
         return;
       }
-      const failure = exitedWake(dir, identity, legacy);
+      const failure = wakeFailureReason(evidence, {
+        legacy,
+        actorAlive: alive(identity),
+        directory: dir,
+      });
       if (failure !== undefined) {
         throw new Error(failure);
       }

@@ -13,15 +13,10 @@ import {
 } from "../shared/post-exit-stdio-guard.ts";
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
-import {
-  parkedSchema,
-  processSchema,
-  wakeFailureSchema,
-  type Launch,
-  type ProcessIdentity,
-} from "./contracts.ts";
+import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { conversation, enqueue, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
+import { generation, handoffToken, parkedFile } from "./generation.ts";
 
 /** Darwin's in-memory publication bound; Android records carry their own native clock. */
 interface Published {
@@ -229,10 +224,13 @@ async function awaitStopping(
 ): Promise<void> {
   if (existing) {
     const stopping = path.join(dir, `stopping-${existing.token}.json`);
-    // Parking ends in exit or a removed marker, after native shutdown persistence.
-    const parking = path.join(dir, "actor.lock", "parking.json");
     const deadline = Date.now() + (fs.existsSync(stopping) ? 5000 : 30_000);
-    while ((fs.existsSync(stopping) || fs.existsSync(parking)) && alive(existing)) {
+    // A stopping or preparing generation keeps its claim until it exits or drops its marker.
+    for (;;) {
+      const evidence = generation(dir, existing.token);
+      if ((!evidence.stopping && !evidence.parking) || !alive(existing)) {
+        break;
+      }
       signal?.throwIfAborted();
       if (Date.now() > deadline) {
         throw new Error("Previous actor is still stopping; no replacement was launched.");
@@ -321,40 +319,24 @@ export async function ensureActor(
   }
   await launchClaimedActor(base, launch, lock);
 }
-/** A failed restore can hand the old cut forward only before native open and after death. */
-function failedBeforeOpenToken(
-  dir: string,
-  exited: OwnedProcess,
-  current: OwnedProcess | undefined,
-): string | undefined {
-  const failure = read(path.join(dir, `wake-failure-${exited.token}.json`), wakeFailureSchema);
-  if (
-    current?.token === exited.token &&
-    !alive(current) &&
-    failure?.beforeOpen?.actorToken === exited.token
-  ) {
-    return failure.beforeOpen.parkedToken;
-  }
-  return undefined;
-}
 /** A failed park keeps its input queued; exact state is lost, so nothing restarts it implicitly. */
 export function parkFailure(base: string, launch: Launch, exited?: OwnedProcess): void {
   const dir = conversation(base, launch);
-  const parked = read(path.join(dir, "parked.json"), parkedSchema);
-  if (
-    exited &&
-    parked &&
-    parked.token !== exited.token &&
-    failedBeforeOpenToken(dir, exited, actor(base, launch)) !== parked.token
-  ) {
-    throw new Error(
-      "Parked working state belongs to another actor generation; nothing was reopened.",
-    );
+  const current = actor(base, launch);
+  const evidence = generation(dir, current?.token);
+  const parked = evidence.parked;
+  if (exited && parked && parked.token !== exited.token) {
+    const handoff =
+      current === undefined ? undefined : handoffToken(evidence, alive(current), exited.token);
+    if (handoff !== parked.token) {
+      throw new Error(
+        "Parked working state belongs to another actor generation; nothing was reopened.",
+      );
+    }
   }
-  const file = path.join(dir, "park-failed.json");
-  if (fs.existsSync(file)) {
+  if (evidence.parkFailed) {
     throw new Error(
-      `This idle child exited without saving its exact working state (${file}). Nothing was restarted or admitted; messages for it stay queued. Inspect it, then delegate new work.`,
+      `This idle child exited without saving its exact working state (${path.join(dir, "park-failed.json")}). Nothing was restarted or admitted; messages for it stay queued. Inspect it, then delegate new work.`,
     );
   }
 }
@@ -363,7 +345,7 @@ export async function wakeActor(base: string, launch: Launch, signal?: AbortSign
   const dir = conversation(base, launch);
   await awaitStopping(dir, actor(base, launch), signal);
   parkFailure(base, launch);
-  if (!fs.existsSync(path.join(dir, "parked.json"))) {
+  if (!parkedFile(dir)) {
     throw new Error("No parked working state; the child was not woken.");
   }
   await ensureActor(base, launch, signal);
