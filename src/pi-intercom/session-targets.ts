@@ -96,14 +96,16 @@ export function formatSessionTarget(
   return session.id;
 }
 
+/** `at` is the `@device` ending of each target when another device will print the options. */
 export function formatTargetOptions(
   sessions: readonly TargetIdentity[],
   allSessions: readonly TargetIdentity[] = sessions,
+  at = "",
 ): string {
   return sessions
     .map(
       (session) =>
-        `${session.name === undefined || session.name === "" ? shortSessionId(session.id) : session.name} → ${formatSessionTarget(session, allSessions)}`,
+        `${session.name === undefined || session.name === "" ? shortSessionId(session.id) : session.name} → ${formatSessionTarget(session, allSessions)}${at}`,
     )
     .join(", ");
 }

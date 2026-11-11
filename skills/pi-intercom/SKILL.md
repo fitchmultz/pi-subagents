@@ -47,9 +47,19 @@ A main can list the main sessions on the owner's other devices:
 `intercom({action:"list", device:"all"})`, or one device name. The answer has one
 block per device, with rows written `name@device`, and no session of this device.
 A device can also be unreachable, have no Pi session, or lack the command; its
-block says which. This is a list only: `send`, `ask` and `last` reach the
-sessions of this device. A child cannot use `device`. If no devices are
-configured, the tool names the file and the keys to set.
+block says which.
+
+The name and the ID of a row are targets: `send` and `ask` with
+`to:"name@device"` reach that main. Its reply to an ask comes back as the tool
+result. A message from another device shows its sender as `name@device`; use
+that as `to` for a message back, and `reply` for an ask. A failure says whether
+the message was not sent, or whether its delivery is unknown; check the
+recipient before sending an unknown one again. A default ask of a busy main is
+refused: use `send`, or `delivery:"steer"`. `last` reads only the sessions of
+this device.
+
+A child cannot use `device` or a `name@device` target; its main does that. If no
+devices are configured, a `device` list names the file and the keys to set.
 
 ## Delivery and paging
 

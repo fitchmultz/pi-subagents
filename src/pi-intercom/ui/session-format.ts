@@ -315,6 +315,6 @@ function deviceBlock(listing: DeviceListing, query: string): string {
 export function formatDeviceListings(listings: readonly DeviceListing[], query = ""): string {
   return [
     ...listings.map((listing) => deviceBlock(listing, query.trim())),
-    "**Other devices:** list only. send, ask and last reach the sessions of this device.",
+    "**Other devices:** send and ask reach a main there by its target above, which ends in @device. last reads only the sessions of this device.",
   ].join("\n\n");
 }

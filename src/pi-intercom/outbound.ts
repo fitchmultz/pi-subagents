@@ -2,11 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
-import {
-  resolveConnectedTarget,
-  resolvePeerHealth,
-  type IntercomConnection,
-} from "./connection.ts";
+import { resolveConnectedTarget, resolvePeerHealth } from "./connected-target.ts";
+import type { IntercomConnection } from "./connection.ts";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
@@ -17,24 +14,25 @@ import {
   type ToolResultLike,
 } from "./runtime-types.ts";
 import type { Message, SessionInfo } from "./types.ts";
-import { errorMessage } from "./validation.ts";
 import { formatAttachments } from "./message-format.ts";
+import { AskDeliveryError, failureDetails, type SendProgress } from "./tool-results.ts";
 import {
-  AskDeliveryError,
-  failureDetails,
-  RecoveryError,
-  sendErrorFacts,
-  sendRecoveryGuidance,
-  WakeFailedError,
-  type RecoveryAction,
-  type SendProgress,
-} from "./tool-results.ts";
+  askFailure,
+  busyAsk,
+  deliveryFailure,
+  replyFailure,
+  replySent,
+  sendFailure,
+  sendHint,
+} from "./outbound-results.ts";
+import type { DeviceTarget, RemoteDevices } from "./devices.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
 type Connection = Readonly<Pick<IntercomConnection, "syncStatus">>;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "transact" | "waiting">>;
 type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "resolveReplyTarget">>;
+type Devices = Readonly<Pick<RemoteDevices, "address" | "send" | "ask">>;
 
 interface OutboundOwners {
   readonly pi: ExtensionAPI;
@@ -42,6 +40,7 @@ interface OutboundOwners {
   readonly connection: Connection;
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
+  readonly devices: Devices;
 }
 export class IntercomOutbound {
   private readonly owners: OutboundOwners;
@@ -66,57 +65,6 @@ export class IntercomOutbound {
     this.owners.lifecycle.markActivity();
     this.owners.connection.syncStatus();
   }
-  private sendFailure(error: unknown, progress: SendProgress): ToolResultLike {
-    const facts = sendErrorFacts(error, progress);
-    return toolError(
-      `Failed to send: ${errorMessage(error)}`,
-      failureDetails(
-        error instanceof RecoveryError ? error.code : "send_failed",
-        [
-          { action: "list" },
-          {
-            action: "send",
-            guidance: sendRecoveryGuidance(facts, "message"),
-          },
-        ],
-        { error: true, ...facts },
-      ),
-    );
-  }
-  private deliveryFailure(to: string, result: SendResult): ToolResultLike {
-    return toolError(
-      `Message to "${to}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`,
-      failureDetails(
-        "delivery_failed",
-        [
-          { action: "list" },
-          { action: "send", guidance: "Retry with an exact active recipient target." },
-        ],
-        {
-          messageId: result.id,
-          accepted: result.accepted,
-          delivered: false,
-          reason: result.reason,
-        },
-      ),
-    );
-  }
-  private sendHint(params: IntercomToolParams): string {
-    if (params.replyTo !== undefined && params.replyTo !== "") {
-      return "";
-    }
-    switch (params.passive === true ? "passive" : params.delivery) {
-      case "passive":
-        return " (passive; recipient model was not woken)";
-      case "steer":
-        return " (steers active recipient after the current tool call)";
-      case "queue":
-        return " (intentionally deferred behind active recipient work)";
-      case undefined:
-      default:
-        return " (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)";
-    }
-  }
   private messageTarget(params: IntercomToolParams): string | undefined {
     if ((params.to ?? "") === "" || (params.message ?? "") === "") {
       return;
@@ -133,17 +81,23 @@ export class IntercomOutbound {
       `Send to "${params.to ?? ""}":\n\n${params.message ?? ""}${attachmentText}`,
     );
   }
-  private sent(to: string, params: IntercomToolParams, result: SendResult): ToolResultLike {
+  /** `local` is false for a session of another device: its asks are not pending here. */
+  private sent(
+    to: string,
+    params: IntercomToolParams,
+    result: SendResult,
+    local: boolean,
+  ): ToolResultLike {
     this.owners.lifecycle.markActivity();
     this.recordSent(to, { ...sendOptions(params), passive: params.passive === true }, result);
-    if ((params.replyTo ?? "") !== "") {
+    if (local && (params.replyTo ?? "") !== "") {
       this.owners.replies.markReplied(params.replyTo ?? "");
     }
     this.owners.connection.syncStatus();
     return toolText(
       result.queued === true
         ? `Message queued for ${to} (${result.reason ?? "queued"})`
-        : `Message sent to ${to}${this.sendHint(params)}`,
+        : `Message sent to ${to}${sendHint(params)}`,
       {
         messageId: result.id,
         accepted: result.accepted,
@@ -153,10 +107,24 @@ export class IntercomOutbound {
       },
     );
   }
+  /**
+   * A session of this device, or of another one for a `name@device` target. An answer goes to
+   * the asker that waits here: the asker of another device is connected under that same name.
+   */
+  private async sendTarget(
+    active: IntercomTransport,
+    to: string,
+    replyTo: string | undefined,
+  ): Promise<string | DeviceTarget> {
+    const asker = (replyTo ?? "") === "" ? null : await resolveConnectedTarget(active, to);
+    return (
+      asker ?? this.owners.devices.address(to) ?? (await resolveConnectedTarget(active, to)) ?? to
+    );
+  }
   async send(
     active: IntercomTransport,
     params: IntercomToolParams,
-    ctx: ExtensionContext,
+    call: { readonly ctx: ExtensionContext; readonly signal: AbortSignal | undefined },
   ): Promise<ToolResultLike> {
     const to = this.messageTarget(params);
     if (to === undefined) {
@@ -164,45 +132,27 @@ export class IntercomOutbound {
     }
     let progress: SendProgress = { kind: "not-sent" };
     try {
-      const target = (await resolveConnectedTarget(active, to)) ?? to;
+      const target = await this.sendTarget(active, to, params.replyTo);
       if (target === active.sessionId) {
         return toolError("Cannot message the current session");
       }
-      if (!(await this.confirm(params, ctx))) {
+      if (!(await this.confirm(params, call.ctx))) {
         return toolText("Message cancelled by user");
       }
       const options = { ...sendOptions(params), passive: params.passive === true };
+      const local = typeof target === "string";
       progress = { kind: "unconfirmed" };
-      const result = await active.send(target, options);
+      const result = await (local
+        ? active.send(target, options)
+        : this.owners.devices.send(active, target, { options, signal: call.signal }));
       progress = { kind: "acknowledged", result };
       if (!result.accepted) {
-        return this.deliveryFailure(to, result);
+        return deliveryFailure(to, result);
       }
-      return this.sent(to, params, result);
+      return this.sent(to, params, result, local);
     } catch (error) {
-      return this.sendFailure(error, progress);
+      return sendFailure(error, progress);
     }
-  }
-  private busyAsk(to: string, result: SendResult): ToolResultLike {
-    return toolText(
-      `${result.delivered ? "Delivered" : "Queued"} ask to ${to}; peer is busy and not accepting blocking asks (peer_busy). Not waiting for a reply; delivery does not mean the question was consumed.`,
-      {
-        messageId: result.id,
-        accepted: result.accepted,
-        delivered: result.delivered,
-        queued: result.queued === true,
-        replied: false,
-        reason: "peer_busy",
-        reasonCode: "recipient_not_accepting_asks",
-        nextActions: [
-          {
-            action: "send",
-            guidance:
-              "Use default-steered send for non-blocking live coordination; queue only when delay is intentional.",
-          },
-        ],
-      },
-    );
   }
   private askReply(to: string, reply: Message, questionId: string): ToolResultLike {
     const text = reply.content.text;
@@ -234,48 +184,6 @@ export class IntercomOutbound {
       `**Reply from ${to}:**\n${text}${attachments !== undefined && attachments.length > 0 ? formatAttachments(attachments) : ""}`,
     );
   }
-  private askFailure(
-    error: unknown,
-    input: { readonly to: string; readonly questionId?: string; readonly progress: SendProgress },
-  ): ToolResultLike {
-    const { to, questionId, progress } = input;
-    if (error instanceof WakeFailedError) {
-      return toolError(
-        `The parked child could not be woken: ${error.message} Your ask is still queued and may arrive after a later wake. Check the recipient before sending it again.`,
-        failureDetails("wake_failed", [{ action: "list" }, { action: "status" }], {
-          error: true,
-          messageId: questionId,
-          accepted: true,
-          delivered: false,
-          queued: true,
-        }),
-      );
-    }
-    if (error instanceof AskDeliveryError) {
-      const result = this.deliveryFailure(to, error.result);
-      return { ...result, details: { ...result.details, error: true } };
-    }
-    const facts = sendErrorFacts(error, progress);
-    return toolError(
-      `Failed: ${errorMessage(error)}`,
-      failureDetails(
-        error instanceof RecoveryError ? error.code : "ask_failed",
-        [
-          { action: "status" },
-          { action: "list" },
-          {
-            action: "send",
-            guidance: sendRecoveryGuidance(facts, "ask"),
-          },
-        ],
-        {
-          error: true,
-          ...(questionId !== undefined && questionId !== "" ? { messageId: questionId } : {}),
-          ...facts,
-        },
-      ),
-    );
-  }
   private isCancelled(signal: AbortSignal | undefined): boolean {
     return signal?.aborted === true;
   }
@@ -299,7 +207,7 @@ export class IntercomOutbound {
     }
     this.markActivity();
     request.record(result);
-    return this.busyAsk(request.to, result);
+    return busyAsk(request.to, result);
   }
   private async prepareAsk(
     active: IntercomTransport,
@@ -337,6 +245,38 @@ export class IntercomOutbound {
     }
     return { target, health };
   }
+  /**
+   * Asks a session of another device; undefined when `to` names a session of this one. One
+   * `ssh` command holds the question and the wait, so no local reply waiter is reserved.
+   */
+  private async askDevice(
+    active: IntercomTransport,
+    to: string,
+    params: IntercomToolParams,
+    signal: AbortSignal | undefined,
+  ): Promise<ToolResultLike | undefined> {
+    const questionId = randomUUID();
+    const options = sendOptions(params);
+    let progress: SendProgress = { kind: "not-sent" };
+    try {
+      const device = this.owners.devices.address(to);
+      if (device === undefined) {
+        return undefined;
+      }
+      const reply = await this.owners.devices.ask(active, device, {
+        options: { ...options, messageId: questionId },
+        signal,
+        onSent: (result) => {
+          progress = { kind: "acknowledged", result };
+          this.recordSent(to, options, result);
+          this.markActivity();
+        },
+      });
+      return this.askReply(to, reply, questionId);
+    } catch (error) {
+      return askFailure(error, { to, questionId, progress });
+    }
+  }
   async ask(
     active: IntercomTransport,
     params: IntercomToolParams,
@@ -346,6 +286,17 @@ export class IntercomOutbound {
     if (to === undefined) {
       return toolError("Missing 'to' or 'message' parameter");
     }
+    return (
+      (await this.askDevice(active, to, params, signal)) ??
+      (await this.askLocal(active, to, params, signal))
+    );
+  }
+  private async askLocal(
+    active: IntercomTransport,
+    to: string,
+    params: IntercomToolParams,
+    signal: AbortSignal | undefined,
+  ): Promise<ToolResultLike> {
     let questionId: string | undefined;
     let progress: SendProgress = { kind: "not-sent" };
     try {
@@ -383,7 +334,7 @@ export class IntercomOutbound {
       });
       return this.askReply(to, reply, questionId);
     } catch (error) {
-      return this.askFailure(error, {
+      return askFailure(error, {
         to,
         ...(questionId === undefined ? {} : { questionId }),
         progress,
@@ -436,51 +387,9 @@ export class IntercomOutbound {
       this.owners.replies.markReplied(target.message.id);
       this.markActivity();
       this.recordSent(sender, { text: body, replyTo: target.message.id }, result);
-      return this.replySent(sender, target.message.id, result);
+      return replySent(sender, target.message.id, result);
     } catch (error) {
-      return this.replyFailure(error, replyTo, progress);
+      return replyFailure(error, replyTo, progress);
     }
-  }
-  private replySent(sender: string, replyTo: string, result: SendResult): ToolResultLike {
-    const queued = result.queued === true;
-    return toolText(
-      queued
-        ? `Reply queued for ${sender} (${result.reason ?? "queued"})`
-        : `Reply sent to ${sender}`,
-      {
-        messageId: result.id,
-        accepted: result.accepted,
-        delivered: result.delivered,
-        queued,
-        replyTo,
-        reasonCode: queued ? "message_queued" : "reply_sent",
-      },
-    );
-  }
-  private replyFailure(
-    error: unknown,
-    replyTo: string | undefined,
-    progress: SendProgress,
-  ): ToolResultLike {
-    const reason = error instanceof RecoveryError ? error.code : "reply_failed";
-    const actions: readonly RecoveryAction[] =
-      reason === "no_pending_reply"
-        ? [
-            { action: "pending" },
-            {
-              action: "send",
-              guidance:
-                "Use send with an explicit recipient when there is no inbound ask to reply to.",
-            },
-          ]
-        : [{ action: "pending" }, { action: "list" }];
-    return toolError(
-      `Failed to reply: ${errorMessage(error)}`,
-      failureDetails(reason, actions, {
-        error: true,
-        ...((replyTo ?? "") !== "" ? { replyTo } : {}),
-        ...sendErrorFacts(error, progress),
-      }),
-    );
   }
 }

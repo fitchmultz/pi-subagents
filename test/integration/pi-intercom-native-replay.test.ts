@@ -113,7 +113,10 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStor
   );
 const { IntercomClient } = await import("../../src/pi-intercom/broker/client.ts");
 
-function launchBroker() {
+function launchBroker(
+  runtime = process.env.PI_INTERCOM_RUNTIME_DIR,
+  collect: (chunk: unknown) => void = collectBrokerLog,
+) {
   const child = spawn(process.execPath, [path.join(repo, "src/pi-intercom/broker/broker.ts")], {
     cwd: root,
     env: {
@@ -122,15 +125,15 @@ function launchBroker() {
       USERPROFILE: process.env.USERPROFILE,
       TMPDIR: tmpdir(),
       PI_CODING_AGENT_DIR: agentDir,
-      PI_INTERCOM_RUNTIME_DIR: process.env.PI_INTERCOM_RUNTIME_DIR,
+      PI_INTERCOM_RUNTIME_DIR: runtime,
       PI_SUBAGENT_TEMP_ROOT: process.env.PI_SUBAGENT_TEMP_ROOT,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", collectBrokerLog);
-  child.stderr.on("data", collectBrokerLog);
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
   return child;
 }
 let brokerLog = "";
@@ -3907,44 +3910,81 @@ for (const hasUI of [false, true]) {
   );
 }
 
-/** A stand-in `ssh` on PATH: it records each call, then runs the remote command line itself. */
+/**
+ * A stand-in `ssh` on PATH: it records each call, then runs the remote command line itself, in a
+ * real shell, with the caller's stdin and stdout as its pipes.
+ */
 function standInDevices(t: TestContext) {
   const fixture = path.join(root, "devices");
   const bin = path.join(fixture, "bin");
-  const cli = path.join(
-    fixture,
-    "home/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom",
-  );
-  // Short, like every socket directory; never created, so no broker can be running in it.
+  const installed = ".pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom";
+  const cli = path.join(fixture, "home", installed);
+  const olderCli = path.join(fixture, "older-home", installed);
+  // Short, like every socket directory. `quiet` is never created, so no broker can run in it.
   const quietRuntime = path.join(text(process.env.PI_INTERCOM_RUNTIME_DIR), "quiet");
-  for (const directory of [bin, cli, path.join(fixture, "old-home")]) {
+  const farRuntime = path.join(text(process.env.PI_INTERCOM_RUNTIME_DIR), "far");
+  for (const directory of [bin, cli, olderCli, path.join(fixture, "old-home")]) {
     mkdirSync(directory, { recursive: true });
   }
+  for (const directory of [cli, olderCli]) {
+    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ type: "module" }));
+  }
   // The installed command of a device: this checkout's source, at the installed path.
-  writeFileSync(path.join(cli, "package.json"), JSON.stringify({ type: "module" }));
   writeFileSync(
     path.join(cli, "remote-cli.js"),
     `import ${JSON.stringify(pathToFileURL(path.join(repo, "src/pi-intercom/remote-cli.ts")).href)};\n`,
   );
+  // The answer of a release whose command only lists: it has no entry for another command.
+  writeFileSync(
+    path.join(olderCli, "remote-cli.js"),
+    `import { text } from "node:stream/consumers";
+const { command } = JSON.parse(await text(process.stdin));
+console.log(JSON.stringify({ version: 1, error: \`Unsupported command \${JSON.stringify(command)}.\` }));
+process.exitCode = 1;
+`,
+  );
   const scripts = {
     node: `#!/bin/sh\nexec '${process.execPath}' "$@"\n`,
-    // `down` does not answer. `old` has no command installed. `quiet` runs no broker.
-    // `broken` has a socket directory that the command refuses.
-    ssh: `#!/bin/sh
+    // `down` does not answer. `old` has no command installed and `older` one that only lists.
+    // `quiet` runs no broker. `broken` has a socket directory that the command refuses.
+    // `far` is a device with its own broker. `drop` and `fade` are `far` behind a connection
+    // that is lost while the command runs: `drop` once the device has the request, and
+    // `fade` after the first line of its answer.
+    ssh: `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> '${fixture}/calls.log'
-eval "device=\\\${$(($# - 1))}"
-for command; do :; done
+device="\${@: -2:1}"
+command="\${@: -1}"
+export HOME='${fixture}/home'
 case "$device" in
   down) echo "ssh: connect to host down port 22: Operation timed out" >&2; exit 255 ;;
   old) export HOME='${fixture}/old-home' ;;
-  quiet) export HOME='${fixture}/home' PI_INTERCOM_RUNTIME_DIR='${quietRuntime}' ;;
-  broken) export HOME='${fixture}/home' PI_INTERCOM_RUNTIME_DIR=relative ;;
-  *) export HOME='${fixture}/home' ;;
+  older) export HOME='${fixture}/older-home' ;;
+  quiet) export PI_INTERCOM_RUNTIME_DIR='${quietRuntime}' ;;
+  broken) export PI_INTERCOM_RUNTIME_DIR=relative ;;
+  far | drop | fade) export PI_INTERCOM_RUNTIME_DIR='${farRuntime}' ;;
 esac
-tee "${fixture}/request-$device.json" | sh -c "$command" > "${fixture}/reply-$device.json"
-status=$?
-cat "${fixture}/reply-$device.json"
-exit $status
+remote() {
+  tee -a "${fixture}/request-$device.json" | sh -c "$command" | tee "${fixture}/reply-$device.json"
+  local status="\${PIPESTATUS[1]}"
+  echo >> "${fixture}/request-$device.json"
+  return "$status"
+}
+# Passes each line on at once, then closes the connection.
+lines() {
+  local left="$1" line
+  while [ "$left" -gt 0 ] && IFS= read -r line; do
+    printf '%s\\n' "$line"
+    left=$((left - 1))
+  done
+}
+# The line that says the device answers, and for \`fade\` one more.
+case "$device" in
+  drop) remote | lines 1 ;;
+  fade) remote | lines 2 ;;
+  *) remote; exit ;;
+esac
+echo "Connection to $device closed by remote host." >&2
+exit 255
 `,
   };
   for (const [name, script] of Object.entries(scripts)) {
@@ -3955,12 +3995,23 @@ exit $status
   process.env.PATH = `${bin}:${previous}`;
   t.after(() => {
     process.env.PATH = previous;
+    rmSync(fixture, { recursive: true, force: true });
   });
   const callsLog = path.join(fixture, "calls.log");
   return {
     fixture,
     quietRuntime,
+    farRuntime,
     calls: () => (existsSync(callsLog) ? readFileSync(callsLog, "utf8").trim().split("\n") : []),
+    /** The requests that `device` was sent, oldest first. */
+    requests: (device: string) => {
+      const file = path.join(fixture, `request-${device}.json`);
+      return existsSync(file)
+        ? readFileSync(file, "utf8")
+            .split("\n")
+            .filter((line) => line !== "")
+        : [];
+    },
   };
 }
 
@@ -4061,22 +4112,19 @@ nodeTest(
     );
     assert.equal(
       footer,
-      "**Other devices:** list only. send, ask and last reach the sessions of this device.",
+      "**Other devices:** send and ask reach a main there by its target above, which ends in @device. last reads only the sessions of this device.",
     );
     const installed = (store: string) =>
       `~/.pi/agent/${store}/pi-subagents/dist/pi-intercom/remote-cli.js`;
     const fromGit = installed("git/github.com/fitchmultz");
     const fromNpm = installed("npm/node_modules/@fitchmultz");
     const call = (device: string) =>
-      `-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 ${device} test -f ${fromGit} && exec node ${fromGit}; test -f ${fromNpm} && exec node ${fromNpm}; exit 44`;
+      `-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 ${device} echo; test -f ${fromGit} && exec node ${fromGit}; test -f ${fromNpm} && exec node ${fromNpm}; exit 44`;
     assert.deepEqual(
       devices.calls().toSorted(),
       ["broken", "down", "old", "peer", "quiet"].map(call),
     );
-    assert.equal(
-      readFileSync(path.join(devices.fixture, "request-peer.json"), "utf8"),
-      '{"version":1,"command":"list","origin":"home"}',
-    );
+    assert.deepEqual(devices.requests("peer"), ['{"version":1,"command":"list","origin":"home"}']);
 
     const one = await list(main, { device: "peer", to: "FIXTURE-HOST" });
     assert.match(
@@ -4087,6 +4135,451 @@ nodeTest(
     );
     assert.equal(devices.calls().length, 6, "one alias runs one ssh");
     assert.deepEqual([main.errors, child.errors, unset.errors], [[], [], []]);
+  },
+);
+
+/** The device `far`: its own broker, and one main named `name` that is connected to it. */
+async function farDevice(
+  t: TestContext,
+  devices: ReturnType<typeof standInDevices>,
+  name: string,
+  options: Pick<NonNullable<Parameters<typeof makeSession>[2]>, "configure" | "hasUI"> = {},
+) {
+  let log = "";
+  const farBroker = launchBroker(devices.farRuntime, (chunk) => {
+    log += text(chunk);
+  });
+  const home = text(process.env.PI_INTERCOM_RUNTIME_DIR);
+  try {
+    await waitFor(() => log.includes("Intercom broker started"), "the broker of far");
+    process.env.PI_INTERCOM_RUNTIME_DIR = devices.farRuntime;
+    const main = await makeSession(t, name, {
+      ...options,
+      waitForRegistration: false,
+      config: { device: "far", otherDevices: ["home"] },
+    });
+    await executeIntercom(main, { action: "list" });
+    await registeredSession(main.sender, main.session.sessionManager.getSessionId());
+    return main;
+  } finally {
+    process.env.PI_INTERCOM_RUNTIME_DIR = home;
+    // Registered after the session, so the session leaves before its broker stops.
+    t.after(async () => {
+      if (farBroker.exitCode === null) {
+        const exited = once(farBroker, "exit");
+        farBroker.kill("SIGTERM");
+        await exited;
+      }
+    });
+  }
+}
+
+/** The failure of an intercom call that must fail. */
+async function failureOf(call: Promise<unknown>): Promise<{
+  readonly message: string;
+  readonly details: Readonly<Record<string, unknown>>;
+}> {
+  try {
+    await call;
+  } catch (error) {
+    return { message: text(property(error, "message")), details: record(at(error, "details")) };
+  }
+  return assert.fail("expected the intercom call to fail");
+}
+
+const noPendingAsk = async (session: { readonly session: AgentSession }) =>
+  JSON.stringify(await executeIntercom(session, { action: "pending" })).includes(
+    "No unresolved inbound asks",
+  );
+
+nodeTest(
+  "native send and ask reach a main of another device by its name@device target, in both directions",
+  async (t) => {
+    const devices = standInDevices(t);
+    const far = await farDevice(t, devices, "far-main");
+    const main = await makeSession(t, "home-main", {
+      config: { device: "home", otherDevices: ["far"] },
+    });
+    const mainCwd = path.join(root, "home-main");
+    const mainPeer = await registeredSession(
+      main.sender,
+      main.session.sessionManager.getSessionId(),
+    );
+    let question = "";
+    far.faux.setResponses([
+      fauxAssistantMessage("Noted"),
+      (context: unknown) => {
+        question = JSON.stringify(context);
+        return fauxAssistantMessage(
+          fauxToolCall("intercom", { action: "reply", message: "Port 8443." }),
+          { stopReason: "toolUse" },
+        );
+      },
+      fauxAssistantMessage("Answered"),
+      // An answer by send and replyTo names the asker as far read it: home-main@home.
+      () =>
+        fauxAssistantMessage(
+          fauxToolCall("intercom", {
+            action: "send",
+            to: "home-main@home",
+            replyTo: text(
+              inboundId(
+                far.session.sessionManager
+                  .getEntries()
+                  .findLast((entry) => entry.type === "custom_message"),
+              ),
+            ),
+            message: "Version 7.",
+          }),
+          { stopReason: "toolUse" },
+        ),
+      fauxAssistantMessage("Answered again"),
+    ]);
+
+    const sent = await executeIntercom(main, {
+      action: "send",
+      to: "far-main@far",
+      message: "Deploy finished on home.",
+    });
+    assert.equal(
+      sent.content[0]?.text,
+      "Message sent to far-main@far (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)",
+    );
+    const sentId = text(at(sent, "details", "messageId"));
+    assert.deepEqual(
+      [at(sent, "details", "accepted"), at(sent, "details", "delivered")],
+      [true, true],
+    );
+    await waitFor(
+      () => far.visible(sentId).length === 1 && far.session.isIdle,
+      "the message on far",
+    );
+    // The recipient reads the sender as a target that it can answer.
+    assert.equal(
+      at(far.visible(sentId)[0], "content"),
+      `**📨 From home-main@home** (Native session cwd: ${mainCwd})\n\nDeploy finished on home.`,
+    );
+    // One ssh carried it: the constant command line, and the request on its stdin.
+    assert.equal(devices.calls().length, 1);
+    assert.match(text(devices.calls()[0]), / far echo; test -f \S+remote-cli\.js && exec node /);
+    assert.deepEqual(
+      devices.requests("far").map((line) => record(JSON.parse(line))),
+      [
+        {
+          version: 1,
+          command: "send",
+          origin: "home",
+          device: "far",
+          from: { id: mainPeer.id, name: "home-main", cwd: mainCwd },
+          to: "far-main",
+          message: { text: "Deploy finished on home.", passive: false, messageId: sentId },
+          timeoutMs: 120_000,
+        },
+      ],
+    );
+
+    // The device part matches in any letter case.
+    const answer = await executeIntercom(main, {
+      action: "ask",
+      to: "far-main@FAR",
+      message: "Which port?",
+    });
+    assert.equal(answer.content[0]?.text, "**Reply from far-main@FAR:**\nPort 8443.");
+    assert.ok(question.includes("From home-main@home"), question);
+    assert.ok(question.includes("Which port?"), question);
+    await far.session.waitForIdle();
+    assert.equal(await noPendingAsk(far), true);
+    assert.equal(devices.calls().length, 2, "one ssh holds the question and the wait");
+    // The answer reaches the asker that waits on far. It is not sent to home as a new message.
+    const again = await executeIntercom(main, {
+      action: "ask",
+      to: "far-main@far",
+      message: "Which version?",
+    });
+    assert.equal(again.content[0]?.text, "**Reply from far-main@far:**\nVersion 7.");
+    await far.session.waitForIdle();
+    assert.equal(await noPendingAsk(far), true);
+    assert.equal(devices.calls().length, 3, "far ran no ssh for its answer");
+    // The sender's journal names the remote target, like a local one.
+    const journal = main.session.sessionManager
+      .getEntries()
+      .filter((entry) => entry.type === "custom")
+      // The host writes custom entries of its own, such as the fork's `pi.runtime` record.
+      .filter((entry) => entry.customType.startsWith("intercom_"))
+      .map((entry) => [entry.customType, at(entry, "data", "to") ?? at(entry, "data", "from")]);
+    assert.deepEqual(journal, [
+      ["intercom_sent", "far-main@far"],
+      ["intercom_sent", "far-main@FAR"],
+      ["intercom_received", "far-main@FAR"],
+      ["intercom_sent", "far-main@far"],
+      ["intercom_received", "far-main@far"],
+    ]);
+
+    // The name that far read is the target for the way back.
+    main.faux.setResponses([fauxAssistantMessage("Thanks")]);
+    const back = await executeIntercom(far, {
+      action: "send",
+      to: "home-main@home",
+      message: "Rollback is ready.",
+    });
+    const backId = text(at(back, "details", "messageId"));
+    await waitFor(
+      () => main.visible(backId).length === 1 && main.session.isIdle,
+      "the message on home",
+    );
+    assert.equal(
+      at(main.visible(backId)[0], "content"),
+      `**📨 From far-main@far** (Native session cwd: ${path.join(root, "far-main")})\n\nRollback is ready.`,
+    );
+    assert.deepEqual([...main.errors, ...far.errors], []);
+  },
+);
+
+nodeTest(
+  "native ask of a busy main of another device is refused unless it steers, and a queued note replaces the earlier one",
+  async (t) => {
+    const devices = standInDevices(t);
+    const release = gate(t);
+    let started = false;
+    const far = await farDevice(t, devices, "far-busy", {
+      hasUI: true,
+      configure(pi) {
+        pi.registerTool({
+          name: "hold",
+          label: "Hold",
+          description: "Held native work",
+          parameters: Type.Object({}),
+          async execute() {
+            started = true;
+            await release.promise;
+            return { content: [{ type: "text", text: "Released" }], details: {} };
+          },
+        });
+      },
+    });
+    const main = await makeSession(t, "home-asker", {
+      config: { device: "home", otherDevices: ["far"] },
+    });
+    far.faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("intercom", { action: "reply", message: "Use blue." }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Answered"),
+      fauxAssistantMessage("Read the note"),
+    ]);
+    const working = far.session.prompt("Work before the question");
+    await waitFor(() => started, "held work on far");
+
+    // A local asker would leave the question behind and stay reachable. A command cannot.
+    const busy = await failureOf(
+      executeIntercom(main, { action: "ask", to: "far-busy@far", message: "Blue or green?" }),
+    );
+    assert.equal(
+      busy.message,
+      'Failed: Ask to "far-busy@far" was not sent: the peer is busy and not accepting blocking asks (peer_busy). Use send, or ask with delivery "steer" to reach it at its next tool boundary and wait.',
+    );
+    assert.deepEqual(
+      [busy.details.accepted, busy.details.delivered, busy.details.deliveryUnknown],
+      [false, false, false],
+    );
+    assert.equal(await noPendingAsk(far), true);
+
+    // Each ssh is a new connection of the same sender, so its later note replaces the earlier.
+    const notes: string[] = [];
+    for (const message of ["Old note", "New note"]) {
+      // The earlier note must be queued before the later one replaces it.
+      const note = await executeIntercom(main, {
+        action: "send",
+        to: "far-busy@far",
+        message,
+        delivery: "queue",
+        queueMode: "replace",
+        threadId: "colour",
+      });
+      notes.push(text(at(note, "details", "messageId")));
+    }
+    const [oldNote = "", newNote = ""] = notes;
+
+    const asking = executeIntercom(main, {
+      action: "ask",
+      to: "far-busy@far",
+      message: "Blue or green?",
+      delivery: "steer",
+    });
+    await waitFor(async () => !(await noPendingAsk(far)), "the steered question on far");
+    release.resolve();
+    assert.equal((await asking).content[0]?.text, "**Reply from far-busy@far:**\nUse blue.");
+    await working;
+    await waitFor(
+      () => far.session.isIdle && far.visible(newNote).length === 1,
+      "the replacement note on far",
+    );
+    assert.equal(far.visible(oldNote).length, 0);
+    assert.deepEqual([...main.errors, ...far.errors], []);
+  },
+);
+
+nodeTest(
+  "native send and ask to another device say whether the message was sent, not sent or unknown",
+  async (t) => {
+    const devices = standInDevices(t);
+    const far = await farDevice(t, devices, "far-quiet");
+    const config = {
+      device: "home",
+      otherDevices: ["far", "down", "old", "older", "quiet", "drop", "fade"],
+    };
+    const main = await makeSession(t, "home-sender", { config });
+    const hasty = await makeSession(t, "home-hasty", {
+      config: { ...config, askTimeoutMs: 1000 },
+    });
+    const rootSessionId = main.session.sessionManager.getSessionId();
+    const child = await makeSession(t, "home-child", {
+      config,
+      lineage: { rootSessionId, parentSessionId: rootSessionId },
+    });
+    // The pending asks of far as its broker lists them, which is what another device reads.
+    const listedAsks = async () =>
+      observedSession(await far.sender.listSessions(), (entry) => entry.name === "far-quiet")
+        .pendingAsks;
+    // far reads every message that reaches it and answers none.
+    far.faux.setResponses(Array.from({ length: 8 }, () => fauxAssistantMessage("Read")));
+    const message = "Are you there?";
+
+    // Refused here, before any ssh.
+    for (const action of ["send", "ask"]) {
+      // One call at a time: each must leave the call log empty.
+      const fromChild = await failureOf(
+        executeIntercom(child, { action, to: "far-quiet@far", message }),
+      );
+      assert.match(
+        fromChild.message,
+        /Only a main session reaches other devices\. Ask your main to do it\.$/,
+      );
+      const self = await failureOf(
+        executeIntercom(main, { action, to: "far-quiet@HOME", message }),
+      );
+      assert.match(self.message, /"home" is this device\. Use the target "far-quiet"\.$/);
+    }
+    assert.deepEqual(devices.calls(), []);
+
+    // The device was reached or not, and the message was not sent.
+    for (const [to, reason] of [
+      [
+        "x@down",
+        "Not sent to down: unreachable (connect to host down port 22: Operation timed out)",
+      ],
+      [
+        "x@old",
+        "Not sent to old: its pi-subagents has no cross-device command; update pi-subagents there",
+      ],
+      [
+        "x@older",
+        "Not sent to older: its pi-subagents is older than this command; update pi-subagents there",
+      ],
+      ["x@quiet", "Not sent to quiet: no Pi session is connected there"],
+      ["nobody@far", 'Ask to "nobody@far" was not sent: connected session not found.'],
+    ] as const) {
+      for (const action of ["send", "ask"]) {
+        if (to === "nobody@far" && action === "send") {
+          continue;
+        }
+        // One call at a time, so a failure names its own case.
+        const result = await failureOf(executeIntercom(main, { action, to, message }));
+        assert.equal(
+          result.message,
+          `${action === "send" ? "Failed to send" : "Failed"}: ${reason}`,
+        );
+        assert.deepEqual(
+          [result.details.accepted, result.details.delivered, result.details.deliveryUnknown],
+          [false, false, false],
+          `${action} ${to}`,
+        );
+      }
+    }
+    assert.equal(existsSync(devices.quietRuntime), false, "the command starts no broker");
+    // far's broker refuses a recipient that it does not have, and names it as the sender did.
+    const nobody = await failureOf(
+      executeIntercom(main, { action: "send", to: "nobody@far", message }),
+    );
+    assert.match(nobody.message, /^Message to "nobody@far" was not delivered: /);
+    assert.equal(nobody.details.reasonCode, "delivery_failed");
+    // far's refusal spells its targets as this device does, and keeps its recovery code.
+    const farPeer = await registeredSession(far.sender, far.session.sessionManager.getSessionId());
+    for (const action of ["send", "ask"]) {
+      // One call at a time, so a failure names its own case.
+      const short = await failureOf(executeIntercom(main, { action, to: "pi-@far", message }));
+      const shown =
+        /^(?:Failed to send|Failed): Target "pi-@far" is too short\. Use the displayed target from intercom list, such as far-quiet → (pi-[0-9a-f]{5,})@far\.$/.exec(
+          short.message,
+        );
+      assert.ok(shown !== null, short.message);
+      assert.ok(farPeer.id.startsWith(text(shown[1])), short.message);
+      assert.equal(short.details.reasonCode, "ambiguous_target");
+    }
+    assert.equal(far.faux.state.callCount, 0, "nothing reached far");
+
+    // The connection is lost after far has the request: the answer is unknown, never "not sent".
+    const unknown =
+      "Delivery unknown: drop gave no answer after the request was handed over (Connection to drop closed by remote host.). Check the recipient before retrying; it may still arrive.";
+    const lostSend = await failureOf(
+      executeIntercom(main, { action: "send", to: "far-quiet@drop", message }),
+    );
+    assert.equal(lostSend.message, `Failed to send: ${unknown}`);
+    assert.equal(lostSend.details.deliveryUnknown, true);
+    const lostId = text(lostSend.details.messageId);
+    await waitFor(() => far.visible(lostId).length === 1, "the unconfirmed message on far");
+    const lostAsk = await failureOf(
+      executeIntercom(main, { action: "ask", to: "far-quiet@drop", message }),
+    );
+    assert.equal(lostAsk.message, `Failed: ${unknown}`);
+    assert.equal(lostAsk.details.deliveryUnknown, true);
+    assert.equal(far.visible(text(lostAsk.details.messageId)).length, 1);
+    // The command saw its caller leave and left too, which retires the question on far.
+    await waitFor(async () => (await listedAsks()) === 0, "the abandoned question retired on far");
+    // Lost during the wait: the device had already confirmed the question, so that is known.
+    const lostReply = await failureOf(
+      executeIntercom(main, { action: "ask", to: "far-quiet@fade", message }),
+    );
+    assert.equal(
+      lostReply.message,
+      "Failed: The ask reached fade, and the connection was lost before a reply came (Connection to fade closed by remote host.).",
+    );
+    assert.deepEqual(
+      [lostReply.details.accepted, lostReply.details.delivered, lostReply.details.deliveryUnknown],
+      [true, true, false],
+    );
+    assert.equal(far.visible(text(lostReply.details.messageId)).length, 1);
+    await waitFor(async () => (await listedAsks()) === 0, "the unanswered question retired on far");
+
+    // No reply in time: the ask was delivered, and far is told that nobody waits any more.
+    const late = await failureOf(
+      executeIntercom(hasty, { action: "ask", to: "far-quiet@far", message }),
+    );
+    assert.equal(late.message, 'Failed: No reply from "far-quiet@far" within 1 minute(s)');
+    assert.equal(late.details.reasonCode, "reply_timeout");
+    assert.deepEqual(
+      [late.details.accepted, late.details.delivered, late.details.deliveryUnknown],
+      [true, true, false],
+    );
+    assert.equal(far.visible(text(late.details.messageId)).length, 1);
+    await waitFor(async () => (await listedAsks()) === 0, "the timed-out question retired on far");
+
+    // Cancelling the tool call stops the ssh, and far learns of it the same way.
+    const controller = new AbortController();
+    const cancelled = failureOf(
+      registeredTool(main.session, "intercom").execute(
+        "cancelled-ask",
+        { action: "ask", to: "far-quiet@far", message },
+        controller.signal,
+      ),
+    );
+    await waitFor(async () => (await listedAsks()) === 1, "the question on far");
+    controller.abort();
+    assert.equal((await cancelled).message, "Failed: Cancelled");
+    await waitFor(async () => (await listedAsks()) === 0, "the cancelled question retired on far");
+    assert.equal(await noPendingAsk(far), true);
+    assert.deepEqual([...main.errors, ...hasty.errors, ...child.errors, ...far.errors], []);
   },
 );
 

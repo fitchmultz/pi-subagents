@@ -62,6 +62,11 @@ export class RecoveryError extends Error {
     this.code = code;
   }
 }
+/** The recovery code of a failure, also when a transport error wraps it. */
+export function recoveryCode(error: unknown, fallback: string): string {
+  const cause = error instanceof SendError ? error.cause : error;
+  return cause instanceof RecoveryError ? cause.code : fallback;
+}
 export function firstTextContent(result: {
   readonly content?: readonly { readonly type: string; readonly text?: string }[];
 }): string {

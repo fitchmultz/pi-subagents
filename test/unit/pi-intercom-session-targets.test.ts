@@ -318,7 +318,7 @@ nodeTest(
     const busyTags =
       "state:busy, accepts_asks:false, pending_asks:0, last_intercom_activity:none, last_seen:5s ago";
     const footer =
-      "**Other devices:** list only. send, ask and last reach the sessions of this device.";
+      "**Other devices:** send and ask reach a main there by its target above, which ends in @device. last reads only the sessions of this device.";
     assert.equal(
       formatDeviceListings(listings),
       [
