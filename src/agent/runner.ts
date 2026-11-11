@@ -126,6 +126,21 @@ class Actor {
     this.work = { kind: "running", launch, task };
     this.actor?.observation.working(true);
   }
+  /** The refusal that must end an admitted run before its prompt, or undefined to start it. */
+  private runRefusal(launch: Launch): string | undefined {
+    if (
+      launch.provider !== this.initial.provider ||
+      launch.model !== this.initial.model ||
+      launch.thinking !== this.initial.thinking
+    ) {
+      return "Continuation model snapshot changed unexpectedly.";
+    }
+    // Stop was admitted while this run was only scheduled; no prompt follows a stop.
+    if (this.stopping) {
+      return "Stopped before the run started; no prompt was submitted.";
+    }
+    return undefined;
+  }
   private async executeRun(
     launch: Launch,
     session: AgentSession,
@@ -136,12 +151,10 @@ class Actor {
       saveResult(this.base, launch, { session, baseline, accounting, stopping, error });
     };
     try {
-      if (
-        launch.provider !== this.initial.provider ||
-        launch.model !== this.initial.model ||
-        launch.thinking !== this.initial.thinking
-      ) {
-        throw new Error("Continuation model snapshot changed unexpectedly.");
+      const refusal = this.runRefusal(launch);
+      if (refusal !== undefined) {
+        // The catch saves the refusal as the run's terminal result.
+        throw new Error(refusal);
       }
       await session.prompt(launch.prompt, { expandPromptTemplates: false });
       if (!this.stopping && reporting(session)) {
