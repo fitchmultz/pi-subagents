@@ -4406,6 +4406,10 @@ nodeTest(
       config,
       lineage: { rootSessionId, parentSessionId: rootSessionId },
     });
+    // The pending asks of far as its broker lists them, which is what another device reads.
+    const listedAsks = async () =>
+      observedSession(await far.sender.listSessions(), (entry) => entry.name === "far-quiet")
+        .pendingAsks;
     // far reads every message that reaches it and answers none.
     far.faux.setResponses(Array.from({ length: 8 }, () => fauxAssistantMessage("Read")));
     const message = "Are you there?";
@@ -4500,7 +4504,7 @@ nodeTest(
     assert.equal(lostAsk.details.deliveryUnknown, true);
     assert.equal(far.visible(text(lostAsk.details.messageId)).length, 1);
     // The command saw its caller leave and left too, which retires the question on far.
-    await waitFor(() => noPendingAsk(far), "the abandoned question retired on far");
+    await waitFor(async () => (await listedAsks()) === 0, "the abandoned question retired on far");
     // Lost during the wait: the device had already confirmed the question, so that is known.
     const lostReply = await failureOf(
       executeIntercom(main, { action: "ask", to: "far-quiet@fade", message }),
@@ -4514,7 +4518,7 @@ nodeTest(
       [true, true, false],
     );
     assert.equal(far.visible(text(lostReply.details.messageId)).length, 1);
-    await waitFor(() => noPendingAsk(far), "the unanswered question retired on far");
+    await waitFor(async () => (await listedAsks()) === 0, "the unanswered question retired on far");
 
     // No reply in time: the ask was delivered, and far is told that nobody waits any more.
     const late = await failureOf(
@@ -4527,7 +4531,7 @@ nodeTest(
       [true, true, false],
     );
     assert.equal(far.visible(text(late.details.messageId)).length, 1);
-    await waitFor(() => noPendingAsk(far), "the timed-out question retired on far");
+    await waitFor(async () => (await listedAsks()) === 0, "the timed-out question retired on far");
 
     // Cancelling the tool call stops the ssh, and far learns of it the same way.
     const controller = new AbortController();
@@ -4538,10 +4542,11 @@ nodeTest(
         controller.signal,
       ),
     );
-    await waitFor(async () => !(await noPendingAsk(far)), "the question on far");
+    await waitFor(async () => (await listedAsks()) === 1, "the question on far");
     controller.abort();
     assert.equal((await cancelled).message, "Failed: Cancelled");
-    await waitFor(() => noPendingAsk(far), "the cancelled question retired on far");
+    await waitFor(async () => (await listedAsks()) === 0, "the cancelled question retired on far");
+    assert.equal(await noPendingAsk(far), true);
     assert.deepEqual([...main.errors, ...hasty.errors, ...child.errors, ...far.errors], []);
   },
 );

@@ -85,6 +85,8 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
       peerLeft: (id) => {
         wait.peerDisconnected(id);
         journal.peerLeft(id);
+        // Its questions are retired: a list must stop counting them as pending.
+        connection.syncStatus();
       },
       disconnected: (error) => {
         wait.reject(
@@ -116,7 +118,6 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     config,
   );
   const inspection = new IntercomInspection(journal, replies, devices);
-  const tools = new IntercomTools({ connection, outbound, inspection });
   new IntercomSessionEvents(pi, {
     lifecycle,
     connection,
@@ -125,7 +126,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     replies,
     wait,
   }).register();
-  registerIntercomTools(pi, tools);
+  registerIntercomTools(pi, new IntercomTools({ connection, outbound, inspection }));
   pi.events.on(PARK, (request) => {
     if (isParkRequest(request)) {
       request.reply(request.park ? connection.park() : connection.unpark());
