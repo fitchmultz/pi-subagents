@@ -78,11 +78,13 @@ two-level topology. Never publish credentials or private transcripts as evidence
 
 ## npm releases
 
-Main-branch changes are reconciled into a reviewed patch-version PR. After that PR
-merges, release CI prepares one npm candidate and runs the complete host CI and
-native package smoke against it. The qualification receipt binds the candidate,
-source, host identities and workflow run before the same archive is published to
-npm and attached to the matching GitHub release.
+Main-branch changes that alter the package users install are reconciled into a
+reviewed patch-version PR. A merge that changes only CI, tests or development
+tooling ships with the next release. After the version PR merges, release CI
+prepares one npm candidate and runs the complete host CI and native package smoke
+against it. The qualification receipt binds the candidate, source, host identities
+and workflow run before the same archive is published to npm and attached to the
+matching GitHub release.
 
 ## Isolation and safety
 
