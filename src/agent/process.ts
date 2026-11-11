@@ -158,6 +158,55 @@ function saveSpawnFailure(dir: string, error: Error): Error {
     );
   }
 }
+type SpawnOutcome =
+  | { readonly kind: "spawned"; readonly child: ChildProcess; readonly pid: number }
+  | { readonly kind: "failed"; readonly failure: Promise<Error> };
+
+/** Starts the runner, or names the failure that prevented a usable process. */
+function startRunner(
+  base: string,
+  launch: Launch,
+  token: string,
+  claim: LaunchClaim,
+): SpawnOutcome {
+  const dir = conversation(base, launch);
+  const log = fs.openSync(path.join(dir, "runner.log"), "a", 0o600);
+  let child: ChildProcess;
+  try {
+    const runner = fileURLToPath(
+      new URL(import.meta.url.endsWith(".ts") ? "./runner.ts" : "./runner.js", import.meta.url),
+    );
+    child = spawn(process.execPath, [runner, base, launch.rootId, token, launch.id], {
+      cwd: launch.cwd,
+      env: childEnvironment(launch),
+      detached: true,
+      stdio: ["ignore", log, log],
+    });
+  } catch (error) {
+    claim.release();
+    fs.closeSync(log);
+    throw error;
+  }
+  const { pid } = child;
+  if (pid === undefined) {
+    claim.release();
+    const failure = new Promise<Error>((resolve) => {
+      child.once("error", (error) => resolve(saveSpawnFailure(dir, error)));
+    });
+    fs.closeSync(log);
+    return {
+      kind: "failed",
+      failure,
+    };
+  }
+  claim.spawned();
+  // The claim is spawned before any later failure: a started runner is never released.
+  fs.closeSync(log);
+  child.on("error", (error) => {
+    write(path.join(dir, "spawn-error.json"), { error: error.message });
+  });
+  return { kind: "spawned", child, pid };
+}
 async function spawnActor(
   base: string,
   launch: Launch,
@@ -165,54 +214,20 @@ async function spawnActor(
   claim: LaunchClaim,
 ): Promise<void> {
   const dir = conversation(base, launch);
-  let child: ChildProcess;
-  let spawnError: Promise<Error> | undefined;
-  try {
-    const log = fs.openSync(path.join(dir, "runner.log"), "a", 0o600);
-    try {
-      const runner = fileURLToPath(
-        new URL(import.meta.url.endsWith(".ts") ? "./runner.ts" : "./runner.js", import.meta.url),
-      );
-      child = spawn(process.execPath, [runner, base, launch.rootId, token, launch.id], {
-        cwd: launch.cwd,
-        env: childEnvironment(launch),
-        detached: true,
-        stdio: ["ignore", log, log],
-      });
-      if (child.pid === undefined) {
-        spawnError = new Promise((resolve) => {
-          child.once("error", (error) => resolve(saveSpawnFailure(dir, error)));
-        });
-        claim.release();
-      } else {
-        claim.spawned();
-        child.on("error", (error) => {
-          write(path.join(dir, "spawn-error.json"), { error: error.message });
-        });
-      }
-    } finally {
-      fs.closeSync(log);
-    }
-  } catch (error) {
-    claim.release();
-    throw error;
+  const outcome = startRunner(base, launch, token, claim);
+  if (outcome.kind === "failed") {
+    throw await outcome.failure;
   }
-  if (child.pid === undefined && spawnError) {
-    throw await spawnError;
-  }
-  if (child.pid === undefined) {
-    claim.spawned();
-    throw new Error("Actor spawn outcome is ambiguous.");
-  }
+  const { child, pid } = outcome;
   child.on("exit", (code, signal) => {
-    write(path.join(dir, `exit-${token}.json`), { pid: child.pid, code, signal, at: Date.now() });
+    write(path.join(dir, `exit-${token}.json`), { pid, code, signal, at: Date.now() });
     trySignalChildTree(child, "SIGKILL");
   });
   child.unref();
   const clock = readProcessClock();
   write(path.join(dir, "actor.lock", "process.json"), {
-    pid: child.pid,
-    identity: readChildProcessIdentity(child.pid) ?? "unverified",
+    pid,
+    identity: readChildProcessIdentity(pid) ?? "unverified",
     token,
     ...(clock !== undefined ? { clock } : {}),
   });

@@ -31,6 +31,49 @@ interface Connection {
   timer: NodeJS.Timeout;
 }
 
+/** One HTTP request's progress: the admitted session, its deadline, peer and cancellation scope. */
+class RequestProgress {
+  private readonly started = Date.now();
+  session?: Session | undefined;
+  controller?: AbortController | undefined;
+  peer?: string | undefined;
+  private deadline?: NodeJS.Timeout | undefined;
+  private scope: ReturnType<typeof cancellationScopeFor> = "session";
+  admit(session: Session, scope: ReturnType<typeof cancellationScopeFor>): AbortController {
+    this.scope = scope;
+    this.session = session;
+    this.controller = session.begin();
+    return this.controller;
+  }
+  cancel(fault: Readonly<Fault>): void {
+    if (this.scope === "request") {
+      this.controller?.abort(fault);
+    } else {
+      this.session?.close(fault);
+    }
+  }
+  deadlineIn(ms: number): void {
+    clearTimeout(this.deadline);
+    this.deadline = setTimeout(
+      () =>
+        this.cancel(
+          new Fault(
+            504,
+            "request_timeout",
+            "HTTP operation deadline exceeded; delivery may be unknown.",
+          ),
+        ),
+      Math.max(1, ms - (Date.now() - this.started)),
+    );
+  }
+  settle(): void {
+    clearTimeout(this.deadline);
+    if (this.controller && this.session) {
+      this.session.end(this.controller);
+    }
+  }
+}
+
 class Bridge {
   private config: Config;
   private readonly configPath: string;
@@ -348,16 +391,9 @@ class Bridge {
   }
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const requestId = randomUUID();
-    const started = Date.now();
-    let session: Session | undefined;
-    let controller: AbortController | undefined;
-    let deadline: NodeJS.Timeout | undefined;
-    let peer: string | undefined;
-    let cancellationScope: ReturnType<typeof cancellationScopeFor> = "session";
-    const cancel = (fault: Readonly<Fault>) =>
-      cancellationScope === "request" ? controller?.abort(fault) : session?.close(fault);
+    const progress = new RequestProgress();
     const abort = () =>
-      cancel(
+      progress.cancel(
         new Fault(499, "client_aborted", "HTTP client disconnected; delivery may be unknown."),
       );
     const onClose = () => {
@@ -365,55 +401,42 @@ class Bridge {
         abort();
       }
     };
-    const setDeadline = (ms: number) => {
-      clearTimeout(deadline);
-      deadline = setTimeout(
-        () =>
-          cancel(
-            new Fault(
-              504,
-              "request_timeout",
-              "HTTP operation deadline exceeded; delivery may be unknown.",
-            ),
-          ),
-        Math.max(1, ms - (Date.now() - started)),
-      );
-    };
     try {
       const { identity, expires } = this.admission(req);
       const route = routeFor(req);
-      cancellationScope = cancellationScopeFor(route);
-      session = this.session(identity, expires);
-      controller = session.begin();
+      const session = this.session(identity, expires);
+      const controller = progress.admit(session, cancellationScopeFor(route));
       const signal = controller.signal;
       req.once("aborted", abort);
       res.once("close", onClose);
-      setDeadline(15000);
+      progress.deadlineIn(15000);
       const operation = await operationFor(req, route, signal);
       const data = await session.execute(operation, {
         signal,
         requestId,
         onPeer: (id) => {
-          peer = id;
+          progress.peer = id;
         },
       });
       session.guard(signal);
-      log("request", { ...session.fields(), requestId, peer, result: "ok" });
+      log("request", { ...session.fields(), requestId, peer: progress.peer, result: "ok" });
       reply(res, requestId, 200, { ok: true, ...data });
     } catch (error) {
       const fault =
         error instanceof Fault
           ? error
           : new Fault(503, "broker_unavailable", "Local broker operation failed.");
-      log("request", { ...session?.fields(), requestId, peer, result: fault.code });
+      log("request", {
+        ...progress.session?.fields(),
+        requestId,
+        peer: progress.peer,
+        result: fault.code,
+      });
       replyFault(res, requestId, fault);
     } finally {
-      clearTimeout(deadline);
       req.off("aborted", abort);
       res.off("close", onClose);
-      if (controller && session) {
-        session.end(controller);
-      }
+      progress.settle();
     }
   }
 }
