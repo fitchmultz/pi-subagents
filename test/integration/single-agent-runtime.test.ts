@@ -232,6 +232,7 @@ for (const phase of [
   "stop-before-admission",
   "delegate-cancel-after-preparation",
   "attachment-refusal",
+  "extension-handle-exit",
   "dispose",
   "custom-bash",
   "bash-before-registration",
