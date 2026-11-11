@@ -230,6 +230,7 @@ for (const phase of [
   "queue-retain-one",
   "cancellation",
   "stop-before-admission",
+  "delegate-cancel-after-preparation",
   "dispose",
   "custom-bash",
   "bash-before-registration",
