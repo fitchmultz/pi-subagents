@@ -4216,6 +4216,24 @@ nodeTest(
         );
       },
       fauxAssistantMessage("Answered"),
+      // An answer by send and replyTo names the asker as far read it: home-main@home.
+      () =>
+        fauxAssistantMessage(
+          fauxToolCall("intercom", {
+            action: "send",
+            to: "home-main@home",
+            replyTo: text(
+              inboundId(
+                far.session.sessionManager
+                  .getEntries()
+                  .findLast((entry) => entry.type === "custom_message"),
+              ),
+            ),
+            message: "Version 7.",
+          }),
+          { stopReason: "toolUse" },
+        ),
+      fauxAssistantMessage("Answered again"),
     ]);
 
     const sent = await executeIntercom(main, {
@@ -4272,6 +4290,16 @@ nodeTest(
     await far.session.waitForIdle();
     assert.equal(await noPendingAsk(far), true);
     assert.equal(devices.calls().length, 2, "one ssh holds the question and the wait");
+    // The answer reaches the asker that waits on far. It is not sent to home as a new message.
+    const again = await executeIntercom(main, {
+      action: "ask",
+      to: "far-main@far",
+      message: "Which version?",
+    });
+    assert.equal(again.content[0]?.text, "**Reply from far-main@far:**\nVersion 7.");
+    await far.session.waitForIdle();
+    assert.equal(await noPendingAsk(far), true);
+    assert.equal(devices.calls().length, 3, "far ran no ssh for its answer");
     // The sender's journal names the remote target, like a local one.
     const journal = main.session.sessionManager
       .getEntries()
@@ -4281,6 +4309,8 @@ nodeTest(
       ["intercom_sent", "far-main@far"],
       ["intercom_sent", "far-main@FAR"],
       ["intercom_received", "far-main@FAR"],
+      ["intercom_sent", "far-main@far"],
+      ["intercom_received", "far-main@far"],
     ]);
 
     // The name that far read is the target for the way back.

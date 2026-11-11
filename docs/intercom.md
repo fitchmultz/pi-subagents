@@ -147,11 +147,14 @@ hard-coded, no pending ask is created, and a hint does not prove a reply exists.
 intercom({ action: "list", device: "all" });
 intercom({ action: "list", device: "laptop" });
 intercom({ action: "list", device: "laptop", to: "review" });
+intercom({ action: "send", to: "api-fix@laptop", message: "The schema change is merged." });
+intercom({ action: "ask", to: "api-fix@laptop", message: "Which port does the API use?" });
 ```
 
-A main session can list the main sessions on the owner's other devices. `device`
-is one configured device name, or `all` for every configured device. The answer
-has one block per device and no session of this device:
+A main session can list the main sessions on the owner's other devices, send a
+message to one of them, and ask one of them a question. For a list, `device` is
+one configured device name, or `all` for every configured device. The answer has
+one block per device and no session of this device:
 
 ```text
 **Main sessions on laptop (2):**
@@ -164,7 +167,7 @@ has one block per device and no session of this device:
 
 **old-box:** not listed: its pi-subagents has no cross-device command; update pi-subagents there
 
-**Other devices:** list only. send, ask and last reach the sessions of this device.
+**Other devices:** send and ask reach a main there by its target above, which ends in @device. last reads only the sessions of this device.
 ```
 
 - A row has the fields of a local main row. Its name and its ID end in `@device`.
@@ -174,12 +177,14 @@ has one block per device and no session of this device:
 - `to` keeps the sessions whose name or ID contains that text, as in a local
   list. A text copied from a row can keep its `@device` ending: it matches that
   row on that device. `scope` and `children` cannot be combined with `device`.
-- The list is the only cross-device action. `send`, `ask`, `reply` and `last`
-  reach the sessions of this device.
-- Only a main session can use `device`. A child gets a refusal, and its main
-  handles anything that involves another device. Like the group rules, this is a
-  coordination rule, not a sandbox against code that runs as the same user.
-- Without `device`, `list` contacts no other device.
+- The name and the ID of a row are targets for `send` and `ask`. `last` reads
+  only the sessions of this device.
+- Only a main session can use `device` or a `name@device` target. A child gets a
+  refusal, and its main handles anything that involves another device. Like the
+  group rules, this is a coordination rule, not a sandbox against code that runs
+  as the same user.
+- Without `device` and without a `name@device` target, the tool contacts no
+  other device.
 
 | Block text                                                 | Meaning                                                                                              |
 | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -188,6 +193,70 @@ has one block per device and no session of this device:
 | `not listed: its pi-subagents has no cross-device command` | The device answered. This package is not installed there, or its version is older than this command. |
 | `not listed: node is not on the PATH of its SSH commands`  | The device answered. Its shell did not find `node` for a command that `ssh` runs without a terminal. |
 | `not listed: …`                                            | Any other failure, with the last line of its error text.                                             |
+
+### Send to and ask a main on another device
+
+`to` is a name or an ID from a device list, with its `@device` ending. The text
+after the last `@` selects the device when it is a configured device name, in
+any letter case. Such a target always goes to that device, also when a session
+of this device has the same full name. The part before the `@` is resolved on
+the other device like a local target: by name, by ID, or by an ID prefix of at
+least 8 characters. `@` with the name of this device is refused with the target
+to use instead.
+
+```text
+Message sent to api-fix@laptop (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)
+```
+
+```text
+**Reply from api-fix@laptop:**
+Port 8443.
+```
+
+The recipient reads the sender as `<session name>@<sender's device>`, with the
+sender's working directory. That name is the target for a message back:
+
+```text
+**📨 From web-build@desk** (Native session cwd: /work/web)
+
+The schema change is merged.
+```
+
+- **Send.** The answer is the receipt of the other device's broker: accepted,
+  delivered or queued, as for a local send. `delivery`, `queueMode`, `threadId`
+  and attachments work as for a local target. A later queued message
+  with `queueMode:"replace"` replaces the sender's earlier one of the same
+  thread.
+- **Ask.** The tool waits for the reply up to the asker's `askTimeoutMs`. The
+  recipient answers with `reply`, or with `send` and `replyTo`, as for a local
+  ask.
+- **A busy recipient.** A default ask of a main that is not accepting asks is
+  refused and not sent. Use `send`, or ask with `delivery:"steer"` to reach the
+  recipient at its next tool boundary and wait.
+- **When nobody waits any more.** After the timeout, a cancelled tool call or a
+  lost connection, the question is retired on the recipient's device: `pending`
+  and the list stop counting it. A late `reply` then fails because no ask is
+  pending; `send` to the sender's name reaches it.
+- **What stays on the device.** Human origin, application guards and reply
+  hints never cross a device.
+
+A failure says whether the message left this device:
+
+| Text                                                                                            | Meaning                                                                                                                           |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `Not sent to <device>: unreachable (…)`                                                         | `ssh` could not connect or log in. Nothing was sent.                                                                              |
+| `Not sent to <device>: its pi-subagents has no cross-device command; update pi-subagents there` | The device answered. This package is not installed there, or it has no cross-device command. Nothing was sent.                    |
+| `Not sent to <device>: its pi-subagents is older than this command; update pi-subagents there`  | The device answered. Its package lists sessions and does not send or ask yet. Nothing was sent.                                   |
+| `Not sent to <device>: no Pi session is connected there`                                        | The device answered. No broker runs there. Nothing was sent.                                                                      |
+| `Message to "<target>" was not delivered: …`, `Ask to "<target>" was not sent: …`               | The other device has no connected session for that target, or refused it. Nothing was sent.                                       |
+| `Target "<target>" is too short` or `matches multiple sessions`                                 | The other device found more than one session. The text lists the targets to use, each with its `@device` ending.                  |
+| `No reply from "<target>" within …`                                                             | The question arrived. No reply came before the timeout.                                                                           |
+| `The ask reached <device>, and the connection was lost before a reply came (…)`                 | The question arrived. The reply, if any, is lost.                                                                                 |
+| `Delivery unknown: <device> gave no answer after the request was handed over (…)`               | The connection was lost after the device had the request. The message may have arrived. Check the recipient before sending again. |
+| `Cancelled`                                                                                     | The tool call was cancelled. The details say whether the message was accepted, was not sent, or is unknown.                       |
+
+"Not sent" is certain: the device answers with one line before the request is
+written to it, and a device that did not answer received nothing.
 
 ### Device names
 
@@ -208,24 +277,28 @@ Device names come from `intercom/config.json` under `PI_CODING_AGENT_DIR`
 
 A name consists of letters, digits, `.`, `_` and `-`, and starts with a letter
 or a digit. No device is reachable until both keys are set: a list with `device`
-then answers that no devices are configured and names this file and both keys.
-A session reads the file when it starts or reloads.
+then answers that no devices are configured and names this file and both keys,
+and a `name@device` target is read as the name of a local session. Set both keys
+on every device: a recipient needs the sender's device in its own `otherDevices`
+to send a message back. A session reads the file when it starts or reloads.
 
 ### How a device is reached
 
-For each device, the tool runs one `ssh` command. With `all`, the commands run
-at the same time.
+For each list of a device, each send and each ask, the tool runs one `ssh`
+command. With `all`, the list commands run at the same time. An ask keeps its
+command open until the reply, the timeout or the cancellation.
 
 ```sh
 ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 <device> '<command>'
 ```
 
-`<command>` is the same for every device. It runs the first installed copy of
-this package's `dist/pi-intercom/remote-cli.js` under the home directory, and
-exits with status 44 when there is none:
+`<command>` is the same for every device and every request. It prints an empty
+line, runs the first installed copy of this package's
+`dist/pi-intercom/remote-cli.js` under the home directory, and exits with status
+44 when there is none. The tool writes the request only after that first line:
 
 ```sh
-test -f ~/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js && exec node ~/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js; test -f ~/.pi/agent/npm/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js && exec node ~/.pi/agent/npm/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js; exit 44
+echo; test -f ~/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js && exec node ~/.pi/agent/git/github.com/fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js; test -f ~/.pi/agent/npm/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js && exec node ~/.pi/agent/npm/node_modules/@fitchmultz/pi-subagents/dist/pi-intercom/remote-cli.js; exit 44
 ```
 
 The other device needs:
@@ -235,8 +308,8 @@ The other device needs:
   directory `~/.pi/agent`.
 - `node` on the `PATH` of a command that `ssh` runs without a terminal.
 
-`remote-cli.js` reads one JSON request from stdin and prints one JSON reply
-line on stdout. The reply is wrapped here for reading:
+`remote-cli.js` reads one JSON request from stdin and prints its JSON reply as
+the last line on stdout. The replies are wrapped here for reading:
 
 ```json
 { "version": 1, "command": "list", "origin": "desk" }
@@ -261,12 +334,53 @@ line on stdout. The reply is wrapped here for reading:
 }
 ```
 
-A failure is `{ "version": 1, "error": "…" }` with exit status 1.
+A send or an ask carries the sending main as its own broker lists it, the
+target without its `@device` ending, and the message:
 
-The command joins the running broker of its device as a main named
-`intercom-list@<origin>`, lists, and leaves. It never starts a broker: without a
-running broker it answers with an empty list. No listener, service or port is
-added on any device.
+```json
+{
+  "version": 1,
+  "command": "ask",
+  "origin": "desk",
+  "device": "laptop",
+  "from": { "id": "pi-…", "name": "web-build", "cwd": "/work/web" },
+  "to": "api-fix",
+  "message": { "text": "Which port does the API use?", "messageId": "…" },
+  "timeoutMs": 120000
+}
+```
+
+```json
+{
+  "version": 1,
+  "receipt": { "id": "…", "accepted": true, "delivered": true },
+  "reply": {
+    "id": "…",
+    "timestamp": 1794350611000,
+    "replyTo": "…",
+    "content": { "text": "Port 8443." }
+  }
+}
+```
+
+A failure is `{ "version": 1, "error": "…" }` with exit status 1. A package
+that lacks a command answers `Unsupported command "<command>".`
+
+The command joins the running broker of its device as a main, does its work,
+and leaves. It never starts a broker: without a running broker it answers a list
+with an empty list and a message with "no Pi session is connected there". No
+listener, service or port is added on any device.
+
+- For a list, the main is named `intercom-list@<origin>`.
+- For a message, the main is named `<sender name>@<origin>`, with the sender's
+  working directory and the model name `remote-cli`. Its ID is `remote-` and a
+  hash of the origin and the sender's ID, so every command of one sender is the
+  same peer to the recipient. Device lists leave these mains out.
+- A waiting ask first prints the receipt of its question as a line of its own,
+  then an empty line every second. The receipt tells the asker that the question
+  arrived, also when the connection is lost later. The empty lines tell the
+  command that its caller is gone: the next write fails, the command leaves, and
+  the recipient retires the question.
 
 For each listed main, these fields leave its device, inside the SSH connection:
 ID, name, cwd, model, project ID, status, `acceptsAsks`, `pendingAsks`,

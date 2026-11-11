@@ -25,7 +25,7 @@ import {
   sendFailure,
   sendHint,
 } from "./outbound-results.ts";
-import type { RemoteDevices } from "./devices.ts";
+import type { DeviceTarget, RemoteDevices } from "./devices.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
@@ -107,6 +107,20 @@ export class IntercomOutbound {
       },
     );
   }
+  /**
+   * A session of this device, or of another one for a `name@device` target. An answer goes to
+   * the asker that waits here: the asker of another device is connected under that same name.
+   */
+  private async sendTarget(
+    active: IntercomTransport,
+    to: string,
+    replyTo: string | undefined,
+  ): Promise<string | DeviceTarget> {
+    const asker = (replyTo ?? "") === "" ? null : await resolveConnectedTarget(active, to);
+    return (
+      asker ?? this.owners.devices.address(to) ?? (await resolveConnectedTarget(active, to)) ?? to
+    );
+  }
   async send(
     active: IntercomTransport,
     params: IntercomToolParams,
@@ -118,8 +132,7 @@ export class IntercomOutbound {
     }
     let progress: SendProgress = { kind: "not-sent" };
     try {
-      const target =
-        this.owners.devices.address(to) ?? (await resolveConnectedTarget(active, to)) ?? to;
+      const target = await this.sendTarget(active, to, params.replyTo);
       if (target === active.sessionId) {
         return toolError("Cannot message the current session");
       }
