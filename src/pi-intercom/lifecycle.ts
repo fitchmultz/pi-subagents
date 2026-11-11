@@ -34,13 +34,17 @@ type ContextState =
       readonly sessionId: string;
       readonly incarnation: string;
     };
+/** The registration this process holds; absent until a broker accepts its transport. */
+interface TransportState {
+  readonly peerId: string;
+  readonly guardedDelivery: boolean;
+}
 
 /** Owns native context validity and occupancy, never journal or socket state. */
 export class IntercomLifecycle {
   private state: ContextState = { kind: "inactive", epoch: 0 };
   private model = "unknown";
-  private peerId: string | null = null;
-  private guardedDelivery = false;
+  private transportPeer?: TransportState | undefined;
   private applicationGuard: string | undefined;
   private running = false;
   private activity = 0;
@@ -109,10 +113,10 @@ export class IntercomLifecycle {
       version: 1,
       rootSessionId: this.lineage?.rootSessionId ?? this.state.sessionId,
       parentSessionId: this.lineage?.parentSessionId,
-      peerId: this.peerId,
+      peerId: this.transportPeer?.peerId ?? null,
       incarnation: this.state.incarnation,
-      connected: this.peerId !== null,
-      guardedDelivery: this.guardedDelivery ? 1 : null,
+      connected: this.transportPeer !== undefined,
+      guardedDelivery: this.transportPeer?.guardedDelivery === true ? 1 : null,
       applicationGuard: this.applicationGuard,
     } as const;
   }
@@ -120,8 +124,7 @@ export class IntercomLifecycle {
     this.pi.events.emit("pi-intercom:context-state", this.snapshot());
   }
   transport(peerId: string | null, guardedDelivery = false): void {
-    this.peerId = peerId;
-    this.guardedDelivery = guardedDelivery;
+    this.transportPeer = peerId === null ? undefined : { peerId, guardedDelivery };
     this.publishContext();
   }
   private matches(target: ContextTarget): boolean {
@@ -135,7 +138,7 @@ export class IntercomLifecycle {
   }
   accepts(guard: DeliveryGuard): boolean {
     return (
-      this.guardedDelivery &&
+      this.transportPeer?.guardedDelivery === true &&
       this.lineage?.parentSessionId === undefined &&
       this.matches(guard) &&
       this.applicationGuard === guard.applicationGuard

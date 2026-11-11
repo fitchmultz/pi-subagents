@@ -51,6 +51,11 @@ type AttemptState =
 
 /** Owns socket registration, coalesced connects and the reconnect/startup timers. */
 export class IntercomConnection {
+  /**
+   * The transport created for the current acquisition. It is not registered until `connect`
+   * resolves; `isConnected()` is the only proof of registration. The client that the broker
+   * retains input for while this actor parks is `parked`.
+   */
   private client: IntercomClient | null = null;
   /** The transport whose broker retains this actor's input while it parks. */
   private parked: IntercomClient | null = null;
@@ -83,8 +88,9 @@ export class IntercomConnection {
   get parking(): boolean {
     return this.parked !== null;
   }
-  get reconnected(): boolean {
-    return this.client !== null && this.client !== this.parked;
+  /** A replacement transport is active while the broker still retains input for the parked one. */
+  get reconnectedWhileParking(): boolean {
+    return this.parked !== null && this.client !== null && this.client !== this.parked;
   }
   unpark(): Promise<boolean> {
     const client = this.parked === this.client ? this.client : null;
