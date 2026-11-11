@@ -14,6 +14,7 @@ import { successorSchema, type Launch } from "./contracts.ts";
 import { readCanonicalResult } from "./usage.ts";
 import { actor, observeAlive } from "./process.ts";
 import { plainText } from "./journal-tail.ts";
+import { runStatusOf } from "./run-state.ts";
 import { ObservationClient, type Watch } from "./observe-client.ts";
 import { adoptedJournal } from "./saved.ts";
 import type { ObserverRow } from "./observe-chrome.ts";
@@ -123,12 +124,12 @@ class Observer {
       roots.set(launch.rootId, actor(this.base, launch));
     }
     return (live) => {
-      const running = !finished && live.get(launch.rootId) === true;
+      const status = runStatusOf(result, live.get(launch.rootId) === true, finished);
       this.rows.set(id, {
         id,
         name: plainText(launch.name ?? id, 120),
-        status: result?.status ?? (running ? "running" : "interrupted"),
-        live: running,
+        status,
+        live: status === "running",
         createdAt: launch.createdAt,
         activity: this.peers.get(id)?.client.activity,
       });

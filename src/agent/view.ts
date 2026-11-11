@@ -7,7 +7,6 @@ import {
   admissionSchema,
   commandMetadataSchema,
   exitSchema,
-  waitingSchema,
   wakeFailureSchema,
   type Launch,
   type Result,
@@ -17,7 +16,7 @@ import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
-import { runAdmission, runState, runStatus } from "./run-state.ts";
+import { runAdmission, runState, runStatus, runWaiting, type RunStatus } from "./run-state.ts";
 interface Guidance {
   id: string;
   runId: string;
@@ -44,7 +43,7 @@ interface RunSummary {
   thinking: string;
   context: string;
   admission: string;
-  status: string;
+  status: RunStatus;
   completed: boolean;
   result?: Pick<Result, "status" | "endedAt" | "error"> | undefined;
   /** A running run that stays open for its child's own unfinished background work. */
@@ -197,8 +196,7 @@ function metadata(
     status,
     completed: result !== undefined,
     result,
-    waiting:
-      status === "running" ? read(path.join(directory, "waiting.json"), waitingSchema) : undefined,
+    waiting: runWaiting(base, launch, status),
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     lastWakeFailure: read(

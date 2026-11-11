@@ -12,11 +12,12 @@ import {
 } from "./observe-layout.ts";
 import type { Launch } from "./contracts.ts";
 import { plainText } from "./journal-tail.ts";
+import type { RunStatus } from "./run-state.ts";
 
 export interface ObserverRow {
   id: string;
   name: string;
-  status: string;
+  status: RunStatus | "unavailable";
   live: boolean;
   createdAt: number;
   activity?: string | undefined;
