@@ -1414,6 +1414,7 @@ async function stopBackgroundWork(/** @type {string} */ id, /** @type {string} *
     const stop = await call("agent_runs", { action: "stop", id }, "background-stop");
     assert.equal(runDetails(stop).stopAcknowledged, false);
     const stopped = runDetails(await settled(id, "Stop publishes the stopped result"));
+    assert.ok(stopped.result !== undefined, "the stopped run publishes a result");
     assert.equal(stopped.result.status, "stopped");
     assert.equal(stopped.waiting, undefined);
     assert.match(completionNotice(id), /: stopped\./);
@@ -5176,6 +5177,7 @@ try {
     const actor = readActorIdentity(runDir(id));
     enqueue(path.dirname(runDir(id)), launch, { action: "stop", actorToken: actor.token });
     const stopped = runDetails(await settled(id, "Stop fences the batched run before its prompt"));
+    assert.ok(stopped.result !== undefined, "the stopped run publishes a result");
     assert.equal(stopped.result.status, "stopped");
     assert.equal(stopped.result.error, "Stopped before the run started; no prompt was submitted.");
     assert.deepEqual(stopped.result.contributions, []);
