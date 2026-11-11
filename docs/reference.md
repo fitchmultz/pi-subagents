@@ -330,6 +330,9 @@ reconciliation, not on the awaited startup path. That delay is not a delivery
 deadline. A short-lived main may exit before recovery, and a prompt started
 immediately after startup may receive the recovered backlog as steering input.
 Managed launchers still gate attachment on accepted host readiness.
+One session has one live main: a startup that finds another live main's attachment
+record refuses to attach instead of overwriting it, so the owning main keeps its
+record and the refusing main's runs and stops act as unattached.
 
 After that, the main reconciles when its owner directory, an unfinished run's
 `result.json`, a pending-accounting child journal or the retired legacy result

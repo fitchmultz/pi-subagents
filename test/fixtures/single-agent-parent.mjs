@@ -666,7 +666,8 @@ const ShellRecordSchema = Type.Object({
   clock: Type.Optional(Type.Object({ namespace: Type.String() })),
 });
 /** Use the owning launch contract after clearing inherited child-host environment. */
-const { launchSchema: LaunchSchema } = await import("../../src/agent/contracts.ts");
+const { attachmentSchema: AttachmentSchema, launchSchema: LaunchSchema } =
+  await import("../../src/agent/contracts.ts");
 /** The agent_runs tool records run inventories in its result details. */
 const RunResultDetailsSchema = Type.Object({
   id: Type.String(),
@@ -5244,6 +5245,84 @@ try {
     assert.equal(runDetails(launched).receipt, "launch");
     fs.writeFileSync(path.join(root, "release-cancelprep"), "release");
     assert.equal(runDetails(await settled(found.id)).result?.status, "completed");
+  } else if (phase === "attachment-refusal") {
+    // One session, one live main: a second main refuses a live foreign owner's attachment.
+    const ownerDir = path.join(agentDir, "sessions", "agent-runs", manager.getSessionId());
+    const file = path.join(ownerDir, "attachment.json");
+    const original = readValidated(AttachmentSchema, file);
+    assert.equal(original.pid, process.pid, "the parent main attached first");
+    assert.equal(original.attached, true);
+    const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
+    let second;
+    try {
+      assert.ok(sleeper.pid !== undefined);
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          pid: sleeper.pid,
+          identity: "unverified",
+          generation: "planted-live-owner",
+          attached: true,
+        }),
+      );
+      const secondFaux = fauxProvider({
+        provider: "second-main",
+        models: [{ id: "second-model" }],
+      });
+      const secondModels = await sdk.ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsPath: null,
+        refreshOnCreate: false,
+        allowModelNetwork: false,
+      });
+      secondModels.registerNativeProvider(secondFaux.provider);
+      const secondServices = await sdk.createAgentSessionServices({
+        cwd,
+        agentDir,
+        modelRuntime: secondModels,
+        settingsManager: sdk.SettingsManager.inMemory({
+          compaction: { enabled: false },
+          retry: { enabled: false },
+        }),
+        resourceLoaderOptions: {
+          noExtensions: true,
+          noSkills: true,
+          noThemes: true,
+          noPromptTemplates: true,
+          extensionFactories: [agents],
+        },
+      });
+      second = await sdk.createAgentSessionRuntime(
+        async ({ sessionManager }) => ({
+          ...(await sdk.createAgentSessionFromServices({
+            services: secondServices,
+            sessionManager,
+            model: secondFaux.getModel(),
+          })),
+          services: secondServices,
+          diagnostics: secondServices.diagnostics,
+        }),
+        { cwd, agentDir, sessionManager: manager },
+      );
+      /** @type {unknown[]} */
+      const secondErrors = [];
+      await second.session.bindExtensions({
+        mode: "print",
+        onError: (error) => {
+          secondErrors.push(error.error);
+        },
+      });
+      assert.ok(
+        secondErrors.some((error) => /Another live main is attached/.test(String(error))),
+        "the second main's attach refuses the live foreign owner",
+      );
+      const planted = readValidated(AttachmentSchema, file);
+      assert.equal(planted.pid, sleeper.pid, "the live owner's record survives the refusal");
+      assert.equal(planted.generation, "planted-live-owner");
+    } finally {
+      await second?.dispose();
+      sleeper.kill();
+    }
   } else if (phase === "cancellation") {
     const model = "single-agent-fixture/literal-model";
     const launched = await call("delegate", { prompt: "HOLD:existing", model }, "existing-launch");

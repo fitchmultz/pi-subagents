@@ -299,6 +299,18 @@ async function launchClaimedActor(base: string, launch: Launch, lock: string): P
     throw error;
   }
 }
+function removeObservedLock(lock: string, observed: fs.Stats | undefined): void {
+  const current = fs.lstatSync(lock, { throwIfNoEntry: false });
+  if (
+    current === undefined ||
+    observed === undefined ||
+    current.dev !== observed.dev ||
+    current.ino !== observed.ino
+  ) {
+    throw new Error("Actor launch is ambiguous; the dead claim was replaced while reclaiming.");
+  }
+  fs.rmSync(lock, { recursive: true });
+}
 export async function ensureActor(
   base: string,
   launch: Launch,
@@ -309,6 +321,7 @@ export async function ensureActor(
   await awaitStopping(dir, actor(base, launch), signal);
   signal?.throwIfAborted();
   // Another parallel tool may replace the claim while this invocation yields.
+  const observed = fs.lstatSync(lock, { throwIfNoEntry: false });
   const claim = inspectActorClaim(base, launch);
   const existing = claim.process;
   if (possiblyLive(claim)) {
@@ -320,7 +333,7 @@ export async function ensureActor(
       throw new Error("Owned native shell work remains live; stop it before continuing.");
     }
     removeObservationEndpoint(existing.token);
-    fs.rmSync(lock, { recursive: true });
+    removeObservedLock(lock, observed);
   }
   try {
     fs.mkdirSync(lock);

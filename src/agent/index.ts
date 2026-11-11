@@ -17,6 +17,7 @@ import {
   signalProcess,
 } from "./process.ts";
 import { stopChildren } from "./shutdown.ts";
+import { publishAttachment } from "./attachment.ts";
 import {
   isChild,
   errorText,
@@ -248,11 +249,7 @@ class AgentRuntime {
         return;
       }
       await fs.promises.mkdir(binding.base, { recursive: true, mode: 0o700 });
-      write(path.join(binding.base, "attachment.json"), {
-        ...ownIdentity(binding.host?.owner.pid),
-        generation: attaching.generation,
-        attached: true,
-      });
+      publishAttachment(binding.base, ownIdentity(binding.host?.owner.pid), attaching.generation);
       if (this.stopping) {
         return;
       }
