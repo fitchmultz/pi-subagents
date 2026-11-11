@@ -146,7 +146,7 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
               wait.waiting && "intercom is waiting for a reply",
               (delivery.restoring !== undefined || delivery.batching) &&
                 "intercom delivery is restoring",
-              connection.reconnected && "intercom reconnected while parking",
+              connection.reconnectedWhileParking && "intercom reconnected while parking",
             ].filter((blocker) => typeof blocker === "string"),
           },
   ]);
