@@ -2,8 +2,22 @@
 
 ## [Unreleased]
 
+## 0.52.34 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+
 - A main session can send a message to, and ask a question of, a main session on another of the owner's devices: `intercom({ action: "send", to: "name@device", message })` and `intercom({ action: "ask", to: "name@device", message })`, with the names and IDs that a device list prints. The recipient reads the sender as `name@device` and answers an ask with `reply`; that name is also the target for a message back. One `ssh` command carries each message, and the command of an ask stays open for the reply up to `askTimeoutMs`. A failure says what happened: `Not sent to <device>: …` when the device was unreachable, has no session, or has a package without this command; `Delivery unknown: …` only when the connection was lost after the device had the request; and for an ask that arrived, that no reply came in time or that the connection was lost before the reply. When the asker times out, cancels or loses the connection, the question is retired on the recipient's device. A default ask of a busy main is refused; use `send` or `delivery: "steer"`. Only a main can use a `name@device` target, and `last` reads only the sessions of this device. See [Send to and ask a main on another device](docs/intercom.md#send-to-and-ask-a-main-on-another-device).
 - A list row stops counting a pending ask as soon as its asker leaves. Before, `pending_asks` kept the old count until the recipient's next activity.
+
+<!-- npm-release:unreleased:end -->
+
+- feat: send to and ask the main sessions on the owner's other devices (3/3) (#403) ([1f3d8c9](https://github.com/fitchmultz/pi-subagents/commit/1f3d8c9c12f78188a18e04c4960d6072749a03ff))
+
+### What's Changed
+
+- feat: send to and ask the main sessions on the owner's other devices (3/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/403
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.33...v0.52.34
 
 ## 0.52.33 - 2026-11-11
 
