@@ -103,13 +103,13 @@ class BlockCursor {
 
 /** Per-viewer cursors. Each accepted frame advances them exactly once; nothing is resent. */
 export class Viewer {
-  blocked = false;
+  private isBlocked = false;
   readonly socket: Socket;
   readonly level: Level;
   activitySeen = -1;
   private activity = "";
   private seen = -1;
-  private key = 0;
+  private key?: number | undefined;
   private count = 0;
   private ended = false;
   private blocks: BlockCursor[] = [];
@@ -125,7 +125,7 @@ export class Viewer {
     this.settled = state.settled;
     this.evicted = state.evicted;
     this.seen = -1;
-    this.key = 0;
+    this.key = undefined;
     this.blocks = [];
     this.tools.clear();
     this.activity = activity;
@@ -272,8 +272,14 @@ export class Viewer {
     return `{"t":"activity","activity":${activity}}`;
   }
   /** `false` from Node means accepted but buffered: wait for drain, never resend. */
+  get blocked(): boolean {
+    return this.isBlocked;
+  }
+  drained(): void {
+    this.isBlocked = false;
+  }
   write(json: string): number {
-    this.blocked = !writeFrame(this.socket, json, FRAME_BYTES);
+    this.isBlocked = !writeFrame(this.socket, json, FRAME_BYTES);
     const buffered = this.socket.writableLength;
     if (buffered > MAX_BUFFERED) {
       this.socket.destroy();
