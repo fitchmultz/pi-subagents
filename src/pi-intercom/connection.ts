@@ -267,7 +267,7 @@ export class IntercomConnection {
           }))
           .then((result) => {
             if (this.client === next && !registered.signal.aborted) {
-              next.wakes.respond(requestId, result);
+              next.respondWake(requestId, result);
             }
           })
           .finally(() => {

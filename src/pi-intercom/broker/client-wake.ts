@@ -6,7 +6,6 @@ import { validateIntercomMessageSize, writeMessage } from "./framing.ts";
 
 /** Negotiated wake outcomes; old brokers and clients keep the original wake event. */
 export class WakeMessages {
-  supported = false;
   private readonly events: EventEmitter;
   private readonly socket: () => net.Socket;
   constructor(events: EventEmitter, socket: () => net.Socket) {
@@ -19,7 +18,7 @@ export class WakeMessages {
       ...(this.events.listenerCount("wake_failed") > 0 ? { wakeNotices: 1 } : {}),
     };
   }
-  receive(msg: UnknownRecord): void {
+  receive(msg: UnknownRecord, supported: boolean): void {
     if (msg.type === "wake_registered") {
       if (typeof msg.requestId !== "string") {
         throw new Error("Invalid wake registration");
@@ -31,7 +30,7 @@ export class WakeMessages {
       throw new Error("Invalid wake message");
     }
     if (msg.type === "wake") {
-      if (this.supported && typeof msg.requestId === "string") {
+      if (supported && typeof msg.requestId === "string") {
         this.events.emit("wake_request", msg.sessionId, msg.requestId);
       } else {
         this.events.emit("wake", msg.sessionId);
@@ -43,8 +42,8 @@ export class WakeMessages {
     }
     this.events.emit("wake_failed", msg.sessionId, msg.messageId, msg.reason);
   }
-  respond(requestId: string, result: WakeResult): void {
-    if (!this.supported) {
+  respond(requestId: string, result: WakeResult, supported: boolean): void {
+    if (!supported) {
       return;
     }
     const frame = { type: "wake_result", requestId, result };

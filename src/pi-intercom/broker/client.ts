@@ -52,14 +52,22 @@ function toError(error: unknown): Error {
 type ClientPhase =
   | { readonly kind: "idle" | "connected" }
   | { readonly kind: "connecting" | "closing"; readonly task: Promise<void> };
+/** Everything one accepted registration negotiated; absent until `registered` arrives. */
+interface Registration {
+  readonly sessionId: string;
+  readonly topics: boolean;
+  readonly guardedDelivery: boolean;
+  readonly lastMessages: boolean;
+  readonly receiptReads: boolean;
+  readonly parking: boolean;
+  readonly wakeResults: boolean;
+}
 
 export class IntercomClient extends EventEmitter {
   private connection: BrokerConnection | null = null;
-  private _sessionId: string | null = null;
-  private _topicsSupported = false;
+  private registration?: Registration | undefined;
   private readonly parking = new ParkRequests();
   readonly wakes = new WakeMessages(this, () => this.requireActiveSocket());
-  private guardedDeliverySupported = false;
   private readonly lastRequests: LastMessageRequests;
   private readonly pendingSends = new PendingRequests<{
     readonly resolve: (r: SendResult) => void;
@@ -88,18 +96,18 @@ export class IntercomClient extends EventEmitter {
   }
 
   get sessionId(): string | null {
-    return this._sessionId;
+    return this.registration?.sessionId ?? null;
   }
 
   get supportsTopics(): boolean {
-    return this.isConnected() && this._topicsSupported;
+    return this.isConnected() && this.registration?.topics === true;
   }
   get supportsGuardedDelivery(): boolean {
-    return this.isConnected() && this.guardedDeliverySupported;
+    return this.isConnected() && this.registration?.guardedDelivery === true;
   }
   isConnected(): boolean {
     return (
-      (this._sessionId ?? "").length > 0 &&
+      this.registration !== undefined &&
       this.phase.kind !== "closing" &&
       this.connection?.isActive() === true
     );
@@ -110,7 +118,7 @@ export class IntercomClient extends EventEmitter {
       throw new Error("Client disconnecting");
     }
     const connection = this.connection;
-    if (!connection || (this._sessionId ?? "").length === 0) {
+    if (!connection || this.registration === undefined) {
       throw new Error("Not connected");
     }
     if (!connection.isActive()) {
@@ -145,13 +153,10 @@ export class IntercomClient extends EventEmitter {
         if (this.connection !== connection) {
           return;
         }
-        const established = this._sessionId !== null;
+        const established = this.registration !== undefined;
         this.connection = null;
-        this._sessionId = null;
-        this._topicsSupported = false;
+        this.registration = undefined;
         this.parking.settle(false);
-        this.guardedDeliverySupported = false;
-        this.wakes.supported = false;
         if (this.phase.kind === "connected") {
           this.phase = { kind: "idle" };
         }
@@ -207,7 +212,7 @@ export class IntercomClient extends EventEmitter {
       throw new Error("Invalid broker message");
     }
 
-    if (this._sessionId === null && msg.type !== "registered") {
+    if (this.registration === undefined && msg.type !== "registered") {
       throw new Error(`Received ${msg.type} before registered`);
     }
 
@@ -244,7 +249,7 @@ export class IntercomClient extends EventEmitter {
       case "wake":
       case "wake_failed":
       case "wake_registered":
-        this.wakes.receive(msg);
+        this.wakes.receive(msg, this.registration?.wakeResults === true);
         break;
       default:
         throw new Error(`Unknown broker message type: ${msg.type}`);
@@ -255,16 +260,18 @@ export class IntercomClient extends EventEmitter {
     if (typeof msg.sessionId !== "string") {
       throw new Error("Invalid registered message");
     }
-    if (this._sessionId !== null) {
+    if (this.registration !== undefined) {
       throw new Error("Received duplicate registered message");
     }
-    this._sessionId = msg.sessionId;
-    this._topicsSupported = msg.topicsSupported === true && msg.topicFrames === true;
-    this.lastRequests.lastMessages = msg.lastMessages === true;
-    this.parking.supported = msg.parking === true;
-    this.lastRequests.receiptReads = msg.receiptReads === 1;
-    this.guardedDeliverySupported = msg.guardedDelivery === 1;
-    this.wakes.supported = msg.wakeResults === 1;
+    this.registration = {
+      sessionId: msg.sessionId,
+      topics: msg.topicsSupported === true && msg.topicFrames === true,
+      guardedDelivery: msg.guardedDelivery === 1,
+      lastMessages: msg.lastMessages === true,
+      receiptReads: msg.receiptReads === 1,
+      parking: msg.parking === true,
+      wakeResults: msg.wakeResults === 1,
+    };
     this.connection?.confirmRegistration();
     this.emit("_registered", { type: "registered", sessionId: msg.sessionId });
   }
@@ -331,7 +338,11 @@ export class IntercomClient extends EventEmitter {
   }
 
   park(on = true): Promise<boolean> {
-    return this.parking.request(() => this.requireActiveSocket(), on);
+    return this.parking.request(
+      () => this.requireActiveSocket(),
+      on,
+      this.registration?.parking === true,
+    );
   }
 
   disconnect(): Promise<void> {
@@ -365,10 +376,19 @@ export class IntercomClient extends EventEmitter {
   }
 
   async last(to: string, query: LastMessageQuery = {}): Promise<LastMessageResult> {
-    return await this.lastRequests.last(this.requireActiveSocket(), to, query);
+    return await this.lastRequests.last(this.requireActiveSocket(), to, query, {
+      lastMessages: this.registration?.lastMessages === true,
+      receiptReads: this.registration?.receiptReads === true,
+    });
   }
   async receipt(to: string, query: ReceiptQuery): Promise<ReceiptResult> {
-    return await this.lastRequests.receipt(this.requireActiveSocket(), to, query);
+    return await this.lastRequests.receipt(this.requireActiveSocket(), to, query, {
+      lastMessages: this.registration?.lastMessages === true,
+      receiptReads: this.registration?.receiptReads === true,
+    });
+  }
+  respondWake(requestId: string, result: Parameters<WakeMessages["respond"]>[1]): void {
+    this.wakes.respond(requestId, result, this.registration?.wakeResults === true);
   }
 
   respondLast(requestId: string, result: unknown): void {
@@ -440,7 +460,7 @@ export class IntercomClient extends EventEmitter {
 
   private requireSendSocket(options: SendOptions): net.Socket {
     const socket = this.requireActiveSocket();
-    if (options.guard && !this.guardedDeliverySupported) {
+    if (options.guard && this.registration?.guardedDelivery !== true) {
       throw new Error("This broker does not support guarded delivery; no message sent.");
     }
     return socket;
@@ -465,7 +485,7 @@ export class IntercomClient extends EventEmitter {
       to,
       messageId,
       options,
-      topicsSupported: this._topicsSupported,
+      topicsSupported: this.registration?.topics === true,
     });
     return await new Promise((resolve, reject) => {
       this.pendingSends.set(
@@ -504,7 +524,7 @@ export class IntercomClient extends EventEmitter {
     const socket = this.connection?.socket;
     if (
       !socket ||
-      (this._sessionId ?? "").length === 0 ||
+      this.registration === undefined ||
       socket.destroyed ||
       socket.writableEnded ||
       !socket.writable
