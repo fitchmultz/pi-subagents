@@ -150,11 +150,9 @@ const { nativePeerId } = await import(
 );
 /** @type {typeof Storage} */
 // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
-const {
-  enqueue,
-  successor: createSuccessor,
-  write,
-} = await import(pathToFileURL(path.join(repo, "dist/agent/storage.js")).href);
+const { enqueue, write } = await import(
+  pathToFileURL(path.join(repo, "dist/agent/storage.js")).href
+);
 /** @type {typeof import("../../src/pi-intercom/index.ts") | undefined} */
 // oxlint-disable-next-line typescript/no-unsafe-assignment -- QX-004: load the selected runtime artifact with its authoritative source contract.
 const intercomModule = ["park-wake-outcome", "park-sdk-outcome"].includes(phase)
@@ -1416,7 +1414,7 @@ async function stopBackgroundWork(/** @type {string} */ id, /** @type {string} *
     const stop = await call("agent_runs", { action: "stop", id }, "background-stop");
     assert.equal(runDetails(stop).stopAcknowledged, false);
     const stopped = runDetails(await settled(id, "Stop publishes the stopped result"));
-    assert.equal(stopped.result?.status, "stopped");
+    assert.equal(stopped.result.status, "stopped");
     assert.equal(stopped.waiting, undefined);
     assert.match(completionNotice(id), /: stopped\./);
     await until(observe, "Stop cancels the child's job and its actor exits");
@@ -5166,38 +5164,26 @@ try {
       }),
     );
   } else if (phase === "stop-before-admission") {
-    const model = "single-agent-fixture/literal-model";
+    // The Run command is durable while the actor is still booting; the token-matching
+    // Stop lands before the actor's first admission pass, so one batch admits both.
     const launched = await call(
       "delegate",
-      { prompt: "STOP_BATCH_FIRST_LITERAL", model },
+      { prompt: "HOLD:stop-batch", model: "single-agent-fixture/literal-model" },
       "stop-batch-launch",
     );
     const id = runDetails(launched).id;
-    assert.equal(runDetails(await settled(id)).result?.status, "completed");
     const launch = readValidated(LaunchSchema, path.join(runDir(id), "launch.json"));
-    const base = path.dirname(runDir(id));
-    const next = createSuccessor(base, launch, "HOLD:stop-batch-second");
-    assert.ok(next !== undefined, "successor created for the batched run");
     const actor = readActorIdentity(runDir(id));
-    // The Run and its token-matching Stop land in one durable batch. A same-millisecond
-    // pair would sort by directory order, so the Stop pins a strictly later createdAt.
-    enqueue(base, next, { action: "run" });
-    const stopId = `${next.id}-stop`;
-    write(
-      path.join(runDir(id), "commands", `${stopId}.json`),
-      {
-        id: stopId,
-        runId: next.id,
-        action: "stop",
-        actorToken: actor.token,
-        createdAt: Date.now() + 1,
-      },
-      true,
+    enqueue(path.dirname(runDir(id)), launch, { action: "stop", actorToken: actor.token });
+    const stopped = runDetails(await settled(id, "Stop fences the batched run before its prompt"));
+    assert.equal(stopped.result.status, "stopped");
+    assert.equal(stopped.result.error, "Stopped before the run started; no prompt was submitted.");
+    assert.deepEqual(stopped.result.contributions, []);
+    assert.equal(
+      requests().some((request) => request.prompt === "HOLD:stop-batch"),
+      false,
+      "the batched run's prompt never reached the child provider",
     );
-    const stopped = runDetails(
-      await settled(next.id, "Stop fences the batched run before its prompt"),
-    );
-    assert.equal(stopped.result?.status, "stopped");
     const exitFile = path.join(runDir(id), `exit-${actor.token}.json`);
     await until(() => fs.existsSync(exitFile), "the stopped actor exits");
     const exit = readValidated(
