@@ -112,6 +112,8 @@ export function childRuntime(
         ],
       },
     });
+    // The SDK has no disposal for services created before a session: if a check below
+    // throws, their cleanup owner never materializes and this actor exits instead.
     exposeChildTools(services.settingsManager);
     const diagnostics = services.resourceLoader.getExtensions().errors;
     if (diagnostics.length > 0) {
