@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## 0.52.37 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- ci: align shared automation pins and wire release supersession inputs (#409) ([5e8b6b7](https://github.com/fitchmultz/pi-subagents/commit/5e8b6b72e712927afa39689f9809a93a877253e8))
+
+### What's Changed
+
+- ci: align shared automation pins and wire release supersession inputs by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/409
+- refactor: name run status and its waiting state (1/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/410
+- refactor: name the child actor lifecycle (2/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/411
+- refactor: name actor generation evidence on disk (3/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/413
+- refactor: derive observer screen visibility (4/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/414
+- refactor: name observation server and live-view phases (5/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/415
+- refactor: name intercom transport and parking state (6/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/416
+- refactor: hold broker capabilities in one registration (7/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/417
+- refactor: name incoming ask attribution (8/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/418
+- refactor: name completion scheduling and reader window (9/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/419
+- refactor: decide cross-device outcomes once (10/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/420
+- refactor: name remaining one-shot states (11/11) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/421
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.36...v0.52.37
+
 ## 0.52.36 - 2026-11-11
 
 <!-- npm-release:unreleased:start -->
