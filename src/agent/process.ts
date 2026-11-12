@@ -17,6 +17,7 @@ import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts
 import { conversation, enqueue, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 import { generation, handoffToken, parkedFile } from "./generation.ts";
+import { OwnershipLock } from "./ownership-lock.ts";
 
 /** Darwin's in-memory publication bound; Android records carry their own native clock. */
 interface Published {
@@ -317,10 +318,19 @@ export async function ensureActor(
   signal?: AbortSignal,
 ): Promise<void> {
   const dir = conversation(base, launch);
-  const lock = path.join(dir, "actor.lock");
   await awaitStopping(dir, actor(base, launch), signal);
   signal?.throwIfAborted();
-  // Another parallel tool may replace the claim while this invocation yields.
+  const ownership = new OwnershipLock(dir);
+  try {
+    await ensureClaimedActor(base, launch);
+  } finally {
+    ownership.close();
+  }
+}
+async function ensureClaimedActor(base: string, launch: Launch): Promise<void> {
+  const dir = conversation(base, launch);
+  const lock = path.join(dir, "actor.lock");
+  // Reinspect only after acquiring the cross-process ownership lock.
   const observed = fs.lstatSync(lock, { throwIfNoEntry: false });
   const claim = inspectActorClaim(base, launch);
   const existing = claim.process;
