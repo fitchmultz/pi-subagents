@@ -257,7 +257,8 @@ export class Parking {
   }
   /**
    * Fence broker input, then hold a settled sleep-ready cut of the same quiet idle leaf. Any
-   * failure or raced command releases, unfences and keeps this actor resident.
+   * raced command releases and unfences before resuming. An escaping failure retains
+   * the launcher marker while the actor shuts down, but still releases and unfences.
    */
   private async prepare(
     runtime: Runtime,
@@ -272,19 +273,26 @@ export class Parking {
     // A launcher that enqueues after this marker waits for exit, then wakes the saved state.
     const marker = parkingMarker(this.dir);
     write(marker, { at: Date.now() });
-    const hold = await cut(pi, session, {
-      quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
-      errors,
-      signal,
-    });
-    // Revalidate after the awaited fence and save, immediately before the irreversible commit.
-    if (hold?.sleepReady === true && quiet()) {
-      return hold;
+    let hold: WorkingHold | undefined;
+    let outcome: "failed" | "resident" | "committed" = "failed";
+    try {
+      hold = await cut(pi, session, {
+        quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
+        errors,
+        signal,
+      });
+      // Revalidate after the awaited fence and save, immediately before the irreversible commit.
+      if (hold?.sleepReady === true && quiet()) {
+        outcome = "committed";
+        return hold;
+      }
+      outcome = "resident";
+      return undefined;
+    } finally {
+      if (outcome !== "committed") {
+        await rollbackParking(outcome === "resident" ? marker : undefined, hold, pi, errors);
+      }
     }
-    await hold?.release();
-    await fence(pi, false);
-    fs.rmSync(marker, { force: true });
-    return undefined;
   }
   /** Commit: native strict exit, then capture; failure leaves no parked authority. */
   private async commit(
@@ -336,6 +344,31 @@ export class Parking {
     } finally {
       await hold.release();
     }
+  }
+}
+/** Release uncommitted preparation; only a resident actor may clear its launcher marker. */
+async function rollbackParking(
+  marker: string | undefined,
+  hold: WorkingHold | undefined,
+  pi: ExtensionAPI,
+  errors: string[],
+): Promise<void> {
+  try {
+    await hold?.release();
+  } catch (error) {
+    errors.push(errorText(error));
+  }
+  try {
+    await fence(pi, false);
+  } catch (error) {
+    errors.push(errorText(error));
+  }
+  try {
+    if (marker !== undefined) {
+      fs.rmSync(marker, { force: true });
+    }
+  } catch (error) {
+    errors.push(errorText(error));
   }
 }
 interface Runs {
