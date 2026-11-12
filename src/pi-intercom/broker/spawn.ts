@@ -104,8 +104,8 @@ export async function spawnBrokerIfNeeded(
       cleanup();
       reject(new Error(`Failed to spawn intercom broker: ${error.message}`, { cause: error }));
     };
-    // A competing broker can win publication. Its healthy endpoint is success even
-    // when our candidate exits; the starter never owns or releases the broker's claim.
+    // An already-published competitor counts as success when our candidate exits.
+    // Otherwise fail promptly so the connection owner can retry a failed launch.
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       isBrokerRunning()
         .then((running) => {
