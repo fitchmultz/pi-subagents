@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { findPackageJSON } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test as nodeTest } from "node:test";
@@ -16,6 +16,86 @@ const repo = fileURLToPath(new URL("../../", import.meta.url));
 const manifest = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
 assert.notEqual(manifest, undefined);
 const sdk = process.env.PI_SINGLE_AGENT_TEST_SDK ?? path.dirname(manifest ?? "");
+const brokers = new Map<
+  string,
+  { child: ChildProcess; exited: Promise<void>; output: () => string }
+>();
+const brokerSchema = Type.Object({
+  pid: Type.Integer(),
+  sessionId: Type.String({ minLength: 1 }),
+});
+async function nativeRoot(prefix: string): Promise<string> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const child = spawn(
+    process.execPath,
+    [path.join(repo, "test/fixtures/single-agent-broker.mjs"), root, repo],
+    { cwd: repo, stdio: ["ignore", "pipe", "pipe", "ipc"] },
+  );
+  let output = "";
+  let registration: unknown;
+  let failure: Error | undefined;
+  child.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString("utf8");
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    output += chunk.toString("utf8");
+  });
+  child.once("message", (message: unknown) => {
+    registration = message;
+  });
+  child.once("error", (error) => {
+    failure = error;
+  });
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+  });
+  brokers.set(root, { child, exited, output: () => output });
+  try {
+    await until(() => {
+      assert.equal(failure, undefined, output);
+      assert.equal(child.exitCode, null, output);
+      assert.equal(child.signalCode, null, output);
+      return registration !== undefined;
+    }, "owned broker keeper registers before native phases");
+    Assert(brokerSchema, registration);
+    assert.equal(registration.pid, child.pid);
+    assertBroker(root);
+    return root;
+  } catch (error) {
+    if (child.pid !== undefined) {
+      child.kill("SIGTERM");
+      await exited;
+    }
+    brokers.delete(root);
+    fs.rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+function assertBroker(root: string): void {
+  const owner = brokers.get(root);
+  assert.ok(owner, "native root owns its broker");
+  assert.equal(owner.child.exitCode, null, owner.output());
+  assert.equal(owner.child.signalCode, null, owner.output());
+  assert.equal(
+    Number.parseInt(fs.readFileSync(path.join(root, "ic/broker.pid"), "utf8"), 10),
+    owner.child.pid,
+    "native phases keep the root's registered broker",
+  );
+}
+async function stopBroker(root: string): Promise<void> {
+  const owner = brokers.get(root);
+  assert.ok(owner, "native root retains its broker until cleanup");
+  try {
+    if (owner.child.connected) {
+      owner.child.disconnect();
+    }
+    await owner.exited;
+    assert.equal(owner.child.exitCode, 0, owner.output());
+    assert.equal(owner.child.signalCode, null, owner.output());
+  } finally {
+    brokers.delete(root);
+  }
+}
 const seedSchema = Type.Object({
   runId: Type.String(),
   sessionId: Type.String(),
@@ -29,6 +109,7 @@ function seed(root: string) {
   return value;
 }
 function run(root: string, phase: string, killed = false): string {
+  assertBroker(root);
   const result = spawnSync(
     process.execPath,
     [path.join(repo, "test/fixtures/single-agent-parent.mjs"), root, repo, sdk, phase],
@@ -41,6 +122,7 @@ function run(root: string, phase: string, killed = false): string {
     `${phase}: ${result.stderr}\n${result.stdout}`,
   );
   assert.equal(result.status, killed ? null : 0, `${phase}: ${result.stderr}\n${result.stdout}`);
+  assertBroker(root);
   if (["command-polling", "usage", "thinking", "background-stop"].includes(phase)) {
     console.log(result.stdout.trim());
   }
@@ -70,56 +152,65 @@ function signalable(pid: number): boolean {
     return false;
   }
 }
-async function cleanup(root: string): Promise<void> {
-  for (const name of [
-    "first",
-    "second",
-    "queue",
-    "queuesecond",
-    "existing",
-    "owned",
-    "boundary",
-    "replacement",
-    "foreground",
-    "publication",
-    "job",
-  ]) {
-    fs.writeFileSync(path.join(root, `release-${name}`), "release");
+function stopShells(root: string): void {
+  for (const file of fs.readdirSync(root, { recursive: true })) {
+    if (typeof file === "string" && file.includes("/shells/") && file.endsWith(".json")) {
+      const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+      Assert(Type.Object({ pid: Type.Integer() }), value);
+      // Permission-denied claims name another user's process; never signal them.
+      if (signalable(value.pid)) {
+        process.kill(-value.pid, "SIGKILL");
+      }
+    }
   }
-  const records = fs
-    .readdirSync(root, { recursive: true })
-    .filter(
-      (file): file is string =>
-        typeof file === "string" && file.endsWith("actor.lock/process.json"),
-    );
-  const pids = records.map((file) => {
-    const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
-    Assert(Type.Object({ pid: Type.Integer() }), value);
-    return value.pid;
-  });
+}
+async function cleanup(root: string): Promise<void> {
+  let pids: number[] = [];
   try {
+    for (const name of [
+      "first",
+      "second",
+      "queue",
+      "queuesecond",
+      "existing",
+      "owned",
+      "boundary",
+      "replacement",
+      "foreground",
+      "publication",
+      "job",
+    ]) {
+      fs.writeFileSync(path.join(root, `release-${name}`), "release");
+    }
+    const records = fs
+      .readdirSync(root, { recursive: true })
+      .filter(
+        (file): file is string =>
+          typeof file === "string" && file.endsWith("actor.lock/process.json"),
+      );
+    pids = records.map((file) => {
+      const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+      Assert(Type.Object({ pid: Type.Integer() }), value);
+      return value.pid;
+    });
     await until(
       () => pids.every(dead),
       "owned native actors must exit after main attachment is gone",
     );
   } finally {
-    for (const pid of pids) {
-      if (!dead(pid)) {
-        process.kill(-pid, "SIGKILL");
-      }
-    }
-    for (const file of fs.readdirSync(root, { recursive: true })) {
-      if (typeof file === "string" && file.includes("/shells/") && file.endsWith(".json")) {
-        const value: unknown = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
-        Assert(Type.Object({ pid: Type.Integer() }), value);
-        // Permission-denied claims name another user's process; never signal them.
-        if (signalable(value.pid)) {
-          process.kill(-value.pid, "SIGKILL");
+    try {
+      for (const pid of pids) {
+        if (!dead(pid)) {
+          process.kill(-pid, "SIGKILL");
         }
       }
+      stopShells(root);
+      await until(() => pids.every(dead), "native actors are joined before broker teardown");
+    } finally {
+      await stopBroker(root);
     }
-    fs.rmSync(root, { recursive: true, force: true });
   }
+  fs.rmSync(root, { recursive: true, force: true });
 }
 for (const phase of [
   "receipt",
@@ -168,7 +259,7 @@ for (const phase of [
   "invalid-temp-root",
 ]) {
   nodeTest(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-native-"));
+    const root = await nativeRoot("sa-native-");
     try {
       const stderr = run(root, phase);
       if (phase === "park-wake-outcome" || phase === "park-sdk-outcome") {
@@ -190,7 +281,7 @@ for (const phase of [
   "background-stop",
 ]) {
   nodeTest(`single-agent native ${phase}`, { timeout: 60000 }, async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-background-"));
+    const root = await nativeRoot("sa-background-");
     try {
       run(root, phase);
       if (fs.existsSync(path.join(root, "background-work-unsupported"))) {
@@ -214,7 +305,7 @@ for (const phase of [
   "park-exposure",
 ]) {
   nodeTest(`single-agent native ${phase}`, { timeout: 60000 }, async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-exposure-"));
+    const root = await nativeRoot("sa-exposure-");
     try {
       run(root, phase);
       if (fs.existsSync(path.join(root, "tool-exposure-unsupported"))) {
@@ -239,7 +330,7 @@ for (const [phase, diagnostics] of [
     `single-agent ${phase} parent shutdown stops verified owners, spares reused PIDs and reports only true ambiguity`,
     { timeout: 60000 },
     async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-shutdown-stale-"));
+      const root = await nativeRoot("sa-shutdown-stale-");
       try {
         const stderr = run(root, phase);
         assert.deepEqual(
@@ -261,7 +352,7 @@ nodeTest(
   "single-agent native preparation SIGKILL leaves only an unadmitted directory and does not starve saved completion or subsequent launches",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-preparation-"));
+    const root = await nativeRoot("sa-preparation-");
     try {
       run(root, "launch-preparation-crash", true);
       const saved = seed(root);
@@ -288,7 +379,7 @@ nodeTest(
   "single-agent native parking keeps parent-death shutdown while its native save is blocked",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-park-orphan-"));
+    const root = await nativeRoot("sa-park-orphan-");
     try {
       run(root, "park-orphan", true);
       const saved = seed(root);
@@ -308,7 +399,7 @@ nodeTest(
   "single-agent native cwd captures active parent B, initializes fork C once and restores child-selected D on cold continuation",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-cwd-"));
+    const root = await nativeRoot("sa-cwd-");
     try {
       run(root, "cwd");
       await until(() => dead(seed(root).childPid), "old cwd actor actually exits");
@@ -321,8 +412,8 @@ nodeTest(
 nodeTest(
   "single-agent actual native runtime shutdown joins admitted filesystem initialization",
   { timeout: 30000 },
-  () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-shutdown-"));
+  async () => {
+    const root = await nativeRoot("sa-shutdown-");
     try {
       const result = spawnSync(
         process.execPath,
@@ -331,7 +422,7 @@ nodeTest(
       );
       assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      await cleanup(root);
     }
   },
 );
@@ -339,7 +430,7 @@ nodeTest(
   "single-agent native child usage is recorded exactly once per native entry and never charged to the parent across notice, concurrent inspection, cold and resident continuations and a fresh reader; a resident continuation reads only its appended journal records",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-usage-"));
+    const root = await nativeRoot("sa-usage-");
     try {
       run(root, "usage");
       run(root, "usage-reopen");
@@ -352,7 +443,7 @@ nodeTest(
   "single-agent continues only owned frozen legacy single-native journals, retaining identity and refusing missing, foreign, retired or duplicate launches",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-saved-"));
+    const root = await nativeRoot("sa-saved-");
     try {
       run(root, "saved-single");
       run(root, "saved-reopen");
@@ -365,7 +456,7 @@ nodeTest(
   "single-agent legacy-only native queued input survives SIGKILL without canonical storage or invented ownership",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-legacy-"));
+    const root = await nativeRoot("sa-legacy-");
     try {
       run(root, "legacy-queue", true);
       run(root, "legacy-reopen");
@@ -381,7 +472,7 @@ for (const crash of [undefined, "before", "after"]) {
     `single-agent cold stopped-result recovery ${crash === undefined ? "after orderly parent exit" : `after SIGKILL ${crash} native append`}`,
     { timeout: 90000 },
     async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-cold-"));
+      const root = await nativeRoot("sa-cold-");
       try {
         run(root, "seed");
         const saved = seed(root);
@@ -433,7 +524,7 @@ nodeTest(
   "single-agent actor SIGKILL retains native shell ownership for cold Stop and same-run continuation retry without replay, bystander signals or blocking on another user's proven-reused PID",
   { timeout: 60000 },
   async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-orphan-"));
+    const root = await nativeRoot("sa-orphan-");
     try {
       run(root, "bash-seed-paused", true);
       const saved = seed(root);
@@ -453,7 +544,7 @@ nodeTest(
   "single-agent cold Stop verifies birth and stops an OS-suspended actor and descendants without fabricated exit",
   { timeout: 60000 },
   async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-stop-"));
+    const root = await nativeRoot("sa-stop-");
     try {
       run(root, "bash-seed-paused", true);
       run(root, "cold-stop");
@@ -470,7 +561,7 @@ for (const [death, phase] of [
     `single-agent parent ${death} stops native shell work and cold continuation reuses the interrupted child conversation`,
     { timeout: 60000 },
     async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-parent-exit-"));
+      const root = await nativeRoot("sa-parent-exit-");
       try {
         if (phase === "bash-parent-reuse") {
           const child = spawn(
@@ -506,13 +597,16 @@ for (const [death, phase] of [
         }
         run(root, "resume-stopped-bash");
       } finally {
-        if (fs.existsSync(path.join(root, "seed.json"))) {
-          const pid = seed(root).bystanderPid;
-          if (pid !== undefined && !dead(pid)) {
-            process.kill(pid, "SIGKILL");
+        try {
+          if (fs.existsSync(path.join(root, "seed.json"))) {
+            const pid = seed(root).bystanderPid;
+            if (pid !== undefined && !dead(pid)) {
+              process.kill(pid, "SIGKILL");
+            }
           }
+        } finally {
+          await cleanup(root);
         }
-        await cleanup(root);
       }
     },
   );
@@ -520,10 +614,13 @@ for (const [death, phase] of [
 nodeTest(
   "failed native actor spawns release only their launch claim and preserve the OS error",
   async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-spawn-failure-"));
-    t.after(() => {
-      fs.chmodSync(path.join(root, "denied"), 0o700);
-      fs.rmSync(root, { recursive: true, force: true });
+    const root = await nativeRoot("sa-spawn-failure-");
+    t.after(async () => {
+      try {
+        fs.chmodSync(path.join(root, "denied"), 0o700);
+      } finally {
+        await cleanup(root);
+      }
     });
     const base = path.join(root, "owner");
     const directory = path.join(base, "run");
@@ -573,8 +670,8 @@ for (const [name, thrown, error] of [
     `single-agent detached actor publishes a canonical failed result when a controlled SDK double throws ${name} at startup`,
     { timeout: 30000 },
     async (t) => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sa-startup-failure-"));
-      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const root = await nativeRoot("sa-startup-failure-");
+      t.after(() => cleanup(root));
       const sdkDouble = path.join(root, "sdk");
       fs.mkdirSync(path.join(sdkDouble, "dist"), { recursive: true });
       fs.mkdirSync(path.join(sdkDouble, "node_modules"));
