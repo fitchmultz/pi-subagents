@@ -491,10 +491,10 @@ nodeTest(
       );
       assert.equal(requests.length, 3);
     } finally {
-      await peer.disconnect();
       if (bridge) {
         await stop(bridge.child);
       }
+      await peer.disconnect();
       if (broker) {
         await stop(broker.child);
       }

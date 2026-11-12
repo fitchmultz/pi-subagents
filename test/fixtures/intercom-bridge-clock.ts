@@ -1,5 +1,28 @@
 import { useFakeTimers } from "sinon";
+import { ChildProcess } from "node:child_process";
+import { subscribe } from "node:diagnostics_channel";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+// Clock jumps can time out native probes and launch detached broker candidates.
+// Join them before this helper exits, while the fixture's keeper still owns the live broker.
+const children = new Set<ChildProcess>();
+subscribe("child_process", (message) => {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    "process" in message &&
+    message.process instanceof ChildProcess
+  ) {
+    const child = message.process;
+    children.add(child);
+    child.once("close", () => children.delete(child));
+  }
+});
+process.on("beforeExit", () => {
+  for (const child of children) {
+    child.ref();
+  }
+});
 
 // Control only the helper's presence/startup clocks; native Pi and AbortSignal keep real clocks.
 const clockFile = process.env.PI_FIXTURE_CLOCK_FILE;

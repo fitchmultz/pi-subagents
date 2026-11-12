@@ -35,6 +35,23 @@ const repo = resolve(import.meta.dirname, "../..");
 
 async function fixture(t: TestContext, identities = 1, realClock = false) {
   const root = mkdtempSync("/tmp/pib-budget-");
+  const oldAgent = process.env.PI_CODING_AGENT_DIR;
+  const oldTmp = process.env.TMPDIR;
+  const cleanup = new AsyncDisposableStack();
+  t.after(() => cleanup.disposeAsync());
+  cleanup.defer(() => {
+    if (oldAgent === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = oldAgent;
+    }
+    if (oldTmp === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = oldTmp;
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
   const env = {
     ...process.env,
     HOME: root,
@@ -79,6 +96,10 @@ async function fixture(t: TestContext, identities = 1, realClock = false) {
       });
     },
   );
+  cleanup.defer(async () => {
+    server.closeAllConnections();
+    await server[Symbol.asyncDispose]();
+  });
   server.listen(0, "127.0.0.1");
   await once(server, "listening", { signal: t.signal });
   const address = server.address();
@@ -103,22 +124,23 @@ async function fixture(t: TestContext, identities = 1, realClock = false) {
     PI_FIXTURE_CLOCK_FILE: join(root, "fixture-clock"),
   };
   const broker = start("src/pi-intercom/broker/broker.ts", [], env);
+  cleanup.defer(() => stop(broker.child));
   await broker.wait(/Intercom broker started/);
   // IntercomClient paths are resolved from this process's environment.
-  const oldAgent = process.env.PI_CODING_AGENT_DIR;
-  const oldTmp = process.env.TMPDIR;
   process.env.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR;
   process.env.TMPDIR = root;
   const peer = new IntercomClient();
   peer.on("error", () => {
     /* Teardown owns broker shutdown. */
   });
+  cleanup.defer(() => peer.disconnect());
   await peer.connect({ name: "sender", cwd: root, model: "fixture" });
   let bridge = start(
     realClock ? "src/pi-intercom/bridge.ts" : "test/fixtures/intercom-bridge-clock.ts",
     ["--config", configPath],
     helperEnv,
   );
+  cleanup.defer(() => stop(bridge.child));
   const apis: BridgeApi[] = [];
   const remoteIds: string[] = [];
   for (const credential of credentials) {
@@ -158,26 +180,6 @@ async function fixture(t: TestContext, identities = 1, realClock = false) {
       db.close();
     }
   };
-  t.after(async () => {
-    await peer.disconnect();
-    await stop(bridge.child);
-    await stop(broker.child);
-    server.closeAllConnections();
-    await new Promise<void>((resolveClose, reject) => {
-      server.close((error) => (error ? reject(error) : resolveClose()));
-    });
-    if (oldAgent === undefined) {
-      delete process.env.PI_CODING_AGENT_DIR;
-    } else {
-      process.env.PI_CODING_AGENT_DIR = oldAgent;
-    }
-    if (oldTmp === undefined) {
-      delete process.env.TMPDIR;
-    } else {
-      process.env.TMPDIR = oldTmp;
-    }
-    rmSync(root, { recursive: true, force: true });
-  });
   /** Each registered identity owns exactly one slot; restarts rebind api slots in place. */
   const api = (index: number) => {
     const value = apis[index];
