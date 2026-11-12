@@ -96,7 +96,6 @@ export async function spawnBrokerIfNeeded(
   child.unref();
 
   await new Promise<void>((resolve, reject) => {
-    let exit: string | undefined;
     const cleanup = () => {
       child.off("error", onError);
       child.off("exit", onExit);
@@ -108,8 +107,20 @@ export async function spawnBrokerIfNeeded(
     // A competing broker can win publication. Its healthy endpoint is success even
     // when our candidate exits; the starter never owns or releases the broker's claim.
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      exit = signal === null ? `code ${code ?? "unknown"}` : `signal ${signal}`;
-      child.off("error", onError);
+      isBrokerRunning()
+        .then((running) => {
+          cleanup();
+          if (running) {
+            resolve();
+          } else {
+            const exit = signal === null ? `code ${code ?? "unknown"}` : `signal ${signal}`;
+            reject(new Error(`Intercom broker exited before startup with ${exit}`));
+          }
+        })
+        .catch((error: unknown) => {
+          cleanup();
+          reject(toError(error));
+        });
     };
     child.once("error", onError);
     child.once("exit", onExit);
@@ -120,11 +131,7 @@ export async function spawnBrokerIfNeeded(
       })
       .catch((error: unknown) => {
         cleanup();
-        reject(
-          exit === undefined
-            ? toError(error)
-            : new Error(`${errorMessage(error)} Candidate exited with ${exit}.`, { cause: error }),
-        );
+        reject(toError(error));
       });
   });
 }
