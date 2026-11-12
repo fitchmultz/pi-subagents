@@ -185,7 +185,9 @@ does not park.
 A job that never ends, such as a server or a watcher, keeps its run `running`
 until the child cancels the job or the parent stops the run. `stop` requests
 cancellation of every listed item and then aborts the child; the result is
-`stopped`. Parent exit stops children the same way. A job's cancellation is a
+`stopped`. A run admitted in the same durable batch as its `stop` is fenced
+before its prompt is submitted, so it publishes `stopped` without starting new
+work. Parent exit stops children the same way. A job's cancellation is a
 request to its detached worker, which stops the shell's process tree whether or
 not the actor is still alive. An actor that is killed before it handles the stop
 leaves its jobs to end or to reach their own `timeout`; their logs stay under

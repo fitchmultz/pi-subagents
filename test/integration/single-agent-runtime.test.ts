@@ -138,6 +138,7 @@ for (const phase of [
   "queue-steer",
   "queue-retain-one",
   "cancellation",
+  "stop-before-admission",
   "dispose",
   "custom-bash",
   "bash-before-registration",

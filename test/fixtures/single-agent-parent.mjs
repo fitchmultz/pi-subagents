@@ -1414,7 +1414,8 @@ async function stopBackgroundWork(/** @type {string} */ id, /** @type {string} *
     const stop = await call("agent_runs", { action: "stop", id }, "background-stop");
     assert.equal(runDetails(stop).stopAcknowledged, false);
     const stopped = runDetails(await settled(id, "Stop publishes the stopped result"));
-    assert.equal(stopped.result?.status, "stopped");
+    assert.ok(stopped.result !== undefined, "the stopped run publishes a result");
+    assert.equal(stopped.result.status, "stopped");
     assert.equal(stopped.waiting, undefined);
     assert.match(completionNotice(id), /: stopped\./);
     await until(observe, "Stop cancels the child's job and its actor exits");
@@ -5163,6 +5164,39 @@ try {
         pid: process.pid,
       }),
     );
+  } else if (phase === "stop-before-admission") {
+    // The Run command is durable while the actor is still booting; the token-matching
+    // Stop lands before the actor's first admission pass, so one batch admits both.
+    const launched = await call(
+      "delegate",
+      { prompt: "HOLD:stop-batch", model: "single-agent-fixture/literal-model" },
+      "stop-batch-launch",
+    );
+    const id = runDetails(launched).id;
+    const launch = readValidated(LaunchSchema, path.join(runDir(id), "launch.json"));
+    const actor = readActorIdentity(runDir(id));
+    enqueue(path.dirname(runDir(id)), launch, { action: "stop", actorToken: actor.token });
+    const stopped = runDetails(await settled(id, "Stop fences the batched run before its prompt"));
+    assert.ok(stopped.result !== undefined, "the stopped run publishes a result");
+    assert.equal(stopped.result.status, "stopped");
+    assert.equal(stopped.result.error, "Stopped before the run started; no prompt was submitted.");
+    assert.deepEqual(stopped.result.contributions, []);
+    assert.equal(
+      requests().some((request) => request.prompt === "HOLD:stop-batch"),
+      false,
+      "the batched run's prompt never reached the child provider",
+    );
+    const exitFile = path.join(runDir(id), `exit-${actor.token}.json`);
+    await until(() => fs.existsSync(exitFile), "the stopped actor exits");
+    const exit = readValidated(
+      Type.Object({
+        code: Type.Union([Type.Integer(), Type.Null()]),
+        signal: Type.Union([Type.String(), Type.Null()]),
+      }),
+      exitFile,
+    );
+    assert.equal(exit.signal, null, "no deadline escalation was needed");
+    assert.equal(exit.code, 0, "the fenced actor exits cleanly");
   } else if (phase === "cancellation") {
     const model = "single-agent-fixture/literal-model";
     const launched = await call("delegate", { prompt: "HOLD:existing", model }, "existing-launch");
