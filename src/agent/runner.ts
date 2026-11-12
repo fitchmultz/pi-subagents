@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { commandSchema, type Command, type Launch, type Result } from "./contracts.ts";
+import { commandSchema, type Command, type Launch } from "./contracts.ts";
 import { commandIdentity, launchAt, read, runDirectory, write } from "./storage.ts";
 import { ownIdentity, shells, signalProcess } from "./process.ts";
 import { ParentCheck } from "./parent-check.ts";
@@ -12,7 +12,7 @@ import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
 import { BackgroundWait, endSession, reporting } from "./background-work.ts";
-import { saveResult } from "./run-result.ts";
+import { saveResult, saveTerminalResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { parkedToken } from "./generation.ts";
 
@@ -123,8 +123,21 @@ class Actor {
     const { session } = this.requireActor();
     const baseline = new Set(session.sessionManager.getEntries().map((entry) => entry.id));
     const task = Promise.resolve().then(() => this.executeRun(launch, session, baseline));
-    this.work = { kind: "running", launch, task };
+    // executeRun saves its own failures; only a failing save rejects past it. That
+    // rejection stays observed here even after the work slot returns to idle.
+    const observed = task.catch((error: unknown) => this.observeBrokenRun(launch, error));
+    this.work = { kind: "running", launch, task: observed };
     this.actor?.observation.working(true);
+  }
+  /** A run whose own save failed still ends with a terminal result and a recorded fault. */
+  private observeBrokenRun(launch: Launch, error: unknown): void {
+    this.errors.push(errorText(error));
+    process.exitCode = 1;
+    try {
+      saveTerminalResult(this.base, launch, this.stopping, errorText(error));
+    } catch (failure) {
+      this.errors.push(errorText(failure));
+    }
   }
   /** The refusal that must end an admitted run before its prompt, or undefined to start it. */
   private runRefusal(launch: Launch): string | undefined {
@@ -367,14 +380,6 @@ class Actor {
   }
   private failure(error: unknown, unopened?: string): void {
     const launch = this.work.kind === "running" ? this.work.launch : this.initial;
-    const result: Result = {
-      id: launch.id,
-      owner: launch.owner,
-      status: this.stopping ? "stopped" : "failed",
-      endedAt: Date.now(),
-      error: errorText(error),
-    };
-    const directory = runDirectory(this.base, launch.id);
     if (parkedToken(this.dir) !== undefined) {
       write(path.join(this.dir, `wake-failure-${this.token}.json`), {
         at: Date.now(),
@@ -384,10 +389,7 @@ class Actor {
           : {}),
       });
     }
-    if (!fs.existsSync(path.join(directory, "result.json"))) {
-      fs.writeFileSync(path.join(directory, "output.txt"), "", { mode: 0o600 });
-      write(path.join(directory, "result.json"), result);
-    }
+    saveTerminalResult(this.base, launch, this.stopping, errorText(error));
     process.exitCode = 1;
   }
   private async start(sdk: Awaited<ReturnType<typeof loadSDK>>, parked: Parking): Promise<Runtime> {

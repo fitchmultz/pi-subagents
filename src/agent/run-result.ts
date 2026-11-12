@@ -74,6 +74,32 @@ function usage(launch: Launch, run: EndedRun, terminal: string | undefined): Acc
         };
   }
 }
+/**
+ * The run's terminal fallback result, written only when nothing canonical exists yet.
+ * The result publishes first; an existing output.txt is never destroyed: a failed save can
+ * leave real output on disk with no canonical result beside it.
+ */
+export function saveTerminalResult(
+  base: string,
+  launch: Launch,
+  stopping: boolean,
+  error: string,
+): void {
+  const directory = runDirectory(base, launch.id);
+  if (fs.existsSync(path.join(directory, "result.json"))) {
+    return;
+  }
+  write(path.join(directory, "result.json"), {
+    id: launch.id,
+    owner: launch.owner,
+    status: stopping ? "stopped" : "failed",
+    endedAt: Date.now(),
+    error,
+  });
+  if (!fs.existsSync(path.join(directory, "output.txt"))) {
+    fs.writeFileSync(path.join(directory, "output.txt"), "", { mode: 0o600 });
+  }
+}
 /** Publishes the run's canonical result and the text of its last assistant message. */
 export function saveResult(base: string, launch: Launch, run: EndedRun): void {
   const terminal = response(run.session, run.baseline);
