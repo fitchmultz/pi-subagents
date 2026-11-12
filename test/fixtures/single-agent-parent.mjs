@@ -4824,7 +4824,7 @@ try {
         assert.equal(
           fs
             .readdirSync(path.dirname(runDir(legacyId)))
-            .filter((file) => file !== "attachment.json").length,
+            .filter((file) => file !== "attachment.json" && file !== "ownership.lock").length,
           0,
           "rejected legacy evidence must not create a run or adoption claim",
         );

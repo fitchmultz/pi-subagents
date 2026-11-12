@@ -3,6 +3,27 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hasErrorCode, isRecord } from "../shared/unknown.ts";
 
+const localOperations = new Map<string, Promise<null>>();
+
+/** Await this process's prior operation without blocking its native spawn-error delivery. */
+export async function serializeLocalOwnership(
+  directory: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const previous = localOperations.get(directory);
+  const { promise, resolve } = Promise.withResolvers<null>();
+  localOperations.set(directory, promise);
+  try {
+    await previous;
+    await operation();
+  } finally {
+    resolve(null);
+    if (localOperations.get(directory) === promise) {
+      localOperations.delete(directory);
+    }
+  }
+}
+
 /** A stable OS lock serializes ownership changes; its inode is never removed. */
 export class OwnershipLock {
   private readonly db: DatabaseSync;

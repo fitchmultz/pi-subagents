@@ -13,8 +13,10 @@ The file is created mode 0600 and validated as a regular file owned by the curre
 user. It is never removed. Only the creator opens and closes a raw file descriptor;
 subsequent acquisitions leave descriptor management to SQLite.
 
+Actor operations in one process await their prior local operation, including
+native spawn-error delivery. Operations in different processes use SQLite's OS lock.
 No busy handler, timeout override, retry loop, lease, or stale-lock reclamation is
-installed. Native contention is an explicit refusal. Closing the connection releases
+installed. Cross-process contention is an explicit refusal. Closing the connection releases
 the transaction; process exit releases the OS lock.
 
 ## Dependency proof
