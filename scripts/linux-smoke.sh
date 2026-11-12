@@ -12,7 +12,7 @@ Example:
 
 Environment:
   PI_LINUX_PI_ARCHIVE  Absolute archive path (required)
-  PI_LINUX_IMAGE      Node 24.22.3+ Linux image (default: node:24-bookworm)
+  PI_LINUX_IMAGE      Node 24.22.3+ Linux image (default: node:24.22.3-bookworm)
 
 Exit codes: 0 passed; 1 validation failed; 2 invalid arguments.'
   exit 0
@@ -26,7 +26,7 @@ fi
 # Validate committed HEAD without passing host credentials or mounting the checkout.
 git -C "$(dirname "$0")/.." archive HEAD | docker run --rm --init -i \
   --mount "type=bind,src=$PI_LINUX_PI_ARCHIVE,dst=/native-pi.tar.gz,readonly" \
-  "${PI_LINUX_IMAGE:-node:24-bookworm}" bash -c '
+  "${PI_LINUX_IMAGE:-node:24.22.3-bookworm}" bash -c '
 set -euo pipefail
 mkdir /workspace /native-pi
 tar -xf - -C /workspace
