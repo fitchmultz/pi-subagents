@@ -414,7 +414,8 @@ class Actor {
       await this.ready(runtime, parked, () => started);
     } catch (error) {
       // A runtime that never became ready is still disposed, so the failed actor exits.
-      await runtime.dispose();
+      // A rejecting disposal is recorded; it must not mask the original readiness failure.
+      await runtime.dispose().catch((dispose: unknown) => this.errors.push(errorText(dispose)));
       throw error;
     }
     return runtime;
@@ -489,7 +490,9 @@ class Actor {
     process.off("SIGINT", this.stop);
     const observation: ObservationStats | undefined = actor?.observation.close();
     if (this.parkOutcome === "resident") {
-      await runtime?.dispose();
+      // A rejecting disposal is recorded and the actor-owned remainder still runs:
+      // shell escalation, the deadline clear and the shutdown record follow it.
+      await runtime?.dispose().catch((error: unknown) => this.errors.push(errorText(error)));
     }
     if (this.stopping) {
       this.stopShells("SIGKILL");
