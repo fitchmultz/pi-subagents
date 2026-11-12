@@ -257,7 +257,8 @@ export class Parking {
   }
   /**
    * Fence broker input, then hold a settled sleep-ready cut of the same quiet idle leaf. Any
-   * failure or raced command releases, unfences and keeps this actor resident.
+   * raced command releases and unfences before resuming. An escaping failure retains
+   * the launcher marker while the actor shuts down, but still releases and unfences.
    */
   private async prepare(
     runtime: Runtime,
@@ -273,7 +274,7 @@ export class Parking {
     const marker = parkingMarker(this.dir);
     write(marker, { at: Date.now() });
     let hold: WorkingHold | undefined;
-    let committed = false;
+    let outcome: "failed" | "resident" | "committed" = "failed";
     try {
       hold = await cut(pi, session, {
         quiet: () => quiet() && session.sessionManager.getLeafId() === this.leaf,
@@ -282,13 +283,14 @@ export class Parking {
       });
       // Revalidate after the awaited fence and save, immediately before the irreversible commit.
       if (hold?.sleepReady === true && quiet()) {
-        committed = true;
+        outcome = "committed";
         return hold;
       }
+      outcome = "resident";
       return undefined;
     } finally {
-      if (!committed) {
-        await rollbackParking(marker, hold, pi, errors);
+      if (outcome !== "committed") {
+        await rollbackParking(outcome === "resident" ? marker : undefined, hold, pi, errors);
       }
     }
   }
@@ -344,10 +346,9 @@ export class Parking {
     }
   }
 }
-/** Releases an uncommitted parking preparation's hold, fence and marker together; the
- * commit consumes their ownership instead, so this must not run once it returned. */
+/** Release uncommitted preparation; only a resident actor may clear its launcher marker. */
 async function rollbackParking(
-  marker: string,
+  marker: string | undefined,
   hold: WorkingHold | undefined,
   pi: ExtensionAPI,
   errors: string[],
@@ -363,7 +364,9 @@ async function rollbackParking(
     errors.push(errorText(error));
   }
   try {
-    fs.rmSync(marker, { force: true });
+    if (marker !== undefined) {
+      fs.rmSync(marker, { force: true });
+    }
   } catch (error) {
     errors.push(errorText(error));
   }
