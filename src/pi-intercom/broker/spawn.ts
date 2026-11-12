@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { readFileSync } from "fs";
+import { closeSync, fstatSync, openSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import net from "net";
@@ -161,8 +161,15 @@ type BrokerOwner =
 
 function readBrokerOwner(pidPath: string): BrokerOwner {
   let raw: string;
+  let published: number;
   try {
-    raw = readFileSync(pidPath, "utf-8");
+    const fd = openSync(pidPath, "r");
+    try {
+      raw = readFileSync(fd, "utf-8");
+      published = fstatSync(fd).mtimeMs;
+    } finally {
+      closeSync(fd);
+    }
   } catch (error) {
     return hasErrorCode(error, "ENOENT")
       ? { kind: "absent" }
@@ -180,7 +187,7 @@ function readBrokerOwner(pidPath: string): BrokerOwner {
       ? { kind: "absent" }
       : { kind: "uncertain", reason: `Cannot establish broker PID ${pid}: ${errorMessage(error)}` };
   }
-  return isBrokerPidReused(pid, raw) ? { kind: "absent" } : { kind: "live", pid };
+  return isBrokerPidReused(pid, raw, published) ? { kind: "absent" } : { kind: "live", pid };
 }
 
 async function previousBrokerWarning(): Promise<string | undefined> {

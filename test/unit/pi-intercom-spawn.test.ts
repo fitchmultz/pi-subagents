@@ -10,6 +10,7 @@ import fs, {
   type ReadFileSyncOptions,
 } from "node:fs";
 import { once } from "node:events";
+import { fork } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { syncBuiltinESMExports } from "node:module";
 import { brokerPidRecord, isBrokerPidReused } from "../../src/pi-intercom/broker/pid.ts";
@@ -244,11 +245,45 @@ nodeTest(
 );
 
 nodeTest(
-  "non-Linux PID records remain numeric without procfs",
-  { skip: process.platform === "linux" },
-  () => {
-    assert.equal(brokerPidRecord(), `${process.pid}\n`);
-    assert.equal(isBrokerPidReused(process.pid, String(process.pid)), false);
+  "macOS broker records use native births and publication bounds for PID and claim liveness",
+  { skip: process.platform !== "darwin" },
+  async () => {
+    fs.mkdirSync(pidDir, { recursive: true });
+    const child = fork(path.join(projectRoot, "test/fixtures/broker-birth-owner.ts"), [], {
+      detached: true,
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    const exited = once(child, "exit");
+    try {
+      const payload: readonly unknown[] = await once(child, "message");
+      const record = payload[0];
+      assert.ok(typeof record === "string" && child.pid !== undefined);
+      assert.match(record, new RegExp(`^${child.pid}\\n[A-Z][a-z]{2} `));
+      const pidPath = path.join(pidDir, "broker.pid");
+      writeFileSync(pidPath, record);
+      await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
+      assert.equal(isBrokerPidReused(child.pid, record), false, "no publication proves nothing");
+      assert.equal(isBrokerPidReused(child.pid, record, Date.now() + 86400000), false);
+      const claimPath = path.join(pidDir, "broker.spawn.lock");
+      const identity = record.slice(record.indexOf("\n") + 1);
+      writeFileSync(claimPath, `${child.pid}\n0\n${identity}`);
+      assert.equal(acquireSpawnClaim(claimPath), undefined, "old embedded timestamp is not proof");
+      // These stale record mtimes predate the real detached process birth. This exercises
+      // the native proof boundary without pretending to force the OS to recycle a PID.
+      fs.utimesSync(pidPath, 1, 1);
+      fs.utimesSync(claimPath, 1, 1);
+      await stopUnhealthyBrokerBeforeSpawn();
+      const release = acquireSpawnClaim(claimPath);
+      assert.ok(release !== undefined, "native later birth permits reclaim");
+      release();
+      process.kill(child.pid, 0);
+      assert.equal(readFileSync(pidPath, "utf8"), record, "no process or PID record is removed");
+    } finally {
+      child.disconnect();
+      await exited;
+      rmSync(pidDir, { recursive: true, force: true });
+    }
   },
 );
 
