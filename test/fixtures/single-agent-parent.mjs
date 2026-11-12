@@ -538,6 +538,11 @@ const runsTool = () => {
   assert.ok(tool !== undefined, "expected the agent_runs tool");
   return tool;
 };
+const delegateTool = () => {
+  const tool = session.agent.state.tools.find((candidate) => candidate.name === "delegate");
+  assert.ok(tool !== undefined, "expected the delegate tool");
+  return tool;
+};
 // Observe the canonical completion the parent actually receives, then inspect without a model turn.
 const settled = async (
   /** @type {import("@earendil-works/pi-ai").ToolResultMessage | import("@earendil-works/pi-agent-core").AgentToolResult<unknown> | string} */ receipt,
@@ -5197,6 +5202,48 @@ try {
     );
     assert.equal(exit.signal, null, "no deadline escalation was needed");
     assert.equal(exit.code, 0, "the fenced actor exits cleanly");
+  } else if (phase === "delegate-cancel-after-preparation") {
+    // The handoff point: a cancellation before publication refuses the delegation; once
+    // the run command is durable, a cancellation no longer retracts the launch.
+    const before = new AbortController();
+    const cancelled = delegateTool().execute(
+      "cancel-before-publication",
+      { prompt: "HOLD:cancelbefore", model: "single-agent-fixture/literal-model" },
+      before.signal,
+    );
+    before.abort();
+    await assert.rejects(cancelled, /Delegation cancelled before launch/);
+    const controller = new AbortController();
+    const pending = delegateTool().execute(
+      "cancel-after-preparation",
+      { prompt: "HOLD:cancelprep", model: "single-agent-fixture/literal-model" },
+      controller.signal,
+    );
+    const base = path.join(agentDir, "sessions", "agent-runs", manager.getSessionId());
+    const launchOf = (/** @type {string} */ prompt) => {
+      try {
+        return fs
+          .readdirSync(base, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => path.join(base, entry.name, "launch.json"))
+          .filter((file) => fs.existsSync(file))
+          .map((file) => readValidated(LaunchSchema, file))
+          .find((launch) => launch.prompt === prompt);
+      } catch {
+        return;
+      }
+    };
+    await until(() => launchOf("HOLD:cancelprep") !== undefined, "delegate publishes its launch");
+    const found = launchOf("HOLD:cancelprep");
+    assert.ok(found !== undefined, "delegate publishes its launch");
+    const command = path.join(runDir(found.id), "commands", `${found.id}.json`);
+    await until(() => fs.existsSync(command), "the delegated run command is durable");
+    // The run command is durable: aborting the delegating turn no longer retracts it.
+    controller.abort();
+    const launched = await pending;
+    assert.equal(runDetails(launched).receipt, "launch");
+    fs.writeFileSync(path.join(root, "release-cancelprep"), "release");
+    assert.equal(runDetails(await settled(found.id)).result?.status, "completed");
   } else if (phase === "cancellation") {
     const model = "single-agent-fixture/literal-model";
     const launched = await call("delegate", { prompt: "HOLD:existing", model }, "existing-launch");
