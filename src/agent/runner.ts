@@ -504,11 +504,9 @@ class Actor {
       ...(observation === undefined ? {} : { observation }),
     });
     this.phase = { kind: "finished" };
-    if (this.parkOutcome !== "resident") {
-      // Parked authority requires actual exit; no leftover extension handle may keep it alive.
-      process.exit();
-    }
-    // Keep the process claim until a launcher proves this exact actor is gone.
+    // Native disposal and shutdown publication are complete. Extension handles do not
+    // own this actor's lifetime; preserve its exit code and leave its claim as evidence.
+    process.exit();
   }
 }
 const base = process.argv.at(2);

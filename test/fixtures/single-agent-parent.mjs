@@ -308,6 +308,28 @@ const settings = sdk.SettingsManager.inMemory({
   ...(phase === "queue-retain" ? { steeringMode: "all" } : {}),
 });
 settings.setProjectTrusted(true);
+if (phase === "extension-handle-exit") {
+  const trigger = path.join(root, "extension-trigger.txt");
+  fs.writeFileSync(trigger, "");
+  const extension = path.join(root, "file-trigger.ts");
+  fs.writeFileSync(
+    extension,
+    fs
+      .readFileSync(path.join(sdkRoot, "examples/extensions/file-trigger.ts"), "utf8")
+      .replace('"/tmp/agent-trigger.txt"', JSON.stringify(trigger)),
+  );
+  const file = path.join(agentDir, "settings.json");
+  /** @type {unknown} */
+  const configured = JSON.parse(fs.readFileSync(file, "utf8"));
+  Assert(Type.Object({ extensions: Type.Array(Type.String()) }), configured);
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      ...configured,
+      extensions: [...configured.extensions, extension],
+    }),
+  );
+}
 /** @type {string | undefined} */
 let cwdOwner;
 if (phase === "cwd" || phase === "cwd-reopen" || phase.startsWith("cwd-invalid-")) {
@@ -5323,6 +5345,49 @@ try {
       await second?.dispose();
       sleeper.kill();
     }
+  } else if (phase === "extension-handle-exit") {
+    const launched = await call(
+      "delegate",
+      {
+        prompt: "HOLD:extension-handle",
+        model: "single-agent-fixture/literal-model",
+      },
+      "extension-launch",
+    );
+    const id = runDetails(launched).id;
+    await until(
+      () => requests().some((request) => request.prompt === "HOLD:extension-handle"),
+      "the child with the native file-trigger extension enters its prompt",
+    );
+    const actor = readActorIdentity(runDir(id));
+    await call("agent_runs", { action: "stop", id }, "extension-stop");
+    await settled(id);
+    await until(
+      () => fs.existsSync(path.join(runDir(id), `shutdown-${actor.token}.json`)),
+      "the actor finishes native disposal and publishes shutdown",
+    );
+    await until(() => {
+      try {
+        process.kill(actor.pid, 0);
+        return false;
+      } catch (error) {
+        return hasErrorCode(error, "ESRCH");
+      }
+    }, "the finished actor exits despite the extension's retained filesystem watcher");
+    const exit = path.join(runDir(id), `exit-${actor.token}.json`);
+    await until(() => fs.existsSync(exit), "the launcher publishes the actor's actual exit");
+    const exited = readValidated(
+      Type.Object({
+        code: Type.Union([Type.Number(), Type.Null()]),
+        signal: Type.Union([Type.String(), Type.Null()]),
+      }),
+      exit,
+    );
+    assert.deepEqual(
+      [exited.code, exited.signal],
+      [0, null],
+      "native disposal ends with a clean actor exit, not parent SIGKILL escalation",
+    );
   } else if (phase === "cancellation") {
     const model = "single-agent-fixture/literal-model";
     const launched = await call("delegate", { prompt: "HOLD:existing", model }, "existing-launch");
