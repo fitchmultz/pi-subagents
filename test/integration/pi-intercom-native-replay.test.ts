@@ -4408,6 +4408,18 @@ nodeTest(
       delivery: "steer",
     });
     await waitFor(async () => !(await noPendingAsk(far)), "the steered question on far");
+    const overlap = await failureOf(
+      executeIntercom(main, {
+        action: "send",
+        to: "far-busy@far",
+        message: "Overlapping note",
+      }),
+    );
+    assert.match(overlap.message, /This remote sender already has a command connected/);
+    assert.deepEqual(
+      [overlap.details.accepted, overlap.details.delivered, overlap.details.deliveryUnknown],
+      [false, false, false],
+    );
     release.resolve();
     assert.equal((await asking).content[0]?.text, "**Reply from far-busy@far:**\nUse blue.");
     await working;

@@ -104,6 +104,11 @@ async function joinBroker(
   });
   try {
     await client.connect({ ...session, model: COMMAND_MODEL }, id);
+    if (client.sessionId !== id) {
+      throw new Error(
+        "This remote sender already has a command connected; wait for it to finish before sending another command.",
+      );
+    }
   } catch (error) {
     await client.disconnect();
     // A socket file without a listener is left by a broker that has exited.

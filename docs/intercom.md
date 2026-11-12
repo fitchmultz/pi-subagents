@@ -374,8 +374,10 @@ listener, service or port is added on any device.
 - For a list, the main is named `intercom-list@<origin>`.
 - For a message, the main is named `<sender name>@<origin>`, with the sender's
   working directory and the model name `remote-cli`. Its ID is `remote-` and a
-  hash of the origin and the sender's ID, so every command of one sender is the
-  same peer to the recipient. Device lists leave these mains out.
+  hash of the origin and the sender's ID, so sequential commands of one sender
+  are the same peer to the recipient. An overlapping command from that sender
+  fails before sending a message; wait for the connected command to finish.
+  Device lists leave these mains out.
 - A waiting ask first prints the receipt of its question as a line of its own,
   then an empty line every second. The receipt tells the asker that the question
   arrived, also when the connection is lost later. The empty lines tell the
