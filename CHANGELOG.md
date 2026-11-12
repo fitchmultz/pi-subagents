@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.39 - 2026-11-12
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix: require patched Node security releases (#437) ([239b972](https://github.com/fitchmultz/pi-subagents/commit/239b9723886bfc8644f14bc9eb62f72dc4ce64ff))
+
+### What's Changed
+
+- fix: require patched Node security releases by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/437
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.38...v0.52.39
+
 ## 0.52.38 - 2026-11-12
 
 <!-- npm-release:unreleased:start -->
