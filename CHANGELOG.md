@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## 0.52.38 - 2026-11-12
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix: stop admitted runs before their prompts (1/12) (#423) ([5e87a63](https://github.com/fitchmultz/pi-subagents/commit/5e87a638241b212a1a80bb074b892740791cfc62))
+
+### What's Changed
+
+- fix: stop admitted runs before their prompts (1/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/423
+- fix: observe a failing run-task save (2/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/424
+- fix: keep actor teardown whole when disposal rejects (3/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/426
+- fix: bracket parking preparation with one rollback scope (4/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/427
+- fix: pin the delegation cancellation handoff (5/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/428
+- fix: refuse a second live main attachment (6/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/429
+- fix: preserve remote sender identity on overlap (7/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/430
+- docs: match observation and receipt ownership contracts (8/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/431
+- fix: exit finished actors after native disposal (9/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/432
+- fix: invalidate migrated native journal generations (10/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/433
+- fix: identify broker process births on macOS (11/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/434
+- fix: retain broker startup ownership through publication (12/12) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/435
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.37...v0.52.38
+
 ## 0.52.37 - 2026-11-11
 
 <!-- npm-release:unreleased:start -->
