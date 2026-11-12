@@ -1,11 +1,12 @@
 import net from "net";
-import { chmodSync, writeFileSync, unlinkSync } from "fs";
+import { unlinkSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { writeMessage, validateIntercomMessageSize } from "./framing.ts";
 import { getBrokerRuntimeDir, prepareBrokerSocketPath } from "./paths.ts";
-import { brokerPidRecord } from "./pid.ts";
-import { assertBrokerCanStart } from "./spawn.ts";
+import { BrokerPublication } from "./pid.ts";
+import { assertBrokerCanStart, waitForBroker } from "./spawn.ts";
+import { acquireSpawnClaim } from "./spawn-claim.ts";
 import { LastMessageRelay } from "./last.ts";
 import { canSeeSession, findSessions } from "./targets.ts";
 import { ParkedSessions, reachable, type ParkablePeer } from "./parked.ts";
@@ -54,6 +55,7 @@ class IntercomBroker {
   private readonly server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private readonly socketPath: string;
+  private readonly publication = new BrokerPublication(PID_PATH);
 
   constructor() {
     this.socketPath = prepareBrokerSocketPath();
@@ -69,16 +71,25 @@ class IntercomBroker {
     });
   }
 
-  start(): void {
-    this.server.listen(this.socketPath, () => {
-      chmodSync(this.socketPath, 0o600);
-      writeFileSync(PID_PATH, brokerPidRecord(), { mode: 0o600 });
-      console.log(`Intercom broker started (pid: ${process.pid})`);
-      // A broker no session ever registers with (for example, its spawning client exited first) must still exit.
-      this.scheduleShutdownCheck();
-    });
+  start(): Promise<void> {
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
+    return new Promise((resolve, reject) => {
+      this.server.once("error", reject);
+      this.server.listen(this.socketPath, () => {
+        try {
+          this.publication.publish(this.socketPath);
+          console.log(`Intercom broker started (pid: ${process.pid})`);
+          // A broker whose starter exited still owns its idle shutdown.
+          this.scheduleShutdownCheck();
+          resolve();
+        } catch (error) {
+          this.publication.remove();
+          this.server.unref();
+          reject(error);
+        }
+      });
+    });
   }
 
   private handleConnection(socket: net.Socket): void {
@@ -489,20 +500,23 @@ class IntercomBroker {
       session.socket.end();
     }
     this.sessions.clear();
-    try {
-      unlinkSync(this.socketPath);
-    } catch {
-      // The socket may already be gone if shutdown started after a disconnect.
-    }
-    try {
-      unlinkSync(PID_PATH);
-    } catch {
-      // The PID file may already be gone if startup never completed.
-    }
-    this.server.close();
+    this.publication.remove();
+    // Exit closes the listener without net.Server.close unlinking a successor socket.
     process.exit(0);
   }
 }
 
-await assertBrokerCanStart();
-new IntercomBroker().start();
+// Only the process that can publish endpoints owns the startup claim. Delayed
+// candidates must acquire it too, even if the starter has timed out or exited.
+prepareBrokerSocketPath();
+const release = acquireSpawnClaim(join(getBrokerRuntimeDir(), "broker.spawn.lock"));
+if (release === undefined) {
+  await waitForBroker();
+} else {
+  try {
+    await assertBrokerCanStart();
+    await new IntercomBroker().start();
+  } finally {
+    release();
+  }
+}

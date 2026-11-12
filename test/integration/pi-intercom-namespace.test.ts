@@ -5,9 +5,14 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
+  closeSync,
+  constants,
+  openSync,
   lstatSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  writeFileSync,
   realpathSync,
   rmSync,
   unlinkSync,
@@ -55,68 +60,177 @@ async function request(child: ChildProcess, action: string, params = {}) {
   return result.result;
 }
 
-nodeTest("a suspended live spawn owner keeps its claim beyond the old age limit", async () => {
+nodeTest(
+  "broker startup ownership survives starter timeout and exit until publication",
+  async () => {
+    const runtime = text(process.env.PI_INTERCOM_RUNTIME_DIR);
+    mkdirSync(runtime, { recursive: true });
+    const fixture = path.join(repo, "test/fixtures/intercom-spawn-owner.ts");
+    const launcher = fork(fixture, ["claim"], {
+      execArgv: [],
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    const launcherExit = once(launcher, "exit");
+    let writer: number | undefined;
+    let candidate: number | undefined;
+    let replacement: net.Server | undefined;
+    const pidFile = path.join(runtime, "broker.pid");
+    try {
+      const claim = path.join(runtime, "broker.spawn.lock");
+      const marker = path.join(runtime, "candidate.json");
+      await waitFor(() => existsSync(marker), "native candidate's identity publication");
+      const raw: unknown = JSON.parse(readFileSync(marker, "utf8"));
+      assertRecord(raw);
+      assert.equal(raw.launcher, launcher.pid);
+      assert.ok(typeof raw.candidate === "number");
+      candidate = raw.candidate;
+      await waitFor(() => {
+        if (!existsSync(claim)) {
+          return false;
+        }
+        const pid = Number.parseInt(readFileSync(claim, "utf8"), 10);
+        if (!Number.isSafeInteger(pid) || pid <= 0) {
+          return false;
+        }
+        return true;
+      }, "broker's native claim publication");
+      assert.equal(
+        Number.parseInt(readFileSync(claim, "utf8"), 10),
+        candidate,
+        "the broker owns startup, not its starter",
+      );
+      assert.ok(lstatSync(pidFile).isFIFO());
+      await waitFor(() => {
+        try {
+          writer = openSync(pidFile, constants.O_WRONLY | constants.O_NONBLOCK);
+          return true;
+        } catch {
+          return false;
+        }
+      }, "native broker reader opens the PID FIFO");
+      const saved = readFileSync(claim, "utf8");
+      unlinkSync(pidFile);
+      assert.equal(existsSync(pidFile), false, "PID publication has not happened");
+      assert.deepEqual(await launcherExit, [1, null], "starter times out and exits independently");
+      assert.equal(readFileSync(claim, "utf8"), saved, "timeout cannot release the broker claim");
+      const contender = fork(fixture, [], {
+        execArgv: [],
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
+      let error = "";
+      contender.stderr?.on("data", (chunk: Buffer) => {
+        error += chunk.toString();
+      });
+      assert.deepEqual(await once(contender, "exit"), [1, null]);
+      assert.match(error, /Broker failed to start within timeout/);
+      assert.equal(readFileSync(claim, "utf8"), saved, "live broker still excludes publication");
+      assert.ok(writer !== undefined && launcher.pid !== undefined);
+      writeFileSync(writer, String(launcher.pid)); // This starter is now a proven exited PID.
+      closeSync(writer);
+      writer = undefined;
+      await waitFor(
+        () => existsSync(pidFile) && !existsSync(claim),
+        "broker bind and PID publication",
+      );
+      assert.equal(Number.parseInt(readFileSync(pidFile, "utf8"), 10), candidate);
+      const socket = net.connect(path.join(runtime, "broker.sock"));
+      await once(socket, "connect");
+      socket.destroy();
+
+      // Keep the old PID inode linked so replacement cannot accidentally reuse it.
+      renameSync(pidFile, `${pidFile}.old`);
+      writeFileSync(pidFile, "replacement PID record\n");
+      replacement = net.createServer((connection) => connection.end());
+      unlinkSync(path.join(runtime, "broker.sock"));
+      replacement.listen(path.join(runtime, "broker.sock"));
+      await once(replacement, "listening");
+      const replacementIdentity = lstatSync(path.join(runtime, "broker.sock"));
+      process.kill(candidate, "SIGTERM");
+      await waitFor(() => !processAlive(Number.parseInt(saved, 10)), "old broker exit");
+      candidate = undefined;
+      assert.equal(readFileSync(pidFile, "utf8"), "replacement PID record\n");
+      assert.equal(lstatSync(path.join(runtime, "broker.sock")).ino, replacementIdentity.ino);
+      const probe = net.connect(path.join(runtime, "broker.sock"));
+      await once(probe, "connect");
+      probe.destroy();
+    } finally {
+      if (writer !== undefined) {
+        closeSync(writer);
+      }
+      if (candidate !== undefined && processAlive(candidate)) {
+        process.kill(candidate, "SIGKILL");
+      }
+      if (replacement !== undefined) {
+        const server = replacement;
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
+      }
+      launcher.kill("SIGKILL");
+      await launcherExit;
+      rmSync(runtime, { recursive: true, force: true });
+    }
+  },
+);
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+nodeTest("a delayed candidate cannot replace the winner after its starter dies", async () => {
   const runtime = text(process.env.PI_INTERCOM_RUNTIME_DIR);
+  mkdirSync(runtime, { recursive: true });
   const fixture = path.join(repo, "test/fixtures/intercom-spawn-owner.ts");
-  const launcher = fork(fixture, ["hold"], {
+  const launcher = fork(fixture, ["delay"], {
     execArgv: [],
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   const launcherExit = once(launcher, "exit");
-  const marker = path.join(runtime, "suspended-candidate.json");
   let candidate: number | undefined;
+  let winner: number | undefined;
+  const pidFile = path.join(runtime, "broker.pid");
   try {
-    await waitFor(() => existsSync(marker), "spawned candidate owns the suspension marker");
+    const marker = path.join(runtime, "candidate.json");
+    await waitFor(() => existsSync(marker), "delayed candidate's native suspension marker");
     const raw: unknown = JSON.parse(readFileSync(marker, "utf8"));
     assertRecord(raw);
     assert.equal(raw.launcher, launcher.pid);
     assert.ok(typeof raw.candidate === "number");
     candidate = raw.candidate;
-    const claim = path.join(runtime, "broker.spawn.lock");
-    const saved = readFileSync(claim, "utf8");
-    assert.equal(Number.parseInt(saved, 10), launcher.pid);
-    const createdAt = Number(saved.split("\n")[1]);
-    assert.ok(Number.isFinite(createdAt));
-    await delay(Math.max(0, createdAt + 10_010 - Date.now()));
+    assert.equal(existsSync(path.join(runtime, "broker.spawn.lock")), false);
+    launcher.kill("SIGKILL");
+    await launcherExit;
     const contender = fork(fixture, [], {
       execArgv: [],
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
-    let error = "";
-    contender.stderr?.on("data", (chunk: Buffer) => {
-      error += chunk.toString();
-    });
-    const exited: readonly unknown[] = await once(contender, "exit");
-    const code = exited[0];
-    assert.equal(code, 1, "a live claim prevents a second startup");
-    assert.match(error, /Broker failed to start within timeout/);
-    assert.equal(readFileSync(claim, "utf8"), saved);
-    assert.ok(launcher.pid !== undefined);
-    process.kill(launcher.pid, 0);
-    process.kill(candidate, "SIGKILL");
+    assert.deepEqual(await once(contender, "exit"), [0, null]);
+    const saved = readFileSync(pidFile, "utf8");
+    winner = Number.parseInt(saved, 10);
+    const socketIdentity = lstatSync(path.join(runtime, "broker.sock"));
+    process.kill(candidate, "SIGCONT");
+    await waitFor(() => !processAlive(Number(raw.candidate)), "delayed candidate refuses takeover");
     candidate = undefined;
-    launcher.kill("SIGKILL");
-    await launcherExit;
-    assert.equal(readFileSync(claim, "utf8"), saved);
-    const replacement = fork(fixture, [], {
-      execArgv: [],
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-    });
-    assert.deepEqual(await once(replacement, "exit"), [0, null]);
-    assert.equal(existsSync(claim), false, "the new owner releases only its acquired claim");
+    assert.equal(readFileSync(pidFile, "utf8"), saved);
+    assert.equal(lstatSync(path.join(runtime, "broker.sock")).ino, socketIdentity.ino);
+    const socket = net.connect(path.join(runtime, "broker.sock"));
+    await once(socket, "connect");
+    socket.destroy();
   } finally {
-    if (candidate !== undefined) {
+    if (candidate !== undefined && processAlive(candidate)) {
       process.kill(candidate, "SIGKILL");
     }
-    launcher.kill("SIGCONT");
-    launcher.kill("SIGTERM");
-    await launcherExit;
-    const pidFile = path.join(runtime, "broker.pid");
-    if (existsSync(pidFile)) {
-      const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
-      process.kill(pid, "SIGTERM");
-      await waitFor(() => !existsSync(pidFile), "test broker exit");
+    if (winner !== undefined && processAlive(winner)) {
+      process.kill(winner, "SIGTERM");
+      await waitFor(() => !processAlive(Number(winner)), "winning test broker exit");
     }
+    launcher.kill("SIGKILL");
+    await launcherExit;
     rmSync(runtime, { recursive: true, force: true });
   }
 });
