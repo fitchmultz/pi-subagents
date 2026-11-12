@@ -22,6 +22,11 @@ the transaction; process exit releases the OS lock.
 Qualified locally on Node v24.22.3, Darwin arm64, SQLite 3.54.1. The package's Node
 floor remains unchanged at 24.21.0. No npm dependency or lockfile changed.
 
+On Fold8's native Android Node v24.22.2 / SQLite 3.54.1, a two-process probe
+verified `SQLITE_BUSY` while the parent held `BEGIN EXCLUSIVE`, acquisition after
+close, and preservation of the private mode-0600 inode. This qualifies the native
+locking primitive, not the complete agent flow on Android.
+
 - Node's [SQLite API](https://github.com/nodejs/node/blob/v24.22.3/doc/api/sqlite.md#new-databasesyncpath-options)
   documents `DatabaseSync` since 22.5.0 and the native default busy timeout of zero
   (`doc/api/sqlite.md:123-128,180-182`).
@@ -57,5 +62,6 @@ stable private inode preservation. Real runners stop at Node's debugger entry,
 before SDK/provider work; these tests prove launch ownership, not provider output.
 Each case stops its owned mains and runner groups and removes its isolated root.
 
-Linux/Android and separate official/fork runtime graphs remain qualification for
-the parent-owned hosted gates. The full test suites are not run locally.
+Linux and separate official/fork runtime graphs remain qualification for the
+parent-owned hosted gates. The full test suites, including the complete Android
+agent flow, are not run locally.
