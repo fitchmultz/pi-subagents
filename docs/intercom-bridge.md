@@ -37,7 +37,8 @@ HTTP deadlines at 15 seconds. Browser-origin/fetch-metadata requests are denied.
 
 ## Configuration
 
-Use Node >=24.21.0 and the packaged `dist/pi-intercom/bridge.js`. Provision an
+Use the packaged `dist/pi-intercom/bridge.js` with Node 24.22.3 (24.x) or
+26.13.1 and newer. Provision an
 immutable reviewed release, keep the prior compiled release for rollback and
 point a separately supervised service at it. Installation/restart is an explicit
 operator gate, not an effect of editing this repository.

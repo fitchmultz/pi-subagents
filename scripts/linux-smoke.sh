@@ -12,7 +12,7 @@ Example:
 
 Environment:
   PI_LINUX_PI_ARCHIVE  Absolute archive path (required)
-  PI_LINUX_IMAGE      Node 24.21.0+ Linux image (default: node:24-bookworm)
+  PI_LINUX_IMAGE      Node 24.22.3+ Linux image (default: node:24-bookworm)
 
 Exit codes: 0 passed; 1 validation failed; 2 invalid arguments.'
   exit 0
