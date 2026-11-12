@@ -90,7 +90,7 @@ also remains. Neither is a new requirement of this standard.
 ## Adoption record
 
 Repository: `fitchmultz/pi-subagents`. Standard: v5.2, 3 November 2026.
-Runtime: Node `>=24.21.0`, npm, committed lockfile.
+Runtime: Node `>=24.22.3 <25 || >=26.13.1`, npm, committed lockfile.
 Qualified tools: Oxlint 1.91.0, oxlint-tsgolint 7.0.2006, Oxfmt 0.76.0,
 TypeScript 7.0.2, oxc-parser 0.157.0, and `@types/node` 24.19.2.
 

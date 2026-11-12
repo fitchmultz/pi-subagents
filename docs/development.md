@@ -1,6 +1,6 @@
 # Development
 
-Node.js 24.21 or newer is required.
+Node.js 24.22.3 (24.x) or 26.13.1 and newer is required.
 
 The supported Intercom client's package export uses emitted declarations for consumers.
 The repository's native `development` type condition points at its TypeScript source so
