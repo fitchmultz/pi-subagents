@@ -368,17 +368,19 @@ Admission is still not publication or model consumption. Native physical receipt
 suppress redelivery across reload/resume, and dropped queues can recover. A
 `--no-session` parent has no session file, so Pi's in-memory transcript holds its
 receipts for the life of that process; such a receipt never removes a retained
-legacy result file. Receipt polling reuses unchanged verified
-journal metadata; changed files validate the committed prefix before parsing
-appended records. Replacement, truncation, changed prefixes, malformed records,
-and missing final newlines do not fabricate receipts.
+legacy result file. Receipt polling reuses unchanged verified journal metadata.
+When a current-format journal grows on the same device and inode, polling retains
+the cached prefix and parses only appended records; it does not reread that prefix.
+Other file changes rebuild the index. Native current-format writers append;
+external prefix edits followed by same-inode growth are outside that contract.
+Malformed records and missing final newlines do not fabricate receipts.
 Completion delivery appends context; it does not replace prior prompts, tools,
 model settings, or the active conversation.
 
 ## Read-only human observation
 
 Interactive main sessions expose an above-editor widget and `/agents` list/watch.
-The widget shows up to five active runs with circle indicators, status and short ID;
+The widget shows up to four active runs with circle indicators, status and short ID;
 unreadable (unavailable) runs also stay listed. The default picker hides completed
 runs; failed, stopped, interrupted, and unavailable runs remain visible there.
 The header total counts all saved runs; the widget rows and overflow count include
