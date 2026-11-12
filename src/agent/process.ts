@@ -17,6 +17,7 @@ import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts
 import { conversation, enqueue, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 import { generation, handoffToken, parkedFile } from "./generation.ts";
+import { OwnershipLock, serializeLocalOwnership } from "./ownership-lock.ts";
 
 /** Darwin's in-memory publication bound; Android records carry their own native clock. */
 interface Published {
@@ -299,16 +300,40 @@ async function launchClaimedActor(base: string, launch: Launch, lock: string): P
     throw error;
   }
 }
+function removeObservedLock(lock: string, observed: fs.Stats | undefined): void {
+  const current = fs.lstatSync(lock, { throwIfNoEntry: false });
+  if (
+    current === undefined ||
+    observed === undefined ||
+    current.dev !== observed.dev ||
+    current.ino !== observed.ino
+  ) {
+    throw new Error("Actor launch is ambiguous; the dead claim was replaced while reclaiming.");
+  }
+  fs.rmSync(lock, { recursive: true });
+}
 export async function ensureActor(
   base: string,
   launch: Launch,
   signal?: AbortSignal,
 ): Promise<void> {
   const dir = conversation(base, launch);
+  await serializeLocalOwnership(dir, async () => {
+    await awaitStopping(dir, actor(base, launch), signal);
+    signal?.throwIfAborted();
+    const ownership = new OwnershipLock(dir);
+    try {
+      await ensureClaimedActor(base, launch);
+    } finally {
+      ownership.close();
+    }
+  });
+}
+async function ensureClaimedActor(base: string, launch: Launch): Promise<void> {
+  const dir = conversation(base, launch);
   const lock = path.join(dir, "actor.lock");
-  await awaitStopping(dir, actor(base, launch), signal);
-  signal?.throwIfAborted();
-  // Another parallel tool may replace the claim while this invocation yields.
+  // Reinspect only after acquiring the cross-process ownership lock.
+  const observed = fs.lstatSync(lock, { throwIfNoEntry: false });
   const claim = inspectActorClaim(base, launch);
   const existing = claim.process;
   if (possiblyLive(claim)) {
@@ -320,7 +345,7 @@ export async function ensureActor(
       throw new Error("Owned native shell work remains live; stop it before continuing.");
     }
     removeObservationEndpoint(existing.token);
-    fs.rmSync(lock, { recursive: true });
+    removeObservedLock(lock, observed);
   }
   try {
     fs.mkdirSync(lock);

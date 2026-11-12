@@ -330,6 +330,15 @@ reconciliation, not on the awaited startup path. That delay is not a delivery
 deadline. A short-lived main may exit before recovery, and a prompt started
 immediately after startup may receive the recovered backlog as steering input.
 Managed launchers still gate attachment on accepted host readiness.
+One session has one live main: a startup that finds another live main's attachment
+record refuses to attach instead of overwriting it, so the owning main keeps its
+record and the refusing main's runs and stops act as unattached.
+Attachment read/check/publication is serialized by a native SQLite OS lock.
+Each conversation uses the same lock primitive for actor reinspection, dead-claim
+reclamation, spawn, and PID publication. The private `ownership.lock` files stay
+outside `actor.lock` and are never unlinked. Contention refuses the operation
+without waiting or reclaiming a live lock; retry after the other operation finishes.
+Closing the connection or process exit releases the OS lock.
 
 After that, the main reconciles when its owner directory, an unfinished run's
 `result.json`, a pending-accounting child journal or the retired legacy result

@@ -231,6 +231,7 @@ for (const phase of [
   "cancellation",
   "stop-before-admission",
   "delegate-cancel-after-preparation",
+  "attachment-refusal",
   "dispose",
   "custom-bash",
   "bash-before-registration",
