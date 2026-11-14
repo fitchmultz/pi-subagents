@@ -4,7 +4,7 @@ set -euo pipefail
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   printf '%s\n' 'Usage: bash scripts/linux-smoke.sh
 
-Validate committed HEAD in Docker against a credential-free, prebuilt Pi 1.5.0+
+Validate committed HEAD in Docker against a credential-free, prebuilt Pi 1.5.2+
 Linux archive with a single top-level pi/ directory and built SDK/CLI output.
 
 Example:
@@ -21,7 +21,7 @@ if [[ $# -ne 0 ]]; then
   printf '%s\n' 'No arguments accepted; use --help.' >&2
   exit 2
 fi
-: "${PI_LINUX_PI_ARCHIVE:?Set PI_LINUX_PI_ARCHIVE to an absolute path to a credential-free prebuilt Linux Pi 1.5.0+ .tar.gz (top-level pi/) with its Linux dependencies and built SDK/CLI.}"
+: "${PI_LINUX_PI_ARCHIVE:?Set PI_LINUX_PI_ARCHIVE to an absolute path to a credential-free prebuilt Linux Pi 1.5.2+ .tar.gz (top-level pi/) with its Linux dependencies and built SDK/CLI.}"
 
 # Validate committed HEAD without passing host credentials or mounting the checkout.
 git -C "$(dirname "$0")/.." archive HEAD | docker run --rm --init -i \

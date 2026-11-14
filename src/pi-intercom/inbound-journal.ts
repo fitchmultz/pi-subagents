@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import { isContextRequest, type IntercomLifecycle } from "./lifecycle.ts";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import {
@@ -111,7 +111,7 @@ export class InboundJournal {
           rootSessionId: from.rootSessionId,
           incarnation: from.incarnation,
         },
-        textSha256: createHash("sha256").update(message.content.text, "utf8").digest("hex"),
+        textSha256: hash("sha256", message.content.text, "hex"),
         delivery: requestedDelivery(message),
         ...publicationMetadata(message),
         checkpointEntryId: entryId,
