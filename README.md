@@ -133,7 +133,7 @@ It never runs during startup/install, deletes data, or reclaims disk space.
 - [Development and qualification](docs/development.md)
 - [Diagnosis, baseline, and measurable rebuild gates](docs/single-agent-rebuild.md)
 
-Supports official Pi and the maintained `fitchmultz/pi` fork at 1.5.0 or later;
+Supports official Pi and the maintained `fitchmultz/pi` fork at 1.5.2 or later;
 the two hosts are qualified separately, including native Android/Termux. Node.js
 is required; see [development prerequisites](docs/development.md). Source
 installs on Android also need an Android-native `tsgo` on PATH; the prebuilt npm

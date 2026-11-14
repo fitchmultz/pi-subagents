@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -7,10 +7,7 @@ import { getPiAgentDir } from "../agent-dir.ts";
 const MAX_UNIX_SOCKET_PATH_BYTES = 100;
 
 function agentDigest(agentDir: string, uid?: number): string {
-  return createHash("sha256")
-    .update(uid === undefined ? agentDir : `${uid}:${agentDir}`)
-    .digest("hex")
-    .slice(0, 16);
+  return hash("sha256", uid === undefined ? agentDir : `${uid}:${agentDir}`, "hex").slice(0, 16);
 }
 
 /** Old agent-directory namespaces are inspected for migration, never used for routing. */
@@ -73,7 +70,7 @@ export function agentObservationSocketPath(token: string): string {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(token)) {
     throw new Error("Invalid actor token.");
   }
-  const name = `obs-${createHash("sha256").update(token).digest("hex").slice(0, 16)}.sock`;
+  const name = `obs-${hash("sha256", token, "hex").slice(0, 16)}.sock`;
   return join(runtimeDirectory(name, "-agents"), name);
 }
 

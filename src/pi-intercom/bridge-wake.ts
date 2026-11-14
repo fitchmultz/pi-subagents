@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import { log } from "./bridge-protocol.ts";
 import { Mailbox, type PendingNotification } from "./bridge-mailbox.ts";
 import type { Identity } from "./bridge-config.ts";
@@ -33,9 +33,7 @@ function actionable(entry: PendingNotification): boolean {
 }
 
 function bucket(identity: Identity): string {
-  return createHash("sha256")
-    .update(identity.wake?.url ?? "")
-    .digest("hex");
+  return hash("sha256", identity.wake?.url ?? "", "hex");
 }
 
 /** Mailbox commits and durable retry/quota deadlines drive wakes; there is no intake scan timer. */

@@ -1,6 +1,7 @@
 import type { Static } from "typebox";
 import { Type } from "./typebox.ts";
 
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const thinkingSchema = Type.Union([
   Type.Literal("off"),
   Type.Literal("minimal"),

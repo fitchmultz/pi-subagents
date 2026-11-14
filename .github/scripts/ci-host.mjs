@@ -68,10 +68,10 @@ try {
   if (flavor === "fork") {
     assert.equal(host.provenance.ref, process.env.PI_FORK_REF);
   }
-  const [major = 0, minor = 0] = host.version.split(".").map(Number);
+  const [major = 0, minor = 0, patch = 0] = host.version.replace(/-.*$/, "").split(".").map(Number);
   assert.ok(
-    major > 1 || (major === 1 && minor >= 5),
-    "Resolved latest host is below the supported 1.5.0 floor",
+    major > 1 || (major === 1 && (minor > 5 || (minor === 5 && patch >= 2))),
+    "Resolved latest host is below the supported 1.5.2 floor",
   );
   const selected = selectDevelopmentHost(development, host, env);
   const testEnv = {

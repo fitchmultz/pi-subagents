@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import path from "node:path";
 
 export interface TargetIdentity {
@@ -15,7 +15,7 @@ export interface ProjectSessionIdentity extends TargetIdentity {
 export const MIN_SESSION_TARGET_PREFIX_LENGTH = 8;
 
 export function nativePeerId(sessionId: string): string {
-  return `pi-${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}`;
+  return `pi-${hash("sha256", sessionId, "hex").slice(0, 32)}`;
 }
 
 export interface TargetResolution<T extends TargetIdentity> {
@@ -66,7 +66,7 @@ export async function resolveSessionProjectId(cwd: string): Promise<string> {
     gitDirectory !== undefined && gitDirectory !== ""
       ? `git:${gitDirectory}`
       : `cwd:${normalizedPath(cwd)}`;
-  return createHash("sha256").update(identity).digest("hex");
+  return hash("sha256", identity, "hex");
 }
 
 function normalizedNames(sessions: readonly TargetIdentity[]): Set<string> {

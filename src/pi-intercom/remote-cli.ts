@@ -6,7 +6,7 @@
  * receipt of its question, then empty lines. It joins this device's running broker as a
  * short-lived main. It never starts a broker: without one, no Pi session is open here.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { hash, randomUUID } from "node:crypto";
 import { text } from "node:stream/consumers";
 import { IntercomClient } from "./broker/client.ts";
 import { getBrokerSocketPath, isOwnedBrokerSocket } from "./broker/paths.ts";
@@ -329,7 +329,7 @@ function failed(error: unknown, progress: SendProgress, words: string): RemoteRe
 async function deliver(base: RemoteRequest, input: Input): Promise<RemoteReply> {
   const request = parseMessage(base, input);
   const { origin, device, from, to } = request;
-  const identity = createHash("sha256").update(`${origin}\0${from.id}`).digest("hex").slice(0, 32);
+  const identity = hash("sha256", `${origin}\0${from.id}`, "hex").slice(0, 32);
   const client = await joinBroker(
     { name: `${from.name}@${origin}`, cwd: from.cwd },
     `${REMOTE_ID_PREFIX}${identity}`,
