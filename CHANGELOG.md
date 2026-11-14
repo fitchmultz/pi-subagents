@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.40 - 2026-11-14
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Raise the Pi floor to 1.5.2 and use StringEnum and crypto.hash (#439) ([dd0fb09](https://github.com/fitchmultz/pi-subagents/commit/dd0fb0932fd49590ad3bfc979d8f45b3aa6a093f))
+
+### What's Changed
+
+- Raise the Pi floor to 1.5.2 and use StringEnum and crypto.hash by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/439
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.39...v0.52.40
+
 ## 0.52.39 - 2026-11-12
 
 <!-- npm-release:unreleased:start -->
