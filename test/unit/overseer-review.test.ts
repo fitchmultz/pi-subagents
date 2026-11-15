@@ -220,6 +220,21 @@ nodeTest(
     assert.match(inspectText, /Overseer review: required before parent settles\./u);
     recordOverseerReview(base, launch, "approved", "Verified final diff across both files.");
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
+    const approvedCompletion = notifications(
+      { sessionManager: SessionManager.inMemory() },
+      base,
+      launch.owner,
+    ).notices.find((item) => item.id === launch.id);
+    const approvedText =
+      typeof approvedCompletion?.message.content === "string"
+        ? approvedCompletion.message.content
+        : "";
+    assert.doesNotMatch(approvedText, /Overseer review required:/u);
+    release(launch.owner, launch.id);
+
+    // Clear review.json so the superseded-run check below exercises successor.json independently.
+    fs.rmSync(path.join(runDirectory(base, launch.id), "review.json"), { force: true });
+    assert.equal(needsOverseerReview(base, launch, completedAfterPause), true);
 
     // Continuing launch -> tipB and calling review(id=launch.id, verdict="approved") while tipB
     // is paused resolves tipB's active escalation instead of stranding the live tip.
@@ -228,7 +243,8 @@ nodeTest(
     fs.mkdirSync(tipDir, { recursive: true, mode: 0o700 });
     write(path.join(tipDir, "launch.json"), tipB, true);
     write(path.join(runDirectory(base, launch.id), "successor.json"), { id: tipB.id }, true);
-    // Superseded run A's completion notice omits the review hint while paused successor B is active.
+    // Unapproved superseded run A omits the review hint solely because successor.json exists.
+    assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
     const supersededCompletion = notifications(
       { sessionManager: SessionManager.inMemory() },
       base,
