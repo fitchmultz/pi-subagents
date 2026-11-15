@@ -11,6 +11,7 @@ import {
   type Launch,
 } from "./contracts.ts";
 import {
+  CONSECUTIVE_ERROR_TURN_LIMIT,
   captureRepoSnapshot,
   changedFilesSinceBaseline,
   checkDeterministicTripwires,
@@ -29,6 +30,7 @@ const MUTATING_TOOLS = new Set([
   "apply_patch",
   "bash",
 ]);
+// Product contract (docs/reference.md): debounced judge checkpoints run every 4 mutating turns or 120 diff lines.
 const JUDGE_TURN_INTERVAL = 4;
 const JUDGE_DIFF_LINE_DELTA = 120;
 
@@ -63,18 +65,29 @@ function summarizeTurnTools(toolResults: unknown): { hadError: boolean; mutated:
   return { hadError, mutated };
 }
 
-function hasSteerSince(commandsDir: string, runId: string, since: number): boolean {
+function commandFiles(commandsDir: string): Set<string> {
   try {
-    return fs
-      .readdirSync(commandsDir)
-      .filter((file) => file.endsWith(".json"))
-      .some((file) => {
-        const meta = read(path.join(commandsDir, file), commandMetadataSchema);
-        return meta?.runId === runId && meta.action === "steer" && meta.createdAt >= since;
-      });
+    return new Set(fs.readdirSync(commandsDir).filter((file) => file.endsWith(".json")));
   } catch {
-    return false;
+    return new Set();
   }
+}
+
+function hasNewSteer(
+  commandsDir: string,
+  runId: string,
+  existingCommands: ReadonlySet<string>,
+): boolean {
+  for (const file of commandFiles(commandsDir)) {
+    if (existingCommands.has(file)) {
+      continue;
+    }
+    const meta = read(path.join(commandsDir, file), commandMetadataSchema);
+    if (meta?.runId === runId && meta.action === "steer") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function checkResolution(
@@ -104,6 +117,7 @@ export async function waitForEscalationResolution(options: {
   const commandsDir = path.join(conversation(base, launch), "commands");
   const escalationFile = path.join(runDir, "escalation.json");
   const resolutionFile = path.join(runDir, "escalation-resolution.json");
+  const existingCommands = commandFiles(commandsDir);
   write(escalationFile, escalation);
 
   const wake = new Wake();
@@ -111,12 +125,13 @@ export async function waitForEscalationResolution(options: {
   const watchCommands = new DirectoryWatch(commandsDir, () => true, wake.raise);
   try {
     while (!isStopping()) {
+      wake.take();
       watchRun.ensure();
       watchCommands.ensure();
       if (checkResolution(resolutionFile, escalation.id, approvedDigests)) {
         return;
       }
-      if (hasSteerSince(commandsDir, launch.id, escalation.at)) {
+      if (hasNewSteer(commandsDir, launch.id, existingCommands)) {
         return;
       }
       await wake.sleep(200);
@@ -177,6 +192,12 @@ class SentinelRunner {
 
   constructor(options: SentinelOptions) {
     this.options = options;
+  }
+
+  primeBaseline(launch: Launch): void {
+    if (launch.overseer?.enabled === true && launch.contract !== undefined) {
+      this.ensureState(launch);
+    }
   }
 
   private ensureState(launch: Launch): RunSentinelState {
@@ -250,8 +271,6 @@ class SentinelRunner {
     if (!shouldRunJudgeCheckpoint(current, snapshot, finalSettle)) {
       return;
     }
-    current.lastJudgedDigest = snapshot.digest;
-    current.lastJudgedLines = snapshot.diffLines;
     current.mutatingTurnsSinceJudge = 0;
     const changedFiles = changedFilesSinceBaseline(launch.cwd, current.baseline, snapshot);
     const judgeHit = await evaluateDecisionCheckpoint({
@@ -263,7 +282,12 @@ class SentinelRunner {
       snapshot,
       signal: undefined,
     });
-    if (judgeHit !== undefined && !this.options.isStopping()) {
+    if (judgeHit === undefined) {
+      current.lastJudgedDigest = snapshot.digest;
+      current.lastJudgedLines = snapshot.diffLines;
+      return;
+    }
+    if (!this.options.isStopping()) {
       await this.escalate(launch, judgeHit);
     }
   }
@@ -280,16 +304,22 @@ class SentinelRunner {
     if (mutated) {
       current.mutatingTurnsSinceJudge += 1;
     }
-    if (!mutated && current.consecutiveErrors < 3) {
+    if (!mutated && current.consecutiveErrors < CONSECUTIVE_ERROR_TURN_LIMIT) {
       return;
     }
     await this.inspectCheckpoint(launch, ctx, false);
   }
 }
 
-/** Installs mid-run and pre-settle overseer checks inside a supervised child session. */
+/** Installs baseline priming, mid-run tripwires, and pre-settle checks inside a supervised child. */
 export function attachOverseerSentinel(pi: ExtensionAPI, options: SentinelOptions): void {
   const runner = new SentinelRunner(options);
+  pi.on("session_start", () => {
+    runner.primeBaseline(options.activeLaunch());
+  });
+  pi.on("before_agent_start", () => {
+    runner.primeBaseline(options.activeLaunch());
+  });
   pi.on("turn_end", async (event, ctx) => {
     await runner.onTurnEnd(event, ctx);
   });

@@ -2,26 +2,41 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
+import type {
+  ClassifierApi,
+  ClassifierChoiceAnswer,
+  ClassifierContext,
+  ClassifierModel,
+  ClassifierResult,
+} from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DelegationContract, Escalation } from "./contracts.ts";
 import { isPathAllowedByScope } from "./overseer-scope.ts";
 
-const MAX_JUDGE_DIFF_CHARS = 16000;
-const MAX_EXCERPT_CHARS = 3000;
-const JUDGE_PROBABILITY_THRESHOLD = 0.85;
-const JUDGE_PRIORITY = [
-  ["google", "gemini-decision-1"],
-  ["cloudflare-workers-ai", "@cf/cloudflare/clef"],
-  ["openai", "gpt-6-luna"],
-  ["cloudflare-workers-ai", "@cf/cloudflare/clef-flash"],
-] as const;
+// Keep escalation card excerpts compact while full files remain inspectable in the worktree.
+const ESCALATION_EXCERPT_CHARS = 3000;
+// Product contract (docs/reference.md): 3 consecutive error turns trigger a loop escalation.
+export const CONSECUTIVE_ERROR_TURN_LIMIT = 3;
+
+export interface JudgeModelRegistry {
+  readonly getAvailableOfType: (
+    type: "classifier",
+  ) => Promise<readonly ClassifierModel<ClassifierApi>[]>;
+  readonly getModelOfType: (
+    type: "classifier",
+    provider: string,
+    modelId: string,
+  ) => ClassifierModel<ClassifierApi> | undefined;
+  readonly classify: ExtensionContext["modelRegistry"]["classify"];
+}
 
 export interface RepoSnapshot {
   readonly isGit: boolean;
+  readonly topLevel: string | undefined;
   readonly head: string | undefined;
   readonly branch: string | undefined;
   readonly fileStamps: ReadonlyMap<string, string>;
-  readonly judgeDiff: string;
+  readonly rawDiff: string;
   readonly diffExcerpt: string;
   readonly diffLines: number;
   readonly digest: string;
@@ -41,7 +56,7 @@ function runGit(cwd: string, args: readonly string[]): string | undefined {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 2 * 1024 * 1024,
+      maxBuffer: 4 * 1024 * 1024,
     });
   } catch {
     return undefined;
@@ -52,33 +67,46 @@ function isAncestor(cwd: string, ancestor: string, descendant: string): boolean 
   return runGit(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]) !== undefined;
 }
 
-function fileStamp(cwd: string, relPath: string, statusCode: string): string {
+function fileStamp(topLevel: string, relPath: string, statusCode: string): string {
   try {
-    const stat = fs.lstatSync(path.join(cwd, relPath));
+    const stat = fs.lstatSync(path.resolve(topLevel, relPath));
     return `${statusCode}:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
   } catch {
     return `${statusCode}:missing`;
   }
 }
 
-function parsePorcelain(cwd: string, raw: string): Map<string, string> {
+function isRenameOrCopy(status: string): boolean {
+  return status[0] === "R" || status[0] === "C" || status[1] === "R" || status[1] === "C";
+}
+
+function parsePorcelainZ(topLevel: string, raw: string): Map<string, string> {
   const stamps = new Map<string, string>();
-  for (const line of raw.split("\n")) {
-    if (line.length < 4) {
+  const tokens = raw.split("\0");
+  let index = 0;
+  while (index < tokens.length) {
+    const entry = tokens[index] ?? "";
+    index += 1;
+    if (entry.length < 4) {
       continue;
     }
-    const status = line.slice(0, 2);
-    const body = line.slice(3);
-    const arrow = body.indexOf(" -> ");
-    const relPath = (arrow >= 0 ? body.slice(arrow + 4) : body).trim();
+    const status = entry.slice(0, 2);
+    const relPath = entry.slice(3);
     if (relPath.length > 0) {
-      stamps.set(relPath, fileStamp(cwd, relPath, status));
+      stamps.set(relPath, fileStamp(topLevel, relPath, status));
+    }
+    if (isRenameOrCopy(status) && index < tokens.length) {
+      const origPath = tokens[index] ?? "";
+      index += 1;
+      if (origPath.length > 0 && !stamps.has(origPath)) {
+        stamps.set(origPath, `${status}:orig`);
+      }
     }
   }
   return stamps;
 }
 
-function untrackedPreview(cwd: string, files: readonly string[]): string {
+function untrackedPreview(topLevel: string, files: readonly string[]): string {
   const chunks: string[] = [];
   let budget = 4000;
   for (const rel of files) {
@@ -86,7 +114,7 @@ function untrackedPreview(cwd: string, files: readonly string[]): string {
       break;
     }
     try {
-      const full = path.join(cwd, rel);
+      const full = path.resolve(topLevel, rel);
       const stat = fs.statSync(full);
       if (stat.isFile() && stat.size <= 32768) {
         const snippet = fs.readFileSync(full, "utf8").slice(0, Math.min(1200, budget));
@@ -103,14 +131,14 @@ function untrackedPreview(cwd: string, files: readonly string[]): string {
 function snapshotDigest(
   head: string | undefined,
   fileStamps: ReadonlyMap<string, string>,
-  judgeDiff: string,
+  rawDiff: string,
 ): string {
   return createHash("sha256")
     .update(head ?? "")
     .update("\0")
     .update(JSON.stringify([...fileStamps.entries()]))
     .update("\0")
-    .update(judgeDiff)
+    .update(rawDiff)
     .digest("hex");
 }
 
@@ -119,78 +147,101 @@ function nonemptyTrimmed(value: string | undefined): string | undefined {
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
 }
 
-/** Captures a fast, bounded Git status and diff snapshot for `cwd`. */
+/** Captures a NUL-delimited Git status and diff snapshot anchored at the repository root. */
 export function captureRepoSnapshot(cwd: string, baselineHead?: string): RepoSnapshot {
-  const statusRaw = runGit(cwd, ["status", "--porcelain=v1", "-uall"]);
-  if (statusRaw === undefined) {
+  const topLevel = nonemptyTrimmed(runGit(cwd, ["rev-parse", "--show-toplevel"]));
+  const statusRaw =
+    topLevel === undefined
+      ? undefined
+      : runGit(topLevel, ["status", "--porcelain=v1", "-z", "-uall"]);
+  if (topLevel === undefined || statusRaw === undefined) {
     return {
       isGit: false,
+      topLevel: undefined,
       head: undefined,
       branch: undefined,
       fileStamps: new Map(),
-      judgeDiff: "",
+      rawDiff: "",
       diffExcerpt: "",
       diffLines: 0,
       digest: "non-git",
     };
   }
-  const head = nonemptyTrimmed(runGit(cwd, ["rev-parse", "--verify", "HEAD"]));
-  const branch = nonemptyTrimmed(runGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]));
-  const fileStamps = parsePorcelain(cwd, statusRaw);
-  const trackedDiff = runGit(cwd, ["diff", baselineHead ?? head ?? "HEAD", "--unified=2"]) ?? "";
+  const head = nonemptyTrimmed(runGit(topLevel, ["rev-parse", "--verify", "HEAD"]));
+  const branch = nonemptyTrimmed(runGit(topLevel, ["symbolic-ref", "--quiet", "--short", "HEAD"]));
+  const fileStamps = parsePorcelainZ(topLevel, statusRaw);
+  const trackedDiff =
+    runGit(topLevel, [
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      baselineHead ?? head ?? "HEAD",
+      "--unified=2",
+    ]) ?? "";
   const untracked = [...fileStamps.entries()]
     .filter(([, code]) => code.startsWith("??:"))
     .map(([file]) => file);
-  const combined = [trackedDiff, untrackedPreview(cwd, untracked)].filter(Boolean).join("\n");
-  const judgeDiff = combined.slice(0, MAX_JUDGE_DIFF_CHARS);
+  const rawDiff = [trackedDiff, untrackedPreview(topLevel, untracked)].filter(Boolean).join("\n");
   return {
     isGit: true,
+    topLevel,
     head,
     branch,
     fileStamps,
-    judgeDiff,
-    diffExcerpt: combined.slice(0, MAX_EXCERPT_CHARS),
-    diffLines: combined === "" ? 0 : combined.split("\n").length,
-    digest: snapshotDigest(head, fileStamps, judgeDiff),
+    rawDiff,
+    diffExcerpt: rawDiff.slice(0, ESCALATION_EXCERPT_CHARS),
+    diffLines: rawDiff === "" ? 0 : rawDiff.split("\n").length,
+    digest: snapshotDigest(head, fileStamps, rawDiff),
   };
 }
 
 function committedFilesBetween(
-  cwd: string,
+  topLevel: string,
   fromHead: string | undefined,
   toHead: string | undefined,
 ): string[] {
   if (fromHead === undefined || toHead === undefined || fromHead === toHead) {
     return [];
   }
-  const raw = runGit(cwd, ["diff", "--name-only", fromHead, toHead]) ?? "";
-  return raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const raw = runGit(topLevel, ["diff", "-z", "--name-only", fromHead, toHead]) ?? "";
+  return raw.split("\0").filter((entry) => entry.length > 0);
 }
 
-/** Files modified, added, or deleted relative to `baseline` (ignores untouched pre-existing dirty files). */
+function formatPathForCwd(topLevel: string, cwd: string, repoRelPath: string): string {
+  let realCwd = path.resolve(cwd);
+  let realTop = path.resolve(topLevel);
+  try {
+    realCwd = fs.realpathSync(cwd);
+    realTop = fs.realpathSync(topLevel);
+  } catch {
+    // Fall back to lexical resolution if cwd disappeared concurrently.
+  }
+  const abs = path.resolve(realTop, repoRelPath);
+  const rel = path.relative(realCwd, abs);
+  return (rel === "" ? repoRelPath : rel).split(path.sep).join("/");
+}
+
+/** Files modified, added, or deleted relative to `baseline`, formatted relative to `cwd`. */
 export function changedFilesSinceBaseline(
   cwd: string,
   baseline: RepoSnapshot,
   current: RepoSnapshot,
 ): string[] {
-  const changed = new Set<string>();
+  if (!current.isGit || current.topLevel === undefined) {
+    return [];
+  }
+  const changedRepoPaths = new Set<string>();
   for (const [file, stamp] of current.fileStamps) {
     if (baseline.fileStamps.get(file) !== stamp) {
-      changed.add(file);
+      changedRepoPaths.add(file);
     }
   }
-  for (const file of baseline.fileStamps.keys()) {
-    if (!current.fileStamps.has(file)) {
-      changed.add(file);
-    }
+  for (const file of committedFilesBetween(current.topLevel, baseline.head, current.head)) {
+    changedRepoPaths.add(file);
   }
-  for (const file of committedFilesBetween(cwd, baseline.head, current.head)) {
-    changed.add(file);
-  }
-  return [...changed].sort();
+  return [...changedRepoPaths]
+    .map((repoRel) => formatPathForCwd(current.topLevel ?? cwd, cwd, repoRel))
+    .sort();
 }
 
 function checkBranchViolation(
@@ -225,7 +276,7 @@ export function checkDeterministicTripwires(options: {
 }): ViolationCandidate | undefined {
   const { cwd, contract, baseline, current, consecutiveErrors } = options;
   const changedFiles = changedFilesSinceBaseline(cwd, baseline, current);
-  if (consecutiveErrors >= 3) {
+  if (consecutiveErrors >= CONSECUTIVE_ERROR_TURN_LIMIT) {
     return {
       kind: "loop_violation",
       summary: `Child hit ${consecutiveErrors} consecutive turns with tool/command errors without clean progress.`,
@@ -263,90 +314,84 @@ export function checkDeterministicTripwires(options: {
 }
 
 async function selectClassifierModel(
-  registry: unknown,
+  registry: JudgeModelRegistry,
   judgeSpec: string,
-): Promise<UnknownRecord | undefined> {
-  if (!isRecord(registry)) {
-    return undefined;
-  }
-  const getAvailable = Reflect.get(registry, "getAvailableOfType");
-  if (typeof getAvailable !== "function") {
-    return undefined;
-  }
-  const rawList: unknown = await Reflect.apply(getAvailable, registry, ["classifier"]);
-  if (!Array.isArray(rawList)) {
-    return undefined;
-  }
-  const models = rawList.filter(isRecord);
+): Promise<ClassifierModel<ClassifierApi> | undefined> {
+  const available = await registry.getAvailableOfType("classifier");
   if (judgeSpec !== "auto") {
     const slash = judgeSpec.indexOf("/");
     const provider = slash > 0 ? judgeSpec.slice(0, slash) : "";
     const id = slash > 0 ? judgeSpec.slice(slash + 1) : judgeSpec;
-    return models.find((m) => m.provider === provider && m.id === id);
-  }
-  for (const [provider, id] of JUDGE_PRIORITY) {
-    const found = models.find((m) => m.provider === provider && m.id === id);
-    if (found !== undefined) {
-      return found;
+    const matched =
+      available.find((model) => model.provider === provider && model.id === id) ??
+      registry.getModelOfType("classifier", provider, id);
+    if (matched === undefined) {
+      throw new Error(
+        `Configured overseer judge '${judgeSpec}' is not an available classifier model.`,
+      );
     }
+    return matched;
   }
-  return models[0];
+  return [...available].sort((left, right) => left.cost.input - right.cost.input)[0];
 }
 
-function readBoolProbability(answers: UnknownRecord, key: string): number {
-  const entry = answers[key];
-  return isRecord(entry) && entry.type === "bool" && typeof entry.probability === "number"
-    ? entry.probability
-    : 0;
-}
-
-function buildJudgeQuestions(contract: DelegationContract): Record<string, unknown> {
-  const questions: Record<string, unknown> = {
-    scope_violation: {
-      type: "bool",
-      instructions:
-        "Did the diff introduce unrequested features, speculative/contrived fallbacks, or changes forbidden by contract.nonGoals?",
-      criteria: {
-        true: "Drifted beyond the requested task or violated nonGoals",
-        false: "Stays directly focused on the requested task and contract",
+function buildJudgeContext(options: {
+  classifier: ClassifierModel<ClassifierApi>;
+  prompt: string;
+  contract: DelegationContract;
+  changedFiles: string[];
+  snapshot: RepoSnapshot;
+}): ClassifierContext {
+  // Reserve half of the model's token context window (~4 chars/token) for state metadata + schema.
+  const diffCharBudget = Math.max(4096, Math.floor(options.classifier.contextWindow * 2));
+  const criteria: Record<string, string> = {
+    compliant: "Stays directly focused on the task prompt, contract, and required primitives",
+    scope_violation:
+      "Introduces unrequested features, speculative fallbacks, or changes forbidden by nonGoals",
+  };
+  const required = options.contract.requiredPrimitives;
+  if (required !== undefined && required.length > 0) {
+    criteria.primitive_violation = `Reimplements or bypasses required primitives (${required.join(", ")}) with custom wrappers, caches, or manual plumbing`;
+  }
+  return {
+    state: {
+      taskPrompt: options.prompt,
+      contract: options.contract,
+      changedFiles: options.changedFiles,
+      diff: options.snapshot.rawDiff.slice(0, diffCharBudget),
+    },
+    questions: {
+      verdict: {
+        type: "choice",
+        instructions:
+          "Select whether the diff complies with the delegation contract or clearly violates it.",
+        criteria,
       },
     },
   };
-  if (contract.requiredPrimitives !== undefined && contract.requiredPrimitives.length > 0) {
-    questions.primitive_violation = {
-      type: "bool",
-      instructions: `Did the diff build custom caches, wrappers, or manual plumbing instead of using the required primitives (${contract.requiredPrimitives.join(", ")})?`,
-      criteria: {
-        true: "Reimplemented or bypassed required primitives with custom code",
-        false: "Uses the required primitives cleanly",
-      },
-    };
-  }
-  return questions;
 }
 
-function interpretJudgeAnswers(
-  classifier: UnknownRecord,
-  answers: UnknownRecord,
+function interpretVerdict(
+  classifier: ClassifierModel<ClassifierApi>,
+  verdictLabel: string,
+  confidence: number,
   options: { contract: DelegationContract; changedFiles: string[]; snapshot: RepoSnapshot },
 ): ViolationCandidate | undefined {
-  const label = `${String(classifier.provider)}/${String(classifier.id)}`;
-  const primitiveProb = readBoolProbability(answers, "primitive_violation");
-  if (primitiveProb >= JUDGE_PROBABILITY_THRESHOLD) {
+  const modelId = `${classifier.provider}/${classifier.id}`;
+  if (verdictLabel === "primitive_violation") {
     const required = options.contract.requiredPrimitives?.join(", ") ?? "";
     return {
       kind: "primitive_violation",
-      summary: `Decision judge (${label}, p=${primitiveProb.toFixed(2)}) flagged custom plumbing bypassing required primitives (${required}).`,
+      summary: `Decision judge (${modelId}, confidence=${confidence.toFixed(2)}) flagged custom plumbing bypassing required primitives (${required}).`,
       changedFiles: options.changedFiles,
       diffExcerpt: options.snapshot.diffExcerpt,
       diffDigest: options.snapshot.digest,
     };
   }
-  const scopeProb = readBoolProbability(answers, "scope_violation");
-  if (scopeProb >= JUDGE_PROBABILITY_THRESHOLD) {
+  if (verdictLabel === "scope_violation") {
     return {
       kind: "scope_violation",
-      summary: `Decision judge (${label}, p=${scopeProb.toFixed(2)}) flagged unrequested scope drift or nonGoal violation.`,
+      summary: `Decision judge (${modelId}, confidence=${confidence.toFixed(2)}) flagged unrequested scope drift or nonGoal violation.`,
       changedFiles: options.changedFiles,
       diffExcerpt: options.snapshot.diffExcerpt,
       diffDigest: options.snapshot.digest,
@@ -355,33 +400,25 @@ function interpretJudgeAnswers(
   return undefined;
 }
 
-async function invokeClassifier(
-  registry: unknown,
-  classifier: UnknownRecord,
-  payload: { state: UnknownRecord; questions: Record<string, unknown> },
-  signal: AbortSignal | undefined,
-): Promise<UnknownRecord | undefined> {
-  const classifyFn = isRecord(registry) ? Reflect.get(registry, "classify") : undefined;
-  if (typeof classifyFn !== "function") {
+function unpackVerdictChoice(
+  result: ClassifierResult,
+  judgeSpec: string,
+): ClassifierChoiceAnswer | undefined {
+  if (result.stopReason !== "stop") {
+    if (judgeSpec !== "auto" && result.stopReason === "error") {
+      throw new Error(
+        `Overseer judge '${judgeSpec}' failed: ${result.errorMessage ?? "classifier error"}.`,
+      );
+    }
     return undefined;
   }
-  try {
-    const result: unknown = await Reflect.apply(classifyFn, registry, [
-      classifier,
-      payload,
-      { signal, timeoutMs: 8000 },
-    ]);
-    return isRecord(result) && result.stopReason === "stop" && isRecord(result.answers)
-      ? result.answers
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  const answer = result.answers.verdict;
+  return answer?.type === "choice" ? answer : undefined;
 }
 
-/** Single-pass Decision-Model check over a bounded diff checkpoint (~$0.0004, 0 output tokens). */
+/** Single-pass Decision-Model check over a diff checkpoint sized to the classifier's contextWindow. */
 export async function evaluateDecisionCheckpoint(options: {
-  modelRegistry: unknown;
+  modelRegistry: JudgeModelRegistry;
   judgeSpec: string | undefined;
   prompt: string;
   contract: DelegationContract;
@@ -390,30 +427,20 @@ export async function evaluateDecisionCheckpoint(options: {
   signal: AbortSignal | undefined;
 }): Promise<ViolationCandidate | undefined> {
   const judgeSpec = options.judgeSpec ?? "auto";
-  if (
-    judgeSpec === "off" ||
-    options.changedFiles.length === 0 ||
-    options.snapshot.judgeDiff === ""
-  ) {
+  if (judgeSpec === "off" || options.changedFiles.length === 0 || options.snapshot.rawDiff === "") {
     return undefined;
   }
   const classifier = await selectClassifierModel(options.modelRegistry, judgeSpec);
   if (classifier === undefined) {
     return undefined;
   }
-  const answers = await invokeClassifier(
-    options.modelRegistry,
+  const result = await options.modelRegistry.classify(
     classifier,
-    {
-      state: {
-        taskPrompt: options.prompt.slice(0, 4000),
-        contract: options.contract,
-        changedFiles: options.changedFiles,
-        diff: options.snapshot.judgeDiff,
-      },
-      questions: buildJudgeQuestions(options.contract),
-    },
-    options.signal,
+    buildJudgeContext({ classifier, ...options }),
+    options.signal === undefined ? undefined : { signal: options.signal },
   );
-  return answers === undefined ? undefined : interpretJudgeAnswers(classifier, answers, options);
+  const answer = unpackVerdictChoice(result, judgeSpec);
+  return answer === undefined
+    ? undefined
+    : interpretVerdict(classifier, answer.choice, answer.confidence, options);
 }

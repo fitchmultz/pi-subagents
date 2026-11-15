@@ -5,20 +5,30 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { Escalation, Launch } from "../../src/agent/contracts.ts";
+import { setTimeout as delay } from "node:timers/promises";
+import type { ClassifierApi, ClassifierModel } from "@earendil-works/pi-ai";
+import {
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
+import { escalationSchema, type Escalation, type Launch } from "../../src/agent/contracts.ts";
 import { notifications, release } from "../../src/agent/notifications.ts";
 import {
   captureRepoSnapshot,
   changedFilesSinceBaseline,
   checkDeterministicTripwires,
   evaluateDecisionCheckpoint,
+  type JudgeModelRegistry,
 } from "../../src/agent/overseer-judge.ts";
 import {
+  attachOverseerSentinel,
   resolveActiveEscalation,
   waitForEscalationResolution,
 } from "../../src/agent/overseer-sentinel.ts";
-import { runDirectory, write } from "../../src/agent/storage.ts";
+import { read, runDirectory, write } from "../../src/agent/storage.ts";
+import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
 function initGitRepo(t: TestContext): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-git-"));
@@ -32,10 +42,31 @@ function initGitRepo(t: TestContext): string {
   git("config", "user.email", "test@example.com");
   git("config", "user.name", "Test");
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "packages", "foo", "src"), { recursive: true });
   fs.writeFileSync(path.join(dir, "src", "allowed.ts"), "export const x = 1;\n");
+  fs.writeFileSync(path.join(dir, "packages", "foo", "src", "item.ts"), "export const y = 1;\n");
+  fs.writeFileSync(path.join(dir, "README.md"), "committed\n");
   git("add", ".");
   git("commit", "-m", "initial");
   return dir;
+}
+
+function makeClassifierModel(
+  provider: string,
+  id: string,
+  inputCost: number,
+): ClassifierModel<ClassifierApi> {
+  return {
+    type: "classifier",
+    id,
+    name: id,
+    api: "typesafe-system-one",
+    provider,
+    baseUrl: "https://example.invalid/v1",
+    input: ["text"],
+    contextWindow: 32768,
+    cost: { input: inputCost, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
 }
 
 function sampleLaunch(base: string, cwd: string, owner: string): Launch {
@@ -73,10 +104,11 @@ function sampleLaunch(base: string, cwd: string, owner: string): Launch {
 }
 
 nodeTest(
-  "deterministic tripwires ignore pre-existing dirty files and catch scope, branch, and loop violations",
+  "deterministic tripwires handle dirty baselines, reverts, unicode paths, subdirectory cwd, and branch rules",
   (t) => {
     const repo = initGitRepo(t);
     fs.writeFileSync(path.join(repo, "preexisting-notes.md"), "untouched\n");
+    fs.writeFileSync(path.join(repo, "README.md"), "preexisting dirty\n");
     execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: repo, stdio: "ignore" });
 
     const baseline = captureRepoSnapshot(repo);
@@ -86,15 +118,35 @@ nodeTest(
       baseBranch: "main",
     };
 
-    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 2;\n");
+    // Reverting pre-existing dirty out-of-scope file back to clean HEAD is not a scope violation,
+    // and non-ASCII filenames inside scope are parsed via -z without Git octal quoting.
+    fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
+    fs.writeFileSync(path.join(repo, "src", "café.ts"), "export const accent = true;\n");
     const cleanSnap = captureRepoSnapshot(repo, baseline.head);
-    assert.deepEqual(changedFilesSinceBaseline(repo, baseline, cleanSnap), ["src/allowed.ts"]);
+    assert.deepEqual(changedFilesSinceBaseline(repo, baseline, cleanSnap), ["src/café.ts"]);
     assert.equal(
       checkDeterministicTripwires({
         cwd: repo,
         contract,
         baseline,
         current: cleanSnap,
+        consecutiveErrors: 0,
+      }),
+      undefined,
+    );
+
+    // Subdirectory delegation cwd resolves Git's worktree-relative paths against show-toplevel.
+    const subCwd = path.join(repo, "packages", "foo");
+    const subBase = captureRepoSnapshot(subCwd);
+    fs.writeFileSync(path.join(subCwd, "src", "item.ts"), "export const y = 2;\n");
+    const subClean = captureRepoSnapshot(subCwd, subBase.head);
+    assert.deepEqual(changedFilesSinceBaseline(subCwd, subBase, subClean), ["src/item.ts"]);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: subCwd,
+        contract,
+        baseline: subBase,
+        current: subClean,
         consecutiveErrors: 0,
       }),
       undefined,
@@ -109,7 +161,7 @@ nodeTest(
     });
     assert.equal(loopHit?.kind, "loop_violation");
 
-    fs.writeFileSync(path.join(repo, "README.md"), "unrequested\n");
+    fs.writeFileSync(path.join(repo, "README.md"), "new drift\n");
     const scopeSnap = captureRepoSnapshot(repo, baseline.head);
     const scopeHit = checkDeterministicTripwires({
       cwd: repo,
@@ -122,11 +174,14 @@ nodeTest(
     assert.equal(scopeHit.kind, "scope_violation");
     assert.match(scopeHit.summary, /README\.md/u);
 
-    fs.rmSync(path.join(repo, "README.md"));
+    fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
     execFileSync("git", ["checkout", "main"], { cwd: repo, stdio: "ignore" });
     const mainBaseline = captureRepoSnapshot(repo);
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 3;\n");
-    execFileSync("git", ["commit", "-am", "direct main commit"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "direct main commit", "src/allowed.ts"], {
+      cwd: repo,
+      stdio: "ignore",
+    });
     const mainAfter = captureRepoSnapshot(repo, mainBaseline.head);
     const branchHit = checkDeterministicTripwires({
       cwd: repo,
@@ -140,27 +195,39 @@ nodeTest(
 );
 
 nodeTest(
-  "evaluateDecisionCheckpoint prioritizes google/gemini-decision-1 and flags high-confidence primitive drift",
+  "evaluateDecisionCheckpoint uses typed classifier catalog and surfaces explicit judge errors",
   async (t) => {
     const repo = initGitRepo(t);
     const baseline = captureRepoSnapshot(repo);
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "const customCache = new Map();\n");
     const snap = captureRepoSnapshot(repo, baseline.head);
 
+    const geminiDecision = makeClassifierModel("google", "gemini-decision-1", 0.03);
+    const luna = makeClassifierModel("openai", "gpt-6-luna", 0.25);
     const chosenModels: string[] = [];
-    const fakeRegistry = {
-      getAvailableOfType: () =>
-        Promise.resolve([
-          { provider: "openai", id: "gpt-6-luna" },
-          { provider: "google", id: "gemini-decision-1" },
-        ]),
-      classify: (model: { provider: string; id: string }) => {
+    const fakeRegistry: JudgeModelRegistry = {
+      getAvailableOfType: () => Promise.resolve([luna, geminiDecision]),
+      getModelOfType: (_type, provider, id) =>
+        [luna, geminiDecision].find((m) => m.provider === provider && m.id === id),
+      classify: (model) => {
         chosenModels.push(`${model.provider}/${model.id}`);
         return Promise.resolve({
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
           stopReason: "stop",
+          timestamp: Date.now(),
           answers: {
-            scope_violation: { type: "bool", probability: 0.12 },
-            primitive_violation: { type: "bool", probability: 0.91 },
+            verdict: {
+              type: "choice",
+              choice: "primitive_violation",
+              probabilities: {
+                compliant: 0.05,
+                scope_violation: 0.04,
+                primitive_violation: 0.91,
+              },
+              confidence: 0.91,
+            },
           },
         });
       },
@@ -184,6 +251,142 @@ nodeTest(
     assert.ok(hit !== undefined);
     assert.equal(hit.kind, "primitive_violation");
     assert.match(hit.summary, /gemini-decision-1/u);
+
+    const failingRegistry: JudgeModelRegistry = {
+      ...fakeRegistry,
+      classify: (model) =>
+        Promise.resolve({
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          stopReason: "error",
+          errorMessage: "invalid API key",
+          timestamp: Date.now(),
+          answers: {},
+        }),
+    };
+    await assert.rejects(
+      () =>
+        evaluateDecisionCheckpoint({
+          modelRegistry: failingRegistry,
+          judgeSpec: "google/gemini-decision-1",
+          prompt: "Implement tag queries",
+          contract: { scope: ["src"], verification: ["npm test"] },
+          changedFiles: ["src/allowed.ts"],
+          snapshot: snap,
+          signal: undefined,
+        }),
+      /invalid API key/u,
+    );
+  },
+);
+
+nodeTest(
+  "attachOverseerSentinel primes baseline before turn 1 and re-judges unfixed steered drift on settle",
+  async (t) => {
+    const repo = initGitRepo(t);
+    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: repo, stdio: "ignore" });
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-sentinel-runs-"));
+    t.after(() => {
+      fs.rmSync(base, { recursive: true, force: true });
+    });
+
+    const parentSession = SessionManager.inMemory();
+    const owner = parentSession.getSessionId();
+    const launch = sampleLaunch(base, repo, owner);
+
+    const loader = new DefaultResourceLoader({
+      cwd: repo,
+      agentDir: getPiAgentDir(),
+      settingsManager: SettingsManager.inMemory(),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      extensionFactories: [
+        (pi: ExtensionAPI) => {
+          attachOverseerSentinel(pi, {
+            base,
+            activeLaunch: () => launch,
+            isStopping: () => false,
+          });
+        },
+      ],
+    });
+    await loader.reload();
+    const ext = loader.getExtensions().extensions[0];
+    assert.ok(ext !== undefined);
+
+    const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
+    let classifyCalls = 0;
+    const ctx = {
+      modelRegistry: {
+        getAvailableOfType: () => Promise.resolve([classifier]),
+        getModelOfType: () => classifier,
+        classify: () => {
+          classifyCalls += 1;
+          return Promise.resolve({
+            api: classifier.api,
+            provider: classifier.provider,
+            model: classifier.id,
+            stopReason: "stop",
+            timestamp: Date.now(),
+            answers: {
+              verdict: {
+                type: "choice",
+                choice: "primitive_violation",
+                probabilities: { compliant: 0.1, scope_violation: 0, primitive_violation: 0.9 },
+                confidence: 0.9,
+              },
+            },
+          });
+        },
+      },
+    };
+    const emit = async (name: string, event: Record<string, unknown>) => {
+      await Promise.all(
+        (ext.handlers.get(name) ?? []).map((handler) => handler({ type: name, ...event }, ctx)),
+      );
+    };
+
+    // Prime baseline BEFORE turn 1 edits anything.
+    await emit("before_agent_start", {});
+
+    // Turn 1 introduces >120 lines of primitive-violating diff inside src/allowed.ts.
+    const bigViolation = Array.from({ length: 130 }, (_, i) => `export const v${i} = ${i};`).join(
+      "\n",
+    );
+    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), `${bigViolation}\n`);
+
+    const turnPromise = emit("turn_end", {
+      toolResults: [{ toolName: "write", isError: false }],
+    });
+    // Wait until escalation.json appears, then steer (do NOT approve).
+    const escPath = path.join(runDirectory(base, launch.id), "escalation.json");
+    while (!fs.existsSync(escPath)) {
+      await delay(10);
+    }
+    const firstEsc = read(escPath, escalationSchema);
+    assert.ok(firstEsc !== undefined);
+    assert.equal(firstEsc.strikes, 1);
+    t.after(() => release(owner, `escalation:${firstEsc.id}`));
+    resolveActiveEscalation(base, launch, "steered");
+    await turnPromise;
+    assert.equal(classifyCalls, 1);
+
+    // Child tries to settle WITHOUT changing the drifted digest -> re-judged and caught!
+    const settlePromise = emit("agent_before_settle", { outcome: "completed", entries: [] });
+    while (!fs.existsSync(escPath)) {
+      await delay(10);
+    }
+    const secondEsc = read(escPath, escalationSchema);
+    assert.ok(secondEsc !== undefined);
+    assert.equal(secondEsc.strikes, 2);
+    t.after(() => release(owner, `escalation:${secondEsc.id}`));
+    resolveActiveEscalation(base, launch, "approved");
+    await settlePromise;
+    assert.equal(classifyCalls, 2);
   },
 );
 
