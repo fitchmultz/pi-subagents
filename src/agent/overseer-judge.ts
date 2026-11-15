@@ -17,6 +17,12 @@ import { isPathAllowedByScope } from "./overseer-scope.ts";
 const ESCALATION_EXCERPT_CHARS = 3000;
 // Product contract (docs/reference.md): 3 consecutive error turns trigger a loop escalation.
 export const CONSECUTIVE_ERROR_TURN_LIMIT = 3;
+const PREFERRED_AUTO_JUDGES = [
+  ["google", "gemini-decision-1"],
+  ["cloudflare-workers-ai", "@cf/cloudflare/clef"],
+  ["openai", "gpt-6-luna"],
+  ["cloudflare-workers-ai", "@cf/cloudflare/clef-flash"],
+] as const;
 
 export interface JudgeModelRegistry {
   readonly getAvailableOfType: (
@@ -250,17 +256,20 @@ function checkBranchViolation(
   baseline: RepoSnapshot,
   current: RepoSnapshot,
 ): string | undefined {
-  if (baseBranch === undefined || !current.isGit) {
+  if (
+    baseBranch === undefined ||
+    !current.isGit ||
+    baseline.head === undefined ||
+    current.head === undefined ||
+    current.head === baseline.head
+  ) {
     return undefined;
   }
-  if (
-    current.branch === baseBranch &&
-    baseline.head !== undefined &&
-    current.head !== baseline.head
-  ) {
+  if (current.branch === baseBranch) {
     return `Child committed directly onto base branch '${baseBranch}' instead of a task branch.`;
   }
-  if (current.head !== undefined && !isAncestor(cwd, baseBranch, "HEAD")) {
+  const baselineMergeBase = nonemptyTrimmed(runGit(cwd, ["merge-base", baseBranch, baseline.head]));
+  if (baselineMergeBase !== undefined && !isAncestor(cwd, baselineMergeBase, current.head)) {
     return `Current HEAD is not descended from expected baseBranch '${baseBranch}'.`;
   }
   return undefined;
@@ -332,7 +341,13 @@ async function selectClassifierModel(
     }
     return matched;
   }
-  return [...available].sort((left, right) => left.cost.input - right.cost.input)[0];
+  for (const [provider, id] of PREFERRED_AUTO_JUDGES) {
+    const found = available.find((model) => model.provider === provider && model.id === id);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return available[0];
 }
 
 function buildJudgeContext(options: {
@@ -400,14 +415,11 @@ function interpretVerdict(
   return undefined;
 }
 
-function unpackVerdictChoice(
-  result: ClassifierResult,
-  judgeSpec: string,
-): ClassifierChoiceAnswer | undefined {
+function unpackVerdictChoice(result: ClassifierResult): ClassifierChoiceAnswer | undefined {
   if (result.stopReason !== "stop") {
-    if (judgeSpec !== "auto" && result.stopReason === "error") {
+    if (result.stopReason === "error") {
       throw new Error(
-        `Overseer judge '${judgeSpec}' failed: ${result.errorMessage ?? "classifier error"}.`,
+        `Overseer judge '${result.provider}/${result.model}' failed: ${result.errorMessage ?? "classifier error"}.`,
       );
     }
     return undefined;
@@ -439,7 +451,7 @@ export async function evaluateDecisionCheckpoint(options: {
     buildJudgeContext({ classifier, ...options }),
     options.signal === undefined ? undefined : { signal: options.signal },
   );
-  const answer = unpackVerdictChoice(result, judgeSpec);
+  const answer = unpackVerdictChoice(result);
   return answer === undefined
     ? undefined
     : interpretVerdict(classifier, answer.choice, answer.confidence, options);

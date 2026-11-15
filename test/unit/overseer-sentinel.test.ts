@@ -152,6 +152,26 @@ nodeTest(
       undefined,
     );
 
+    // Advancing main after feat/work was cut does not wedge in-scope edits on feat/work.
+    execFileSync("git", ["checkout", "main"], { cwd: repo, stdio: "ignore" });
+    fs.writeFileSync(path.join(repo, "UPSTREAM.md"), "ahead on main\n");
+    execFileSync("git", ["add", "UPSTREAM.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "advance main"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["checkout", "feat/work"], { cwd: repo, stdio: "ignore" });
+    const divergedBase = captureRepoSnapshot(repo);
+    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 22;\n");
+    const divergedCurrent = captureRepoSnapshot(repo, divergedBase.head);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: repo,
+        contract,
+        baseline: divergedBase,
+        current: divergedCurrent,
+        consecutiveErrors: 0,
+      }),
+      undefined,
+    );
+
     const loopHit = checkDeterministicTripwires({
       cwd: repo,
       contract,
@@ -203,12 +223,13 @@ nodeTest(
     const snap = captureRepoSnapshot(repo, baseline.head);
 
     const geminiDecision = makeClassifierModel("google", "gemini-decision-1", 0.03);
+    const freeOpenRouter = makeClassifierModel("openrouter", "parallel/decisions-fast:free", 0);
     const luna = makeClassifierModel("openai", "gpt-6-luna", 0.25);
     const chosenModels: string[] = [];
     const fakeRegistry: JudgeModelRegistry = {
-      getAvailableOfType: () => Promise.resolve([luna, geminiDecision]),
+      getAvailableOfType: () => Promise.resolve([freeOpenRouter, luna, geminiDecision]),
       getModelOfType: (_type, provider, id) =>
-        [luna, geminiDecision].find((m) => m.provider === provider && m.id === id),
+        [freeOpenRouter, luna, geminiDecision].find((m) => m.provider === provider && m.id === id),
       classify: (model) => {
         chosenModels.push(`${model.provider}/${model.id}`);
         return Promise.resolve({
@@ -269,7 +290,7 @@ nodeTest(
       () =>
         evaluateDecisionCheckpoint({
           modelRegistry: failingRegistry,
-          judgeSpec: "google/gemini-decision-1",
+          judgeSpec: "auto",
           prompt: "Implement tag queries",
           contract: { scope: ["src"], verification: ["npm test"] },
           changedFiles: ["src/allowed.ts"],
