@@ -14,7 +14,6 @@ profile discovery, loader, role body, chain DSL, or nested delegation.
 delegate({
   prompt: "Complete assignment with constraints and expected output",
   name: "short-name",
-  thinking: "low",
 });
 ```
 
@@ -27,6 +26,9 @@ including prior tool results. A forked child still cannot delegate. Optional
 `cwd`, `model`, and `thinking` are explicit launch overrides; do not change global
 auth/model settings to implement an override. `thinking` accepts `off`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, or `max`. Omit it to inherit the parent's effort.
+When `/overseer` mode is active, omit both `model` and `thinking` unless the user
+explicitly requests a different worker or effort level (`google/gemini-4-hydrogen:xhigh`
+runs by default), and supply `contract`.
 Pi clamps the child's effort to its model capabilities without changing the parent.
 `model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
 exports it; a literal model ID wins before suffix parsing. Without that host API,
