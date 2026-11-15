@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.43 - 2026-11-15
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(overseer): default worker to inherit and simplify footer status (#448) ([ac34970](https://github.com/fitchmultz/pi-subagents/commit/ac34970d6bcf9c339df64654340d99ae3ee6c546))
+
+### What's Changed
+
+- feat(overseer): default worker to inherit and simplify footer status by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/448
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.42...v0.52.43
+
 ## 0.52.42 - 2026-11-15
 
 <!-- npm-release:unreleased:start -->
