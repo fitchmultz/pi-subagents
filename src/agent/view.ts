@@ -8,6 +8,7 @@ import {
   commandMetadataSchema,
   exitSchema,
   wakeFailureSchema,
+  type Escalation,
   type Launch,
   type Result,
   type Waiting,
@@ -16,7 +17,14 @@ import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
-import { runAdmission, runState, runStatus, runWaiting, type RunStatus } from "./run-state.ts";
+import {
+  runAdmission,
+  runEscalation,
+  runState,
+  runStatus,
+  runWaiting,
+  type RunStatus,
+} from "./run-state.ts";
 interface Guidance {
   id: string;
   runId: string;
@@ -48,6 +56,8 @@ interface RunSummary {
   result?: Pick<Result, "status" | "endedAt" | "error"> | undefined;
   /** A running run that stays open for its child's own unfinished background work. */
   waiting?: Waiting | undefined;
+  /** Active unresolved mid-run overseer escalation pausing this running child. */
+  escalation?: Escalation | undefined;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
   lastWakeFailure?: { at: number; reason: string } | undefined;
@@ -197,6 +207,7 @@ function metadata(
     completed: result !== undefined,
     result,
     waiting: runWaiting(base, launch, status),
+    escalation: runEscalation(base, launch, status),
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     lastWakeFailure: read(
@@ -299,6 +310,7 @@ function inventoryRow(run: RunSummary): string {
     run.model,
     run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
     ...(run.waiting ? [waitingMark(run.waiting)] : []),
+    ...(run.escalation ? [`[paused: ${run.escalation.kind} #${run.escalation.strikes}]`] : []),
     ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
   ].join(" ");
 }
@@ -361,6 +373,14 @@ function waitingLines(waiting: Waiting | undefined): string[] {
         ...waiting.work.map((item) => `  ${item.id}: ${JSON.stringify(item.description)}`),
       ];
 }
+function escalationLines(escalation: Escalation | undefined): string[] {
+  return escalation === undefined
+    ? []
+    : [
+        `Paused on overseer escalation #${escalation.strikes} (${escalation.kind}) since ${utc(escalation.at)}: ${escalation.summary}`,
+        `Changed files: ${escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)"}`,
+      ];
+}
 function resultText(details: RunView): string {
   const page = details.output;
   const suffix =
@@ -374,6 +394,7 @@ function resultText(details: RunView): string {
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     identityText(details),
     ...waitingLines(details.waiting),
+    ...escalationLines(details.escalation),
     receiptText(details),
     exitText(details),
     details.lastWakeFailure

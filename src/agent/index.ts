@@ -65,6 +65,7 @@ import { registerCompactMessages, renderCompactResult } from "../shared/compact-
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
 import { OverseerController } from "./overseer.ts";
+import { resolveActiveEscalation } from "./overseer-sentinel.ts";
 
 interface AttachmentBinding {
   readonly context: ExtensionContext;
@@ -371,6 +372,7 @@ class AgentRuntime {
     const claim = state.kind === "admitted" ? inspectActorClaim(this.base, launch) : undefined;
     if (continuationDecision(state, possiblyLive(claim)) === "guidance") {
       const command = enqueue(this.base, launch, { action: "steer", prompt: input.prompt });
+      resolveActiveEscalation(this.base, launch, "steered");
       return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",
         command,
@@ -438,7 +440,7 @@ class AgentRuntime {
     return this.continue(launch, input);
   }
   register(): void {
-    registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
+    registerCompactMessages(this.pi, ["agent-completion", "agent-escalation", "subagent-notify"]);
     if (!this.child) {
       this.overseer.register();
     }

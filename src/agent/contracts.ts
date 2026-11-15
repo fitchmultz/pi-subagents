@@ -24,6 +24,32 @@ export const overseerLaunchSchema = Type.Object({
   judge: Type.Optional(Type.String({ minLength: 1 })),
 });
 export type OverseerLaunch = Static<typeof overseerLaunchSchema>;
+export const escalationKindSchema = Type.Union([
+  Type.Literal("scope_violation"),
+  Type.Literal("branch_violation"),
+  Type.Literal("primitive_violation"),
+  Type.Literal("loop_violation"),
+]);
+export const escalationSchema = Type.Object({
+  id: Type.String(),
+  runId: Type.String(),
+  owner: Type.String(),
+  at: Type.Number(),
+  strikes: Type.Integer({ minimum: 1 }),
+  kind: escalationKindSchema,
+  summary: Type.String(),
+  changedFiles: Type.Array(Type.String()),
+  diffExcerpt: Type.String(),
+  diffDigest: Type.String(),
+});
+export type Escalation = Static<typeof escalationSchema>;
+export const escalationResolutionSchema = Type.Object({
+  escalationId: Type.String(),
+  verdict: Type.Union([Type.Literal("steered"), Type.Literal("approved"), Type.Literal("stopped")]),
+  diffDigest: Type.Optional(Type.String()),
+  at: Type.Number(),
+});
+export type EscalationResolution = Static<typeof escalationResolutionSchema>;
 export const launchSchema = Type.Object({
   version: Type.Literal(1),
   id: Type.String(),
