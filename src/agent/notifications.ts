@@ -1,11 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { completionReceipts } from "./receipts.ts";
+import { completionReceipts, escalationReceipts } from "./receipts.ts";
 import { readOutputPage } from "../shared/output-page.ts";
 import { journalStamp } from "../shared/native-journal.ts";
-import type { Launch, Result } from "./contracts.ts";
-import { launchAt, list, runDirectory } from "./storage.ts";
+import {
+  escalationResolutionSchema,
+  escalationSchema,
+  type Escalation,
+  type Launch,
+  type Result,
+} from "./contracts.ts";
+import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 
 function isStringSet(value: unknown): value is Set<string> {
@@ -120,6 +126,88 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     },
   };
 }
+
+function escalationNotice(launch: Launch, escalation: Escalation): Completion {
+  const label = launch.name === undefined ? launch.id : `${launch.id} (${launch.name})`;
+  const files = escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)";
+  const stopHint =
+    escalation.strikes >= 3
+      ? '3rd strike reached: prefer stopping this run (`agent_runs` action="stop") and re-scoping or taking over.'
+      : 'Steer (`agent_runs` action="continue" with corrective prompt) or stop (`action="stop"`).';
+  return {
+    owner: launch.owner,
+    id: `escalation:${escalation.id}`,
+    message: {
+      customType: "agent-escalation",
+      display: true,
+      content: [
+        `[Overseer escalation #${escalation.strikes} - ${escalation.kind}] Run ${label} paused in ${launch.cwd}.`,
+        `Reason: ${escalation.summary}`,
+        `Changed files: ${files}`,
+        escalation.diffExcerpt,
+        stopHint,
+      ]
+        .filter((line) => line.length > 0)
+        .join("\n"),
+      details: {
+        owner: launch.owner,
+        id: launch.id,
+        escalationId: escalation.id,
+        escalation,
+      },
+    },
+  };
+}
+
+function inspectRunEscalation(
+  base: string,
+  owner: string,
+  id: string,
+  awaited: Set<string>,
+): { launch: Launch; escalation: Escalation } | undefined {
+  const launch = launchAt(base, id, owner);
+  if (launch.overseer?.enabled !== true) {
+    return undefined;
+  }
+  const dir = runDirectory(base, id);
+  const escFile = path.join(dir, "escalation.json");
+  awaited.add(escFile);
+  const escalation = read(escFile, escalationSchema);
+  if (escalation === undefined) {
+    return undefined;
+  }
+  const resolution = read(path.join(dir, "escalation-resolution.json"), escalationResolutionSchema);
+  return resolution?.escalationId === escalation.id ? undefined : { launch, escalation };
+}
+
+function pendingEscalations(
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  options: { base: string; owner: string; unsettledIds: readonly string[]; awaited: Set<string> },
+): Completion[] {
+  const { base, owner, unsettledIds, awaited } = options;
+  if (unsettledIds.length === 0) {
+    return [];
+  }
+  let seen: ReadonlySet<string> | undefined;
+  const where = ctx.sessionManager.getSessionFile() === undefined ? "memory" : "file";
+  const notices: Completion[] = [];
+  for (const id of unsettledIds) {
+    const found = inspectRunEscalation(base, owner, id, awaited);
+    if (found === undefined) {
+      continue;
+    }
+    seen ??= escalationReceipts(ctx.sessionManager, owner);
+    const key = `escalation:${found.escalation.id}`;
+    const state = completionDelivery(owner, key, seen.has(found.escalation.id) ? where : undefined);
+    if (state.kind === "published") {
+      release(owner, key);
+    } else if (state.kind === "deliverable") {
+      notices.push(escalationNotice(found.launch, found.escalation));
+    }
+  }
+  return notices;
+}
+
 interface PendingJournal {
   readonly file: string;
   readonly stamp: string | undefined;
@@ -214,7 +302,12 @@ function completedRun({ base, owner, known, settled }: Scan, id: string): Comple
   }
   return { id, ...order, loaded };
 }
-function completed(base: string, owner: string, awaited: Set<string>): Completed[] {
+function completed(
+  base: string,
+  owner: string,
+  awaited: Set<string>,
+  unsettledIds: string[],
+): Completed[] {
   const key = JSON.stringify([base, owner]);
   const scan = {
     base,
@@ -226,6 +319,7 @@ function completed(base: string, owner: string, awaited: Set<string>): Completed
     const run = completedRun(scan, id);
     if (run === undefined) {
       awaited.add(path.join(runDirectory(base, id), "result.json"));
+      unsettledIds.push(id);
     } else if (run.loaded && accountingState(run.loaded.result).kind === "pending") {
       awaited.add(run.loaded.launch.sessionFile);
     }
@@ -248,10 +342,16 @@ export interface Reconciliation {
   /** Canonical files whose publication can change what this owner must deliver. */
   readonly awaited: ReadonlySet<string>;
 }
-export function notifications(ctx: ExtensionContext, base: string, owner: string): Reconciliation {
+export function notifications(
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  base: string,
+  owner: string,
+): Reconciliation {
   const notices: Completion[] = [];
   const awaited = new Set<string>();
-  const runs = completed(base, owner, awaited);
+  const unsettledIds: string[] = [];
+  const runs = completed(base, owner, awaited, unsettledIds);
+  notices.push(...pendingEscalations(ctx, { base, owner, unsettledIds, awaited }));
   const receipts = runs.length === 0 ? undefined : completionReceipts(ctx.sessionManager, owner);
   const where = ctx.sessionManager.getSessionFile() === undefined ? "memory" : "file";
   for (const run of runs) {

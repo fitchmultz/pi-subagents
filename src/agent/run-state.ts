@@ -1,9 +1,12 @@
 import * as path from "node:path";
 import {
   admissionSchema,
+  escalationResolutionSchema,
+  escalationSchema,
   resultSchema,
   successorSchema,
   waitingSchema,
+  type Escalation,
   type Launch,
   type Result,
   type Waiting,
@@ -81,4 +84,22 @@ export function runWaiting(base: string, launch: Launch, status: RunStatus): Wai
   return status === "running"
     ? read(path.join(runDirectory(base, launch.id), "waiting.json"), waitingSchema)
     : undefined;
+}
+
+/** Active unresolved mid-run overseer escalation pausing this running child, if any. */
+export function runEscalation(
+  base: string,
+  launch: Launch,
+  status: RunStatus,
+): Escalation | undefined {
+  if (status !== "running") {
+    return undefined;
+  }
+  const dir = runDirectory(base, launch.id);
+  const active = read(path.join(dir, "escalation.json"), escalationSchema);
+  if (active === undefined) {
+    return undefined;
+  }
+  const resolution = read(path.join(dir, "escalation-resolution.json"), escalationResolutionSchema);
+  return resolution?.escalationId === active.id ? undefined : active;
 }

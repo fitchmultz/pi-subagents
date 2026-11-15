@@ -290,3 +290,106 @@ export function formatContractSection(contract: DelegationContract): string {
   }
   return lines.join("\n");
 }
+
+export function safeRealpath(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+export function excludedRepoPrefixes(
+  topLevel: string,
+  paths: readonly string[] | undefined,
+): string[] {
+  if (paths === undefined || paths.length === 0) {
+    return [];
+  }
+  const top = safeRealpath(topLevel);
+  return paths.flatMap((raw) => {
+    const rel = path.relative(top, safeRealpath(raw));
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
+      ? [rel.split(path.sep).join("/")]
+      : [];
+  });
+}
+
+export function isExcludedRepoPath(rel: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((p) => rel === p || rel.startsWith(`${p}/`));
+}
+
+export function untrackedFilesPreview(top: string, files: readonly string[]): string {
+  const chunks: string[] = [];
+  let budget = 4000;
+  for (const rel of files) {
+    if (budget <= 0) {
+      break;
+    }
+    try {
+      const full = path.resolve(top, rel);
+      const st = fs.statSync(full);
+      if (st.isFile() && st.size <= 32768) {
+        const snippet = fs.readFileSync(full, "utf8").slice(0, Math.min(1200, budget));
+        chunks.push(`+++ new file: ${rel}\n${snippet}`);
+        budget -= snippet.length;
+      }
+    } catch {
+      // Ignore concurrent deletion.
+    }
+  }
+  return chunks.join("\n");
+}
+
+const isRenameOrCopy = (st: string): boolean =>
+  st[0] === "R" || st[0] === "C" || st[1] === "R" || st[1] === "C";
+
+function fileStamp(topLevel: string, relPath: string, code: string): string {
+  try {
+    const st = fs.lstatSync(path.resolve(topLevel, relPath));
+    return `${code}:${st.size}:${Math.trunc(st.mtimeMs)}`;
+  } catch {
+    return `${code}:missing`;
+  }
+}
+
+function setStamp(
+  stamps: Map<string, string>,
+  rel: string,
+  stamp: string,
+  excluded: readonly string[],
+): void {
+  if (rel.length > 0 && !isExcludedRepoPath(rel, excluded)) {
+    stamps.set(rel, stamp);
+  }
+}
+
+export function parsePorcelainZ(
+  top: string,
+  raw: string,
+  excluded: readonly string[],
+): Map<string, string> {
+  const stamps = new Map<string, string>();
+  const tokens = raw.split("\0");
+  for (let i = 0; i < tokens.length;) {
+    const entry = tokens[i] ?? "";
+    i += 1;
+    if (entry.length < 4) {
+      continue;
+    }
+    const st = entry.slice(0, 2);
+    setStamp(stamps, entry.slice(3), fileStamp(top, entry.slice(3), st), excluded);
+    if (isRenameOrCopy(st) && i < tokens.length) {
+      const orig = tokens[i] ?? "";
+      i += 1;
+      if (!stamps.has(orig)) {
+        setStamp(stamps, orig, `${st}:orig`, excluded);
+      }
+    }
+  }
+  return stamps;
+}
+
+export function shortBranchName(raw: string | undefined): string | undefined {
+  return raw?.replace(/^refs\/heads\//u, "").replace(/^(?:refs\/remotes\/)?origin\//u, "");
+}

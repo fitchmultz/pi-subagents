@@ -8,6 +8,7 @@ import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 const detailFields = new Set([
   "owner",
   "id",
+  "escalationId",
   "completed",
   "receivedResult",
   "completion",
@@ -58,9 +59,11 @@ interface ReceiptIndex {
   entries: UnknownRecord[];
   /** First completion receipt per owned run ID, built in the same LF pass. */
   completions: Map<string, string | undefined>;
+  /** Delivered mid-run escalation IDs for this owner, built in the same LF pass. */
+  escalations: Set<string>;
 }
 const indexes = new Map<string, ReceiptIndex>();
-type Prefix = Pick<ReceiptIndex, "end" | "entries" | "completions">;
+type Prefix = Pick<ReceiptIndex, "end" | "entries" | "completions" | "escalations">;
 
 function toolCompletion(message: unknown): unknown {
   return isRecord(message) &&
@@ -77,10 +80,17 @@ function completionDetails(entry: UnknownRecord): unknown {
   }
   return entry.type === "message" ? toolCompletion(entry.message) : undefined;
 }
-function addEntry(journal: Prefix, entry: UnknownRecord) {
-  const header = journal.entries.at(0);
-  const owner = header?.type === "session" ? header.id : undefined;
-  const details = typeof owner === "string" ? completionDetails(entry) : undefined;
+function recordEscalationReceipt(journal: Prefix, owner: string, entry: UnknownRecord): void {
+  if (entry.type !== "custom_message" || entry.customType !== "agent-escalation") {
+    return;
+  }
+  const details = entry.details;
+  if (isRecord(details) && details.owner === owner && typeof details.escalationId === "string") {
+    journal.escalations.add(details.escalationId);
+  }
+}
+function recordCompletionReceipt(journal: Prefix, owner: string, entry: UnknownRecord): void {
+  const details = completionDetails(entry);
   if (
     isRecord(details) &&
     details.owner === owner &&
@@ -90,12 +100,20 @@ function addEntry(journal: Prefix, entry: UnknownRecord) {
   ) {
     journal.completions.set(details.id, typeof entry.id === "string" ? entry.id : undefined);
   }
+}
+function addEntry(journal: Prefix, entry: UnknownRecord) {
+  const header = journal.entries.at(0);
+  const owner = header?.type === "session" ? header.id : undefined;
+  if (typeof owner === "string") {
+    recordEscalationReceipt(journal, owner, entry);
+    recordCompletionReceipt(journal, owner, entry);
+  }
   journal.entries.push(entry);
 }
 function prefix(stat: fs.BigIntStats, cached: ReceiptIndex | undefined): Prefix {
   return cached && nativeAppend(cached.stat, stat, cached.entries[0])
     ? cached
-    : { end: 0, entries: [], completions: new Map() };
+    : { end: 0, entries: [], completions: new Map(), escalations: new Set() };
 }
 function index(file: string, observed: fs.BigIntStats): ReceiptIndex {
   const cached = indexes.get(file);
@@ -167,7 +185,7 @@ function remembered(
   if (header?.id !== owner) {
     return;
   }
-  const journal: Prefix = { end: 0, entries: [], completions: new Map() };
+  const journal: Prefix = { end: 0, entries: [], completions: new Map(), escalations: new Set() };
   // Index the same record frames the physical journal scan accepts.
   for (const entry of [header, ...manager.getEntries()]) {
     if (isRecord(entry)) {
@@ -196,4 +214,14 @@ export function completionReceipts(
   const file = manager.getSessionFile();
   const journal = file === undefined ? remembered(manager, owner) : owned(file, owner);
   return journal?.completions ?? new Map<string, string>();
+}
+
+/** Delivered mid-run escalation IDs for `owner` from the native transcript. */
+export function escalationReceipts(
+  manager: ExtensionContext["sessionManager"],
+  owner: string,
+): ReadonlySet<string> {
+  const file = manager.getSessionFile();
+  const journal = file === undefined ? remembered(manager, owner) : owned(file, owner);
+  return journal?.escalations ?? new Set<string>();
 }

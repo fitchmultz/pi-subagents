@@ -403,6 +403,11 @@ class Actor {
         started = { pi, ctx };
       },
       tool: (event) => this.actor?.observation.tool(event),
+      sentinel: {
+        base: this.base,
+        activeLaunch: () => (this.work.kind === "running" ? this.work.launch : this.initial),
+        isStopping: () => this.stopping,
+      },
     });
     const runtime = await sdk.createAgentSessionRuntime(factory, {
       cwd: this.initial.cwd,
