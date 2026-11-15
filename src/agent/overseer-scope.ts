@@ -290,3 +290,53 @@ export function formatContractSection(contract: DelegationContract): string {
   }
   return lines.join("\n");
 }
+
+export function safeRealpath(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+export function excludedRepoPrefixes(
+  topLevel: string,
+  paths: readonly string[] | undefined,
+): string[] {
+  if (paths === undefined || paths.length === 0) {
+    return [];
+  }
+  const top = safeRealpath(topLevel);
+  return paths.flatMap((raw) => {
+    const rel = path.relative(top, safeRealpath(raw));
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
+      ? [rel.split(path.sep).join("/")]
+      : [];
+  });
+}
+
+export function isExcludedRepoPath(rel: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((p) => rel === p || rel.startsWith(`${p}/`));
+}
+
+export function untrackedFilesPreview(top: string, files: readonly string[]): string {
+  const chunks: string[] = [];
+  let budget = 4000;
+  for (const rel of files) {
+    if (budget <= 0) {
+      break;
+    }
+    try {
+      const full = path.resolve(top, rel);
+      const st = fs.statSync(full);
+      if (st.isFile() && st.size <= 32768) {
+        const snippet = fs.readFileSync(full, "utf8").slice(0, Math.min(1200, budget));
+        chunks.push(`+++ new file: ${rel}\n${snippet}`);
+        budget -= snippet.length;
+      }
+    } catch {
+      // Ignore concurrent deletion.
+    }
+  }
+  return chunks.join("\n");
+}

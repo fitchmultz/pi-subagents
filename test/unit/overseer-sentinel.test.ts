@@ -350,6 +350,82 @@ nodeTest(
       }),
       undefined,
     );
+
+    // Remote-only baseBranch (origin/main without refs/heads/main) reports sneaky base commit as
+    // branch_violation without diffing from the empty tree and inventing README.md scope drift.
+    const remoteOnly = initGitRepo(t);
+    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: remoteOnly, stdio: "ignore" });
+    const mainTip = execFileSync("git", ["rev-parse", "main"], {
+      cwd: remoteOnly,
+      encoding: "utf8",
+    }).trim();
+    execFileSync("git", ["update-ref", "refs/remotes/origin/main", mainTip], {
+      cwd: remoteOnly,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["branch", "-D", "main"], { cwd: remoteOnly, stdio: "ignore" });
+    const remoteBase = captureRepoSnapshot(remoteOnly, { baseBranch: "main" });
+    execFileSync("git", ["checkout", "-b", "main", "origin/main"], {
+      cwd: remoteOnly,
+      stdio: "ignore",
+    });
+    fs.writeFileSync(path.join(remoteOnly, "src", "sneak.ts"), "export const s = 1;\n");
+    execFileSync("git", ["add", "src/sneak.ts"], { cwd: remoteOnly, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "sneak on main"], { cwd: remoteOnly, stdio: "ignore" });
+    execFileSync("git", ["checkout", "feat/work"], { cwd: remoteOnly, stdio: "ignore" });
+    const remoteAfter = captureRepoSnapshot(remoteOnly, {
+      baselineHead: remoteBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.deepEqual(changedFilesSinceBaseline(remoteOnly, remoteBase, remoteAfter), [
+      "src/sneak.ts",
+    ]);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: remoteOnly,
+        contract,
+        baseline: remoteBase,
+        current: remoteAfter,
+        consecutiveErrors: 0,
+      })?.kind,
+      "branch_violation",
+    );
+
+    // Fast-forwarding local main from upstream (git fetch origin main:main) while on feat/work
+    // is NOT misattributed as child scope/branch drift, even if upstream touched README.md.
+    const upstream = initGitRepo(t);
+    execFileSync("git", ["branch", "feat/work"], { cwd: upstream, stdio: "ignore" });
+    const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-ff-clone-"));
+    t.after(() => fs.rmSync(cloneDir, { recursive: true, force: true }));
+    execFileSync("git", ["clone", upstream, cloneDir], { stdio: "ignore" });
+    execFileSync("git", ["checkout", "feat/work"], { cwd: cloneDir, stdio: "ignore" });
+    execFileSync("git", ["branch", "-f", "main", "origin/main"], {
+      cwd: cloneDir,
+      stdio: "ignore",
+    });
+    const ffBase = captureRepoSnapshot(cloneDir, { baseBranch: "main" });
+    execFileSync("git", ["checkout", "main"], { cwd: upstream, stdio: "ignore" });
+    fs.writeFileSync(path.join(upstream, "README.md"), "upstream readme update\n");
+    execFileSync("git", ["add", "README.md"], { cwd: upstream, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "upstream main"], { cwd: upstream, stdio: "ignore" });
+    execFileSync("git", ["fetch", "origin", "main:main"], { cwd: cloneDir, stdio: "ignore" });
+    const ffAfter = captureRepoSnapshot(cloneDir, {
+      baselineHead: ffBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.deepEqual(changedFilesSinceBaseline(cloneDir, ffBase, ffAfter), []);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: cloneDir,
+        contract,
+        baseline: ffBase,
+        current: ffAfter,
+        consecutiveErrors: 0,
+      }),
+      undefined,
+    );
   },
 );
 

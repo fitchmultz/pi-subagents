@@ -11,7 +11,13 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DelegationContract, Escalation } from "./contracts.ts";
-import { isPathAllowedByScope } from "./overseer-scope.ts";
+import {
+  excludedRepoPrefixes,
+  isExcludedRepoPath,
+  isPathAllowedByScope,
+  safeRealpath,
+  untrackedFilesPreview,
+} from "./overseer-scope.ts";
 
 const ESCALATION_EXCERPT_CHARS = 3000;
 export const CONSECUTIVE_ERROR_TURN_LIMIT = 3;
@@ -46,23 +52,33 @@ export interface RepoSnapshot {
   readonly topLevel: string | undefined;
   readonly head: string | undefined;
   readonly branch: string | undefined;
-  readonly localBaseHead: string | undefined;
   readonly resolvedBaseHead: string | undefined;
   readonly baseBranchUnborn: boolean;
+  readonly branchHeads: ReadonlyMap<string, string>;
   readonly fileStamps: ReadonlyMap<string, string>;
   readonly rawDiff: string;
   readonly diffExcerpt: string;
-  readonly diffLines: number;
   readonly digest: string;
 }
 
-export interface ViolationCandidate {
-  readonly kind: Escalation["kind"];
-  readonly summary: string;
-  readonly changedFiles: string[];
-  readonly diffExcerpt: string;
-  readonly diffDigest: string;
-}
+export type ViolationCandidate = Pick<
+  Escalation,
+  "kind" | "summary" | "changedFiles" | "diffExcerpt" | "diffDigest"
+>;
+
+const NON_GIT_SNAPSHOT: RepoSnapshot = {
+  isGit: false,
+  topLevel: undefined,
+  head: undefined,
+  branch: undefined,
+  resolvedBaseHead: undefined,
+  baseBranchUnborn: false,
+  branchHeads: new Map(),
+  fileStamps: new Map(),
+  rawDiff: "",
+  diffExcerpt: "",
+  digest: "non-git",
+};
 
 function runGit(cwd: string, args: readonly string[]): string | undefined {
   try {
@@ -70,7 +86,7 @@ function runGit(cwd: string, args: readonly string[]): string | undefined {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 4 * 1024 * 1024,
+      maxBuffer: 4194304,
     });
   } catch {
     return undefined;
@@ -82,30 +98,8 @@ function trimmed(value: string | undefined): string | undefined {
   return s !== undefined && s.length > 0 ? s : undefined;
 }
 
-function safeReal(target: string): string {
-  try {
-    return fs.realpathSync(target);
-  } catch {
-    return path.resolve(target);
-  }
-}
-
-function excludedPrefixes(topLevel: string, paths: readonly string[] | undefined): string[] {
-  if (paths === undefined || paths.length === 0) {
-    return [];
-  }
-  const top = safeReal(topLevel);
-  return paths.flatMap((raw) => {
-    const rel = path.relative(top, safeReal(raw));
-    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
-      ? [rel.split(path.sep).join("/")]
-      : [];
-  });
-}
-
-function isExcluded(relPath: string, prefixes: readonly string[]): boolean {
-  return prefixes.some((p) => relPath === p || relPath.startsWith(`${p}/`));
-}
+const isRenameOrCopy = (st: string): boolean =>
+  st[0] === "R" || st[0] === "C" || st[1] === "R" || st[1] === "C";
 
 function fileStamp(topLevel: string, relPath: string, code: string): string {
   try {
@@ -116,18 +110,14 @@ function fileStamp(topLevel: string, relPath: string, code: string): string {
   }
 }
 
-function isRenameOrCopy(st: string): boolean {
-  return st[0] === "R" || st[0] === "C" || st[1] === "R" || st[1] === "C";
-}
-
 function setStamp(
   stamps: Map<string, string>,
-  relPath: string,
+  rel: string,
   stamp: string,
   excluded: readonly string[],
 ): void {
-  if (relPath.length > 0 && !isExcluded(relPath, excluded)) {
-    stamps.set(relPath, stamp);
+  if (rel.length > 0 && !isExcludedRepoPath(rel, excluded)) {
+    stamps.set(rel, stamp);
   }
 }
 
@@ -157,55 +147,53 @@ function parsePorcelainZ(
   return stamps;
 }
 
-function untrackedPreview(top: string, files: readonly string[]): string {
-  const chunks: string[] = [];
-  let budget = 4000;
-  for (const rel of files) {
-    if (budget <= 0) {
-      break;
-    }
-    try {
-      const full = path.resolve(top, rel);
-      const st = fs.statSync(full);
-      if (st.isFile() && st.size <= 32768) {
-        const snippet = fs.readFileSync(full, "utf8").slice(0, Math.min(1200, budget));
-        chunks.push(`+++ new file: ${rel}\n${snippet}`);
-        budget -= snippet.length;
-      }
-    } catch {
-      // Ignore concurrent deletion.
-    }
-  }
-  return chunks.join("\n");
+const refCommit = (top: string, ref: string): string | undefined =>
+  trimmed(runGit(top, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]));
+
+function isSyncedWithRemote(top: string, branchName: string, sha: string | undefined): boolean {
+  const remote =
+    sha === undefined ? undefined : refCommit(top, `refs/remotes/origin/${branchName}`);
+  return (
+    remote !== undefined &&
+    sha !== undefined &&
+    runGit(top, ["merge-base", "--is-ancestor", sha, remote]) !== undefined
+  );
 }
 
-function refCommit(top: string, ref: string): string | undefined {
-  return trimmed(runGit(top, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]));
+const emptyTree = (top: string): string | undefined =>
+  trimmed(runGit(top, ["hash-object", "-t", "tree", "/dev/null"]));
+
+function localBranchHeads(top: string): Map<string, string> {
+  const raw =
+    runGit(top, ["for-each-ref", "--format=%(refname:short)%00%(objectname)", "refs/heads"]) ?? "";
+  const map = new Map<string, string>();
+  for (const line of raw.split("\n")) {
+    const nul = line.indexOf("\0");
+    if (nul > 0) {
+      map.set(line.slice(0, nul), line.slice(nul + 1).trim());
+    }
+  }
+  return map;
 }
 
 function baseState(
   top: string,
   baseBranch: string | undefined,
   head: string | undefined,
-): { local: string | undefined; resolved: string | undefined; unborn: boolean } {
+  branchHeads: ReadonlyMap<string, string>,
+): { resolved: string | undefined; unborn: boolean } {
   if (baseBranch === undefined) {
-    return { local: undefined, resolved: undefined, unborn: false };
+    return { resolved: undefined, unborn: false };
   }
-  const local = refCommit(top, `refs/heads/${baseBranch}`);
   const resolved =
-    local ?? refCommit(top, baseBranch) ?? refCommit(top, `refs/remotes/origin/${baseBranch}`);
-  return {
-    local,
-    resolved,
-    unborn:
-      resolved === undefined &&
-      head === undefined &&
-      trimmed(runGit(top, ["rev-list", "-n", "1", "--all"])) === undefined,
-  };
-}
-
-function emptyTree(top: string): string | undefined {
-  return trimmed(runGit(top, ["hash-object", "-t", "tree", "/dev/null"]));
+    branchHeads.get(baseBranch) ??
+    refCommit(top, baseBranch) ??
+    refCommit(top, `refs/remotes/origin/${baseBranch}`);
+  const unborn =
+    resolved === undefined &&
+    head === undefined &&
+    trimmed(runGit(top, ["rev-list", "-n", "1", "--all"])) === undefined;
+  return { resolved, unborn };
 }
 
 function trackedDiff(top: string, head: string | undefined, opts: SnapshotOptions): string {
@@ -226,34 +214,22 @@ export function captureRepoSnapshot(cwd: string, options?: string | SnapshotOpti
   const statusRaw =
     top === undefined ? undefined : runGit(top, ["status", "--porcelain=v1", "-z", "-uall"]);
   if (top === undefined || statusRaw === undefined) {
-    return {
-      isGit: false,
-      topLevel: undefined,
-      head: undefined,
-      branch: undefined,
-      localBaseHead: undefined,
-      resolvedBaseHead: undefined,
-      baseBranchUnborn: false,
-      fileStamps: new Map(),
-      rawDiff: "",
-      diffExcerpt: "",
-      diffLines: 0,
-      digest: "non-git",
-    };
+    return NON_GIT_SNAPSHOT;
   }
   const head = trimmed(runGit(top, ["rev-parse", "--verify", "HEAD"]));
   const branch = trimmed(runGit(top, ["symbolic-ref", "--quiet", "--short", "HEAD"]));
-  const bs = baseState(top, opts.baseBranch, head);
-  const fileStamps = parsePorcelainZ(top, statusRaw, excludedPrefixes(top, opts.excludePaths));
+  const branchHeads = localBranchHeads(top);
+  const bs = baseState(top, opts.baseBranch, head, branchHeads);
+  const fileStamps = parsePorcelainZ(top, statusRaw, excludedRepoPrefixes(top, opts.excludePaths));
   const untracked = [...fileStamps.entries()]
     .filter(([, c]) => c.startsWith("??:"))
     .map(([f]) => f);
-  const rawDiff = [trackedDiff(top, head, opts), untrackedPreview(top, untracked)]
+  const rawDiff = [trackedDiff(top, head, opts), untrackedFilesPreview(top, untracked)]
     .filter(Boolean)
     .join("\n");
   const digest = createHash("sha256")
     .update(
-      `${head ?? ""}\0${bs.local ?? ""}\0${JSON.stringify([...fileStamps.entries()])}\0${rawDiff}`,
+      `${head ?? ""}\0${JSON.stringify([...branchHeads.entries()])}\0${JSON.stringify([...fileStamps.entries()])}\0${rawDiff}`,
     )
     .digest("hex");
   return {
@@ -261,13 +237,12 @@ export function captureRepoSnapshot(cwd: string, options?: string | SnapshotOpti
     topLevel: top,
     head,
     branch,
-    localBaseHead: bs.local,
     resolvedBaseHead: bs.resolved,
     baseBranchUnborn: bs.unborn,
+    branchHeads,
     fileStamps,
     rawDiff,
     diffExcerpt: rawDiff.slice(0, ESCALATION_EXCERPT_CHARS),
-    diffLines: rawDiff === "" ? 0 : rawDiff.split("\n").length,
     digest,
   };
 }
@@ -285,6 +260,25 @@ function committedBetween(top: string, from: string | undefined, to: string | un
     .filter(Boolean);
 }
 
+function addBranchRefChanges(
+  top: string,
+  baseline: RepoSnapshot,
+  current: RepoSnapshot,
+  add: (items: Iterable<string>) => void,
+): void {
+  const anchor = baseline.head ?? baseline.resolvedBaseHead;
+  for (const [name, tip] of current.branchHeads) {
+    const prev = baseline.branchHeads.get(name);
+    if (prev === tip || isSyncedWithRemote(top, name, tip)) {
+      continue;
+    }
+    const from =
+      prev ??
+      (anchor === undefined ? undefined : trimmed(runGit(top, ["merge-base", anchor, tip])));
+    add(committedBetween(top, from, tip));
+  }
+}
+
 /** Files modified, added, or deleted relative to `baseline`, formatted relative to `cwd`. */
 export function changedFilesSinceBaseline(
   cwd: string,
@@ -296,11 +290,11 @@ export function changedFilesSinceBaseline(
   if (!current.isGit || top === undefined) {
     return [];
   }
-  const excluded = excludedPrefixes(top, excludePaths);
+  const excluded = excludedRepoPrefixes(top, excludePaths);
   const paths = new Set<string>();
   const add = (items: Iterable<string>): void => {
     for (const f of items) {
-      if (!isExcluded(f, excluded)) {
+      if (!isExcludedRepoPath(f, excluded)) {
         paths.add(f);
       }
     }
@@ -311,11 +305,9 @@ export function changedFilesSinceBaseline(
       .map(([f]) => f),
   );
   add(committedBetween(top, baseline.head, current.head));
-  if (current.localBaseHead !== baseline.localBaseHead) {
-    add(committedBetween(top, baseline.localBaseHead, current.localBaseHead));
-  }
-  const realCwd = safeReal(cwd);
-  const realTop = safeReal(top);
+  addBranchRefChanges(top, baseline, current, add);
+  const realCwd = safeRealpath(cwd);
+  const realTop = safeRealpath(top);
   return [...paths]
     .map((rel) => {
       const out = path.relative(realCwd, path.resolve(realTop, rel));
@@ -354,10 +346,11 @@ function branchViolation(
   if (baseBranch === undefined || !current.isGit || current.topLevel === undefined) {
     return undefined;
   }
-  if (
-    current.localBaseHead !== baseline.localBaseHead ||
-    (current.branch === baseBranch && current.head !== baseline.head)
-  ) {
+  const localBase = current.branchHeads.get(baseBranch);
+  const localBaseMutated =
+    localBase !== baseline.branchHeads.get(baseBranch) &&
+    !isSyncedWithRemote(current.topLevel, baseBranch, localBase);
+  if (localBaseMutated) {
     return `Child committed directly onto base branch '${baseBranch}' instead of a task branch.`;
   }
   if (current.resolvedBaseHead === undefined && !baseline.baseBranchUnborn) {
@@ -401,7 +394,9 @@ export function checkDeterministicTripwires(options: {
   const branchIssue =
     changedFiles.length > 0 ||
     current.head !== baseline.head ||
-    current.localBaseHead !== baseline.localBaseHead
+    (contract.baseBranch !== undefined &&
+      current.branchHeads.get(contract.baseBranch) !==
+        baseline.branchHeads.get(contract.baseBranch))
       ? branchViolation(contract.baseBranch, baseline, current)
       : undefined;
   return branchIssue === undefined ? undefined : hit("branch_violation", branchIssue);
@@ -414,8 +409,7 @@ async function selectClassifier(
   const available = await registry.getAvailableOfType("classifier");
   if (spec !== "auto") {
     const slash = spec.indexOf("/");
-    const provider = slash > 0 ? spec.slice(0, slash) : "";
-    const id = slash > 0 ? spec.slice(slash + 1) : spec;
+    const [provider, id] = slash > 0 ? [spec.slice(0, slash), spec.slice(slash + 1)] : ["", spec];
     const matched =
       available.find((m) => m.provider === provider && m.id === id) ??
       registry.getModelOfType("classifier", provider, id);
@@ -471,16 +465,14 @@ function buildJudgeContext(options: {
 }
 
 function unpackChoice(result: ClassifierResult): ClassifierChoiceAnswer | undefined {
-  if (result.stopReason !== "stop") {
-    if (result.stopReason === "error") {
-      throw new Error(
-        `Overseer judge '${result.provider}/${result.model}' failed: ${result.errorMessage ?? "classifier error"}.`,
-      );
-    }
-    return undefined;
+  if (result.stopReason === "error") {
+    throw new Error(
+      `Overseer judge '${result.provider}/${result.model}' failed: ${result.errorMessage ?? "classifier error"}.`,
+    );
   }
-  const ans = result.answers.verdict;
-  return ans?.type === "choice" ? ans : undefined;
+  return result.stopReason === "stop" && result.answers.verdict?.type === "choice"
+    ? result.answers.verdict
+    : undefined;
 }
 
 function interpretChoice(

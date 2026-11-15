@@ -154,6 +154,10 @@ export async function waitForEscalationResolution(options: {
   }
 }
 
+function diffLineCount(snapshot: RepoSnapshot): number {
+  return snapshot.rawDiff === "" ? 0 : snapshot.rawDiff.split("\n").length;
+}
+
 function shouldRunJudgeCheckpoint(
   state: RunSentinelState,
   snapshot: RepoSnapshot,
@@ -167,7 +171,7 @@ function shouldRunJudgeCheckpoint(
   }
   return (
     state.mutatingTurnsSinceJudge >= JUDGE_TURN_INTERVAL ||
-    Math.abs(snapshot.diffLines - state.lastJudgedLines) >= JUDGE_DIFF_LINE_DELTA
+    Math.abs(diffLineCount(snapshot) - state.lastJudgedLines) >= JUDGE_DIFF_LINE_DELTA
   );
 }
 
@@ -274,7 +278,7 @@ class SentinelRunner {
       consecutiveErrors: 0,
       mutatingTurnsSinceJudge: 0,
       lastJudgedDigest: baseline.digest,
-      lastJudgedLines: baseline.diffLines,
+      lastJudgedLines: diffLineCount(baseline),
       strikes: 0,
       approvedDigests: new Set(),
     };
@@ -353,7 +357,7 @@ class SentinelRunner {
     const judgeHit = await runSafeJudgeCheckpoint(launch, ctx, snapshot, changedFiles);
     if (judgeHit === undefined) {
       current.lastJudgedDigest = snapshot.digest;
-      current.lastJudgedLines = snapshot.diffLines;
+      current.lastJudgedLines = diffLineCount(snapshot);
       return undefined;
     }
     if (!this.options.isStopping()) {
