@@ -1,0 +1,299 @@
+import "../support/isolated-home.ts";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test as nodeTest, type TestContext } from "node:test";
+import {
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import agents from "../../src/agent/index.ts";
+import { launchSchema } from "../../src/agent/contracts.ts";
+import { DEFAULT_OVERSEER_WORKER, OVERSEER_ENTRY_TYPE } from "../../src/agent/overseer.ts";
+import {
+  checkToolCallScope,
+  formatContractSection,
+  isPathAllowedByScope,
+  normalizeDelegationContract,
+} from "../../src/agent/overseer-scope.ts";
+import { prepareLaunch } from "../../src/agent/launch.ts";
+import { read } from "../../src/agent/storage.ts";
+import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
+
+interface BranchEntry {
+  readonly type: "custom";
+  readonly customType: string;
+  readonly data: unknown;
+}
+
+async function createHarness(t: TestContext, sessionId: string) {
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: getPiAgentDir(),
+    settingsManager: SettingsManager.inMemory(),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    extensionFactories: [agents],
+  });
+  await loader.reload();
+  const loaded = loader.getExtensions();
+  assert.deepEqual(loaded.errors, []);
+  const extension = loaded.extensions.at(0);
+  assert.ok(extension !== undefined);
+
+  let branch: BranchEntry[] = [];
+  loaded.runtime.appendEntry = (customType: string, data: unknown) => {
+    branch = [...branch, { type: "custom", customType, data }];
+  };
+  loaded.runtime.getSettings = () => ({});
+  const notices: Array<{ message: string; level: string }> = [];
+  const statuses = new Map<string, string | undefined>();
+  const ctx = {
+    mode: "interactive",
+    hasUI: true,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    ui: {
+      notify: (message: string, level: string) => {
+        notices.push({ message, level });
+      },
+      setStatus: (key: string, text: string | undefined) => {
+        statuses.set(key, text);
+      },
+      theme: {
+        fg: (_color: string, text: string) => text,
+      },
+    },
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getSessionFile: () => path.join(getPiAgentDir(), `${sessionId}.jsonl`),
+      getBranch: () => branch,
+      appendCustomEntry: (customType: string, data: unknown) => {
+        branch = [...branch, { type: "custom", customType, data }];
+      },
+    },
+  };
+
+  const emit = async (name: string, event: Record<string, unknown>) => {
+    await Promise.all(
+      (extension.handlers.get(name) ?? []).map((handler) => handler({ type: name, ...event }, ctx)),
+    );
+  };
+
+  let open = false;
+  t.after(async () => {
+    if (open) {
+      await emit("session_shutdown", { reason: "quit", disposition: "release" });
+    }
+  });
+
+  return {
+    extension,
+    ctx,
+    notices,
+    statuses,
+    getBranch: () => branch,
+    setBranch: (next: BranchEntry[]) => {
+      branch = next;
+    },
+    start: () => {
+      open = true;
+      return emit("session_start", { reason: "startup" });
+    },
+    tree: () => emit("session_tree", {}),
+    beforeAgentStart: async () => {
+      const sections: Record<string, string> = {};
+      await emit("before_agent_start", { systemPromptOptions: { sections } });
+      return sections;
+    },
+    runCommand: async (name: string, args = "") => {
+      const cmd = extension.commands.get(name);
+      assert.ok(cmd !== undefined, `missing command /${name}`);
+      await Reflect.apply(cmd.handler, cmd, [args, ctx]);
+    },
+  };
+}
+
+nodeTest(
+  "overseer mode stays inert when off and persists branch-scoped toggle, worker, and judge state",
+  async (t) => {
+    const harness = await createHarness(t, "overseer-branch");
+    await harness.start();
+
+    assert.equal(harness.statuses.get("overseer"), undefined);
+    assert.deepEqual(await harness.beforeAgentStart(), {});
+
+    await harness.runCommand("overseer", "on");
+    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen");
+    const activeSections = await harness.beforeAgentStart();
+    assert.match(activeSections.overseer ?? "", /Overseer mode is active/u);
+
+    const savedOnBranch = [...harness.getBranch()];
+    assert.equal(savedOnBranch.at(-1)?.customType, OVERSEER_ENTRY_TYPE);
+
+    await harness.runCommand("overseer-worker", "openai/gpt-6-sol:medium");
+    assert.equal(harness.statuses.get("overseer"), "overseer: gpt-6-sol");
+    await harness.runCommand("overseer-judge", "google/gemini-decision-1");
+
+    // Rewinding the session tree to before /overseer on restores the off state.
+    harness.setBranch([]);
+    await harness.tree();
+    assert.equal(harness.statuses.get("overseer"), undefined);
+    assert.deepEqual(await harness.beforeAgentStart(), {});
+
+    // Returning to the saved branch restores the enabled overseer state.
+    harness.setBranch(savedOnBranch);
+    await harness.tree();
+    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen");
+  },
+);
+
+nodeTest(
+  "normalizeDelegationContract enforces verification on mutating scopes and allows read-only scope: []",
+  () => {
+    const readOnly = normalizeDelegationContract({ scope: [] });
+    assert.deepEqual(readOnly, { scope: [] });
+
+    assert.throws(
+      () => normalizeDelegationContract({ scope: ["src/agent"] }),
+      /requires at least one verification check/u,
+    );
+    assert.throws(
+      () => normalizeDelegationContract({ scope: ["../escape"], verification: ["npm test"] }),
+      /without '\.\.' traversal/u,
+    );
+
+    const normalized = normalizeDelegationContract({
+      scope: ["./src/agent/", "test/unit/overseer-contract.test.ts"],
+      verification: [" npm run test:unit "],
+      baseBranch: " main ",
+      requiredPrimitives: [" DatabaseSync.createTagStore() "],
+      nonGoals: [" Do not add custom statement caches "],
+    });
+    assert.deepEqual(normalized, {
+      scope: ["src/agent", "test/unit/overseer-contract.test.ts"],
+      verification: ["npm run test:unit"],
+      baseBranch: "main",
+      requiredPrimitives: ["DatabaseSync.createTagStore()"],
+      nonGoals: ["Do not add custom statement caches"],
+    });
+    assert.match(formatContractSection(normalized), /DatabaseSync\.createTagStore\(\)/u);
+  },
+);
+
+nodeTest(
+  "checkToolCallScope blocks read-only edits and out-of-scope file mutations across edit tools",
+  () => {
+    const cwd = "/repo/worktree";
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/index.ts", []), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/index.ts", ["src/agent"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/agent-extra/index.ts", ["src/agent"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "../outside.ts", ["*"]), false);
+
+    assert.match(
+      checkToolCallScope(cwd, [], "edit", { path: "src/agent/index.ts" }) ?? "",
+      /Read-only delegation contract/u,
+    );
+    assert.equal(
+      checkToolCallScope(cwd, ["src/agent"], "write_files", {
+        files: [{ path: "src/agent/overseer.ts" }],
+      }),
+      undefined,
+    );
+    assert.match(
+      checkToolCallScope(cwd, ["src/agent"], "apply_patch", {
+        input:
+          "*** Begin Patch\n*** Update File: src/agent/overseer.ts\n*** Add File: README.md\n*** End Patch",
+      }) ?? "",
+      /blocks editing README\.md/u,
+    );
+  },
+);
+
+nodeTest(
+  "prepareLaunch resolves overseer default worker with thinking suffix and persists contract",
+  async (t) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-launch-"));
+    t.after(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const makeModel = (id: string, name: string): Model<Api> => ({
+      id,
+      name,
+      api: "google-generative-ai",
+      provider: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 16384,
+    });
+    const hydrogen = makeModel("gemini-4-hydrogen", "Gemini 4 Hydrogen");
+    const carbon = makeModel("gemini-4-carbon", "Gemini 4 Carbon");
+    const models = [hydrogen, carbon];
+    const parentSession = SessionManager.create(tempDir, tempDir);
+    const context = {
+      cwd: tempDir,
+      isProjectTrusted: () => true,
+      model: carbon,
+      modelRegistry: {
+        find: (provider: string, id: string) =>
+          models.find((entry) => entry.provider === provider && entry.id === id),
+        getAll: () => models,
+      },
+      sessionManager: parentSession,
+    };
+    const contract = normalizeDelegationContract({
+      scope: ["src/db.ts"],
+      verification: ["npm test"],
+      requiredPrimitives: ["DatabaseSync.createTagStore()"],
+    });
+    const base = path.join(tempDir, "runs");
+    fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+    const launch = await prepareLaunch({
+      input: { prompt: "Implement tag store query" },
+      context,
+      base,
+      owner: "parent-session",
+      agentDir: getPiAgentDir(),
+      thinking: "medium",
+      executionCwd: tempDir,
+      defaultModel: DEFAULT_OVERSEER_WORKER,
+      contract,
+      overseer: { enabled: true, judge: "auto" },
+    });
+    assert.equal(launch.provider, "google");
+    assert.equal(launch.model, "gemini-4-hydrogen");
+    assert.equal(launch.thinking, "high");
+    assert.deepEqual(launch.overseer, { enabled: true, judge: "auto" });
+    assert.deepEqual(launch.contract?.scope, ["src/db.ts"]);
+    assert.deepEqual(
+      read(path.join(base, launch.id, "launch.json"), launchSchema)?.contract,
+      contract,
+    );
+
+    // Explicit per-call thinking overrides the default worker's :high suffix without conflict.
+    const overridden = await prepareLaunch({
+      input: { prompt: "Quick tweak", thinking: "low" },
+      context,
+      base,
+      owner: "parent-session",
+      agentDir: getPiAgentDir(),
+      thinking: "medium",
+      executionCwd: tempDir,
+      defaultModel: DEFAULT_OVERSEER_WORKER,
+      contract,
+      overseer: { enabled: true, judge: "auto" },
+    });
+    assert.equal(overridden.model, "gemini-4-hydrogen");
+    assert.equal(overridden.thinking, "low");
+  },
+);

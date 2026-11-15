@@ -11,22 +11,50 @@ import { shellCommand } from "./process.ts";
 import { localCwdOwner } from "./cwd.ts";
 import type { ToolEvent } from "./observation-state.ts";
 import { backgroundCommands } from "./background-work.ts";
+import { checkToolCallScope, formatContractSection } from "./overseer-scope.ts";
 import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
-function guard(pi: ExtensionAPI, directory: string, token: string): void {
+function rewriteLocalBash(
+  pi: ExtensionAPI,
+  event: { readonly toolName: string; readonly input: Record<string, unknown> },
+  directory: string,
+  token: string,
+): void {
+  if (event.toolName !== "bash" || typeof event.input.command !== "string") {
+    return;
+  }
+  const owner = pi.getAllTools().find((tool) => tool.name === "bash")?.sourceInfo;
+  if (owner && (owner.source === "builtin" || localCwdOwner(owner))) {
+    // Preserve the selected local owner's cwd/env and leave remote/custom tools alone.
+    const input = event.input;
+    input.command = shellCommand(event.input.command, directory, token);
+  }
+}
+
+function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: string): void {
+  if (launch.contract !== undefined) {
+    const section = formatContractSection(launch.contract);
+    pi.on("before_agent_start", (event) => {
+      const { sections } = event.systemPromptOptions;
+      sections.delegation_contract = section;
+    });
+  }
   pi.on("tool_call", (event) => {
     if (event.toolName === "delegate" || event.toolName === "agent_runs") {
       return { block: true, reason: "Only a main session may delegate or control children." };
     }
-    if (event.toolName !== "bash" || typeof event.input.command !== "string") {
-      return;
+    if (launch.contract !== undefined) {
+      const scopeViolation = checkToolCallScope(
+        launch.cwd,
+        launch.contract.scope,
+        event.toolName,
+        event.input,
+      );
+      if (scopeViolation !== undefined) {
+        return { block: true, reason: scopeViolation };
+      }
     }
-    const owner = pi.getAllTools().find((tool) => tool.name === "bash")?.sourceInfo;
-    if (owner && (owner.source === "builtin" || localCwdOwner(owner))) {
-      // Preserve the selected local owner's cwd/env and leave remote/custom tools alone.
-      const input = event.input;
-      input.command = shellCommand(event.input.command, directory, token);
-    }
+    rewriteLocalBash(pi, event, directory, token);
     return;
   });
 }
@@ -100,7 +128,7 @@ export function childRuntime(
           { name: "mcp", builtin: true, factory: sdk.createMcpExtension() },
           ...(jobs ? [{ name: "background-command", builtin: true, factory: jobs }] : []),
           (pi) => {
-            guard(pi, hooks.directory, hooks.token);
+            guard(pi, launch, hooks.directory, hooks.token);
             pi.on("session_start", (_event, ctx) => {
               hooks.started(pi, ctx);
             });

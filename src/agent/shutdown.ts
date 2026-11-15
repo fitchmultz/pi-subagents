@@ -1,8 +1,40 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { ProcessIdentity } from "./contracts.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Launch, ProcessIdentity } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { alive, requestStop, signalProcess } from "./process.ts";
 import { launchAt, list } from "./storage.ts";
+import { renderReceipt } from "./view.ts";
+
+export function stopRun(
+  base: string,
+  launch: Launch,
+  ctx: ExtensionContext | undefined,
+  report: (message: string) => void,
+): ReturnType<typeof renderReceipt> {
+  const { targets: live, command: id } = requestStop(base, launch);
+  if (live.length === 0) {
+    return renderReceipt(base, launch, ctx, {
+      stopAcknowledged: false,
+      note: "No matching live actor or owned shell; process exit code remains unknown.",
+    });
+  }
+  const escalation = setTimeout(() => {
+    try {
+      for (const target of live) {
+        signalProcess(target, "SIGKILL");
+      }
+    } catch (error) {
+      report(`Agent stop escalation ${launch.id}: ${errorText(error)}`);
+    }
+  }, 3000);
+  escalation.unref();
+  return renderReceipt(base, launch, ctx, {
+    stopRequest: id,
+    stopAcknowledged: false,
+    note: "Stop requested; neither native admission nor process exit is implied.",
+  });
+}
 
 export async function stopChildren(
   base: string,
