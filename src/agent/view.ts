@@ -10,12 +10,14 @@ import {
   wakeFailureSchema,
   type Escalation,
   type Launch,
+  type OverseerReview,
   type Result,
   type Waiting,
 } from "./contracts.ts";
 import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
+import { needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
   runAdmission,
@@ -58,6 +60,8 @@ interface RunSummary {
   waiting?: Waiting | undefined;
   /** Active unresolved mid-run overseer escalation pausing this running child. */
   escalation?: Escalation | undefined;
+  review?: OverseerReview | undefined;
+  reviewRequired: boolean;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
   lastWakeFailure?: { at: number; reason: string } | undefined;
@@ -74,6 +78,7 @@ type Receipt =
   | { readonly receipt: "launch"; readonly note: string }
   | { readonly receipt: "continuation" | "existing-successor" }
   | { readonly receipt: "guidance"; readonly command: string; readonly note: string }
+  | { readonly receipt: "review"; readonly review: OverseerReview; readonly note: string }
   | {
       readonly stopRequest?: string | undefined;
       readonly stopAcknowledged: false;
@@ -99,6 +104,7 @@ function receiptResult(result: Result | undefined) {
     status: result.status,
     endedAt: result.endedAt,
     error: result.error,
+    ...(result.changedFiles !== undefined ? { changedFiles: result.changedFiles } : {}),
     ...accounting,
   };
 }
@@ -208,6 +214,8 @@ function metadata(
     result,
     waiting: runWaiting(base, launch, status),
     escalation: runEscalation(base, launch, status),
+    review: readReview(base, launch.id),
+    reviewRequired: needsOverseerReview(base, launch, result),
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     lastWakeFailure: read(
@@ -311,6 +319,7 @@ function inventoryRow(run: RunSummary): string {
     run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
     ...(run.waiting ? [waitingMark(run.waiting)] : []),
     ...(run.escalation ? [`[paused: ${run.escalation.kind} #${run.escalation.strikes}]`] : []),
+    ...(run.reviewRequired ? ["[review required]"] : []),
     ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
   ].join(" ");
 }
@@ -381,6 +390,12 @@ function escalationLines(escalation: Escalation | undefined): string[] {
         `Changed files: ${escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)"}`,
       ];
 }
+function reviewLine(details: RunView): string {
+  if (details.review !== undefined) {
+    return `Overseer review: ${details.review.verdict} at ${utc(details.review.at)} - ${details.review.summary}`;
+  }
+  return details.reviewRequired ? "Overseer review: required before parent settles." : "";
+}
 function resultText(details: RunView): string {
   const page = details.output;
   const suffix =
@@ -395,6 +410,7 @@ function resultText(details: RunView): string {
     identityText(details),
     ...waitingLines(details.waiting),
     ...escalationLines(details.escalation),
+    reviewLine(details),
     receiptText(details),
     exitText(details),
     details.lastWakeFailure

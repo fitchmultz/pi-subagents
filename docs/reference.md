@@ -87,6 +87,7 @@ parent's effort has changed.
 | `inspect`  | Read one run's result and process/publication facts without waiting or interrupting. |
 | `continue` | Supply a complete follow-up prompt using the saved child conversation.               |
 | `stop`     | Request termination; inspect the actual process outcome afterward.                   |
+| `review`   | Record overseer `approved` or `changes_requested` verdict (unpausing or steering).   |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
 infer them from display names. `list` returns at most 50 runs per page: running
@@ -451,3 +452,33 @@ approval workflow.
 No package update implicitly grants deployment, publication, a global model/auth
 change, or permission to restart a live bridge. Remote messaging requires the
 separate authenticated bridge setup and coordinated companion migration.
+
+## Overseer mode
+
+Overseer mode is off by default. Enable it per session branch with `/overseer on` (or `--overseer`)
+or configure defaults under `subagents.overseer` (`{ enabled, worker, judge }`) in Pi settings.
+`/overseer-worker` sets the default worker (`google/gemini-4-hydrogen:high` by default);
+`/overseer-judge` sets the classifier judge (`auto`, `off`, or `provider/model`). Main-session
+tools remain unrestricted so the overseer can run scripts or apply small surgical edits directly.
+
+When overseer mode is enabled, `delegate` requires `contract`:
+
+- `scope`: relative edit-tool paths inside `cwd`, `['*']` for any edit path in `cwd`, or `[]` to
+  disable edit tools. Pre-write scope checks constrain edit tools (`edit`, `write`, `replace_text`,
+  `write_files`, `apply_patch`); shell commands are not OS-sandboxed and are checked post-turn via
+  `git status`.
+- `verification`: required when `scope` is non-empty.
+- `baseBranch`, `requiredPrimitives`, `nonGoals`: optional Git and native-API constraints.
+
+Supervised children run zero-cost tripwires on mutating/error turns (3-turn error loops,
+out-of-scope Git modifications relative to the run's baseline snapshot, and `baseBranch`
+ancestry/direct-commit guards) plus debounced decision-model checkpoints (every 4 mutating turns,
+
+> =120 changed diff lines, and pre-settle). On high-confidence drift, the child writes
+> `escalation.json`, pauses, and wakes the parent once with `[agent-escalation]`. Steering via
+> `continue`, approving via `review`, or stopping via `stop` resolves the pause immediately.
+
+When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
+prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`
+or a superseding continuation (`changes_requested` / `continue`) is recorded. Runs with no
+detected repository changes settle with zero extra turns.

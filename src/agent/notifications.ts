@@ -101,6 +101,19 @@ export function deliver(
     }
   }
 }
+function overseerReviewHint(launch: Launch, result: Result): string {
+  const files = result.changedFiles;
+  if (
+    launch.overseer?.enabled !== true ||
+    result.status !== "completed" ||
+    files === undefined ||
+    files.length === 0
+  ) {
+    return "";
+  }
+  return `\n[Overseer review required: inspect git diff in ${launch.cwd} (${files.join(", ")}) and call agent_runs(action="review", id="${launch.id}", verdict="approved", summary="...") in this turn before finishing.]`;
+}
+
 function notification(base: string, launch: Launch, result: Result): Completion {
   const file = path.join(runDirectory(base, launch.id), "output.txt");
   const page = fs.existsSync(file) ? readOutputPage(file, { offset: 0, length: 32768 }) : undefined;
@@ -114,7 +127,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(launch, result)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,

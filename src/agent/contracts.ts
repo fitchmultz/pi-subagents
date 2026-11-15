@@ -50,6 +50,13 @@ export const escalationResolutionSchema = Type.Object({
   at: Type.Number(),
 });
 export type EscalationResolution = Static<typeof escalationResolutionSchema>;
+export const overseerReviewSchema = Type.Object({
+  runId: Type.String(),
+  verdict: Type.Union([Type.Literal("approved"), Type.Literal("changes_requested")]),
+  summary: Type.String({ minLength: 1 }),
+  at: Type.Number(),
+});
+export type OverseerReview = Static<typeof overseerReviewSchema>;
 export const launchSchema = Type.Object({
   version: Type.Literal(1),
   id: Type.String(),
@@ -125,6 +132,7 @@ export const resultSchema = Type.Object({
   endedAt: Type.Number(),
   terminalEntryId: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),
+  changedFiles: Type.Optional(Type.Array(Type.String())),
   contributions: Type.Optional(contributionsSchema),
   accountingError: Type.Optional(Type.String()),
   accountingPending: Type.Optional(
