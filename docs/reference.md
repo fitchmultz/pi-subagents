@@ -455,9 +455,9 @@ separate authenticated bridge setup and coordinated companion migration.
 
 ## Overseer mode
 
-Overseer mode is off by default. Enable it per session branch with `/overseer on` (or `--overseer`)
+Overseer mode is off by default. Toggle it per session branch with `/overseer` (`/overseer on`, `/overseer off`, or `--overseer`)
 or configure defaults under `subagents.overseer` (`{ enabled, worker, judge }`) in Pi settings.
-`/overseer-worker` sets the default worker (`google/gemini-4-hydrogen:high` by default);
+`/overseer-worker` sets the default worker (`google/gemini-4-hydrogen:xhigh` by default);
 `/overseer-judge` sets the classifier judge (`auto`, `off`, or `provider/model`). Main-session
 tools remain unrestricted so the overseer can run scripts or apply small surgical edits directly.
 

@@ -10,12 +10,12 @@ import { normalizeDelegationContract } from "./overseer-scope.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 
 export const OVERSEER_ENTRY_TYPE = "subagents-overseer";
-export const DEFAULT_OVERSEER_WORKER = "google/gemini-4-hydrogen:high";
+export const DEFAULT_OVERSEER_WORKER = "google/gemini-4-hydrogen:xhigh";
 export const DEFAULT_OVERSEER_JUDGE = "auto";
 
 const PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
-  "When delegating via `delegate`, always supply `contract` (`scope: []` to disable edit tools for recon/review, or allowed relative `scope` edit paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed). Omitted `model` uses the configured overseer worker.",
+  "When delegating via `delegate`, omit `model` and `thinking` so the configured overseer worker runs unless the user explicitly asks for another model or thinking level, and always supply `contract` (`scope: []` for recon/review, or allowed relative `scope` edit paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed).",
   "You are accountable for every child output: handle mid-run escalations promptly and inspect the real git diff against the contract before finishing.",
 ].join("\n");
 
@@ -98,11 +98,8 @@ function branchState(
   return cur;
 }
 
-function shortLabel(ref: string): string {
-  const withoutProv = ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
-  const colon = withoutProv.indexOf(":");
-  return colon >= 0 ? withoutProv.slice(0, colon) : withoutProv;
-}
+const shortLabel = (ref: string): string =>
+  ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
 
 function completions(
   prefix: string,

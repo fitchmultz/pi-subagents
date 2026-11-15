@@ -86,9 +86,13 @@ function selectedModel(
     return { model: context.model, thinking: selectedThinking(input.thinking, thinking) };
   }
   const resolved = resolveExplicitModel(input.model, context, sdk);
+  const fallback =
+    defaultModel !== undefined && `${resolved.model.provider}/${resolved.model.id}` === defaultModel
+      ? (defaultThinking ?? thinking)
+      : thinking;
   return {
     model: resolved.model,
-    thinking: selectedThinking(input.thinking, thinking, resolved.suffix),
+    thinking: selectedThinking(input.thinking, fallback, resolved.suffix),
   };
 }
 function targetTrust(

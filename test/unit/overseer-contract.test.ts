@@ -133,16 +133,23 @@ nodeTest(
     assert.equal(harness.statuses.get("overseer"), undefined);
     assert.deepEqual(await harness.beforeAgentStart(), {});
 
-    await harness.runCommand("overseer", "on");
-    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen");
+    // Bare `/overseer` toggles overseer mode on with sensible defaults (gemini-4-hydrogen:xhigh + auto judge).
+    await harness.runCommand("overseer", "");
+    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen:xhigh");
     const activeSections = await harness.beforeAgentStart();
     assert.match(activeSections.overseer ?? "", /Overseer mode is active/u);
 
     const savedOnBranch = [...harness.getBranch()];
     assert.equal(savedOnBranch.at(-1)?.customType, OVERSEER_ENTRY_TYPE);
 
+    // Bare `/overseer` again toggles off; `/overseer on` re-enables.
+    await harness.runCommand("overseer", "");
+    assert.equal(harness.statuses.get("overseer"), undefined);
+    await harness.runCommand("overseer", "on");
+    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen:xhigh");
+
     await harness.runCommand("overseer-worker", "openai/gpt-6-sol:medium");
-    assert.equal(harness.statuses.get("overseer"), "overseer: gpt-6-sol");
+    assert.equal(harness.statuses.get("overseer"), "overseer: gpt-6-sol:medium");
     await harness.runCommand("overseer-judge", "google/gemini-decision-1");
 
     // Rewinding the session tree to before /overseer on restores the off state.
@@ -154,7 +161,7 @@ nodeTest(
     // Returning to the saved branch restores the enabled overseer state.
     harness.setBranch(savedOnBranch);
     await harness.tree();
-    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen");
+    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen:xhigh");
   },
 );
 
@@ -327,7 +334,7 @@ nodeTest(
     });
     assert.equal(launch.provider, "google");
     assert.equal(launch.model, "gemini-4-hydrogen");
-    assert.equal(launch.thinking, "high");
+    assert.equal(launch.thinking, "xhigh");
     assert.deepEqual(launch.overseer, { enabled: true, judge: "auto" });
     assert.deepEqual(launch.contract?.scope, ["src/db.ts"]);
     assert.deepEqual(
@@ -335,7 +342,23 @@ nodeTest(
       contract,
     );
 
-    // Explicit per-call thinking overrides the default worker's :high suffix without conflict.
+    // Redundantly specifying the default worker model without `:thinking` still keeps `xhigh`.
+    const explicitDefaultWorker = await prepareLaunch({
+      input: { prompt: "Same worker without suffix", model: "google/gemini-4-hydrogen" },
+      context,
+      base,
+      owner: "parent-session",
+      agentDir: getPiAgentDir(),
+      thinking: "medium",
+      executionCwd: tempDir,
+      ...splitWorkerSpec(DEFAULT_OVERSEER_WORKER),
+      contract,
+      overseer: { enabled: true, judge: "auto" },
+    });
+    assert.equal(explicitDefaultWorker.model, "gemini-4-hydrogen");
+    assert.equal(explicitDefaultWorker.thinking, "xhigh");
+
+    // Explicit per-call thinking overrides the default worker's :xhigh suffix without conflict.
     const overridden = await prepareLaunch({
       input: { prompt: "Quick tweak", thinking: "low" },
       context,
