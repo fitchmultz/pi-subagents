@@ -11,6 +11,7 @@ import {
   type Launch,
   type Result,
 } from "./contracts.ts";
+import { needsOverseerReview } from "./overseer-review.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 
@@ -101,6 +102,14 @@ export function deliver(
     }
   }
 }
+function overseerReviewHint(base: string, launch: Launch, result: Result): string {
+  if (!needsOverseerReview(base, launch, result)) {
+    return "";
+  }
+  const files = (result.changedFiles ?? []).join(", ");
+  return `\n[Overseer review required: inspect git diff in ${launch.cwd} (${files}) and call agent_runs(action="review", id="${launch.id}", verdict="approved", summary="...") in this turn before finishing.]`;
+}
+
 function notification(base: string, launch: Launch, result: Result): Completion {
   const file = path.join(runDirectory(base, launch.id), "output.txt");
   const page = fs.existsSync(file) ? readOutputPage(file, { offset: 0, length: 32768 }) : undefined;
@@ -114,7 +123,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,
@@ -132,8 +141,8 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
   const files = escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)";
   const stopHint =
     escalation.strikes >= 3
-      ? '3rd strike reached: prefer stopping this run (`agent_runs` action="stop") and re-scoping or taking over.'
-      : 'Steer (`agent_runs` action="continue" with corrective prompt) or stop (`action="stop"`).';
+      ? '3rd strike: prefer `agent_runs` `action="stop"`, or approve (`action="review"`, `verdict="approved"`, `summary="..."`).'
+      : 'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
   return {
     owner: launch.owner,
     id: `escalation:${escalation.id}`,

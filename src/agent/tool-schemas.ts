@@ -1,7 +1,9 @@
 import type { Static } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "./typebox.ts";
 import { THINKING_LEVELS } from "./contracts.ts";
+import { renderCompactResult } from "../shared/compact-cards.ts";
 
 // Main-session tool parameters only; the detached runner must not load pi-ai values.
 export const delegateContractSchema = Type.Object(
@@ -53,9 +55,17 @@ export const delegateSchema = Type.Object(
 export type DelegateInput = Static<typeof delegateSchema>;
 export const runsSchema = Type.Object(
   {
-    action: StringEnum(["list", "inspect", "continue", "stop"] as const),
+    action: StringEnum(["list", "inspect", "continue", "stop", "review"] as const),
     id: Type.Optional(Type.String()),
     prompt: Type.Optional(Type.String({ minLength: 1 })),
+    verdict: Type.Optional(StringEnum(["approved", "changes_requested"] as const)),
+    summary: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          "Diff/check evidence for review approval, or corrective instructions when requesting changes.",
+      }),
+    ),
     offset: Type.Optional(Type.Integer({ minimum: 0 })),
     length: Type.Optional(Type.Integer({ minimum: 4, maximum: 262144 })),
   },
@@ -67,3 +77,32 @@ export type RunsInput = Static<typeof runsSchema>;
  * Only `list` sets it, to its JSON inventory; the other actions resolve to their model text.
  */
 export const runsOutputSchema = Type.String();
+
+export function registerAgentTools(
+  pi: ExtensionAPI,
+  child: boolean,
+  executeDelegate: ToolDefinition<typeof delegateSchema>["execute"],
+  executeRuns: ToolDefinition<typeof runsSchema>["execute"],
+): void {
+  pi.registerTool({
+    name: "delegate",
+    label: "Delegate",
+    description:
+      "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Optional thinking overrides inherited effort for this child. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
+    parameters: delegateSchema,
+    exposure: child ? "hidden" : "direct",
+    renderResult: renderCompactResult,
+    execute: executeDelegate,
+  });
+  pi.registerTool({
+    name: "agent_runs",
+    label: "Agent runs",
+    description:
+      "Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation.",
+    parameters: runsSchema,
+    outputSchema: runsOutputSchema,
+    exposure: child ? "hidden" : "direct",
+    renderResult: renderCompactResult,
+    execute: executeRuns,
+  });
+}

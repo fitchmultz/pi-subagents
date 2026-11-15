@@ -12,7 +12,7 @@ import { initializeCwd } from "./cwd.ts";
 import { childRuntime } from "./child-runtime.ts";
 import { ActorObservation, type ObservationStats } from "./observation.ts";
 import { BackgroundWait, endSession, reporting } from "./background-work.ts";
-import { saveResult, saveTerminalResult } from "./run-result.ts";
+import { captureOverseerBaseline, saveResult, saveTerminalResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { parkedToken } from "./generation.ts";
 
@@ -159,9 +159,17 @@ class Actor {
     session: AgentSession,
     baseline: ReadonlySet<string>,
   ): Promise<void> {
+    const repoBaseline = captureOverseerBaseline(this.base, launch);
     const save = (error?: string): void => {
       const { accounting, stopping } = this;
-      saveResult(this.base, launch, { session, baseline, accounting, stopping, error });
+      saveResult(this.base, launch, {
+        session,
+        baseline,
+        accounting,
+        stopping,
+        error,
+        repoBaseline,
+      });
     };
     try {
       const refusal = this.runRefusal(launch);

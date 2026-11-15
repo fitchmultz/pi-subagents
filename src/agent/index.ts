@@ -2,11 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as loadedSDK from "@earendil-works/pi-coding-agent";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   inspectActorClaim,
   possiblyLive,
@@ -32,13 +28,7 @@ import {
   type Launch,
   type ProcessIdentity,
 } from "./contracts.ts";
-import {
-  delegateSchema,
-  runsOutputSchema,
-  runsSchema,
-  type DelegateInput,
-  type RunsInput,
-} from "./tool-schemas.ts";
+import { registerAgentTools, type DelegateInput, type RunsInput } from "./tool-schemas.ts";
 import {
   enqueue,
   latest,
@@ -61,10 +51,11 @@ import { savedContinuation } from "./saved.ts";
 import { continuationDecision, readRunState } from "./run-state.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
-import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
+import { registerCompactMessages } from "../shared/compact-cards.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
 import { OverseerController } from "./overseer.ts";
+import { prepareOverseerReviewAction, registerOverseerSettleGate } from "./overseer-review.ts";
 import { resolveActiveEscalation } from "./overseer-sentinel.ts";
 
 interface AttachmentBinding {
@@ -433,16 +424,40 @@ class AgentRuntime {
     if (input.action === "inspect") {
       return renderInspection(this.base, original, this.ctx, input);
     }
+    if (input.action === "review") {
+      return this.review(original, input);
+    }
     const launch = latest(this.base, original);
     if (input.action === "stop") {
       return this.stop(launch);
     }
     return this.continue(launch, input);
   }
+  private async review(original: Launch, input: RunsInput) {
+    const { target, review, verdict } = prepareOverseerReviewAction(this.base, original, input);
+    if (verdict === "changes_requested") {
+      return this.continue(latest(this.base, target), { ...input, prompt: review.summary });
+    }
+    return renderReceipt(this.base, target, this.ctx, {
+      receipt: "review",
+      review,
+      note: "Overseer approval recorded.",
+    });
+  }
   register(): void {
-    registerCompactMessages(this.pi, ["agent-completion", "agent-escalation", "subagent-notify"]);
+    registerCompactMessages(this.pi, [
+      "agent-completion",
+      "agent-escalation",
+      "overseer-review-gate",
+      "subagent-notify",
+    ]);
     if (!this.child) {
       this.overseer.register();
+      registerOverseerSettleGate(this.pi, () =>
+        this.attachment.kind === "attached"
+          ? { enabled: this.overseer.current.enabled, base: this.base, owner: this.owner }
+          : undefined,
+      );
     }
     serveParked(
       this.pi,
@@ -474,31 +489,12 @@ class AgentRuntime {
         return;
       });
     }
-    const execute: ToolDefinition<typeof delegateSchema>["execute"] = (...args) =>
-      this.delegate(args[1], args[2], args[4]);
-    this.pi.registerTool({
-      name: "delegate",
-      label: "Delegate",
-      description:
-        "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Optional thinking overrides inherited effort for this child. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
-      parameters: delegateSchema,
-      exposure: this.child ? "hidden" : "direct",
-      renderResult: renderCompactResult,
-      execute,
-    });
-    const runs: ToolDefinition<typeof runsSchema>["execute"] = (...args) =>
-      this.runs(args[1], args[4]);
-    this.pi.registerTool({
-      name: "agent_runs",
-      label: "Agent runs",
-      description:
-        "Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation.",
-      parameters: runsSchema,
-      outputSchema: runsOutputSchema,
-      exposure: this.child ? "hidden" : "direct",
-      renderResult: renderCompactResult,
-      execute: runs,
-    });
+    registerAgentTools(
+      this.pi,
+      this.child,
+      (...args) => this.delegate(args[1], args[2], args[4]),
+      (...args) => this.runs(args[1], args[4]),
+    );
   }
 }
 export default function agents(pi: ExtensionAPI): void {

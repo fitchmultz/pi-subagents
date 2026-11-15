@@ -13,20 +13,13 @@ export const OVERSEER_ENTRY_TYPE = "subagents-overseer";
 export const DEFAULT_OVERSEER_WORKER = "google/gemini-4-hydrogen:high";
 export const DEFAULT_OVERSEER_JUDGE = "auto";
 
-const OVERSEER_PROMPT_SECTION = [
+const PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
   "When delegating via `delegate`, always supply `contract` (`scope: []` to disable edit tools for recon/review, or allowed relative `scope` edit paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed). Omitted `model` uses the configured overseer worker.",
   "You are accountable for every child output: handle mid-run escalations promptly and inspect the real git diff against the contract before finishing.",
 ].join("\n");
 
 export interface OverseerState {
-  readonly enabled: boolean;
-  readonly worker: string;
-  readonly judge: string;
-}
-
-interface PersistedOverseerEntry {
-  readonly version: 1;
   readonly enabled: boolean;
   readonly worker: string;
   readonly judge: string;
@@ -39,13 +32,11 @@ export interface PreparedOverseerDelegation {
   readonly overseer?: OverseerLaunch;
 }
 
-function nonEmptyString(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
-}
+const strOr = (v: unknown, fb: string): string =>
+  typeof v === "string" && v.trim().length > 0 ? v.trim() : fb;
 
-function isThinkingLevel(value: string): value is ThinkingLevel {
-  return (THINKING_LEVELS as readonly string[]).includes(value);
-}
+const isThinking = (v: string): v is ThinkingLevel =>
+  (THINKING_LEVELS as readonly string[]).includes(v);
 
 export function splitWorkerSpec(worker: string): {
   readonly defaultModel: string;
@@ -55,198 +46,180 @@ export function splitWorkerSpec(worker: string): {
   const colon = worker.lastIndexOf(":");
   if (slash > 0 && colon > slash + 1) {
     const suffix = worker.slice(colon + 1);
-    if (isThinkingLevel(suffix)) {
+    if (isThinking(suffix)) {
       return { defaultModel: worker.slice(0, colon), defaultThinking: suffix };
     }
   }
   return { defaultModel: worker };
 }
 
-function readHostSettings(
+function hostSettings(
   pi: Pick<ExtensionAPI, "getFlag" | "getSettings">,
 ): UnknownRecord | undefined {
   try {
-    const result: unknown = pi.getSettings();
-    return isRecord(result) ? result : undefined;
+    const res: unknown = pi.getSettings();
+    return isRecord(res) ? res : undefined;
   } catch {
-    // Loader-only hosts invoke registered handlers without binding ExtensionRuntime actions.
     return undefined;
   }
 }
 
-function configuredDefaults(pi: Pick<ExtensionAPI, "getFlag" | "getSettings">): OverseerState {
-  const overseer = recordAt(recordAt(readHostSettings(pi), "subagents"), "overseer");
-  const flagEnabled = pi.getFlag("overseer") === true;
+function defaults(pi: Pick<ExtensionAPI, "getFlag" | "getSettings">): OverseerState {
+  const cfg = recordAt(recordAt(hostSettings(pi), "subagents"), "overseer");
   return {
-    enabled: typeof overseer?.enabled === "boolean" ? overseer.enabled : flagEnabled,
-    worker: nonEmptyString(overseer?.worker, DEFAULT_OVERSEER_WORKER),
-    judge: nonEmptyString(overseer?.judge, DEFAULT_OVERSEER_JUDGE),
+    enabled: typeof cfg?.enabled === "boolean" ? cfg.enabled : pi.getFlag("overseer") === true,
+    worker: strOr(cfg?.worker, DEFAULT_OVERSEER_WORKER),
+    judge: strOr(cfg?.judge, DEFAULT_OVERSEER_JUDGE),
   };
 }
 
-function readEntryState(data: unknown, fallback: OverseerState): OverseerState | undefined {
-  if (!isRecord(data) || typeof data.enabled !== "boolean") {
-    return undefined;
-  }
-  return {
-    enabled: data.enabled,
-    worker: nonEmptyString(data.worker, fallback.worker),
-    judge: nonEmptyString(data.judge, fallback.judge),
-  };
-}
-
-function reconstructBranchState(
+function branchState(
   pi: Pick<ExtensionAPI, "getFlag" | "getSettings">,
   ctx: { readonly sessionManager: { readonly getBranch?: () => readonly unknown[] } },
 ): OverseerState {
-  let current = configuredDefaults(pi);
-  const rawEntries: unknown =
+  let cur = defaults(pi);
+  const raw: unknown =
     typeof ctx.sessionManager.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
-  if (!Array.isArray(rawEntries)) {
-    return current;
+  if (!Array.isArray(raw)) {
+    return cur;
   }
-  for (const entry of rawEntries) {
-    if (isRecord(entry) && entry.type === "custom" && entry.customType === OVERSEER_ENTRY_TYPE) {
-      current = readEntryState(entry.data, current) ?? current;
+  for (const e of raw) {
+    if (isRecord(e) && e.type === "custom" && e.customType === OVERSEER_ENTRY_TYPE) {
+      const d = e.data;
+      if (isRecord(d) && typeof d.enabled === "boolean") {
+        cur = {
+          enabled: d.enabled,
+          worker: strOr(d.worker, cur.worker),
+          judge: strOr(d.judge, cur.judge),
+        };
+      }
     }
   }
-  return current;
+  return cur;
 }
 
-function shortModelLabel(reference: string): string {
-  const slash = reference.indexOf("/");
-  const withoutProvider = slash >= 0 ? reference.slice(slash + 1) : reference;
-  const colon = withoutProvider.indexOf(":");
-  return colon >= 0 ? withoutProvider.slice(0, colon) : withoutProvider;
+function shortLabel(ref: string): string {
+  const withoutProv = ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
+  const colon = withoutProv.indexOf(":");
+  return colon >= 0 ? withoutProv.slice(0, colon) : withoutProv;
 }
 
-function prefixCompletions(
+function completions(
   prefix: string,
   choices: readonly string[],
 ): Array<{ value: string; label: string }> | null {
-  const trimmed = prefix.trim().toLowerCase();
-  const matches = choices
-    .filter((choice) => choice.toLowerCase().startsWith(trimmed))
+  const p = prefix.trim().toLowerCase();
+  const out = choices
+    .filter((c) => c.toLowerCase().startsWith(p))
     .map((value) => ({ value, label: value }));
-  return matches.length > 0 ? matches : null;
+  return out.length > 0 ? out : null;
 }
 
-function validModelSpec(spec: string): boolean {
-  const slash = spec.indexOf("/");
-  return slash > 0 && slash < spec.length - 1 && !/\s/u.test(spec);
-}
+const validSpec = (s: string): boolean => {
+  const i = s.indexOf("/");
+  return i > 0 && i < s.length - 1 && !/\s/u.test(s);
+};
 
 export class OverseerController {
-  private state: OverseerState;
+  private state: OverseerState = {
+    enabled: false,
+    worker: DEFAULT_OVERSEER_WORKER,
+    judge: DEFAULT_OVERSEER_JUDGE,
+  };
   private readonly pi: ExtensionAPI;
 
   constructor(pi: ExtensionAPI) {
     this.pi = pi;
-    this.state = {
-      enabled: false,
-      worker: DEFAULT_OVERSEER_WORKER,
-      judge: DEFAULT_OVERSEER_JUDGE,
-    };
   }
 
   get current(): OverseerState {
     return this.state;
   }
 
-  private renderStatus(ctx: ExtensionContext): void {
+  private render(ctx: ExtensionContext): void {
     if (!ctx.hasUI) {
-      return;
-    }
-    if (!this.state.enabled) {
-      ctx.ui.setStatus("overseer", undefined);
       return;
     }
     ctx.ui.setStatus(
       "overseer",
-      ctx.ui.theme.fg("dim", `overseer: ${shortModelLabel(this.state.worker)}`),
+      this.state.enabled
+        ? ctx.ui.theme.fg("dim", `overseer: ${shortLabel(this.state.worker)}`)
+        : undefined,
     );
   }
 
-  private syncFromBranch(ctx: ExtensionContext): void {
-    this.state = reconstructBranchState(this.pi, ctx);
-    this.renderStatus(ctx);
+  private sync(ctx: ExtensionContext): void {
+    this.state = branchState(this.pi, ctx);
+    this.render(ctx);
   }
 
-  private persist(next: OverseerState, ctx: ExtensionContext): void {
+  private save(next: OverseerState, ctx: ExtensionContext): void {
     this.state = next;
-    const entry: PersistedOverseerEntry = {
-      version: 1,
-      enabled: next.enabled,
-      worker: next.worker,
-      judge: next.judge,
-    };
-    this.pi.appendEntry(OVERSEER_ENTRY_TYPE, entry);
-    this.renderStatus(ctx);
+    this.pi.appendEntry(OVERSEER_ENTRY_TYPE, { version: 1 as const, ...next });
+    this.render(ctx);
   }
 
-  private statusLine(): string {
-    return this.state.enabled
-      ? `Overseer mode: on (worker: ${this.state.worker}, judge: ${this.state.judge})`
-      : `Overseer mode: off (worker: ${this.state.worker}, judge: ${this.state.judge})`;
+  private line(): string {
+    return `Overseer mode: ${this.state.enabled ? "on" : "off"} (worker: ${this.state.worker}, judge: ${this.state.judge})`;
   }
 
-  private handleToggle(args: string, ctx: ExtensionCommandContext): void {
-    const token = args.trim().toLowerCase();
-    if (token === "status") {
-      ctx.ui.notify(this.statusLine(), "info");
+  private onToggle(args: string, ctx: ExtensionCommandContext): void {
+    const tok = args.trim().toLowerCase();
+    if (tok === "status") {
+      ctx.ui.notify(this.line(), "info");
       return;
     }
-    if (token !== "" && token !== "on" && token !== "off") {
+    if (tok !== "" && tok !== "on" && tok !== "off") {
       ctx.ui.notify("Usage: /overseer [on|off|status]", "warning");
       return;
     }
-    const enabled = token === "" ? !this.state.enabled : token === "on";
-    this.persist({ ...this.state, enabled }, ctx);
-    ctx.ui.notify(this.statusLine(), "info");
+    this.save({ ...this.state, enabled: tok === "" ? !this.state.enabled : tok === "on" }, ctx);
+    ctx.ui.notify(this.line(), "info");
   }
 
-  private handleWorker(args: string, ctx: ExtensionCommandContext): void {
-    const trimmed = args.trim();
-    if (trimmed === "" || trimmed.toLowerCase() === "status") {
+  private onWorker(args: string, ctx: ExtensionCommandContext): void {
+    const s = args.trim();
+    const low = s.toLowerCase();
+    if (s === "" || low === "status") {
       ctx.ui.notify(`Overseer worker: ${this.state.worker}`, "info");
       return;
     }
-    if (trimmed.toLowerCase() === "reset") {
-      const defaults = configuredDefaults(this.pi);
-      this.persist({ ...this.state, worker: defaults.worker }, ctx);
-      ctx.ui.notify(`Overseer worker reset to ${defaults.worker}`, "info");
+    if (low === "reset") {
+      const worker = defaults(this.pi).worker;
+      this.save({ ...this.state, worker }, ctx);
+      ctx.ui.notify(`Overseer worker reset to ${worker}`, "info");
       return;
     }
-    if (!validModelSpec(trimmed)) {
+    if (!validSpec(s)) {
       ctx.ui.notify("Worker must be provider/model[:thinking], 'reset', or 'status'.", "warning");
       return;
     }
-    this.persist({ ...this.state, worker: trimmed }, ctx);
-    ctx.ui.notify(`Overseer worker set to ${trimmed}`, "info");
+    this.save({ ...this.state, worker: s }, ctx);
+    ctx.ui.notify(`Overseer worker set to ${s}`, "info");
   }
 
-  private handleJudge(args: string, ctx: ExtensionCommandContext): void {
-    const trimmed = args.trim();
-    if (trimmed === "" || trimmed.toLowerCase() === "status") {
+  private onJudge(args: string, ctx: ExtensionCommandContext): void {
+    const s = args.trim();
+    const low = s.toLowerCase();
+    if (s === "" || low === "status") {
       ctx.ui.notify(`Overseer judge: ${this.state.judge}`, "info");
       return;
     }
-    const lower = trimmed.toLowerCase();
-    if (lower === "reset") {
-      const defaults = configuredDefaults(this.pi);
-      this.persist({ ...this.state, judge: defaults.judge }, ctx);
-      ctx.ui.notify(`Overseer judge reset to ${defaults.judge}`, "info");
+    if (low === "reset") {
+      const judge = defaults(this.pi).judge;
+      this.save({ ...this.state, judge }, ctx);
+      ctx.ui.notify(`Overseer judge reset to ${judge}`, "info");
       return;
     }
-    if (lower !== "auto" && lower !== "off" && !validModelSpec(trimmed)) {
+    if (low !== "auto" && low !== "off" && !validSpec(s)) {
       ctx.ui.notify(
         "Judge must be 'auto', 'off', provider/model, 'reset', or 'status'.",
         "warning",
       );
       return;
     }
-    const judge = lower === "auto" || lower === "off" ? lower : trimmed;
-    this.persist({ ...this.state, judge }, ctx);
+    const judge = low === "auto" || low === "off" ? low : s;
+    this.save({ ...this.state, judge }, ctx);
     ctx.ui.notify(`Overseer judge set to ${judge}`, "info");
   }
 
@@ -274,45 +247,40 @@ export class OverseerController {
       type: "boolean",
       default: false,
     });
-    this.pi.on("session_start", (_event, ctx) => {
-      this.syncFromBranch(ctx);
-    });
-    this.pi.on("session_tree", (_event, ctx) => {
-      this.syncFromBranch(ctx);
-    });
+    this.pi.on("session_start", (_e, ctx) => this.sync(ctx));
+    this.pi.on("session_tree", (_e, ctx) => this.sync(ctx));
     this.pi.on("before_agent_start", (event) => {
       const { sections } = event.systemPromptOptions;
       if (this.state.enabled) {
-        sections.overseer = OVERSEER_PROMPT_SECTION;
+        sections.overseer = PROMPT_SECTION;
       } else {
         delete sections.overseer;
       }
     });
     this.pi.registerCommand("overseer", {
       description: "Toggle or inspect overseer mode (/overseer [on|off|status])",
-      getArgumentCompletions: (prefix) => prefixCompletions(prefix, ["on", "off", "status"]),
+      getArgumentCompletions: (p) => completions(p, ["on", "off", "status"]),
       handler: (args, ctx) => {
-        this.handleToggle(args, ctx);
+        this.onToggle(args, ctx);
         return Promise.resolve();
       },
     });
     this.pi.registerCommand("overseer-worker", {
       description:
         "Set or inspect the default overseer worker model (/overseer-worker <provider/model[:thinking]|reset|status>)",
-      getArgumentCompletions: (prefix) =>
-        prefixCompletions(prefix, ["status", "reset", DEFAULT_OVERSEER_WORKER]),
+      getArgumentCompletions: (p) => completions(p, ["status", "reset", DEFAULT_OVERSEER_WORKER]),
       handler: (args, ctx) => {
-        this.handleWorker(args, ctx);
+        this.onWorker(args, ctx);
         return Promise.resolve();
       },
     });
     this.pi.registerCommand("overseer-judge", {
       description:
         "Set or inspect the overseer decision judge (/overseer-judge <auto|off|provider/model|reset|status>)",
-      getArgumentCompletions: (prefix) =>
-        prefixCompletions(prefix, ["auto", "off", "status", "reset", "google/gemini-decision-1"]),
+      getArgumentCompletions: (p) =>
+        completions(p, ["auto", "off", "status", "reset", "google/gemini-decision-1"]),
       handler: (args, ctx) => {
-        this.handleJudge(args, ctx);
+        this.onJudge(args, ctx);
         return Promise.resolve();
       },
     });

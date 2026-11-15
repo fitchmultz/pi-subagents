@@ -35,8 +35,32 @@ agent_runs({
   id: "<run-id>",
   prompt: "Now inspect the refresh-token path. Do not edit.",
 });
+agent_runs({
+  action: "review",
+  id: "<run-id>",
+  verdict: "approved",
+  summary: "Verified git diff in src/auth.ts and unit test output.",
+});
 agent_runs({ action: "stop", id: "<run-id>" });
 ```
+
+## Overseer mode (opt-in)
+
+Toggle `/overseer` (or pass `--overseer`) when a main session plans with a frontier
+model and delegates implementation to a faster worker (`google/gemini-4-hydrogen:high`
+by default; configurable via `/overseer-worker` and `/overseer-judge` or `subagents.overseer`
+in settings). When off, `delegate` and `agent_runs` behave identically to default mode.
+
+When enabled:
+
+- `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
+  `requiredPrimitives`, `nonGoals`) and defaults omitted `model` to the configured worker.
+- Child sessions block out-of-scope edit tool calls before writing, run zero-cost Git/loop
+  tripwires on mutating turns, and sample an available decision classifier
+  (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff
+  checkpoints—pausing the child and waking the parent with `[agent-escalation]` on drift.
+- Completed mutating overseen runs require `agent_runs({ action: "review", ... })` before
+  the parent session settles (`agent_before_settle`).
 
 ## Talk to agents
 
