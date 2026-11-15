@@ -1,10 +1,11 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { isRecord, recordAt, type UnknownRecord } from "../shared/unknown.ts";
-import type { DelegationContract, OverseerLaunch } from "./contracts.ts";
+import { THINKING_LEVELS, type DelegationContract, type OverseerLaunch } from "./contracts.ts";
 import { normalizeDelegationContract } from "./overseer-scope.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 
@@ -33,6 +34,7 @@ interface PersistedOverseerEntry {
 
 export interface PreparedOverseerDelegation {
   readonly defaultModel?: string;
+  readonly defaultThinking?: ThinkingLevel;
   readonly contract?: DelegationContract;
   readonly overseer?: OverseerLaunch;
 }
@@ -41,13 +43,30 @@ function nonEmptyString(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }
 
-function readHostSettings(pi: Pick<ExtensionAPI, "getFlag">): UnknownRecord | undefined {
-  const getter: unknown = Reflect.get(pi, "getSettings");
-  if (typeof getter !== "function") {
-    return undefined;
+function isThinkingLevel(value: string): value is ThinkingLevel {
+  return (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+export function splitWorkerSpec(worker: string): {
+  readonly defaultModel: string;
+  readonly defaultThinking?: ThinkingLevel;
+} {
+  const slash = worker.indexOf("/");
+  const colon = worker.lastIndexOf(":");
+  if (slash > 0 && colon > slash + 1) {
+    const suffix = worker.slice(colon + 1);
+    if (isThinkingLevel(suffix)) {
+      return { defaultModel: worker.slice(0, colon), defaultThinking: suffix };
+    }
   }
+  return { defaultModel: worker };
+}
+
+function readHostSettings(
+  pi: Pick<ExtensionAPI, "getFlag" | "getSettings">,
+): UnknownRecord | undefined {
   try {
-    const result: unknown = Reflect.apply(getter, pi, []);
+    const result: unknown = pi.getSettings();
     return isRecord(result) ? result : undefined;
   } catch {
     // Loader-only hosts invoke registered handlers without binding ExtensionRuntime actions.
@@ -55,7 +74,7 @@ function readHostSettings(pi: Pick<ExtensionAPI, "getFlag">): UnknownRecord | un
   }
 }
 
-function configuredDefaults(pi: Pick<ExtensionAPI, "getFlag">): OverseerState {
+function configuredDefaults(pi: Pick<ExtensionAPI, "getFlag" | "getSettings">): OverseerState {
   const overseer = recordAt(recordAt(readHostSettings(pi), "subagents"), "overseer");
   const flagEnabled = pi.getFlag("overseer") === true;
   return {
@@ -77,13 +96,11 @@ function readEntryState(data: unknown, fallback: OverseerState): OverseerState |
 }
 
 function reconstructBranchState(
-  pi: Pick<ExtensionAPI, "getFlag">,
+  pi: Pick<ExtensionAPI, "getFlag" | "getSettings">,
   ctx: Pick<ExtensionContext, "sessionManager">,
 ): OverseerState {
   let current = configuredDefaults(pi);
-  const getBranch: unknown = Reflect.get(ctx.sessionManager, "getBranch");
-  const rawEntries: unknown =
-    typeof getBranch === "function" ? Reflect.apply(getBranch, ctx.sessionManager, []) : [];
+  const rawEntries: unknown = ctx.sessionManager.getBranch();
   if (!Array.isArray(rawEntries)) {
     return current;
   }
@@ -244,7 +261,7 @@ export class OverseerController {
       );
     }
     return {
-      defaultModel: this.state.worker,
+      ...splitWorkerSpec(this.state.worker),
       contract,
       overseer: { enabled: true, judge: this.state.judge },
     };

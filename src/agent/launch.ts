@@ -3,12 +3,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import {
-  THINKING_LEVELS,
-  type DelegationContract,
-  type Launch,
-  type OverseerLaunch,
-} from "./contracts.ts";
+import type { DelegationContract, Launch, OverseerLaunch } from "./contracts.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
 import { runDirectory, write } from "./storage.ts";
@@ -22,10 +17,6 @@ export interface LaunchContext {
     ExtensionContext["sessionManager"],
     "getSessionId" | "getSessionFile" | "getHeader" | "getBranch"
   >;
-}
-
-function isThinkingLevel(value: string): value is ThinkingLevel {
-  return (THINKING_LEVELS as readonly string[]).includes(value);
 }
 
 function selectedThinking(
@@ -43,7 +34,6 @@ function resolveExplicitModel(
   spec: string,
   context: LaunchContext,
   sdk: Awaited<ReturnType<typeof loadSDK>>,
-  allowPortableSuffix: boolean,
 ) {
   const slash = spec.indexOf("/");
   if (slash < 1) {
@@ -66,33 +56,28 @@ function resolveExplicitModel(
     }
     return { model: resolved.model, suffix: resolved.thinkingLevel };
   }
-  if (allowPortableSuffix) {
-    const colon = rest.lastIndexOf(":");
-    const maybeThinking = colon > 0 ? rest.slice(colon + 1) : "";
-    if (colon > 0 && isThinkingLevel(maybeThinking)) {
-      const baseModel = context.modelRegistry.find(provider, rest.slice(0, colon));
-      if (baseModel) {
-        return { model: baseModel, suffix: maybeThinking };
-      }
-    }
-  }
   throw new Error(
     `Model ${spec} is unavailable; no fallback was used. Check the provider/model ID. This host supports literal IDs only. If you intended a thinking suffix, update Pi for native thinking-suffix support.`,
   );
 }
 
 function selectedModel(
-  options: { input: DelegateInput; defaultModel?: string | undefined; thinking: ThinkingLevel },
+  options: {
+    input: DelegateInput;
+    defaultModel?: string | undefined;
+    defaultThinking?: ThinkingLevel | undefined;
+    thinking: ThinkingLevel;
+  },
   context: LaunchContext,
   sdk: Awaited<ReturnType<typeof loadSDK>>,
 ) {
-  const { input, defaultModel, thinking } = options;
+  const { input, defaultModel, defaultThinking, thinking } = options;
   if (input.model === undefined) {
     if (defaultModel !== undefined) {
-      const resolved = resolveExplicitModel(defaultModel, context, sdk, true);
+      const resolved = resolveExplicitModel(defaultModel, context, sdk);
       return {
         model: resolved.model,
-        thinking: input.thinking ?? resolved.suffix ?? thinking,
+        thinking: input.thinking ?? resolved.suffix ?? defaultThinking ?? thinking,
       };
     }
     if (!context.model) {
@@ -100,7 +85,7 @@ function selectedModel(
     }
     return { model: context.model, thinking: selectedThinking(input.thinking, thinking) };
   }
-  const resolved = resolveExplicitModel(input.model, context, sdk, false);
+  const resolved = resolveExplicitModel(input.model, context, sdk);
   return {
     model: resolved.model,
     thinking: selectedThinking(input.thinking, thinking, resolved.suffix),
@@ -177,6 +162,7 @@ export async function prepareLaunch(options: {
   thinking: ThinkingLevel;
   executionCwd: string;
   defaultModel?: string | undefined;
+  defaultThinking?: ThinkingLevel | undefined;
   contract?: DelegationContract | undefined;
   overseer?: OverseerLaunch | undefined;
 }): Promise<Launch> {
@@ -188,7 +174,12 @@ export async function prepareLaunch(options: {
     throw new Error("Delegation cwd is not a directory.");
   }
   const selection = selectedModel(
-    { input, defaultModel: options.defaultModel, thinking },
+    {
+      input,
+      defaultModel: options.defaultModel,
+      defaultThinking: options.defaultThinking,
+      thinking,
+    },
     context,
     sdk,
   );

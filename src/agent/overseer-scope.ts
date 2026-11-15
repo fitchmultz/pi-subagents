@@ -1,9 +1,15 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 import type { DelegationContract } from "./contracts.ts";
 
 const EDIT_TOOLS = new Set(["edit", "write", "replace_text", "write_files", "apply_patch"]);
+const PI_NATIVE_EDIT_TOOLS = new Set(["edit", "write"]);
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/gu;
+// POSIX _POSIX_SYMLOOP_MAX / Linux MAXSYMLINKS upper bound for symlink traversal.
+const MAX_SYMLINK_HOPS = 40;
 const PATCH_HEADER_PREFIXES = [
   "*** Add File: ",
   "*** Update File: ",
@@ -73,21 +79,90 @@ export function normalizeDelegationContract(raw: DelegationContract): Delegation
   };
 }
 
-function realCanonicalPath(target: string): string {
-  const tail: string[] = [];
-  let cursor = path.resolve(target);
-  for (;;) {
+function normalizePiEditCandidate(cwd: string, raw: string): string | undefined {
+  let normalized = raw.replace(UNICODE_SPACES, " ");
+  if (normalized.startsWith("@")) {
+    normalized = normalized.slice(1);
+  }
+  if (normalized === "~") {
+    normalized = os.homedir();
+  } else if (normalized.startsWith("~/")) {
+    normalized = path.join(os.homedir(), normalized.slice(2));
+  } else if (normalized.startsWith("file://")) {
     try {
-      return path.join(fs.realpathSync(cursor), ...tail);
+      normalized = fileURLToPath(normalized);
     } catch {
-      const parent = path.dirname(cursor);
-      if (parent === cursor) {
-        return path.join(cursor, ...tail);
-      }
-      tail.unshift(path.basename(cursor));
-      cursor = parent;
+      return undefined;
     }
   }
+  return path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
+}
+
+function resolveCandidateForTool(
+  cwd: string,
+  candidatePath: string,
+  toolName?: string,
+): string | undefined {
+  if (toolName !== undefined && PI_NATIVE_EDIT_TOOLS.has(toolName)) {
+    return normalizePiEditCandidate(cwd, candidatePath);
+  }
+  return path.resolve(cwd, candidatePath);
+}
+
+function resolveSymlinkStep(cursor: string, tail: readonly string[]): string | undefined {
+  const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+  if (stat?.isSymbolicLink() !== true) {
+    return undefined;
+  }
+  return path.join(path.resolve(path.dirname(cursor), fs.readlinkSync(cursor)), ...tail);
+}
+
+function tryRealpath(target: string): string | undefined {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return undefined;
+  }
+}
+
+function canonicalPath(target: string): string | undefined {
+  const tail: string[] = [];
+  let cursor = path.resolve(target);
+  let hops = 0;
+  for (;;) {
+    const real = tryRealpath(cursor);
+    if (real !== undefined) {
+      return path.join(real, ...tail);
+    }
+    const linked = resolveSymlinkStep(cursor, tail);
+    if (linked !== undefined) {
+      hops += 1;
+      if (hops > MAX_SYMLINK_HOPS) {
+        return undefined;
+      }
+      cursor = linked;
+      tail.length = 0;
+      continue;
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      return path.join(cursor, ...tail);
+    }
+    tail.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+}
+
+function canonicalScopeEntry(cwd: string, resolvedCwd: string, entry: string): string | undefined {
+  const target = canonicalPath(path.resolve(cwd, entry));
+  if (target === undefined) {
+    return undefined;
+  }
+  const relative = path.relative(resolvedCwd, target);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  return relative.split(path.sep).join("/");
 }
 
 /** Checks whether `candidatePath` stays inside `cwd` and matches `scope`. */
@@ -95,12 +170,17 @@ export function isPathAllowedByScope(
   cwd: string,
   candidatePath: string,
   scope: readonly string[],
+  toolName?: string,
 ): boolean {
   if (scope.length === 0) {
     return false;
   }
-  const resolvedCwd = realCanonicalPath(cwd);
-  const resolvedTarget = realCanonicalPath(path.resolve(cwd, candidatePath));
+  const resolvedCwd = canonicalPath(cwd);
+  const candidate = resolveCandidateForTool(cwd, candidatePath, toolName);
+  const resolvedTarget = candidate === undefined ? undefined : canonicalPath(candidate);
+  if (resolvedCwd === undefined || resolvedTarget === undefined) {
+    return false;
+  }
   const relative = path.relative(resolvedCwd, resolvedTarget);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return false;
@@ -112,7 +192,13 @@ export function isPathAllowedByScope(
     return false;
   }
   const relPosix = relative.split(path.sep).join("/");
-  return scope.some((entry) => relPosix === entry || relPosix.startsWith(`${entry}/`));
+  return scope.some((entry) => {
+    const canonicalEntry = canonicalScopeEntry(cwd, resolvedCwd, entry);
+    return (
+      canonicalEntry !== undefined &&
+      (relPosix === canonicalEntry || relPosix.startsWith(`${canonicalEntry}/`))
+    );
+  });
 }
 
 function patchTargetPaths(patchText: string): string[] {
@@ -165,7 +251,7 @@ export function checkToolCallScope(
     return "Delegation contract (scope: []) disables file-edit tools.";
   }
   for (const target of extractTargetPaths(toolName, input)) {
-    if (!isPathAllowedByScope(cwd, target, scope)) {
+    if (!isPathAllowedByScope(cwd, target, scope, toolName)) {
       return `Delegation contract scope blocks editing ${target} (allowed scope: ${scope.join(", ")}).`;
     }
   }

@@ -12,7 +12,11 @@ import {
 import type { Api, Model } from "@earendil-works/pi-ai";
 import agents from "../../src/agent/index.ts";
 import { launchSchema } from "../../src/agent/contracts.ts";
-import { DEFAULT_OVERSEER_WORKER, OVERSEER_ENTRY_TYPE } from "../../src/agent/overseer.ts";
+import {
+  DEFAULT_OVERSEER_WORKER,
+  OVERSEER_ENTRY_TYPE,
+  splitWorkerSpec,
+} from "../../src/agent/overseer.ts";
 import {
   checkToolCallScope,
   formatContractSection,
@@ -197,14 +201,37 @@ nodeTest(
     const cwd = path.join(root, "worktree");
     const outside = path.join(root, "outside");
     fs.mkdirSync(path.join(cwd, "src", "agent"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "configs"), { recursive: true });
     fs.mkdirSync(outside, { recursive: true });
     fs.symlinkSync(outside, path.join(cwd, "src", "agent", "escaped"));
+    fs.symlinkSync(
+      path.join(outside, "missing-secret.ts"),
+      path.join(cwd, "src", "agent", "dangling-escape.ts"),
+    );
+    fs.writeFileSync(path.join(cwd, "configs", "eslint.json"), "{}\n");
+    fs.symlinkSync(path.join("configs", "eslint.json"), path.join(cwd, ".eslintrc.json"));
 
     assert.equal(isPathAllowedByScope(cwd, "src/agent/index.ts", []), false);
     assert.equal(isPathAllowedByScope(cwd, "src/agent/index.ts", ["src/agent"]), true);
     assert.equal(isPathAllowedByScope(cwd, "src/agent-extra/index.ts", ["src/agent"]), false);
     assert.equal(isPathAllowedByScope(cwd, "../outside.ts", ["*"]), false);
     assert.equal(isPathAllowedByScope(cwd, "src/agent/escaped/secret.ts", ["src/agent"]), false);
+    // Dangling symlinks pointing outside cwd are resolved through readlink and blocked.
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/agent/dangling-escape.ts", ["src/agent"], "write"),
+      false,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/dangling-escape.ts", ["*"], "write"), false);
+    // In-cwd symlinked scope entries match both the symlink path and its canonical target.
+    assert.equal(isPathAllowedByScope(cwd, ".eslintrc.json", [".eslintrc.json"], "edit"), true);
+    // Pi native edit/write @, ~, and file:// path forms cannot escape cwd.
+    assert.equal(isPathAllowedByScope(cwd, "@../outside/x.ts", ["*"], "write"), false);
+    assert.equal(isPathAllowedByScope(cwd, "~/outside.ts", ["*"], "write"), false);
+    assert.equal(
+      isPathAllowedByScope(cwd, `file://${path.join(outside, "x.ts")}`, ["*"], "edit"),
+      false,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "@src/agent/index.ts", ["src/agent"], "edit"), true);
 
     assert.match(
       checkToolCallScope(cwd, [], "edit", { path: "src/agent/index.ts" }) ?? "",
@@ -276,7 +303,7 @@ nodeTest(
       agentDir: getPiAgentDir(),
       thinking: "medium",
       executionCwd: tempDir,
-      defaultModel: DEFAULT_OVERSEER_WORKER,
+      ...splitWorkerSpec(DEFAULT_OVERSEER_WORKER),
       contract,
       overseer: { enabled: true, judge: "auto" },
     });
@@ -299,7 +326,7 @@ nodeTest(
       agentDir: getPiAgentDir(),
       thinking: "medium",
       executionCwd: tempDir,
-      defaultModel: DEFAULT_OVERSEER_WORKER,
+      ...splitWorkerSpec(DEFAULT_OVERSEER_WORKER),
       contract,
       overseer: { enabled: true, judge: "auto" },
     });
