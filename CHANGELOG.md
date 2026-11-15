@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.41 - 2026-11-15
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat/overseer contract (#441) ([ba7fc4b](https://github.com/fitchmultz/pi-subagents/commit/ba7fc4b82a3fa35857f0c804922aad842ea86711))
+
+### What's Changed
+
+- feat/overseer contract by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/441
+- feat(agent): add mid-run overseer sentinel, pause gate, and escalation wake (2/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/442
+- feat(agent): add overseer review gate, review action, and docs (3/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/444
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.40...v0.52.41
+
 ## 0.52.40 - 2026-11-14
 
 <!-- npm-release:unreleased:start -->
