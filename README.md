@@ -54,7 +54,7 @@ in settings). When off, `delegate` and `agent_runs` behave identically to defaul
 When enabled:
 
 - `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
-  `requiredPrimitives`, `nonGoals`) and defaults omitted `model`/`thinking` to the configured worker (`google/gemini-4-hydrogen:xhigh`).
+  `requiredPrimitives`, `nonGoals`) and defaults omitted `model`/`thinking` (or naming that worker without `thinking`) to the configured worker (`google/gemini-4-hydrogen:xhigh`).
 - Child sessions block out-of-scope edit tool calls before writing, run zero-cost Git/loop
   tripwires on mutating turns, and sample an available decision classifier
   (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff
