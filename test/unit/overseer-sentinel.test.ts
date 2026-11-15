@@ -27,7 +27,7 @@ import {
   resolveActiveEscalation,
   waitForEscalationResolution,
 } from "../../src/agent/overseer-sentinel.ts";
-import { read, runDirectory, write } from "../../src/agent/storage.ts";
+import { enqueue, read, runDirectory, write } from "../../src/agent/storage.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
 function initGitRepo(t: TestContext): string {
@@ -111,7 +111,7 @@ nodeTest(
     fs.writeFileSync(path.join(repo, "README.md"), "preexisting dirty\n");
     execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: repo, stdio: "ignore" });
 
-    const baseline = captureRepoSnapshot(repo);
+    const baseline = captureRepoSnapshot(repo, { baseBranch: "main" });
     const contract = {
       scope: ["src"],
       verification: ["npm test"],
@@ -122,7 +122,11 @@ nodeTest(
     // and non-ASCII filenames inside scope are parsed via -z without Git octal quoting.
     fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
     fs.writeFileSync(path.join(repo, "src", "café.ts"), "export const accent = true;\n");
-    const cleanSnap = captureRepoSnapshot(repo, baseline.head);
+    const cleanSnap = captureRepoSnapshot(repo, {
+      baselineHead: baseline.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
     assert.deepEqual(changedFilesSinceBaseline(repo, baseline, cleanSnap), ["src/café.ts"]);
     assert.equal(
       checkDeterministicTripwires({
@@ -137,9 +141,13 @@ nodeTest(
 
     // Subdirectory delegation cwd resolves Git's worktree-relative paths against show-toplevel.
     const subCwd = path.join(repo, "packages", "foo");
-    const subBase = captureRepoSnapshot(subCwd);
+    const subBase = captureRepoSnapshot(subCwd, { baseBranch: "main" });
     fs.writeFileSync(path.join(subCwd, "src", "item.ts"), "export const y = 2;\n");
-    const subClean = captureRepoSnapshot(subCwd, subBase.head);
+    const subClean = captureRepoSnapshot(subCwd, {
+      baselineHead: subBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
     assert.deepEqual(changedFilesSinceBaseline(subCwd, subBase, subClean), ["src/item.ts"]);
     assert.equal(
       checkDeterministicTripwires({
@@ -158,9 +166,13 @@ nodeTest(
     execFileSync("git", ["add", "UPSTREAM.md"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "advance main"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["checkout", "feat/work"], { cwd: repo, stdio: "ignore" });
-    const divergedBase = captureRepoSnapshot(repo);
+    const divergedBase = captureRepoSnapshot(repo, { baseBranch: "main" });
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 22;\n");
-    const divergedCurrent = captureRepoSnapshot(repo, divergedBase.head);
+    const divergedCurrent = captureRepoSnapshot(repo, {
+      baselineHead: divergedBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
     assert.equal(
       checkDeterministicTripwires({
         cwd: repo,
@@ -170,6 +182,23 @@ nodeTest(
         consecutiveErrors: 0,
       }),
       undefined,
+    );
+
+    // Unresolvable baseBranch fails closed instead of silently skipping ancestry checks.
+    const typoSnap = captureRepoSnapshot(repo, {
+      baselineHead: divergedBase.head,
+      hasBaseline: true,
+      baseBranch: "mun",
+    });
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: repo,
+        contract: { ...contract, baseBranch: "mun" },
+        baseline: divergedBase,
+        current: typoSnap,
+        consecutiveErrors: 0,
+      })?.kind,
+      "branch_violation",
     );
 
     const loopHit = checkDeterministicTripwires({
@@ -182,7 +211,11 @@ nodeTest(
     assert.equal(loopHit?.kind, "loop_violation");
 
     fs.writeFileSync(path.join(repo, "README.md"), "new drift\n");
-    const scopeSnap = captureRepoSnapshot(repo, baseline.head);
+    const scopeSnap = captureRepoSnapshot(repo, {
+      baselineHead: baseline.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
     const scopeHit = checkDeterministicTripwires({
       cwd: repo,
       contract,
@@ -195,22 +228,82 @@ nodeTest(
     assert.match(scopeHit.summary, /README\.md/u);
 
     fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
+    // Sneaky commit on main followed by switching back to feat/work is caught via localBaseHead.
+    const sneakBase = captureRepoSnapshot(repo, { baseBranch: "main" });
     execFileSync("git", ["checkout", "main"], { cwd: repo, stdio: "ignore" });
-    const mainBaseline = captureRepoSnapshot(repo);
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const x = 3;\n");
     execFileSync("git", ["commit", "-m", "direct main commit", "src/allowed.ts"], {
       cwd: repo,
       stdio: "ignore",
     });
-    const mainAfter = captureRepoSnapshot(repo, mainBaseline.head);
+    execFileSync("git", ["checkout", "feat/work"], { cwd: repo, stdio: "ignore" });
+    const sneakAfter = captureRepoSnapshot(repo, {
+      baselineHead: sneakBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
     const branchHit = checkDeterministicTripwires({
       cwd: repo,
       contract,
-      baseline: mainBaseline,
-      current: mainAfter,
+      baseline: sneakBase,
+      current: sneakAfter,
       consecutiveErrors: 0,
     });
     assert.equal(branchHit?.kind, "branch_violation");
+
+    // Committed git mv from out-of-scope README.md into src/ is caught via --no-renames.
+    const renameBase = captureRepoSnapshot(repo, { baseBranch: "main" });
+    execFileSync("git", ["mv", "README.md", "src/moved-readme.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "move readme", "README.md", "src/moved-readme.md"], {
+      cwd: repo,
+      stdio: "ignore",
+    });
+    const renameAfter = captureRepoSnapshot(repo, {
+      baselineHead: renameBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: repo,
+        contract,
+        baseline: renameBase,
+        current: renameAfter,
+        consecutiveErrors: 0,
+      })?.kind,
+      "scope_violation",
+    );
+
+    // First commit in an unborn Git repository catches both out-of-scope files and main commits.
+    const unborn = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-unborn-"));
+    t.after(() => fs.rmSync(unborn, { recursive: true, force: true }));
+    execFileSync("git", ["init", "-b", "main"], { cwd: unborn, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: unborn,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: unborn, stdio: "ignore" });
+    const unbornBase = captureRepoSnapshot(unborn, { baseBranch: "main" });
+    fs.mkdirSync(path.join(unborn, "src"), { recursive: true });
+    fs.writeFileSync(path.join(unborn, "src", "init.ts"), "export const v = 1;\n");
+    execFileSync("git", ["add", "."], { cwd: unborn, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "first"], { cwd: unborn, stdio: "ignore" });
+    const unbornAfter = captureRepoSnapshot(unborn, {
+      baselineHead: unbornBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.deepEqual(changedFilesSinceBaseline(unborn, unbornBase, unbornAfter), ["src/init.ts"]);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: unborn,
+        contract,
+        baseline: unbornBase,
+        current: unbornAfter,
+        consecutiveErrors: 0,
+      })?.kind,
+      "branch_violation",
+    );
   },
 );
 
@@ -467,5 +560,16 @@ nodeTest(
     await waiting;
     assert.equal(resolved, true);
     assert.equal(fs.existsSync(path.join(runDirectory(base, launch.id), "escalation.json")), false);
+
+    // Guidance enqueued before waitForEscalationResolution starts is honored without wedging.
+    enqueue(base, launch, { action: "steer", prompt: "Fix drift immediately" });
+    const preSteeredVerdict = await waitForEscalationResolution({
+      base,
+      launch,
+      escalation: { ...escalation, id: "esc-pre-steered" },
+      approvedDigests: approved,
+      isStopping: () => false,
+    });
+    assert.equal(preSteeredVerdict, "steered");
   },
 );

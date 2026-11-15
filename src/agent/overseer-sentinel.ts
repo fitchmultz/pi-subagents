@@ -39,6 +39,8 @@ const JUDGE_DIFF_LINE_DELTA = 120;
 interface RunSentinelState {
   readonly runId: string;
   readonly baseline: RepoSnapshot;
+  readonly excludePaths: readonly string[];
+  readonly seenSteerFiles: Set<string>;
   consecutiveErrors: number;
   mutatingTurnsSinceJudge: number;
   lastJudgedDigest: string;
@@ -67,29 +69,31 @@ function summarizeTurnTools(toolResults: unknown): { hadError: boolean; mutated:
   return { hadError, mutated };
 }
 
-function commandFiles(commandsDir: string): Set<string> {
+function jsonFiles(dir: string): Set<string> {
   try {
-    return new Set(fs.readdirSync(commandsDir).filter((file) => file.endsWith(".json")));
+    return new Set(fs.readdirSync(dir).filter((file) => file.endsWith(".json")));
   } catch {
     return new Set();
   }
 }
 
-function hasNewSteer(
+function consumePendingSteers(
   commandsDir: string,
   runId: string,
-  existingCommands: ReadonlySet<string>,
+  seenSteerFiles: Set<string>,
 ): boolean {
-  for (const file of commandFiles(commandsDir)) {
-    if (existingCommands.has(file)) {
+  let found = false;
+  for (const file of jsonFiles(commandsDir)) {
+    if (seenSteerFiles.has(file)) {
       continue;
     }
     const meta = read(path.join(commandsDir, file), commandMetadataSchema);
     if (meta?.runId === runId && meta.action === "steer") {
-      return true;
+      seenSteerFiles.add(file);
+      found = true;
     }
   }
-  return false;
+  return found;
 }
 
 function checkResolution(
@@ -113,13 +117,15 @@ export async function waitForEscalationResolution(options: {
   escalation: Escalation;
   approvedDigests: Set<string>;
   isStopping: () => boolean;
+  seenSteerFiles?: Set<string> | undefined;
 }): Promise<EscalationResolution["verdict"]> {
   const { base, launch, escalation, approvedDigests, isStopping } = options;
   const runDir = runDirectory(base, launch.id);
-  const commandsDir = path.join(conversation(base, launch), "commands");
+  const convDir = conversation(base, launch);
+  const commandsDir = path.join(convDir, "commands");
+  const seenSteers = options.seenSteerFiles ?? jsonFiles(path.join(convDir, "admissions"));
   const escalationFile = path.join(runDir, "escalation.json");
   const resolutionFile = path.join(runDir, "escalation-resolution.json");
-  const existingCommands = commandFiles(commandsDir);
   write(escalationFile, escalation);
 
   const wake = new Wake();
@@ -132,9 +138,10 @@ export async function waitForEscalationResolution(options: {
       watchCommands.ensure();
       const verdict = checkResolution(resolutionFile, escalation.id, approvedDigests);
       if (verdict !== undefined) {
+        consumePendingSteers(commandsDir, launch.id, seenSteers);
         return verdict;
       }
-      if (hasNewSteer(commandsDir, launch.id, existingCommands)) {
+      if (consumePendingSteers(commandsDir, launch.id, seenSteers)) {
         return "steered";
       }
       await wake.sleep(200);
@@ -220,6 +227,10 @@ async function runSafeJudgeCheckpoint(
   }
 }
 
+export function harnessExcludePaths(base: string, launch: Launch): string[] {
+  return [base, launch.agentDir, path.dirname(launch.sessionFile)];
+}
+
 class SentinelRunner {
   private state: RunSentinelState | undefined;
   private readonly options: SentinelOptions;
@@ -234,14 +245,32 @@ class SentinelRunner {
     }
   }
 
+  markAdmittedTurnSteers(launch: Launch): void {
+    if (launch.overseer?.enabled !== true || launch.contract === undefined) {
+      return;
+    }
+    const current = this.ensureState(launch);
+    const convDir = conversation(this.options.base, launch);
+    for (const file of jsonFiles(path.join(convDir, "admissions"))) {
+      current.seenSteerFiles.add(file);
+    }
+  }
+
   private ensureState(launch: Launch): RunSentinelState {
     if (this.state?.runId === launch.id) {
       return this.state;
     }
-    const baseline = captureRepoSnapshot(launch.cwd);
+    const excludePaths = harnessExcludePaths(this.options.base, launch);
+    const baseline = captureRepoSnapshot(launch.cwd, {
+      baseBranch: launch.contract?.baseBranch,
+      excludePaths,
+    });
+    const commandsDir = path.join(conversation(this.options.base, launch), "commands");
     this.state = {
       runId: launch.id,
       baseline,
+      excludePaths,
+      seenSteerFiles: jsonFiles(commandsDir),
       consecutiveErrors: 0,
       mutatingTurnsSinceJudge: 0,
       lastJudgedDigest: baseline.digest,
@@ -277,6 +306,7 @@ class SentinelRunner {
       escalation,
       approvedDigests: current.approvedDigests,
       isStopping: this.options.isStopping,
+      seenSteerFiles: current.seenSteerFiles,
     });
   }
 
@@ -293,13 +323,19 @@ class SentinelRunner {
       return undefined;
     }
     const current = this.ensureState(launch);
-    const snapshot = captureRepoSnapshot(launch.cwd, current.baseline.head);
+    const snapshot = captureRepoSnapshot(launch.cwd, {
+      baselineHead: current.baseline.head,
+      hasBaseline: true,
+      baseBranch: launch.contract.baseBranch,
+      excludePaths: current.excludePaths,
+    });
     const localHit = checkDeterministicTripwires({
       cwd: launch.cwd,
       contract: launch.contract,
       baseline: current.baseline,
       current: snapshot,
       consecutiveErrors: current.consecutiveErrors,
+      excludePaths: current.excludePaths,
     });
     if (localHit !== undefined && !current.approvedDigests.has(localHit.diffDigest)) {
       return this.escalate(launch, localHit);
@@ -308,7 +344,12 @@ class SentinelRunner {
       return undefined;
     }
     current.mutatingTurnsSinceJudge = 0;
-    const changedFiles = changedFilesSinceBaseline(launch.cwd, current.baseline, snapshot);
+    const changedFiles = changedFilesSinceBaseline(
+      launch.cwd,
+      current.baseline,
+      snapshot,
+      current.excludePaths,
+    );
     const judgeHit = await runSafeJudgeCheckpoint(launch, ctx, snapshot, changedFiles);
     if (judgeHit === undefined) {
       current.lastJudgedDigest = snapshot.digest;
@@ -348,6 +389,9 @@ export function attachOverseerSentinel(pi: ExtensionAPI, options: SentinelOption
   });
   pi.on("before_agent_start", () => {
     runner.primeBaseline(options.activeLaunch());
+  });
+  pi.on("turn_start", () => {
+    runner.markAdmittedTurnSteers(options.activeLaunch());
   });
   pi.on("turn_end", async (event, ctx) => {
     await runner.onTurnEnd(event, ctx);
