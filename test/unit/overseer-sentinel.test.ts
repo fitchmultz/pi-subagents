@@ -304,6 +304,52 @@ nodeTest(
       })?.kind,
       "branch_violation",
     );
+
+    // Unborn empty Git repository already checked out on a task branch allows in-scope edits/commits.
+    const unbornTask = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-unborn-task-"));
+    t.after(() => fs.rmSync(unbornTask, { recursive: true, force: true }));
+    execFileSync("git", ["init", "-b", "main"], { cwd: unbornTask, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: unbornTask,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: unbornTask, stdio: "ignore" });
+    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: unbornTask, stdio: "ignore" });
+    const unbornTaskBase = captureRepoSnapshot(unbornTask, { baseBranch: "main" });
+    fs.mkdirSync(path.join(unbornTask, "src"), { recursive: true });
+    fs.writeFileSync(path.join(unbornTask, "src", "init.ts"), "export const v = 1;\n");
+    const unbornTaskDirty = captureRepoSnapshot(unbornTask, {
+      baselineHead: unbornTaskBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: unbornTask,
+        contract,
+        baseline: unbornTaskBase,
+        current: unbornTaskDirty,
+        consecutiveErrors: 0,
+      }),
+      undefined,
+    );
+    execFileSync("git", ["add", "."], { cwd: unbornTask, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "task first"], { cwd: unbornTask, stdio: "ignore" });
+    const unbornTaskCommitted = captureRepoSnapshot(unbornTask, {
+      baselineHead: unbornTaskBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: unbornTask,
+        contract,
+        baseline: unbornTaskBase,
+        current: unbornTaskCommitted,
+        consecutiveErrors: 0,
+      }),
+      undefined,
+    );
   },
 );
 

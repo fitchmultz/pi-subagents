@@ -186,7 +186,6 @@ function refCommit(top: string, ref: string): string | undefined {
 function baseState(
   top: string,
   baseBranch: string | undefined,
-  branch: string | undefined,
   head: string | undefined,
 ): { local: string | undefined; resolved: string | undefined; unborn: boolean } {
   if (baseBranch === undefined) {
@@ -198,7 +197,10 @@ function baseState(
   return {
     local,
     resolved,
-    unborn: resolved === undefined && branch === baseBranch && head === undefined,
+    unborn:
+      resolved === undefined &&
+      head === undefined &&
+      trimmed(runGit(top, ["rev-list", "-n", "1", "--all"])) === undefined,
   };
 }
 
@@ -241,7 +243,7 @@ export function captureRepoSnapshot(cwd: string, options?: string | SnapshotOpti
   }
   const head = trimmed(runGit(top, ["rev-parse", "--verify", "HEAD"]));
   const branch = trimmed(runGit(top, ["symbolic-ref", "--quiet", "--short", "HEAD"]));
-  const bs = baseState(top, opts.baseBranch, branch, head);
+  const bs = baseState(top, opts.baseBranch, head);
   const fileStamps = parsePorcelainZ(top, statusRaw, excludedPrefixes(top, opts.excludePaths));
   const untracked = [...fileStamps.entries()]
     .filter(([, c]) => c.startsWith("??:"))
