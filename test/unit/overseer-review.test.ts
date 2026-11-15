@@ -315,5 +315,25 @@ nodeTest(
       }),
       true,
     );
+
+    // If baseline was a Git repo and completion git status fails (or .git disappears),
+    // changedFilesSinceBaseline fails closed so needsOverseerReview still gates settlement.
+    fs.rmSync(path.join(nonGitDir, ".git"), { recursive: true, force: true });
+    const brokenCurrent = captureRepoSnapshot(nonGitDir, {
+      baselineHead: nonGitCurrent.head,
+      hasBaseline: true,
+    });
+    const brokenChanged = changedFilesSinceBaseline(nonGitDir, nonGitCurrent, brokenCurrent);
+    assert.deepEqual(brokenChanged, ["(git-status-unavailable)"]);
+    assert.equal(
+      needsOverseerReview(base, nonGitLaunch, {
+        id: nonGitLaunch.id,
+        owner: launch.owner,
+        status: "completed",
+        endedAt: Date.now(),
+        changedFiles: brokenChanged,
+      }),
+      true,
+    );
   },
 );
