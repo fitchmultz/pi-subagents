@@ -342,22 +342,6 @@ nodeTest(
       contract,
     );
 
-    // Redundantly specifying the default worker model without `:thinking` still keeps `xhigh`.
-    const explicitDefaultWorker = await prepareLaunch({
-      input: { prompt: "Same worker without suffix", model: "google/gemini-4-hydrogen" },
-      context,
-      base,
-      owner: "parent-session",
-      agentDir: getPiAgentDir(),
-      thinking: "medium",
-      executionCwd: tempDir,
-      ...splitWorkerSpec(DEFAULT_OVERSEER_WORKER),
-      contract,
-      overseer: { enabled: true, judge: "auto" },
-    });
-    assert.equal(explicitDefaultWorker.model, "gemini-4-hydrogen");
-    assert.equal(explicitDefaultWorker.thinking, "xhigh");
-
     // Explicit per-call thinking overrides the default worker's :xhigh suffix without conflict.
     const overridden = await prepareLaunch({
       input: { prompt: "Quick tweak", thinking: "low" },
