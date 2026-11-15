@@ -389,3 +389,22 @@ export function parsePorcelainZ(
   }
   return stamps;
 }
+
+export function shortBranchName(raw: string | undefined): string | undefined {
+  return raw?.replace(/^refs\/heads\//u, "").replace(/^(?:refs\/remotes\/)?origin\//u, "");
+}
+
+export function hasFetchHeadSha(
+  top: string,
+  fetchHeadPath: string | undefined,
+  sha: string,
+): boolean {
+  if (fetchHeadPath === undefined) {
+    return false;
+  }
+  try {
+    return fs.readFileSync(path.resolve(top, fetchHeadPath), "utf8").includes(sha);
+  } catch {
+    return false;
+  }
+}

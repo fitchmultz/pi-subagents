@@ -427,7 +427,8 @@ nodeTest(
       undefined,
     );
 
-    // git pull --ff-only on main (and core.logAllRefUpdates=false fetch) also count as upstream sync.
+    // git pull --ff-only (including ref-form baseBranch: "origin/main") and reflogless fetch pass,
+    // while reflogless direct commit + push on main is still caught.
     fs.writeFileSync(path.join(upstream, "README.md"), "upstream pull update\n");
     execFileSync("git", ["commit", "-am", "upstream pull"], { cwd: upstream, stdio: "ignore" });
     execFileSync("git", ["checkout", "main"], { cwd: cloneDir, stdio: "ignore" });
@@ -436,17 +437,26 @@ nodeTest(
       stdio: "ignore",
     });
     execFileSync("git", ["checkout", "feat/work"], { cwd: cloneDir, stdio: "ignore" });
-    const pullAfter = captureRepoSnapshot(cloneDir, {
-      baselineHead: ffBase.head,
-      hasBaseline: true,
-      baseBranch: "main",
+    const refFormBase = captureRepoSnapshot(cloneDir, { baseBranch: "origin/main" });
+    fs.writeFileSync(path.join(upstream, "README.md"), "upstream ref-form update\n");
+    execFileSync("git", ["commit", "-am", "upstream ref-form"], { cwd: upstream, stdio: "ignore" });
+    execFileSync("git", ["config", "core.logAllRefUpdates", "false"], {
+      cwd: cloneDir,
+      stdio: "ignore",
     });
-    assert.deepEqual(changedFilesSinceBaseline(cloneDir, ffBase, pullAfter), []);
+    fs.rmSync(path.join(cloneDir, ".git", "logs"), { recursive: true, force: true });
+    execFileSync("git", ["fetch", "origin", "main:main"], { cwd: cloneDir, stdio: "ignore" });
+    const pullAfter = captureRepoSnapshot(cloneDir, {
+      baselineHead: refFormBase.head,
+      hasBaseline: true,
+      baseBranch: "origin/main",
+    });
+    assert.deepEqual(changedFilesSinceBaseline(cloneDir, refFormBase, pullAfter), []);
     assert.equal(
       checkDeterministicTripwires({
         cwd: cloneDir,
-        contract,
-        baseline: ffBase,
+        contract: { ...contract, baseBranch: "origin/main" },
+        baseline: refFormBase,
         current: pullAfter,
         consecutiveErrors: 0,
       }),
@@ -497,6 +507,49 @@ nodeTest(
         contract,
         baseline: pushBase,
         current: pushAfter,
+        consecutiveErrors: 0,
+      })?.kind,
+      "branch_violation",
+    );
+    // Even under scope: ['*'], losing Git status mid-run fails closed instead of silently passing.
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: pushClone,
+        contract: { scope: ["*"], verification: ["npm test"] },
+        baseline: pushBase,
+        current: captureRepoSnapshot(path.join(os.tmpdir(), "non-existent-git-dir")),
+        consecutiveErrors: 0,
+      })?.kind,
+      "loop_violation",
+    );
+    execFileSync("git", ["config", "core.logAllRefUpdates", "false"], {
+      cwd: pushClone,
+      stdio: "ignore",
+    });
+    fs.rmSync(path.join(pushClone, ".git", "logs"), { recursive: true, force: true });
+    const refloglessPushBase = captureRepoSnapshot(pushClone, { baseBranch: "main" });
+    execFileSync("git", ["checkout", "-B", "main", "origin/main"], {
+      cwd: pushClone,
+      stdio: "ignore",
+    });
+    fs.writeFileSync(path.join(pushClone, "src", "init.ts"), "export const a = 3;\n");
+    execFileSync("git", ["commit", "-am", "reflogless push"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["push", "origin", "refs/heads/main:refs/heads/main"], {
+      cwd: pushClone,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["checkout", "feat/work"], { cwd: pushClone, stdio: "ignore" });
+    const refloglessPushAfter = captureRepoSnapshot(pushClone, {
+      baselineHead: refloglessPushBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: pushClone,
+        contract,
+        baseline: refloglessPushBase,
+        current: refloglessPushAfter,
         consecutiveErrors: 0,
       })?.kind,
       "branch_violation",

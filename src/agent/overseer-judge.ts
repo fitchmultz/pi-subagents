@@ -12,10 +12,12 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DelegationContract, Escalation } from "./contracts.ts";
 import {
   excludedRepoPrefixes,
+  hasFetchHeadSha,
   isExcludedRepoPath,
   isPathAllowedByScope,
   parsePorcelainZ,
   safeRealpath,
+  shortBranchName,
   untrackedFilesPreview,
 } from "./overseer-scope.ts";
 
@@ -117,12 +119,16 @@ function isUpstreamSync(
   }
   const remoteRef = `refs/remotes/origin/${name}`;
   const remote = refCommit(top, remoteRef);
+  if (
+    remote === undefined ||
+    runGit(top, ["merge-base", "--is-ancestor", sha, remote]) === undefined
+  ) {
+    return false;
+  }
   const log = runGit(top, ["log", "-g", "-1", "--format=%gs", remoteRef]) ?? "";
-  return (
-    remote !== undefined &&
-    !log.startsWith("update by push") &&
-    runGit(top, ["merge-base", "--is-ancestor", sha, remote]) !== undefined
-  );
+  return log === ""
+    ? hasFetchHeadSha(top, trimmed(runGit(top, ["rev-parse", "--git-path", "FETCH_HEAD"])), remote)
+    : log.startsWith("fetch") || log.startsWith("pull");
 }
 
 const emptyTree = (top: string): string | undefined =>
@@ -151,10 +157,11 @@ function baseState(
   if (baseBranch === undefined) {
     return { resolved: undefined, unborn: false };
   }
+  const short = shortBranchName(baseBranch) ?? baseBranch;
   const resolved =
-    branchHeads.get(baseBranch) ??
+    branchHeads.get(short) ??
     refCommit(top, baseBranch) ??
-    refCommit(top, `refs/remotes/origin/${baseBranch}`);
+    refCommit(top, `refs/remotes/origin/${short}`);
   const unborn =
     resolved === undefined &&
     head === undefined &&
@@ -203,7 +210,7 @@ export function captureRepoSnapshot(cwd: string, options?: string | SnapshotOpti
     topLevel: top,
     head,
     branch,
-    baseBranch: opts.baseBranch,
+    baseBranch: shortBranchName(opts.baseBranch),
     resolvedBaseHead: bs.resolved,
     baseBranchUnborn: bs.unborn,
     branchHeads,
@@ -313,10 +320,11 @@ function branchViolation(
   if (baseBranch === undefined || !current.isGit || current.topLevel === undefined) {
     return undefined;
   }
-  const localBase = current.branchHeads.get(baseBranch);
+  const shortBase = shortBranchName(baseBranch) ?? baseBranch;
+  const localBase = current.branchHeads.get(shortBase);
   const localBaseMutated =
-    localBase !== baseline.branchHeads.get(baseBranch) &&
-    !isUpstreamSync(current.topLevel, baseBranch, localBase, baseline);
+    localBase !== baseline.branchHeads.get(shortBase) &&
+    !isUpstreamSync(current.topLevel, shortBase, localBase, baseline);
   if (localBaseMutated) {
     return `Child committed directly onto base branch '${baseBranch}' instead of a task branch.`;
   }
@@ -324,6 +332,27 @@ function branchViolation(
     return `Expected baseBranch '${baseBranch}' could not be resolved in Git.`;
   }
   return headAncestryIssue(current.topLevel, baseBranch, baseline, current);
+}
+
+function scopeOrGitIssue(
+  ctx: { cwd: string; scope: readonly string[]; baseline: RepoSnapshot; current: RepoSnapshot },
+  changedFiles: readonly string[],
+): { kind: Escalation["kind"]; summary: string } | undefined {
+  if (ctx.baseline.isGit && !ctx.current.isGit) {
+    return {
+      kind: "loop_violation",
+      summary: "Git status became unavailable during supervised run.",
+    };
+  }
+  const out = changedFiles.filter((f) => !isPathAllowedByScope(ctx.cwd, f, ctx.scope));
+  if (out.length === 0) {
+    return undefined;
+  }
+  const allowed = ctx.scope.length === 0 ? "read-only ([])" : ctx.scope.join(", ");
+  return {
+    kind: "scope_violation",
+    summary: `Modified out-of-scope path(s): ${out.join(", ")} (allowed scope: ${allowed}).`,
+  };
 }
 
 /** Zero-cost local checks for error loops, out-of-scope edits, and wrong Git branches. */
@@ -350,22 +379,21 @@ export function checkDeterministicTripwires(options: {
       `Child hit ${consecutiveErrors} consecutive turns with tool/command errors without clean progress.`,
     );
   }
-  const out = changedFiles.filter((f) => !isPathAllowedByScope(cwd, f, contract.scope));
-  if (out.length > 0) {
-    const allowed = contract.scope.length === 0 ? "read-only ([])" : contract.scope.join(", ");
-    return hit(
-      "scope_violation",
-      `Modified out-of-scope path(s): ${out.join(", ")} (allowed scope: ${allowed}).`,
-    );
+  const scopeIssue = scopeOrGitIssue(
+    { cwd, scope: contract.scope, baseline, current },
+    changedFiles,
+  );
+  if (scopeIssue !== undefined) {
+    return hit(scopeIssue.kind, scopeIssue.summary);
   }
-  const branchIssue =
+  const sb = shortBranchName(contract.baseBranch) ?? "";
+  const branchMoved =
     changedFiles.length > 0 ||
     current.head !== baseline.head ||
-    (contract.baseBranch !== undefined &&
-      current.branchHeads.get(contract.baseBranch) !==
-        baseline.branchHeads.get(contract.baseBranch))
-      ? branchViolation(contract.baseBranch, baseline, current)
-      : undefined;
+    current.branchHeads.get(sb) !== baseline.branchHeads.get(sb);
+  const branchIssue = branchMoved
+    ? branchViolation(contract.baseBranch, baseline, current)
+    : undefined;
   return branchIssue === undefined ? undefined : hit("branch_violation", branchIssue);
 }
 

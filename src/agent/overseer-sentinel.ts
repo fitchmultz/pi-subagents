@@ -32,9 +32,8 @@ const MUTATING_TOOLS = new Set([
   "apply_patch",
   "bash",
 ]);
-// Product contract (docs/reference.md): debounced judge checkpoints run every 4 mutating turns or 120 diff lines.
 const JUDGE_TURN_INTERVAL = 4;
-const JUDGE_DIFF_LINE_DELTA = 120;
+const JUDGE_DIFF_DELTA = 120;
 
 interface RunSentinelState {
   readonly runId: string;
@@ -42,14 +41,14 @@ interface RunSentinelState {
   readonly excludePaths: readonly string[];
   readonly seenSteerFiles: Set<string>;
   consecutiveErrors: number;
-  mutatingTurnsSinceJudge: number;
+  turnsSinceJudge: number;
   lastJudgedDigest: string;
   lastJudgedLines: number;
   strikes: number;
   readonly approvedDigests: Set<string>;
 }
 
-function summarizeTurnTools(toolResults: unknown): { hadError: boolean; mutated: boolean } {
+function turnTools(toolResults: unknown): { hadError: boolean; mutated: boolean } {
   if (!Array.isArray(toolResults)) {
     return { hadError: false, mutated: false };
   }
@@ -170,8 +169,8 @@ function shouldRunJudgeCheckpoint(
     return true;
   }
   return (
-    state.mutatingTurnsSinceJudge >= JUDGE_TURN_INTERVAL ||
-    Math.abs(diffLineCount(snapshot) - state.lastJudgedLines) >= JUDGE_DIFF_LINE_DELTA
+    state.turnsSinceJudge >= JUDGE_TURN_INTERVAL ||
+    Math.abs(diffLineCount(snapshot) - state.lastJudgedLines) >= JUDGE_DIFF_DELTA
   );
 }
 
@@ -181,7 +180,6 @@ export interface SentinelOptions {
   readonly isStopping: () => boolean;
 }
 
-/** Marks any active mid-run escalation on `launch` resolved so a paused child can proceed. */
 export function resolveActiveEscalation(
   base: string,
   launch: Launch,
@@ -201,7 +199,7 @@ export function resolveActiveEscalation(
   return active;
 }
 
-async function runSafeJudgeCheckpoint(
+async function safeJudge(
   launch: Launch,
   ctx: ExtensionContext,
   snapshot: RepoSnapshot,
@@ -249,13 +247,14 @@ class SentinelRunner {
     }
   }
 
-  markAdmittedTurnSteers(launch: Launch): void {
+  markTurnSteers(launch: Launch): void {
     if (launch.overseer?.enabled !== true || launch.contract === undefined) {
       return;
     }
     const current = this.ensureState(launch);
-    const convDir = conversation(this.options.base, launch);
-    for (const file of jsonFiles(path.join(convDir, "admissions"))) {
+    for (const file of jsonFiles(
+      path.join(conversation(this.options.base, launch), "admissions"),
+    )) {
       current.seenSteerFiles.add(file);
     }
   }
@@ -276,7 +275,7 @@ class SentinelRunner {
       excludePaths,
       seenSteerFiles: jsonFiles(commandsDir),
       consecutiveErrors: 0,
-      mutatingTurnsSinceJudge: 0,
+      turnsSinceJudge: 0,
       lastJudgedDigest: baseline.digest,
       lastJudgedLines: diffLineCount(baseline),
       strikes: 0,
@@ -343,14 +342,14 @@ class SentinelRunner {
     if (!shouldRunJudgeCheckpoint(current, snapshot, finalSettle)) {
       return undefined;
     }
-    current.mutatingTurnsSinceJudge = 0;
+    current.turnsSinceJudge = 0;
     const changedFiles = changedFilesSinceBaseline(
       launch.cwd,
       current.baseline,
       snapshot,
       current.excludePaths,
     );
-    const judgeHit = await runSafeJudgeCheckpoint(launch, ctx, snapshot, changedFiles);
+    const judgeHit = await safeJudge(launch, ctx, snapshot, changedFiles);
     if (judgeHit === undefined) {
       current.lastJudgedDigest = snapshot.digest;
       current.lastJudgedLines = diffLineCount(snapshot);
@@ -369,10 +368,10 @@ class SentinelRunner {
     }
     const current = this.ensureState(launch);
     const toolResults = isRecord(event) ? event.toolResults : undefined;
-    const { hadError, mutated } = summarizeTurnTools(toolResults);
+    const { hadError, mutated } = turnTools(toolResults);
     current.consecutiveErrors = hadError ? current.consecutiveErrors + 1 : 0;
     if (mutated) {
-      current.mutatingTurnsSinceJudge += 1;
+      current.turnsSinceJudge += 1;
     }
     if (!mutated && current.consecutiveErrors < CONSECUTIVE_ERROR_TURN_LIMIT) {
       return;
@@ -381,7 +380,6 @@ class SentinelRunner {
   }
 }
 
-/** Installs baseline priming, mid-run tripwires, and pre-settle checks inside a supervised child. */
 export function attachOverseerSentinel(pi: ExtensionAPI, options: SentinelOptions): void {
   const runner = new SentinelRunner(options);
   pi.on("session_start", () => {
@@ -391,7 +389,7 @@ export function attachOverseerSentinel(pi: ExtensionAPI, options: SentinelOption
     runner.primeBaseline(options.activeLaunch());
   });
   pi.on("turn_start", () => {
-    runner.markAdmittedTurnSteers(options.activeLaunch());
+    runner.markTurnSteers(options.activeLaunch());
   });
   pi.on("turn_end", async (event, ctx) => {
     await runner.onTurnEnd(event, ctx);
