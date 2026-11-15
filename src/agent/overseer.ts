@@ -97,10 +97,11 @@ function readEntryState(data: unknown, fallback: OverseerState): OverseerState |
 
 function reconstructBranchState(
   pi: Pick<ExtensionAPI, "getFlag" | "getSettings">,
-  ctx: Pick<ExtensionContext, "sessionManager">,
+  ctx: { readonly sessionManager: { readonly getBranch?: () => readonly unknown[] } },
 ): OverseerState {
   let current = configuredDefaults(pi);
-  const rawEntries: unknown = ctx.sessionManager.getBranch();
+  const rawEntries: unknown =
+    typeof ctx.sessionManager.getBranch === "function" ? ctx.sessionManager.getBranch() : [];
   if (!Array.isArray(rawEntries)) {
     return current;
   }

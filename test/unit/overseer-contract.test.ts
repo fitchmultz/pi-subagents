@@ -202,8 +202,10 @@ nodeTest(
     const outside = path.join(root, "outside");
     fs.mkdirSync(path.join(cwd, "src", "agent"), { recursive: true });
     fs.mkdirSync(path.join(cwd, "configs"), { recursive: true });
-    fs.mkdirSync(outside, { recursive: true });
+    fs.mkdirSync(path.join(outside, "dir"), { recursive: true });
     fs.symlinkSync(outside, path.join(cwd, "src", "agent", "escaped"));
+    fs.symlinkSync(path.join(outside, "dir"), path.join(cwd, "src", "agent", "b"));
+    fs.symlinkSync("b/../escaped.ts", path.join(cwd, "src", "agent", "a"));
     fs.symlinkSync(
       path.join(outside, "missing-secret.ts"),
       path.join(cwd, "src", "agent", "dangling-escape.ts"),
@@ -222,6 +224,22 @@ nodeTest(
       false,
     );
     assert.equal(isPathAllowedByScope(cwd, "src/agent/dangling-escape.ts", ["*"], "write"), false);
+    // Symlink targets containing intermediate symlink + '..' (a -> b/../escaped.ts) are blocked.
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/a", ["src/agent"], "write"), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/a", ["*"], "write"), false);
+    // Batch edit tools follow symlinks before '..' (src/agent/b/../secrets.txt -> outside/secrets.txt).
+    assert.match(
+      checkToolCallScope(cwd, ["src/agent"], "write_files", {
+        files: [{ path: "src/agent/b/../secrets.txt" }],
+      }) ?? "",
+      /blocks editing/u,
+    );
+    assert.match(
+      checkToolCallScope(cwd, ["*"], "apply_patch", {
+        input: "*** Begin Patch\n*** Add File: src/agent/b/../patched.txt\n*** End Patch",
+      }) ?? "",
+      /blocks editing/u,
+    );
     // In-cwd symlinked scope entries match both the symlink path and its canonical target.
     assert.equal(isPathAllowedByScope(cwd, ".eslintrc.json", [".eslintrc.json"], "edit"), true);
     // Pi native edit/write @, ~, and file:// path forms cannot escape cwd.

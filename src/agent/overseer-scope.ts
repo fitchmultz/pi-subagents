@@ -98,63 +98,66 @@ function normalizePiEditCandidate(cwd: string, raw: string): string | undefined 
   return path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
 }
 
-function resolveCandidateForTool(
-  cwd: string,
-  candidatePath: string,
-  toolName?: string,
-): string | undefined {
-  if (toolName !== undefined && PI_NATIVE_EDIT_TOOLS.has(toolName)) {
-    return normalizePiEditCandidate(cwd, candidatePath);
-  }
-  return path.resolve(cwd, candidatePath);
+function splitSegments(raw: string): string[] {
+  return raw.replaceAll("\\", "/").split("/");
 }
 
-function resolveSymlinkStep(cursor: string, tail: readonly string[]): string | undefined {
-  const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+function readSymlinkTarget(candidate: string): string | undefined {
+  const stat = fs.lstatSync(candidate, { throwIfNoEntry: false });
   if (stat?.isSymbolicLink() !== true) {
     return undefined;
   }
-  return path.join(path.resolve(path.dirname(cursor), fs.readlinkSync(cursor)), ...tail);
+  return fs.readlinkSync(candidate);
 }
 
-function tryRealpath(target: string): string | undefined {
-  try {
-    return fs.realpathSync(target);
-  } catch {
-    return undefined;
-  }
-}
-
-function canonicalPath(target: string): string | undefined {
-  const tail: string[] = [];
-  let cursor = path.resolve(target);
+function kernelCanonicalPath(initialBase: string, rawPath: string): string | undefined {
+  let current = path.isAbsolute(rawPath) ? path.parse(rawPath).root : initialBase;
+  const queue = splitSegments(rawPath);
   let hops = 0;
-  for (;;) {
-    const real = tryRealpath(cursor);
-    if (real !== undefined) {
-      return path.join(real, ...tail);
+  while (queue.length > 0) {
+    const segment = queue.shift();
+    if (segment === undefined || segment === "" || segment === ".") {
+      continue;
     }
-    const linked = resolveSymlinkStep(cursor, tail);
-    if (linked !== undefined) {
+    if (segment === "..") {
+      current = path.dirname(current);
+      continue;
+    }
+    const next = path.join(current, segment);
+    const linkTarget = readSymlinkTarget(next);
+    if (linkTarget !== undefined) {
       hops += 1;
       if (hops > MAX_SYMLINK_HOPS) {
         return undefined;
       }
-      cursor = linked;
-      tail.length = 0;
+      if (path.isAbsolute(linkTarget)) {
+        current = path.parse(linkTarget).root;
+      }
+      queue.unshift(...splitSegments(linkTarget));
       continue;
     }
-    const parent = path.dirname(cursor);
-    if (parent === cursor) {
-      return path.join(cursor, ...tail);
-    }
-    tail.unshift(path.basename(cursor));
-    cursor = parent;
+    current = next;
   }
+  return current;
 }
 
-function canonicalScopeEntry(cwd: string, resolvedCwd: string, entry: string): string | undefined {
-  const target = canonicalPath(path.resolve(cwd, entry));
+function resolveTargetPath(
+  cwd: string,
+  resolvedCwd: string,
+  candidatePath: string,
+  toolName?: string,
+): string | undefined {
+  if (toolName !== undefined && PI_NATIVE_EDIT_TOOLS.has(toolName)) {
+    const lexical = normalizePiEditCandidate(cwd, candidatePath);
+    return lexical === undefined
+      ? undefined
+      : kernelCanonicalPath(path.parse(lexical).root, lexical);
+  }
+  return kernelCanonicalPath(resolvedCwd, candidatePath);
+}
+
+function canonicalScopeEntry(resolvedCwd: string, entry: string): string | undefined {
+  const target = kernelCanonicalPath(resolvedCwd, entry);
   if (target === undefined) {
     return undefined;
   }
@@ -175,9 +178,12 @@ export function isPathAllowedByScope(
   if (scope.length === 0) {
     return false;
   }
-  const resolvedCwd = canonicalPath(cwd);
-  const candidate = resolveCandidateForTool(cwd, candidatePath, toolName);
-  const resolvedTarget = candidate === undefined ? undefined : canonicalPath(candidate);
+  const absCwd = path.resolve(cwd);
+  const resolvedCwd = kernelCanonicalPath(path.parse(absCwd).root, absCwd);
+  const resolvedTarget =
+    resolvedCwd === undefined
+      ? undefined
+      : resolveTargetPath(cwd, resolvedCwd, candidatePath, toolName);
   if (resolvedCwd === undefined || resolvedTarget === undefined) {
     return false;
   }
@@ -193,7 +199,7 @@ export function isPathAllowedByScope(
   }
   const relPosix = relative.split(path.sep).join("/");
   return scope.some((entry) => {
-    const canonicalEntry = canonicalScopeEntry(cwd, resolvedCwd, entry);
+    const canonicalEntry = canonicalScopeEntry(resolvedCwd, entry);
     return (
       canonicalEntry !== undefined &&
       (relPosix === canonicalEntry || relPosix.startsWith(`${canonicalEntry}/`))
