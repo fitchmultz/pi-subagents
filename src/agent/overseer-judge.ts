@@ -52,6 +52,7 @@ export interface RepoSnapshot {
   readonly topLevel: string | undefined;
   readonly head: string | undefined;
   readonly branch: string | undefined;
+  readonly baseBranch: string | undefined;
   readonly resolvedBaseHead: string | undefined;
   readonly baseBranchUnborn: boolean;
   readonly branchHeads: ReadonlyMap<string, string>;
@@ -71,6 +72,7 @@ const NON_GIT_SNAPSHOT: RepoSnapshot = {
   topLevel: undefined,
   head: undefined,
   branch: undefined,
+  baseBranch: undefined,
   resolvedBaseHead: undefined,
   baseBranchUnborn: false,
   branchHeads: new Map(),
@@ -86,7 +88,7 @@ function runGit(cwd: string, args: readonly string[]): string | undefined {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 4194304,
+      maxBuffer: 67108864,
     });
   } catch {
     return undefined;
@@ -107,7 +109,7 @@ function isUpstreamSync(
   sha: string | undefined,
   baseline: RepoSnapshot,
 ): boolean {
-  if (sha === undefined) {
+  if (sha === undefined || name !== baseline.baseBranch) {
     return false;
   }
   if (sha === baseline.resolvedBaseHead) {
@@ -118,7 +120,7 @@ function isUpstreamSync(
   const log = runGit(top, ["log", "-g", "-1", "--format=%gs", remoteRef]) ?? "";
   return (
     remote !== undefined &&
-    log.startsWith("fetch") &&
+    !log.startsWith("update by push") &&
     runGit(top, ["merge-base", "--is-ancestor", sha, remote]) !== undefined
   );
 }
@@ -201,6 +203,7 @@ export function captureRepoSnapshot(cwd: string, options?: string | SnapshotOpti
     topLevel: top,
     head,
     branch,
+    baseBranch: opts.baseBranch,
     resolvedBaseHead: bs.resolved,
     baseBranchUnborn: bs.unborn,
     branchHeads,
@@ -252,7 +255,7 @@ export function changedFilesSinceBaseline(
 ): string[] {
   const top = current.topLevel;
   if (!current.isGit || top === undefined) {
-    return [];
+    return baseline.isGit ? ["(git-status-unavailable)"] : [];
   }
   const excluded = excludedRepoPrefixes(top, excludePaths);
   const paths = new Set<string>();
@@ -399,13 +402,12 @@ function buildJudgeContext(options: {
   snapshot: RepoSnapshot;
 }): ClassifierContext {
   const criteria: Record<string, string> = {
-    compliant: "Stays directly focused on the task prompt, contract, and required primitives",
-    scope_violation:
-      "Introduces unrequested features, speculative fallbacks, or changes forbidden by nonGoals",
+    compliant: "Complies with the prompt, contract, and required primitives",
+    scope_violation: "Adds unrequested features, fallbacks, or changes forbidden by nonGoals",
   };
   const req = options.contract.requiredPrimitives;
   if (req !== undefined && req.length > 0) {
-    criteria.primitive_violation = `Reimplements or bypasses required primitives (${req.join(", ")}) with custom wrappers, caches, or manual plumbing`;
+    criteria.primitive_violation = `Bypasses required primitives (${req.join(", ")}) with custom wrappers or plumbing`;
   }
   return {
     state: {
@@ -420,8 +422,7 @@ function buildJudgeContext(options: {
     questions: {
       verdict: {
         type: "choice",
-        instructions:
-          "Select whether the diff complies with the delegation contract or clearly violates it.",
+        instructions: "Classify whether the diff complies with or violates the contract.",
         criteria,
       },
     },

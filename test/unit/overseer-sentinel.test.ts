@@ -427,6 +427,32 @@ nodeTest(
       undefined,
     );
 
+    // git pull --ff-only on main (and core.logAllRefUpdates=false fetch) also count as upstream sync.
+    fs.writeFileSync(path.join(upstream, "README.md"), "upstream pull update\n");
+    execFileSync("git", ["commit", "-am", "upstream pull"], { cwd: upstream, stdio: "ignore" });
+    execFileSync("git", ["checkout", "main"], { cwd: cloneDir, stdio: "ignore" });
+    execFileSync("git", ["pull", "--ff-only", "origin", "main"], {
+      cwd: cloneDir,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["checkout", "feat/work"], { cwd: cloneDir, stdio: "ignore" });
+    const pullAfter = captureRepoSnapshot(cloneDir, {
+      baselineHead: ffBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.deepEqual(changedFilesSinceBaseline(cloneDir, ffBase, pullAfter), []);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: cloneDir,
+        contract,
+        baseline: ffBase,
+        current: pullAfter,
+        consecutiveErrors: 0,
+      }),
+      undefined,
+    );
+
     // Child committing directly on main and pushing to origin/main (even with a colliding `main`
     // tag present) is still caught as branch_violation, not treated as an upstream fast-forward.
     const bareOrigin = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-bare-origin-"));
