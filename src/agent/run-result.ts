@@ -9,6 +9,7 @@ import {
   changedFilesSinceBaseline,
   type RepoSnapshot,
 } from "./overseer-judge.ts";
+import { harnessExcludePaths } from "./overseer-sentinel.ts";
 import { runDirectory, write } from "./storage.ts";
 import { accountingFields, type UsageIndex } from "./usage.ts";
 
@@ -63,15 +64,30 @@ export interface EndedRun {
   readonly error?: string | undefined;
   readonly repoBaseline?: RepoSnapshot | undefined;
 }
-export function captureOverseerBaseline(launch: Launch): RepoSnapshot | undefined {
-  return launch.overseer?.enabled === true ? captureRepoSnapshot(launch.cwd) : undefined;
+export function captureOverseerBaseline(base: string, launch: Launch): RepoSnapshot | undefined {
+  return launch.overseer?.enabled === true
+    ? captureRepoSnapshot(launch.cwd, {
+        baseBranch: launch.contract?.baseBranch,
+        excludePaths: harnessExcludePaths(base, launch),
+      })
+    : undefined;
 }
-function detectedChanges(launch: Launch, baseline: RepoSnapshot | undefined): string[] | undefined {
+function detectedChanges(
+  base: string,
+  launch: Launch,
+  baseline: RepoSnapshot | undefined,
+): string[] | undefined {
   if (baseline === undefined || !baseline.isGit) {
     return undefined;
   }
-  const current = captureRepoSnapshot(launch.cwd, baseline.head);
-  const changed = changedFilesSinceBaseline(launch.cwd, baseline, current);
+  const excludePaths = harnessExcludePaths(base, launch);
+  const current = captureRepoSnapshot(launch.cwd, {
+    baselineHead: baseline.head,
+    hasBaseline: true,
+    baseBranch: launch.contract?.baseBranch,
+    excludePaths,
+  });
+  const changed = changedFilesSinceBaseline(launch.cwd, baseline, current, excludePaths);
   return changed.length > 0 ? changed.slice(0, 100) : undefined;
 }
 function usage(launch: Launch, run: EndedRun, terminal: string | undefined): AccountingState {
@@ -122,7 +138,7 @@ export function saveResult(base: string, launch: Launch, run: EndedRun): void {
   const terminal = response(run.session, run.baseline);
   const message = terminal?.message;
   const failure = failureReason(run.error, message);
-  const changedFiles = detectedChanges(launch, run.repoBaseline);
+  const changedFiles = detectedChanges(base, launch, run.repoBaseline);
   const result: Result = {
     id: launch.id,
     owner: launch.owner,

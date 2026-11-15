@@ -1,11 +1,13 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Escalation, Launch, Result } from "../../src/agent/contracts.ts";
+import { captureRepoSnapshot, changedFilesSinceBaseline } from "../../src/agent/overseer-judge.ts";
 import {
   buildReviewGateDraft,
   needsOverseerReview,
@@ -15,6 +17,7 @@ import {
   unreviewedCompletedRuns,
 } from "../../src/agent/overseer-review.ts";
 import { waitForEscalationResolution } from "../../src/agent/overseer-sentinel.ts";
+import { captureOverseerBaseline } from "../../src/agent/run-result.ts";
 import { runDirectory, write } from "../../src/agent/storage.ts";
 
 function makeLaunch(
@@ -205,5 +208,39 @@ nodeTest(
     assert.equal(actionResult.target.id, tipB.id);
     await tipWait;
     assert.equal(tipDigests.has("tip-digest"), true);
+
+    // Unborn empty Git repo where a scope:[] child makes the first commit still populates
+    // changedFiles so needsOverseerReview gates parent settlement.
+    const unbornRepo = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-review-unborn-"));
+    t.after(() => fs.rmSync(unbornRepo, { recursive: true, force: true }));
+    execFileSync("git", ["init", "-b", "main"], { cwd: unbornRepo, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: unbornRepo,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: unbornRepo, stdio: "ignore" });
+    const unbornLaunch: Launch = {
+      ...makeLaunch(base, "unborn-readonly", launch.owner, { scope: [] }),
+      cwd: unbornRepo,
+    };
+    const unbornBaseline = captureOverseerBaseline(base, unbornLaunch);
+    assert.ok(unbornBaseline !== undefined);
+    fs.writeFileSync(path.join(unbornRepo, "first.txt"), "hello\n");
+    execFileSync("git", ["add", "first.txt"], { cwd: unbornRepo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: unbornRepo, stdio: "ignore" });
+    const unbornCurrent = captureRepoSnapshot(unbornRepo, {
+      baselineHead: unbornBaseline.head,
+      hasBaseline: true,
+    });
+    const unbornChanged = changedFilesSinceBaseline(unbornRepo, unbornBaseline, unbornCurrent);
+    assert.deepEqual(unbornChanged, ["first.txt"]);
+    const unbornResult: Result = {
+      id: unbornLaunch.id,
+      owner: launch.owner,
+      status: "completed",
+      endedAt: Date.now(),
+      changedFiles: unbornChanged,
+    };
+    assert.equal(needsOverseerReview(base, unbornLaunch, unbornResult), true);
   },
 );

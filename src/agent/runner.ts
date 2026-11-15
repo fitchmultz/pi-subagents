@@ -159,7 +159,7 @@ class Actor {
     session: AgentSession,
     baseline: ReadonlySet<string>,
   ): Promise<void> {
-    const repoBaseline = captureOverseerBaseline(launch);
+    const repoBaseline = captureOverseerBaseline(this.base, launch);
     const save = (error?: string): void => {
       const { accounting, stopping } = this;
       saveResult(this.base, launch, {
