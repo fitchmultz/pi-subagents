@@ -145,8 +145,8 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
   const files = escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)";
   const stopHint =
     escalation.strikes >= 3
-      ? '3rd strike: prefer `agent_runs` `action="stop"`, or approve a false positive (`action="review"`, `verdict="approved"`).'
-      : 'Steer (`agent_runs` `action="continue"` or `action="review"` `verdict="changes_requested"`), approve (`action="review"` `verdict="approved"`), or `action="stop"`.';
+      ? '3rd strike: prefer `agent_runs` `action="stop"`, or approve (`action="review"`, `verdict="approved"`, `summary="..."`).'
+      : 'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
   return {
     owner: launch.owner,
     id: `escalation:${escalation.id}`,

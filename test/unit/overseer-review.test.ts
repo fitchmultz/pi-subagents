@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Escalation, Launch, Result } from "../../src/agent/contracts.ts";
+import { notifications, release } from "../../src/agent/notifications.ts";
 import { captureRepoSnapshot, changedFilesSinceBaseline } from "../../src/agent/overseer-judge.ts";
 import {
   buildReviewGateDraft,
@@ -119,6 +120,7 @@ nodeTest(
     const firstDraft = buildReviewGateDraft(pending, reminders);
     assert.ok(firstDraft !== undefined);
     assert.match(firstDraft.content, /mutating-run/u);
+    assert.match(firstDraft.content, /summary="\.\.\."/u);
     assert.equal(buildReviewGateDraft(pending, reminders) !== undefined, true);
     // Bounded at 2 reminders per run so a misbehaving model cannot loop forever.
     assert.equal(buildReviewGateDraft(pending, reminders), undefined);
@@ -171,6 +173,20 @@ nodeTest(
     recordOverseerReview(base, launch, "approved", "Inspected diff; change is within contract.");
     await waiting;
     assert.equal(approvedDigests.has("approved-digest-abc"), true);
+
+    // Mid-run escalation notices include required `summary="..."` on both normal and 3rd-strike hints.
+    const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
+    write(escFile, { ...escalation, id: "esc-hint-check", strikes: 2 });
+    t.after(() => release(launch.owner, "escalation:esc-hint-check"));
+    const escNotices = notifications(
+      { sessionManager: SessionManager.inMemory() },
+      base,
+      launch.owner,
+    ).notices;
+    const escText =
+      typeof escNotices[0]?.message.content === "string" ? escNotices[0].message.content : "";
+    assert.match(escText, /summary="\.\.\."/u);
+    fs.rmSync(escFile, { force: true });
 
     // Mid-run escalation approval predates final completion, so final completion still requires review.
     const completedAfterPause: Result = {

@@ -115,7 +115,7 @@ export function buildReviewGateDraft(
     customType: "overseer-review-gate",
     display: true,
     content: [
-      'Overseer review required. Inspect each git diff against its contract, then call `agent_runs` `action="review"` (`verdict="approved"` or `"changes_requested"`):',
+      'Overseer review required. Inspect each diff against its contract, then call `agent_runs` `action="review"` (`verdict="approved"` or `"changes_requested"`, `summary="..."`):',
       ...rows,
     ].join("\n"),
   };
