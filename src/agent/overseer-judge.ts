@@ -12,7 +12,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DelegationContract, Escalation } from "./contracts.ts";
 import {
   excludedRepoPrefixes,
-  hasFetchHeadSha,
   isExcludedRepoPath,
   isPathAllowedByScope,
   parsePorcelainZ,
@@ -105,6 +104,16 @@ function trimmed(value: string | undefined): string | undefined {
 const refCommit = (top: string, ref: string): string | undefined =>
   trimmed(runGit(top, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]));
 
+const refLog = (top: string, ref: string): string =>
+  runGit(top, ["log", "-g", "-1", "--format=%gs", ref]) ?? "";
+
+const isFetchOrPull = (s: string): boolean => s.startsWith("fetch") || s.startsWith("pull");
+
+const isReflogSync = (rlog: string, llog: string): boolean =>
+  !llog.startsWith("commit") &&
+  !rlog.startsWith("update by push") &&
+  (isFetchOrPull(rlog) || isFetchOrPull(llog));
+
 function isUpstreamSync(
   top: string,
   name: string,
@@ -125,10 +134,7 @@ function isUpstreamSync(
   ) {
     return false;
   }
-  const log = runGit(top, ["log", "-g", "-1", "--format=%gs", remoteRef]) ?? "";
-  return log === ""
-    ? hasFetchHeadSha(top, trimmed(runGit(top, ["rev-parse", "--git-path", "FETCH_HEAD"])), remote)
-    : log.startsWith("fetch") || log.startsWith("pull");
+  return isReflogSync(refLog(top, remoteRef), refLog(top, `refs/heads/${name}`));
 }
 
 const emptyTree = (top: string): string | undefined =>

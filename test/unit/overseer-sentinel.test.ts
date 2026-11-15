@@ -427,8 +427,8 @@ nodeTest(
       undefined,
     );
 
-    // git pull --ff-only (including ref-form baseBranch: "origin/main") and reflogless fetch pass,
-    // while reflogless direct commit + push on main is still caught.
+    // git pull --ff-only and ref-form baseBranch ("origin/main") fast-forwards pass, while
+    // reflogless direct commit + push on main fails closed even after a subsequent git fetch.
     fs.writeFileSync(path.join(upstream, "README.md"), "upstream pull update\n");
     execFileSync("git", ["commit", "-am", "upstream pull"], { cwd: upstream, stdio: "ignore" });
     execFileSync("git", ["checkout", "main"], { cwd: cloneDir, stdio: "ignore" });
@@ -440,11 +440,6 @@ nodeTest(
     const refFormBase = captureRepoSnapshot(cloneDir, { baseBranch: "origin/main" });
     fs.writeFileSync(path.join(upstream, "README.md"), "upstream ref-form update\n");
     execFileSync("git", ["commit", "-am", "upstream ref-form"], { cwd: upstream, stdio: "ignore" });
-    execFileSync("git", ["config", "core.logAllRefUpdates", "false"], {
-      cwd: cloneDir,
-      stdio: "ignore",
-    });
-    fs.rmSync(path.join(cloneDir, ".git", "logs"), { recursive: true, force: true });
     execFileSync("git", ["fetch", "origin", "main:main"], { cwd: cloneDir, stdio: "ignore" });
     const pullAfter = captureRepoSnapshot(cloneDir, {
       baselineHead: refFormBase.head,
@@ -539,6 +534,7 @@ nodeTest(
       stdio: "ignore",
     });
     execFileSync("git", ["checkout", "feat/work"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["fetch", "-q", "origin"], { cwd: pushClone, stdio: "ignore" });
     const refloglessPushAfter = captureRepoSnapshot(pushClone, {
       baselineHead: refloglessPushBase.head,
       hasBaseline: true,
