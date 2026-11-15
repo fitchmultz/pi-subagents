@@ -11,6 +11,7 @@ import {
   type Launch,
   type Result,
 } from "./contracts.ts";
+import { needsOverseerReview } from "./overseer-review.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 
@@ -101,17 +102,12 @@ export function deliver(
     }
   }
 }
-function overseerReviewHint(launch: Launch, result: Result): string {
-  const files = result.changedFiles;
-  if (
-    launch.overseer?.enabled !== true ||
-    result.status !== "completed" ||
-    files === undefined ||
-    files.length === 0
-  ) {
+function overseerReviewHint(base: string, launch: Launch, result: Result): string {
+  if (!needsOverseerReview(base, launch, result)) {
     return "";
   }
-  return `\n[Overseer review required: inspect git diff in ${launch.cwd} (${files.join(", ")}) and call agent_runs(action="review", id="${launch.id}", verdict="approved", summary="...") in this turn before finishing.]`;
+  const files = (result.changedFiles ?? []).join(", ");
+  return `\n[Overseer review required: inspect git diff in ${launch.cwd} (${files}) and call agent_runs(action="review", id="${launch.id}", verdict="approved", summary="...") in this turn before finishing.]`;
 }
 
 function notification(base: string, launch: Launch, result: Result): Completion {
@@ -127,7 +123,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(launch, result)}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,

@@ -176,17 +176,21 @@ nodeTest(
 
     // Mid-run escalation notices include required `summary="..."` on both normal and 3rd-strike hints.
     const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
-    write(escFile, { ...escalation, id: "esc-hint-check", strikes: 2 });
-    t.after(() => release(launch.owner, "escalation:esc-hint-check"));
-    const escNotices = notifications(
-      { sessionManager: SessionManager.inMemory() },
-      base,
-      launch.owner,
-    ).notices;
-    const escText =
-      typeof escNotices[0]?.message.content === "string" ? escNotices[0].message.content : "";
-    assert.match(escText, /summary="\.\.\."/u);
-    fs.rmSync(escFile, { force: true });
+    for (const strikes of [2, 3]) {
+      const escId = `esc-hint-check-${strikes}`;
+      write(escFile, { ...escalation, id: escId, strikes });
+      t.after(() => release(launch.owner, `escalation:${escId}`));
+      const escNotices = notifications(
+        { sessionManager: SessionManager.inMemory() },
+        base,
+        launch.owner,
+      ).notices;
+      const escText =
+        typeof escNotices[0]?.message.content === "string" ? escNotices[0].message.content : "";
+      assert.match(escText, /summary="\.\.\."/u);
+      assert.match(escText, strikes >= 3 ? /3rd strike:/u : /Steer/u);
+      fs.rmSync(escFile, { force: true });
+    }
 
     // Mid-run escalation approval predates final completion, so final completion still requires review.
     const completedAfterPause: Result = {
@@ -198,6 +202,18 @@ nodeTest(
     };
     write(path.join(runDirectory(base, launch.id), "result.json"), completedAfterPause);
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), true);
+    t.after(() => release(launch.owner, launch.id));
+    const unreviewedCompletion = notifications(
+      { sessionManager: SessionManager.inMemory() },
+      base,
+      launch.owner,
+    ).notices.find((item) => item.id === launch.id);
+    const unreviewedText =
+      typeof unreviewedCompletion?.message.content === "string"
+        ? unreviewedCompletion.message.content
+        : "";
+    assert.match(unreviewedText, /Overseer review required:/u);
+    release(launch.owner, launch.id);
     const midRunInspect = renderInspection(base, launch);
     const inspectText = midRunInspect.content[0]?.text ?? "";
     assert.match(inspectText, /Overseer review: approved at /u);
@@ -212,6 +228,18 @@ nodeTest(
     fs.mkdirSync(tipDir, { recursive: true, mode: 0o700 });
     write(path.join(tipDir, "launch.json"), tipB, true);
     write(path.join(runDirectory(base, launch.id), "successor.json"), { id: tipB.id }, true);
+    // Superseded run A's completion notice omits the review hint while paused successor B is active.
+    const supersededCompletion = notifications(
+      { sessionManager: SessionManager.inMemory() },
+      base,
+      launch.owner,
+    ).notices.find((item) => item.id === launch.id);
+    const supersededText =
+      typeof supersededCompletion?.message.content === "string"
+        ? supersededCompletion.message.content
+        : "";
+    assert.doesNotMatch(supersededText, /Overseer review required:/u);
+    release(launch.owner, launch.id);
     const tipDigests = new Set<string>();
     const tipWait = waitForEscalationResolution({
       base,
