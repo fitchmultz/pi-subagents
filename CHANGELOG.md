@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.42 - 2026-11-15
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(overseer): default worker to google/gemini-4-hydrogen:xhigh (#446) ([a8579f3](https://github.com/fitchmultz/pi-subagents/commit/a8579f34f2de6740bd9d7f1ab099ded093f4220b))
+
+### What's Changed
+
+- feat(overseer): default worker to google/gemini-4-hydrogen:xhigh by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/446
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.41...v0.52.42
+
 ## 0.52.41 - 2026-11-15
 
 <!-- npm-release:unreleased:start -->
