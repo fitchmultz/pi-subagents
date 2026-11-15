@@ -14,15 +14,14 @@ import { latest, launchAt, list, read, runDirectory, write } from "./storage.ts"
 import type { RunsInput } from "./tool-schemas.ts";
 import { readCanonicalResult } from "./usage.ts";
 
-const MAX_GATE_REMINDERS_PER_RUN = 2;
+const MAX_REMINDERS = 2;
 
-export function readReview(base: string, runId: string): OverseerReview | undefined {
-  return read(path.join(runDirectory(base, runId), "review.json"), overseerReviewSchema);
-}
+export const readReview = (base: string, runId: string): OverseerReview | undefined =>
+  read(path.join(runDirectory(base, runId), "review.json"), overseerReviewSchema);
 
-function hasApprovedCompletionReview(base: string, runId: string, endedAt: number): boolean {
-  const review = readReview(base, runId);
-  return review !== undefined && review.verdict === "approved" && review.at >= endedAt;
+function isApprovedAfter(base: string, runId: string, endedAt: number): boolean {
+  const rev = readReview(base, runId);
+  return rev?.verdict === "approved" && rev.at >= endedAt;
 }
 
 export function needsOverseerReview(
@@ -37,11 +36,10 @@ export function needsOverseerReview(
   ) {
     return false;
   }
-  const dir = runDirectory(base, launch.id);
-  if (read(path.join(dir, "successor.json"), successorSchema) !== undefined) {
+  if (read(path.join(runDirectory(base, launch.id), "successor.json"), successorSchema)) {
     return false;
   }
-  return !hasApprovedCompletionReview(base, launch.id, result.endedAt);
+  return !isApprovedAfter(base, launch.id, result.endedAt);
 }
 
 export function recordOverseerReview(
@@ -50,19 +48,19 @@ export function recordOverseerReview(
   verdict: "approved" | "changes_requested",
   summary: string,
 ): OverseerReview {
-  const trimmed = summary.trim();
-  if (trimmed.length === 0) {
+  const s = summary.trim();
+  if (s.length === 0) {
     throw new Error("review requires a non-empty summary.");
   }
   if (verdict === "approved") {
     resolveActiveEscalation(base, launch, "approved");
   }
-  const settledResult = readCanonicalResult(base, launch);
+  const res = readCanonicalResult(base, launch);
   const review: OverseerReview = {
     runId: launch.id,
     verdict,
-    summary: trimmed,
-    at: settledResult !== undefined ? Math.max(Date.now(), settledResult.endedAt) : Date.now(),
+    summary: s,
+    at: res ? Math.max(Date.now(), res.endedAt) : Date.now(),
   };
   write(path.join(runDirectory(base, launch.id), "review.json"), review);
   return review;
@@ -83,18 +81,16 @@ export function unreviewedCompletedRuns(
     return [];
   }
   const receipts = completionReceipts(ctx.sessionManager, owner);
-  const pending: UnreviewedRun[] = [];
-  for (const id of ids) {
+  return ids.flatMap((id) => {
     if (!receipts.has(id)) {
-      continue;
+      return [];
     }
     const launch = launchAt(base, id, owner);
     const result = readCanonicalResult(base, launch);
-    if (needsOverseerReview(base, launch, result)) {
-      pending.push({ launch, changedFiles: result?.changedFiles ?? [] });
-    }
-  }
-  return pending;
+    return needsOverseerReview(base, launch, result)
+      ? [{ launch, changedFiles: result?.changedFiles ?? [] }]
+      : [];
+  });
 }
 
 export function buildReviewGateDraft(
@@ -103,26 +99,24 @@ export function buildReviewGateDraft(
 ):
   | { type: "custom_message"; customType: "overseer-review-gate"; content: string; display: true }
   | undefined {
-  const actionable = unreviewed.filter(
-    ({ launch }) => (reminders.get(launch.id) ?? 0) < MAX_GATE_REMINDERS_PER_RUN,
-  );
-  if (actionable.length === 0) {
+  const due = unreviewed.filter(({ launch }) => (reminders.get(launch.id) ?? 0) < MAX_REMINDERS);
+  if (due.length === 0) {
     return undefined;
   }
-  for (const { launch } of actionable) {
+  for (const { launch } of due) {
     reminders.set(launch.id, (reminders.get(launch.id) ?? 0) + 1);
   }
-  const items = actionable.map(({ launch, changedFiles }) => {
-    const label = launch.name === undefined ? launch.id : `${launch.id} (${launch.name})`;
-    return `- ${label} in ${launch.cwd}: ${changedFiles.join(", ")}`;
+  const rows = due.map(({ launch: l, changedFiles }) => {
+    const tag = l.name === undefined ? l.id : `${l.id} (${l.name})`;
+    return `- ${tag} in ${l.cwd}: ${changedFiles.join(", ")}`;
   });
   return {
     type: "custom_message",
     customType: "overseer-review-gate",
     display: true,
     content: [
-      'Overseer review required before finishing. Inspect the actual git diff against each child\'s contract, then call `agent_runs` with `action="review"`, `verdict="approved"` (citing diff/verification evidence in `summary`) or `verdict="changes_requested"` (with corrective instructions in `summary`):',
-      ...items,
+      'Overseer review required before finishing. Inspect the git diff against each contract, then call `agent_runs` with `action="review"` (`verdict="approved"` or `verdict="changes_requested"`):',
+      ...rows,
     ].join("\n"),
   };
 }
@@ -136,13 +130,14 @@ export function prepareOverseerReviewAction(
     throw new Error("review requires verdict ('approved' | 'changes_requested') and summary.");
   }
   const tip = latest(base, original);
-  const tipSettled = fs.existsSync(path.join(runDirectory(base, tip.id), "result.json"));
-  const originalSettled = fs.existsSync(path.join(runDirectory(base, original.id), "result.json"));
-  // If the conversation continued to an active/paused tip, review applies to that tip rather than
-  // stranding a live escalation behind a settled predecessor ID.
-  const target = !tipSettled || !originalSettled ? tip : original;
-  const review = recordOverseerReview(base, target, input.verdict, input.summary);
-  return { target, review, verdict: input.verdict };
+  const settled = (id: string): boolean =>
+    fs.existsSync(path.join(runDirectory(base, id), "result.json"));
+  const target = !settled(tip.id) || !settled(original.id) ? tip : original;
+  return {
+    target,
+    review: recordOverseerReview(base, target, input.verdict, input.summary),
+    verdict: input.verdict,
+  };
 }
 
 export function registerOverseerSettleGate(
@@ -151,11 +146,8 @@ export function registerOverseerSettleGate(
 ): void {
   const reminders = new Map<string, number>();
   pi.on("agent_before_settle", (event, context) => {
-    if (event.outcome !== "completed") {
-      return;
-    }
-    const active = state();
-    if (active === undefined || !active.enabled) {
+    const active = event.outcome === "completed" ? state() : undefined;
+    if (active?.enabled !== true) {
       return;
     }
     const draft = buildReviewGateDraft(

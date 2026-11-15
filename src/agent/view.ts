@@ -391,10 +391,13 @@ function escalationLines(escalation: Escalation | undefined): string[] {
       ];
 }
 function reviewLine(details: RunView): string {
-  if (details.review !== undefined) {
-    return `Overseer review: ${details.review.verdict} at ${utc(details.review.at)} - ${details.review.summary}`;
-  }
-  return details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
+  const prior =
+    details.review === undefined
+      ? ""
+      : `Overseer review: ${details.review.verdict} at ${utc(details.review.at)} - ${details.review.summary}`;
+  const pending =
+    details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
+  return [prior, pending].filter(Boolean).join("\n");
 }
 function resultText(details: RunView): string {
   const page = details.output;

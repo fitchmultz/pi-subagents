@@ -19,6 +19,7 @@ import {
 import { waitForEscalationResolution } from "../../src/agent/overseer-sentinel.ts";
 import { captureOverseerBaseline } from "../../src/agent/run-result.ts";
 import { runDirectory, write } from "../../src/agent/storage.ts";
+import { renderInspection } from "../../src/agent/view.ts";
 
 function makeLaunch(
   base: string,
@@ -181,6 +182,10 @@ nodeTest(
     };
     write(path.join(runDirectory(base, launch.id), "result.json"), completedAfterPause);
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), true);
+    const midRunInspect = renderInspection(base, launch);
+    const inspectText = midRunInspect.content[0]?.text ?? "";
+    assert.match(inspectText, /Overseer review: approved at /u);
+    assert.match(inspectText, /Overseer review: required before parent settles\./u);
     recordOverseerReview(base, launch, "approved", "Verified final diff across both files.");
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
 
@@ -242,5 +247,37 @@ nodeTest(
       changedFiles: unbornChanged,
     };
     assert.equal(needsOverseerReview(base, unbornLaunch, unbornResult), true);
+
+    // Commits left on a side branch after checking out baseline branch still require review.
+    execFileSync("git", ["checkout", "-b", "feat/side"], { cwd: unbornRepo, stdio: "ignore" });
+    const sideLaunch: Launch = {
+      ...makeLaunch(base, "side-branch", launch.owner, { scope: ["src"] }),
+      cwd: unbornRepo,
+    };
+    execFileSync("git", ["checkout", "main"], { cwd: unbornRepo, stdio: "ignore" });
+    const sideBaseline = captureOverseerBaseline(base, sideLaunch);
+    assert.ok(sideBaseline !== undefined);
+    execFileSync("git", ["checkout", "feat/side"], { cwd: unbornRepo, stdio: "ignore" });
+    fs.mkdirSync(path.join(unbornRepo, "src"), { recursive: true });
+    fs.writeFileSync(path.join(unbornRepo, "src", "side.ts"), "export const s = 1;\n");
+    execFileSync("git", ["add", "src/side.ts"], { cwd: unbornRepo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "side commit"], { cwd: unbornRepo, stdio: "ignore" });
+    execFileSync("git", ["checkout", "main"], { cwd: unbornRepo, stdio: "ignore" });
+    const sideCurrent = captureRepoSnapshot(unbornRepo, {
+      baselineHead: sideBaseline.head,
+      hasBaseline: true,
+    });
+    const sideChanged = changedFilesSinceBaseline(unbornRepo, sideBaseline, sideCurrent);
+    assert.deepEqual(sideChanged, ["src/side.ts"]);
+    assert.equal(
+      needsOverseerReview(base, sideLaunch, {
+        id: sideLaunch.id,
+        owner: launch.owner,
+        status: "completed",
+        endedAt: Date.now(),
+        changedFiles: sideChanged,
+      }),
+      true,
+    );
   },
 );
