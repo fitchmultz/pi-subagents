@@ -33,7 +33,11 @@ interface BranchEntry {
   readonly data: unknown;
 }
 
-async function createHarness(t: TestContext, sessionId: string) {
+async function createHarness(
+  t: TestContext,
+  sessionId: string,
+  settings: Record<string, unknown> = {},
+) {
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getPiAgentDir(),
@@ -55,7 +59,7 @@ async function createHarness(t: TestContext, sessionId: string) {
   loaded.runtime.appendEntry = (customType: string, data: unknown) => {
     branch = [...branch, { type: "custom", customType, data }];
   };
-  loaded.runtime.getSettings = () => ({});
+  loaded.runtime.getSettings = () => settings;
   const notices: Array<{ message: string; level: string }> = [];
   const statuses = new Map<string, string | undefined>();
   const ctx = {
@@ -151,8 +155,24 @@ nodeTest(
     await harness.runCommand("overseer-worker", "openai/gpt-6-sol:medium");
     // Footer stays a clean `overseer` label even when a custom worker is set.
     assert.equal(harness.statuses.get("overseer"), "overseer");
+    assert.deepEqual(harness.getBranch().at(-1)?.data, {
+      version: 1,
+      enabled: true,
+      worker: "openai/gpt-6-sol:medium",
+      judge: "auto",
+    });
     await harness.runCommand("overseer-worker", "inherit");
     assert.equal(harness.statuses.get("overseer"), "overseer");
+    assert.deepEqual(harness.getBranch().at(-1)?.data, {
+      version: 1,
+      enabled: true,
+      worker: "inherit",
+      judge: "auto",
+    });
+    assert.deepEqual(harness.notices.at(-1), {
+      message: "Overseer worker set to inherit",
+      level: "info",
+    });
     await harness.runCommand("overseer-judge", "google/gemini-decision-1");
 
     // Rewinding the session tree to before /overseer on restores the off state.
@@ -165,6 +185,18 @@ nodeTest(
     harness.setBranch(savedOnBranch);
     await harness.tree();
     assert.equal(harness.statuses.get("overseer"), "overseer");
+
+    // Settings `subagents.overseer.worker: "INHERIT"` normalizes to `inherit` and splitWorkerSpec omits defaultModel/defaultThinking.
+    const configured = await createHarness(t, "overseer-settings", {
+      subagents: { overseer: { enabled: true, worker: "INHERIT" } },
+    });
+    await configured.start();
+    await configured.runCommand("overseer-worker", "status");
+    assert.deepEqual(configured.notices.at(-1), {
+      message: "Overseer worker: inherit",
+      level: "info",
+    });
+    assert.deepEqual(splitWorkerSpec("INHERIT"), {});
   },
 );
 
