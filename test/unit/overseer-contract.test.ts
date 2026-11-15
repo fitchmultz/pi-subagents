@@ -155,7 +155,7 @@ nodeTest(
 );
 
 nodeTest(
-  "normalizeDelegationContract enforces verification on mutating scopes and allows read-only scope: []",
+  "normalizeDelegationContract enforces verification on mutating scopes and allows scope: []",
   () => {
     const readOnly = normalizeDelegationContract({ scope: [] });
     assert.deepEqual(readOnly, { scope: [] });
@@ -188,17 +188,27 @@ nodeTest(
 );
 
 nodeTest(
-  "checkToolCallScope blocks read-only edits and out-of-scope file mutations across edit tools",
-  () => {
-    const cwd = "/repo/worktree";
+  "checkToolCallScope blocks scope: [] edits, out-of-scope paths, and symlink escapes",
+  (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-scope-"));
+    t.after(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const cwd = path.join(root, "worktree");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(path.join(cwd, "src", "agent"), { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.symlinkSync(outside, path.join(cwd, "src", "agent", "escaped"));
+
     assert.equal(isPathAllowedByScope(cwd, "src/agent/index.ts", []), false);
     assert.equal(isPathAllowedByScope(cwd, "src/agent/index.ts", ["src/agent"]), true);
     assert.equal(isPathAllowedByScope(cwd, "src/agent-extra/index.ts", ["src/agent"]), false);
     assert.equal(isPathAllowedByScope(cwd, "../outside.ts", ["*"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/escaped/secret.ts", ["src/agent"]), false);
 
     assert.match(
       checkToolCallScope(cwd, [], "edit", { path: "src/agent/index.ts" }) ?? "",
-      /Read-only delegation contract/u,
+      /disables file-edit tools/u,
     );
     assert.equal(
       checkToolCallScope(cwd, ["src/agent"], "write_files", {

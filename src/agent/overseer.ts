@@ -14,7 +14,7 @@ export const DEFAULT_OVERSEER_JUDGE = "auto";
 
 const OVERSEER_PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
-  "When delegating via `delegate`, always supply `contract` (`scope: []` for read-only recon/review, or allowed relative `scope` paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation). Omitted `model` uses the configured overseer worker.",
+  "When delegating via `delegate`, always supply `contract` (`scope: []` to disable edit tools for recon/review, or allowed relative `scope` edit paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed). Omitted `model` uses the configured overseer worker.",
   "You are accountable for every child output: handle mid-run escalations promptly and inspect the real git diff against the contract before finishing.",
 ].join("\n");
 
@@ -240,7 +240,7 @@ export class OverseerController {
     }
     if (contract === undefined) {
       throw new Error(
-        "Overseer mode requires contract ({ scope, verification?, requiredPrimitives?, nonGoals?, baseBranch? }); use scope: [] for read-only runs.",
+        "Overseer mode requires contract ({ scope, verification?, requiredPrimitives?, nonGoals?, baseBranch? }); use scope: [] when file edits are not needed.",
       );
     }
     return {

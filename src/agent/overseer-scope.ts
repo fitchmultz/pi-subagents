@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { isRecord, type UnknownRecord } from "../shared/unknown.ts";
 import type { DelegationContract } from "./contracts.ts";
@@ -57,7 +58,7 @@ export function normalizeDelegationContract(raw: DelegationContract): Delegation
   const verification = trimList(raw.verification);
   if (scope.length > 0 && verification === undefined) {
     throw new Error(
-      "Mutating delegation contract requires at least one verification check (or use scope: [] for read-only runs).",
+      "Mutating delegation contract requires at least one verification check (or use scope: [] to disable edit tools).",
     );
   }
   const baseBranch = raw.baseBranch?.trim();
@@ -72,6 +73,23 @@ export function normalizeDelegationContract(raw: DelegationContract): Delegation
   };
 }
 
+function realCanonicalPath(target: string): string {
+  const tail: string[] = [];
+  let cursor = path.resolve(target);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cursor), ...tail);
+    } catch {
+      const parent = path.dirname(cursor);
+      if (parent === cursor) {
+        return path.join(cursor, ...tail);
+      }
+      tail.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
 /** Checks whether `candidatePath` stays inside `cwd` and matches `scope`. */
 export function isPathAllowedByScope(
   cwd: string,
@@ -81,8 +99,8 @@ export function isPathAllowedByScope(
   if (scope.length === 0) {
     return false;
   }
-  const resolvedCwd = path.resolve(cwd);
-  const resolvedTarget = path.resolve(resolvedCwd, candidatePath);
+  const resolvedCwd = realCanonicalPath(cwd);
+  const resolvedTarget = realCanonicalPath(path.resolve(cwd, candidatePath));
   const relative = path.relative(resolvedCwd, resolvedTarget);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return false;
@@ -144,7 +162,7 @@ export function checkToolCallScope(
     return undefined;
   }
   if (scope.length === 0) {
-    return "Read-only delegation contract (scope: []): file edits are disabled.";
+    return "Delegation contract (scope: []) disables file-edit tools.";
   }
   for (const target of extractTargetPaths(toolName, input)) {
     if (!isPathAllowedByScope(cwd, target, scope)) {
@@ -157,10 +175,12 @@ export function checkToolCallScope(
 /** Static system-prompt section describing the child's active delegation contract. */
 export function formatContractSection(contract: DelegationContract): string {
   const scopeText =
-    contract.scope.length === 0 ? "read-only (no file edits)" : contract.scope.join(", ");
+    contract.scope.length === 0
+      ? "no file edits (edit tools disabled; do not modify files via shell commands)"
+      : contract.scope.join(", ");
   const lines = [
     "Follow this delegation contract strictly. Stay inside the allowed scope and stop rather than inventing workarounds outside it.",
-    `- Allowed scope: ${scopeText}`,
+    `- Allowed edit scope: ${scopeText}`,
   ];
   if (contract.baseBranch !== undefined) {
     lines.push(`- Expected base branch: ${contract.baseBranch}`);
