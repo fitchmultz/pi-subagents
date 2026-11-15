@@ -11,6 +11,19 @@ export const thinkingSchema = Type.Union([
   Type.Literal("xhigh"),
   Type.Literal("max"),
 ]);
+export const delegationContractSchema = Type.Object({
+  scope: Type.Array(Type.String({ minLength: 1 })),
+  verification: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+  baseBranch: Type.Optional(Type.String({ minLength: 1 })),
+  requiredPrimitives: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+  nonGoals: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+});
+export type DelegationContract = Static<typeof delegationContractSchema>;
+export const overseerLaunchSchema = Type.Object({
+  enabled: Type.Literal(true),
+  judge: Type.Optional(Type.String({ minLength: 1 })),
+});
+export type OverseerLaunch = Static<typeof overseerLaunchSchema>;
 export const launchSchema = Type.Object({
   version: Type.Literal(1),
   id: Type.String(),
@@ -30,6 +43,8 @@ export const launchSchema = Type.Object({
   thinking: thinkingSchema,
   trusted: Type.Boolean(),
   name: Type.Optional(Type.String()),
+  contract: Type.Optional(delegationContractSchema),
+  overseer: Type.Optional(overseerLaunchSchema),
   createdAt: Type.Number(),
 });
 export type Launch = Static<typeof launchSchema>;

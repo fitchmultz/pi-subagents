@@ -13,10 +13,8 @@ import {
   ensureActor,
   ownIdentity,
   parkFailure,
-  requestStop,
-  signalProcess,
 } from "./process.ts";
-import { stopChildren } from "./shutdown.ts";
+import { stopChildren, stopRun } from "./shutdown.ts";
 import { publishAttachment } from "./attachment.ts";
 import {
   isChild,
@@ -66,6 +64,7 @@ import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages, renderCompactResult } from "../shared/compact-cards.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
+import { OverseerController } from "./overseer.ts";
 
 interface AttachmentBinding {
   readonly context: ExtensionContext;
@@ -108,9 +107,11 @@ class AgentRuntime {
   private readonly child = isChild();
   private readonly agentDir = path.resolve(getPiAgentDir());
   private readonly pi: ExtensionAPI;
+  private readonly overseer: OverseerController;
   constructor(pi: ExtensionAPI) {
     this.pi = pi;
     this.watches = new CompletionWatches(this.reporter, this.wake);
+    this.overseer = new OverseerController(pi);
   }
   private get binding(): AttachmentBinding {
     if (this.attachment.kind === "detached") {
@@ -301,28 +302,8 @@ class AgentRuntime {
     }
   }
   private stop(launch: Launch) {
-    const base = this.base;
-    const { targets: live, command: id } = requestStop(base, launch);
-    if (live.length === 0) {
-      return renderReceipt(base, launch, this.ctx, {
-        stopAcknowledged: false,
-        note: "No matching live actor or owned shell; process exit code remains unknown.",
-      });
-    }
-    const escalation = setTimeout(() => {
-      try {
-        live.forEach((target) => {
-          signalProcess(target, "SIGKILL");
-        });
-      } catch (error) {
-        this.reporter.report(undefined, `Agent stop escalation ${launch.id}: ${errorText(error)}`);
-      }
-    }, 3000);
-    escalation.unref();
-    return renderReceipt(base, launch, this.ctx, {
-      stopRequest: id,
-      stopAcknowledged: false,
-      note: "Stop requested; neither native admission nor process exit is implied.",
+    return stopRun(this.base, launch, this.ctx, (message) => {
+      this.reporter.report(undefined, message);
     });
   }
   private async delegate(
@@ -334,6 +315,7 @@ class AgentRuntime {
     await this.attachmentTail;
     this.checkMain();
     this.refuseIfAborted(signal, "Delegation cancelled before launch.");
+    const prepared = this.overseer.prepareDelegation(input);
     const launch = await prepareLaunch({
       input,
       context,
@@ -342,6 +324,7 @@ class AgentRuntime {
       agentDir: this.agentDir,
       thinking: context.thinkingLevel ?? this.pi.getThinkingLevel(),
       executionCwd: executionCwd(this.pi, context),
+      ...prepared,
     });
     this.checkMain();
     enqueue(this.base, launch, { action: "run" });
@@ -456,6 +439,9 @@ class AgentRuntime {
   }
   register(): void {
     registerCompactMessages(this.pi, ["agent-completion", "subagent-notify"]);
+    if (!this.child) {
+      this.overseer.register();
+    }
     serveParked(
       this.pi,
       () => (this.child || !this.ctx ? undefined : { base: this.base, owner: this.owner }),

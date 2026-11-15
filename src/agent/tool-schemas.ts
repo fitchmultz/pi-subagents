@@ -4,6 +4,34 @@ import { Type } from "./typebox.ts";
 import { THINKING_LEVELS } from "./contracts.ts";
 
 // Main-session tool parameters only; the detached runner must not load pi-ai values.
+export const delegateContractSchema = Type.Object(
+  {
+    scope: Type.Array(Type.String({ minLength: 1 }), {
+      description:
+        "Allowed relative edit-tool paths inside cwd, ['*'] for any edit path in cwd, or [] to disable edit tools (shell commands are not sandboxed).",
+    }),
+    verification: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        description: "Checks required before completion (required when scope is non-empty).",
+      }),
+    ),
+    baseBranch: Type.Optional(
+      Type.String({ minLength: 1, description: "Expected Git base branch or ref." }),
+    ),
+    requiredPrimitives: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        description: "Existing language/package APIs the child must use instead of custom shims.",
+      }),
+    ),
+    nonGoals: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        description: "Out-of-scope edits or forbidden workarounds.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 export const delegateSchema = Type.Object(
   {
     prompt: Type.String({ minLength: 1 }),
@@ -18,6 +46,7 @@ export const delegateSchema = Type.Object(
     ),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
     context: Type.Optional(StringEnum(["fresh", "fork"] as const)),
+    contract: Type.Optional(delegateContractSchema),
   },
   { additionalProperties: false },
 );
