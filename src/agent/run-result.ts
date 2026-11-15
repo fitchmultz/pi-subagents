@@ -77,7 +77,7 @@ function detectedChanges(
   launch: Launch,
   baseline: RepoSnapshot | undefined,
 ): string[] | undefined {
-  if (baseline === undefined || !baseline.isGit) {
+  if (baseline === undefined) {
     return undefined;
   }
   const excludePaths = harnessExcludePaths(base, launch);

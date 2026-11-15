@@ -279,5 +279,41 @@ nodeTest(
       }),
       true,
     );
+
+    // Non-Git directory at launch where the child runs `git init` and commits still requires review.
+    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-review-nongit-"));
+    t.after(() => fs.rmSync(nonGitDir, { recursive: true, force: true }));
+    const nonGitLaunch: Launch = {
+      ...makeLaunch(base, "nongit-init", launch.owner, { scope: ["src"] }),
+      cwd: nonGitDir,
+    };
+    const nonGitBaseline = captureOverseerBaseline(base, nonGitLaunch);
+    assert.equal(nonGitBaseline?.isGit, false);
+    execFileSync("git", ["init", "-b", "main"], { cwd: nonGitDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: nonGitDir,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: nonGitDir, stdio: "ignore" });
+    fs.mkdirSync(path.join(nonGitDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(nonGitDir, "src", "greenfield.ts"), "export const g = 1;\n");
+    execFileSync("git", ["add", "src/greenfield.ts"], { cwd: nonGitDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "greenfield"], { cwd: nonGitDir, stdio: "ignore" });
+    const nonGitCurrent = captureRepoSnapshot(nonGitDir, {
+      baselineHead: nonGitBaseline.head,
+      hasBaseline: true,
+    });
+    const nonGitChanged = changedFilesSinceBaseline(nonGitDir, nonGitBaseline, nonGitCurrent);
+    assert.deepEqual(nonGitChanged, ["src/greenfield.ts"]);
+    assert.equal(
+      needsOverseerReview(base, nonGitLaunch, {
+        id: nonGitLaunch.id,
+        owner: launch.owner,
+        status: "completed",
+        endedAt: Date.now(),
+        changedFiles: nonGitChanged,
+      }),
+      true,
+    );
   },
 );
