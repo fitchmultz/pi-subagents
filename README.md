@@ -46,15 +46,16 @@ agent_runs({ action: "stop", id: "<run-id>" });
 
 ## Overseer mode (opt-in)
 
-Toggle `/overseer` (or pass `--overseer`) when a main session plans with a frontier
-model and delegates implementation to a faster worker (`google/gemini-4-hydrogen:xhigh`
-by default; configurable via `/overseer-worker` and `/overseer-judge` or `subagents.overseer`
-in settings). When off, `delegate` and `agent_runs` behave identically to default mode.
+Toggle `/overseer` (or pass `--overseer`) to add contract scoping, mid-run drift
+supervision, and completion diff review to `delegate` (`worker` defaults to `inherit`,
+preserving normal `delegate` model/effort inheritance unless configured via `/overseer-worker`
+or `subagents.overseer` in settings). When off, `delegate` and `agent_runs` behave identically
+to default mode.
 
 When enabled:
 
 - `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
-  `requiredPrimitives`, `nonGoals`) and defaults omitted `model`/`thinking` to the configured worker (`google/gemini-4-hydrogen:xhigh`).
+  `requiredPrimitives`, `nonGoals`); omitted `model`/`thinking` inherit normally unless an overseer worker is configured.
 - Child sessions block out-of-scope edit tool calls before writing, run zero-cost Git/loop
   tripwires on mutating turns, and sample an available decision classifier
   (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff

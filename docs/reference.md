@@ -26,7 +26,7 @@ model must be available; there is no hidden alternate-model retry catalog.
 It overrides parent effort for this child without changing the parent. It works
 with an omitted model or a literal model ID on every supported host, including
 official Pi 1.5.2. Omission preserves inherited effort (or the configured overseer
-worker's effort when `model` is omitted in overseer mode). Pi applies its native
+worker's effort when `model` is omitted and `/overseer-worker` configures one). Pi applies its native
 model-capability clamping; the launch receipt records the requested value, not
 proof of the child's effective effort.
 
@@ -458,7 +458,7 @@ separate authenticated bridge setup and coordinated companion migration.
 
 Overseer mode is off by default. Toggle it per session branch with `/overseer` (`/overseer on`, `/overseer off`, or `--overseer`)
 or configure defaults under `subagents.overseer` (`{ enabled, worker, judge }`) in Pi settings.
-`/overseer-worker` sets the default worker (`google/gemini-4-hydrogen:xhigh` by default);
+`/overseer-worker` sets an optional default worker (`inherit` by default, keeping normal `delegate` model/effort inheritance unless a `provider/model[:thinking]` worker is configured);
 `/overseer-judge` sets the classifier judge (`auto`, `off`, or `provider/model`). Main-session
 tools remain unrestricted so the overseer can run scripts or apply small surgical edits directly.
 

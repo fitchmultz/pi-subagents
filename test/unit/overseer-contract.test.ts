@@ -133,9 +133,9 @@ nodeTest(
     assert.equal(harness.statuses.get("overseer"), undefined);
     assert.deepEqual(await harness.beforeAgentStart(), {});
 
-    // Bare `/overseer` toggles overseer mode on with sensible defaults (gemini-4-hydrogen:xhigh + auto judge).
+    // Bare `/overseer` toggles overseer mode on with footer `overseer` and worker `inherit`.
     await harness.runCommand("overseer", "");
-    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen:xhigh");
+    assert.equal(harness.statuses.get("overseer"), "overseer");
     const activeSections = await harness.beforeAgentStart();
     assert.match(activeSections.overseer ?? "", /Overseer mode is active/u);
 
@@ -146,10 +146,13 @@ nodeTest(
     await harness.runCommand("overseer", "");
     assert.equal(harness.statuses.get("overseer"), undefined);
     await harness.runCommand("overseer", "on");
-    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen:xhigh");
+    assert.equal(harness.statuses.get("overseer"), "overseer");
 
     await harness.runCommand("overseer-worker", "openai/gpt-6-sol:medium");
-    assert.equal(harness.statuses.get("overseer"), "overseer: gpt-6-sol:medium");
+    // Footer stays a clean `overseer` label even when a custom worker is set.
+    assert.equal(harness.statuses.get("overseer"), "overseer");
+    await harness.runCommand("overseer-worker", "inherit");
+    assert.equal(harness.statuses.get("overseer"), "overseer");
     await harness.runCommand("overseer-judge", "google/gemini-decision-1");
 
     // Rewinding the session tree to before /overseer on restores the off state.
@@ -161,7 +164,7 @@ nodeTest(
     // Returning to the saved branch restores the enabled overseer state.
     harness.setBranch(savedOnBranch);
     await harness.tree();
-    assert.equal(harness.statuses.get("overseer"), "overseer: gemini-4-hydrogen:xhigh");
+    assert.equal(harness.statuses.get("overseer"), "overseer");
   },
 );
 
@@ -320,7 +323,8 @@ nodeTest(
     });
     const base = path.join(tempDir, "runs");
     fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-    const launch = await prepareLaunch({
+    // Default worker (`inherit`) keeps normal delegate model and thinking inheritance.
+    const inherited = await prepareLaunch({
       input: { prompt: "Implement tag store query" },
       context,
       base,
@@ -332,17 +336,34 @@ nodeTest(
       contract,
       overseer: { enabled: true, judge: "auto" },
     });
-    assert.equal(launch.provider, "google");
-    assert.equal(launch.model, "gemini-4-hydrogen");
-    assert.equal(launch.thinking, "xhigh");
-    assert.deepEqual(launch.overseer, { enabled: true, judge: "auto" });
-    assert.deepEqual(launch.contract?.scope, ["src/db.ts"]);
+    assert.equal(inherited.provider, "google");
+    assert.equal(inherited.model, "gemini-4-carbon");
+    assert.equal(inherited.thinking, "medium");
+    assert.deepEqual(inherited.overseer, { enabled: true, judge: "auto" });
+    assert.deepEqual(inherited.contract?.scope, ["src/db.ts"]);
     assert.deepEqual(
-      read(path.join(base, launch.id, "launch.json"), launchSchema)?.contract,
+      read(path.join(base, inherited.id, "launch.json"), launchSchema)?.contract,
       contract,
     );
 
-    // Explicit per-call thinking overrides the default worker's :xhigh suffix without conflict.
+    // Configuring an explicit overseer worker (`provider/model:thinking`) overrides omitted model/thinking.
+    const launch = await prepareLaunch({
+      input: { prompt: "Implement tag store query on worker" },
+      context,
+      base,
+      owner: "parent-session",
+      agentDir: getPiAgentDir(),
+      thinking: "medium",
+      executionCwd: tempDir,
+      ...splitWorkerSpec("google/gemini-4-hydrogen:xhigh"),
+      contract,
+      overseer: { enabled: true, judge: "auto" },
+    });
+    assert.equal(launch.provider, "google");
+    assert.equal(launch.model, "gemini-4-hydrogen");
+    assert.equal(launch.thinking, "xhigh");
+
+    // Explicit per-call thinking overrides a configured worker's :xhigh suffix without conflict.
     const overridden = await prepareLaunch({
       input: { prompt: "Quick tweak", thinking: "low" },
       context,
@@ -351,7 +372,7 @@ nodeTest(
       agentDir: getPiAgentDir(),
       thinking: "medium",
       executionCwd: tempDir,
-      ...splitWorkerSpec(DEFAULT_OVERSEER_WORKER),
+      ...splitWorkerSpec("google/gemini-4-hydrogen:xhigh"),
       contract,
       overseer: { enabled: true, judge: "auto" },
     });

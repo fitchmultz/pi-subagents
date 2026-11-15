@@ -10,12 +10,12 @@ import { normalizeDelegationContract } from "./overseer-scope.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 
 export const OVERSEER_ENTRY_TYPE = "subagents-overseer";
-export const DEFAULT_OVERSEER_WORKER = "google/gemini-4-hydrogen:xhigh";
+export const DEFAULT_OVERSEER_WORKER = "inherit";
 export const DEFAULT_OVERSEER_JUDGE = "auto";
 
 const PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
-  "When delegating via `delegate`, omit `model` and `thinking` so the configured overseer worker runs unless the user explicitly asks for another model or thinking level, and always supply `contract` (`scope: []` for recon/review, or allowed relative `scope` edit paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed).",
+  "When delegating via `delegate`, always supply `contract` (`scope: []` for recon/review, or allowed relative `scope` edit paths plus `verification`, `requiredPrimitives`, `nonGoals`, and `baseBranch` for implementation; shell commands are not OS-sandboxed).",
   "You are accountable for every child output: handle mid-run escalations promptly and inspect the real git diff against the contract before finishing.",
 ].join("\n");
 
@@ -35,13 +35,21 @@ export interface PreparedOverseerDelegation {
 const strOr = (v: unknown, fb: string): string =>
   typeof v === "string" && v.trim().length > 0 ? v.trim() : fb;
 
+const normWorker = (v: unknown, fb: string): string => {
+  const s = strOr(v, fb);
+  return s.toLowerCase() === "inherit" ? "inherit" : s;
+};
+
 const isThinking = (v: string): v is ThinkingLevel =>
   (THINKING_LEVELS as readonly string[]).includes(v);
 
 export function splitWorkerSpec(worker: string): {
-  readonly defaultModel: string;
+  readonly defaultModel?: string;
   readonly defaultThinking?: ThinkingLevel;
 } {
+  if (worker.toLowerCase() === "inherit") {
+    return {};
+  }
   const slash = worker.indexOf("/");
   const colon = worker.lastIndexOf(":");
   if (slash > 0 && colon > slash + 1) {
@@ -68,7 +76,7 @@ function defaults(pi: Pick<ExtensionAPI, "getFlag" | "getSettings">): OverseerSt
   const cfg = recordAt(recordAt(hostSettings(pi), "subagents"), "overseer");
   return {
     enabled: typeof cfg?.enabled === "boolean" ? cfg.enabled : pi.getFlag("overseer") === true,
-    worker: strOr(cfg?.worker, DEFAULT_OVERSEER_WORKER),
+    worker: normWorker(cfg?.worker, DEFAULT_OVERSEER_WORKER),
     judge: strOr(cfg?.judge, DEFAULT_OVERSEER_JUDGE),
   };
 }
@@ -89,7 +97,7 @@ function branchState(
       if (isRecord(d) && typeof d.enabled === "boolean") {
         cur = {
           enabled: d.enabled,
-          worker: strOr(d.worker, cur.worker),
+          worker: normWorker(d.worker, cur.worker),
           judge: strOr(d.judge, cur.judge),
         };
       }
@@ -97,9 +105,6 @@ function branchState(
   }
   return cur;
 }
-
-const shortLabel = (ref: string): string =>
-  ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
 
 function completions(
   prefix: string,
@@ -139,9 +144,7 @@ export class OverseerController {
     }
     ctx.ui.setStatus(
       "overseer",
-      this.state.enabled
-        ? ctx.ui.theme.fg("dim", `overseer: ${shortLabel(this.state.worker)}`)
-        : undefined,
+      this.state.enabled ? ctx.ui.theme.fg("dim", "overseer") : undefined,
     );
   }
 
@@ -187,8 +190,16 @@ export class OverseerController {
       ctx.ui.notify(`Overseer worker reset to ${worker}`, "info");
       return;
     }
+    if (low === "inherit") {
+      this.save({ ...this.state, worker: "inherit" }, ctx);
+      ctx.ui.notify("Overseer worker set to inherit", "info");
+      return;
+    }
     if (!validSpec(s)) {
-      ctx.ui.notify("Worker must be provider/model[:thinking], 'reset', or 'status'.", "warning");
+      ctx.ui.notify(
+        "Worker must be 'inherit', provider/model[:thinking], 'reset', or 'status'.",
+        "warning",
+      );
       return;
     }
     this.save({ ...this.state, worker: s }, ctx);
@@ -264,8 +275,8 @@ export class OverseerController {
     });
     this.pi.registerCommand("overseer-worker", {
       description:
-        "Set or inspect the default overseer worker model (/overseer-worker <provider/model[:thinking]|reset|status>)",
-      getArgumentCompletions: (p) => completions(p, ["status", "reset", DEFAULT_OVERSEER_WORKER]),
+        "Set or inspect the default overseer worker model (/overseer-worker <inherit|provider/model[:thinking]|reset|status>)",
+      getArgumentCompletions: (p) => completions(p, ["inherit", "status", "reset"]),
       handler: (args, ctx) => {
         this.onWorker(args, ctx);
         return Promise.resolve();
