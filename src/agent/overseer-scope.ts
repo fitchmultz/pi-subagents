@@ -340,3 +340,52 @@ export function untrackedFilesPreview(top: string, files: readonly string[]): st
   }
   return chunks.join("\n");
 }
+
+const isRenameOrCopy = (st: string): boolean =>
+  st[0] === "R" || st[0] === "C" || st[1] === "R" || st[1] === "C";
+
+function fileStamp(topLevel: string, relPath: string, code: string): string {
+  try {
+    const st = fs.lstatSync(path.resolve(topLevel, relPath));
+    return `${code}:${st.size}:${Math.trunc(st.mtimeMs)}`;
+  } catch {
+    return `${code}:missing`;
+  }
+}
+
+function setStamp(
+  stamps: Map<string, string>,
+  rel: string,
+  stamp: string,
+  excluded: readonly string[],
+): void {
+  if (rel.length > 0 && !isExcludedRepoPath(rel, excluded)) {
+    stamps.set(rel, stamp);
+  }
+}
+
+export function parsePorcelainZ(
+  top: string,
+  raw: string,
+  excluded: readonly string[],
+): Map<string, string> {
+  const stamps = new Map<string, string>();
+  const tokens = raw.split("\0");
+  for (let i = 0; i < tokens.length;) {
+    const entry = tokens[i] ?? "";
+    i += 1;
+    if (entry.length < 4) {
+      continue;
+    }
+    const st = entry.slice(0, 2);
+    setStamp(stamps, entry.slice(3), fileStamp(top, entry.slice(3), st), excluded);
+    if (isRenameOrCopy(st) && i < tokens.length) {
+      const orig = tokens[i] ?? "";
+      i += 1;
+      if (!stamps.has(orig)) {
+        setStamp(stamps, orig, `${st}:orig`, excluded);
+      }
+    }
+  }
+  return stamps;
+}

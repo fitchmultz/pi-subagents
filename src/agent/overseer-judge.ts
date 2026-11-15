@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
   ClassifierApi,
@@ -15,6 +14,7 @@ import {
   excludedRepoPrefixes,
   isExcludedRepoPath,
   isPathAllowedByScope,
+  parsePorcelainZ,
   safeRealpath,
   untrackedFilesPreview,
 } from "./overseer-scope.ts";
@@ -98,64 +98,27 @@ function trimmed(value: string | undefined): string | undefined {
   return s !== undefined && s.length > 0 ? s : undefined;
 }
 
-const isRenameOrCopy = (st: string): boolean =>
-  st[0] === "R" || st[0] === "C" || st[1] === "R" || st[1] === "C";
-
-function fileStamp(topLevel: string, relPath: string, code: string): string {
-  try {
-    const st = fs.lstatSync(path.resolve(topLevel, relPath));
-    return `${code}:${st.size}:${Math.trunc(st.mtimeMs)}`;
-  } catch {
-    return `${code}:missing`;
-  }
-}
-
-function setStamp(
-  stamps: Map<string, string>,
-  rel: string,
-  stamp: string,
-  excluded: readonly string[],
-): void {
-  if (rel.length > 0 && !isExcludedRepoPath(rel, excluded)) {
-    stamps.set(rel, stamp);
-  }
-}
-
-function parsePorcelainZ(
-  top: string,
-  raw: string,
-  excluded: readonly string[],
-): Map<string, string> {
-  const stamps = new Map<string, string>();
-  const tokens = raw.split("\0");
-  for (let i = 0; i < tokens.length;) {
-    const entry = tokens[i] ?? "";
-    i += 1;
-    if (entry.length < 4) {
-      continue;
-    }
-    const st = entry.slice(0, 2);
-    setStamp(stamps, entry.slice(3), fileStamp(top, entry.slice(3), st), excluded);
-    if (isRenameOrCopy(st) && i < tokens.length) {
-      const orig = tokens[i] ?? "";
-      i += 1;
-      if (!stamps.has(orig)) {
-        setStamp(stamps, orig, `${st}:orig`, excluded);
-      }
-    }
-  }
-  return stamps;
-}
-
 const refCommit = (top: string, ref: string): string | undefined =>
   trimmed(runGit(top, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]));
 
-function isSyncedWithRemote(top: string, branchName: string, sha: string | undefined): boolean {
-  const remote =
-    sha === undefined ? undefined : refCommit(top, `refs/remotes/origin/${branchName}`);
+function isUpstreamSync(
+  top: string,
+  name: string,
+  sha: string | undefined,
+  baseline: RepoSnapshot,
+): boolean {
+  if (sha === undefined) {
+    return false;
+  }
+  if (sha === baseline.resolvedBaseHead) {
+    return true;
+  }
+  const remoteRef = `refs/remotes/origin/${name}`;
+  const remote = refCommit(top, remoteRef);
+  const log = runGit(top, ["log", "-g", "-1", "--format=%gs", remoteRef]) ?? "";
   return (
     remote !== undefined &&
-    sha !== undefined &&
+    log.startsWith("fetch") &&
     runGit(top, ["merge-base", "--is-ancestor", sha, remote]) !== undefined
   );
 }
@@ -165,7 +128,8 @@ const emptyTree = (top: string): string | undefined =>
 
 function localBranchHeads(top: string): Map<string, string> {
   const raw =
-    runGit(top, ["for-each-ref", "--format=%(refname:short)%00%(objectname)", "refs/heads"]) ?? "";
+    runGit(top, ["for-each-ref", "--format=%(refname:lstrip=2)%00%(objectname)", "refs/heads"]) ??
+    "";
   const map = new Map<string, string>();
   for (const line of raw.split("\n")) {
     const nul = line.indexOf("\0");
@@ -269,7 +233,7 @@ function addBranchRefChanges(
   const anchor = baseline.head ?? baseline.resolvedBaseHead;
   for (const [name, tip] of current.branchHeads) {
     const prev = baseline.branchHeads.get(name);
-    if (prev === tip || isSyncedWithRemote(top, name, tip)) {
+    if (prev === tip || isUpstreamSync(top, name, tip, baseline)) {
       continue;
     }
     const from =
@@ -349,7 +313,7 @@ function branchViolation(
   const localBase = current.branchHeads.get(baseBranch);
   const localBaseMutated =
     localBase !== baseline.branchHeads.get(baseBranch) &&
-    !isSyncedWithRemote(current.topLevel, baseBranch, localBase);
+    !isUpstreamSync(current.topLevel, baseBranch, localBase, baseline);
   if (localBaseMutated) {
     return `Child committed directly onto base branch '${baseBranch}' instead of a task branch.`;
   }

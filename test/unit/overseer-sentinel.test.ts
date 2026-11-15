@@ -426,6 +426,55 @@ nodeTest(
       }),
       undefined,
     );
+
+    // Child committing directly on main and pushing to origin/main (even with a colliding `main`
+    // tag present) is still caught as branch_violation, not treated as an upstream fast-forward.
+    const bareOrigin = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-bare-origin-"));
+    const pushClone = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-push-clone-"));
+    t.after(() => {
+      fs.rmSync(bareOrigin, { recursive: true, force: true });
+      fs.rmSync(pushClone, { recursive: true, force: true });
+    });
+    execFileSync("git", ["init", "--bare", "-b", "main", bareOrigin], { stdio: "ignore" });
+    execFileSync("git", ["clone", bareOrigin, pushClone], { stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: pushClone,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: pushClone, stdio: "ignore" });
+    fs.mkdirSync(path.join(pushClone, "src"), { recursive: true });
+    fs.writeFileSync(path.join(pushClone, "src", "init.ts"), "export const a = 1;\n");
+    execFileSync("git", ["add", "."], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["push", "-u", "origin", "main"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["tag", "main"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["checkout", "-b", "feat/work"], { cwd: pushClone, stdio: "ignore" });
+    const pushBase = captureRepoSnapshot(pushClone, { baseBranch: "main" });
+    execFileSync("git", ["checkout", "refs/heads/main"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["checkout", "-B", "main"], { cwd: pushClone, stdio: "ignore" });
+    fs.writeFileSync(path.join(pushClone, "src", "init.ts"), "export const a = 2;\n");
+    execFileSync("git", ["commit", "-am", "sneak push"], { cwd: pushClone, stdio: "ignore" });
+    execFileSync("git", ["push", "origin", "refs/heads/main:refs/heads/main"], {
+      cwd: pushClone,
+      stdio: "ignore",
+    });
+    execFileSync("git", ["checkout", "feat/work"], { cwd: pushClone, stdio: "ignore" });
+    const pushAfter = captureRepoSnapshot(pushClone, {
+      baselineHead: pushBase.head,
+      hasBaseline: true,
+      baseBranch: "main",
+    });
+    assert.deepEqual(changedFilesSinceBaseline(pushClone, pushBase, pushAfter), ["src/init.ts"]);
+    assert.equal(
+      checkDeterministicTripwires({
+        cwd: pushClone,
+        contract,
+        baseline: pushBase,
+        current: pushAfter,
+        consecutiveErrors: 0,
+      })?.kind,
+      "branch_violation",
+    );
   },
 );
 

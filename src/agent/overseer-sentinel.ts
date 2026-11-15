@@ -298,11 +298,7 @@ class SentinelRunner {
       owner: launch.owner,
       at: Date.now(),
       strikes: current.strikes,
-      kind: hit.kind,
-      summary: hit.summary,
-      changedFiles: hit.changedFiles,
-      diffExcerpt: hit.diffExcerpt,
-      diffDigest: hit.diffDigest,
+      ...hit,
     };
     return waitForEscalationResolution({
       base: this.options.base,
