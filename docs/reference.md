@@ -473,10 +473,10 @@ When overseer mode is enabled, `delegate` requires `contract`:
 Supervised children run zero-cost tripwires on mutating/error turns (3-turn error loops,
 out-of-scope Git modifications relative to the run's baseline snapshot, and `baseBranch`
 ancestry/direct-commit guards) plus debounced decision-model checkpoints (every 4 mutating turns,
-
-> =120 changed diff lines, and pre-settle). On high-confidence drift, the child writes
-> `escalation.json`, pauses, and wakes the parent once with `[agent-escalation]`. Steering via
-> `continue`, approving via `review`, or stopping via `stop` resolves the pause immediately.
+120 or more changed diff lines, and pre-settle). On drift, the child writes `escalation.json`,
+pauses, and wakes the parent once with `[agent-escalation]`. Steering via `continue` /
+`changes_requested`, approving via `review` (`verdict="approved"`), or stopping via `stop`
+resolves the pause immediately.
 
 When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
 prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`

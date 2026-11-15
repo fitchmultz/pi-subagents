@@ -135,8 +135,12 @@ export function prepareOverseerReviewAction(
   if (input.verdict === undefined || input.summary === undefined) {
     throw new Error("review requires verdict ('approved' | 'changes_requested') and summary.");
   }
-  const settled = fs.existsSync(path.join(runDirectory(base, original.id), "result.json"));
-  const target = settled ? original : latest(base, original);
+  const tip = latest(base, original);
+  const tipSettled = fs.existsSync(path.join(runDirectory(base, tip.id), "result.json"));
+  const originalSettled = fs.existsSync(path.join(runDirectory(base, original.id), "result.json"));
+  // If the conversation continued to an active/paused tip, review applies to that tip rather than
+  // stranding a live escalation behind a settled predecessor ID.
+  const target = !tipSettled || !originalSettled ? tip : original;
   const review = recordOverseerReview(base, target, input.verdict, input.summary);
   return { target, review, verdict: input.verdict };
 }

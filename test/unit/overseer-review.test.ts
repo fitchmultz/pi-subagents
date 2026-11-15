@@ -9,6 +9,7 @@ import type { Escalation, Launch, Result } from "../../src/agent/contracts.ts";
 import {
   buildReviewGateDraft,
   needsOverseerReview,
+  prepareOverseerReviewAction,
   readReview,
   recordOverseerReview,
   unreviewedCompletedRuns,
@@ -179,5 +180,30 @@ nodeTest(
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), true);
     recordOverseerReview(base, launch, "approved", "Verified final diff across both files.");
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
+
+    // Continuing launch -> tipB and calling review(id=launch.id, verdict="approved") while tipB
+    // is paused resolves tipB's active escalation instead of stranding the live tip.
+    const tipB: Launch = { ...launch, id: "paused-tip-b", predecessor: launch.id };
+    const tipDir = runDirectory(base, tipB.id);
+    fs.mkdirSync(tipDir, { recursive: true, mode: 0o700 });
+    write(path.join(tipDir, "launch.json"), tipB, true);
+    write(path.join(runDirectory(base, launch.id), "successor.json"), { id: tipB.id }, true);
+    const tipDigests = new Set<string>();
+    const tipWait = waitForEscalationResolution({
+      base,
+      launch: tipB,
+      escalation: { ...escalation, id: "esc-tip-b", runId: tipB.id, diffDigest: "tip-digest" },
+      approvedDigests: tipDigests,
+      isStopping: () => false,
+    });
+    const actionResult = prepareOverseerReviewAction(base, launch, {
+      action: "review",
+      id: launch.id,
+      verdict: "approved",
+      summary: "Approved paused tip via predecessor id.",
+    });
+    assert.equal(actionResult.target.id, tipB.id);
+    await tipWait;
+    assert.equal(tipDigests.has("tip-digest"), true);
   },
 );

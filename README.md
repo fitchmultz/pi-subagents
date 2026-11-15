@@ -56,8 +56,8 @@ When enabled:
 - `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
   `requiredPrimitives`, `nonGoals`) and defaults omitted `model` to the configured worker.
 - Child sessions block out-of-scope edit tool calls before writing, run zero-cost Git/loop
-  tripwires on mutating turns, and sample the lowest-cost available decision classifier
-  from Pi's catalog (such as `google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff
+  tripwires on mutating turns, and sample an available decision classifier
+  (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff
   checkpoints—pausing the child and waking the parent with `[agent-escalation]` on drift.
 - Completed mutating overseen runs require `agent_runs({ action: "review", ... })` before
   the parent session settles (`agent_before_settle`).

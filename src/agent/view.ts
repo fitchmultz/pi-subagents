@@ -61,7 +61,7 @@ interface RunSummary {
   /** Active unresolved mid-run overseer escalation pausing this running child. */
   escalation?: Escalation | undefined;
   review?: OverseerReview | undefined;
-  reviewRequired: boolean;
+  reviewRequired?: true | undefined;
   nativeReceipt: string | null;
   process: ReturnType<typeof processView>;
   lastWakeFailure?: { at: number; reason: string } | undefined;
@@ -215,7 +215,7 @@ function metadata(
     waiting: runWaiting(base, launch, status),
     escalation: runEscalation(base, launch, status),
     review: readReview(base, launch.id),
-    reviewRequired: needsOverseerReview(base, launch, result),
+    ...(needsOverseerReview(base, launch, result) ? { reviewRequired: true as const } : {}),
     nativeReceipt: options.ctx ? (published(options.ctx, launch) ?? null) : null,
     process,
     lastWakeFailure: read(
@@ -319,7 +319,7 @@ function inventoryRow(run: RunSummary): string {
     run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
     ...(run.waiting ? [waitingMark(run.waiting)] : []),
     ...(run.escalation ? [`[paused: ${run.escalation.kind} #${run.escalation.strikes}]`] : []),
-    ...(run.reviewRequired ? ["[review required]"] : []),
+    ...(run.reviewRequired === true ? ["[review required]"] : []),
     ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
   ].join(" ");
 }
@@ -394,7 +394,7 @@ function reviewLine(details: RunView): string {
   if (details.review !== undefined) {
     return `Overseer review: ${details.review.verdict} at ${utc(details.review.at)} - ${details.review.summary}`;
   }
-  return details.reviewRequired ? "Overseer review: required before parent settles." : "";
+  return details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
 }
 function resultText(details: RunView): string {
   const page = details.output;
