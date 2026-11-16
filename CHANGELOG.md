@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.44 - 2026-11-16
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer,observe): polish /agents UX and pre-settle steering (#450) ([a1a813a](https://github.com/fitchmultz/pi-subagents/commit/a1a813a8548e0072c2150ad2a13dddbe4cb0084a))
+
+### What's Changed
+
+- fix(overseer,observe): polish /agents UX and pre-settle steering by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/450
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.43...v0.52.44
+
 ## 0.52.43 - 2026-11-15
 
 <!-- npm-release:unreleased:start -->
