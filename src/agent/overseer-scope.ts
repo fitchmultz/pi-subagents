@@ -10,55 +10,41 @@ const PI_NATIVE_EDIT_TOOLS = new Set(["edit", "write"]);
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/gu;
 // POSIX _POSIX_SYMLOOP_MAX / Linux MAXSYMLINKS upper bound for symlink traversal.
 const MAX_SYMLINK_HOPS = 40;
-const PATCH_HEADER_PREFIXES = [
-  "*** Add File: ",
-  "*** Update File: ",
-  "*** Delete File: ",
-  "*** Move to: ",
-];
+const PATCH_HEADERS = ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "];
 
 function trimList(values: readonly string[] | undefined): string[] | undefined {
-  if (values === undefined) {
-    return undefined;
-  }
-  const trimmed = values.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
-  return trimmed.length > 0 ? trimmed : undefined;
+  const out = values?.map((v) => v.trim()).filter(Boolean);
+  return out !== undefined && out.length > 0 ? out : undefined;
 }
 
 function normalizeScopeEntry(raw: string): string {
-  const trimmed = raw.trim().replaceAll("\\", "/");
-  if (trimmed === "*") {
+  const s = raw.trim().replaceAll("\\", "/");
+  if (s === "*") {
     return "*";
   }
-  const stripped = trimmed.replace(/^(?:\.\/)+/u, "").replace(/\/+$/u, "");
-  if (stripped.length === 0 || stripped.startsWith("/")) {
+  const rel = s.replace(/^(?:\.\/)+/u, "").replace(/\/+$/u, "");
+  if (rel === "" || rel.startsWith("/")) {
     throw new Error(
       "Contract scope entries must be relative paths inside the delegation cwd (or '*' / []).",
     );
   }
-  const normalized = path.posix.normalize(stripped);
-  if (
-    normalized === "." ||
-    normalized === ".." ||
-    normalized.startsWith("../") ||
-    normalized.startsWith("/")
-  ) {
+  const norm = path.posix.normalize(rel);
+  if (norm === "." || norm === ".." || norm.startsWith("../") || norm.startsWith("/")) {
     throw new Error(
       "Contract scope entries must stay inside the delegation cwd without '..' traversal.",
     );
   }
-  return normalized;
+  return norm;
 }
 
 function normalizeScopeList(rawScope: readonly string[]): string[] {
   if (rawScope.length === 0) {
     return [];
   }
-  const normalized = rawScope.map(normalizeScopeEntry);
-  return normalized.includes("*") ? ["*"] : [...new Set(normalized)];
+  const list = rawScope.map(normalizeScopeEntry);
+  return list.includes("*") ? ["*"] : [...new Set(list)];
 }
 
-/** Validates and normalizes a delegation contract before launch persistence. */
 export function normalizeDelegationContract(raw: DelegationContract): DelegationContract {
   const scope = normalizeScopeList(raw.scope);
   const verification = trimList(raw.verification);
@@ -161,14 +147,13 @@ function canonicalScopeEntry(resolvedCwd: string, entry: string): string | undef
   if (target === undefined) {
     return undefined;
   }
-  const relative = path.relative(resolvedCwd, target);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+  const rel = path.relative(resolvedCwd, target);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     return undefined;
   }
-  return relative.split(path.sep).join("/");
+  return rel.split(path.sep).join("/");
 }
 
-/** Checks whether `candidatePath` stays inside `cwd` and matches `scope`. */
 export function isPathAllowedByScope(
   cwd: string,
   candidatePath: string,
@@ -179,38 +164,33 @@ export function isPathAllowedByScope(
     return false;
   }
   const absCwd = path.resolve(cwd);
-  const resolvedCwd = kernelCanonicalPath(path.parse(absCwd).root, absCwd);
-  const resolvedTarget =
-    resolvedCwd === undefined
-      ? undefined
-      : resolveTargetPath(cwd, resolvedCwd, candidatePath, toolName);
-  if (resolvedCwd === undefined || resolvedTarget === undefined) {
+  const realCwd = kernelCanonicalPath(path.parse(absCwd).root, absCwd);
+  const realTarget =
+    realCwd === undefined ? undefined : resolveTargetPath(cwd, realCwd, candidatePath, toolName);
+  if (realCwd === undefined || realTarget === undefined) {
     return false;
   }
-  const relative = path.relative(resolvedCwd, resolvedTarget);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  const rel = path.relative(realCwd, realTarget);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
     return false;
   }
   if (scope.includes("*")) {
     return true;
   }
-  if (relative === "") {
+  if (rel === "") {
     return false;
   }
-  const relPosix = relative.split(path.sep).join("/");
+  const posix = rel.split(path.sep).join("/");
   return scope.some((entry) => {
-    const canonicalEntry = canonicalScopeEntry(resolvedCwd, entry);
-    return (
-      canonicalEntry !== undefined &&
-      (relPosix === canonicalEntry || relPosix.startsWith(`${canonicalEntry}/`))
-    );
+    const ce = canonicalScopeEntry(realCwd, entry);
+    return ce !== undefined && (posix === ce || posix.startsWith(`${ce}/`));
   });
 }
 
 function patchTargetPaths(patchText: string): string[] {
   const paths: string[] = [];
   for (const line of patchText.split(/\r?\n/u)) {
-    const prefix = PATCH_HEADER_PREFIXES.find((header) => line.startsWith(header));
+    const prefix = PATCH_HEADERS.find((header) => line.startsWith(header));
     if (prefix !== undefined) {
       const target = line.slice(prefix.length).trim();
       if (target.length > 0) {
@@ -243,7 +223,6 @@ function extractTargetPaths(toolName: string, input: UnknownRecord): string[] {
   return [];
 }
 
-/** Returns a block reason when a child tool call violates `contract.scope`, or `undefined`. */
 export function checkToolCallScope(
   cwd: string,
   scope: readonly string[],
@@ -264,7 +243,6 @@ export function checkToolCallScope(
   return undefined;
 }
 
-/** Static system-prompt section describing the child's active delegation contract. */
 export function formatContractSection(contract: DelegationContract): string {
   const scopeText =
     contract.scope.length === 0

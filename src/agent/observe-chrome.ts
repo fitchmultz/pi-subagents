@@ -21,6 +21,7 @@ export interface ObserverRow {
   live: boolean;
   createdAt: number;
   activity?: string | undefined;
+  paused?: string | undefined;
 }
 
 export class Details extends ScrollView {
@@ -59,8 +60,9 @@ export class ChildList extends ScrollView {
       );
     }
     for (const row of rows) {
+      const state = row.paused ?? row.status;
       this.list.addChild(
-        actionText(`${row.id === selected ? ">" : " "} ${row.status} · ${row.name}`, () =>
+        actionText(`${row.id === selected ? ">" : " "} ${state} · ${row.name}`, () =>
           this.open(row.id),
         ),
       );
@@ -71,7 +73,11 @@ export class ChildList extends ScrollView {
   }
 }
 
-export type ScreenAction = [Parameters<KeybindingsManager["matches"]>[1], string, () => void];
+export type ScreenAction = readonly [
+  Parameters<KeybindingsManager["matches"]>[1],
+  string,
+  () => void,
+];
 
 /** Header activity label: a live connection wins over the last known row status. */
 export function activityLabel(options: {
@@ -83,11 +89,11 @@ export function activityLabel(options: {
   if (row?.live !== true) {
     return row?.status ?? "checking";
   }
-  if (client?.connected === true) {
-    return client.activity;
+  if (row.paused !== undefined) {
+    return row.paused;
   }
   if (client) {
-    return "Reconnecting";
+    return client.connected ? client.activity : "Reconnecting";
   }
   return options.connecting ? "Connecting" : (row.activity ?? row.status);
 }

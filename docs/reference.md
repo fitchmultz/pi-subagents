@@ -393,7 +393,7 @@ An empty partial inventory says it is checking saved runs, not that no runs exis
 In fullscreen mode, click a named row to watch that child; click the header or
 overflow count to open `/agents`. Picker rows and selection/Back/Close hints are
 clickable too. Regular mode retains the keyboard path because Pi leaves mouse
-input to the terminal there. Ctrl+O expands model/cwd details. The widget
+input to the terminal there. Enter or Ctrl+O expands the selected tool card in `/agents`, and Ctrl+P (`app.session.togglePath`) toggles assignment/journal details. The widget
 clears once a complete error-free scan finds no active or unreadable runs, or when
 the native parent is replaced; it stays while saved runs are still being checked. It is not
 a footer-only count.

@@ -4,6 +4,7 @@ import {
   renderLayoutFrame,
   dispatchLayoutMouse,
   type LayoutFrame,
+  setKeybindings,
   TruncatedText,
   VStack,
 } from "./observe-layout.ts";
@@ -11,7 +12,6 @@ import { errorMessage } from "../shared/unknown.ts";
 import { plainText } from "./journal-tail.ts";
 import { Reading } from "./observe-reading.ts";
 import { ObservationChannel, type ObservationClient, type Watch } from "./observe-client.ts";
-
 import {
   ChildList,
   Details,
@@ -70,13 +70,15 @@ export class ObserverScreen extends VStack {
   constructor(options: ScreenOptions) {
     super();
     this.options = options;
+    setKeybindings(options.keys);
     this.selected = options.selected;
-    if (options.selected.length > 0) {
-      this.open(this.selected);
-    }
+    this.open(this.selected);
     this.structure();
   }
   private open(id: string): void {
+    if (id.length === 0) {
+      return;
+    }
     try {
       const watch = this.options.data.watch(id);
       const reading: Reading =
@@ -108,8 +110,7 @@ export class ObserverScreen extends VStack {
       this.failure = "";
       this.selectionFailure = "";
       this.reconcileVisibility();
-      this.structure();
-      this.options.tui.requestRender();
+      this.paint();
       for (const key of this.saved.keys()) {
         if (this.saved.size > 4 && key !== this.selected) {
           this.saved.delete(key);
@@ -225,7 +226,9 @@ export class ObserverScreen extends VStack {
     const status = this.options.data.row(this.selected)?.status ?? "";
     const signature = JSON.stringify([
       this.options.data.status(),
-      this.options.data.inventory().map(({ id, name, status: state }) => [id, name, state]),
+      this.options.data
+        .inventory()
+        .map(({ id, name, status: state, paused }) => [id, name, state, paused]),
       this.client
         ? [this.client.activity, this.client.connected, this.client.model, this.client.thinking]
         : undefined,
@@ -253,8 +256,7 @@ export class ObserverScreen extends VStack {
       applied ||
       pending !== this.reading?.pending
     ) {
-      this.structure();
-      this.options.tui.requestRender();
+      this.paint();
     }
     this.index();
     this.wait();
@@ -272,7 +274,7 @@ export class ObserverScreen extends VStack {
   private wait(): void {
     const reading = this.activeReading();
     const live = this.options.data.row(this.selected)?.live === true;
-    if (reading && reading.transcript.waiting && live) {
+    if (reading?.transcript.waiting === true && live) {
       this.schedule();
     }
   }
@@ -312,8 +314,7 @@ export class ObserverScreen extends VStack {
       this.options.done();
       return;
     }
-    this.structure();
-    this.options.tui.requestRender();
+    this.paint();
   }
   private move(direction: number): void {
     if (this.focus === "conversation") {
@@ -359,11 +360,15 @@ export class ObserverScreen extends VStack {
   }
   private confirm(): void {
     if (this.focus === "list") {
-      this.open(
-        this.selected.length > 0 ? this.selected : (this.options.data.inventory()[0]?.id ?? ""),
-      );
+      const rows = this.options.data.inventory();
+      this.open(rows.find((row) => row.id === this.selected)?.id ?? rows[0]?.id ?? "");
     } else if (this.reading) {
       this.reading.transcript.toggle();
+    }
+  }
+  private expandTool(): void {
+    if (this.focus === "conversation") {
+      this.reading?.transcript.toggle();
     }
   }
   private switchFocus(): void {
@@ -389,6 +394,7 @@ export class ObserverScreen extends VStack {
         this.focus === "list" && this.reading ? "conversation" : "children",
         () => this.switchFocus(),
       ],
+      ["app.tools.expand", "", () => this.expandTool()],
     ];
   }
   private perform(action: () => void): void {
@@ -434,7 +440,7 @@ export class ObserverScreen extends VStack {
       basis: 1,
     });
     const rows = this.options.data.inventory();
-    if (this.selected.length === 0) {
+    if (!this.reading && !rows.some((row) => row.id === this.selected)) {
       this.selected = rows[0]?.id ?? "";
     }
     this.list.update(rows, this.selected, this.options.data.checking());
@@ -443,11 +449,7 @@ export class ObserverScreen extends VStack {
       this.conversation(reading);
     } else {
       this.addChild(new TruncatedText(this.options.data.status(), 0, 0), { basis: 1 });
-      this.addChild(this.list, {
-        basis: 0,
-        grow: 1,
-        minSize: 1,
-      });
+      this.addChild(this.list, { basis: 0, grow: 1, minSize: 1 });
     }
     const error = [this.failure, this.selectionFailure, this.options.data.error()].find(
       (message) => message.length > 0,

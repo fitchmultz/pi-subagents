@@ -14,7 +14,7 @@ import { successorSchema, type Launch } from "./contracts.ts";
 import { readCanonicalResult } from "./usage.ts";
 import { actor, observeAlive } from "./process.ts";
 import { plainText } from "./journal-tail.ts";
-import { runStatusOf } from "./run-state.ts";
+import { runEscalation, runStatusOf } from "./run-state.ts";
 import { ObservationClient, type Watch } from "./observe-client.ts";
 import { adoptedJournal } from "./saved.ts";
 import type { ObserverRow } from "./observe-chrome.ts";
@@ -61,7 +61,10 @@ class Observer {
         if (
           this.watcher === watcher &&
           this.timer === undefined &&
-          (file === null || /(?:launch|result|successor|process)\.json$/.test(file))
+          (file === null ||
+            /(?:launch|result|successor|process|escalation|escalation-resolution)\.json$/.test(
+              file,
+            ))
         ) {
           this.scan();
         }
@@ -124,6 +127,7 @@ class Observer {
     }
     return (live) => {
       const status = runStatusOf(result, live.get(launch.rootId) === true, finished);
+      const escalation = runEscalation(this.base, launch, status);
       this.rows.set(id, {
         id,
         name: plainText(launch.name ?? id, 120),
@@ -131,6 +135,10 @@ class Observer {
         live: status === "running",
         createdAt: launch.createdAt,
         activity: this.peers.get(id)?.client.activity,
+        paused:
+          escalation === undefined
+            ? undefined
+            : `paused: ${escalation.kind} #${escalation.strikes}`,
       });
     };
   }
@@ -317,12 +325,12 @@ class Observer {
           content.clear();
           content.addChild(actionText(theme.fg("accent", shown.status), () => open("")));
           for (const row of shown.rows) {
-            const glyph = row.live ? "●" : "○";
-            const color = row.live ? "accent" : "warning";
+            const glyph = row.live && row.paused === undefined ? "●" : "○";
+            const color = row.live && row.paused === undefined ? "accent" : "warning";
+            const detail = row.paused ?? row.activity ?? row.status;
             content.addChild(
-              actionText(
-                `${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${row.activity ?? row.status}`,
-                () => open(row.id),
+              actionText(`${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${detail}`, () =>
+                open(row.id),
               ),
             );
           }

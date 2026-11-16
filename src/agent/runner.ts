@@ -415,6 +415,11 @@ class Actor {
         base: this.base,
         activeLaunch: () => (this.work.kind === "running" ? this.work.launch : this.initial),
         isStopping: () => this.stopping,
+        flushPendingCommands: () => {
+          if (!this.stopping) {
+            this.pending().forEach((c) => this.accept(c));
+          }
+        },
       },
     });
     const runtime = await sdk.createAgentSessionRuntime(factory, {

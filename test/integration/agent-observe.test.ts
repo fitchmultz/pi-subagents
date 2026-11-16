@@ -584,6 +584,30 @@ async function exerciseReading(options: {
   await command;
 }
 
+async function verifyObserverExpandKey(
+  terminal: CaptureTerminal,
+  visible: () => string,
+): Promise<void> {
+  assert.match(
+    visible(),
+    /ctrl\+o to expand/i,
+    "tool cards inside /agents render configured expand key hints",
+  );
+  terminal.send("\x0f");
+  await until(
+    () => visible().includes("LIVE_PROGRESS_1_END"),
+    "configured app.tools.expand key expands the selected tool card in /agents",
+    visible,
+  );
+  terminal.clear();
+  terminal.send("\x0f");
+  await until(
+    () => /ctrl\+o to expand/i.test(visible()) && !visible().includes("LIVE_PROGRESS_1_END"),
+    "configured app.tools.expand key collapses the selected tool card in /agents",
+    visible,
+  );
+}
+
 for (const tuiMode of ["fullscreen", "regular"] as const) {
   nodeTest(
     `native ${tuiMode} observer watches an actual child without waking or aborting either agent and clears on replacement`,
@@ -861,6 +885,7 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         /LIVE_PROGRESS_1/,
         "progress is transient, not an already-published result",
       );
+      await verifyObserverExpandKey(terminal, visible);
       terminal.send("\r");
       await until(
         () => visible().includes("LIVE_PROGRESS_1_END"),
@@ -1006,6 +1031,13 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
       await until(
         () => terminal.text().includes("No child runs to show"),
         "completed child disappears from the picker",
+      );
+      terminal.send("\r");
+      view.renderNow();
+      assert.doesNotMatch(
+        visible(),
+        /Use a full child run ID/,
+        "confirming on an empty /agents list does not show an empty-ID error",
       );
       assert.match(
         terminal.text(),
@@ -1571,18 +1603,44 @@ nodeTest(
       shown,
     );
     assert.doesNotMatch(shown(), /active-first|stopped-history/, "strip lists active work only");
-    terminal.click(screen, "● active-second");
+    write(path.join(base, secondId, "escalation.json"), {
+      id: "esc-active-second",
+      runId: secondId,
+      owner,
+      at: 1,
+      strikes: 1,
+      kind: "scope_violation",
+      summary: "Out-of-scope edit",
+      changedFiles: ["README.md"],
+      diffExcerpt: "+# touched",
+      diffDigest: "digest-second",
+    });
     await until(
-      () => shown().includes("running · active-second") && shown().includes("escape back"),
-      "clicking the active strip row watches it",
+      () => shown().includes("○ active-second · paused: scope_violation #1"),
+      "strip renders paused overseer escalations distinctly",
+      shown,
+    );
+    terminal.click(screen, "○ active-second");
+    await until(
+      () =>
+        shown().includes("active-second · paused: scope_violation #1 · Details") &&
+        shown().includes("> paused: scope_violati"),
+      "/agents header and sidebar surface paused overseer escalation state",
       shown,
     );
     terminal.send("\x1b");
     await until(
       () =>
+        shown().includes("paused: scope_violation #1 · active-second") &&
         shown().includes("interrupted · active-first") &&
         shown().includes("stopped · stopped-history"),
       "watch returns to the explicit inventory with saved history",
+      shown,
+    );
+    fs.rmSync(path.join(base, secondId, "escalation.json"), { force: true });
+    await until(
+      () => shown().includes("running · active-second"),
+      "clearing escalation restores normal running display",
       shown,
     );
     terminal.send("\x1b");
