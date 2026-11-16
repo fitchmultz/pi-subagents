@@ -185,7 +185,6 @@ function trackedDiff(top: string, head: string | undefined, opts: SnapshotOption
     : (runGit(top, ["-c", "core.quotePath=false", "diff", base, "--unified=2"]) ?? "");
 }
 
-/** Captures a NUL-delimited Git status and diff snapshot anchored at the repository root. */
 export function captureRepoSnapshot(cwd: string, options?: string | SnapshotOptions): RepoSnapshot {
   const opts =
     typeof options === "string" ? { baselineHead: options, hasBaseline: true } : (options ?? {});
@@ -259,7 +258,6 @@ function addBranchRefChanges(
   }
 }
 
-/** Files modified, added, or deleted relative to `baseline`, formatted relative to `cwd`. */
 export function changedFilesSinceBaseline(
   cwd: string,
   baseline: RepoSnapshot,
@@ -361,7 +359,6 @@ function scopeOrGitIssue(
   };
 }
 
-/** Zero-cost local checks for error loops, out-of-scope edits, and wrong Git branches. */
 export function checkDeterministicTripwires(options: {
   cwd: string;
   contract: DelegationContract;
@@ -445,18 +442,19 @@ function buildJudgeContext(options: {
   }
   return {
     state: {
-      taskPrompt: options.prompt,
       contract: options.contract,
       changedFiles: options.changedFiles,
       diff: options.snapshot.rawDiff.slice(
         0,
         Math.max(4096, Math.floor(options.classifier.contextWindow * 2)),
       ),
+      taskPrompt: options.prompt,
     },
     questions: {
       verdict: {
         type: "choice",
-        instructions: "Classify whether the diff complies with or violates the contract.",
+        instructions:
+          "Judge ONLY the current git diff against contract (requiredPrimitives and nonGoals); ignore earlier reverted attempts or conflicting taskPrompt wording.",
         criteria,
       },
     },
@@ -496,7 +494,6 @@ function interpretChoice(
   };
 }
 
-/** Single-pass Decision-Model check over a diff checkpoint sized to the classifier's contextWindow. */
 export async function evaluateDecisionCheckpoint(options: {
   modelRegistry: JudgeModelRegistry;
   judgeSpec: string | undefined;

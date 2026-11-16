@@ -107,7 +107,7 @@ once a full scan finds none. The `/agents` picker hides completed runs; failed,
 stopped, interrupted, and unavailable runs remain visible there.
 Click a named row in fullscreen mode to watch it; `/agents` remains the keyboard
 path. Long result/message cards are collapsed and use Pi's native expansion
-(Ctrl+O by default). Ctrl+O also expands model/cwd details. Use `/agents <run-id>` to watch
+(Ctrl+O by default). Inside `/agents`, Enter or Ctrl+O expands the selected tool card and Ctrl+P (`app.session.togglePath`) toggles assignment/journal details. Use `/agents <run-id>` to watch
 any saved run, including a completed child's native published text, tool calls and results.
 This is read-only: it neither spends a model turn nor dispatches, steers or stops
 work. Unpublished provider token deltas are not a journal stream. Agents still

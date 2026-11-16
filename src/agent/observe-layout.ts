@@ -27,7 +27,7 @@ const [tui, layout, dispatch, sdk] = await Promise.all([
   dispatchPromise,
   loadSDK(sdkRoot),
 ]);
-export const { Container, HStack, ScrollView, Text, TruncatedText, VStack } = tui;
+export const { Container, HStack, ScrollView, setKeybindings, Text, TruncatedText, VStack } = tui;
 export const {
   AssistantMessageComponent,
   ToolExecutionComponent,

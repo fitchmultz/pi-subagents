@@ -655,6 +655,8 @@ nodeTest(
     const owner = parentSession.getSessionId();
     const launch = sampleLaunch(base, repo, owner);
 
+    let flushed = 0;
+    let flushHasQueued = true;
     const loader = new DefaultResourceLoader({
       cwd: repo,
       agentDir: getPiAgentDir(),
@@ -670,6 +672,10 @@ nodeTest(
             base,
             activeLaunch: () => launch,
             isStopping: () => false,
+            flushPendingCommands: () => {
+              flushed += 1;
+              return flushHasQueued;
+            },
           });
         },
       ],
@@ -681,6 +687,7 @@ nodeTest(
     const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
     let classifyCalls = 0;
     const ctx = {
+      hasPendingMessages: () => false,
       modelRegistry: {
         getAvailableOfType: () => Promise.resolve([classifier]),
         getModelOfType: () => classifier,
@@ -704,11 +711,10 @@ nodeTest(
         },
       },
     };
-    const emit = async (name: string, event: Record<string, unknown>) => {
-      await Promise.all(
+    const emit = async (name: string, event: Record<string, unknown>): Promise<unknown[]> =>
+      Promise.all(
         (ext.handlers.get(name) ?? []).map((handler) => handler({ type: name, ...event }, ctx)),
       );
-    };
 
     // Prime baseline BEFORE turn 1 edits anything.
     await emit("before_agent_start", {});
@@ -736,7 +742,11 @@ nodeTest(
     assert.equal(classifyCalls, 1);
 
     // Child tries to settle WITHOUT changing the drifted digest -> re-judged and caught!
-    const settlePromise = emit("agent_before_settle", { outcome: "completed", entries: [] });
+    const settlePromise = emit("agent_before_settle", {
+      outcome: "completed",
+      entries: [],
+      context: { pendingMessages: [] },
+    });
     while (!fs.existsSync(escPath)) {
       await delay(10);
     }
@@ -744,9 +754,46 @@ nodeTest(
     assert.ok(secondEsc !== undefined);
     assert.equal(secondEsc.strikes, 2);
     t.after(() => release(owner, `escalation:${secondEsc.id}`));
-    resolveActiveEscalation(base, launch, "approved");
-    await settlePromise;
+    resolveActiveEscalation(base, launch, "steered");
+    const steeredResults = await settlePromise;
     assert.equal(classifyCalls, 2);
+    assert.equal(flushed, 1);
+    assert.deepEqual(steeredResults, [{ continue: true }]);
+
+    flushHasQueued = false;
+    const approvePromise = emit("agent_before_settle", {
+      outcome: "completed",
+      entries: [],
+      context: { pendingMessages: [] },
+    });
+    while (!fs.existsSync(escPath)) {
+      await delay(10);
+    }
+    const thirdEsc = read(escPath, escalationSchema);
+    assert.ok(thirdEsc !== undefined);
+    assert.equal(thirdEsc.strikes, 3);
+    t.after(() => release(owner, `escalation:${thirdEsc.id}`));
+    resolveActiveEscalation(base, launch, "approved");
+    const approvedResults = await approvePromise;
+    assert.deepEqual(approvedResults, [undefined]);
+
+    // Unsteered settle fallback injects overseer-sentinel only when no steer is queued.
+    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), `${bigViolation}\n// strike 4\n`);
+    const fallbackPromise = emit("agent_before_settle", {
+      outcome: "completed",
+      entries: [],
+      context: { pendingMessages: [] },
+    });
+    while (!fs.existsSync(escPath)) {
+      await delay(10);
+    }
+    const fourthEsc = read(escPath, escalationSchema);
+    assert.ok(fourthEsc !== undefined);
+    t.after(() => release(owner, `escalation:${fourthEsc.id}`));
+    resolveActiveEscalation(base, launch, "steered");
+    const fallbackResults = await fallbackPromise;
+    assert.equal(flushed, 2);
+    assert.match(JSON.stringify(fallbackResults), /overseer-sentinel/u);
   },
 );
 
