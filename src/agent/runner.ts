@@ -160,17 +160,15 @@ class Actor {
     baseline: ReadonlySet<string>,
   ): Promise<void> {
     const repoBaseline = captureOverseerBaseline(this.base, launch);
-    const save = (error?: string): void => {
-      const { accounting, stopping } = this;
+    const save = (error?: string): void =>
       saveResult(this.base, launch, {
         session,
         baseline,
-        accounting,
-        stopping,
+        accounting: this.accounting,
+        stopping: this.stopping,
         error,
         repoBaseline,
       });
-    };
     try {
       const refusal = this.runRefusal(launch);
       if (refusal !== undefined) {
@@ -419,6 +417,8 @@ class Actor {
           if (!this.stopping) {
             this.pending().forEach((c) => this.accept(c));
           }
+          const s = this.actor?.session;
+          return s !== undefined && (s.agent.hasQueuedMessages() || s.pendingMessageCount > 0);
         },
       },
     });
@@ -527,10 +527,7 @@ class Actor {
     process.exit();
   }
 }
-const base = process.argv.at(2);
-const rootId = process.argv.at(3);
-const token = process.argv.at(4);
-const firstId = process.argv.at(5);
+const [base, rootId, token, firstId] = process.argv.slice(2);
 if (base === undefined || rootId === undefined || token === undefined || firstId === undefined) {
   throw new Error("Expected saved conversation and actor claim.");
 }

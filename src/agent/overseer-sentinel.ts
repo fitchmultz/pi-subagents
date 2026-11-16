@@ -178,7 +178,7 @@ export interface SentinelOptions {
   readonly base: string;
   readonly activeLaunch: () => Launch;
   readonly isStopping: () => boolean;
-  readonly flushPendingCommands?: () => void;
+  readonly flushPendingCommands?: () => boolean;
 }
 
 export function resolveActiveEscalation(
@@ -403,8 +403,11 @@ export function attachOverseerSentinel(pi: ExtensionAPI, options: SentinelOption
     if (verdict !== "steered") {
       return;
     }
-    options.flushPendingCommands?.();
-    if (event.context.pendingMessages.length > 0 || ctx.hasPendingMessages()) {
+    if (
+      options.flushPendingCommands?.() === true ||
+      event.context.pendingMessages.length > 0 ||
+      ctx.hasPendingMessages()
+    ) {
       return { continue: true };
     }
     return {

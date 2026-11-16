@@ -656,7 +656,7 @@ nodeTest(
     const launch = sampleLaunch(base, repo, owner);
 
     let flushed = 0;
-    let hasPending = false;
+    let flushHasQueued = true;
     const loader = new DefaultResourceLoader({
       cwd: repo,
       agentDir: getPiAgentDir(),
@@ -674,7 +674,7 @@ nodeTest(
             isStopping: () => false,
             flushPendingCommands: () => {
               flushed += 1;
-              hasPending = true;
+              return flushHasQueued;
             },
           });
         },
@@ -687,7 +687,7 @@ nodeTest(
     const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
     let classifyCalls = 0;
     const ctx = {
-      hasPendingMessages: () => hasPending,
+      hasPendingMessages: () => false,
       modelRegistry: {
         getAvailableOfType: () => Promise.resolve([classifier]),
         getModelOfType: () => classifier,
@@ -760,8 +760,7 @@ nodeTest(
     assert.equal(flushed, 1);
     assert.deepEqual(steeredResults, [{ continue: true }]);
 
-    // Subsequent settle approval resolves cleanly without extra turns.
-    hasPending = false;
+    flushHasQueued = false;
     const approvePromise = emit("agent_before_settle", {
       outcome: "completed",
       entries: [],
@@ -777,6 +776,24 @@ nodeTest(
     resolveActiveEscalation(base, launch, "approved");
     const approvedResults = await approvePromise;
     assert.deepEqual(approvedResults, [undefined]);
+
+    // Unsteered settle fallback injects overseer-sentinel only when no steer is queued.
+    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), `${bigViolation}\n// strike 4\n`);
+    const fallbackPromise = emit("agent_before_settle", {
+      outcome: "completed",
+      entries: [],
+      context: { pendingMessages: [] },
+    });
+    while (!fs.existsSync(escPath)) {
+      await delay(10);
+    }
+    const fourthEsc = read(escPath, escalationSchema);
+    assert.ok(fourthEsc !== undefined);
+    t.after(() => release(owner, `escalation:${fourthEsc.id}`));
+    resolveActiveEscalation(base, launch, "steered");
+    const fallbackResults = await fallbackPromise;
+    assert.equal(flushed, 2);
+    assert.match(JSON.stringify(fallbackResults), /overseer-sentinel/u);
   },
 );
 
