@@ -1,7 +1,6 @@
 import { spawn } from "child_process";
 import { closeSync, fstatSync, openSync, readFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import net from "net";
 import { getPiAgentDir } from "../agent-dir.ts";
 import {
@@ -14,7 +13,7 @@ import {
 import { isBrokerPidReused } from "./pid.ts";
 import { errorMessage, hasErrorCode } from "../../shared/unknown.ts";
 
-const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const EXTENSION_DIR = join(import.meta.dirname, "..", "..", "..");
 const BROKER_PID = join(getBrokerRuntimeDir(), "broker.pid");
 const BROKER_SPAWN_LOCK = join(getBrokerRuntimeDir(), "broker.spawn.lock");
 
@@ -88,7 +87,7 @@ export async function spawnBrokerIfNeeded(
   await stopUnhealthyBrokerBeforeSpawn();
 
   const brokerPath = join(
-    dirname(fileURLToPath(import.meta.url)),
+    import.meta.dirname,
     import.meta.url.endsWith(".ts") ? "broker.ts" : "broker.js",
   );
   const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);

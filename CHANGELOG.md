@@ -13,6 +13,7 @@
 
 - feat(intercom): expose worker start age in session list (PIF-201) (1/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/452
 - feat(intercom): surface failed peer turns in list and last (PSA-201) (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/453
+- Use import.meta.dirname for broker paths by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/456
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.44...v0.52.45
 
