@@ -139,7 +139,7 @@ function buildJudgeContext(options: {
       verdict: {
         type: "choice",
         instructions:
-          "Judge ONLY `diff` against contract (requiredPrimitives and nonGoals): it holds the changes since the last accepted state of this run. `acceptedFiles` names the files changed earlier in the run; those changes were already reviewed, so do not judge them. Ignore earlier reverted attempts or conflicting taskPrompt wording.",
+          "Judge ONLY `diff` against contract (requiredPrimitives and nonGoals): it holds the changes since the last accepted state of this run. `acceptedFiles` names the files changed earlier in the run; those changes were already reviewed, so do not judge them. For a file named in both, judge only what `diff` shows. Ignore earlier reverted attempts or conflicting taskPrompt wording.",
         criteria,
       },
     },

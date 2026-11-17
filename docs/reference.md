@@ -496,8 +496,15 @@ the child did not write:
   session makes there is never listed.
 - A commit that the child made and then moved away from, for example on a side branch, stays
   listed. It is read from the HEAD reflog of the child's own worktree.
+- An accepted edit that was never committed stays listed when a checkout of another branch
+  drops it, although the file then equals the commit that was checked out.
 - When the base branch moves while another worktree has it checked out, that is not a
   `branch_violation` of this run: Git lets only that worktree commit to it.
+
+The saved trees are objects that no ref holds. If one can no longer be read, because the
+repository was replaced or `git prune` removed the object, the changes cannot be computed. The
+checkpoint then pauses the run with a `loop_violation`, and a completed run lists
+`(git-status-unavailable)` as its changed file, so that the review is still required.
 
 The `changedFiles` of a completed run follow the same rules, measured from launch.
 
@@ -536,7 +543,7 @@ Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).
 Changes since your last approval:
   +1 -0 docs/NEW.md
   +1 -0 src/allowed.ts
-Approved earlier in this run, not shown: README.md, src/big.ts
+Approved earlier in this run (those changes are not shown): README.md, src/big.ts
 diff --git a/docs/NEW.md b/docs/NEW.md
 …
 ```
@@ -545,10 +552,13 @@ diff --git a/docs/NEW.md b/docs/NEW.md
   the diff are relative to the repository root.
 - `Changed since the last clean check, look here first` names the files changed after the last
   state that passed the checks. It appears when that is only a part of the listed work.
-- `Committed in this worktree and no longer checked out` names files of commits the child made
-  and then moved away from. They have no line counts and are not in the diff.
-- `Approved earlier in this run, not shown` names the files of the work that the overseer
-  already approved.
+- `No longer in the working tree (committed on another branch, or dropped by a checkout)` names
+  files of commits the child made and then moved away from, and files with an accepted edit
+  that was never committed and that a checkout of another branch dropped. They have no line
+  counts and are not in the diff.
+- `Approved earlier in this run (those changes are not shown)` names the files of the work
+  that the overseer already approved. A file that changed again after the approval is also in
+  the lines above, with its new change only.
 - The diff is cut at 3000 characters. When it is cut, the notice ends with the command that
   prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
 

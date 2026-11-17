@@ -619,7 +619,7 @@ nodeTest(
     });
     assert.match(
       asked[0].questions["verdict"]?.instructions ?? "",
-      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them/u,
+      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them\. For a file named in both, judge only what `diff` shows\./u,
     );
     assert.ok(hit !== undefined);
     assert.equal(hit.kind, "primitive_violation");
@@ -797,6 +797,15 @@ nodeTest(
       "src/two.ts",
       "test/foo.test.ts",
     ]);
+    // Dropping it with a forced checkout of the branch below is new work too. The file then
+    // matches the commit that was checked out, but the approved edit is in no commit.
+    fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
+    fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
+    git(child, "checkout", "-f", "feat/child");
+    const dropped = ownChanges(child, approved, snapshot());
+    assert.deepEqual(dropped.files, ["src/two.ts"]);
+    assert.deepEqual(dropped.leftBehind, ["src/two.ts"]);
+    git(child, "checkout", "feat/child-2");
     // Committing the approved work changes nothing the overseer has not seen.
     fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
     fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
@@ -830,6 +839,17 @@ nodeTest(
       "src/side.ts",
       "src/two.ts",
       "test/foo.test.ts",
+    ]);
+
+    // An accepted working tree is an object that no ref holds. Once it is pruned the changes
+    // since then cannot be computed, and that is reported instead of "no changes".
+    fs.writeFileSync(path.join(child, "README.md"), "accepted drift\n");
+    const unreferenced = acceptedPoint(afterSide, snapshot());
+    fs.writeFileSync(path.join(child, "README.md"), "later drift\n");
+    assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, ["README.md"]);
+    git(child, "prune", "--expire=now");
+    assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, [
+      "(git-status-unavailable)",
     ]);
   },
 );
@@ -1101,7 +1121,7 @@ nodeTest(
         "Changes since your last approval:",
         "  +1 -0 docs/NEW.md",
         "  +1 -0 src/allowed.ts",
-        "Approved earlier in this run, not shown: README.md, src/big.ts",
+        "Approved earlier in this run (those changes are not shown): README.md, src/big.ts",
         "diff --git a/docs/NEW.md b/docs/NEW.md",
         "new file mode 100644",
         "index 0000000..3e75765",
@@ -1129,15 +1149,29 @@ nodeTest(
     const third = await paused();
     assert.equal(third.kind, "primitive_violation");
     assert.deepEqual(third.changedFiles, ["src/allowed.ts"]);
-    // A third pause after two approvals: no correction is counted, and no advice to stop.
+    // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
+    // and says of the approved files only that their earlier changes are not shown. This is a
+    // third pause after two approvals: no correction is counted, and nothing advises stopping.
     assert.deepEqual([third.strikes, third.corrections], [3, 0]);
-    assert.deepEqual(notice().split("\n").slice(0, 3), [
-      `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-      `Reason: ${third.summary}`,
-      "Changes since your last approval:",
-    ]);
-    assert.equal(notice().split("\n").at(-1), STEER_APPROVE_OR_STOP);
-    assert.doesNotMatch(notice(), /prefer|corrected/u);
+    assert.equal(
+      notice(),
+      [
+        `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+        `Reason: ${third.summary}`,
+        "Changes since your last approval:",
+        "  +1 -0 src/allowed.ts",
+        "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
+        "diff --git a/src/allowed.ts b/src/allowed.ts",
+        "index 5dc3114..46469ae 100644",
+        "--- a/src/allowed.ts",
+        "+++ b/src/allowed.ts",
+        "@@ -1,2 +1,3 @@",
+        " export const x = 1;",
+        " export const later = 1;",
+        "+// FLAG",
+        STEER_APPROVE_OR_STOP,
+      ].join("\n"),
+    );
     assert.equal(judged.length, 2);
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
@@ -1233,7 +1267,7 @@ nodeTest("a pause names work the child committed and then left on another branch
       "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
       "Changes since launch:",
       "  docs/SIDE.md",
-      "Committed in this worktree and no longer checked out: docs/SIDE.md",
+      "No longer in the working tree (committed on another branch, or dropped by a checkout): docs/SIDE.md",
       STEER_APPROVE_OR_STOP,
     ].join("\n"),
   );
