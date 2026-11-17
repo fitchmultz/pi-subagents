@@ -29,7 +29,6 @@ export function checkQuality(root: string): void {
     "typecheck:declarations": "node quality/declarations.ts",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:install": "node scripts/local-install-smoke.mjs",
-    "check:size": "node scripts/measure-size.mjs",
     "check:quality": "node quality/check.ts",
     lint: "oxlint --type-aware --deny-warnings .",
     "format:check": "oxfmt --check .",

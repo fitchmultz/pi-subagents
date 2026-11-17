@@ -62,7 +62,6 @@
     "typecheck": "node scripts/typescript.mjs --noEmit",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:install": "node scripts/local-install-smoke.mjs",
-    "check:size": "node scripts/measure-size.mjs",
     "lint": "oxlint --type-aware --deny-warnings .",
     "lint:fix": "oxlint --type-aware --fix .",
     "lint:agent": "oxlint --type-aware --deny-warnings --format=agent .",
