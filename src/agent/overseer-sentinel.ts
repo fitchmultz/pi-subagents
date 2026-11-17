@@ -7,8 +7,10 @@ import {
   commandMetadataSchema,
   escalationResolutionSchema,
   escalationSchema,
+  judgeUnavailableSchema,
   type Escalation,
   type EscalationResolution,
+  type JudgeUnavailable,
   type Launch,
 } from "./contracts.ts";
 import { errorText } from "./host.ts";
@@ -63,6 +65,8 @@ interface RunSentinelState {
   turnsSinceJudge: number;
   /** The state the judge last saw, and the size of the new work it saw then. */
   judged: { readonly tree: string | undefined; readonly lines: number };
+  /** The classifiers whose request failed in this run. On `auto` the judge asks them last. */
+  readonly failedJudges: Set<string>;
   /** Pauses so far, and how many of them the overseer answered with a correction. */
   pauses: number;
   corrections: number;
@@ -184,7 +188,7 @@ function shouldRunJudgeCheckpoint(
   if (finalSettle) {
     return true;
   }
-  // The judge already answered for this exact state.
+  // The judge was already asked about this exact state.
   if (checkpoint.snapshot.tree === state.judged.tree) {
     return false;
   }
@@ -220,29 +224,33 @@ export function resolveActiveEscalation(
   return active;
 }
 
-async function safeJudge(
+const judgeUnavailableFile = (base: string, runId: string): string =>
+  path.join(runDirectory(base, runId), "judge-unavailable.json");
+
+/** Why no judge has answered for the latest work of a run, when that is so. */
+export const judgeUnavailable = (base: string, runId: string): JudgeUnavailable | undefined =>
+  read(judgeUnavailableFile(base, runId), judgeUnavailableSchema);
+
+/** Rejects when no judge answered. */
+async function askJudge(
   launch: Launch,
   ctx: ExtensionContext,
-  checkpoint: Work,
-  acceptedFiles: readonly string[],
+  work: { checkpoint: Work; acceptedFiles: readonly string[]; failed: Set<string> },
 ): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
     return undefined;
   }
-  try {
-    return await evaluateDecisionCheckpoint({
-      modelRegistry: ctx.modelRegistry,
-      judgeSpec: launch.overseer?.judge,
-      prompt: launch.prompt,
-      contract: launch.contract,
-      changedFiles: checkpoint.changes.files,
-      acceptedFiles,
-      diff: checkpoint.diff,
-      signal: undefined,
-    });
-  } catch (error) {
-    return { kind: "loop_violation", summary: errorText(error) };
-  }
+  return evaluateDecisionCheckpoint({
+    modelRegistry: ctx.modelRegistry,
+    judgeSpec: launch.overseer?.judge,
+    prompt: launch.prompt,
+    contract: launch.contract,
+    changedFiles: work.checkpoint.changes.files,
+    acceptedFiles: work.acceptedFiles,
+    diff: work.checkpoint.diff,
+    failed: work.failed,
+    signal: undefined,
+  });
 }
 
 export function harnessExcludePaths(base: string, launch: Launch): string[] {
@@ -296,6 +304,7 @@ class SentinelRunner {
       consecutiveErrors: 0,
       turnsSinceJudge: 0,
       judged: { tree: point.snapshot.tree, lines: 0 },
+      failedJudges: new Set(),
       pauses: 0,
       corrections: 0,
     };
@@ -319,6 +328,8 @@ class SentinelRunner {
     const current = this.ensureState(launch);
     current.reviewPoint = acceptedPoint(current.reviewPoint, snapshot);
     current.judged = { tree: snapshot.tree, lines: 0 };
+    // Nothing is left that no judge answered for.
+    fs.rmSync(judgeUnavailableFile(this.options.base, launch.id), { force: true });
   }
 
   /** What a pause shows: all the work the overseer has not approved, not only what failed now. */
@@ -449,8 +460,22 @@ class SentinelRunner {
     }
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
-    const accepted = this.changedBefore(launch, current.reviewPoint);
-    const verdict = await safeJudge(launch, ctx, checkpoint, accepted);
+    const acceptedFiles = this.changedBefore(launch, current.reviewPoint);
+    let verdict: Violation | undefined;
+    try {
+      verdict = await askJudge(launch, ctx, {
+        checkpoint,
+        acceptedFiles,
+        failed: current.failedJudges,
+      });
+    } catch (error) {
+      // No judge answered. That is no finding about the work, so the child is not paused. The
+      // review point stays: a later checkpoint asks again about all the work since then, and
+      // the completion notice reports a run that ends with work no judge answered for.
+      const unavailable: JudgeUnavailable = { at: Date.now(), summary: errorText(error) };
+      write(judgeUnavailableFile(this.options.base, launch.id), unavailable);
+      return undefined;
+    }
     if (verdict === undefined) {
       this.pass(launch, snapshot);
       return undefined;

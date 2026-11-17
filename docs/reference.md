@@ -533,6 +533,38 @@ until the checkpoint before the run settles.
 The judge receives the diff of the new work, the names of the files changed earlier in the run
 (`acceptedFiles`), and the instruction to judge only the new diff.
 
+### Which classifier judges, and when none answers
+
+With the judge on `auto`, a checkpoint asks the first of these classifiers that is available:
+`google/gemini-decision-1`, `cloudflare-workers-ai/@cf/cloudflare/clef`, `openai/gpt-6-luna`,
+`cloudflare-workers-ai/@cf/cloudflare/clef-flash`. When none of the four is available, it asks
+the first available classifier. When no classifier is available, the judge is not asked.
+
+A judge request can fail: the provider account has no credit, the key is rejected, or the
+provider cannot be reached. A failed request is not a finding about the child's work, and it
+never pauses the child.
+
+- On `auto`, the checkpoint asks the next classifier of the list until one answers. For the
+  rest of the run, a classifier whose request failed is asked after the others, so its failed
+  request is not repeated while another classifier answers.
+- A configured judge (`provider/model`) is not replaced by another classifier. A configured
+  judge that is not an available classifier counts as a failed request.
+- When no classifier answers, the child continues. The scope, branch and error-loop checks
+  still run and still pause it. The new work stays unjudged: the next judge checkpoint asks
+  again, about all the work since the last state that passed.
+- A run that ends with work that no classifier answered for says so in its completion
+  notice, once, with the error of each failed request. The review of a completed run with
+  changes is required as for every supervised run.
+
+```text
+[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. Overseer judge 'google/gemini-decision-1' failed: Google Decisions error (402): …]
+```
+
+While work is unjudged, the run directory holds `judge-unavailable.json` (`at`, `summary`). The
+child removes it when that work passes: a classifier finds it clean, the overseer approves a
+pause, or the work is gone. A parent that runs an older package version does not read the
+file, and its completion notice does not have the line.
+
 ### What a pause notice shows
 
 The `[agent-escalation]` notice describes the work since the overseer's last approval, or since

@@ -84,10 +84,19 @@ export function checkDeterministicTripwires(options: {
   return issue === undefined ? undefined : { kind: "branch_violation", summary: issue };
 }
 
-async function selectClassifier(
+const classifierName = (model: ClassifierModel<ClassifierApi>): string =>
+  `${model.provider}/${model.id}`;
+
+/**
+ * The classifiers a checkpoint may ask, in the order it asks them. A configured judge is the
+ * owner's choice and has no substitute. On `auto`, a classifier whose request failed earlier
+ * in the run is asked after the others.
+ */
+async function judgeCandidates(
   registry: JudgeModelRegistry,
   spec: string,
-): Promise<ClassifierModel<ClassifierApi> | undefined> {
+  failed: ReadonlySet<string>,
+): Promise<ClassifierModel<ClassifierApi>[]> {
   const available = await registry.getAvailableOfType("classifier");
   if (spec !== "auto") {
     const slash = spec.indexOf("/");
@@ -98,15 +107,16 @@ async function selectClassifier(
     if (matched === undefined) {
       throw new Error(`Configured overseer judge '${spec}' is not an available classifier model.`);
     }
-    return matched;
+    return [matched];
   }
-  for (const [provider, id] of PREFERRED_AUTO_JUDGES) {
+  const preferred = PREFERRED_AUTO_JUDGES.flatMap(([provider, id]) => {
     const found = available.find((m) => m.provider === provider && m.id === id);
-    if (found !== undefined) {
-      return found;
-    }
-  }
-  return available[0];
+    return found === undefined ? [] : [found];
+  });
+  const candidates = preferred.length > 0 ? preferred : available.slice(0, 1);
+  return candidates.toSorted(
+    (a, b) => Number(failed.has(classifierName(a))) - Number(failed.has(classifierName(b))),
+  );
 }
 
 function buildJudgeContext(options: {
@@ -145,11 +155,6 @@ function buildJudgeContext(options: {
 }
 
 function unpackChoice(result: ClassifierResult): ClassifierChoiceAnswer | undefined {
-  if (result.stopReason === "error") {
-    throw new Error(
-      `Overseer judge '${result.provider}/${result.model}' failed: ${result.errorMessage ?? "classifier error"}.`,
-    );
-  }
   return result.stopReason === "stop" && result.answers.verdict?.type === "choice"
     ? result.answers.verdict
     : undefined;
@@ -163,7 +168,7 @@ function interpretChoice(
   if (ans?.choice !== "primitive_violation" && ans?.choice !== "scope_violation") {
     return undefined;
   }
-  const id = `${classifier.provider}/${classifier.id}`;
+  const id = classifierName(classifier);
   const req = contract.requiredPrimitives?.join(", ") ?? "";
   return {
     kind: ans.choice,
@@ -174,6 +179,11 @@ function interpretChoice(
   };
 }
 
+/**
+ * Asks the judge about the new work. Rejects when no classifier answered: the configured judge
+ * is not an available classifier, or every request failed. That is a fault of the judge and
+ * never a finding about the work.
+ */
 export async function evaluateDecisionCheckpoint(options: {
   modelRegistry: JudgeModelRegistry;
   judgeSpec: string | undefined;
@@ -184,20 +194,31 @@ export async function evaluateDecisionCheckpoint(options: {
   diff: string;
   /** Files changed earlier in the run, in states that were already accepted. */
   acceptedFiles: readonly string[];
+  /** The classifiers whose request failed earlier in the run. The call adds those that fail now. */
+  failed: Set<string>;
   signal: AbortSignal | undefined;
 }): Promise<Violation | undefined> {
   const spec = options.judgeSpec ?? "auto";
   if (spec === "off" || options.changedFiles.length === 0 || options.diff === "") {
     return undefined;
   }
-  const classifier = await selectClassifier(options.modelRegistry, spec);
-  if (classifier === undefined) {
-    return undefined;
+  const failures: string[] = [];
+  for (const classifier of await judgeCandidates(options.modelRegistry, spec, options.failed)) {
+    const result = await options.modelRegistry.classify(
+      classifier,
+      buildJudgeContext({ classifier, ...options }),
+      options.signal === undefined ? undefined : { signal: options.signal },
+    );
+    if (result.stopReason !== "error") {
+      return interpretChoice(classifier, unpackChoice(result), options.contract);
+    }
+    options.failed.add(classifierName(classifier));
+    failures.push(
+      `Overseer judge '${classifierName(classifier)}' failed: ${result.errorMessage ?? "classifier error"}.`,
+    );
   }
-  const result = await options.modelRegistry.classify(
-    classifier,
-    buildJudgeContext({ classifier, ...options }),
-    options.signal === undefined ? undefined : { signal: options.signal },
-  );
-  return interpretChoice(classifier, unpackChoice(result), options.contract);
+  if (failures.length > 0) {
+    throw new Error(failures.join(" "));
+  }
+  return undefined;
 }

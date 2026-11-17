@@ -60,6 +60,8 @@ When enabled:
   tripwires on mutating turns, and sample an available decision classifier
   (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff
   checkpoints—pausing the child and waking the parent with `[agent-escalation]` on drift.
+  A classifier request that fails is not drift: the next classifier is asked, the child is
+  not paused, and a run that ends unjudged says so in its completion notice.
 - Completed mutating overseen runs require `agent_runs({ action: "review", ... })` before
   the parent session settles (`agent_before_settle`).
 
