@@ -371,7 +371,6 @@ class SentinelRunner {
       cwd: launch.cwd,
       contract: launch.contract,
       launch: current.launch.snapshot,
-      reviewed: current.reviewPoint.snapshot,
       current: snapshot,
       changes: checkpoint.changes,
       consecutiveErrors: current.consecutiveErrors,

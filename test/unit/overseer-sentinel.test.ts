@@ -72,7 +72,6 @@ function tripwires(options: {
   return checkDeterministicTripwires({
     ...rest,
     launch: baseline.snapshot,
-    reviewed: baseline.snapshot,
     changes: ownChanges(options.cwd, baseline, options.current),
   });
 }
@@ -544,6 +543,20 @@ nodeTest(
       })?.kind,
       "branch_violation",
     );
+
+    // An uncommitted edit that was there at launch is not the run's work. A forced checkout of
+    // another branch that drops it lists nothing, also after a checkpoint accepted that state.
+    const dirty = initGitRepo(t);
+    git(dirty, "branch", "feat/old");
+    fs.writeFileSync(path.join(dirty, "src", "second.ts"), "export const second = 2;\n");
+    git(dirty, "add", ".");
+    git(dirty, "commit", "-m", "second");
+    fs.writeFileSync(path.join(dirty, "README.md"), "preexisting dirty\n");
+    const dirtyLaunch = launchPoint(dirty);
+    const dirtyPassed = acceptedPoint(dirtyLaunch, captureRepoSnapshot(dirty));
+    git(dirty, "checkout", "-f", "feat/old");
+    assert.deepEqual(ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty)).files, []);
+    assert.deepEqual(ownChanges(dirty, dirtyPassed, captureRepoSnapshot(dirty)).files, []);
   },
 );
 
@@ -831,6 +844,20 @@ nodeTest(
     assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, [
       "(git-status-unavailable)",
     ]);
+    // The checkpoint pauses for it whatever the scope allows.
+    assert.deepEqual(
+      tripwires({
+        cwd: child,
+        contract: { scope: ["*"], verification: ["npm test"] },
+        baseline: unreferenced,
+        current: snapshot(),
+        consecutiveErrors: 0,
+      }),
+      {
+        kind: "loop_violation",
+        summary: "Git status became unavailable during supervised run.",
+      },
+    );
   },
 );
 
