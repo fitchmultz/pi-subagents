@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.49 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+
 - A failed overseer judge request no longer pauses the child. Before, a request that failed for a reason outside the child's work, such as a provider account without credit, paused the child with a `loop_violation` at every judge checkpoint, and the parent had to approve each pause. Now, with the judge on `auto`, the checkpoint asks the next classifier: the preferred ones first, then every other available classifier. For the rest of the run a classifier that gave no verdict is asked after the others. A configured judge (`provider/model`) is not replaced by another classifier. A response without a verdict counts as a failed request, not as a clean verdict. When no classifier gives a verdict, also because none is available, the child continues, the scope, branch and error-loop checks still pause it, and the next judge checkpoint asks again about all the unjudged work. A run that ends with such work says so once in its completion notice (`[Overseer judge unavailable: ...]`). Before, `auto` without an available classifier accepted the work without saying so. Cancelling the child's run now cancels its judge request. See [Which classifier judges, and when none answers](docs/reference.md#which-classifier-judges-and-when-none-answers).
+
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): try the next judge when a judge gives no verdict (OVR-214) (1/1) (#466) ([fa6f227](https://github.com/fitchmultz/pi-subagents/commit/fa6f227f1c0c6be8731c59f659ce7c476f1775b9))
+
+### What's Changed
+
+- fix(overseer): try the next judge when a judge gives no verdict, and do not pause for it (OVR-214) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/466
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.48...v0.52.49
 
 ## 0.52.48 - 2026-11-17
 
