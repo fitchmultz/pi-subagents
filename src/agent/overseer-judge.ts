@@ -54,21 +54,19 @@ export function checkDeterministicTripwires(options: {
   contract: DelegationContract;
   /** The run's first snapshot. The base-branch rules hold for the whole run. */
   launch: RepoSnapshot;
-  /** The last accepted snapshot. */
-  reviewed: RepoSnapshot;
   current: RepoSnapshot;
-  /** The child's own changes since `reviewed`. */
+  /** The child's own changes since the last accepted snapshot. */
   changes: OwnChanges;
   consecutiveErrors: number;
 }): Violation | undefined {
-  const { cwd, contract, launch, reviewed, current, changes, consecutiveErrors } = options;
+  const { cwd, contract, launch, current, changes, consecutiveErrors } = options;
   if (consecutiveErrors >= CONSECUTIVE_ERROR_TURN_LIMIT) {
     return {
       kind: "loop_violation",
       summary: `Child hit ${consecutiveErrors} consecutive turns with tool/command errors without clean progress.`,
     };
   }
-  if (reviewed.isGit && !current.isGit) {
+  if (changes.unreadable) {
     return {
       kind: "loop_violation",
       summary: "Git status became unavailable during supervised run.",

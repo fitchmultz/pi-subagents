@@ -10,8 +10,6 @@ import {
 } from "./overseer-scope.ts";
 import { missing } from "./storage.ts";
 
-const GIT_UNAVAILABLE = "(git-status-unavailable)";
-
 export interface SnapshotOptions {
   readonly baseBranch?: string | undefined;
   readonly excludePaths?: readonly string[] | undefined;
@@ -53,6 +51,11 @@ export interface ReviewPoint {
 export interface OwnChanges {
   /** Changed paths relative to the run's cwd, sorted. */
   readonly files: readonly string[];
+  /**
+   * Git could not compute the changes. `files` then holds one placeholder instead of paths, so
+   * that whoever reads only `files` does not take the run for one without changes.
+   */
+  readonly unreadable: boolean;
   /**
    * Among `files`: work that the working tree no longer holds. It was committed in this worktree
    * on history that HEAD no longer contains, or it was accepted without a commit and a checkout
@@ -297,21 +300,17 @@ function unexplained(
   top: string,
   from: ReviewPoint,
   to: { readonly tree: string; readonly grew: boolean },
-  options: { readonly changed: readonly string[]; readonly boundaries: readonly string[] },
+  options: {
+    readonly changed: readonly string[];
+    readonly boundaries: readonly string[];
+    readonly accepted: ReadonlySet<string>;
+  },
 ): string[] {
   const reviewedHead = from.snapshot.head;
-  const reviewedTree = from.snapshot.tree;
   // While the history only grew, a commit the reviewed history already contained explains a
   // file only if the child had not changed that file before: taking accepted work back out
   // is new work.
-  const accepted = new Set(
-    to.grew &&
-      from.launchTree !== undefined &&
-      reviewedTree !== undefined &&
-      from.launchTree !== reviewedTree
-      ? changedPaths(top, from.launchTree, reviewedTree)
-      : [],
-  );
+  const accepted = to.grew ? options.accepted : new Set<string>();
   let paths = [...options.changed];
   for (const boundary of options.boundaries) {
     if (paths.length === 0) {
@@ -351,21 +350,35 @@ function relativeTo(cwd: string, top: string): (file: string) => string {
 const fromCwd = (cwd: string, top: string, files: readonly string[]): string[] =>
   [...new Set(files.map(relativeTo(cwd, top)))].sort();
 
+/** The files the child had changed when `from` was accepted. Nothing at launch is its work. */
+function acceptedPaths(top: string, from: ReviewPoint): Set<string> {
+  const { tree } = from.snapshot;
+  const none = from.launchTree === undefined || tree === undefined || from.launchTree === tree;
+  return new Set(none ? [] : changedPaths(top, from.launchTree, tree));
+}
+
 /**
- * Files whose accepted content was in no commit and is gone after a checkout of another line.
- * No known commit explains that loss, although the file now equals the commit checked out.
+ * Files whose accepted content was the child's, was in no commit, and is gone after a checkout
+ * of another line. No known commit explains that loss, although the file now equals the commit
+ * checked out. Uncommitted content that was there at launch is not the child's to lose.
  */
 function droppedEdits(
   top: string,
   from: RepoSnapshot,
   line: { readonly grew: boolean; readonly reviewed: string },
-  now: { readonly changed: readonly string[]; readonly paths: readonly string[] },
+  now: {
+    readonly changed: readonly string[];
+    readonly paths: readonly string[];
+    readonly accepted: ReadonlySet<string>;
+  },
 ): string[] {
-  if (line.grew || from.head === undefined) {
+  if (line.grew || from.head === undefined || now.accepted.size === 0) {
     return [];
   }
   const uncommitted = new Set(changedPaths(top, from.head, line.reviewed));
-  return now.changed.filter((file) => uncommitted.has(file) && !now.paths.includes(file));
+  return now.changed.filter(
+    (file) => now.accepted.has(file) && uncommitted.has(file) && !now.paths.includes(file),
+  );
 }
 
 /** The child's part of the difference between the reviewed tree and the tree `to` holds now. */
@@ -386,8 +399,14 @@ function treeChanges(
   const boundaries = to.head === undefined ? [] : knownBoundaries(top, to.head, options.known);
   const grew = historyGrew(top, from.snapshot, to);
   const changed = options.own(differing);
-  const paths = unexplained(top, from, { tree, grew }, { changed, boundaries });
-  const dropped = droppedEdits(top, from.snapshot, { grew, reviewed }, { changed, paths });
+  const accepted = acceptedPaths(top, from);
+  const paths = unexplained(top, from, { tree, grew }, { changed, boundaries, accepted });
+  const dropped = droppedEdits(
+    top,
+    from.snapshot,
+    { grew, reviewed },
+    { changed, paths, accepted },
+  );
   if (paths.length === 0) {
     return { paths, dropped, diff: undefined };
   }
@@ -397,6 +416,13 @@ function treeChanges(
   const everyPath = base === reviewed && paths.length === differing.length;
   return { paths, dropped, diff: { top, base, tree, paths: everyPath ? undefined : paths } };
 }
+
+const UNREADABLE: OwnChanges = {
+  files: ["(git-status-unavailable)"],
+  unreadable: true,
+  leftBehind: [],
+  diff: undefined,
+};
 
 /** The child's own changes since `from`, without what only upstream or an existing commit changed. */
 export function ownChanges(
@@ -408,14 +434,13 @@ export function ownChanges(
   const top = to.topLevel;
   const { tree } = to;
   if (top === undefined || tree === undefined) {
-    const files = from.snapshot.isGit ? [GIT_UNAVAILABLE] : [];
-    return { files, leftBehind: [], diff: undefined };
+    return from.snapshot.isGit ? UNREADABLE : { ...UNREADABLE, files: [], unreadable: false };
   }
   // An accepted tree is an object that no ref holds, and a repository can be replaced. A tree
   // that can no longer be read must not look like a run without changes.
   const accepted = [...optional(from.snapshot.tree), ...optional(from.launchTree)];
   if (accepted.some((object) => git(top, ["cat-file", "-e", object]) === undefined)) {
-    return { files: [GIT_UNAVAILABLE], leftBehind: [], diff: undefined };
+    return UNREADABLE;
   }
   const excluded = excludedRepoPrefixes(top, excludePaths);
   const own = (paths: string[]): string[] =>
@@ -425,6 +450,7 @@ export function ownChanges(
   const left = [...own(leftBehindPaths(top, from.snapshot, to, known)), ...dropped];
   return {
     files: fromCwd(cwd, top, [...paths, ...left]),
+    unreadable: false,
     leftBehind: fromCwd(cwd, top, left),
     diff,
   };

@@ -496,8 +496,9 @@ the child did not write:
   session makes there is never listed.
 - A commit that the child made and then moved away from, for example on a side branch, stays
   listed. It is read from the HEAD reflog of the child's own worktree.
-- An accepted edit that was never committed stays listed when a checkout of another branch
-  drops it, although the file then equals the commit that was checked out.
+- An accepted edit of the child that was never committed stays listed when a checkout of
+  another branch drops it, although the file then equals the commit that was checked out. An
+  uncommitted edit that was there at launch is not the child's, and dropping it lists nothing.
 - When the base branch moves while another worktree has it checked out, that is not a
   `branch_violation` of this run: Git lets only that worktree commit to it.
 
