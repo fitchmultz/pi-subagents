@@ -1297,12 +1297,44 @@ nodeTest("a pause names work the child committed and then left on another branch
       "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
       "Changes since launch:",
       "  docs/SIDE.md",
-      "No longer in the working tree (committed on another branch, or dropped by a checkout): docs/SIDE.md",
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
       STEER_APPROVE_OR_STOP,
     ].join("\n"),
   );
   resolveActiveEscalation(base, launch, "approved");
   await turn;
+
+  // More work goes to the side branch, and the same path is then written again in the working
+  // tree. The notice shows the new file, and says that other work on it is not in the diff.
+  git(repo, "checkout", "feat/side");
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "side two\n");
+  git(repo, "commit", "-am", "more side work");
+  git(repo, "checkout", "feat/work");
+  fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "rewritten\n");
+  const again = emit("turn_end", mutatingTurn);
+  await paused();
+  assert.equal(
+    notice(),
+    [
+      `[Overseer escalation #2 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
+      "Changes since your last approval:",
+      "  +1 -0 docs/SIDE.md",
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
+      "Approved earlier in this run (those changes are not shown): docs/SIDE.md",
+      "diff --git a/docs/SIDE.md b/docs/SIDE.md",
+      "new file mode 100644",
+      "index 0000000..d597f6c",
+      "--- /dev/null",
+      "+++ b/docs/SIDE.md",
+      "@@ -0,0 +1 @@",
+      "+rewritten",
+      STEER_APPROVE_OR_STOP,
+    ].join("\n"),
+  );
+  resolveActiveEscalation(base, launch, "approved");
+  await again;
 });
 
 nodeTest(

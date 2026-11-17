@@ -151,7 +151,8 @@ function changeLines(escalation: Escalation): string[] {
     stat === "" ? `  ${files}` : stat,
     named("Changed since the last clean check, look here first", escalation.unchecked),
     named(
-      "No longer in the working tree (committed on another branch, or dropped by a checkout)",
+      // The work is named, not the path: the same file can have other changes that are shown.
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout)",
       escalation.leftBehind,
     ),
     // A file can be here and in the lines above: it changed again after the approval.
