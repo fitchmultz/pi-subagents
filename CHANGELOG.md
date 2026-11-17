@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- A failed overseer judge request no longer pauses the child. Before, a request that failed for a reason outside the child's work, such as a provider account without credit, paused the child with a `loop_violation` at every judge checkpoint, and the parent had to approve each pause. Now, with the judge on `auto`, the checkpoint asks the next classifier: the preferred ones first, then every other available classifier. For the rest of the run a classifier that gave no verdict is asked after the others. A configured judge (`provider/model`) is not replaced by another classifier. A response without a verdict counts as a failed request, not as a clean verdict. When no classifier gives a verdict, also because none is available, the child continues, the scope, branch and error-loop checks still pause it, and the next judge checkpoint asks again about all the unjudged work. A run that ends with such work says so once in its completion notice (`[Overseer judge unavailable: ...]`). Before, `auto` without an available classifier accepted the work without saying so. Cancelling the child's run now cancels its judge request. See [Which classifier judges, and when none answers](docs/reference.md#which-classifier-judges-and-when-none-answers).
+
 ## 0.52.48 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->

@@ -12,6 +12,7 @@ import {
   type Result,
 } from "./contracts.ts";
 import { needsOverseerReview } from "./overseer-review.ts";
+import { judgeUnavailable } from "./overseer-judge.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 
@@ -110,6 +111,15 @@ function overseerReviewHint(base: string, launch: Launch, result: Result): strin
   return `\n[Overseer review required: inspect git diff in ${launch.cwd} (${files}) and call agent_runs(action="review", id="${launch.id}", verdict="approved", summary="...") in this turn before finishing.]`;
 }
 
+/** Says once, with the run's result, that the run ended with work no judge answered for. */
+function judgeUnavailableHint(base: string, launch: Launch): string {
+  const unavailable =
+    launch.overseer?.enabled === true ? judgeUnavailable(base, launch.id) : undefined;
+  return unavailable === undefined
+    ? ""
+    : `\n[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. ${unavailable.summary}]`;
+}
+
 function notification(base: string, launch: Launch, result: Result): Completion {
   const file = path.join(runDirectory(base, launch.id), "output.txt");
   const page = fs.existsSync(file) ? readOutputPage(file, { offset: 0, length: 32768 }) : undefined;
@@ -123,7 +133,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,

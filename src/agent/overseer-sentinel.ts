@@ -27,7 +27,9 @@ import {
 import {
   CONSECUTIVE_ERROR_TURN_LIMIT,
   checkDeterministicTripwires,
+  clearJudgeUnavailable,
   evaluateDecisionCheckpoint,
+  recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
 import { conversation, read, runDirectory, write } from "./storage.ts";
@@ -63,6 +65,8 @@ interface RunSentinelState {
   turnsSinceJudge: number;
   /** The state the judge last saw, and the size of the new work it saw then. */
   judged: { readonly tree: string | undefined; readonly lines: number };
+  /** The classifiers whose request failed in this run. On `auto` the judge asks them last. */
+  readonly failedJudges: Set<string>;
   /** Pauses so far, and how many of them the overseer answered with a correction. */
   pauses: number;
   corrections: number;
@@ -184,7 +188,7 @@ function shouldRunJudgeCheckpoint(
   if (finalSettle) {
     return true;
   }
-  // The judge already answered for this exact state.
+  // The judge was already asked about this exact state.
   if (checkpoint.snapshot.tree === state.judged.tree) {
     return false;
   }
@@ -220,29 +224,27 @@ export function resolveActiveEscalation(
   return active;
 }
 
-async function safeJudge(
+/** Rejects when no judge answered. */
+async function askJudge(
   launch: Launch,
   ctx: ExtensionContext,
-  checkpoint: Work,
-  acceptedFiles: readonly string[],
+  work: { checkpoint: Work; acceptedFiles: readonly string[]; failed: Set<string> },
 ): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
     return undefined;
   }
-  try {
-    return await evaluateDecisionCheckpoint({
-      modelRegistry: ctx.modelRegistry,
-      judgeSpec: launch.overseer?.judge,
-      prompt: launch.prompt,
-      contract: launch.contract,
-      changedFiles: checkpoint.changes.files,
-      acceptedFiles,
-      diff: checkpoint.diff,
-      signal: undefined,
-    });
-  } catch (error) {
-    return { kind: "loop_violation", summary: errorText(error) };
-  }
+  return evaluateDecisionCheckpoint({
+    modelRegistry: ctx.modelRegistry,
+    judgeSpec: launch.overseer?.judge,
+    prompt: launch.prompt,
+    contract: launch.contract,
+    changedFiles: work.checkpoint.changes.files,
+    acceptedFiles: work.acceptedFiles,
+    diff: work.checkpoint.diff,
+    failed: work.failed,
+    // Cancelling the child's run cancels its judge request.
+    signal: ctx.signal,
+  });
 }
 
 export function harnessExcludePaths(base: string, launch: Launch): string[] {
@@ -296,6 +298,7 @@ class SentinelRunner {
       consecutiveErrors: 0,
       turnsSinceJudge: 0,
       judged: { tree: point.snapshot.tree, lines: 0 },
+      failedJudges: new Set(),
       pauses: 0,
       corrections: 0,
     };
@@ -319,6 +322,8 @@ class SentinelRunner {
     const current = this.ensureState(launch);
     current.reviewPoint = acceptedPoint(current.reviewPoint, snapshot);
     current.judged = { tree: snapshot.tree, lines: 0 };
+    // The passed state has no work that still waits for a judge.
+    clearJudgeUnavailable(this.options.base, launch.id);
   }
 
   /** What a pause shows: all the work the overseer has not approved, not only what failed now. */
@@ -449,8 +454,26 @@ class SentinelRunner {
     }
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
-    const accepted = this.changedBefore(launch, current.reviewPoint);
-    const verdict = await safeJudge(launch, ctx, checkpoint, accepted);
+    const acceptedFiles = this.changedBefore(launch, current.reviewPoint);
+    // The signal of the run that is active now. `ctx.signal` is gone when that run ends.
+    const { signal } = ctx;
+    let verdict: Violation | undefined;
+    try {
+      const failed = current.failedJudges;
+      verdict = await askJudge(launch, ctx, { checkpoint, acceptedFiles, failed });
+    } catch (error) {
+      if (signal?.aborted === true) {
+        // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
+        return undefined;
+      }
+      // No judge answered. That is no finding about the work, so the child is not paused. The
+      // review point stays: a later checkpoint asks again about all the work since then, and
+      // the completion notice reports a run that ends with work no judge answered for.
+      recordJudgeUnavailable(this.options.base, launch.id, errorText(error));
+      return undefined;
+    }
+    // A classifier answered: the work is judged, whatever the verdict.
+    clearJudgeUnavailable(this.options.base, launch.id);
     if (verdict === undefined) {
       this.pass(launch, snapshot);
       return undefined;

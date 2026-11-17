@@ -67,6 +67,16 @@ export const escalationResolutionSchema = Type.Object({
   at: Type.Number(),
 });
 export type EscalationResolution = Static<typeof escalationResolutionSchema>;
+/**
+ * Saved by a supervised child while no judge has answered for its latest work, and removed when
+ * a judge answers for that work or the work is accepted. The child does not wait for an answer
+ * to it.
+ */
+export const judgeUnavailableSchema = Type.Object({
+  at: Type.Number(),
+  summary: Type.String(),
+});
+export type JudgeUnavailable = Static<typeof judgeUnavailableSchema>;
 export const overseerReviewSchema = Type.Object({
   runId: Type.String(),
   verdict: Type.Union([Type.Literal("approved"), Type.Literal("changes_requested")]),

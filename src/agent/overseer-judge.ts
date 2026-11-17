@@ -3,12 +3,19 @@ import type {
   ClassifierChoiceAnswer,
   ClassifierContext,
   ClassifierModel,
-  ClassifierResult,
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { DelegationContract, Escalation } from "./contracts.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import {
+  judgeUnavailableSchema,
+  type DelegationContract,
+  type Escalation,
+  type JudgeUnavailable,
+} from "./contracts.ts";
 import { branchIssue, type OwnChanges, type RepoSnapshot } from "./overseer-git.ts";
 import { isPathAllowedByScope } from "./overseer-scope.ts";
+import { read, runDirectory, write } from "./storage.ts";
 
 export const CONSECUTIVE_ERROR_TURN_LIMIT = 3;
 const PREFERRED_AUTO_JUDGES = [
@@ -84,10 +91,21 @@ export function checkDeterministicTripwires(options: {
   return issue === undefined ? undefined : { kind: "branch_violation", summary: issue };
 }
 
-async function selectClassifier(
+const classifierName = (model: ClassifierModel<ClassifierApi>): string =>
+  `${model.provider}/${model.id}`;
+
+/**
+ * The classifiers a checkpoint may ask, in the order it asks them. A configured judge is the
+ * owner's choice and has no substitute. `auto` asks the preferred classifiers first and then
+ * every other available one: the judge sends text and one choice question, which every
+ * classifier API answers. A classifier whose request failed earlier in the run is asked after
+ * the others.
+ */
+async function judgeCandidates(
   registry: JudgeModelRegistry,
   spec: string,
-): Promise<ClassifierModel<ClassifierApi> | undefined> {
+  failed: ReadonlySet<string>,
+): Promise<ClassifierModel<ClassifierApi>[]> {
   const available = await registry.getAvailableOfType("classifier");
   if (spec !== "auto") {
     const slash = spec.indexOf("/");
@@ -98,33 +116,39 @@ async function selectClassifier(
     if (matched === undefined) {
       throw new Error(`Configured overseer judge '${spec}' is not an available classifier model.`);
     }
-    return matched;
+    return [matched];
   }
-  for (const [provider, id] of PREFERRED_AUTO_JUDGES) {
+  const preferred = PREFERRED_AUTO_JUDGES.flatMap(([provider, id]) => {
     const found = available.find((m) => m.provider === provider && m.id === id);
-    if (found !== undefined) {
-      return found;
-    }
+    return found === undefined ? [] : [found];
+  });
+  return [...new Set([...preferred, ...available])].toSorted(
+    (a, b) => Number(failed.has(classifierName(a))) - Number(failed.has(classifierName(b))),
+  );
+}
+
+/** The verdicts the judge can choose from. */
+function judgeCriteria(contract: DelegationContract): Record<string, string> {
+  const criteria: Record<string, string> = {
+    compliant: "Complies with the prompt, contract, and required primitives",
+    scope_violation: "Adds unrequested features, fallbacks, or changes forbidden by nonGoals",
+  };
+  const req = contract.requiredPrimitives;
+  if (req !== undefined && req.length > 0) {
+    criteria.primitive_violation = `Bypasses required primitives (${req.join(", ")}) with custom wrappers or plumbing`;
   }
-  return available[0];
+  return criteria;
 }
 
 function buildJudgeContext(options: {
   classifier: ClassifierModel<ClassifierApi>;
+  criteria: Record<string, string>;
   prompt: string;
   contract: DelegationContract;
   changedFiles: readonly string[];
   acceptedFiles: readonly string[];
   diff: string;
 }): ClassifierContext {
-  const criteria: Record<string, string> = {
-    compliant: "Complies with the prompt, contract, and required primitives",
-    scope_violation: "Adds unrequested features, fallbacks, or changes forbidden by nonGoals",
-  };
-  const req = options.contract.requiredPrimitives;
-  if (req !== undefined && req.length > 0) {
-    criteria.primitive_violation = `Bypasses required primitives (${req.join(", ")}) with custom wrappers or plumbing`;
-  }
   return {
     state: {
       contract: options.contract,
@@ -138,32 +162,21 @@ function buildJudgeContext(options: {
         type: "choice",
         instructions:
           "Judge ONLY `diff` against contract (requiredPrimitives and nonGoals): it holds the changes since the last accepted state of this run. `acceptedFiles` names the files changed earlier in the run; those changes were already reviewed, so do not judge them. For a file named in both, judge only what `diff` shows. Ignore earlier reverted attempts or conflicting taskPrompt wording.",
-        criteria,
+        criteria: options.criteria,
       },
     },
   };
 }
 
-function unpackChoice(result: ClassifierResult): ClassifierChoiceAnswer | undefined {
-  if (result.stopReason === "error") {
-    throw new Error(
-      `Overseer judge '${result.provider}/${result.model}' failed: ${result.errorMessage ?? "classifier error"}.`,
-    );
-  }
-  return result.stopReason === "stop" && result.answers.verdict?.type === "choice"
-    ? result.answers.verdict
-    : undefined;
-}
-
 function interpretChoice(
   classifier: ClassifierModel<ClassifierApi>,
-  ans: ClassifierChoiceAnswer | undefined,
+  ans: ClassifierChoiceAnswer,
   contract: DelegationContract,
 ): Violation | undefined {
-  if (ans?.choice !== "primitive_violation" && ans?.choice !== "scope_violation") {
+  if (ans.choice !== "primitive_violation" && ans.choice !== "scope_violation") {
     return undefined;
   }
-  const id = `${classifier.provider}/${classifier.id}`;
+  const id = classifierName(classifier);
   const req = contract.requiredPrimitives?.join(", ") ?? "";
   return {
     kind: ans.choice,
@@ -174,6 +187,44 @@ function interpretChoice(
   };
 }
 
+type Asked = { readonly verdict: ClassifierChoiceAnswer } | { readonly failure: string };
+
+/**
+ * Asks one classifier. A request that failed, and a response without one of the verdicts that
+ * were asked for, are failures: neither says that the work complies. Rejects when `signal`
+ * cancelled the request, which is no fault of the classifier.
+ */
+async function askClassifier(
+  classifier: ClassifierModel<ClassifierApi>,
+  criteria: Record<string, string>,
+  options: Parameters<typeof evaluateDecisionCheckpoint>[0],
+): Promise<Asked> {
+  const name = classifierName(classifier);
+  const result = await options.modelRegistry.classify(
+    classifier,
+    buildJudgeContext({ classifier, criteria, ...options }),
+    options.signal === undefined ? undefined : { signal: options.signal },
+  );
+  if (result.stopReason === "aborted") {
+    throw new Error(`The request to overseer judge '${name}' was cancelled.`);
+  }
+  if (result.stopReason === "error") {
+    return {
+      failure: `Overseer judge '${name}' failed: ${result.errorMessage ?? "classifier error"}.`,
+    };
+  }
+  const { verdict } = result.answers;
+  return verdict?.type === "choice" && Object.hasOwn(criteria, verdict.choice)
+    ? { verdict }
+    : { failure: `Overseer judge '${name}' failed: the response has no verdict.` };
+}
+
+/**
+ * Asks the judge about the new work, unless the judge is `off`. Rejects when no classifier gave
+ * a verdict: none is available, the configured judge is not an available classifier, or every
+ * request failed or came back without a verdict. That is a fault of the judge and never a
+ * finding about the work. Also rejects when `signal` cancelled a request, which is neither.
+ */
 export async function evaluateDecisionCheckpoint(options: {
   modelRegistry: JudgeModelRegistry;
   judgeSpec: string | undefined;
@@ -184,20 +235,45 @@ export async function evaluateDecisionCheckpoint(options: {
   diff: string;
   /** Files changed earlier in the run, in states that were already accepted. */
   acceptedFiles: readonly string[];
+  /** The classifiers whose request failed earlier in the run. The call adds those that fail now. */
+  failed: Set<string>;
   signal: AbortSignal | undefined;
 }): Promise<Violation | undefined> {
   const spec = options.judgeSpec ?? "auto";
   if (spec === "off" || options.changedFiles.length === 0 || options.diff === "") {
     return undefined;
   }
-  const classifier = await selectClassifier(options.modelRegistry, spec);
-  if (classifier === undefined) {
-    return undefined;
+  const criteria = judgeCriteria(options.contract);
+  const failures: string[] = [];
+  for (const classifier of await judgeCandidates(options.modelRegistry, spec, options.failed)) {
+    const asked = await askClassifier(classifier, criteria, options);
+    if ("verdict" in asked) {
+      return interpretChoice(classifier, asked.verdict, options.contract);
+    }
+    options.failed.add(classifierName(classifier));
+    failures.push(asked.failure);
   }
-  const result = await options.modelRegistry.classify(
-    classifier,
-    buildJudgeContext({ classifier, ...options }),
-    options.signal === undefined ? undefined : { signal: options.signal },
+  throw new Error(
+    failures.length > 0
+      ? failures.join(" ")
+      : "No classifier model is available for the overseer judge.",
   );
-  return interpretChoice(classifier, unpackChoice(result), options.contract);
+}
+
+const judgeUnavailableFile = (base: string, runId: string): string =>
+  path.join(runDirectory(base, runId), "judge-unavailable.json");
+
+/** Why no judge has given a verdict on the latest work of a run, when that is so. */
+export const judgeUnavailable = (base: string, runId: string): JudgeUnavailable | undefined =>
+  read(judgeUnavailableFile(base, runId), judgeUnavailableSchema);
+
+/** Records, for the completion notice of the run, that its latest work has no verdict. */
+export function recordJudgeUnavailable(base: string, runId: string, summary: string): void {
+  const unavailable: JudgeUnavailable = { at: Date.now(), summary };
+  write(judgeUnavailableFile(base, runId), unavailable);
+}
+
+/** The latest work of the run has a verdict, was approved, or is gone. */
+export function clearJudgeUnavailable(base: string, runId: string): void {
+  fs.rmSync(judgeUnavailableFile(base, runId), { force: true });
 }

@@ -533,6 +533,48 @@ until the checkpoint before the run settles.
 The judge receives the diff of the new work, the names of the files changed earlier in the run
 (`acceptedFiles`), and the instruction to judge only the new diff.
 
+### Which classifier judges, and when none answers
+
+With the judge on `auto`, a checkpoint asks the available classifiers in this order, until one
+gives a verdict:
+
+1. `google/gemini-decision-1`, `cloudflare-workers-ai/@cf/cloudflare/clef`,
+   `openai/gpt-6-luna`, `cloudflare-workers-ai/@cf/cloudflare/clef-flash`.
+2. Every other available classifier, in the order of the model registry. The judge sends text
+   and one choice question, which every classifier model accepts.
+
+With a configured judge (`provider/model`) it asks only that classifier, and never another one
+in its place. With the judge `off` it asks nothing and reports nothing.
+
+A classifier gives no verdict when its request fails, for example because the provider account
+has no credit, the key is rejected or the provider cannot be reached, and when its response
+does not hold one of the verdicts that were asked for. Neither is a finding about the child's
+work, neither counts as a clean verdict, and neither pauses the child.
+
+- On `auto`, the checkpoint then asks the next classifier. For the rest of the run, a
+  classifier that gave no verdict is asked after the others, so its failed request is not
+  repeated while another classifier answers.
+- No classifier gives a verdict when every request fails, when no classifier is available, or
+  when the configured judge fails or is not an available classifier. The child then
+  continues. The scope, branch and error-loop checks still run and still pause it. The new
+  work stays unjudged: the next judge checkpoint asks again, about all the work since the
+  last state that passed.
+- A run that ends with work that has no verdict says so in its completion notice, once, with
+  the reason for each classifier. The review of a completed run with changes is required as
+  for every supervised run.
+- A judge request that is cancelled because the child's run is cancelled is not a verdict and
+  not a failed request: no other classifier is asked, and the cancelled request is not
+  reported.
+
+```text
+[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. Overseer judge 'google/gemini-decision-1' failed: Google Decisions error (402): …]
+```
+
+While work has no verdict, the run directory holds `judge-unavailable.json` (`at`, `summary`).
+The child removes it when a classifier gives a verdict on that work, clean or not, when the
+overseer approves a pause, or when the work is gone. A parent that runs an older package
+version does not read the file, and its completion notice does not have the line.
+
 ### What a pause notice shows
 
 The `[agent-escalation]` notice describes the work since the overseer's last approval, or since

@@ -595,7 +595,7 @@ nodeTest(
 );
 
 nodeTest(
-  "evaluateDecisionCheckpoint uses typed classifier catalog and surfaces explicit judge errors",
+  "evaluateDecisionCheckpoint uses typed classifier catalog and asks the next classifier when a request fails",
   async (t) => {
     const repo = initGitRepo(t);
     const baseline = launchPoint(repo);
@@ -607,13 +607,40 @@ nodeTest(
     const luna = makeClassifierModel("openai", "gpt-6-luna", 0.25);
     const chosenModels: string[] = [];
     const asked: ClassifierContext[] = [];
+    /** The classifiers whose requests fail, as with a provider account that is out of credits. */
+    const down = new Set<string>();
+    /** The classifiers whose responses carry no verdict. */
+    const silent = new Set<string>();
+    let available = [freeOpenRouter, luna, geminiDecision];
     const fakeRegistry: JudgeModelRegistry = {
-      getAvailableOfType: () => Promise.resolve([freeOpenRouter, luna, geminiDecision]),
+      getAvailableOfType: () => Promise.resolve(available),
       getModelOfType: (_type, provider, id) =>
         [freeOpenRouter, luna, geminiDecision].find((m) => m.provider === provider && m.id === id),
-      classify: (model, context) => {
-        chosenModels.push(`${model.provider}/${model.id}`);
+      classify: (model, context, options) => {
+        const name = `${model.provider}/${model.id}`;
+        chosenModels.push(name);
         asked.push(context);
+        const result = {
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          timestamp: Date.now(),
+          answers: {},
+        };
+        // As the registry reports a request that its caller's signal cancelled.
+        if (options?.signal?.aborted === true) {
+          return Promise.resolve({ ...result, stopReason: "aborted", errorMessage: "aborted" });
+        }
+        if (down.has(name)) {
+          return Promise.resolve({
+            ...result,
+            stopReason: "error",
+            errorMessage: "credits depleted",
+          });
+        }
+        if (silent.has(name)) {
+          return Promise.resolve({ ...result, stopReason: "stop" });
+        }
         return Promise.resolve({
           api: model.api,
           provider: model.provider,
@@ -648,6 +675,7 @@ nodeTest(
       changedFiles: ["src/allowed.ts"],
       acceptedFiles: ["README.md"],
       diff,
+      failed: new Set(),
       signal: undefined,
     });
 
@@ -672,33 +700,98 @@ nodeTest(
     assert.equal(hit.kind, "primitive_violation");
     assert.match(hit.summary, /gemini-decision-1/u);
 
-    const failingRegistry: JudgeModelRegistry = {
-      ...fakeRegistry,
-      classify: (model) =>
-        Promise.resolve({
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          stopReason: "error",
-          errorMessage: "invalid API key",
-          timestamp: Date.now(),
-          answers: {},
-        }),
-    };
-    await assert.rejects(
-      () =>
-        evaluateDecisionCheckpoint({
-          modelRegistry: failingRegistry,
-          judgeSpec: "auto",
-          prompt: "Implement tag queries",
-          contract: { scope: ["src"], verification: ["npm test"] },
-          changedFiles: ["src/allowed.ts"],
-          acceptedFiles: [],
-          diff,
-          signal: undefined,
-        }),
-      /invalid API key/u,
+    const checkpoint = (judgeSpec: string, failed: Set<string>, signal?: AbortSignal) =>
+      evaluateDecisionCheckpoint({
+        modelRegistry: fakeRegistry,
+        judgeSpec,
+        prompt: "Implement tag queries",
+        contract: {
+          scope: ["src"],
+          verification: ["npm test"],
+          requiredPrimitives: ["DatabaseSync.createTagStore()"],
+        },
+        changedFiles: ["src/allowed.ts"],
+        acceptedFiles: [],
+        diff,
+        failed,
+        signal,
+      });
+    const google = "google/gemini-decision-1";
+    const openai = "openai/gpt-6-luna";
+    const other = "openrouter/parallel/decisions-fast:free";
+
+    // On `auto`, a failed request is no verdict: the next preferred classifier gives it. At the
+    // next checkpoint of the same run the classifier that failed is not asked first again.
+    down.add(google);
+    const run = new Set<string>();
+    chosenModels.length = 0;
+    const verdict = await checkpoint("auto", run);
+    assert.deepEqual(chosenModels, [google, openai]);
+    assert.match(verdict?.summary ?? "", /^Decision judge \(openai\/gpt-6-luna, /u);
+    await checkpoint("auto", run);
+    assert.deepEqual(chosenModels, [google, openai, openai]);
+
+    // A configured judge is not replaced by a classifier that would answer.
+    chosenModels.length = 0;
+    await assert.rejects(checkpoint(google, new Set()), {
+      message: "Overseer judge 'google/gemini-decision-1' failed: credits depleted.",
+    });
+    assert.deepEqual(chosenModels, [google]);
+
+    // When the preferred classifiers fail, `auto` asks the other available classifiers.
+    down.add(openai);
+    chosenModels.length = 0;
+    const fromOther = await checkpoint("auto", new Set());
+    assert.deepEqual(chosenModels, [google, openai, other]);
+    assert.match(
+      fromOther?.summary ?? "",
+      /^Decision judge \(openrouter\/parallel\/decisions-fast:free, /u,
     );
+
+    // When every request fails, the checkpoint reports each failure instead of a verdict.
+    down.add(other);
+    chosenModels.length = 0;
+    await assert.rejects(checkpoint("auto", new Set()), {
+      message:
+        "Overseer judge 'google/gemini-decision-1' failed: credits depleted. Overseer judge 'openai/gpt-6-luna' failed: credits depleted. Overseer judge 'openrouter/parallel/decisions-fast:free' failed: credits depleted.",
+    });
+    assert.deepEqual(chosenModels, [google, openai, other]);
+
+    // A response without a verdict does not say that the work complies: the next classifier is
+    // asked, and the silent one counts as failed.
+    down.clear();
+    silent.add(google);
+    const afterSilence = new Set<string>();
+    chosenModels.length = 0;
+    const spoken = await checkpoint("auto", afterSilence);
+    assert.deepEqual(chosenModels, [google, openai]);
+    assert.equal(spoken?.kind, "primitive_violation");
+    assert.deepEqual([...afterSilence], [google]);
+    await assert.rejects(checkpoint(google, new Set()), {
+      message: "Overseer judge 'google/gemini-decision-1' failed: the response has no verdict.",
+    });
+    silent.clear();
+
+    // A cancelled request is neither a verdict nor a failed classifier: no other one is asked.
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const afterCancel = new Set<string>();
+    chosenModels.length = 0;
+    await assert.rejects(checkpoint("auto", afterCancel, cancelled.signal), {
+      message: "The request to overseer judge 'google/gemini-decision-1' was cancelled.",
+    });
+    assert.deepEqual(chosenModels, [google]);
+    assert.deepEqual([...afterCancel], []);
+
+    // With no classifier available, `auto` has no verdict to give and says so. A judge that is
+    // `off` asks nothing and reports nothing.
+    available = [];
+    chosenModels.length = 0;
+    await assert.rejects(checkpoint("auto", new Set()), {
+      message: "No classifier model is available for the overseer judge.",
+    });
+    assert.equal(await checkpoint("off", new Set()), undefined);
+    assert.deepEqual(chosenModels, []);
   },
 );
 
@@ -932,15 +1025,22 @@ const STEER_APPROVE_OR_STOP =
 
 type JudgeChoice = "compliant" | "scope_violation" | "primitive_violation";
 const mutatingTurn = { toolResults: [{ toolName: "bash", isError: false }] };
+const manyLines = (name: string): string =>
+  `${Array.from({ length: 130 }, (_, i) => `export const ${name}${i} = ${i};`).join("\n")}\n`;
 
 /**
  * A supervised run on `feat/work` of a real repository, with the sentinel attached through the
- * native extension loader and a classifier that answers what `verdict` returns.
+ * native extension loader and a classifier that answers what `verdict` returns. Its request
+ * fails when `verdict` returns `request_failed`.
  */
 async function supervisedRun(
   t: TestContext,
   options: {
-    verdict: (diff: string) => JudgeChoice;
+    verdict: (diff: string) => JudgeChoice | "request_failed";
+    /** Whether the classifier is available. It is, unless this says otherwise. */
+    available?: () => boolean;
+    /** The cancellation signal of the child's active run, when the test has one. */
+    signal?: () => AbortSignal | undefined;
     flushPendingCommands?: () => boolean;
   },
 ) {
@@ -987,14 +1087,41 @@ async function supervisedRun(
   /** What the judge received on each call. */
   const judged: { changedFiles: unknown; acceptedFiles: unknown; diff: string }[] = [];
   const ctx = {
+    get signal() {
+      return options.signal?.();
+    },
     hasPendingMessages: () => false,
     modelRegistry: {
-      getAvailableOfType: () => Promise.resolve([classifier]),
+      getAvailableOfType: () =>
+        Promise.resolve(options.available?.() === false ? [] : [classifier]),
       getModelOfType: () => classifier,
-      classify: (_model: unknown, context: ClassifierContext) => {
+      classify: (
+        _model: unknown,
+        context: ClassifierContext,
+        request?: { signal?: AbortSignal },
+      ) => {
         const { changedFiles, acceptedFiles, diff } = context.state;
         const asked = { changedFiles, acceptedFiles, diff: typeof diff === "string" ? diff : "" };
         judged.push(asked);
+        const failure = {
+          api: classifier.api,
+          provider: classifier.provider,
+          model: classifier.id,
+          timestamp: Date.now(),
+          answers: {},
+        };
+        // As the registry reports a request that its caller's signal cancelled.
+        if (request?.signal?.aborted === true) {
+          return Promise.resolve({ ...failure, stopReason: "aborted", errorMessage: "aborted" });
+        }
+        const choice = options.verdict(asked.diff);
+        if (choice === "request_failed") {
+          return Promise.resolve({
+            ...failure,
+            stopReason: "error",
+            errorMessage: "credits depleted",
+          });
+        }
         return Promise.resolve({
           api: classifier.api,
           provider: classifier.provider,
@@ -1004,7 +1131,7 @@ async function supervisedRun(
           answers: {
             verdict: {
               type: "choice",
-              choice: options.verdict(asked.diff),
+              choice,
               probabilities: {},
               confidence: 0.9,
             },
@@ -1120,8 +1247,6 @@ nodeTest(
       verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
     });
     const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
-    const manyLines = (name: string): string =>
-      `${Array.from({ length: 130 }, (_, i) => `export const ${name}${i} = ${i};`).join("\n")}\n`;
     await emit("before_agent_start", {});
 
     // 130 new lines reach the judge at once. It finds them clean, so the child is not paused.
@@ -1317,6 +1442,108 @@ nodeTest("an approved base-branch issue is not raised again for later work", asy
   await emit("turn_end", mutatingTurn);
   assert.equal(fs.existsSync(escPath), false);
 });
+
+nodeTest(
+  "a judge whose requests fail does not pause the run, and the completion notice says so",
+  async (t) => {
+    let answer: JudgeChoice | "request_failed" = "request_failed";
+    let available = true;
+    let runSignal: AbortSignal | undefined;
+    const { repo, base, launch, emit, paused, judged, escPath } = await supervisedRun(t, {
+      verdict: () => answer,
+      available: () => available,
+      signal: () => runSignal,
+    });
+    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
+    const unavailableFile = path.join(runDirectory(base, launch.id), "judge-unavailable.json");
+    /** What the parent is sent about the run. */
+    const notices = (): string[] =>
+      notifications({ sessionManager: SessionManager.inMemory() }, base, launch.owner).notices.map(
+        ({ message }) => (typeof message.content === "string" ? message.content : ""),
+      );
+    /** Whether a checkpoint paused the child. The handlers of a paused child do not return. */
+    const pauses = async (checkpoint: Promise<unknown>): Promise<boolean> => {
+      const watch = new AbortController();
+      const pause = async (): Promise<boolean> => {
+        while (!watch.signal.aborted && !fs.existsSync(escPath)) {
+          await delay(10);
+        }
+        return true;
+      };
+      const stopped = await Promise.race([checkpoint.then(() => false), pause()]);
+      watch.abort();
+      return stopped;
+    };
+    await emit("before_agent_start", {});
+
+    // 130 new lines reach the judge, and its request fails. The child is not paused, and the
+    // parent is sent nothing.
+    fs.writeFileSync(path.join(repo, "src", "big.ts"), manyLines("big"));
+    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
+    assert.equal(judged.length, 1);
+    assert.deepEqual(notices(), []);
+    assert.equal(fs.existsSync(unavailableFile), true);
+
+    // The scope check still pauses the child. The overseer approves the pause, which shows all
+    // the work so far: no work is left that waits for a judge.
+    fs.writeFileSync(path.join(repo, "README.md"), "drift\n");
+    const drift = emit("turn_end", mutatingTurn);
+    assert.equal((await paused()).kind, "scope_violation");
+    resolveActiveEscalation(base, launch, "approved");
+    await drift;
+    assert.equal(fs.existsSync(unavailableFile), false);
+
+    // The child's run is cancelled while later work is with the judge. The cancelled request is
+    // not a verdict and not a fault of the judge: no pause, and nothing to report.
+    fs.writeFileSync(path.join(repo, "src", "more.ts"), manyLines("more"));
+    runSignal = AbortSignal.abort();
+    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
+    assert.equal(judged.length, 2);
+    assert.equal(fs.existsSync(unavailableFile), false);
+    runSignal = undefined;
+
+    // The request fails again for later work.
+    fs.writeFileSync(path.join(repo, "src", "later.ts"), manyLines("later"));
+    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
+    assert.equal(judged.length, 3);
+    assert.equal(fs.existsSync(unavailableFile), true);
+
+    // Before the run settles a classifier answers again. It is asked about all the work that no
+    // judge answered for, and flags it. That work is judged: nothing is left to report.
+    answer = "primitive_violation";
+    const flagged = emit("agent_before_settle", settle);
+    assert.equal((await paused()).kind, "primitive_violation");
+    assert.equal(judged.length, 4);
+    assert.match(judged[3]?.diff ?? "", /^\+export const more129 = 129;$/mu);
+    assert.equal(fs.existsSync(unavailableFile), false);
+    resolveActiveEscalation(base, launch, "steered");
+    await flagged;
+
+    // The child changes the flagged work, and no classifier is available at the checkpoint
+    // before the run settles: nothing can be asked. The run ends without a pause. Its completion
+    // notice still requires the review, and says once that no judge gave a verdict.
+    available = false;
+    fs.appendFileSync(path.join(repo, "src", "more.ts"), "export const last = 1;\n");
+    assert.equal(await pauses(emit("agent_before_settle", settle)), false);
+    assert.equal(judged.length, 4);
+    write(path.join(runDirectory(base, launch.id), "result.json"), {
+      id: launch.id,
+      owner: launch.owner,
+      status: "completed",
+      endedAt: Date.now(),
+      changedFiles: ["README.md", "src/big.ts", "src/later.ts", "src/more.ts"],
+    });
+    const completion = notices();
+    assert.equal(completion.length, 1);
+    assert.deepEqual(
+      completion[0]?.split("\n").filter((line) => line.startsWith("[Overseer ")),
+      [
+        `[Overseer review required: inspect git diff in ${repo} (README.md, src/big.ts, src/later.ts, src/more.ts) and call agent_runs(action="review", id="run-overseer-1", verdict="approved", summary="...") in this turn before finishing.]`,
+        "[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. No classifier model is available for the overseer judge.]",
+      ],
+    );
+  },
+);
 
 nodeTest("a pause names work the child committed and then left on another branch", async (t) => {
   const { repo, base, launch, emit, paused, notice } = await supervisedRun(t, {
