@@ -398,25 +398,32 @@ export function ownChanges(
   };
 }
 
-/** The diff of the working-tree part of `changes`. */
-export function changesDiff(changes: OwnChanges): string {
+function diffOf(changes: OwnChanges, format: readonly string[]): string {
   const { diff } = changes;
   if (diff === undefined) {
     return "";
   }
-  const pathspec =
-    diff.paths === undefined ? [] : ["--", ...diff.paths.map((file) => `:(top,literal)${file}`)];
-  return (
-    git(diff.top, [
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      "--unified=2",
-      diff.base,
-      diff.tree,
-      ...pathspec,
-    ]) ?? ""
-  );
+  const pathspec = (diff.paths ?? []).map((file) => `:(top,literal)${file}`);
+  const args = ["-c", "core.quotePath=false", "diff", ...format, diff.base, diff.tree];
+  return git(diff.top, [...args, "--", ...pathspec]) ?? "";
+}
+
+/** The diff of the working-tree part of `changes`. */
+export const changesDiff = (changes: OwnChanges): string => diffOf(changes, ["--unified=2"]);
+
+/** Added and removed lines per file of that diff, as `git diff --numstat` prints them. */
+export const changesStat = (changes: OwnChanges): string =>
+  diffOf(changes, ["--numstat", "--no-renames"]);
+
+/** The shell command that prints the whole diff of `changes`. */
+export function changesDiffCommand(changes: OwnChanges): string | undefined {
+  const { diff } = changes;
+  if (diff === undefined) {
+    return undefined;
+  }
+  const quote = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
+  const paths = (diff.paths ?? []).map((file) => ` ${quote(file)}`).join("");
+  return `git -C ${quote(diff.top)} diff ${diff.base} ${diff.tree}${paths === "" ? "" : ` --${paths}`}`;
 }
 
 const isFetchOrPull = (s: string): boolean => s.startsWith("fetch") || s.startsWith("pull");

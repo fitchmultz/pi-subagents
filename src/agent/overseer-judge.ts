@@ -116,6 +116,7 @@ function buildJudgeContext(options: {
   prompt: string;
   contract: DelegationContract;
   changedFiles: readonly string[];
+  acceptedFiles: readonly string[];
   diff: string;
 }): ClassifierContext {
   const criteria: Record<string, string> = {
@@ -130,6 +131,7 @@ function buildJudgeContext(options: {
     state: {
       contract: options.contract,
       changedFiles: options.changedFiles,
+      acceptedFiles: options.acceptedFiles,
       diff: options.diff.slice(0, Math.max(4096, Math.floor(options.classifier.contextWindow * 2))),
       taskPrompt: options.prompt,
     },
@@ -137,7 +139,7 @@ function buildJudgeContext(options: {
       verdict: {
         type: "choice",
         instructions:
-          "Judge ONLY the current git diff against contract (requiredPrimitives and nonGoals); ignore earlier reverted attempts or conflicting taskPrompt wording.",
+          "Judge ONLY `diff` against contract (requiredPrimitives and nonGoals): it holds the changes since the last accepted state of this run. `acceptedFiles` names the files changed earlier in the run; those changes were already reviewed, so do not judge them. Ignore earlier reverted attempts or conflicting taskPrompt wording.",
         criteria,
       },
     },
@@ -179,9 +181,11 @@ export async function evaluateDecisionCheckpoint(options: {
   judgeSpec: string | undefined;
   prompt: string;
   contract: DelegationContract;
+  /** The files of the new work, and its diff. */
   changedFiles: readonly string[];
-  /** The diff of the child's own changes that `changedFiles` names. */
   diff: string;
+  /** Files changed earlier in the run, in states that were already accepted. */
+  acceptedFiles: readonly string[];
   signal: AbortSignal | undefined;
 }): Promise<Violation | undefined> {
   const spec = options.judgeSpec ?? "auto";

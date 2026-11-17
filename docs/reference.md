@@ -522,6 +522,40 @@ Steering accepts nothing. Out-of-scope work that stays in place is flagged again
 checkpoint. After the judge flags a state, it is not asked about that unchanged state again
 until the checkpoint before the run settles.
 
+The judge receives the diff of the new work, the names of the files changed earlier in the run
+(`acceptedFiles`), and the instruction to judge only the new diff.
+
+### What a pause notice shows
+
+The `[agent-escalation]` notice describes the work since the overseer's last approval, or since
+launch before the first one, and says which of the two it is:
+
+```text
+[Overseer escalation #2 - scope_violation] Run 7f3a… (docs-fix) paused in /repo/worktree.
+Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).
+Changes since your last approval:
+  +1 -0 docs/NEW.md
+  +1 -0 src/allowed.ts
+Approved earlier in this run, not shown: README.md, src/big.ts
+diff --git a/docs/NEW.md b/docs/NEW.md
+…
+```
+
+- Every changed file has its added and removed line counts. The paths in these lines and in
+  the diff are relative to the repository root.
+- `Changed since the last clean check, look here first` names the files changed after the last
+  state that passed the checks. It appears when that is only a part of the listed work.
+- `Committed in this worktree and no longer checked out` names files of commits the child made
+  and then moved away from. They have no line counts and are not in the diff.
+- `Approved earlier in this run, not shown` names the files of the work that the overseer
+  already approved.
+- The diff is cut at 3000 characters. When it is cut, the notice ends with the command that
+  prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
+
+`escalation.json` carries the same facts in the optional fields `since`, `stat`, `diffCommand`,
+`unchecked`, `leftBehind` and `approved`. A child that runs an older package version writes none
+of them; its notice lists the changed files and the diff excerpt.
+
 When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
 prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`
 or a superseding continuation (`changes_requested` / `continue`) is recorded. Runs with no

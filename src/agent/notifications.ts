@@ -136,9 +136,29 @@ function notification(base: string, launch: Launch, result: Result): Completion 
   };
 }
 
+const named = (label: string, files: readonly string[] | undefined): string =>
+  files === undefined || files.length === 0 ? "" : `${label}: ${files.join(", ")}`;
+
+/** What changed, as far as the child's package version reports it. */
+function changeLines(escalation: Escalation): string[] {
+  const files = escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)";
+  if (escalation.stat === undefined) {
+    return [`Changed files: ${files}`, escalation.diffExcerpt];
+  }
+  const stat = escalation.stat.replaceAll(/^(\S+)\t(\S+)\t/gmu, "  +$1 -$2 ").trimEnd();
+  return [
+    `Changes since ${escalation.since === "approval" ? "your last approval" : "launch"}:`,
+    stat === "" ? `  ${files}` : stat,
+    named("Changed since the last clean check, look here first", escalation.unchecked),
+    named("Committed in this worktree and no longer checked out", escalation.leftBehind),
+    named("Approved earlier in this run, not shown", escalation.approved),
+    escalation.diffExcerpt.trimEnd(),
+    escalation.diffCommand === undefined ? "" : `[Diff cut. All of it: ${escalation.diffCommand}]`,
+  ];
+}
+
 function escalationNotice(launch: Launch, escalation: Escalation): Completion {
   const label = launch.name === undefined ? launch.id : `${launch.id} (${launch.name})`;
-  const files = escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)";
   const stopHint =
     escalation.strikes >= 3
       ? '3rd strike: prefer `agent_runs` `action="stop"`, or approve (`action="review"`, `verdict="approved"`, `summary="..."`).'
@@ -152,8 +172,7 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
       content: [
         `[Overseer escalation #${escalation.strikes} - ${escalation.kind}] Run ${label} paused in ${launch.cwd}.`,
         `Reason: ${escalation.summary}`,
-        `Changed files: ${files}`,
-        escalation.diffExcerpt,
+        ...changeLines(escalation),
         stopHint,
       ]
         .filter((line) => line.length > 0)

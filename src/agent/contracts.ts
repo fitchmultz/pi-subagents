@@ -41,6 +41,20 @@ export const escalationSchema = Type.Object({
   changedFiles: Type.Array(Type.String()),
   diffExcerpt: Type.String(),
   diffDigest: Type.String(),
+  // A parent and a running child can be on different package versions: a child from before
+  // these fields existed writes none of them.
+  /** Where `changedFiles`, `stat` and `diffExcerpt` are measured from. */
+  since: Type.Optional(Type.Union([Type.Literal("launch"), Type.Literal("approval")])),
+  /** `git diff --numstat` of the changes since `since`. */
+  stat: Type.Optional(Type.String()),
+  /** Prints the whole diff when `diffExcerpt` is cut. */
+  diffCommand: Type.Optional(Type.String()),
+  /** Files changed since the last state that passed the checks, when that is later than `since`. */
+  unchecked: Type.Optional(Type.Array(Type.String())),
+  /** Files committed in the child's worktree on history that HEAD no longer contains. */
+  leftBehind: Type.Optional(Type.Array(Type.String())),
+  /** Files changed earlier in the run that the overseer approved. */
+  approved: Type.Optional(Type.Array(Type.String())),
 });
 export type Escalation = Static<typeof escalationSchema>;
 export const escalationResolutionSchema = Type.Object({
