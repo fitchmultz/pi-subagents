@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## 0.52.46 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- chore(size): remove the 1 MiB size ceiling (OVR-213) (#458) ([94803a6](https://github.com/fitchmultz/pi-subagents/commit/94803a6090741c5f9ed5bd7a74d400295ed300bf))
+
+### What's Changed
+
+- chore(size): remove the 1 MiB size ceiling (OVR-213) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/458
+- ci: release through direct signed version commits (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/463
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.45...v0.52.46
+
 ## 0.52.45 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->
