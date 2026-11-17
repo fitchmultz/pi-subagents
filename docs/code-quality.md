@@ -24,7 +24,7 @@ npm run build
 
 Full `npm run ci` remains hosted-only. It runs each independent gate even when
 another fails: native lint, format, implementation types, handwritten declaration
-types, policy and coverage, package size, package/install smokes, unit tests, and
+types, policy and coverage, package/install smokes, unit tests, and
 integration tests. Package smokes build the actual artifacts before testing them.
 The aggregate fails if any gate fails.
 
