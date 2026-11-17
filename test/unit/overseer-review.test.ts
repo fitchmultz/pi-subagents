@@ -8,7 +8,7 @@ import { test as nodeTest, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Escalation, Launch, Result } from "../../src/agent/contracts.ts";
 import { notifications, release } from "../../src/agent/notifications.ts";
-import { captureRepoSnapshot, changedFilesSinceBaseline } from "../../src/agent/overseer-judge.ts";
+import { captureRepoSnapshot, ownChanges } from "../../src/agent/overseer-git.ts";
 import {
   buildReviewGateDraft,
   needsOverseerReview,
@@ -161,18 +161,15 @@ nodeTest(
       diffDigest: "approved-digest-abc",
     };
 
-    const approvedDigests = new Set<string>();
     const waiting = waitForEscalationResolution({
       base,
       launch,
       escalation,
-      approvedDigests,
       isStopping: () => false,
     });
 
     recordOverseerReview(base, launch, "approved", "Inspected diff; change is within contract.");
-    await waiting;
-    assert.equal(approvedDigests.has("approved-digest-abc"), true);
+    assert.equal(await waiting, "approved");
 
     // Mid-run escalation notices include required `summary="..."` on both normal and 3rd-strike hints.
     const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
@@ -256,12 +253,10 @@ nodeTest(
         : "";
     assert.doesNotMatch(supersededText, /Overseer review required:/u);
     release(launch.owner, launch.id);
-    const tipDigests = new Set<string>();
     const tipWait = waitForEscalationResolution({
       base,
       launch: tipB,
       escalation: { ...escalation, id: "esc-tip-b", runId: tipB.id, diffDigest: "tip-digest" },
-      approvedDigests: tipDigests,
       isStopping: () => false,
     });
     const actionResult = prepareOverseerReviewAction(base, launch, {
@@ -271,8 +266,7 @@ nodeTest(
       summary: "Approved paused tip via predecessor id.",
     });
     assert.equal(actionResult.target.id, tipB.id);
-    await tipWait;
-    assert.equal(tipDigests.has("tip-digest"), true);
+    assert.equal(await tipWait, "approved");
 
     // Unborn empty Git repo where a scope:[] child makes the first commit still populates
     // changedFiles so needsOverseerReview gates parent settlement.
@@ -293,11 +287,8 @@ nodeTest(
     fs.writeFileSync(path.join(unbornRepo, "first.txt"), "hello\n");
     execFileSync("git", ["add", "first.txt"], { cwd: unbornRepo, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "initial"], { cwd: unbornRepo, stdio: "ignore" });
-    const unbornCurrent = captureRepoSnapshot(unbornRepo, {
-      baselineHead: unbornBaseline.head,
-      hasBaseline: true,
-    });
-    const unbornChanged = changedFilesSinceBaseline(unbornRepo, unbornBaseline, unbornCurrent);
+    const unbornCurrent = captureRepoSnapshot(unbornRepo);
+    const unbornChanged = ownChanges(unbornRepo, unbornBaseline, unbornCurrent).files;
     assert.deepEqual(unbornChanged, ["first.txt"]);
     const unbornResult: Result = {
       id: unbornLaunch.id,
@@ -323,11 +314,8 @@ nodeTest(
     execFileSync("git", ["add", "src/side.ts"], { cwd: unbornRepo, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "side commit"], { cwd: unbornRepo, stdio: "ignore" });
     execFileSync("git", ["checkout", "main"], { cwd: unbornRepo, stdio: "ignore" });
-    const sideCurrent = captureRepoSnapshot(unbornRepo, {
-      baselineHead: sideBaseline.head,
-      hasBaseline: true,
-    });
-    const sideChanged = changedFilesSinceBaseline(unbornRepo, sideBaseline, sideCurrent);
+    const sideCurrent = captureRepoSnapshot(unbornRepo);
+    const sideChanged = ownChanges(unbornRepo, sideBaseline, sideCurrent).files;
     assert.deepEqual(sideChanged, ["src/side.ts"]);
     assert.equal(
       needsOverseerReview(base, sideLaunch, {
@@ -348,7 +336,7 @@ nodeTest(
       cwd: nonGitDir,
     };
     const nonGitBaseline = captureOverseerBaseline(base, nonGitLaunch);
-    assert.equal(nonGitBaseline?.isGit, false);
+    assert.equal(nonGitBaseline?.snapshot.isGit, false);
     execFileSync("git", ["init", "-b", "main"], { cwd: nonGitDir, stdio: "ignore" });
     execFileSync("git", ["config", "user.email", "test@example.com"], {
       cwd: nonGitDir,
@@ -359,11 +347,8 @@ nodeTest(
     fs.writeFileSync(path.join(nonGitDir, "src", "greenfield.ts"), "export const g = 1;\n");
     execFileSync("git", ["add", "src/greenfield.ts"], { cwd: nonGitDir, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "greenfield"], { cwd: nonGitDir, stdio: "ignore" });
-    const nonGitCurrent = captureRepoSnapshot(nonGitDir, {
-      baselineHead: nonGitBaseline.head,
-      hasBaseline: true,
-    });
-    const nonGitChanged = changedFilesSinceBaseline(nonGitDir, nonGitBaseline, nonGitCurrent);
+    const nonGitCurrent = captureRepoSnapshot(nonGitDir);
+    const nonGitChanged = ownChanges(nonGitDir, nonGitBaseline, nonGitCurrent).files;
     assert.deepEqual(nonGitChanged, ["src/greenfield.ts"]);
     assert.equal(
       needsOverseerReview(base, nonGitLaunch, {
@@ -377,13 +362,11 @@ nodeTest(
     );
 
     // If baseline was a Git repo and completion git status fails (or .git disappears),
-    // changedFilesSinceBaseline fails closed so needsOverseerReview still gates settlement.
+    // ownChanges fails closed so needsOverseerReview still gates settlement.
+    const gitBaseline = captureOverseerBaseline(base, nonGitLaunch);
+    assert.ok(gitBaseline !== undefined);
     fs.rmSync(path.join(nonGitDir, ".git"), { recursive: true, force: true });
-    const brokenCurrent = captureRepoSnapshot(nonGitDir, {
-      baselineHead: nonGitCurrent.head,
-      hasBaseline: true,
-    });
-    const brokenChanged = changedFilesSinceBaseline(nonGitDir, nonGitCurrent, brokenCurrent);
+    const brokenChanged = ownChanges(nonGitDir, gitBaseline, captureRepoSnapshot(nonGitDir)).files;
     assert.deepEqual(brokenChanged, ["(git-status-unavailable)"]);
     assert.equal(
       needsOverseerReview(base, nonGitLaunch, {

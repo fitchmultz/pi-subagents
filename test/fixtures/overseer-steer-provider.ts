@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -9,8 +10,9 @@ function hasMessage(context: TranscriptContext, needle: string): boolean {
 
 export default function fixture(pi: ExtensionAPI): void {
   const cwd = process.env.OVERSEER_TEST_REPO;
-  if (cwd === undefined) {
-    throw new Error("OVERSEER_TEST_REPO required");
+  const sibling = process.env.OVERSEER_TEST_SIBLING;
+  if (cwd === undefined || sibling === undefined) {
+    throw new Error("OVERSEER_TEST_REPO and OVERSEER_TEST_SIBLING required");
   }
   const provider = fauxProvider({
     provider: "overseer-fixture",
@@ -20,6 +22,10 @@ export default function fixture(pi: ExtensionAPI): void {
     async () => {
       // Write out-of-scope drift without a mutating tool so agent_before_settle catches it.
       fs.writeFileSync(path.join(cwd, "README.md"), "out-of-scope drift\n");
+      // Another session commits in a different worktree of the same repository.
+      fs.writeFileSync(path.join(sibling, "SIBLING.md"), "other session\n");
+      execFileSync("git", ["add", "SIBLING.md"], { cwd: sibling, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "other session"], { cwd: sibling, stdio: "ignore" });
       return fauxAssistantMessage("DRIFTED");
     },
     async (context) => {

@@ -475,12 +475,52 @@ When overseer mode is enabled, `delegate` requires `contract`:
 - `baseBranch`, `requiredPrimitives`, `nonGoals`: optional Git and native-API constraints.
 
 Supervised children run zero-cost tripwires on mutating/error turns (3-turn error loops,
-out-of-scope Git modifications relative to the run's baseline snapshot, and `baseBranch`
-ancestry/direct-commit guards) plus debounced decision-model checkpoints (every 4 mutating turns,
-120 or more changed diff lines, and pre-settle). On drift, the child writes `escalation.json`,
-pauses, and wakes the parent once with `[agent-escalation]`. Steering via `continue` /
-`changes_requested`, approving via `review` (`verdict="approved"`), or stopping via `stop`
-resolves the pause immediately.
+out-of-scope changes of the child's own, and `baseBranch` ancestry/direct-commit guards) plus
+debounced decision-model checkpoints (every 4 mutating turns, 120 or more new diff lines, and
+pre-settle). On drift, the child writes `escalation.json`, pauses, and wakes the parent once with
+`[agent-escalation]`. Steering via `continue` / `changes_requested`, approving via `review`
+(`verdict="approved"`), or stopping via `stop` resolves the pause immediately.
+
+### What counts as the child's change
+
+Each checkpoint saves the child's working tree as a Git tree object: tracked and untracked files,
+without ignored files and the harness's own files. The index and the working tree are not
+touched. The child's changes are the differences between two such trees, without the content
+the child did not write:
+
+- Commits that a ref named when the run launched are known, and so is the tip of
+  `origin/<baseBranch>` unless this repository pushed it there. After a merge, a fast-forward
+  or a checkout, a file whose content equals its content in a known commit under the current
+  history is not listed. A file that both the child and upstream changed stays listed.
+- Other worktrees of the same repository are not read. A commit or an edit that another
+  session makes there is never listed.
+- A commit that the child made and then moved away from, for example on a side branch, stays
+  listed. It is read from the HEAD reflog of the child's own worktree.
+- When the base branch moves while another worktree has it checked out, that is not a
+  `branch_violation` of this run: Git lets only that worktree commit to it.
+
+The `changedFiles` of a completed run follow the same rules, measured from launch.
+
+### What a checkpoint looks at
+
+A run keeps two accepted states. Both start at launch.
+
+- The scope check and the judge look at the work since the last state that passed. A state
+  passes when the overseer approves a pause, when a checkpoint finds no new work, or when the
+  judge finds the new work clean. The judge's line count is the size of that new work.
+- A pause reports all the work since the overseer's last approval, or since launch before the
+  first one. Work that only the judge cleared is still new to the overseer.
+
+Approving a pause accepts the paused state:
+
+- An approved out-of-scope file is not flagged again until it changes again. Deleting an
+  approved file or reverting an approved edit is a change.
+- An approved base-branch issue is not raised again in that run.
+- Committing approved work raises nothing: the working tree did not change.
+
+Steering accepts nothing. Out-of-scope work that stays in place is flagged again at the next
+checkpoint. After the judge flags a state, it is not asked about that unchanged state again
+until the checkpoint before the run settles.
 
 When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
 prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`
