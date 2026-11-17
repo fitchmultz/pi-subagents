@@ -44,7 +44,7 @@ concurrency:
 
 env:
   CI: "true"
-  PI_AUTOMATION_REF: 508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
+  PI_AUTOMATION_REF: e007829ba45938fbb3bdab83e5152771369bb656 # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
@@ -71,9 +71,9 @@ jobs:
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
 
   resolve:
-    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@e007829ba45938fbb3bdab83e5152771369bb656 # main
     with:
-      automation-ref: 508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
+      automation-ref: e007829ba45938fbb3bdab83e5152771369bb656 # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
 
@@ -138,7 +138,7 @@ jobs:
           node-version: ">=24.22.3 <25"
           check-latest: true
           package-manager-cache: false
-      - uses: fitchmultz/.github/.github/actions/setup-linux-dns@508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
+      - uses: fitchmultz/.github/.github/actions/setup-linux-dns@e007829ba45938fbb3bdab83e5152771369bb656 # main
       - name: Install native test prerequisites
         shell: bash
         run: |
