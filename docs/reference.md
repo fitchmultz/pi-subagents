@@ -496,8 +496,9 @@ the child did not write:
   session makes there is never listed.
 - A commit that the child made and then moved away from, for example on a side branch, stays
   listed. It is read from the HEAD reflog of the child's own worktree.
-- An accepted edit that was never committed stays listed when a checkout of another branch
-  drops it, although the file then equals the commit that was checked out.
+- An accepted edit of the child that was never committed stays listed when a checkout of
+  another branch drops it, although the file then equals the commit that was checked out. An
+  uncommitted edit that was there at launch is not the child's, and dropping it lists nothing.
 - When the base branch moves while another worktree has it checked out, that is not a
   `branch_violation` of this run: Git lets only that worktree commit to it.
 
@@ -553,10 +554,11 @@ diff --git a/docs/NEW.md b/docs/NEW.md
   repository root.
 - `Changed since the last clean check, look here first` names the files changed after the last
   state that passed the checks. It appears when that is only a part of the listed work.
-- `No longer in the working tree (committed on another branch, or dropped by a checkout)` names
-  files of commits the child made and then moved away from, and files with an accepted edit
-  that was never committed and that a checkout of another branch dropped. They have no line
-  counts and are not in the diff.
+- `Work on these files is not in the diff (committed on a branch the child left, or dropped by
+  a checkout)` names the files of commits the child made and then moved away from, and files
+  with an accepted edit that was never committed and that a checkout of another branch
+  dropped. That work has no line counts and is not in the diff. A file that also has changes
+  in the working tree is in the lines above with those changes.
 - `Approved earlier in this run (those changes are not shown)` names the files of the work
   that the overseer already approved. A file that changed again after the approval is also in
   the lines above, with its new change only.

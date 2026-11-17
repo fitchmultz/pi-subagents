@@ -73,7 +73,6 @@ function tripwires(options: {
   return checkDeterministicTripwires({
     ...rest,
     launch: baseline.snapshot,
-    reviewed: baseline.snapshot,
     changes: ownChanges(options.cwd, baseline, options.current),
   });
 }
@@ -555,6 +554,20 @@ nodeTest(
       })?.kind,
       "branch_violation",
     );
+
+    // An uncommitted edit that was there at launch is not the run's work. A forced checkout of
+    // another branch that drops it lists nothing, also after a checkpoint accepted that state.
+    const dirty = initGitRepo(t);
+    git(dirty, "branch", "feat/old");
+    fs.writeFileSync(path.join(dirty, "src", "second.ts"), "export const second = 2;\n");
+    git(dirty, "add", ".");
+    git(dirty, "commit", "-m", "second");
+    fs.writeFileSync(path.join(dirty, "README.md"), "preexisting dirty\n");
+    const dirtyLaunch = launchPoint(dirty);
+    const dirtyPassed = acceptedPoint(dirtyLaunch, captureRepoSnapshot(dirty));
+    git(dirty, "checkout", "-f", "feat/old");
+    assert.deepEqual(ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty)).files, []);
+    assert.deepEqual(ownChanges(dirty, dirtyPassed, captureRepoSnapshot(dirty)).files, []);
   },
 );
 
@@ -862,6 +875,20 @@ nodeTest(
     assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, [
       "(git-status-unavailable)",
     ]);
+    // The checkpoint pauses for it whatever the scope allows.
+    assert.deepEqual(
+      tripwires({
+        cwd: child,
+        contract: { scope: ["*"], verification: ["npm test"] },
+        baseline: unreferenced,
+        current: snapshot(),
+        consecutiveErrors: 0,
+      }),
+      {
+        kind: "loop_violation",
+        summary: "Git status became unavailable during supervised run.",
+      },
+    );
   },
 );
 
@@ -1278,12 +1305,44 @@ nodeTest("a pause names work the child committed and then left on another branch
       "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
       "Changes since launch:",
       "  docs/SIDE.md",
-      "No longer in the working tree (committed on another branch, or dropped by a checkout): docs/SIDE.md",
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
       STEER_APPROVE_OR_STOP,
     ].join("\n"),
   );
   resolveActiveEscalation(base, launch, "approved");
   await turn;
+
+  // More work goes to the side branch, and the same path is then written again in the working
+  // tree. The notice shows the new file, and says that other work on it is not in the diff.
+  git(repo, "checkout", "feat/side");
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "side two\n");
+  git(repo, "commit", "-am", "more side work");
+  git(repo, "checkout", "feat/work");
+  fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "rewritten\n");
+  const again = emit("turn_end", mutatingTurn);
+  await paused();
+  assert.equal(
+    notice(),
+    [
+      `[Overseer escalation #2 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
+      "Changes since your last approval:",
+      "  +1 -0 docs/SIDE.md",
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
+      "Approved earlier in this run (those changes are not shown): docs/SIDE.md",
+      "diff --git a/docs/SIDE.md b/docs/SIDE.md",
+      "new file mode 100644",
+      "index 0000000..d597f6c",
+      "--- /dev/null",
+      "+++ b/docs/SIDE.md",
+      "@@ -0,0 +1 @@",
+      "+rewritten",
+      STEER_APPROVE_OR_STOP,
+    ].join("\n"),
+  );
+  resolveActiveEscalation(base, launch, "approved");
+  await again;
 });
 
 nodeTest(
