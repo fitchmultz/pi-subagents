@@ -130,7 +130,7 @@ function sampleLaunch(base: string, cwd: string, owner: string): Launch {
 
 nodeTest(
   "deterministic tripwires handle dirty baselines, reverts, unicode paths, subdirectory cwd, and branch rules",
-  (t) => {
+  async (t) => {
     const repo = initGitRepo(t);
     fs.writeFileSync(path.join(repo, "preexisting-notes.md"), "untouched\n");
     fs.writeFileSync(path.join(repo, "README.md"), "preexisting dirty\n");
@@ -557,6 +557,22 @@ nodeTest(
     git(dirty, "checkout", "-f", "feat/old");
     assert.deepEqual(ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty)).files, []);
     assert.deepEqual(ownChanges(dirty, dirtyPassed, captureRepoSnapshot(dirty)).files, []);
+
+    // Git compares file times in whole seconds. An edit of the same size, made in the second
+    // in which the index was written, is found only by content, and a snapshot taken a second
+    // later still has to find it.
+    const quick = path.join(dirty, "src", "allowed.ts");
+    const second = (file: string): number => Math.floor(fs.statSync(file).mtimeMs / 1000);
+    do {
+      fs.writeFileSync(quick, "export const x = 3;\n");
+      git(dirty, "add", ".");
+      fs.writeFileSync(quick, "export const x = 4;\n");
+    } while (second(quick) !== second(path.join(dirty, ".git", "index")));
+    while (Math.floor(Date.now() / 1000) <= second(quick)) {
+      await delay(50);
+    }
+    const quickEdit = ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty));
+    assert.match(changesDiff(quickEdit), /^\+export const x = 4;$/mu);
   },
 );
 
