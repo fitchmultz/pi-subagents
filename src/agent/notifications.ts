@@ -151,7 +151,8 @@ function changeLines(escalation: Escalation): string[] {
     stat === "" ? `  ${files}` : stat,
     named("Changed since the last clean check, look here first", escalation.unchecked),
     named("Committed in this worktree and no longer checked out", escalation.leftBehind),
-    named("Approved earlier in this run, not shown", escalation.approved),
+    // A file can be here and in the lines above: it changed again after the approval.
+    named("Approved earlier in this run (those changes are not shown)", escalation.approved),
     escalation.diffExcerpt.trimEnd(),
     escalation.diffCommand === undefined ? "" : `[Diff cut. All of it: ${escalation.diffCommand}]`,
   ];

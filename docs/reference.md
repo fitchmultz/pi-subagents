@@ -536,7 +536,7 @@ Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).
 Changes since your last approval:
   +1 -0 docs/NEW.md
   +1 -0 src/allowed.ts
-Approved earlier in this run, not shown: README.md, src/big.ts
+Approved earlier in this run (those changes are not shown): README.md, src/big.ts
 diff --git a/docs/NEW.md b/docs/NEW.md
 …
 ```
@@ -547,8 +547,9 @@ diff --git a/docs/NEW.md b/docs/NEW.md
   state that passed the checks. It appears when that is only a part of the listed work.
 - `Committed in this worktree and no longer checked out` names files of commits the child made
   and then moved away from. They have no line counts and are not in the diff.
-- `Approved earlier in this run, not shown` names the files of the work that the overseer
-  already approved.
+- `Approved earlier in this run (those changes are not shown)` names the files of the work
+  that the overseer already approved. A file that changed again after the approval is also in
+  the lines above, with its new change only.
 - The diff is cut at 3000 characters. When it is cut, the notice ends with the command that
   prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
 

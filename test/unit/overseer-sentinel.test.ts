@@ -619,7 +619,7 @@ nodeTest(
     });
     assert.match(
       asked[0].questions["verdict"]?.instructions ?? "",
-      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them/u,
+      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them\. For a file named in both, judge only what `diff` shows\./u,
     );
     assert.ok(hit !== undefined);
     assert.equal(hit.kind, "primitive_violation");
@@ -1099,7 +1099,7 @@ nodeTest(
         "Changes since your last approval:",
         "  +1 -0 docs/NEW.md",
         "  +1 -0 src/allowed.ts",
-        "Approved earlier in this run, not shown: README.md, src/big.ts",
+        "Approved earlier in this run (those changes are not shown): README.md, src/big.ts",
         "diff --git a/docs/NEW.md b/docs/NEW.md",
         "new file mode 100644",
         "index 0000000..3e75765",
@@ -1127,6 +1127,23 @@ nodeTest(
     const third = await paused();
     assert.equal(third.kind, "primitive_violation");
     assert.deepEqual(third.changedFiles, ["src/allowed.ts"]);
+    // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
+    // and says of the approved files only that their earlier changes are not shown.
+    assert.deepEqual(notice().split("\n").slice(0, -1), [
+      `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      `Reason: ${third.summary}`,
+      "Changes since your last approval:",
+      "  +1 -0 src/allowed.ts",
+      "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
+      "diff --git a/src/allowed.ts b/src/allowed.ts",
+      "index 5dc3114..46469ae 100644",
+      "--- a/src/allowed.ts",
+      "+++ b/src/allowed.ts",
+      "@@ -1,2 +1,3 @@",
+      " export const x = 1;",
+      " export const later = 1;",
+      "+// FLAG",
+    ]);
     assert.equal(judged.length, 2);
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
