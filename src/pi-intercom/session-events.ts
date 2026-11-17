@@ -19,9 +19,11 @@ type Lifecycle = Readonly<
     | "identity"
     | "invalidate"
     | "live"
+    | "recordTurnOutcome"
     | "selectModel"
     | "start"
     | "status"
+    | "syncTurnError"
     | "toolEnd"
     | "toolStart"
   >
@@ -92,8 +94,15 @@ export class IntercomSessionEvents {
     }
   }
   private async messageEnd(message: unknown): Promise<void> {
-    const { journal, connection, replies } = this.owners;
+    const { lifecycle, connection } = this.owners;
     this.consumeMessage(message);
+    if (lifecycle.recordTurnOutcome(message) && lifecycle.live()) {
+      connection.syncStatus();
+    }
+    await this.notifyFailedAsk(message);
+  }
+  private async notifyFailedAsk(message: unknown): Promise<void> {
+    const { journal, connection, replies } = this.owners;
     const client = connection.active;
     const context = replies.currentTurn();
     const error = getAssistantErrorMessage(message);
@@ -137,7 +146,9 @@ export class IntercomSessionEvents {
     });
     this.pi.on("session_tree", (_event, ctx) => {
       if (lifecycle.live(ctx)) {
+        lifecycle.syncTurnError(ctx);
         journal.reconcileConsumed(ctx, true);
+        connection.syncStatus();
       }
     });
     this.pi.on("model_select", (event, ctx) => {

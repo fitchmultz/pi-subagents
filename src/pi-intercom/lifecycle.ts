@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { randomUUID } from "node:crypto";
 import type { IntercomConfig } from "./config.ts";
 import { buildPresenceIdentity, WORKER_STARTED_AT, type IntercomLineage } from "./identity.ts";
+import { getSanitizedAssistantError } from "./message-format.ts";
 import { resolveSessionProjectId } from "./session-targets.ts";
 import {
   isContextTarget,
@@ -46,6 +47,7 @@ export class IntercomLifecycle {
   private model = "unknown";
   private transportPeer?: TransportState | undefined;
   private applicationGuard: string | undefined;
+  private turnError: string | undefined;
   private running = false;
   private activity = 0;
   private readonly tools = new Map<string, string>();
@@ -65,6 +67,9 @@ export class IntercomLifecycle {
   }
   get toolCount(): number {
     return this.tools.size;
+  }
+  get lastTurnError(): string | undefined {
+    return this.turnError;
   }
   registerContextEvents(sync: () => void): void {
     this.pi.events.on("pi-intercom:context-query", (request) => this.contextRequest(request));
@@ -154,11 +159,30 @@ export class IntercomLifecycle {
     };
     this.applicationGuard = undefined;
     this.model = ctx.model?.id ?? "unknown";
+    this.syncTurnError(ctx);
     this.running = false;
     this.activity = 0;
     this.tools.clear();
     this.transport(null);
     return this.state.epoch;
+  }
+  syncTurnError(ctx: Pick<ExtensionContext, "sessionManager">): void {
+    const latest = ctx.sessionManager
+      .getBranch()
+      .findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
+    this.turnError =
+      latest?.type === "message" ? getSanitizedAssistantError(latest.message) : undefined;
+  }
+  recordTurnOutcome(message: unknown): boolean {
+    if (!isRecord(message) || message.role !== "assistant") {
+      return false;
+    }
+    const next = getSanitizedAssistantError(message);
+    if (this.turnError === next) {
+      return false;
+    }
+    this.turnError = next;
+    return true;
   }
   invalidate(): void {
     const epoch = this.state.epoch + 1;
@@ -172,6 +196,7 @@ export class IntercomLifecycle {
   }
   clear(): void {
     this.state = { kind: "inactive", epoch: this.state.epoch };
+    this.turnError = undefined;
   }
   live(
     ctx: ExtensionContext | null = this.state.kind === "live" ? this.state.context : null,
@@ -244,13 +269,17 @@ export class IntercomLifecycle {
   }
   health(
     pendingAsks: number,
-  ): Pick<SessionInfo, "startedAt" | "pendingAsks" | "acceptsAsks" | "lastIntercomActivity"> {
+  ): Pick<
+    SessionInfo,
+    "startedAt" | "pendingAsks" | "acceptsAsks" | "lastIntercomActivity" | "lastTurnError"
+  > {
     const live = this.live();
     return {
       startedAt: WORKER_STARTED_AT,
       pendingAsks,
       acceptsAsks: live ? this.isIdle(live) : false,
       lastIntercomActivity: this.activity,
+      ...(this.turnError !== undefined ? { lastTurnError: this.turnError } : {}),
     };
   }
   async registration(pendingAsks: number): Promise<Omit<SessionInfo, "id">> {

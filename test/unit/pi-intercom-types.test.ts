@@ -1,12 +1,15 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe as nodeDescribe, it as nodeIt } from "node:test";
+import { isLastMessageResult } from "../../src/pi-intercom/broker/last.ts";
+import { getSanitizedAssistantError } from "../../src/pi-intercom/message-format.ts";
 import {
   isAttachment,
   isMessage,
   isSessionRegistration,
   normalizeSessionInfo,
 } from "../../src/pi-intercom/types.ts";
+import { MAX_TURN_ERROR_LENGTH } from "../../src/pi-intercom/validation.ts";
 
 const message = { id: "m1", timestamp: 1, content: { text: "hello" } };
 
@@ -22,6 +25,7 @@ nodeDescribe("pi-intercom wire validation", () => {
         lastIntercomActivity: 2,
         pendingAsks: 0,
         acceptsAsks: true,
+        lastTurnError: "401 Unauthorized",
       }),
       true,
     );
@@ -81,5 +85,82 @@ nodeDescribe("pi-intercom wire validation", () => {
       false,
     );
     assert.equal(isSessionRegistration({ cwd: "/tmp", model: "bad\nmodel" }), false);
+    assert.equal(isSessionRegistration({ cwd: "/tmp", model: "test", lastTurnError: "" }), false);
+    assert.equal(
+      isSessionRegistration({ cwd: "/tmp", model: "test", lastTurnError: "bad\nline" }),
+      false,
+    );
+    assert.equal(
+      isSessionRegistration({
+        cwd: "/tmp",
+        model: "test",
+        lastTurnError: "x".repeat(MAX_TURN_ERROR_LENGTH + 1),
+      }),
+      false,
+    );
   });
+
+  nodeIt(
+    "sanitizes assistant turn errors and validates latestTurnError on last-message results",
+    () => {
+      assert.equal(
+        getSanitizedAssistantError({
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "  2009\n\tUnauthorized\u001b[31m  ",
+        }),
+        "2009 Unauthorized [31m",
+      );
+      assert.equal(
+        getSanitizedAssistantError({
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "\u0007\n\t ",
+        }),
+        "assistant turn failed",
+      );
+      const truncated = getSanitizedAssistantError({
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: `${"a".repeat(MAX_TURN_ERROR_LENGTH - 2)}😀tail`,
+      });
+      assert.ok(truncated !== undefined);
+      assert.equal(truncated.isWellFormed(), true);
+      assert.ok(truncated.length <= MAX_TURN_ERROR_LENGTH);
+      assert.equal(
+        getSanitizedAssistantError({
+          role: "assistant",
+          stopReason: "stop",
+          errorMessage: "ignored",
+        }),
+        undefined,
+      );
+
+      const base = {
+        session: { id: "pi-1", cwd: "/repo", model: "fixture" },
+        entryId: null,
+        text: "",
+        offset: 0,
+        totalLength: 0,
+      };
+      assert.equal(
+        isLastMessageResult({
+          ...base,
+          latestTurnError: { entryId: "entry-1", error: "401 Unauthorized" },
+        }),
+        true,
+      );
+      assert.equal(
+        isLastMessageResult({ ...base, latestTurnError: { entryId: "", error: "401" } }),
+        false,
+      );
+      assert.equal(
+        isLastMessageResult({
+          ...base,
+          latestTurnError: { entryId: "entry-1", error: "bad\nline" },
+        }),
+        false,
+      );
+    },
+  );
 });

@@ -303,7 +303,10 @@ clock bound remains usable when its original process identity is verifiable.
 ## `intercom`
 
 Use `list`, `send`, and `last` for normal coordination. `ask`, `reply`, `pending`,
-and `status` support request/reply and diagnosis. See [local messaging](intercom.md)
+and `status` support request/reply and diagnosis. `list` rows include
+`worker_started` and `last_turn_error` health tags locally and across devices,
+and unpinned `last` reads warn when a newer assistant turn failed after or
+without a completed response. See [local messaging](intercom.md)
 for topology, target resolution, native replay, and delivery distinctions.
 
 ### Usage accounting

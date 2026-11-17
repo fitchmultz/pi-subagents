@@ -11,7 +11,10 @@ workflow UI, or topic registry.
 1. Use `intercom({action:"list"})` before choosing a peer. It prints the main
    sessions first, then the child sessions of your group as one count line. A
    child is a valid target by name or ID without its row; `children:true` prints
-   the rows. Default discovery spans projects and agent directories under the
+   the rows. Rows include `worker_started:<age>` (the current worker process age,
+   refreshed on `pi restart`) and `last_turn_error:<error>` when the peer's most
+   recent assistant turn failed. Default discovery spans projects and agent
+   directories under the
    same OS user; optional `scope:"project"` filters to this repository and its
    worktrees, and optional `to` keeps the sessions whose name or ID contains it,
    child rows included.
@@ -24,7 +27,9 @@ workflow UI, or topic registry.
    - `send`: non-blocking guidance/corrections/blockers; default delivery steers.
      A message to an idle peer costs it a full model request. If it needs no
      action and must still be on record, use `delivery:"passive"`.
-   - `last`: original last completed assistant text, without waking the peer.
+   - `last`: original last completed assistant text, without waking the peer;
+     unpinned reads also report `Latest turn failed (<entryId>): <error>` when a
+     newer assistant turn on the active branch failed.
    - `ask`: bounded correlated wait only when the sender must stay alive waiting.
    - `reply`: answer the active/sole pending ask, or specify `replyTo` when ambiguous.
    - `pending`: unresolved inbound asks and their correlation.

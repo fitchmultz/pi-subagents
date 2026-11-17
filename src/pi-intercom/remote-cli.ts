@@ -1,11 +1,3 @@
-/**
- * The command that another device of the same owner runs here over SSH.
- *
- * It reads one JSON request from stdin, prints its JSON reply as the last line on stdout and
- * exits: status 0 for a result, 1 for a reply with `error`. A waiting `ask` first prints the
- * receipt of its question, then empty lines. It joins this device's running broker as a
- * short-lived main. It never starts a broker: without one, no Pi session is open here.
- */
 import { hash, randomUUID } from "node:crypto";
 import { text } from "node:stream/consumers";
 import { IntercomClient } from "./broker/client.ts";
@@ -32,24 +24,16 @@ import { errorMessage, hasErrorCode, isRecord } from "../shared/unknown.ts";
 export interface RemoteRequest {
   readonly version: 1;
   readonly command: string;
-  /** The calling device's alias. */
   readonly origin: string;
 }
-/** `send` and `ask`: a message from a main of the origin device to a session of this one. */
 export interface RemoteMessage extends RemoteRequest {
   readonly command: "send" | "ask";
-  /** This device's alias on the origin device: a refusal spells its targets `name@device`. */
   readonly device: string;
-  /** The sending main, as its own broker lists it. */
   readonly from: { readonly id: string; readonly name: string; readonly cwd: string };
-  /** A session name or ID, resolved here. */
   readonly to: string;
-  /** The sender's options. Human origin, guards and reply hints never cross a device. */
   readonly message: SendOptions;
-  /** `ask`: how long to wait for the reply. */
   readonly timeoutMs: number;
 }
-/** A session of another device: the fields of a list row, nothing that identifies its context. */
 export type RemoteSession = Pick<
   SessionInfo,
   | "id"
@@ -63,20 +47,15 @@ export type RemoteSession = Pick<
   | "lastIntercomActivity"
   | "pendingAsks"
   | "acceptsAsks"
+  | "lastTurnError"
 >;
 export type RemoteReply =
   | {
       readonly version: 1;
-      /** This device's clock, so the caller prints ages without comparing two clocks. */
       readonly now: number;
       readonly sessions: readonly RemoteSession[];
     }
-  /** The broker's receipt for a message, and the answer to an ask. */
   | { readonly version: 1; readonly receipt: SendResult; readonly reply?: Message }
-  /**
-   * Without `receipt` the message was not sent, or with `deliveryUnknown` the broker did not
-   * confirm it. With `receipt` an accepted ask got no reply.
-   */
   | {
       readonly version: 1;
       readonly error: string;
@@ -85,13 +64,10 @@ export type RemoteReply =
       readonly receipt?: SendResult;
     };
 
-/** Identities that are not Pi sessions of this device: bridge peers and commands like this one. */
 const REMOTE_ID_PREFIX = "remote-";
 const COMMAND_MODEL = "remote-cli";
-/** How often a waiting ask writes an empty line, to learn that its caller is gone. */
 const HEARTBEAT_MS = 1000;
 
-/** Undefined when no broker runs here. */
 async function joinBroker(
   session: { readonly name: string; readonly cwd: string },
   id: string,
@@ -134,17 +110,16 @@ function listed(session: SessionInfo): RemoteSession {
     lastIntercomActivity: session.lastIntercomActivity,
     pendingAsks: session.pendingAsks,
     acceptsAsks: session.acceptsAsks,
+    lastTurnError: session.lastTurnError,
   };
 }
 
 type Input = Readonly<Record<string, unknown>>;
 
-/** One line of the answer. The caller reads the last one. */
 function print(reply: RemoteReply): void {
   process.stdout.write(`${JSON.stringify(reply)}\n`);
 }
 
-/** The Pi mains of this device. A client without lineage cannot see a child. */
 async function list(request: RemoteRequest): Promise<RemoteReply> {
   const client = await joinBroker(
     { name: `intercom-list@${request.origin}`, cwd: process.cwd() },
@@ -170,7 +145,6 @@ async function list(request: RemoteRequest): Promise<RemoteReply> {
   }
 }
 
-/** The parts of a message that may cross devices, checked like a broker frame. */
 function sendOptions(value: unknown, expectsReply: boolean): SendOptions {
   const message = isRecord(value)
     ? {
@@ -229,10 +203,7 @@ function parseMessage(request: RemoteRequest, input: Input): RemoteMessage {
   };
 }
 
-/**
- * Aborts when the caller's end of stdout is gone. Over SSH nothing else tells a waiting command
- * that its caller left, and only a write finds a closed pipe.
- */
+// Over SSH, only writing to stdout detects a closed caller pipe.
 function callerGone(): AbortSignal {
   const gone = new AbortController();
   process.stdout.on("error", () => {
@@ -245,12 +216,10 @@ function callerGone(): AbortSignal {
 interface Dispatch {
   readonly client: IntercomClient;
   readonly request: RemoteMessage;
-  /** The recipient's ID here, or null when no connected session matches `request.to`. */
   readonly peer: string | null;
   readonly track: (progress: SendProgress) => void;
 }
 
-/** Waits like a local asker: its departure retires the recipient's pending ask. */
 async function askHere({ client, request, peer, track }: Dispatch): Promise<RemoteReply> {
   const { message } = request;
   const shown = `${request.to}@${request.device}`;
@@ -324,10 +293,7 @@ function failed(error: unknown, progress: SendProgress, words: string): RemoteRe
   };
 }
 
-/**
- * Delivers a message as a main named `<sender>@<origin>`. One sender keeps one identity here,
- * so its later queued message can replace an earlier one of the same thread.
- */
+// Stable sender identity lets later replace-mode messages supersede earlier ones on the same thread.
 async function deliver(base: RemoteRequest, input: Input): Promise<RemoteReply> {
   const request = parseMessage(base, input);
   const { origin, device, from, to } = request;

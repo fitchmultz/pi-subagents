@@ -16,11 +16,7 @@ import {
 import { finiteNumber, isRecord, isUnknownArray } from "./validation.ts";
 
 const NOT_INSTALLED = 44;
-/**
- * One constant command line: the request goes on stdin, so no argument needs quoting. `echo`
- * answers first, so a device that printed nothing was sent nothing. Then the first copy that Pi
- * installed under the home directory runs, from Git or from npm.
- */
+// `echo` answers before stdin is written, proving whether a silent connection ever received the request.
 const REMOTE_COMMAND = [
   "echo",
   ...["git/github.com/fitchmultz", "npm/node_modules/@fitchmultz"].map((root) => {
@@ -29,7 +25,6 @@ const REMOTE_COMMAND = [
   }),
   `exit ${NOT_INSTALLED}`,
 ].join("; ");
-/** Never prompt, give up on a device that does not answer, and notice one that stops answering. */
 const SSH_OPTIONS = [
   "-o",
   "BatchMode=yes",
@@ -41,32 +36,25 @@ const SSH_OPTIONS = [
   "ServerAliveCountMax=2",
 ];
 const SSH_FAILED = 255;
-/** Exit statuses of the remote shell that mean the device answered without running the command. */
 const NOT_RUN: ReadonlyMap<unknown, string> = new Map([
   [NOT_INSTALLED, "its pi-subagents has no cross-device command; update pi-subagents there"],
   [127, "node is not on the PATH of its SSH commands"],
 ]);
-/** How a package that lacks a command answers a request for it. */
 const UNSUPPORTED = /^Unsupported command /;
 const OLDER = "its pi-subagents is older than this command; update pi-subagents there";
 const CHECK_FIRST = "Check the recipient before retrying; it may still arrive.";
 
-/** The mains of one other device, or why they could not be listed, in a few words. */
 export type DeviceListing =
   | {
       readonly device: string;
       readonly sessions: readonly SessionInfo[];
-      /** The device's own clock when it listed. */
       readonly now: number;
     }
   | { readonly device: string; readonly failure: string };
 
-/** A session of another device, written `name@device`. */
 export interface DeviceTarget {
-  /** This device's alias: the address of the sender. */
   readonly origin: string;
   readonly device: string;
-  /** A session name or ID, resolved by that device. */
   readonly name: string;
 }
 type Sender = Readonly<Pick<IntercomTransport, "listSessions" | "sessionId">>;
@@ -76,7 +64,6 @@ interface Exit {
   readonly error: ExecFileException | null;
   readonly stdout: string;
   readonly stderr: string;
-  /** The device answered, so it was sent the request. Otherwise it received nothing. */
   readonly requested: boolean;
 }
 type Reply = Readonly<Record<string, unknown>>;
@@ -107,7 +94,6 @@ function lastLine(text: string): string {
   return text.trim().split("\n").at(-1)?.trim() ?? "";
 }
 
-/** The version 1 reply: the last line that the device printed. */
 function replyOf({ stdout }: Exit): Reply | undefined {
   try {
     const reply: unknown = JSON.parse(lastLine(stdout));
@@ -117,7 +103,6 @@ function replyOf({ stdout }: Exit): Reply | undefined {
   }
 }
 
-/** Why a device gave no reply, in a few words, and whether it may have run the request. */
 function noReply({ error, stderr, requested }: Exit): {
   readonly reason: string;
   readonly unreachable: boolean;
@@ -136,7 +121,6 @@ function noReply({ error, stderr, requested }: Exit): {
   return { reason: words === "" ? stopped(error) : words, unreachable: false, ran: requested };
 }
 
-/** How `ssh` ended when it printed no reason. An `execFile` message repeats the command line. */
 function stopped(error: ExecFileException | null): string {
   if (typeof error?.signal === "string") {
     return `ssh was stopped by ${error.signal}`;
@@ -186,7 +170,6 @@ function receiptOf(value: unknown): SendResult | undefined {
   };
 }
 
-/** What one remote command established, decided once from its exit and reply line. */
 type Exchange =
   | { readonly kind: "not-sent"; readonly error: Error }
   | { readonly kind: "unknown"; readonly error: Error }
@@ -194,7 +177,6 @@ type Exchange =
   | { readonly kind: "accepted"; readonly receipt: SendResult }
   | { readonly kind: "unanswered"; readonly receipt: SendResult; readonly reason: Error };
 
-/** A SendError says whether the device received the message: `not-sent`, or `unconfirmed`. */
 function notSent(messageId: string, cause: Readonly<Error>): SendError {
   return new SendError({ kind: "not-sent", messageId }, cause);
 }
@@ -202,7 +184,6 @@ function unknown(messageId: string, words: string): SendError {
   return new SendError({ kind: "unconfirmed", messageId }, new Error(words));
 }
 
-/** Why a message request got no reply line. */
 function unanswered(
   device: string,
   messageId: string,
@@ -232,7 +213,6 @@ function unanswered(
       };
 }
 
-/** Why an ask ended on the receipt of its question: the wait for the reply was cut off. */
 function lostReply(device: string, exit: Exit, signal?: AbortSignal): Error {
   return new Error(
     signal?.aborted === true
@@ -241,7 +221,6 @@ function lostReply(device: string, exit: Exit, signal?: AbortSignal): Error {
   );
 }
 
-/** What the device's reply line says, including an accepted ask whose reply was lost. */
 function exchange(options: {
   readonly device: string;
   readonly messageId: string;
@@ -295,7 +274,6 @@ function exchange(options: {
   };
 }
 
-/** The device's own words, with the recovery code that a local refusal of that kind carries. */
 function refusal(words: string, code: unknown): Error {
   return code === "ambiguous_target" || code === "reply_timeout"
     ? new RecoveryError(code, words)
@@ -319,7 +297,6 @@ function access(config: DeviceConfig, child: boolean): Access {
   return { self: config.device, others: config.otherDevices };
 }
 
-/** The owner's other devices, reached with one `ssh` command per request. Nothing stays running. */
 export class RemoteDevices {
   private readonly config: DeviceConfig;
   private readonly access: Access;
@@ -327,7 +304,6 @@ export class RemoteDevices {
     this.config = config;
     this.access = access(config, child);
   }
-  /** Lists the mains of `selector`: one configured alias, or "all". Devices answer in parallel. */
   async list(
     selector: string,
     signal?: AbortSignal,
@@ -353,12 +329,7 @@ export class RemoteDevices {
       ),
     };
   }
-  /**
-   * The session of another device that `to` names as `name@device`, or undefined for a target
-   * of this device. The text after the last `@` decides, in any letter case: a configured
-   * device always wins over a local session with that name. Throws when this session may not
-   * reach the device.
-   */
+  // Configured `@device` suffixes take case-insensitive precedence over local names.
   address(to: string): DeviceTarget | undefined {
     const target = to.trim();
     const at = target.lastIndexOf("@");
@@ -424,10 +395,6 @@ export class RemoteDevices {
           reply,
         });
   }
-  /**
-   * Sends to a session of another device and returns that broker's receipt. Throws like a
-   * local transport: a SendError says whether the device received anything.
-   */
   async send(
     sender: Sender,
     target: DeviceTarget,
@@ -439,10 +406,6 @@ export class RemoteDevices {
     }
     return result.receipt;
   }
-  /**
-   * Asks a session of another device and waits for its reply, up to the ask timeout. `onSent`
-   * gets the receipt of an accepted ask before a missing reply is thrown.
-   */
   async ask(
     sender: Sender,
     target: DeviceTarget,

@@ -305,6 +305,7 @@ nodeTest(
           startedAt: now - 7_200_000,
           lastSeen: now - 5_000,
           lastIntercomActivity: now - 120_000,
+          lastTurnError: "401 Unauthorized",
         },
         {
           id: "cccccccc-1111",
@@ -323,9 +324,10 @@ nodeTest(
     );
     assert.match(
       listing,
-      /• older-worker \(bbbbbbbb\) — .*\[same native session cwd, idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:2m ago, last_seen:5s ago, worker_started:2h ago\]/,
+      /• older-worker \(bbbbbbbb\) — .*\[same native session cwd, idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:2m ago, last_seen:5s ago, worker_started:2h ago, last_turn_error:401 Unauthorized\]/,
     );
     assert.doesNotMatch(listing, /• legacy-peer[^\n]*worker_started:/);
+    assert.doesNotMatch(listing, /• restarted-main[^\n]*last_turn_error:/);
   },
 );
 

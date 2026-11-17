@@ -515,6 +515,7 @@ export class IntercomClient extends EventEmitter {
     readonly pendingAsks?: number | undefined;
     readonly acceptsAsks?: boolean | undefined;
     readonly lastIntercomActivity?: number | undefined;
+    readonly lastTurnError?: string | null | undefined;
     readonly subscriptions?: SessionInfo["subscriptions"] | undefined;
     readonly topics?: readonly TopicUpdate[] | undefined;
   }): void {

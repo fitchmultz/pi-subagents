@@ -365,6 +365,7 @@ class IntercomBroker {
       "pendingAsks",
       "acceptsAsks",
       "lastIntercomActivity",
+      "lastTurnError",
       "subscriptions",
       "topics",
       "applicationGuard",
@@ -375,6 +376,9 @@ class IntercomBroker {
     }
     if (msg.applicationGuard === null) {
       delete update.applicationGuard;
+    }
+    if (msg.lastTurnError === null) {
+      delete update.lastTurnError;
     }
     const nextInfo = normalizeSessionInfo(update);
     if (!nextInfo) {
