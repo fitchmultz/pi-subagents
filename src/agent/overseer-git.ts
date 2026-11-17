@@ -483,13 +483,15 @@ export function changesStat(cwd: string, changes: OwnChanges): string {
   }
   // A notice names these files beside `files`, so they are spelled the same way: from the cwd.
   const fromRunCwd = relativeTo(cwd, top);
+  // One record is one line: a name with a control character is written as a JSON string.
+  const oneLine = (file: string): string => (/\p{Cc}/u.test(file) ? JSON.stringify(file) : file);
   return lines(diffOf(changes, ["--numstat", "--no-renames", "-z"]), "\0")
     .map((row) => {
       const [added = "", removed = "", ...file] = row.split("\t");
       return { counts: `${added}\t${removed}`, file: fromRunCwd(file.join("\t")) };
     })
     .sort((a, b) => (a.file < b.file ? -1 : 1))
-    .map((row) => `${row.counts}\t${row.file}`)
+    .map((row) => `${row.counts}\t${oneLine(row.file)}`)
     .join("\n");
 }
 
