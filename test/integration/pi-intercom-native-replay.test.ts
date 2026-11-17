@@ -4041,7 +4041,7 @@ nodeTest(
     // Without `device` the list is the local one, and nothing is run.
     const localList = await list(main, {});
     assert.match(localList, /\*\*Other main sessions \(\d+\):\*\*\n/);
-    assert.match(localList, /• device-main \([^\n]+worker_started:\d+s ago\]/);
+    assert.match(localList, /• device-main \([^\n]+worker_started:\d+[smh] ago\]/);
     await assert.rejects(
       list(child, { device: "all" }),
       /Only a main session reaches other devices/,
@@ -4072,7 +4072,7 @@ nodeTest(
     assert.match(
       mainRow,
       new RegExp(
-        `^• device-main@peer \\(pi-[0-9a-f]{5,}@peer\\) — Native session cwd: ${path.join(root, "device-main")} \\(\\S+\\) \\[idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:\\d+s ago, worker_started:\\d+s ago\\]$`,
+        `^• device-main@peer \\(pi-[0-9a-f]{5,}@peer\\) — Native session cwd: ${path.join(root, "device-main")} \\(\\S+\\) \\[idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:\\d+s ago, worker_started:\\d+[smh] ago\\]$`,
       ),
     );
     assert.ok(rows.some((row) => row.startsWith("• device-unset@peer (")));
