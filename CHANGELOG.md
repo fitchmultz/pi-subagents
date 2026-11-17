@@ -8,6 +8,20 @@
 - An approved overseer pause no longer counts against the run. A pause notice always offers steer, approve and stop. Only pauses the overseer answered with a correction (`continue`, or `review` with `changes_requested`) are counted toward the advice to stop, which appears from three corrections on. Before, the third pause of a run said "3rd strike: prefer stop" and dropped the steer option, even when both earlier pauses were approved. `agent_runs list`, `inspect` and the `/agents` observer show the pause number and the corrections, for example `paused: scope_violation #4, 2 corrections`. In `escalation.json`, `strikes` is the pause number and the new optional `corrections` is the count of corrections.
 - The reply to `agent_runs` `action="review"` with `verdict="approved"` is two lines: the run, the verdict and the time, and what happens next. Before, it repeated the whole run record, including the child's final report that the completion notice had just delivered. See [What an approval replies](docs/reference.md#what-an-approval-replies).
 
+## 0.52.46 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- chore(size): remove the 1 MiB size ceiling (OVR-213) (#458) ([94803a6](https://github.com/fitchmultz/pi-subagents/commit/94803a6090741c5f9ed5bd7a74d400295ed300bf))
+
+### What's Changed
+
+- chore(size): remove the 1 MiB size ceiling (OVR-213) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/458
+- ci: release through direct signed version commits (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/463
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.45...v0.52.46
+
 ## 0.52.45 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->

@@ -24,6 +24,7 @@ import {
   acceptedPoint,
   captureRepoSnapshot,
   changesDiff,
+  changesDiffCommand,
   changesStat,
   launchPoint,
   ownChanges,
@@ -131,7 +132,7 @@ function sampleLaunch(base: string, cwd: string, owner: string): Launch {
 
 nodeTest(
   "deterministic tripwires handle dirty baselines, reverts, unicode paths, subdirectory cwd, and branch rules",
-  (t) => {
+  async (t) => {
     const repo = initGitRepo(t);
     fs.writeFileSync(path.join(repo, "preexisting-notes.md"), "untouched\n");
     fs.writeFileSync(path.join(repo, "README.md"), "preexisting dirty\n");
@@ -568,6 +569,22 @@ nodeTest(
     git(dirty, "checkout", "-f", "feat/old");
     assert.deepEqual(ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty)).files, []);
     assert.deepEqual(ownChanges(dirty, dirtyPassed, captureRepoSnapshot(dirty)).files, []);
+
+    // Git compares file times in whole seconds. An edit of the same size, made in the second
+    // in which the index was written, is found only by content, and a snapshot taken a second
+    // later still has to find it.
+    const quick = path.join(dirty, "src", "allowed.ts");
+    const second = (file: string): number => Math.floor(fs.statSync(file).mtimeMs / 1000);
+    do {
+      fs.writeFileSync(quick, "export const x = 3;\n");
+      git(dirty, "add", ".");
+      fs.writeFileSync(quick, "export const x = 4;\n");
+    } while (second(quick) !== second(path.join(dirty, ".git", "index")));
+    while (Math.floor(Date.now() / 1000) <= second(quick)) {
+      await delay(50);
+    }
+    const quickEdit = ownChanges(dirty, dirtyLaunch, captureRepoSnapshot(dirty));
+    assert.match(changesDiff(quickEdit), /^\+export const x = 4;$/mu);
   },
 );
 
@@ -771,8 +788,11 @@ nodeTest(
       path.join(child, "src", "shared.ts"),
       "export const first = 2;\n\n\n\n\nexport const last = 1;\n",
     );
-    git(child, "commit", "-am", "child work");
+    fs.writeFileSync(path.join(child, "src", "[id].ts"), "export const page = 1;\n");
+    git(child, "add", ".");
+    git(child, "commit", "-m", "child work");
     fs.mkdirSync(path.join(upstream, "docs"));
+    fs.writeFileSync(path.join(upstream, "src", "i.ts"), "export const upstream = 1;\n");
     fs.writeFileSync(path.join(upstream, "docs", "UP.md"), "two\n");
     fs.writeFileSync(path.join(upstream, "README.md"), "upstream two\n");
     fs.writeFileSync(
@@ -784,8 +804,16 @@ nodeTest(
     git(child, "fetch", "origin");
     git(child, "merge", "--no-edit", "origin/main");
     const merged = ownChanges(child, launch, snapshot());
-    assert.deepEqual(merged.files, ["src/allowed.ts", "src/shared.ts"]);
-    assert.doesNotMatch(changesDiff(merged), /README\.md|UPSTREAM\.md|docs\/UP\.md/u);
+    assert.deepEqual(merged.files, ["src/[id].ts", "src/allowed.ts", "src/shared.ts"]);
+    assert.doesNotMatch(changesDiff(merged), /README\.md|UPSTREAM\.md|docs\/UP\.md|src\/i\.ts/u);
+    // The command a notice prints for the whole diff names the same files literally: `[id]` is
+    // not read as a pattern that also matches the upstream file `i.ts`.
+    const wholeDiff = execSync(changesDiffCommand(merged) ?? "false", { encoding: "utf8" });
+    assert.deepEqual(wholeDiff.match(/^\+\+\+ b\/.*$/gmu), [
+      "+++ b/src/[id].ts",
+      "+++ b/src/allowed.ts",
+      "+++ b/src/shared.ts",
+    ]);
 
     // A second branch stacked on the first. Switching back down with a clean worktree lists
     // nothing, whether the branches were accepted during this run or existed at its launch,
@@ -858,6 +886,7 @@ nodeTest(
     assert.deepEqual(ownChanges(child, afterSide, snapshot()).files, []);
     // Measured from launch, as the completed run reports it, all of the child's work is listed.
     assert.deepEqual(ownChanges(child, launch, snapshot()).files, [
+      "src/[id].ts",
       "src/allowed.ts",
       "src/shared.ts",
       "src/side.ts",

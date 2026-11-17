@@ -152,7 +152,13 @@ function workingTree(top: string, excluded: readonly string[]): string | undefin
   try {
     const env = { ...process.env, GIT_INDEX_FILE: path.join(directory, "index") };
     try {
+      // Git trusts the cached size and time of a file only when the index is older than the
+      // file, and it compares whole seconds. A fresh copy would be newer than every file and
+      // hide a same-size edit made in the second the index was written, so the copy keeps the
+      // time of the real index, rounded down.
+      const written = Math.floor(fs.statSync(index).mtimeMs / 1000);
       fs.copyFileSync(index, env.GIT_INDEX_FILE);
+      fs.utimesSync(env.GIT_INDEX_FILE, written, written);
     } catch (error) {
       // A repository without a first commit has no index yet.
       if (!missing(error)) {
@@ -494,8 +500,13 @@ export function changesDiffCommand(changes: OwnChanges): string | undefined {
     return undefined;
   }
   const quote = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
-  const paths = (diff.paths ?? []).map((file) => ` ${quote(file)}`).join("");
-  return `git -C ${quote(diff.top)} diff ${diff.base} ${diff.tree}${paths === "" ? "" : ` --${paths}`}`;
+  const command = `git -C ${quote(diff.top)}`;
+  const trees = `diff ${diff.base} ${diff.tree}`;
+  if (diff.paths === undefined) {
+    return `${command} ${trees}`;
+  }
+  // Literal, as in the excerpt: a path can hold pathspec syntax such as `[` or a leading `:`.
+  return `${command} --literal-pathspecs ${trees} -- ${diff.paths.map(quote).join(" ")}`;
 }
 
 const isFetchOrPull = (s: string): boolean => s.startsWith("fetch") || s.startsWith("pull");
