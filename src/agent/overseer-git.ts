@@ -500,8 +500,13 @@ export function changesDiffCommand(changes: OwnChanges): string | undefined {
     return undefined;
   }
   const quote = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
-  const paths = (diff.paths ?? []).map((file) => ` ${quote(file)}`).join("");
-  return `git -C ${quote(diff.top)} diff ${diff.base} ${diff.tree}${paths === "" ? "" : ` --${paths}`}`;
+  const command = `git -C ${quote(diff.top)}`;
+  const trees = `diff ${diff.base} ${diff.tree}`;
+  if (diff.paths === undefined) {
+    return `${command} ${trees}`;
+  }
+  // Literal, as in the excerpt: a path can hold pathspec syntax such as `[` or a leading `:`.
+  return `${command} --literal-pathspecs ${trees} -- ${diff.paths.map(quote).join(" ")}`;
 }
 
 const isFetchOrPull = (s: string): boolean => s.startsWith("fetch") || s.startsWith("pull");
