@@ -15,7 +15,13 @@ import {
   type ReceiptQuery,
   type ReceiptResult,
 } from "../types.ts";
-import { finiteNumber, nonNegativeInteger, optionalLabel, safeLabel } from "../validation.ts";
+import {
+  finiteNumber,
+  isLatestTurnError,
+  nonNegativeInteger,
+  optionalLabel,
+  safeLabel,
+} from "../validation.ts";
 import { validateIntercomMessageSize, writeMessage } from "./framing.ts";
 import { messageSender } from "./snapshots.ts";
 import { findSessions } from "./targets.ts";
@@ -68,6 +74,7 @@ function pageIdentity(value: UnknownRecord): boolean {
   return (
     normalizeSessionInfo(value.session) !== null &&
     (value.entryId === null || (typeof value.entryId === "string" && value.entryId.length > 0)) &&
+    (value.latestTurnError === undefined || isLatestTurnError(value.latestTurnError)) &&
     typeof value.text === "string" &&
     value.text.length <= LAST_MESSAGE_PAGE_LIMIT
   );

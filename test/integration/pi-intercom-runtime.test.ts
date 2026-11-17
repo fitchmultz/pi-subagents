@@ -209,6 +209,18 @@ nodeTest("invalid presence updates cannot poison peer session lists", async (t) 
       (await bad.listSessions()).find((peer) => peer.name === "healthy-presence-peer")
         ?.startedAt === 1_700_000_005_000,
   );
+  healthy.updatePresence({ lastTurnError: "401 Unauthorized" });
+  await waitFor(
+    async () =>
+      (await bad.listSessions()).find((peer) => peer.name === "healthy-presence-peer")
+        ?.lastTurnError === "401 Unauthorized",
+  );
+  healthy.updatePresence({ lastTurnError: null });
+  await waitFor(
+    async () =>
+      (await bad.listSessions()).find((peer) => peer.name === "healthy-presence-peer")
+        ?.lastTurnError === undefined,
+  );
   const disconnected = once(bad, "disconnected");
   bad.updatePresence({ name: "bad\u0001name", pendingAsks: 0.5 });
   await disconnected;

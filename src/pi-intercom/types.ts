@@ -6,6 +6,7 @@ import {
   optionalBoolean,
   optionalFiniteNumber,
   optionalLabel,
+  optionalTurnError,
   safeLabel,
   safeText,
 } from "./validation.ts";
@@ -32,6 +33,7 @@ export interface SessionInfo {
   readonly lastIntercomActivity?: number | undefined;
   readonly pendingAsks?: number | undefined;
   readonly acceptsAsks?: boolean | undefined;
+  readonly lastTurnError?: string | undefined;
   readonly subscriptions?: readonly TopicSubscription[] | undefined;
   readonly topics?: readonly TopicUpdate[] | undefined;
 }
@@ -72,9 +74,6 @@ function validTopicOwnership(item: Readonly<Record<string, unknown>>): boolean {
   );
 }
 
-function validRevision(value: number): boolean {
-  return Number.isSafeInteger(value) && value > 0;
-}
 export function isTopicUpdate(value: unknown): value is TopicUpdate {
   if (!isRecord(value) || typeof value.topic !== "string" || !safeLabel(value.topic.trim())) {
     return false;
@@ -83,8 +82,8 @@ export function isTopicUpdate(value: unknown): value is TopicUpdate {
     safeText(value.text) &&
     typeof value.event === "string" &&
     ["update", "blocker", "decision", "release"].includes(value.event) &&
-    finiteNumber(value.revision) &&
-    validRevision(value.revision) &&
+    nonNegativeInteger(value.revision) &&
+    value.revision > 0 &&
     finiteNumber(value.updatedAt) &&
     validTopicOwnership(value)
   );
@@ -142,9 +141,7 @@ export function isHumanMessageOrigin(value: unknown): value is HumanMessageOrigi
     /^[a-zA-Z0-9_-]+$/.test(value.ownerSessionId) &&
     typeof value.runId === "string" &&
     /^[a-zA-Z0-9_-]+$/.test(value.runId) &&
-    finiteNumber(value.index) &&
-    Number.isSafeInteger(value.index) &&
-    value.index >= 0
+    nonNegativeInteger(value.index)
   );
 }
 
@@ -291,19 +288,16 @@ export function isMessage(value: unknown): value is Message {
 }
 
 function validSessionHealth(session: Readonly<Record<string, unknown>>): boolean {
-  if (
-    ![session.startedAt, session.lastSeen, session.lastIntercomActivity].every(
-      optionalFiniteNumber,
-    ) ||
-    !optionalBoolean(session.acceptsAsks)
-  ) {
-    return false;
-  }
   return (
-    session.pendingAsks === undefined ||
-    (finiteNumber(session.pendingAsks) &&
-      Number.isInteger(session.pendingAsks) &&
-      session.pendingAsks >= 0)
+    [session.startedAt, session.lastSeen, session.lastIntercomActivity].every(
+      optionalFiniteNumber,
+    ) &&
+    optionalBoolean(session.acceptsAsks) &&
+    optionalTurnError(session.lastTurnError) &&
+    (session.pendingAsks === undefined ||
+      (finiteNumber(session.pendingAsks) &&
+        Number.isInteger(session.pendingAsks) &&
+        session.pendingAsks >= 0))
   );
 }
 
@@ -339,8 +333,7 @@ export function isSessionRegistration(value: unknown): value is Omit<SessionInfo
     return false;
   }
   return (
-    optionalLabel(value.name) &&
-    optionalLabel(value.status) &&
+    [value.name, value.status].every(optionalLabel) &&
     validSessionLineage(value) &&
     validSessionProject(value.projectId) &&
     validSessionHealth(value) &&
@@ -461,6 +454,7 @@ export type LastMessageResult =
       readonly offset: number;
       readonly totalLength: number;
       readonly nextOffset?: number;
+      readonly latestTurnError?: { readonly entryId: string; readonly error: string } | undefined;
     }
   | { readonly error: string };
 

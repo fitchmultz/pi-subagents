@@ -14,7 +14,14 @@ import type { BackgroundReporter } from "../shared/background-reporting.ts";
 
 type Lifecycle = Pick<
   Readonly<IntercomLifecycle>,
-  "currentSessionId" | "generation" | "health" | "identity" | "live" | "registration" | "status"
+  | "currentSessionId"
+  | "generation"
+  | "health"
+  | "identity"
+  | "lastTurnError"
+  | "live"
+  | "registration"
+  | "status"
 > &
   Pick<Readonly<IntercomLifecycle>, "snapshot" | "transport">;
 
@@ -49,15 +56,8 @@ type AttemptState =
       readonly task: Promise<IntercomTransport>;
     };
 
-/** Owns socket registration, coalesced connects and the reconnect/startup timers. */
 export class IntercomConnection {
-  /**
-   * The transport created for the current acquisition. It is not registered until `connect`
-   * resolves; `isConnected()` is the only proof of registration. The client that the broker
-   * retains input for while this actor parks is `parked`.
-   */
   private client: IntercomClient | null = null;
-  /** The transport whose broker retains this actor's input while it parks. */
   private parked: IntercomClient | null = null;
   private acquisition: AttemptState = { kind: "idle" };
   private attempt = 0;
@@ -88,7 +88,6 @@ export class IntercomConnection {
   get parking(): boolean {
     return this.parked !== null;
   }
-  /** A replacement transport is active while the broker still retains input for the parked one. */
   get reconnectedWhileParking(): boolean {
     return this.parked !== null && this.client !== null && this.client !== this.parked;
   }
@@ -150,23 +149,41 @@ export class IntercomConnection {
     this.acquisition = { kind: "backoff", generation, timer };
     timer.unref();
   }
+  private presenceState() {
+    const health = this.lifecycle.health(this.hooks.pendingAsks());
+    return {
+      status: this.lifecycle.status(),
+      ...health,
+      lastTurnError: health.lastTurnError ?? null,
+    };
+  }
   syncIdentity(sessionId: string): void {
     if (this.client && this.lifecycle.live()) {
       this.client.updatePresence({
         ...this.lifecycle.identity(sessionId),
-        status: this.lifecycle.status(),
-        ...this.lifecycle.health(this.hooks.pendingAsks()),
+        ...this.presenceState(),
       });
     }
   }
   syncStatus(): void {
     if (this.client && this.lifecycle.currentSessionId !== null && this.lifecycle.live()) {
       this.client.updatePresence({
-        status: this.lifecycle.status(),
-        ...this.lifecycle.health(this.hooks.pendingAsks()),
+        ...this.presenceState(),
         applicationGuard: this.lifecycle.snapshot().applicationGuard ?? null,
       });
     }
+  }
+  private liveSession(id: string, ctx: ExtensionContext): SessionInfo {
+    return {
+      id,
+      ...this.lifecycle.identity(ctx.sessionManager.getSessionId()),
+      cwd: ctx.cwd,
+      model: ctx.model?.id ?? "unknown",
+      status: this.lifecycle.status(),
+      ...(this.lifecycle.lastTurnError !== undefined
+        ? { lastTurnError: this.lifecycle.lastTurnError }
+        : {}),
+    };
   }
   private answerLast(next: IntercomClient, request: LastRequest): void {
     const ctx = this.lifecycle.live();
@@ -204,17 +221,7 @@ export class IntercomConnection {
     try {
       next.respondLast(
         request.requestId,
-        readLastMessage(
-          ctx.sessionManager,
-          {
-            id,
-            ...this.lifecycle.identity(ctx.sessionManager.getSessionId()),
-            cwd: ctx.cwd,
-            model: ctx.model?.id ?? "unknown",
-            status: this.lifecycle.status(),
-          },
-          query,
-        ),
+        readLastMessage(ctx.sessionManager, this.liveSession(id, ctx), query),
       );
     } catch (error) {
       next.respondLast(request.requestId, { error: asError(error).message });

@@ -4344,6 +4344,146 @@ nodeTest(
 );
 
 nodeTest(
+  "native list and last surface failed peer turns across message_end, session_tree, session_start and remote devices",
+  async (t) => {
+    const devices = standInDevices(t);
+    const config = { device: "home", otherDevices: ["peer"] };
+    const reader = await makeSession(t, "failure-reader", { config });
+    const peer = await makeSession(t, "failure-peer", { config });
+    const listLocal = async () =>
+      (await executeIntercom(reader, { action: "list", to: "failure-peer" })).content[0]?.text ??
+      "";
+    const listRemote = async () =>
+      (await executeIntercom(reader, { action: "list", device: "peer", to: "failure-peer" }))
+        .content[0]?.text ?? "";
+
+    peer.faux.setResponses([
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "  2009\nUnauthorized  ",
+      }),
+      fauxAssistantMessage("Queued pi restart"),
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "401 Unauthorized",
+      }),
+    ]);
+
+    // 1. Only turn failed (no completed assistant turn exists yet).
+    await peer.session.prompt("Attempt without valid credentials");
+    const firstErrorId = text(peer.session.sessionManager.getLeafId());
+    await waitFor(
+      async () => (await listLocal()).includes("last_turn_error:2009 Unauthorized]"),
+      "initial turn error in local list",
+    );
+    const onlyFailed = await executeIntercom(reader, { action: "last", to: "failure-peer" });
+    assert.equal(onlyFailed.content[0]?.text, "");
+    assert.match(
+      text(onlyFailed.content[1]?.text),
+      new RegExp(
+        `Latest turn failed \\(${firstErrorId}\\): 2009 Unauthorized\\nNo completed assistant response\\.`,
+      ),
+    );
+    assert.deepEqual(at(onlyFailed, "details", "latestTurnError"), {
+      entryId: firstErrorId,
+      error: "2009 Unauthorized",
+    });
+
+    // 2. Newer turn succeeds after an earlier error: clears presence and omits stale warning.
+    await peer.session.prompt("Retry with valid credentials");
+    const completedId = text(peer.session.sessionManager.getLeafId());
+    await waitFor(
+      async () => !(await listLocal()).includes("last_turn_error:"),
+      "cleared turn error after normal completion",
+    );
+    const recovered = await executeIntercom(reader, { action: "last", to: "failure-peer" });
+    assert.equal(recovered.content[0]?.text, "Queued pi restart");
+    assert.doesNotMatch(text(recovered.content[1]?.text), /Latest turn failed/);
+    assert.equal(at(recovered, "details", "latestTurnError"), undefined);
+
+    // 3. Woken by intercom send and fails model call after an earlier completed turn.
+    const sent = await executeIntercom(reader, {
+      action: "send",
+      to: "failure-peer",
+      message: "Please handle follow-up work.",
+    });
+    const sentId = text(at(sent, "details", "messageId"));
+    await waitFor(
+      () => peer.visible(sentId).length === 1 && peer.session.isIdle,
+      "woken peer turn settled",
+    );
+    const wakeErrorId = text(peer.session.sessionManager.getLeafId());
+    await waitFor(
+      async () => (await listLocal()).includes("last_turn_error:401 Unauthorized]"),
+      "wake failure in local list",
+    );
+    assert.match(
+      await listRemote(),
+      /• failure-peer@peer \([^\n]+last_turn_error:401 Unauthorized\]/,
+    );
+    const remotePeer = records(
+      record(readJson(path.join(devices.fixture, "reply-peer.json"))).sessions,
+    ).find((session) => session.name === "failure-peer");
+    assertDefined(remotePeer);
+    assert.equal(remotePeer.lastTurnError, "401 Unauthorized");
+
+    const staleWithFailure = await executeIntercom(reader, { action: "last", to: "failure-peer" });
+    assert.equal(staleWithFailure.content[0]?.text, "Queued pi restart");
+    assert.match(
+      text(staleWithFailure.content[1]?.text),
+      new RegExp(
+        `Latest turn failed \\(${wakeErrorId}\\): 401 Unauthorized\\nEntry: ${completedId}`,
+      ),
+    );
+    assert.deepEqual(at(staleWithFailure, "details", "latestTurnError"), {
+      entryId: wakeErrorId,
+      error: "401 Unauthorized",
+    });
+
+    const pinned = await executeIntercom(reader, {
+      action: "last",
+      to: "failure-peer",
+      entryId: completedId,
+    });
+    assert.equal(pinned.content[0]?.text, "Queued pi restart");
+    assert.equal(at(pinned, "details", "latestTurnError"), undefined);
+
+    // 4. session_tree branch switching updates lastTurnError presence in both directions.
+    await peer.session.navigateTree(completedId, { summarize: false });
+    await waitFor(
+      async () => !(await listLocal()).includes("last_turn_error:"),
+      "healthy branch clears last_turn_error",
+    );
+    await peer.session.navigateTree(wakeErrorId, { summarize: false });
+    await waitFor(
+      async () => (await listLocal()).includes("last_turn_error:401 Unauthorized]"),
+      "failed branch restores last_turn_error",
+    );
+
+    // 5. session_start initializes lastTurnError from saved branch history on reopen.
+    const sessionFile = text(peer.session.sessionManager.getSessionFile());
+    await peer.runtime.switchSession(sessionFile);
+    await registeredSession(peer.sender, peer.runtime.session.sessionManager.getSessionId());
+    await waitFor(
+      async () => (await listLocal()).includes("last_turn_error:401 Unauthorized]"),
+      "reopened session advertises saved branch turn error on startup",
+    );
+
+    // 6. A non-error non-completed assistant turn (aborted) supersedes an older failed turn.
+    peer.faux.setResponses([fauxAssistantMessage("Cancelled", { stopReason: "aborted" })]);
+    await peer.runtime.session.prompt("Start then cancel");
+    await waitFor(
+      async () => !(await listLocal()).includes("last_turn_error:"),
+      "non-error aborted turn clears stale last_turn_error",
+    );
+    const afterAborted = await executeIntercom(reader, { action: "last", to: "failure-peer" });
+    assert.equal(afterAborted.content[0]?.text, "Queued pi restart");
+    assert.equal(at(afterAborted, "details", "latestTurnError"), undefined);
+    assert.deepEqual([...reader.errors, ...peer.errors], []);
+  },
+);
+
+nodeTest(
   "native ask of a busy main of another device is refused unless it steers, and a queued note replaces the earlier one",
   async (t) => {
     const devices = standInDevices(t);

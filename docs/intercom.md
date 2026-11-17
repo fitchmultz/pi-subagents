@@ -32,7 +32,9 @@ With `device`, `list` prints the main sessions of the owner's
 `list` and `status` print the current session and then two blocks:
 
 1. **Main sessions.** One line per main with its name, target, cwd, model and
-   state. Sessions of one repository and its worktrees sit together: the block is
+   state, including `worker_started:<age>` for its current worker process and
+   `last_turn_error:<error>` when its latest assistant turn on the active branch
+   failed. Sessions of one repository and its worktrees sit together: the block is
    sorted by project, then by name.
 2. **Child sessions of the caller's group.** One line in total: how many there
    are, counted by state, and the call that prints their rows.
@@ -387,7 +389,7 @@ listener, service or port is added on any device.
 
 For each listed main, these fields leave its device, inside the SSH connection:
 ID, name, cwd, model, project ID, status, `startedAt`, `acceptsAsks`, `pendingAsks`,
-`lastSeen` and `lastIntercomActivity`.
+`lastSeen`, `lastIntercomActivity` and `lastTurnError`.
 
 ## Send, ask, and reply
 
@@ -461,6 +463,11 @@ intercom({ action: "last", to: "<exact-peer-id>", entryId: "<entry-id>", offset:
 The native owner reads the last completed assistant response on its active
 branch. This is original assistant text, not a run-status summary. No direct
 message, prompt, or model turn is created. Empty history is reported explicitly.
+When `entryId` is omitted and a newer assistant turn on the active branch ended
+in error (or the only assistant turn failed), the metadata block adds
+`Latest turn failed (<entryId>): <error>` and `details.latestTurnError` carries
+`{ entryId, error }` so an earlier completed reply is not mistaken for the
+peer's latest turn.
 
 Pages are bounded to 16,384 UTF-16 code units. Keep `entryId` for stable paging and
 use the returned next offset; do not calculate byte offsets. A newer response

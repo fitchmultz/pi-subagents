@@ -15,6 +15,10 @@ function lastPage(result: Exclude<LastMessageResult, { readonly error: string }>
     result.entryId === null
       ? "No completed assistant response."
       : `Entry: ${result.entryId}\nCharacters (UTF-16): ${result.offset}–${result.offset + result.text.length} of ${result.totalLength}`;
+  const failure =
+    result.latestTurnError === undefined
+      ? ""
+      : `\nLatest turn failed (${result.latestTurnError.entryId}): ${result.latestTurnError.error}`;
   const next =
     result.nextOffset === undefined
       ? ""
@@ -24,7 +28,7 @@ function lastPage(result: Exclude<LastMessageResult, { readonly error: string }>
       { type: "text", text: result.text },
       {
         type: "text",
-        text: `Session: ${identity}\nStatus: ${result.session.status ?? "unknown"}\n${page}${next}`,
+        text: `Session: ${identity}\nStatus: ${result.session.status ?? "unknown"}${failure}\n${page}${next}`,
       },
     ],
     details: { ...result },

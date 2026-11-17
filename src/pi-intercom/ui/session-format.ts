@@ -58,7 +58,6 @@ function age(timestamp: number | undefined, now: number): string {
 }
 const SELF_HINT =
   "self target unavailable; choose a peer below; use pending/reply for inbound asks";
-/** Delivery guidance once per list. Each row's state and accepts_asks tags say which part applies. */
 function deliveryLegend(peers: readonly SessionInfo[]): string {
   return [
     "**Delivery:** send steers by default: it wakes an idle peer (a full model request for it) and reaches a busy peer at its next tool boundary. ask only if you must stay alive for a required reply. queue only for intentional delay. passive never wakes: use it for receipts and FYI that need no action.",
@@ -85,16 +84,17 @@ function healthTags(session: SessionInfo, now: number): readonly string[] {
   if (typeof session.startedAt === "number" && session.startedAt > 0) {
     tags.push(`worker_started:${age(session.startedAt, now)}`);
   }
+  if (session.lastTurnError !== undefined && session.lastTurnError !== "") {
+    tags.push(`last_turn_error:${session.lastTurnError}`);
+  }
   return tags;
 }
 interface RowOptions {
-  /** The caller's cwd. Absent for a session on another device: paths there are not comparable. */
   readonly currentCwd?: string;
   readonly self: boolean;
   readonly duplicates: ReadonlySet<string>;
   readonly allSessions: readonly SessionInfo[];
   readonly now: number;
-  /** The alias of the other device that the session runs on: its targets end in `@device`. */
   readonly device?: string;
 }
 function location(session: SessionInfo, options: RowOptions): string | undefined {
@@ -155,7 +155,6 @@ function compareText(left: string, right: string): number {
   }
   return left < right ? -1 : 1;
 }
-/** Same-project sessions sit together: projects by their first cwd, then sessions by name. */
 function byProjectThenName(sessions: readonly SessionInfo[]): readonly SessionInfo[] {
   const firstCwd = new Map<string, string>();
   for (const session of sessions) {
@@ -186,16 +185,12 @@ function matching(sessions: readonly SessionInfo[], query: string): readonly Ses
     [session.name ?? "", session.id].some((value) => value.toLowerCase().includes(wanted)),
   );
 }
-/** What a list prints. A child is a session with a parent; every other session is a main. */
 export interface SessionListView {
   readonly scope?: IntercomSessionScope | undefined;
-  /** Keeps the peers whose name or ID contains it, ignoring case. */
   readonly query?: string | undefined;
-  /** Prints every child row instead of the one-line summary. */
   readonly children?: boolean | undefined;
 }
 interface BlockView {
-  /** The caller's own kind is labelled "Other": the caller is in neither block. */
   readonly callerIsChild: boolean;
   readonly scope: IntercomSessionScope;
   readonly query: string;
@@ -204,7 +199,6 @@ interface BlockView {
 }
 interface Block {
   readonly lines: readonly string[];
-  /** The targets this block offers: the rows it prints and the children it only counts. */
   readonly peers: readonly SessionInfo[];
 }
 function mainBlock(mains: readonly SessionInfo[], view: BlockView): Block {
@@ -216,7 +210,6 @@ function mainBlock(mains: readonly SessionInfo[], view: BlockView): Block {
       : `**${label} matching ${JSON.stringify(view.query)} (${peers.length} of ${mains.length}; omit \`to\` to list all):**`;
   return { lines: [heading, ...peers.map(view.render)], peers };
 }
-/** One summary line unless the caller asks for the rows or `query` matches some. */
 function childBlock(children: readonly SessionInfo[], view: BlockView): Block {
   const label = `${view.callerIsChild ? "Other child" : "Child"} sessions in your group`;
   if (children.length === 0) {
@@ -246,7 +239,6 @@ function hiddenHint(hidden: number): readonly string[] {
       ]
     : [];
 }
-/** Main sessions first, then the child sessions of the caller's group. */
 export function formatSessionListSections(
   allSessions: readonly SessionInfo[],
   id: string,
@@ -290,7 +282,6 @@ export function formatSessionListSections(
     .map((lines) => lines.join("\n"))
     .join("\n\n");
 }
-/** A row prints `name@device` and `id@device`, so a filter copied from a row can end in `@device`. */
 function withoutDevice(query: string, device: string): string {
   const suffix = `@${device}`.toLowerCase();
   return query.toLowerCase().endsWith(suffix) ? query.slice(0, -suffix.length) : query;
@@ -314,7 +305,6 @@ function deviceBlock(listing: DeviceListing, query: string): string {
     ...peers.map((peer) => row(peer, { ...options, device })),
   ].join("\n");
 }
-/** One block per other device: its mains as `name@device`, with ages on that device's clock. */
 export function formatDeviceListings(listings: readonly DeviceListing[], query = ""): string {
   return [
     ...listings.map((listing) => deviceBlock(listing, query.trim())),
