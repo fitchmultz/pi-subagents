@@ -4,11 +4,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AccountingState, Launch, Result } from "./contracts.ts";
 import { errorText } from "./host.ts";
-import {
-  captureRepoSnapshot,
-  changedFilesSinceBaseline,
-  type RepoSnapshot,
-} from "./overseer-judge.ts";
+import { captureRepoSnapshot, launchPoint, ownChanges, type ReviewPoint } from "./overseer-git.ts";
 import { harnessExcludePaths } from "./overseer-sentinel.ts";
 import { runDirectory, write } from "./storage.ts";
 import { accountingFields, type UsageIndex } from "./usage.ts";
@@ -62,11 +58,11 @@ export interface EndedRun {
   readonly accounting: UsageIndex;
   readonly stopping: boolean;
   readonly error?: string | undefined;
-  readonly repoBaseline?: RepoSnapshot | undefined;
+  readonly repoBaseline?: ReviewPoint | undefined;
 }
-export function captureOverseerBaseline(base: string, launch: Launch): RepoSnapshot | undefined {
+export function captureOverseerBaseline(base: string, launch: Launch): ReviewPoint | undefined {
   return launch.overseer?.enabled === true
-    ? captureRepoSnapshot(launch.cwd, {
+    ? launchPoint(launch.cwd, {
         baseBranch: launch.contract?.baseBranch,
         excludePaths: harnessExcludePaths(base, launch),
       })
@@ -75,19 +71,17 @@ export function captureOverseerBaseline(base: string, launch: Launch): RepoSnaps
 function detectedChanges(
   base: string,
   launch: Launch,
-  baseline: RepoSnapshot | undefined,
+  baseline: ReviewPoint | undefined,
 ): string[] | undefined {
   if (baseline === undefined) {
     return undefined;
   }
   const excludePaths = harnessExcludePaths(base, launch);
   const current = captureRepoSnapshot(launch.cwd, {
-    baselineHead: baseline.head,
-    hasBaseline: true,
     baseBranch: launch.contract?.baseBranch,
     excludePaths,
   });
-  const changed = changedFilesSinceBaseline(launch.cwd, baseline, current, excludePaths);
+  const changed = ownChanges(launch.cwd, baseline, current, excludePaths).files;
   return changed.length > 0 ? changed.slice(0, 100) : undefined;
 }
 function usage(launch: Launch, run: EndedRun, terminal: string | undefined): AccountingState {

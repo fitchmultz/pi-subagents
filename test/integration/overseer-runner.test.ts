@@ -43,25 +43,28 @@ async function until(check: () => boolean, reason: string, timeout = 30_000): Pr
 }
 
 nodeTest(
-  "real Actor pre-settle steer skips redundant overseer-sentinel turn and delivers steer",
+  "real Actor in a linked worktree reports only its own changes, and a pre-settle steer skips the redundant overseer-sentinel turn",
   async (t) => {
     const root = fs.realpathSync(fs.mkdtempSync("/tmp/ovr-runner-"));
+    // The run works in a linked worktree. The main checkout of the same repository stays on
+    // the base branch, where the provider fixture commits as another session would.
+    const checkout = path.join(root, "checkout");
     const work = path.join(root, "repo");
     const agentDir = path.join(root, "agent");
-    fs.mkdirSync(path.join(work, "src"), { recursive: true });
+    fs.mkdirSync(path.join(checkout, "src"), { recursive: true });
     fs.mkdirSync(agentDir, { recursive: true });
 
     const git = (...args: string[]) => {
-      execFileSync("git", args, { cwd: work, stdio: "ignore" });
+      execFileSync("git", args, { cwd: checkout, stdio: "ignore" });
     };
     git("init", "-b", "main");
     git("config", "user.email", "test@example.com");
     git("config", "user.name", "Test");
-    fs.writeFileSync(path.join(work, "src", "allowed.ts"), "export const x = 1;\n");
-    fs.writeFileSync(path.join(work, "README.md"), "committed\n");
+    fs.writeFileSync(path.join(checkout, "src", "allowed.ts"), "export const x = 1;\n");
+    fs.writeFileSync(path.join(checkout, "README.md"), "committed\n");
     git("add", ".");
     git("commit", "-m", "initial");
-    git("checkout", "-b", "feat/work");
+    git("worktree", "add", "-b", "feat/work", work);
 
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
@@ -143,6 +146,7 @@ nodeTest(
     Object.assign(process.env, {
       PI_OFFLINE: "1",
       OVERSEER_TEST_REPO: work,
+      OVERSEER_TEST_SIBLING: checkout,
     });
     try {
       await ensureActor(base, launch);
@@ -162,6 +166,7 @@ nodeTest(
     const esc = read(escPath, escalationSchema);
     assert.ok(esc !== undefined);
     assert.equal(esc.kind, "scope_violation");
+    assert.deepEqual(esc.changedFiles, ["README.md"]);
     t.after(() => release(owner, `escalation:${esc.id}`));
 
     enqueue(base, launch, { action: "steer", prompt: "REVERT_README" });
@@ -172,6 +177,12 @@ nodeTest(
     const result = read(resultPath, resultSchema);
     assert.ok(result !== undefined);
     assert.equal(result.status, "completed");
+    // The child reverted its only edit. The other session's commit is not this run's change.
+    assert.equal(result.changedFiles, undefined);
+    assert.equal(
+      execFileSync("git", ["log", "-1", "--format=%s", "main"], { cwd: work, encoding: "utf8" }),
+      "other session\n",
+    );
 
     const journal = fs.readFileSync(sessionFile, "utf8");
     assert.match(journal, /REVERT_README/u);

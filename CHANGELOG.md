@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Overseer mode lists only the child's own changes. A checkpoint now saves the working tree as a Git tree object and compares trees, so three false alarms are gone: a commit or an edit in another worktree of the same repository is never listed; files that only upstream changed are not listed after a fast-forward or a merge of `origin/<baseBranch>`; and a clean checkout of an existing commit, such as the lower branch of a stack, lists nothing. A base branch that moves while another worktree has it checked out is no longer a `branch_violation` of the run. A commit the child made and then moved away from is still listed. The `changedFiles` of a completed run follow the same rules.
+- An overseer approval now accepts the paused state for the rest of the run, not only that exact diff. Later pauses are raised for later changes only: an approved out-of-scope file is flagged again only when it changes again, an approved base-branch issue is not raised again, and committing approved work raises nothing. The judge sees the work since the last state that passed (approved, unchanged or found clean) instead of the whole diff since launch, and it is no longer asked on every turn about a flagged state that did not change. A pause lists the work since the overseer's last approval instead of the work since launch. See [Overseer mode](docs/reference.md#overseer-mode).
+
 ## 0.52.46 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->

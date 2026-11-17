@@ -13,13 +13,20 @@ import {
 } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import {
-  CONSECUTIVE_ERROR_TURN_LIMIT,
+  acceptedPoint,
   captureRepoSnapshot,
-  changedFilesSinceBaseline,
+  changesDiff,
+  launchPoint,
+  ownChanges,
+  type OwnChanges,
+  type RepoSnapshot,
+  type ReviewPoint,
+} from "./overseer-git.ts";
+import {
+  CONSECUTIVE_ERROR_TURN_LIMIT,
   checkDeterministicTripwires,
   evaluateDecisionCheckpoint,
-  type RepoSnapshot,
-  type ViolationCandidate,
+  type Violation,
 } from "./overseer-judge.ts";
 import { conversation, read, runDirectory, write } from "./storage.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
@@ -34,18 +41,34 @@ const MUTATING_TOOLS = new Set([
 ]);
 const JUDGE_TURN_INTERVAL = 4;
 const JUDGE_DIFF_DELTA = 120;
+const ESCALATION_EXCERPT_CHARS = 3000;
 
 interface RunSentinelState {
   readonly runId: string;
-  readonly baseline: RepoSnapshot;
+  readonly launch: ReviewPoint;
+  /**
+   * The last state that passed: approved by the overseer, unchanged, or cleared by the judge.
+   * The scope check and the judge see only the work after it.
+   */
+  reviewPoint: ReviewPoint;
+  /** The last state the overseer approved, or launch. A pause shows all the work after it. */
+  approved: ReviewPoint;
+  /** Base-branch issues the overseer approved. An approved issue is not raised again. */
+  readonly approvedBranchIssues: Set<string>;
   readonly excludePaths: readonly string[];
   readonly seenSteerFiles: Set<string>;
   consecutiveErrors: number;
   turnsSinceJudge: number;
-  lastJudgedDigest: string;
-  lastJudgedLines: number;
+  /** The state the judge last saw, and the size of the new work it saw then. */
+  judged: { readonly tree: string | undefined; readonly lines: number };
   strikes: number;
-  readonly approvedDigests: Set<string>;
+}
+
+/** The child's own work between an accepted state and `snapshot`. */
+interface Work {
+  readonly snapshot: RepoSnapshot;
+  readonly changes: OwnChanges;
+  readonly diff: string;
 }
 
 function turnTools(toolResults: unknown): { hadError: boolean; mutated: boolean } {
@@ -95,30 +118,22 @@ function consumePendingSteers(
   return found;
 }
 
-function checkResolution(
+function resolutionVerdict(
   resolutionFile: string,
   escalationId: string,
-  approvedDigests: Set<string>,
 ): EscalationResolution["verdict"] | undefined {
   const resolution = read(resolutionFile, escalationResolutionSchema);
-  if (resolution?.escalationId !== escalationId) {
-    return undefined;
-  }
-  if (resolution.verdict === "approved" && resolution.diffDigest !== undefined) {
-    approvedDigests.add(resolution.diffDigest);
-  }
-  return resolution.verdict;
+  return resolution?.escalationId === escalationId ? resolution.verdict : undefined;
 }
 
 export async function waitForEscalationResolution(options: {
   base: string;
   launch: Launch;
   escalation: Escalation;
-  approvedDigests: Set<string>;
   isStopping: () => boolean;
   seenSteerFiles?: Set<string> | undefined;
 }): Promise<EscalationResolution["verdict"]> {
-  const { base, launch, escalation, approvedDigests, isStopping } = options;
+  const { base, launch, escalation, isStopping } = options;
   const runDir = runDirectory(base, launch.id);
   const convDir = conversation(base, launch);
   const commandsDir = path.join(convDir, "commands");
@@ -135,7 +150,7 @@ export async function waitForEscalationResolution(options: {
       wake.take();
       watchRun.ensure();
       watchCommands.ensure();
-      const verdict = checkResolution(resolutionFile, escalation.id, approvedDigests);
+      const verdict = resolutionVerdict(resolutionFile, escalation.id);
       if (verdict !== undefined) {
         consumePendingSteers(commandsDir, launch.id, seenSteers);
         return verdict;
@@ -153,24 +168,25 @@ export async function waitForEscalationResolution(options: {
   }
 }
 
-function diffLineCount(snapshot: RepoSnapshot): number {
-  return snapshot.rawDiff === "" ? 0 : snapshot.rawDiff.split("\n").length;
+function lineCount(diff: string): number {
+  return diff === "" ? 0 : diff.split("\n").length;
 }
 
 function shouldRunJudgeCheckpoint(
   state: RunSentinelState,
-  snapshot: RepoSnapshot,
+  checkpoint: Work,
   finalSettle: boolean,
 ): boolean {
-  if (snapshot.digest === state.lastJudgedDigest || state.approvedDigests.has(snapshot.digest)) {
-    return false;
-  }
   if (finalSettle) {
     return true;
   }
+  // The judge already answered for this exact state.
+  if (checkpoint.snapshot.tree === state.judged.tree) {
+    return false;
+  }
   return (
     state.turnsSinceJudge >= JUDGE_TURN_INTERVAL ||
-    Math.abs(diffLineCount(snapshot) - state.lastJudgedLines) >= JUDGE_DIFF_DELTA
+    Math.abs(lineCount(checkpoint.diff) - state.judged.lines) >= JUDGE_DIFF_DELTA
   );
 }
 
@@ -203,9 +219,8 @@ export function resolveActiveEscalation(
 async function safeJudge(
   launch: Launch,
   ctx: ExtensionContext,
-  snapshot: RepoSnapshot,
-  changedFiles: string[],
-): Promise<ViolationCandidate | undefined> {
+  checkpoint: Work,
+): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
     return undefined;
   }
@@ -215,18 +230,12 @@ async function safeJudge(
       judgeSpec: launch.overseer?.judge,
       prompt: launch.prompt,
       contract: launch.contract,
-      changedFiles,
-      snapshot,
+      changedFiles: checkpoint.changes.files,
+      diff: checkpoint.diff,
       signal: undefined,
     });
   } catch (error) {
-    return {
-      kind: "loop_violation",
-      summary: errorText(error),
-      changedFiles,
-      diffExcerpt: snapshot.diffExcerpt,
-      diffDigest: snapshot.digest,
-    };
+    return { kind: "loop_violation", summary: errorText(error) };
   }
 }
 
@@ -265,49 +274,79 @@ class SentinelRunner {
       return this.state;
     }
     const excludePaths = harnessExcludePaths(this.options.base, launch);
-    const baseline = captureRepoSnapshot(launch.cwd, {
+    const point = launchPoint(launch.cwd, {
       baseBranch: launch.contract?.baseBranch,
       excludePaths,
     });
     const commandsDir = path.join(conversation(this.options.base, launch), "commands");
     this.state = {
       runId: launch.id,
-      baseline,
+      launch: point,
+      reviewPoint: point,
+      approved: point,
+      approvedBranchIssues: new Set(),
       excludePaths,
       seenSteerFiles: jsonFiles(commandsDir),
       consecutiveErrors: 0,
       turnsSinceJudge: 0,
-      lastJudgedDigest: baseline.digest,
-      lastJudgedLines: diffLineCount(baseline),
+      judged: { tree: point.snapshot.tree, lines: 0 },
       strikes: 0,
-      approvedDigests: new Set(),
     };
     return this.state;
   }
 
+  private workSince(launch: Launch, point: ReviewPoint, snapshot: RepoSnapshot): Work {
+    const { excludePaths } = this.ensureState(launch);
+    const changes = ownChanges(launch.cwd, point, snapshot, excludePaths);
+    return { snapshot, changes, diff: changesDiff(changes) };
+  }
+
+  /** Moves the review point: later checks and judge verdicts cover only what changes after `snapshot`. */
+  private pass(launch: Launch, snapshot: RepoSnapshot): void {
+    const current = this.ensureState(launch);
+    current.reviewPoint = acceptedPoint(current.reviewPoint, snapshot);
+    current.judged = { tree: snapshot.tree, lines: 0 };
+  }
+
   private async escalate(
     launch: Launch,
-    hit: ViolationCandidate,
+    issue: Violation,
+    checkpoint: Work,
   ): Promise<EscalationResolution["verdict"]> {
     const current = this.ensureState(launch);
     current.strikes += 1;
     current.consecutiveErrors = 0;
+    // The overseer answers for all the work it has not approved, not only for what failed now.
+    const unapproved =
+      current.approved === current.reviewPoint
+        ? checkpoint
+        : this.workSince(launch, current.approved, checkpoint.snapshot);
     const escalation: Escalation = {
       id: randomUUID(),
       runId: launch.id,
       owner: launch.owner,
       at: Date.now(),
       strikes: current.strikes,
-      ...hit,
+      ...issue,
+      changedFiles: [...unapproved.changes.files],
+      diffExcerpt: unapproved.diff.slice(0, ESCALATION_EXCERPT_CHARS),
+      diffDigest: checkpoint.snapshot.tree ?? "non-git",
     };
-    return waitForEscalationResolution({
+    const verdict = await waitForEscalationResolution({
       base: this.options.base,
       launch,
       escalation,
-      approvedDigests: current.approvedDigests,
       isStopping: this.options.isStopping,
       seenSteerFiles: current.seenSteerFiles,
     });
+    if (verdict === "approved") {
+      this.pass(launch, checkpoint.snapshot);
+      current.approved = current.reviewPoint;
+      if (issue.kind === "branch_violation") {
+        current.approvedBranchIssues.add(issue.summary);
+      }
+    }
+    return verdict;
   }
 
   async inspectCheckpoint(
@@ -324,42 +363,48 @@ class SentinelRunner {
     }
     const current = this.ensureState(launch);
     const snapshot = captureRepoSnapshot(launch.cwd, {
-      baselineHead: current.baseline.head,
-      hasBaseline: true,
       baseBranch: launch.contract.baseBranch,
       excludePaths: current.excludePaths,
     });
-    const localHit = checkDeterministicTripwires({
+    const checkpoint = this.workSince(launch, current.reviewPoint, snapshot);
+    const issue = checkDeterministicTripwires({
       cwd: launch.cwd,
       contract: launch.contract,
-      baseline: current.baseline,
+      launch: current.launch.snapshot,
       current: snapshot,
+      changes: checkpoint.changes,
       consecutiveErrors: current.consecutiveErrors,
-      excludePaths: current.excludePaths,
     });
-    if (localHit !== undefined && !current.approvedDigests.has(localHit.diffDigest)) {
-      return this.escalate(launch, localHit);
+    if (issue !== undefined && !current.approvedBranchIssues.has(issue.summary)) {
+      return this.escalate(launch, issue, checkpoint);
     }
-    if (!shouldRunJudgeCheckpoint(current, snapshot, finalSettle)) {
+    return this.judge(launch, ctx, checkpoint, finalSettle);
+  }
+
+  /** Asks the judge about the new work when a trigger holds; a clean answer moves the review point. */
+  private async judge(
+    launch: Launch,
+    ctx: ExtensionContext,
+    checkpoint: Work,
+    finalSettle: boolean,
+  ): Promise<EscalationResolution["verdict"] | undefined> {
+    const current = this.ensureState(launch);
+    const { snapshot } = checkpoint;
+    if (checkpoint.changes.files.length === 0) {
+      this.pass(launch, snapshot);
+      return undefined;
+    }
+    if (!shouldRunJudgeCheckpoint(current, checkpoint, finalSettle)) {
       return undefined;
     }
     current.turnsSinceJudge = 0;
-    const changedFiles = changedFilesSinceBaseline(
-      launch.cwd,
-      current.baseline,
-      snapshot,
-      current.excludePaths,
-    );
-    const judgeHit = await safeJudge(launch, ctx, snapshot, changedFiles);
-    if (judgeHit === undefined) {
-      current.lastJudgedDigest = snapshot.digest;
-      current.lastJudgedLines = diffLineCount(snapshot);
+    current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
+    const verdict = await safeJudge(launch, ctx, checkpoint);
+    if (verdict === undefined) {
+      this.pass(launch, snapshot);
       return undefined;
     }
-    if (!this.options.isStopping()) {
-      return this.escalate(launch, judgeHit);
-    }
-    return undefined;
+    return this.options.isStopping() ? undefined : this.escalate(launch, verdict, checkpoint);
   }
 
   async onTurnEnd(event: unknown, ctx: ExtensionContext): Promise<void> {
