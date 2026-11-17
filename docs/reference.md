@@ -496,8 +496,15 @@ the child did not write:
   session makes there is never listed.
 - A commit that the child made and then moved away from, for example on a side branch, stays
   listed. It is read from the HEAD reflog of the child's own worktree.
+- An accepted edit that was never committed stays listed when a checkout of another branch
+  drops it, although the file then equals the commit that was checked out.
 - When the base branch moves while another worktree has it checked out, that is not a
   `branch_violation` of this run: Git lets only that worktree commit to it.
+
+The saved trees are objects that no ref holds. If one can no longer be read, because the
+repository was replaced or `git prune` removed the object, the changes cannot be computed. The
+checkpoint then pauses the run with a `loop_violation`, and a completed run lists
+`(git-status-unavailable)` as its changed file, so that the review is still required.
 
 The `changedFiles` of a completed run follow the same rules, measured from launch.
 

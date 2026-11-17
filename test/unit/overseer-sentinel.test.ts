@@ -777,6 +777,15 @@ nodeTest(
       "src/two.ts",
       "test/foo.test.ts",
     ]);
+    // Dropping it with a forced checkout of the branch below is new work too. The file then
+    // matches the commit that was checked out, but the approved edit is in no commit.
+    fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
+    fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
+    git(child, "checkout", "-f", "feat/child");
+    const dropped = ownChanges(child, approved, snapshot());
+    assert.deepEqual(dropped.files, ["src/two.ts"]);
+    assert.deepEqual(dropped.leftBehind, ["src/two.ts"]);
+    git(child, "checkout", "feat/child-2");
     // Committing the approved work changes nothing the overseer has not seen.
     fs.writeFileSync(path.join(child, "test", "foo.test.ts"), "export const covered = true;\n");
     fs.appendFileSync(path.join(child, "src", "two.ts"), "export const more = 1;\n");
@@ -810,6 +819,17 @@ nodeTest(
       "src/side.ts",
       "src/two.ts",
       "test/foo.test.ts",
+    ]);
+
+    // An accepted working tree is an object that no ref holds. Once it is pruned the changes
+    // since then cannot be computed, and that is reported instead of "no changes".
+    fs.writeFileSync(path.join(child, "README.md"), "accepted drift\n");
+    const unreferenced = acceptedPoint(afterSide, snapshot());
+    fs.writeFileSync(path.join(child, "README.md"), "later drift\n");
+    assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, ["README.md"]);
+    git(child, "prune", "--expire=now");
+    assert.deepEqual(ownChanges(child, unreferenced, snapshot()).files, [
+      "(git-status-unavailable)",
     ]);
   },
 );
