@@ -342,16 +342,19 @@ function historyGrew(top: string, from: RepoSnapshot, to: RepoSnapshot): boolean
   );
 }
 
-/** Maps repository paths to sorted, distinct paths relative to the run's cwd. */
-function fromCwd(cwd: string, top: string, files: readonly string[]): string[] {
+/** Maps a repository path to its path relative to the run's cwd. */
+function relativeTo(cwd: string, top: string): (file: string) => string {
   const realCwd = safeRealpath(cwd);
   const realTop = safeRealpath(top);
-  const relative = files.map((file) => {
+  return (file) => {
     const out = path.relative(realCwd, path.resolve(realTop, file));
     return (out === "" ? file : out).split(path.sep).join("/");
-  });
-  return [...new Set(relative)].sort();
+  };
 }
+
+/** Maps repository paths to sorted, distinct paths relative to the run's cwd. */
+const fromCwd = (cwd: string, top: string, files: readonly string[]): string[] =>
+  [...new Set(files.map(relativeTo(cwd, top)))].sort();
 
 /** The files the child had changed when `from` was accepted. Nothing at launch is its work. */
 function acceptedPaths(top: string, from: ReviewPoint): Set<string> {
@@ -459,25 +462,53 @@ export function ownChanges(
   };
 }
 
-/** The diff of the working-tree part of `changes`. */
-export function changesDiff(changes: OwnChanges): string {
+function diffOf(changes: OwnChanges, format: readonly string[]): string {
   const { diff } = changes;
   if (diff === undefined) {
     return "";
   }
-  const pathspec =
-    diff.paths === undefined ? [] : ["--", ...diff.paths.map((file) => `:(top,literal)${file}`)];
-  return (
-    git(diff.top, [
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      "--unified=2",
-      diff.base,
-      diff.tree,
-      ...pathspec,
-    ]) ?? ""
-  );
+  const pathspec = (diff.paths ?? []).map((file) => `:(top,literal)${file}`);
+  const args = ["-c", "core.quotePath=false", "diff", ...format, diff.base, diff.tree];
+  return git(diff.top, [...args, "--", ...pathspec]) ?? "";
+}
+
+/** The diff of the working-tree part of `changes`. */
+export const changesDiff = (changes: OwnChanges): string => diffOf(changes, ["--unified=2"]);
+
+/** Added and removed lines per file of that diff, as `git diff --numstat` prints them. */
+export function changesStat(cwd: string, changes: OwnChanges): string {
+  const top = changes.diff?.top;
+  if (top === undefined) {
+    return "";
+  }
+  // A notice names these files beside `files`, so they are spelled the same way: from the cwd.
+  const fromRunCwd = relativeTo(cwd, top);
+  // One record is one line: a name with a control character is written as a JSON string.
+  const oneLine = (file: string): string => (/\p{Cc}/u.test(file) ? JSON.stringify(file) : file);
+  return lines(diffOf(changes, ["--numstat", "--no-renames", "-z"]), "\0")
+    .map((row) => {
+      const [added = "", removed = "", ...file] = row.split("\t");
+      return { counts: `${added}\t${removed}`, file: fromRunCwd(file.join("\t")) };
+    })
+    .sort((a, b) => (a.file < b.file ? -1 : 1))
+    .map((row) => `${row.counts}\t${oneLine(row.file)}`)
+    .join("\n");
+}
+
+/** The shell command that prints the whole diff of `changes`. */
+export function changesDiffCommand(changes: OwnChanges): string | undefined {
+  const { diff } = changes;
+  if (diff === undefined) {
+    return undefined;
+  }
+  const quote = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
+  const command = `git -C ${quote(diff.top)}`;
+  const trees = `diff ${diff.base} ${diff.tree}`;
+  if (diff.paths === undefined) {
+    return `${command} ${trees}`;
+  }
+  // Literal, as in the excerpt: a path can hold pathspec syntax such as `[` or a leading `:`.
+  return `${command} --literal-pathspecs ${trees} -- ${diff.paths.map(quote).join(" ")}`;
 }
 
 const isFetchOrPull = (s: string): boolean => s.startsWith("fetch") || s.startsWith("pull");

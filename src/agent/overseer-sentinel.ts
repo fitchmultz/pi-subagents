@@ -16,6 +16,8 @@ import {
   acceptedPoint,
   captureRepoSnapshot,
   changesDiff,
+  changesDiffCommand,
+  changesStat,
   launchPoint,
   ownChanges,
   type OwnChanges,
@@ -220,6 +222,7 @@ async function safeJudge(
   launch: Launch,
   ctx: ExtensionContext,
   checkpoint: Work,
+  acceptedFiles: readonly string[],
 ): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
     return undefined;
@@ -231,6 +234,7 @@ async function safeJudge(
       prompt: launch.prompt,
       contract: launch.contract,
       changedFiles: checkpoint.changes.files,
+      acceptedFiles,
       diff: checkpoint.diff,
       signal: undefined,
     });
@@ -301,6 +305,12 @@ class SentinelRunner {
     return { snapshot, changes, diff: changesDiff(changes) };
   }
 
+  /** The files the child changed between launch and an accepted state. */
+  private changedBefore(launch: Launch, point: ReviewPoint): string[] {
+    const { launch: start, excludePaths } = this.ensureState(launch);
+    return [...ownChanges(launch.cwd, start, point.snapshot, excludePaths).files];
+  }
+
   /** Moves the review point: later checks and judge verdicts cover only what changes after `snapshot`. */
   private pass(launch: Launch, snapshot: RepoSnapshot): void {
     const current = this.ensureState(launch);
@@ -321,6 +331,12 @@ class SentinelRunner {
       current.approved === current.reviewPoint
         ? checkpoint
         : this.workSince(launch, current.approved, checkpoint.snapshot);
+    const everApproved = current.approved !== current.launch;
+    const flagged = checkpoint.changes.files;
+    const diffCommand =
+      unapproved.diff.length > ESCALATION_EXCERPT_CHARS
+        ? changesDiffCommand(unapproved.changes)
+        : undefined;
     const escalation: Escalation = {
       id: randomUUID(),
       runId: launch.id,
@@ -331,6 +347,13 @@ class SentinelRunner {
       changedFiles: [...unapproved.changes.files],
       diffExcerpt: unapproved.diff.slice(0, ESCALATION_EXCERPT_CHARS),
       diffDigest: checkpoint.snapshot.tree ?? "non-git",
+      since: everApproved ? "approval" : "launch",
+      stat: changesStat(launch.cwd, unapproved.changes),
+      ...(diffCommand === undefined ? {} : { diffCommand }),
+      // Named only when it narrows the list: where the overseer should look first.
+      unchecked: flagged.join("\0") === unapproved.changes.files.join("\0") ? [] : [...flagged],
+      leftBehind: [...unapproved.changes.leftBehind],
+      approved: everApproved ? this.changedBefore(launch, current.approved) : [],
     };
     const verdict = await waitForEscalationResolution({
       base: this.options.base,
@@ -399,7 +422,8 @@ class SentinelRunner {
     }
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
-    const verdict = await safeJudge(launch, ctx, checkpoint);
+    const accepted = this.changedBefore(launch, current.reviewPoint);
+    const verdict = await safeJudge(launch, ctx, checkpoint, accepted);
     if (verdict === undefined) {
       this.pass(launch, snapshot);
       return undefined;

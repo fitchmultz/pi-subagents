@@ -1,6 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -24,6 +24,8 @@ import {
   acceptedPoint,
   captureRepoSnapshot,
   changesDiff,
+  changesDiffCommand,
+  changesStat,
   launchPoint,
   ownChanges,
   type RepoSnapshot,
@@ -170,6 +172,22 @@ nodeTest(
       baseBranch: "main",
     });
     assert.deepEqual(ownChanges(subCwd, subBase, subClean).files, ["src/item.ts"]);
+    // The line counts of a notice spell files the same way, also outside the cwd. One record
+    // is one line, so a name with a line break is written as a JSON string.
+    fs.writeFileSync(path.join(repo, "TOP.md"), "top\n");
+    fs.writeFileSync(path.join(repo, "two\nlines.md"), "odd\n");
+    const subChanges = ownChanges(
+      subCwd,
+      subBase,
+      captureRepoSnapshot(subCwd, { baseBranch: "main" }),
+    );
+    assert.deepEqual(subChanges.files, ["../../TOP.md", "../../two\nlines.md", "src/item.ts"]);
+    assert.equal(
+      changesStat(subCwd, subChanges),
+      '1\t0\t../../TOP.md\n1\t0\t"../../two\\nlines.md"\n1\t1\tsrc/item.ts',
+    );
+    fs.rmSync(path.join(repo, "TOP.md"));
+    fs.rmSync(path.join(repo, "two\nlines.md"));
     assert.equal(
       tripwires({
         cwd: subCwd,
@@ -588,12 +606,14 @@ nodeTest(
     const freeOpenRouter = makeClassifierModel("openrouter", "parallel/decisions-fast:free", 0);
     const luna = makeClassifierModel("openai", "gpt-6-luna", 0.25);
     const chosenModels: string[] = [];
+    const asked: ClassifierContext[] = [];
     const fakeRegistry: JudgeModelRegistry = {
       getAvailableOfType: () => Promise.resolve([freeOpenRouter, luna, geminiDecision]),
       getModelOfType: (_type, provider, id) =>
         [freeOpenRouter, luna, geminiDecision].find((m) => m.provider === provider && m.id === id),
-      classify: (model) => {
+      classify: (model, context) => {
         chosenModels.push(`${model.provider}/${model.id}`);
+        asked.push(context);
         return Promise.resolve({
           api: model.api,
           provider: model.provider,
@@ -626,11 +646,28 @@ nodeTest(
         requiredPrimitives: ["DatabaseSync.createTagStore()"],
       },
       changedFiles: ["src/allowed.ts"],
+      acceptedFiles: ["README.md"],
       diff,
       signal: undefined,
     });
 
     assert.deepEqual(chosenModels, ["google/gemini-decision-1"]);
+    // The judge is told what is new and what was accepted before, and to judge only the new part.
+    assert.deepEqual(asked[0]?.state, {
+      contract: {
+        scope: ["src"],
+        verification: ["npm test"],
+        requiredPrimitives: ["DatabaseSync.createTagStore()"],
+      },
+      changedFiles: ["src/allowed.ts"],
+      acceptedFiles: ["README.md"],
+      diff,
+      taskPrompt: "Implement tag queries",
+    });
+    assert.match(
+      asked[0].questions["verdict"]?.instructions ?? "",
+      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them\. For a file named in both, judge only what `diff` shows\./u,
+    );
     assert.ok(hit !== undefined);
     assert.equal(hit.kind, "primitive_violation");
     assert.match(hit.summary, /gemini-decision-1/u);
@@ -656,6 +693,7 @@ nodeTest(
           prompt: "Implement tag queries",
           contract: { scope: ["src"], verification: ["npm test"] },
           changedFiles: ["src/allowed.ts"],
+          acceptedFiles: [],
           diff,
           signal: undefined,
         }),
@@ -756,8 +794,11 @@ nodeTest(
       path.join(child, "src", "shared.ts"),
       "export const first = 2;\n\n\n\n\nexport const last = 1;\n",
     );
-    git(child, "commit", "-am", "child work");
+    fs.writeFileSync(path.join(child, "src", "[id].ts"), "export const page = 1;\n");
+    git(child, "add", ".");
+    git(child, "commit", "-m", "child work");
     fs.mkdirSync(path.join(upstream, "docs"));
+    fs.writeFileSync(path.join(upstream, "src", "i.ts"), "export const upstream = 1;\n");
     fs.writeFileSync(path.join(upstream, "docs", "UP.md"), "two\n");
     fs.writeFileSync(path.join(upstream, "README.md"), "upstream two\n");
     fs.writeFileSync(
@@ -769,8 +810,16 @@ nodeTest(
     git(child, "fetch", "origin");
     git(child, "merge", "--no-edit", "origin/main");
     const merged = ownChanges(child, launch, snapshot());
-    assert.deepEqual(merged.files, ["src/allowed.ts", "src/shared.ts"]);
-    assert.doesNotMatch(changesDiff(merged), /README\.md|UPSTREAM\.md|docs\/UP\.md/u);
+    assert.deepEqual(merged.files, ["src/[id].ts", "src/allowed.ts", "src/shared.ts"]);
+    assert.doesNotMatch(changesDiff(merged), /README\.md|UPSTREAM\.md|docs\/UP\.md|src\/i\.ts/u);
+    // The command a notice prints for the whole diff names the same files literally: `[id]` is
+    // not read as a pattern that also matches the upstream file `i.ts`.
+    const wholeDiff = execSync(changesDiffCommand(merged) ?? "false", { encoding: "utf8" });
+    assert.deepEqual(wholeDiff.match(/^\+\+\+ b\/.*$/gmu), [
+      "+++ b/src/[id].ts",
+      "+++ b/src/allowed.ts",
+      "+++ b/src/shared.ts",
+    ]);
 
     // A second branch stacked on the first. Switching back down with a clean worktree lists
     // nothing, whether the branches were accepted during this run or existed at its launch,
@@ -843,6 +892,7 @@ nodeTest(
     assert.deepEqual(ownChanges(child, afterSide, snapshot()).files, []);
     // Measured from launch, as the completed run reports it, all of the child's work is listed.
     assert.deepEqual(ownChanges(child, launch, snapshot()).files, [
+      "src/[id].ts",
       "src/allowed.ts",
       "src/shared.ts",
       "src/side.ts",
@@ -876,6 +926,9 @@ nodeTest(
     );
   },
 );
+
+const STEER_APPROVE_OR_STOP =
+  'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
 
 type JudgeChoice = "compliant" | "scope_violation" | "primitive_violation";
 const mutatingTurn = { toolResults: [{ toolName: "bash", isError: false }] };
@@ -932,15 +985,15 @@ async function supervisedRun(
 
   const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
   /** What the judge received on each call. */
-  const judged: { changedFiles: unknown; diff: string }[] = [];
+  const judged: { changedFiles: unknown; acceptedFiles: unknown; diff: string }[] = [];
   const ctx = {
     hasPendingMessages: () => false,
     modelRegistry: {
       getAvailableOfType: () => Promise.resolve([classifier]),
       getModelOfType: () => classifier,
       classify: (_model: unknown, context: ClassifierContext) => {
-        const { changedFiles, diff } = context.state;
-        const asked = { changedFiles, diff: typeof diff === "string" ? diff : "" };
+        const { changedFiles, acceptedFiles, diff } = context.state;
+        const asked = { changedFiles, acceptedFiles, diff: typeof diff === "string" ? diff : "" };
         judged.push(asked);
         return Promise.resolve({
           api: classifier.api,
@@ -975,7 +1028,14 @@ async function supervisedRun(
     t.after(() => release(owner, `escalation:${escalation.id}`));
     return escalation;
   };
-  return { repo, base, launch, emit, paused, judged, escPath };
+  /** The notice the overseer receives for the current pause. */
+  const notice = (): string => {
+    const pending = notifications({ sessionManager: SessionManager.inMemory() }, base, owner);
+    const content = pending.notices[0]?.message.content;
+    assert.ok(typeof content === "string");
+    return content;
+  };
+  return { repo, base, launch, emit, paused, notice, judged, escPath };
 }
 
 nodeTest(
@@ -1054,7 +1114,7 @@ nodeTest(
 nodeTest(
   "a pause shows the work since the last approval, and the judge sees the work since the last accepted state",
   async (t) => {
-    const { repo, base, launch, emit, paused, judged, escPath } = await supervisedRun(t, {
+    const { repo, base, launch, emit, paused, notice, judged, escPath } = await supervisedRun(t, {
       verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
     });
     const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
@@ -1075,6 +1135,28 @@ nodeTest(
     const first = await paused();
     assert.equal(first.kind, "scope_violation");
     assert.deepEqual(first.changedFiles, ["README.md", "src/big.ts"]);
+    // The notice gives every file with its line counts, names the part that no check has cleared,
+    // and, because the diff does not fit, the command that prints all of it.
+    assert.ok(first.diffCommand !== undefined);
+    assert.match(first.diffCommand, /^git -C '[^']+' diff [0-9a-f]{40} [0-9a-f]{40}$/u);
+    assert.doesNotMatch(first.diffExcerpt, /big129/u);
+    const whole = execSync(first.diffCommand, { encoding: "utf8" });
+    assert.match(whole, /^\+drift$/mu);
+    assert.match(whole, /^\+export const big129 = 129;$/mu);
+    assert.equal(
+      notice(),
+      [
+        `[Overseer escalation #1 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+        "Reason: Modified out-of-scope path(s): README.md (allowed scope: src).",
+        "Changes since launch:",
+        "  +1 -1 README.md",
+        "  +130 -0 src/big.ts",
+        "Changed since the last clean check, look here first: README.md",
+        first.diffExcerpt.trimEnd(),
+        `[Diff cut. All of it: ${first.diffCommand}]`,
+        STEER_APPROVE_OR_STOP,
+      ].join("\n"),
+    );
     resolveActiveEscalation(base, launch, "approved");
     // An older child still running accepts an approval by this snapshot identifier.
     assert.equal(
@@ -1102,6 +1184,32 @@ nodeTest(
     assert.deepEqual(second.changedFiles, ["docs/NEW.md", "src/allowed.ts"]);
     assert.match(second.diffExcerpt, /docs\/NEW\.md/u);
     assert.doesNotMatch(second.diffExcerpt, /README\.md|big\.ts/u);
+    assert.equal(
+      notice(),
+      [
+        `[Overseer escalation #2 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+        "Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).",
+        "Changes since your last approval:",
+        "  +1 -0 docs/NEW.md",
+        "  +1 -0 src/allowed.ts",
+        "Approved earlier in this run (those changes are not shown): README.md, src/big.ts",
+        "diff --git a/docs/NEW.md b/docs/NEW.md",
+        "new file mode 100644",
+        "index 0000000..3e75765",
+        "--- /dev/null",
+        "+++ b/docs/NEW.md",
+        "@@ -0,0 +1 @@",
+        "+new",
+        "diff --git a/src/allowed.ts b/src/allowed.ts",
+        "index ad1d380..5dc3114 100644",
+        "--- a/src/allowed.ts",
+        "+++ b/src/allowed.ts",
+        "@@ -1 +1,2 @@",
+        " export const x = 1;",
+        "+export const later = 1;",
+        STEER_APPROVE_OR_STOP,
+      ].join("\n"),
+    );
     resolveActiveEscalation(base, launch, "approved");
     await secondTurn;
     assert.equal(judged.length, 1);
@@ -1112,9 +1220,27 @@ nodeTest(
     const third = await paused();
     assert.equal(third.kind, "primitive_violation");
     assert.deepEqual(third.changedFiles, ["src/allowed.ts"]);
+    // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
+    // and says of the approved files only that their earlier changes are not shown.
+    assert.deepEqual(notice().split("\n").slice(0, -1), [
+      `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      `Reason: ${third.summary}`,
+      "Changes since your last approval:",
+      "  +1 -0 src/allowed.ts",
+      "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
+      "diff --git a/src/allowed.ts b/src/allowed.ts",
+      "index 5dc3114..46469ae 100644",
+      "--- a/src/allowed.ts",
+      "+++ b/src/allowed.ts",
+      "@@ -1,2 +1,3 @@",
+      " export const x = 1;",
+      " export const later = 1;",
+      "+// FLAG",
+    ]);
     assert.equal(judged.length, 2);
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
+      acceptedFiles: ["README.md", "docs/NEW.md", "src/allowed.ts", "src/big.ts"],
       diff: [
         "diff --git a/src/allowed.ts b/src/allowed.ts",
         "index 5dc3114..46469ae 100644",
@@ -1184,6 +1310,68 @@ nodeTest("an approved base-branch issue is not raised again for later work", asy
   assert.equal(fs.existsSync(escPath), false);
 });
 
+nodeTest("a pause names work the child committed and then left on another branch", async (t) => {
+  const { repo, base, launch, emit, paused, notice } = await supervisedRun(t, {
+    verdict: () => "compliant",
+  });
+  await emit("before_agent_start", {});
+  git(repo, "checkout", "-b", "feat/side");
+  fs.mkdirSync(path.join(repo, "docs"));
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "side\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-m", "side work");
+  git(repo, "checkout", "feat/work");
+
+  const turn = emit("turn_end", mutatingTurn);
+  const escalation = await paused();
+  assert.deepEqual(escalation.changedFiles, ["docs/SIDE.md"]);
+  assert.equal(
+    notice(),
+    [
+      `[Overseer escalation #1 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
+      "Changes since launch:",
+      "  docs/SIDE.md",
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
+      STEER_APPROVE_OR_STOP,
+    ].join("\n"),
+  );
+  resolveActiveEscalation(base, launch, "approved");
+  await turn;
+
+  // More work goes to the side branch, and the same path is then written again in the working
+  // tree. The notice shows the new file, and says that other work on it is not in the diff.
+  git(repo, "checkout", "feat/side");
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "side two\n");
+  git(repo, "commit", "-am", "more side work");
+  git(repo, "checkout", "feat/work");
+  fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "docs", "SIDE.md"), "rewritten\n");
+  const again = emit("turn_end", mutatingTurn);
+  await paused();
+  assert.equal(
+    notice(),
+    [
+      `[Overseer escalation #2 - scope_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
+      "Changes since your last approval:",
+      "  +1 -0 docs/SIDE.md",
+      "Work on these files is not in the diff (committed on a branch the child left, or dropped by a checkout): docs/SIDE.md",
+      "Approved earlier in this run (those changes are not shown): docs/SIDE.md",
+      "diff --git a/docs/SIDE.md b/docs/SIDE.md",
+      "new file mode 100644",
+      "index 0000000..d597f6c",
+      "--- /dev/null",
+      "+++ b/docs/SIDE.md",
+      "@@ -0,0 +1 @@",
+      "+rewritten",
+      STEER_APPROVE_OR_STOP,
+    ].join("\n"),
+  );
+  resolveActiveEscalation(base, launch, "approved");
+  await again;
+});
+
 nodeTest(
   "pause-on-drift publishes escalation notice to parent and resumes when parent steers",
   async (t) => {
@@ -1227,6 +1415,17 @@ nodeTest(
     const reconciled = notifications({ sessionManager: parentSession }, base, owner);
     assert.equal(reconciled.notices.length, 1);
     assert.equal(reconciled.notices[0]?.message.customType, "agent-escalation");
+    // A child from before the notice fields existed still gets its files and excerpt printed.
+    assert.equal(
+      reconciled.notices[0].message.content,
+      [
+        `[Overseer escalation #1 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${temp}.`,
+        "Reason: Custom Map cache added instead of createTagStore",
+        "Changed files: src/allowed.ts",
+        "+const cache = new Map();",
+        STEER_APPROVE_OR_STOP,
+      ].join("\n"),
+    );
     assert.equal(
       reconciled.awaited.has(path.join(runDirectory(base, launch.id), "escalation.json")),
       true,

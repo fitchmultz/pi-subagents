@@ -530,6 +530,46 @@ Steering accepts nothing. Out-of-scope work that stays in place is flagged again
 checkpoint. After the judge flags a state, it is not asked about that unchanged state again
 until the checkpoint before the run settles.
 
+The judge receives the diff of the new work, the names of the files changed earlier in the run
+(`acceptedFiles`), and the instruction to judge only the new diff.
+
+### What a pause notice shows
+
+The `[agent-escalation]` notice describes the work since the overseer's last approval, or since
+launch before the first one, and says which of the two it is:
+
+```text
+[Overseer escalation #2 - scope_violation] Run 7f3a… (docs-fix) paused in /repo/worktree.
+Reason: Modified out-of-scope path(s): docs/NEW.md (allowed scope: src).
+Changes since your last approval:
+  +1 -0 docs/NEW.md
+  +1 -0 src/allowed.ts
+Approved earlier in this run (those changes are not shown): README.md, src/big.ts
+diff --git a/docs/NEW.md b/docs/NEW.md
+…
+```
+
+- Every changed file has its added and removed line counts. The notice names files relative
+  to the run's cwd, as `changedFiles` does. Only the diff itself has paths relative to the
+  repository root. In the line counts, a file name with a control character, such as a line
+  break, is written as a JSON string.
+- `Changed since the last clean check, look here first` names the files changed after the last
+  state that passed the checks. It appears when that is only a part of the listed work.
+- `Work on these files is not in the diff (committed on a branch the child left, or dropped by
+  a checkout)` names the files of commits the child made and then moved away from, and files
+  with an accepted edit that was never committed and that a checkout of another branch
+  dropped. That work has no line counts and is not in the diff. A file that also has changes
+  in the working tree is in the lines above with those changes.
+- `Approved earlier in this run (those changes are not shown)` names the files of the work
+  that the overseer already approved. A file that changed again after the approval is also in
+  the lines above, with its new change only.
+- The diff is cut at 3000 characters. When it is cut, the excerpt is followed by the command that
+  prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
+
+`escalation.json` carries the same facts in the optional fields `since`, `stat`, `diffCommand`,
+`unchecked`, `leftBehind` and `approved`. A child that runs an older package version writes none
+of them; its notice lists the changed files and the diff excerpt.
+
 When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
 prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`
 or a superseding continuation (`changes_requested` / `continue`) is recorded. Runs with no
