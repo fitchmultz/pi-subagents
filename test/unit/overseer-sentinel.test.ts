@@ -172,16 +172,22 @@ nodeTest(
       baseBranch: "main",
     });
     assert.deepEqual(ownChanges(subCwd, subBase, subClean).files, ["src/item.ts"]);
-    // The line counts of a notice spell files the same way, also outside the cwd.
+    // The line counts of a notice spell files the same way, also outside the cwd. One record
+    // is one line, so a name with a line break is written as a JSON string.
     fs.writeFileSync(path.join(repo, "TOP.md"), "top\n");
+    fs.writeFileSync(path.join(repo, "two\nlines.md"), "odd\n");
     const subChanges = ownChanges(
       subCwd,
       subBase,
       captureRepoSnapshot(subCwd, { baseBranch: "main" }),
     );
-    assert.deepEqual(subChanges.files, ["../../TOP.md", "src/item.ts"]);
-    assert.equal(changesStat(subCwd, subChanges), "1\t0\t../../TOP.md\n1\t1\tsrc/item.ts");
+    assert.deepEqual(subChanges.files, ["../../TOP.md", "../../two\nlines.md", "src/item.ts"]);
+    assert.equal(
+      changesStat(subCwd, subChanges),
+      '1\t0\t../../TOP.md\n1\t0\t"../../two\\nlines.md"\n1\t1\tsrc/item.ts',
+    );
     fs.rmSync(path.join(repo, "TOP.md"));
+    fs.rmSync(path.join(repo, "two\nlines.md"));
     assert.equal(
       tripwires({
         cwd: subCwd,
