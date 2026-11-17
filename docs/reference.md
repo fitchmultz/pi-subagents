@@ -548,8 +548,9 @@ diff --git a/docs/NEW.md b/docs/NEW.md
 …
 ```
 
-- Every changed file has its added and removed line counts. The paths in these lines and in
-  the diff are relative to the repository root.
+- Every changed file has its added and removed line counts. The notice names files relative
+  to the run's cwd, as `changedFiles` does. Only the diff itself has paths relative to the
+  repository root.
 - `Changed since the last clean check, look here first` names the files changed after the last
   state that passed the checks. It appears when that is only a part of the listed work.
 - `No longer in the working tree (committed on another branch, or dropped by a checkout)` names
