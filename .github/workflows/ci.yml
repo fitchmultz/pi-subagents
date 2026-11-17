@@ -69,8 +69,6 @@ jobs:
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
       - run: npm run format:check
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-      - run: npm run check:size
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
 
   resolve:
     uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main

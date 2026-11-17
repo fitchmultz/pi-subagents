@@ -2,9 +2,9 @@
 
 ## Rebuild measurements
 
-The baseline is in [the rebuild evidence](single-agent-rebuild.md); the only
-enforced ceiling is the 1 MiB total production bytes. `node scripts/measure-size.mjs`
+The baseline is in [the rebuild evidence](single-agent-rebuild.md). `node scripts/measure-size.mjs`
 measures production source, schemas, generated code and scripts; tests are separate.
+No size limit is enforced.
 Line/byte reductions are not measurements of latency, resident memory, provider
 cost, or throughput.
 

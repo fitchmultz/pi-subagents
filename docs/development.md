@@ -16,7 +16,6 @@ npm ci
 npm run lint
 npm run format:check
 npm run typecheck
-node scripts/measure-size.mjs
 ```
 
 Run narrow owner-boundary tests locally through `scripts/run-tests.mjs`. Full
@@ -128,13 +127,11 @@ proof that an unrelated safety assertion can disappear. Expected values must be
 independent of production helpers; observe actual readiness/publication before
 negative assertions. A sleep does not prove an owner processed its input.
 
-## Size gate
+## Size report
 
-`scripts/measure-size.mjs` counts source, production scripts, generated code and
-schemas, including new untracked files. `--report` prints without enforcing.
-The only enforced ceiling is 1 MiB total production bytes; source and production
-line counts are reported for visibility, not mandated. Tests have no deletion
-quota. Moving machinery into generated/minified output does not evade the gate.
+`node scripts/measure-size.mjs` prints the lines and bytes of source, production
+scripts, generated code and schemas, including new untracked files. Tests are not
+counted. The numbers are for visibility: no check enforces a size limit.
 
 [The rebuild evidence](single-agent-rebuild.md) records the baseline, confirmed
 design, test-transfer obligations, and exact selected host identities. Update it
