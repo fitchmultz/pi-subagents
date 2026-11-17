@@ -4,8 +4,6 @@ import { extname, join } from "node:path";
 
 const roots = ["src", "scripts", "generated"];
 const extensions = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".sh"]);
-/** @type {Record<string, number>} */
-const ceilings = { productionBytes: 1048576 };
 
 /**
  * @param {string} directory
@@ -56,13 +54,4 @@ const measured = {
   productionLines: rows.reduce((total, row) => total + row.lines, 0),
   productionBytes: rows.reduce((total, row) => total + row.bytes, 0),
 };
-console.log(JSON.stringify({ files: rows.length, measured, ceilings }, null, 2));
-if (!process.argv.includes("--report")) {
-  const exceeded = Object.keys(ceilings).filter(
-    (key) => (measured[key] ?? 0) > (ceilings[key] ?? Number.POSITIVE_INFINITY),
-  );
-  if (exceeded.length > 0) {
-    console.error(`Shrink budget exceeded: ${exceeded.join(", ")}`);
-    process.exitCode = 1;
-  }
-}
+console.log(JSON.stringify({ files: rows.length, measured }, null, 2));

@@ -84,8 +84,7 @@ No committed generated output requires a separate freshness generator.
 
 The existing viewer import restriction remains: lazy viewer values must come
 from the selected host through `observe-layout.ts`. It strengthens the base
-policy and protects runtime identity. The existing 1 MiB production-byte ceiling
-also remains. Neither is a new requirement of this standard.
+policy and protects runtime identity. It is not a new requirement of this standard.
 
 ## Adoption record
 

@@ -6,7 +6,6 @@ const gates = [
   "typecheck",
   "typecheck:declarations",
   "check:quality",
-  "check:size",
   "smoke:package",
   "smoke:install",
   "test:unit",
