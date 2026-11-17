@@ -7,10 +7,8 @@ import {
   commandMetadataSchema,
   escalationResolutionSchema,
   escalationSchema,
-  judgeUnavailableSchema,
   type Escalation,
   type EscalationResolution,
-  type JudgeUnavailable,
   type Launch,
 } from "./contracts.ts";
 import { errorText } from "./host.ts";
@@ -29,7 +27,9 @@ import {
 import {
   CONSECUTIVE_ERROR_TURN_LIMIT,
   checkDeterministicTripwires,
+  clearJudgeUnavailable,
   evaluateDecisionCheckpoint,
+  recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
 import { conversation, read, runDirectory, write } from "./storage.ts";
@@ -224,13 +224,6 @@ export function resolveActiveEscalation(
   return active;
 }
 
-const judgeUnavailableFile = (base: string, runId: string): string =>
-  path.join(runDirectory(base, runId), "judge-unavailable.json");
-
-/** Why no judge has answered for the latest work of a run, when that is so. */
-export const judgeUnavailable = (base: string, runId: string): JudgeUnavailable | undefined =>
-  read(judgeUnavailableFile(base, runId), judgeUnavailableSchema);
-
 /** Rejects when no judge answered. */
 async function askJudge(
   launch: Launch,
@@ -249,7 +242,8 @@ async function askJudge(
     acceptedFiles: work.acceptedFiles,
     diff: work.checkpoint.diff,
     failed: work.failed,
-    signal: undefined,
+    // Cancelling the child's run cancels its judge request.
+    signal: ctx.signal,
   });
 }
 
@@ -329,7 +323,7 @@ class SentinelRunner {
     current.reviewPoint = acceptedPoint(current.reviewPoint, snapshot);
     current.judged = { tree: snapshot.tree, lines: 0 };
     // The passed state has no work that still waits for a judge.
-    fs.rmSync(judgeUnavailableFile(this.options.base, launch.id), { force: true });
+    clearJudgeUnavailable(this.options.base, launch.id);
   }
 
   /** What a pause shows: all the work the overseer has not approved, not only what failed now. */
@@ -461,23 +455,25 @@ class SentinelRunner {
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
     const acceptedFiles = this.changedBefore(launch, current.reviewPoint);
+    // The signal of the run that is active now. `ctx.signal` is gone when that run ends.
+    const { signal } = ctx;
     let verdict: Violation | undefined;
     try {
-      verdict = await askJudge(launch, ctx, {
-        checkpoint,
-        acceptedFiles,
-        failed: current.failedJudges,
-      });
+      const failed = current.failedJudges;
+      verdict = await askJudge(launch, ctx, { checkpoint, acceptedFiles, failed });
     } catch (error) {
+      if (signal?.aborted === true) {
+        // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
+        return undefined;
+      }
       // No judge answered. That is no finding about the work, so the child is not paused. The
       // review point stays: a later checkpoint asks again about all the work since then, and
       // the completion notice reports a run that ends with work no judge answered for.
-      const unavailable: JudgeUnavailable = { at: Date.now(), summary: errorText(error) };
-      write(judgeUnavailableFile(this.options.base, launch.id), unavailable);
+      recordJudgeUnavailable(this.options.base, launch.id, errorText(error));
       return undefined;
     }
     // A classifier answered: the work is judged, whatever the verdict.
-    fs.rmSync(judgeUnavailableFile(this.options.base, launch.id), { force: true });
+    clearJudgeUnavailable(this.options.base, launch.id);
     if (verdict === undefined) {
       this.pass(launch, snapshot);
       return undefined;

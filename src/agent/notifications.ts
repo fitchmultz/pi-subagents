@@ -12,7 +12,7 @@ import {
   type Result,
 } from "./contracts.ts";
 import { needsOverseerReview } from "./overseer-review.ts";
-import { judgeUnavailable } from "./overseer-sentinel.ts";
+import { judgeUnavailable } from "./overseer-judge.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
 

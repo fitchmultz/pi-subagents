@@ -58,10 +58,11 @@ When enabled:
   `requiredPrimitives`, `nonGoals`); omitted `model`/`thinking` inherit normally unless an overseer worker is configured.
 - Child sessions block out-of-scope edit tool calls before writing, run zero-cost Git/loop
   tripwires on mutating turns, and sample an available decision classifier
-  (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna`) on debounced diff
-  checkpoints—pausing the child and waking the parent with `[agent-escalation]` on drift.
-  A classifier request that fails is not drift: the next classifier is asked, the child is
-  not paused, and a run that ends unjudged says so in its completion notice.
+  (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna` first, then any other
+  available one) on debounced diff checkpoints—pausing the child and waking the parent with
+  `[agent-escalation]` on drift. A classifier that gives no verdict is not drift: the next
+  classifier is asked, the child is not paused, and a run that ends unjudged says so in its
+  completion notice.
 - Completed mutating overseen runs require `agent_runs({ action: "review", ... })` before
   the parent session settles (`agent_before_settle`).
 
