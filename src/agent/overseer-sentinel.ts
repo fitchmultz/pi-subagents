@@ -348,7 +348,7 @@ class SentinelRunner {
       diffExcerpt: unapproved.diff.slice(0, ESCALATION_EXCERPT_CHARS),
       diffDigest: checkpoint.snapshot.tree ?? "non-git",
       since: everApproved ? "approval" : "launch",
-      stat: changesStat(unapproved.changes),
+      stat: changesStat(launch.cwd, unapproved.changes),
       ...(diffCommand === undefined ? {} : { diffCommand }),
       // Named only when it narrows the list: where the overseer should look first.
       unchecked: flagged.join("\0") === unapproved.changes.files.join("\0") ? [] : [...flagged],

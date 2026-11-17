@@ -24,6 +24,7 @@ import {
   acceptedPoint,
   captureRepoSnapshot,
   changesDiff,
+  changesStat,
   launchPoint,
   ownChanges,
   type RepoSnapshot,
@@ -171,6 +172,16 @@ nodeTest(
       baseBranch: "main",
     });
     assert.deepEqual(ownChanges(subCwd, subBase, subClean).files, ["src/item.ts"]);
+    // The line counts of a notice spell files the same way, also outside the cwd.
+    fs.writeFileSync(path.join(repo, "TOP.md"), "top\n");
+    const subChanges = ownChanges(
+      subCwd,
+      subBase,
+      captureRepoSnapshot(subCwd, { baseBranch: "main" }),
+    );
+    assert.deepEqual(subChanges.files, ["../../TOP.md", "src/item.ts"]);
+    assert.equal(changesStat(subCwd, subChanges), "1\t0\t../../TOP.md\n1\t1\tsrc/item.ts");
+    fs.rmSync(path.join(repo, "TOP.md"));
     assert.equal(
       tripwires({
         cwd: subCwd,

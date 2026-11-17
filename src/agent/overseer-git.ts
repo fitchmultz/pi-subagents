@@ -337,16 +337,19 @@ function historyGrew(top: string, from: RepoSnapshot, to: RepoSnapshot): boolean
   );
 }
 
-/** Maps repository paths to sorted, distinct paths relative to the run's cwd. */
-function fromCwd(cwd: string, top: string, files: readonly string[]): string[] {
+/** Maps a repository path to its path relative to the run's cwd. */
+function relativeTo(cwd: string, top: string): (file: string) => string {
   const realCwd = safeRealpath(cwd);
   const realTop = safeRealpath(top);
-  const relative = files.map((file) => {
+  return (file) => {
     const out = path.relative(realCwd, path.resolve(realTop, file));
     return (out === "" ? file : out).split(path.sep).join("/");
-  });
-  return [...new Set(relative)].sort();
+  };
 }
+
+/** Maps repository paths to sorted, distinct paths relative to the run's cwd. */
+const fromCwd = (cwd: string, top: string, files: readonly string[]): string[] =>
+  [...new Set(files.map(relativeTo(cwd, top)))].sort();
 
 /**
  * Files whose accepted content was in no commit and is gone after a checkout of another line.
@@ -441,8 +444,22 @@ function diffOf(changes: OwnChanges, format: readonly string[]): string {
 export const changesDiff = (changes: OwnChanges): string => diffOf(changes, ["--unified=2"]);
 
 /** Added and removed lines per file of that diff, as `git diff --numstat` prints them. */
-export const changesStat = (changes: OwnChanges): string =>
-  diffOf(changes, ["--numstat", "--no-renames"]);
+export function changesStat(cwd: string, changes: OwnChanges): string {
+  const top = changes.diff?.top;
+  if (top === undefined) {
+    return "";
+  }
+  // A notice names these files beside `files`, so they are spelled the same way: from the cwd.
+  const fromRunCwd = relativeTo(cwd, top);
+  return lines(diffOf(changes, ["--numstat", "--no-renames", "-z"]), "\0")
+    .map((row) => {
+      const [added = "", removed = "", ...file] = row.split("\t");
+      return { counts: `${added}\t${removed}`, file: fromRunCwd(file.join("\t")) };
+    })
+    .sort((a, b) => (a.file < b.file ? -1 : 1))
+    .map((row) => `${row.counts}\t${row.file}`)
+    .join("\n");
+}
 
 /** The shell command that prints the whole diff of `changes`. */
 export function changesDiffCommand(changes: OwnChanges): string | undefined {

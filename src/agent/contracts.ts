@@ -45,7 +45,7 @@ export const escalationSchema = Type.Object({
   // these fields existed writes none of them.
   /** Where `changedFiles`, `stat` and `diffExcerpt` are measured from. */
   since: Type.Optional(Type.Union([Type.Literal("launch"), Type.Literal("approval")])),
-  /** `git diff --numstat` of the changes since `since`. */
+  /** The changes since `since`, one `added<TAB>removed<TAB>file` line per file as `git diff --numstat` counts them. Files are spelled as in `changedFiles`. */
   stat: Type.Optional(Type.String()),
   /** Prints the whole diff when `diffExcerpt` is cut. */
   diffCommand: Type.Optional(Type.String()),
