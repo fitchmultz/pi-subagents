@@ -2,11 +2,27 @@
 
 ## [Unreleased]
 
+## 0.52.47 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+
 - Overseer mode lists only the child's own changes. A checkpoint now saves the working tree as a Git tree object and compares trees, so three false alarms are gone: a commit or an edit in another worktree of the same repository is never listed; files that only upstream changed are not listed after a fast-forward or a merge of `origin/<baseBranch>`; and a clean checkout of an existing commit, such as the lower branch of a stack, lists nothing. A base branch that moves while another worktree has it checked out is no longer a `branch_violation` of the run. A commit the child made and then moved away from is still listed. The `changedFiles` of a completed run follow the same rules.
 - An overseer approval now accepts the paused state for the rest of the run, not only that exact diff. Later pauses are raised for later changes only: an approved out-of-scope file is flagged again only when it changes again, an approved base-branch issue is not raised again, and committing approved work raises nothing. The judge sees the work since the last state that passed (approved, unchanged or found clean) instead of the whole diff since launch, and it is no longer asked on every turn about a flagged state that did not change. A pause lists the work since the overseer's last approval instead of the work since launch. See [Overseer mode](docs/reference.md#overseer-mode).
 - An overseer pause notice now says what it covers. It states whether the listed work is measured from launch or from the overseer's last approval, gives the added and removed line counts of every changed file, names the files changed after the last clean check, names the files the overseer approved earlier in the run, and, when the 3000-character diff excerpt is cut, gives the `git diff` command that prints the whole diff. Before, the notice listed file names and an excerpt that could end before the files that mattered. The judge also receives the names of the files changed earlier in the run and is told to judge only the new diff. See [What a pause notice shows](docs/reference.md#what-a-pause-notice-shows).
 - An approved overseer pause no longer counts against the run. A pause notice always offers steer, approve and stop. Only pauses the overseer answered with a correction (`continue`, or `review` with `changes_requested`) are counted toward the advice to stop, which appears from three corrections on. Before, the third pause of a run said "3rd strike: prefer stop" and dropped the steer option, even when both earlier pauses were approved. `agent_runs list`, `inspect` and the `/agents` observer show the pause number and the corrections, for example `paused: scope_violation #4, 2 corrections`. In `escalation.json`, `strikes` is the pause number and the new optional `corrections` is the count of corrections.
 - The reply to `agent_runs` `action="review"` with `verdict="approved"` is two lines: the run, the verdict and the time, and what happens next. Before, it repeated the whole run record, including the child's final report that the completion notice had just delivered. See [What an approval replies](docs/reference.md#what-an-approval-replies).
+
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): attribute changes to the child's own work (OVR-211) (1/3) (#457) ([534de53](https://github.com/fitchmultz/pi-subagents/commit/534de53e935982ff82991ca5aa4bf6db7be3b3b8))
+
+### What's Changed
+
+- fix(overseer): attribute changes to the child's own work (OVR-211) (1/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/457
+- fix(overseer): say what a pause notice covers (OVR-210) (2/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/459
+- fix(overseer): count corrections, not approvals, and shorten the review receipt (OVR-204) (3/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/460
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.46...v0.52.47
 
 ## 0.52.46 - 2026-11-17
 
