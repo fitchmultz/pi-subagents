@@ -150,7 +150,10 @@ function changeLines(escalation: Escalation): string[] {
     `Changes since ${escalation.since === "approval" ? "your last approval" : "launch"}:`,
     stat === "" ? `  ${files}` : stat,
     named("Changed since the last clean check, look here first", escalation.unchecked),
-    named("Committed in this worktree and no longer checked out", escalation.leftBehind),
+    named(
+      "No longer in the working tree (committed on another branch, or dropped by a checkout)",
+      escalation.leftBehind,
+    ),
     // A file can be here and in the lines above: it changed again after the approval.
     named("Approved earlier in this run (those changes are not shown)", escalation.approved),
     escalation.diffExcerpt.trimEnd(),

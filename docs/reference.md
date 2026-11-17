@@ -552,8 +552,10 @@ diff --git a/docs/NEW.md b/docs/NEW.md
   the diff are relative to the repository root.
 - `Changed since the last clean check, look here first` names the files changed after the last
   state that passed the checks. It appears when that is only a part of the listed work.
-- `Committed in this worktree and no longer checked out` names files of commits the child made
-  and then moved away from. They have no line counts and are not in the diff.
+- `No longer in the working tree (committed on another branch, or dropped by a checkout)` names
+  files of commits the child made and then moved away from, and files with an accepted edit
+  that was never committed and that a checkout of another branch dropped. They have no line
+  counts and are not in the diff.
 - `Approved earlier in this run (those changes are not shown)` names the files of the work
   that the overseer already approved. A file that changed again after the approval is also in
   the lines above, with its new change only.

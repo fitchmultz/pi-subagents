@@ -51,7 +51,7 @@ export const escalationSchema = Type.Object({
   diffCommand: Type.Optional(Type.String()),
   /** Files changed since the last state that passed the checks, when that is later than `since`. */
   unchecked: Type.Optional(Type.Array(Type.String())),
-  /** Files committed in the child's worktree on history that HEAD no longer contains. */
+  /** Files of work that the child's working tree no longer holds: committed on history that HEAD left, or dropped by a checkout. */
   leftBehind: Type.Optional(Type.Array(Type.String())),
   /** Files changed earlier in the run that the overseer approved. */
   approved: Type.Optional(Type.Array(Type.String())),

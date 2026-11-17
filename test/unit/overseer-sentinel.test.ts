@@ -1259,7 +1259,7 @@ nodeTest("a pause names work the child committed and then left on another branch
       "Reason: Modified out-of-scope path(s): docs/SIDE.md (allowed scope: src).",
       "Changes since launch:",
       "  docs/SIDE.md",
-      "Committed in this worktree and no longer checked out: docs/SIDE.md",
+      "No longer in the working tree (committed on another branch, or dropped by a checkout): docs/SIDE.md",
       STEER_APPROVE_OR_STOP,
     ].join("\n"),
   );
