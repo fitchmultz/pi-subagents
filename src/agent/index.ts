@@ -434,14 +434,18 @@ class AgentRuntime {
     return this.continue(launch, input);
   }
   private async review(original: Launch, input: RunsInput) {
-    const { target, review, verdict } = prepareOverseerReviewAction(this.base, original, input);
+    const { target, review, verdict, released } = prepareOverseerReviewAction(
+      this.base,
+      original,
+      input,
+    );
     if (verdict === "changes_requested") {
       return this.continue(latest(this.base, target), { ...input, prompt: review.summary });
     }
     return renderReceipt(this.base, target, this.ctx, {
       receipt: "review",
       review,
-      note: "Overseer approval recorded.",
+      released,
     });
   }
   register(): void {

@@ -136,6 +136,9 @@ function notification(base: string, launch: Launch, result: Result): Completion 
   };
 }
 
+/** From this many corrections on, a pause notice advises stopping the run. */
+const PREFER_STOP_CORRECTIONS = 3;
+
 const named = (label: string, files: readonly string[] | undefined): string =>
   files === undefined || files.length === 0 ? "" : `${label}: ${files.join(", ")}`;
 
@@ -164,10 +167,14 @@ function changeLines(escalation: Escalation): string[] {
 
 function escalationNotice(launch: Launch, escalation: Escalation): Completion {
   const label = launch.name === undefined ? launch.id : `${launch.id} (${launch.name})`;
-  const stopHint =
-    escalation.strikes >= 3
-      ? '3rd strike: prefer `agent_runs` `action="stop"`, or approve (`action="review"`, `verdict="approved"`, `summary="..."`).'
-      : 'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
+  // An older child does not report its corrections, so its notice gives no advice.
+  const corrections = escalation.corrections ?? 0;
+  const corrected =
+    corrections === 0
+      ? ""
+      : `You corrected this run ${corrections} time${corrections === 1 ? "" : "s"} before this pause${
+          corrections >= PREFER_STOP_CORRECTIONS ? ': prefer `agent_runs` `action="stop"`' : ""
+        }.`;
   return {
     owner: launch.owner,
     id: `escalation:${escalation.id}`,
@@ -178,7 +185,8 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
         `[Overseer escalation #${escalation.strikes} - ${escalation.kind}] Run ${label} paused in ${launch.cwd}.`,
         `Reason: ${escalation.summary}`,
         ...changeLines(escalation),
-        stopHint,
+        corrected,
+        'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.',
       ]
         .filter((line) => line.length > 0)
         .join("\n"),

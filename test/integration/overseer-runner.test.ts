@@ -18,6 +18,7 @@ import { release } from "../../src/agent/notifications.ts";
 import { resolveActiveEscalation } from "../../src/agent/overseer-sentinel.ts";
 import { ensureActor, ownIdentity } from "../../src/agent/process.ts";
 import { enqueue, ownerDirectory, read, runDirectory, write } from "../../src/agent/storage.ts";
+import { renderReceipt } from "../../src/agent/view.ts";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -168,6 +169,20 @@ nodeTest(
     assert.equal(esc.kind, "scope_violation");
     assert.deepEqual(esc.changedFiles, ["README.md"]);
     t.after(() => release(owner, `escalation:${esc.id}`));
+    // An approval receipt for this paused, live child is two lines: what was recorded and what
+    // follows. A running child that was not paused must be reviewed again after it ends.
+    const review = { runId: id, verdict: "approved" as const, summary: "ok", at: 1767323045000 };
+    const recorded = `Overseer review recorded: run ${id} (overseer-steer-test) approved at 2026-01-02T03:04:05Z.`;
+    assert.equal(
+      renderReceipt(base, launch, undefined, { receipt: "review", review, released: true })
+        .content[0]?.text,
+      `${recorded}\nThe paused child continues. Its next notice arrives when it pauses again or ends.`,
+    );
+    assert.equal(
+      renderReceipt(base, launch, undefined, { receipt: "review", review, released: false })
+        .content[0]?.text,
+      `${recorded}\nThe run is still running and was not paused: review it again after it ends.`,
+    );
 
     enqueue(base, launch, { action: "steer", prompt: "REVERT_README" });
     resolveActiveEscalation(base, launch, "steered");

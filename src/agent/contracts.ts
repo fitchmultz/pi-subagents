@@ -35,6 +35,7 @@ export const escalationSchema = Type.Object({
   runId: Type.String(),
   owner: Type.String(),
   at: Type.Number(),
+  /** The number of this pause in the run. Named for what earlier versions took it to mean. */
   strikes: Type.Integer({ minimum: 1 }),
   kind: escalationKindSchema,
   summary: Type.String(),
@@ -55,6 +56,8 @@ export const escalationSchema = Type.Object({
   leftBehind: Type.Optional(Type.Array(Type.String())),
   /** Files changed earlier in the run that the overseer approved. */
   approved: Type.Optional(Type.Array(Type.String())),
+  /** How many earlier pauses of the run the overseer answered with a correction. */
+  corrections: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 export type Escalation = Static<typeof escalationSchema>;
 export const escalationResolutionSchema = Type.Object({

@@ -63,7 +63,9 @@ interface RunSentinelState {
   turnsSinceJudge: number;
   /** The state the judge last saw, and the size of the new work it saw then. */
   judged: { readonly tree: string | undefined; readonly lines: number };
-  strikes: number;
+  /** Pauses so far, and how many of them the overseer answered with a correction. */
+  pauses: number;
+  corrections: number;
 }
 
 /** The child's own work between an accepted state and `snapshot`. */
@@ -294,7 +296,8 @@ class SentinelRunner {
       consecutiveErrors: 0,
       turnsSinceJudge: 0,
       judged: { tree: point.snapshot.tree, lines: 0 },
-      strikes: 0,
+      pauses: 0,
+      corrections: 0,
     };
     return this.state;
   }
@@ -318,15 +321,22 @@ class SentinelRunner {
     current.judged = { tree: snapshot.tree, lines: 0 };
   }
 
-  private async escalate(
+  /** What a pause shows: all the work the overseer has not approved, not only what failed now. */
+  private unapprovedWork(
     launch: Launch,
-    issue: Violation,
     checkpoint: Work,
-  ): Promise<EscalationResolution["verdict"]> {
+  ): Pick<
+    Escalation,
+    | "changedFiles"
+    | "diffExcerpt"
+    | "since"
+    | "stat"
+    | "diffCommand"
+    | "unchecked"
+    | "leftBehind"
+    | "approved"
+  > {
     const current = this.ensureState(launch);
-    current.strikes += 1;
-    current.consecutiveErrors = 0;
-    // The overseer answers for all the work it has not approved, not only for what failed now.
     const unapproved =
       current.approved === current.reviewPoint
         ? checkpoint
@@ -337,16 +347,9 @@ class SentinelRunner {
       unapproved.diff.length > ESCALATION_EXCERPT_CHARS
         ? changesDiffCommand(unapproved.changes)
         : undefined;
-    const escalation: Escalation = {
-      id: randomUUID(),
-      runId: launch.id,
-      owner: launch.owner,
-      at: Date.now(),
-      strikes: current.strikes,
-      ...issue,
+    return {
       changedFiles: [...unapproved.changes.files],
       diffExcerpt: unapproved.diff.slice(0, ESCALATION_EXCERPT_CHARS),
-      diffDigest: checkpoint.snapshot.tree ?? "non-git",
       since: everApproved ? "approval" : "launch",
       stat: changesStat(launch.cwd, unapproved.changes),
       ...(diffCommand === undefined ? {} : { diffCommand }),
@@ -355,6 +358,27 @@ class SentinelRunner {
       leftBehind: [...unapproved.changes.leftBehind],
       approved: everApproved ? this.changedBefore(launch, current.approved) : [],
     };
+  }
+
+  private async escalate(
+    launch: Launch,
+    issue: Violation,
+    checkpoint: Work,
+  ): Promise<EscalationResolution["verdict"]> {
+    const current = this.ensureState(launch);
+    current.pauses += 1;
+    current.consecutiveErrors = 0;
+    const escalation: Escalation = {
+      id: randomUUID(),
+      runId: launch.id,
+      owner: launch.owner,
+      at: Date.now(),
+      strikes: current.pauses,
+      corrections: current.corrections,
+      ...issue,
+      ...this.unapprovedWork(launch, checkpoint),
+      diffDigest: checkpoint.snapshot.tree ?? "non-git",
+    };
     const verdict = await waitForEscalationResolution({
       base: this.options.base,
       launch,
@@ -362,6 +386,9 @@ class SentinelRunner {
       isStopping: this.options.isStopping,
       seenSteerFiles: current.seenSteerFiles,
     });
+    if (verdict === "steered") {
+      current.corrections += 1;
+    }
     if (verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
       current.approved = current.reviewPoint;

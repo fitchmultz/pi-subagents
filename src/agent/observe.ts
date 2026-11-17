@@ -14,7 +14,7 @@ import { successorSchema, type Launch } from "./contracts.ts";
 import { readCanonicalResult } from "./usage.ts";
 import { actor, observeAlive } from "./process.ts";
 import { plainText } from "./journal-tail.ts";
-import { runEscalation, runStatusOf } from "./run-state.ts";
+import { pauseLabel, runEscalation, runStatusOf } from "./run-state.ts";
 import { ObservationClient, type Watch } from "./observe-client.ts";
 import { adoptedJournal } from "./saved.ts";
 import type { ObserverRow } from "./observe-chrome.ts";
@@ -135,10 +135,7 @@ class Observer {
         live: status === "running",
         createdAt: launch.createdAt,
         activity: this.peers.get(id)?.client.activity,
-        paused:
-          escalation === undefined
-            ? undefined
-            : `paused: ${escalation.kind} #${escalation.strikes}`,
+        paused: escalation === undefined ? undefined : `paused: ${pauseLabel(escalation)}`,
       });
     };
   }

@@ -20,6 +20,7 @@ import { published } from "./notifications.ts";
 import { needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
+  pauseLabel,
   runAdmission,
   runEscalation,
   runState,
@@ -78,7 +79,12 @@ type Receipt =
   | { readonly receipt: "launch"; readonly note: string }
   | { readonly receipt: "continuation" | "existing-successor" }
   | { readonly receipt: "guidance"; readonly command: string; readonly note: string }
-  | { readonly receipt: "review"; readonly review: OverseerReview; readonly note: string }
+  | {
+      readonly receipt: "review";
+      readonly review: OverseerReview;
+      /** The approval released a pause of the running child. */
+      readonly released: boolean;
+    }
   | {
       readonly stopRequest?: string | undefined;
       readonly stopAcknowledged: false;
@@ -269,6 +275,21 @@ function projection(
     output: outputView(view.outputFile, input),
   };
 }
+/**
+ * Confirms a recorded approval and says what it changes. The run's record and the child's report
+ * are not repeated: the completion notice and `inspect` own them.
+ */
+function reviewReceiptText(run: RunView, review: OverseerReview, released: boolean): string {
+  const label = run.name === undefined ? run.id : `${run.id} (${run.name})`;
+  const settled = `The run's status is ${run.status}; it needs no further review.`;
+  const unsettled = released
+    ? "The paused child continues. Its next notice arrives when it pauses again or ends."
+    : "The run is still running and was not paused: review it again after it ends.";
+  return [
+    `Overseer review recorded: run ${label} ${review.verdict} at ${utc(review.at)}.`,
+    run.status === "running" ? unsettled : settled,
+  ].join("\n");
+}
 export function renderReceipt(
   base: string,
   launch: Launch,
@@ -276,6 +297,9 @@ export function renderReceipt(
   receipt: Receipt,
 ): ToolReply {
   const details = { ...projection(base, launch, ctx), ...receipt };
+  if ("receipt" in receipt && receipt.receipt === "review") {
+    return toolResult(details, reviewReceiptText(details, receipt.review, receipt.released));
+  }
   const model = { ...details, result: receiptResult(details.result) };
   return toolResult(details, JSON.stringify(model, null, 2));
 }
@@ -318,7 +342,7 @@ function inventoryRow(run: RunSummary): string {
     run.model,
     run.name === undefined ? "(unnamed)" : JSON.stringify(run.name),
     ...(run.waiting ? [waitingMark(run.waiting)] : []),
-    ...(run.escalation ? [`[paused: ${run.escalation.kind} #${run.escalation.strikes}]`] : []),
+    ...(run.escalation ? [`[paused: ${pauseLabel(run.escalation)}]`] : []),
     ...(run.reviewRequired === true ? ["[review required]"] : []),
     ...(run.lastWakeFailure ? ["[wake failed: inspect]"] : []),
   ].join(" ");
@@ -386,7 +410,7 @@ function escalationLines(escalation: Escalation | undefined): string[] {
   return escalation === undefined
     ? []
     : [
-        `Paused on overseer escalation #${escalation.strikes} (${escalation.kind}) since ${utc(escalation.at)}: ${escalation.summary}`,
+        `Paused on overseer escalation (${pauseLabel(escalation)}) since ${utc(escalation.at)}: ${escalation.summary}`,
         `Changed files: ${escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)"}`,
       ];
 }

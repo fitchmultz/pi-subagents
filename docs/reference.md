@@ -566,9 +566,38 @@ diff --git a/docs/NEW.md b/docs/NEW.md
 - The diff is cut at 3000 characters. When it is cut, the excerpt is followed by the command that
   prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
 
-`escalation.json` carries the same facts in the optional fields `since`, `stat`, `diffCommand`,
-`unchecked`, `leftBehind` and `approved`. A child that runs an older package version writes none
-of them; its notice lists the changed files and the diff excerpt.
+Every notice ends with the three answers: steer, approve and stop. The number after `#` is the
+number of the pause in the run. A correction is a pause that the overseer answered with a steer
+(`continue`, or `review` with `changes_requested`). An approved pause is not a correction. After
+the first correction the notice says how many there were, and from three corrections on it
+advises stopping the run:
+
+```text
+You corrected this run 3 times before this pause: prefer `agent_runs` `action="stop"`.
+```
+
+`agent_runs list`, `inspect` and the `/agents` observer print both counts for a paused run, for
+example `paused: scope_violation #4, 2 corrections`.
+
+`escalation.json` carries these facts in `strikes` (the pause number) and in the optional fields
+`since`, `stat`, `diffCommand`, `unchecked`, `leftBehind`, `approved` and `corrections`. A child
+that runs an older package version writes none of the optional fields; its notice lists the
+changed files and the diff excerpt, and gives no advice to stop.
+
+### What an approval replies
+
+`agent_runs` `action="review"` with `verdict="approved"` replies with two lines: the run, the
+verdict and the time, and then what follows.
+
+```text
+Overseer review recorded: run 7f3a… (docs-fix) approved at 2026-11-17T17:02:11Z.
+The paused child continues. Its next notice arrives when it pauses again or ends.
+```
+
+The second line is one of three: the paused child continues; the run is still running and was
+not paused, so it needs a review again after it ends; or the run has ended and needs no further
+review. The child's report and the run record are not repeated: the completion notice and
+`inspect` have them. `changes_requested` replies as `continue` does.
 
 When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
 prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`

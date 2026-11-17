@@ -20,7 +20,8 @@ import {
 import { waitForEscalationResolution } from "../../src/agent/overseer-sentinel.ts";
 import { captureOverseerBaseline } from "../../src/agent/run-result.ts";
 import { runDirectory, write } from "../../src/agent/storage.ts";
-import { renderInspection } from "../../src/agent/view.ts";
+import { pauseLabel } from "../../src/agent/run-state.ts";
+import { renderInspection, renderReceipt } from "../../src/agent/view.ts";
 
 function makeLaunch(
   base: string,
@@ -171,23 +172,49 @@ nodeTest(
     recordOverseerReview(base, launch, "approved", "Inspected diff; change is within contract.");
     assert.equal(await waiting, "approved");
 
-    // Mid-run escalation notices include required `summary="..."` on both normal and 3rd-strike hints.
+    // Every pause notice offers steer, approve and stop, each with its required `summary="..."`.
+    // Only corrections move a run toward "prefer stop": a third pause after two approvals does
+    // not, and neither does the pause of a child too old to report its corrections.
     const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
-    for (const strikes of [2, 3]) {
-      const escId = `esc-hint-check-${strikes}`;
-      write(escFile, { ...escalation, id: escId, strikes });
-      t.after(() => release(launch.owner, `escalation:${escId}`));
-      const escNotices = notifications(
+    const options =
+      'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
+    const closing = (id: string, counts: Pick<Escalation, "strikes" | "corrections">): string => {
+      write(escFile, { ...escalation, id, ...counts });
+      t.after(() => release(launch.owner, `escalation:${id}`));
+      const [notice] = notifications(
         { sessionManager: SessionManager.inMemory() },
         base,
         launch.owner,
       ).notices;
-      const escText =
-        typeof escNotices[0]?.message.content === "string" ? escNotices[0].message.content : "";
-      assert.match(escText, /summary="\.\.\."/u);
-      assert.match(escText, strikes >= 3 ? /3rd strike:/u : /Steer/u);
       fs.rmSync(escFile, { force: true });
-    }
+      const content = notice?.message.content;
+      assert.ok(typeof content === "string");
+      assert.match(content, new RegExp(`^\\[Overseer escalation #${counts.strikes} - `, "u"));
+      return content.split("\n").slice(3).join("\n");
+    };
+    assert.equal(closing("esc-older-child", { strikes: 3 }), `+// valid change\n${options}`);
+    assert.equal(
+      closing("esc-approved-twice", { strikes: 3, corrections: 0 }),
+      `+// valid change\n${options}`,
+    );
+    assert.equal(
+      closing("esc-corrected-twice", { strikes: 3, corrections: 2 }),
+      `+// valid change\nYou corrected this run 2 times before this pause.\n${options}`,
+    );
+    assert.equal(
+      closing("esc-corrected-thrice", { strikes: 5, corrections: 3 }),
+      `+// valid change\nYou corrected this run 3 times before this pause: prefer \`agent_runs\` \`action="stop"\`.\n${options}`,
+    );
+    // The inventory, the inspection and the observer print the same two counts.
+    assert.equal(pauseLabel({ ...escalation, strikes: 3 }), "scope_violation #3");
+    assert.equal(
+      pauseLabel({ ...escalation, strikes: 3, corrections: 1 }),
+      "scope_violation #3, 1 correction",
+    );
+    assert.equal(
+      pauseLabel({ ...escalation, strikes: 5, corrections: 3 }),
+      "scope_violation #5, 3 corrections",
+    );
 
     // Mid-run escalation approval predates final completion, so final completion still requires review.
     const completedAfterPause: Result = {
@@ -215,8 +242,28 @@ nodeTest(
     const inspectText = midRunInspect.content[0]?.text ?? "";
     assert.match(inspectText, /Overseer review: approved at /u);
     assert.match(inspectText, /Overseer review: required before parent settles\./u);
-    recordOverseerReview(base, launch, "approved", "Verified final diff across both files.");
+    const finalReview = recordOverseerReview(
+      base,
+      launch,
+      "approved",
+      "Verified final diff across both files.",
+    );
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
+    // The reply to the review confirms it and says what follows. It does not repeat the run
+    // record or the child's report.
+    fs.writeFileSync(path.join(runDirectory(base, launch.id), "output.txt"), "The final report.\n");
+    assert.match(renderInspection(base, launch).content[0]?.text ?? "", /The final report\./u);
+    assert.equal(
+      renderReceipt(base, launch, undefined, {
+        receipt: "review",
+        review: finalReview,
+        released: false,
+      }).content[0]?.text,
+      [
+        `Overseer review recorded: run paused-run (paused-run) approved at ${new Date(finalReview.at).toISOString().slice(0, 19)}Z.`,
+        "The run's status is completed; it needs no further review.",
+      ].join("\n"),
+    );
     const approvedCompletion = notifications(
       { sessionManager: SessionManager.inMemory() },
       base,
@@ -266,6 +313,7 @@ nodeTest(
       summary: "Approved paused tip via predecessor id.",
     });
     assert.equal(actionResult.target.id, tipB.id);
+    assert.equal(actionResult.released, true);
     assert.equal(await tipWait, "approved");
 
     // Unborn empty Git repo where a scope:[] child makes the first commit still populates

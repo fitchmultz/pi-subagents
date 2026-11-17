@@ -1065,7 +1065,7 @@ nodeTest(
     });
     // Wait until escalation.json appears, then steer (do NOT approve).
     const firstEsc = await paused();
-    assert.equal(firstEsc.strikes, 1);
+    assert.deepEqual([firstEsc.strikes, firstEsc.corrections], [1, 0]);
     resolveActiveEscalation(base, launch, "steered");
     await turnPromise;
     assert.equal(judged.length, 1);
@@ -1077,7 +1077,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const secondEsc = await paused();
-    assert.equal(secondEsc.strikes, 2);
+    assert.deepEqual([secondEsc.strikes, secondEsc.corrections], [2, 1]);
     resolveActiveEscalation(base, launch, "steered");
     const steeredResults = await settlePromise;
     assert.equal(judged.length, 2);
@@ -1091,7 +1091,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const thirdEsc = await paused();
-    assert.equal(thirdEsc.strikes, 3);
+    assert.deepEqual([thirdEsc.strikes, thirdEsc.corrections], [3, 2]);
     resolveActiveEscalation(base, launch, "approved");
     const approvedResults = await approvePromise;
     assert.deepEqual(approvedResults, [undefined]);
@@ -1103,7 +1103,9 @@ nodeTest(
       entries: [],
       context: { pendingMessages: [] },
     });
-    await paused();
+    // The approval of the third pause is not a correction.
+    const fourthEsc = await paused();
+    assert.deepEqual([fourthEsc.strikes, fourthEsc.corrections], [4, 2]);
     resolveActiveEscalation(base, launch, "steered");
     const fallbackResults = await fallbackPromise;
     assert.equal(flushed, 2);
@@ -1221,22 +1223,28 @@ nodeTest(
     assert.equal(third.kind, "primitive_violation");
     assert.deepEqual(third.changedFiles, ["src/allowed.ts"]);
     // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
-    // and says of the approved files only that their earlier changes are not shown.
-    assert.deepEqual(notice().split("\n").slice(0, -1), [
-      `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-      `Reason: ${third.summary}`,
-      "Changes since your last approval:",
-      "  +1 -0 src/allowed.ts",
-      "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
-      "diff --git a/src/allowed.ts b/src/allowed.ts",
-      "index 5dc3114..46469ae 100644",
-      "--- a/src/allowed.ts",
-      "+++ b/src/allowed.ts",
-      "@@ -1,2 +1,3 @@",
-      " export const x = 1;",
-      " export const later = 1;",
-      "+// FLAG",
-    ]);
+    // and says of the approved files only that their earlier changes are not shown. This is a
+    // third pause after two approvals: no correction is counted, and nothing advises stopping.
+    assert.deepEqual([third.strikes, third.corrections], [3, 0]);
+    assert.equal(
+      notice(),
+      [
+        `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+        `Reason: ${third.summary}`,
+        "Changes since your last approval:",
+        "  +1 -0 src/allowed.ts",
+        "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
+        "diff --git a/src/allowed.ts b/src/allowed.ts",
+        "index 5dc3114..46469ae 100644",
+        "--- a/src/allowed.ts",
+        "+++ b/src/allowed.ts",
+        "@@ -1,2 +1,3 @@",
+        " export const x = 1;",
+        " export const later = 1;",
+        "+// FLAG",
+        STEER_APPROVE_OR_STOP,
+      ].join("\n"),
+    );
     assert.equal(judged.length, 2);
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
