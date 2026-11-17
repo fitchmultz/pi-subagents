@@ -562,7 +562,7 @@ diff --git a/docs/NEW.md b/docs/NEW.md
 - `Approved earlier in this run (those changes are not shown)` names the files of the work
   that the overseer already approved. A file that changed again after the approval is also in
   the lines above, with its new change only.
-- The diff is cut at 3000 characters. When it is cut, the notice ends with the command that
+- The diff is cut at 3000 characters. When it is cut, the excerpt is followed by the command that
   prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
 
 `escalation.json` carries the same facts in the optional fields `since`, `stat`, `diffCommand`,

@@ -145,7 +145,7 @@ function changeLines(escalation: Escalation): string[] {
   if (escalation.stat === undefined) {
     return [`Changed files: ${files}`, escalation.diffExcerpt];
   }
-  const stat = escalation.stat.replaceAll(/^(\S+)\t(\S+)\t/gmu, "  +$1 -$2 ").trimEnd();
+  const stat = escalation.stat.replaceAll(/^(\S+)\t(\S+)\t/gmu, "  +$1 -$2 ");
   return [
     `Changes since ${escalation.since === "approval" ? "your last approval" : "launch"}:`,
     stat === "" ? `  ${files}` : stat,
