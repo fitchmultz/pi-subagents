@@ -6,6 +6,20 @@
 - An overseer approval now accepts the paused state for the rest of the run, not only that exact diff. Later pauses are raised for later changes only: an approved out-of-scope file is flagged again only when it changes again, an approved base-branch issue is not raised again, and committing approved work raises nothing. The judge sees the work since the last state that passed (approved, unchanged or found clean) instead of the whole diff since launch, and it is no longer asked on every turn about a flagged state that did not change. A pause lists the work since the overseer's last approval instead of the work since launch. See [Overseer mode](docs/reference.md#overseer-mode).
 - An overseer pause notice now says what it covers. It states whether the listed work is measured from launch or from the overseer's last approval, gives the added and removed line counts of every changed file, names the files changed after the last clean check, names the files the overseer approved earlier in the run, and, when the 3000-character diff excerpt is cut, ends with the `git diff` command that prints the whole diff. Before, the notice listed file names and an excerpt that could end before the files that mattered. The judge also receives the names of the files changed earlier in the run and is told to judge only the new diff. See [What a pause notice shows](docs/reference.md#what-a-pause-notice-shows).
 
+## 0.52.46 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- chore(size): remove the 1 MiB size ceiling (OVR-213) (#458) ([94803a6](https://github.com/fitchmultz/pi-subagents/commit/94803a6090741c5f9ed5bd7a74d400295ed300bf))
+
+### What's Changed
+
+- chore(size): remove the 1 MiB size ceiling (OVR-213) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/458
+- ci: release through direct signed version commits (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/463
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.45...v0.52.46
+
 ## 0.52.45 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->
