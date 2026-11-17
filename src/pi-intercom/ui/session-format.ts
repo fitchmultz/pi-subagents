@@ -82,6 +82,9 @@ function healthTags(session: SessionInfo, now: number): readonly string[] {
       `last_seen:${formatDuration(Math.max(0, Math.floor((now - session.lastSeen) / 1000)))} ago`,
     );
   }
+  if (typeof session.startedAt === "number" && session.startedAt > 0) {
+    tags.push(`worker_started:${age(session.startedAt, now)}`);
+  }
   return tags;
 }
 interface RowOptions {

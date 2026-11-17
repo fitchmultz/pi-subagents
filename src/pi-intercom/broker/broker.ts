@@ -361,6 +361,7 @@ class IntercomBroker {
       "name",
       "status",
       "model",
+      "startedAt",
       "pendingAsks",
       "acceptsAsks",
       "lastIntercomActivity",

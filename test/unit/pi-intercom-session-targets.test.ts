@@ -276,6 +276,60 @@ nodeTest(
 );
 
 nodeTest(
+  "formatSessionListSections renders worker_started age when startedAt is positive and omits absent or zero values",
+  (t) => {
+    const now = 1_000_000_000;
+    t.mock.timers.enable({ apis: ["Date"], now });
+    const listing = formatSessionListSections(
+      [
+        {
+          id: "aaaaaaaa-1111",
+          name: "restarted-main",
+          cwd: "/repo",
+          model: "fixture",
+          status: "idle",
+          acceptsAsks: true,
+          pendingAsks: 0,
+          startedAt: now - 45_000,
+          lastSeen: now - 2_000,
+          lastIntercomActivity: 0,
+        },
+        {
+          id: "bbbbbbbb-1111",
+          name: "older-worker",
+          cwd: "/repo",
+          model: "fixture",
+          status: "idle",
+          acceptsAsks: true,
+          pendingAsks: 0,
+          startedAt: now - 7_200_000,
+          lastSeen: now - 5_000,
+          lastIntercomActivity: now - 120_000,
+        },
+        {
+          id: "cccccccc-1111",
+          name: "legacy-peer",
+          cwd: "/repo",
+          model: "fixture",
+          startedAt: 0,
+        },
+      ],
+      "aaaaaaaa-1111",
+    );
+
+    assert.match(
+      listing,
+      /• restarted-main \(aaaaaaaa\) — .*\[self, idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:2s ago, worker_started:45s ago\]/,
+    );
+    assert.match(
+      listing,
+      /• older-worker \(bbbbbbbb\) — .*\[same native session cwd, idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:2m ago, last_seen:5s ago, worker_started:2h ago\]/,
+    );
+    assert.doesNotMatch(listing, /• legacy-peer[^\n]*worker_started:/);
+  },
+);
+
+nodeTest(
   "formatDeviceListings prints one block per device: name@device rows, no sessions, each failure",
   () => {
     // A fixed device clock far from this machine's: ages must come from the device's `now`.
@@ -303,6 +357,7 @@ nodeTest(
           status: "idle",
           acceptsAsks: true,
           pendingAsks: 1,
+          startedAt: now - 1_800_000,
           lastSeen: now - 7_200_000,
           lastIntercomActivity: now - 120_000,
         }),
@@ -323,7 +378,7 @@ nodeTest(
       formatDeviceListings(listings),
       [
         "**Main sessions on laptop (3):**",
-        "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago]",
+        "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago, worker_started:30m ago]",
         `• web-build@laptop (pi-bbbbb@laptop) — Native session cwd: /work/web (fixture) [tool:bash, target:pi-bbbbb@laptop, ${busyTags}]`,
         `• Web-Build@laptop (pi-ccccc@laptop) — Native session cwd: /work/web (fixture) [tool:bash, target:pi-ccccc@laptop, ${busyTags}]`,
         "",
@@ -340,7 +395,7 @@ nodeTest(
       formatDeviceListings(listings.slice(0, 2), " API "),
       [
         '**Main sessions on laptop matching "API" (1 of 3):**',
-        "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago]",
+        "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago, worker_started:30m ago]",
         "",
         "**Main sessions on desk (0):** no Pi session is connected there.",
         "",
@@ -353,7 +408,7 @@ nodeTest(
         formatDeviceListings([laptop, { ...laptop, device: "desk" }], copied),
         [
           `**Main sessions on laptop matching ${JSON.stringify(copied)} (1 of 3):**`,
-          "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago]",
+          "• api-fix@laptop (pi-aaaaa@laptop) — Native session cwd: /work/api (fixture) [idle, state:idle, accepts_asks:true, pending_asks:1, last_intercom_activity:2m ago, last_seen:2h ago, worker_started:30m ago]",
           "",
           `**Main sessions on desk matching ${JSON.stringify(copied)} (0 of 3):**`,
           "",

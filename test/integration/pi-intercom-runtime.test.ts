@@ -198,7 +198,17 @@ nodeTest(
 nodeTest("invalid presence updates cannot poison peer session lists", async (t) => {
   const fixture = await brokerFixture(t);
   const bad = await fixture.client("bad-presence-peer");
-  const healthy = await fixture.client("healthy-presence-peer");
+  const healthy = await fixture.client("healthy-presence-peer", { startedAt: 1_700_000_000_000 });
+  assert.equal(
+    (await bad.listSessions()).find((peer) => peer.name === "healthy-presence-peer")?.startedAt,
+    1_700_000_000_000,
+  );
+  healthy.updatePresence({ startedAt: 1_700_000_005_000 });
+  await waitFor(
+    async () =>
+      (await bad.listSessions()).find((peer) => peer.name === "healthy-presence-peer")
+        ?.startedAt === 1_700_000_005_000,
+  );
   const disconnected = once(bad, "disconnected");
   bad.updatePresence({ name: "bad\u0001name", pendingAsks: 0.5 });
   await disconnected;

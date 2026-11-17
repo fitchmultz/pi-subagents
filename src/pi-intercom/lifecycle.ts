@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import type { IntercomConfig } from "./config.ts";
-import { buildPresenceIdentity, type IntercomLineage } from "./identity.ts";
+import { buildPresenceIdentity, WORKER_STARTED_AT, type IntercomLineage } from "./identity.ts";
 import { resolveSessionProjectId } from "./session-targets.ts";
 import {
   isContextTarget,
@@ -244,9 +244,10 @@ export class IntercomLifecycle {
   }
   health(
     pendingAsks: number,
-  ): Pick<SessionInfo, "pendingAsks" | "acceptsAsks" | "lastIntercomActivity"> {
+  ): Pick<SessionInfo, "startedAt" | "pendingAsks" | "acceptsAsks" | "lastIntercomActivity"> {
     const live = this.live();
     return {
+      startedAt: WORKER_STARTED_AT,
       pendingAsks,
       acceptsAsks: live ? this.isIdle(live) : false,
       lastIntercomActivity: this.activity,
