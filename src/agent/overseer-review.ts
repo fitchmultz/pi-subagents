@@ -125,7 +125,13 @@ export function prepareOverseerReviewAction(
   base: string,
   original: Launch,
   input: RunsInput,
-): { target: Launch; review: OverseerReview; verdict: "approved" | "changes_requested" } {
+): {
+  target: Launch;
+  review: OverseerReview;
+  verdict: "approved" | "changes_requested";
+  /** The review approved a pause that was open on the target. */
+  released: boolean;
+} {
   if (input.verdict === undefined || input.summary === undefined) {
     throw new Error("review requires verdict ('approved' | 'changes_requested') and summary.");
   }
@@ -133,10 +139,12 @@ export function prepareOverseerReviewAction(
   const settled = (id: string): boolean =>
     fs.existsSync(path.join(runDirectory(base, id), "result.json"));
   const target = !settled(tip.id) || !settled(original.id) ? tip : original;
+  const paused = fs.existsSync(path.join(runDirectory(base, target.id), "escalation.json"));
   return {
     target,
     review: recordOverseerReview(base, target, input.verdict, input.summary),
     verdict: input.verdict,
+    released: paused && input.verdict === "approved",
   };
 }
 

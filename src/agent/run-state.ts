@@ -86,6 +86,14 @@ export function runWaiting(base: string, launch: Launch, status: RunStatus): Wai
     : undefined;
 }
 
+/** What paused the run, which pause of the run it is, and how often the overseer corrected it before. */
+export function pauseLabel(escalation: Escalation): string {
+  const corrections = escalation.corrections ?? 0;
+  const corrected =
+    corrections === 0 ? "" : `, ${corrections} correction${corrections === 1 ? "" : "s"}`;
+  return `${escalation.kind} #${escalation.strikes}${corrected}`;
+}
+
 /** Active unresolved mid-run overseer escalation pausing this running child, if any. */
 export function runEscalation(
   base: string,

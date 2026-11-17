@@ -972,7 +972,7 @@ nodeTest(
     });
     // Wait until escalation.json appears, then steer (do NOT approve).
     const firstEsc = await paused();
-    assert.equal(firstEsc.strikes, 1);
+    assert.deepEqual([firstEsc.strikes, firstEsc.corrections], [1, 0]);
     resolveActiveEscalation(base, launch, "steered");
     await turnPromise;
     assert.equal(judged.length, 1);
@@ -984,7 +984,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const secondEsc = await paused();
-    assert.equal(secondEsc.strikes, 2);
+    assert.deepEqual([secondEsc.strikes, secondEsc.corrections], [2, 1]);
     resolveActiveEscalation(base, launch, "steered");
     const steeredResults = await settlePromise;
     assert.equal(judged.length, 2);
@@ -998,7 +998,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const thirdEsc = await paused();
-    assert.equal(thirdEsc.strikes, 3);
+    assert.deepEqual([thirdEsc.strikes, thirdEsc.corrections], [3, 2]);
     resolveActiveEscalation(base, launch, "approved");
     const approvedResults = await approvePromise;
     assert.deepEqual(approvedResults, [undefined]);
@@ -1010,7 +1010,9 @@ nodeTest(
       entries: [],
       context: { pendingMessages: [] },
     });
-    await paused();
+    // The approval of the third pause is not a correction.
+    const fourthEsc = await paused();
+    assert.deepEqual([fourthEsc.strikes, fourthEsc.corrections], [4, 2]);
     resolveActiveEscalation(base, launch, "steered");
     const fallbackResults = await fallbackPromise;
     assert.equal(flushed, 2);
@@ -1127,6 +1129,15 @@ nodeTest(
     const third = await paused();
     assert.equal(third.kind, "primitive_violation");
     assert.deepEqual(third.changedFiles, ["src/allowed.ts"]);
+    // A third pause after two approvals: no correction is counted, and no advice to stop.
+    assert.deepEqual([third.strikes, third.corrections], [3, 0]);
+    assert.deepEqual(notice().split("\n").slice(0, 3), [
+      `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+      `Reason: ${third.summary}`,
+      "Changes since your last approval:",
+    ]);
+    assert.equal(notice().split("\n").at(-1), STEER_APPROVE_OR_STOP);
+    assert.doesNotMatch(notice(), /prefer|corrected/u);
     assert.equal(judged.length, 2);
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
