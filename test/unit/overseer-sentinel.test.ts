@@ -1364,9 +1364,9 @@ nodeTest("an approved base-branch issue is not raised again for later work", asy
 nodeTest(
   "a judge whose requests fail does not pause the run, and the completion notice says so",
   async (t) => {
-    let judgeAnswers = false;
+    let answer: JudgeChoice | "request_failed" = "request_failed";
     const { repo, base, launch, emit, paused, judged, escPath } = await supervisedRun(t, {
-      verdict: () => (judgeAnswers ? "compliant" : "request_failed"),
+      verdict: () => answer,
     });
     const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
     const unavailableFile = path.join(runDirectory(base, launch.id), "judge-unavailable.json");
@@ -1396,44 +1396,54 @@ nodeTest(
     assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
     assert.equal(judged.length, 1);
     assert.deepEqual(notices(), []);
+    assert.equal(fs.existsSync(unavailableFile), true);
 
-    // The scope check still pauses the child.
+    // The scope check still pauses the child. The overseer approves the pause, which shows all
+    // the work so far: no work is left that waits for a judge.
     fs.writeFileSync(path.join(repo, "README.md"), "drift\n");
     const drift = emit("turn_end", mutatingTurn);
     assert.equal((await paused()).kind, "scope_violation");
-    resolveActiveEscalation(base, launch, "steered");
+    resolveActiveEscalation(base, launch, "approved");
     await drift;
-    fs.writeFileSync(path.join(repo, "README.md"), "committed\n");
-
-    // Before the run settles the judge answers again. It is asked about all the work that no
-    // judge answered for, and it clears that work: nothing is left to report.
-    assert.equal(fs.existsSync(unavailableFile), true);
-    judgeAnswers = true;
-    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
-    assert.equal(judged.length, 2);
-    assert.match(judged[1]?.diff ?? "", /^\+export const big129 = 129;$/mu);
     assert.equal(fs.existsSync(unavailableFile), false);
 
-    // The child does more work, and the request fails again at the checkpoint before the run
-    // settles. The run ends without a pause. Its completion notice still requires the review,
-    // and says once that no judge answered.
-    judgeAnswers = false;
-    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const last = 1;\n");
-    assert.equal(await pauses(emit("agent_before_settle", settle)), false);
+    // The request fails again for later work.
+    fs.writeFileSync(path.join(repo, "src", "more.ts"), manyLines("more"));
+    assert.equal(await pauses(emit("turn_end", mutatingTurn)), false);
+    assert.equal(judged.length, 2);
+    assert.equal(fs.existsSync(unavailableFile), true);
+
+    // Before the run settles a classifier answers again. It is asked about all the work that no
+    // judge answered for, and flags it. That work is judged: nothing is left to report.
+    answer = "primitive_violation";
+    const flagged = emit("agent_before_settle", settle);
+    assert.equal((await paused()).kind, "primitive_violation");
     assert.equal(judged.length, 3);
+    assert.match(judged[2]?.diff ?? "", /^\+export const more129 = 129;$/mu);
+    assert.equal(fs.existsSync(unavailableFile), false);
+    resolveActiveEscalation(base, launch, "steered");
+    await flagged;
+
+    // The child changes the flagged work, and the request fails again at the checkpoint before
+    // the run settles. The run ends without a pause. Its completion notice still requires the
+    // review, and says once that no judge answered.
+    answer = "request_failed";
+    fs.appendFileSync(path.join(repo, "src", "more.ts"), "export const last = 1;\n");
+    assert.equal(await pauses(emit("agent_before_settle", settle)), false);
+    assert.equal(judged.length, 4);
     write(path.join(runDirectory(base, launch.id), "result.json"), {
       id: launch.id,
       owner: launch.owner,
       status: "completed",
       endedAt: Date.now(),
-      changedFiles: ["src/allowed.ts", "src/big.ts"],
+      changedFiles: ["README.md", "src/big.ts", "src/more.ts"],
     });
     const completion = notices();
     assert.equal(completion.length, 1);
     assert.deepEqual(
       completion[0]?.split("\n").filter((line) => line.startsWith("[Overseer ")),
       [
-        `[Overseer review required: inspect git diff in ${repo} (src/allowed.ts, src/big.ts) and call agent_runs(action="review", id="run-overseer-1", verdict="approved", summary="...") in this turn before finishing.]`,
+        `[Overseer review required: inspect git diff in ${repo} (README.md, src/big.ts, src/more.ts) and call agent_runs(action="review", id="run-overseer-1", verdict="approved", summary="...") in this turn before finishing.]`,
         "[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. Overseer judge 'google/gemini-decision-1' failed: credits depleted.]",
       ],
     );

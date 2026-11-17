@@ -561,9 +561,9 @@ never pauses the child.
 ```
 
 While work is unjudged, the run directory holds `judge-unavailable.json` (`at`, `summary`). The
-child removes it when that work passes: a classifier finds it clean, the overseer approves a
-pause, or the work is gone. A parent that runs an older package version does not read the
-file, and its completion notice does not have the line.
+child removes it when a classifier answers for that work, with either verdict, when the
+overseer approves a pause, or when the work is gone. A parent that runs an older package
+version does not read the file, and its completion notice does not have the line.
 
 ### What a pause notice shows
 

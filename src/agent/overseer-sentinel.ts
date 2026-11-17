@@ -328,7 +328,7 @@ class SentinelRunner {
     const current = this.ensureState(launch);
     current.reviewPoint = acceptedPoint(current.reviewPoint, snapshot);
     current.judged = { tree: snapshot.tree, lines: 0 };
-    // Nothing is left that no judge answered for.
+    // The passed state has no work that still waits for a judge.
     fs.rmSync(judgeUnavailableFile(this.options.base, launch.id), { force: true });
   }
 
@@ -476,6 +476,8 @@ class SentinelRunner {
       write(judgeUnavailableFile(this.options.base, launch.id), unavailable);
       return undefined;
     }
+    // A classifier answered: the work is judged, whatever the verdict.
+    fs.rmSync(judgeUnavailableFile(this.options.base, launch.id), { force: true });
     if (verdict === undefined) {
       this.pass(launch, snapshot);
       return undefined;
