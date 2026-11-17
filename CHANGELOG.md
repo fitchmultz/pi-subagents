@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.48 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Name GPT-6.2 Astra in the real Pi smoke help example (DOT-214) (1/1) (#465) ([48e50bc](https://github.com/fitchmultz/pi-subagents/commit/48e50bc6533e1c2aa0fd97ff5e83d2df9da95146))
+
+### What's Changed
+
+- Name GPT-6.2 Astra in the real Pi smoke help example (DOT-214) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/465
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.47...v0.52.48
+
 ## 0.52.47 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->
