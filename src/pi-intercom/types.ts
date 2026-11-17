@@ -27,6 +27,7 @@ export interface SessionInfo {
   readonly guardedDelivery?: 1 | undefined;
   readonly applicationGuard?: string | undefined;
   readonly status?: string | undefined;
+  readonly startedAt?: number | undefined;
   readonly lastSeen?: number | undefined;
   readonly lastIntercomActivity?: number | undefined;
   readonly pendingAsks?: number | undefined;
@@ -291,8 +292,9 @@ export function isMessage(value: unknown): value is Message {
 
 function validSessionHealth(session: Readonly<Record<string, unknown>>): boolean {
   if (
-    !optionalFiniteNumber(session.lastSeen) ||
-    !optionalFiniteNumber(session.lastIntercomActivity) ||
+    ![session.startedAt, session.lastSeen, session.lastIntercomActivity].every(
+      optionalFiniteNumber,
+    ) ||
     !optionalBoolean(session.acceptsAsks)
   ) {
     return false;

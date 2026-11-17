@@ -4039,7 +4039,9 @@ nodeTest(
     ) => (await executeIntercom(caller, { action: "list", ...params })).content[0]?.text ?? "";
 
     // Without `device` the list is the local one, and nothing is run.
-    assert.match(await list(main, {}), /\*\*Other main sessions \(\d+\):\*\*\n/);
+    const localList = await list(main, {});
+    assert.match(localList, /\*\*Other main sessions \(\d+\):\*\*\n/);
+    assert.match(localList, /• device-main \([^\n]+worker_started:\d+[smh] ago\]/);
     await assert.rejects(
       list(child, { device: "all" }),
       /Only a main session reaches other devices/,
@@ -4070,11 +4072,15 @@ nodeTest(
     assert.match(
       mainRow,
       new RegExp(
-        `^• device-main@peer \\(pi-[0-9a-f]{5,}@peer\\) — Native session cwd: ${path.join(root, "device-main")} \\(\\S+\\) \\[idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:\\d+s ago\\]$`,
+        `^• device-main@peer \\(pi-[0-9a-f]{5,}@peer\\) — Native session cwd: ${path.join(root, "device-main")} \\(\\S+\\) \\[idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:\\d+s ago, worker_started:\\d+[smh] ago\\]$`,
       ),
     );
     assert.ok(rows.some((row) => row.startsWith("• device-unset@peer (")));
     assert.ok(rows.some((row) => row.startsWith("• fixture-host@peer (")));
+    assert.doesNotMatch(
+      rows.find((row) => row.startsWith("• fixture-host@peer (")) ?? "",
+      /worker_started:/,
+    );
     assert.doesNotMatch(peer, /bridge-bot|device-child|intercom-list|remote-/);
     assert.equal(quiet, "**Main sessions on quiet (0):** no Pi session is connected there.");
     const listedAt = Date.now();
@@ -4088,6 +4094,7 @@ nodeTest(
     // Only the fields of a row leave the device: no session root, incarnation or guard.
     const sent = records(reply("peer").sessions).find((session) => session.name === "device-main");
     assertDefined(sent);
+    assert.ok(numberValue(sent.startedAt) <= listedAt && numberValue(sent.startedAt) > 0);
     assert.deepEqual(Object.keys(sent).toSorted(), [
       "acceptsAsks",
       "cwd",
@@ -4098,6 +4105,7 @@ nodeTest(
       "name",
       "pendingAsks",
       "projectId",
+      "startedAt",
       "status",
     ]);
     assert.equal(down, "**down:** unreachable (connect to host down port 22: Operation timed out)");

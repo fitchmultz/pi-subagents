@@ -58,6 +58,7 @@ export type RemoteSession = Pick<
   | "model"
   | "projectId"
   | "status"
+  | "startedAt"
   | "lastSeen"
   | "lastIntercomActivity"
   | "pendingAsks"
@@ -128,6 +129,7 @@ function listed(session: SessionInfo): RemoteSession {
     model: session.model,
     projectId: session.projectId,
     status: session.status,
+    startedAt: session.startedAt,
     lastSeen: session.lastSeen,
     lastIntercomActivity: session.lastIntercomActivity,
     pendingAsks: session.pendingAsks,

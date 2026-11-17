@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+export const WORKER_STARTED_AT = Math.floor(performance.timeOrigin);
+
 export interface IntercomLineage {
   readonly rootSessionId: string;
   readonly parentSessionId: string;

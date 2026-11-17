@@ -511,6 +511,7 @@ export class IntercomClient extends EventEmitter {
     readonly name?: string | undefined;
     readonly status?: string | undefined;
     readonly model?: string | undefined;
+    readonly startedAt?: number | undefined;
     readonly pendingAsks?: number | undefined;
     readonly acceptsAsks?: boolean | undefined;
     readonly lastIntercomActivity?: number | undefined;

@@ -17,6 +17,7 @@ nodeDescribe("pi-intercom wire validation", () => {
         cwd: "/repo",
         model: "model",
         projectId: "a".repeat(64),
+        startedAt: 1,
         lastSeen: 1,
         lastIntercomActivity: 2,
         pendingAsks: 0,
@@ -24,12 +25,22 @@ nodeDescribe("pi-intercom wire validation", () => {
       }),
       true,
     );
+    assert.equal(
+      normalizeSessionInfo({
+        id: "session-1",
+        cwd: "/repo",
+        model: "model",
+        startedAt: 1_700_000_000_000,
+      })?.startedAt,
+      1_700_000_000_000,
+    );
     assert.equal(isSessionRegistration({ cwd: "/repo", model: 1 }), false);
     assert.equal(
       isSessionRegistration({ cwd: "/repo", model: "model", projectId: "not-a-project-id" }),
       false,
     );
     assert.equal(isSessionRegistration({ cwd: "/repo", model: "model", pendingAsks: "0" }), false);
+    assert.equal(isSessionRegistration({ cwd: "/repo", model: "model", startedAt: "1" }), false);
   });
 
   nodeIt("drops malformed project ids from older broker session info", () => {
@@ -63,6 +74,10 @@ nodeDescribe("pi-intercom wire validation", () => {
     assert.equal(isSessionRegistration({ cwd: "/tmp", model: "test", pendingAsks: -1 }), false);
     assert.equal(
       isSessionRegistration({ cwd: "/tmp", model: "test", lastSeen: Number.POSITIVE_INFINITY }),
+      false,
+    );
+    assert.equal(
+      isSessionRegistration({ cwd: "/tmp", model: "test", startedAt: Number.NaN }),
       false,
     );
     assert.equal(isSessionRegistration({ cwd: "/tmp", model: "bad\nmodel" }), false);

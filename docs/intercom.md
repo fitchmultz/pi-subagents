@@ -158,8 +158,8 @@ one block per device and no session of this device:
 
 ```text
 **Main sessions on laptop (2):**
-• api-fix@laptop (pi-7e8f9@laptop) — Native session cwd: /work/api (model-b) [idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:2h ago]
-• web-build@laptop (pi-0a1b2@laptop) — Native session cwd: /work/web (model-a) [tool:bash, state:busy, accepts_asks:false, pending_asks:0, last_intercom_activity:none, last_seen:5s ago]
+• api-fix@laptop (pi-7e8f9@laptop) — Native session cwd: /work/api (model-b) [idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none, last_seen:2h ago, worker_started:2h ago]
+• web-build@laptop (pi-0a1b2@laptop) — Native session cwd: /work/web (model-a) [tool:bash, state:busy, accepts_asks:false, pending_asks:0, last_intercom_activity:none, last_seen:5s ago, worker_started:20m ago]
 
 **Main sessions on desk (0):** no Pi session is connected there.
 
@@ -326,6 +326,7 @@ the last line on stdout. The replies are wrapped here for reading:
       "cwd": "/work/api",
       "model": "model-b",
       "status": "idle",
+      "startedAt": 1794343410000,
       "acceptsAsks": true,
       "pendingAsks": 0,
       "lastSeen": 1794343410543
@@ -385,7 +386,7 @@ listener, service or port is added on any device.
   the recipient retires the question.
 
 For each listed main, these fields leave its device, inside the SSH connection:
-ID, name, cwd, model, project ID, status, `acceptsAsks`, `pendingAsks`,
+ID, name, cwd, model, project ID, status, `startedAt`, `acceptsAsks`, `pendingAsks`,
 `lastSeen` and `lastIntercomActivity`.
 
 ## Send, ask, and reply
