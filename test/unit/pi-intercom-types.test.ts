@@ -1,8 +1,11 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe as nodeDescribe, it as nodeIt } from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
+import { Assert } from "../../src/agent/typebox.ts";
 import { isLastMessageResult } from "../../src/pi-intercom/broker/last.ts";
 import { getSanitizedAssistantError } from "../../src/pi-intercom/message-format.ts";
+import { intercomSchema } from "../../src/pi-intercom/tool-schemas.ts";
 import {
   isAttachment,
   isMessage,
@@ -163,4 +166,71 @@ nodeDescribe("pi-intercom wire validation", () => {
       );
     },
   );
+});
+
+nodeDescribe("intercomSchema strict property validation", () => {
+  const tool = {
+    name: "intercom",
+    description: "Intercom tool",
+    parameters: intercomSchema,
+  };
+
+  nodeIt("accepts valid root and attachment properties", () => {
+    const valid = {
+      action: "send",
+      to: "worker",
+      message: "Check this attachment",
+      attachments: [
+        {
+          type: "file",
+          name: "src/index.ts",
+          content: "export {};",
+          language: "ts",
+        },
+      ],
+    };
+    Assert(intercomSchema, valid);
+    validateToolArguments(tool, {
+      type: "toolCall",
+      id: "call-valid",
+      name: "intercom",
+      arguments: valid,
+    });
+  });
+
+  nodeIt("rejects unexpected properties on the root schema and attachment items", () => {
+    const rootExtra = { action: "list", extraField: true };
+    assert.throws(() => Assert(intercomSchema, rootExtra));
+    assert.throws(() => {
+      validateToolArguments(tool, {
+        type: "toolCall",
+        id: "call-root-extra",
+        name: "intercom",
+        arguments: rootExtra,
+      });
+    });
+
+    const attachmentExtra = {
+      action: "send",
+      to: "worker",
+      message: "Hello",
+      attachments: [
+        {
+          type: "snippet",
+          name: "snippet.ts",
+          content: "const x = 1;",
+          extraAttachmentField: "nope",
+        },
+      ],
+    };
+    assert.throws(() => Assert(intercomSchema, attachmentExtra));
+    assert.throws(() => {
+      validateToolArguments(tool, {
+        type: "toolCall",
+        id: "call-attachment-extra",
+        name: "intercom",
+        arguments: attachmentExtra,
+      });
+    });
+  });
 });

@@ -1088,19 +1088,38 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         assert.doesNotMatch(collapsed, /CARD_END/, "long custom cards start collapsed");
         terminal.click(screen, "[intercom_message]");
         await until(
+          () =>
+            screenLines().some((line) => line.includes("CARD_END")) &&
+            screenLines().some(
+              (line) => line.includes("[intercom_message]") && line.includes("to collapse"),
+            ) &&
+            screenLines().some(
+              (line) => line.includes("[subagent-human-message]") && line.includes("to expand"),
+            ),
+          "clicking one custom card expands only that card",
+        );
+        terminal.click(screen, "[intercom_message]");
+        await until(
+          () =>
+            screenLines().some((line) => line.includes("CARD_START")) &&
+            !screenLines().some((line) => line.includes("CARD_END")) &&
+            screenLines().some(
+              (line) => line.includes("[intercom_message]") && line.includes("to expand"),
+            ),
+          "clicking the expanded custom card collapses only that card",
+        );
+        terminal.click(screen, "[intercom_message]");
+        await until(
           () => screenLines().some((line) => line.includes("CARD_END")),
-          "clickable message hint uses native expansion state",
+          "clicking custom card re-expands it before global Ctrl+O",
         );
         terminal.send("\x0f");
         await until(
           () =>
-            screenLines().some((line) => line.includes("CARD_START")) &&
-            !screenLines().some((line) => line.includes("CARD_END")),
-          "keyboard and mouse share native expansion state",
-        );
-        terminal.send("\x0f");
-        await until(
-          () => screenLines().some((line) => line.includes("CARD_END")),
+            screenLines().some((line) => line.includes("CARD_END")) &&
+            screenLines().some(
+              (line) => line.includes("[subagent-human-message]") && line.includes("to collapse"),
+            ),
           "native Ctrl+O expands full card content",
         );
         terminal.send("\x0f");
