@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.52 - 2026-11-18
+
+<!-- npm-release:unreleased:start -->
+
 - Overseer tool-error reviews show which calls failed and which succeeded, even in the same turn. The notice names known repeated calls without showing arguments or logs. Prior steers no longer prompt advice to stop a worker. (OVR-215, OVR-216)
+
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): show tool outcomes without recommending stop (OVR-215, OVR-216) (1/1) (#469) ([0f601f2](https://github.com/fitchmultz/pi-subagents/commit/0f601f2a07b15935504fe0a6a071cd070b556f1d))
+
+### What's Changed
+
+- fix(overseer): show tool outcomes without recommending stop (OVR-215, OVR-216) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/469
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.51...v0.52.52
 
 ## 0.52.51 - 2026-11-18
 
