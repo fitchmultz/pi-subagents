@@ -261,9 +261,13 @@ structural limit, policy check, or compiler gate.
 Chosen adjustment and scope: replace `oxlint-tsgolint` with `tsrs@7.1.0-beta.tsrs2`
 in `package.json` and `package-lock.json`, retain `typescript@7.0.2` (`tsc`),
 keep `.oxlintrc.json` unchanged, update `test/support/lint-probes.ts` to probe
-`@tsrs/<platform>`, strip `TSRS_BINARY`/`TSRS_LIB_PATH`/`OXLINT_TSGOLINT_*`
-overrides via `sanitizeLintEnv`, and use Oxlint's default `tsrs-lint` resolution,
-while retaining missing/invalid backend and env-stripping tests in
+`@tsrs/<platform>`, strip all `TSRS_*` and `OXLINT_TSGOLINT_*` overrides
+(including `TSRS_BINARY`, `TSRS_LIB_PATH`, `OXLINT_TSGOLINT_PATH`,
+`OXLINT_TSGOLINT_TRACE`, `OXLINT_TSGOLINT_CPU`, `OXLINT_TSGOLINT_HEAP`,
+`OXLINT_TSGOLINT_ALLOCS`, and
+`OXLINT_TSGOLINT_DANGEROUSLY_SUPPRESS_PROGRAM_DIAGNOSTICS`) via
+`sanitizeLintEnv`, and use Oxlint's default `tsrs-lint` resolution, while
+retaining missing/invalid backend and env-stripping tests in
 `test/unit/strict-oxlint-qualification.test.ts`.
 
 Retained protection, lost detection, version skew, and assumptions: all Appendix A

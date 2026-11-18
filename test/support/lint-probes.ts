@@ -14,17 +14,11 @@ interface Finding {
   readonly message?: string;
 }
 
-const blockedBackendEnvVars = new Set([
-  "OXLINT_TSGOLINT_PATH",
-  "OXLINT_TSGOLINT_DANGEROUSLY_SUPPRESS_PROGRAM_DIAGNOSTICS",
-  "TSRS_BINARY",
-  "TSRS_LIB_PATH",
-]);
-
 export function sanitizeLintEnv(sourceEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...sourceEnv };
   for (const name of Object.keys(env)) {
-    if (blockedBackendEnvVars.has(name.toUpperCase())) {
+    const upper = name.toUpperCase();
+    if (upper.startsWith("OXLINT_TSGOLINT_") || upper.startsWith("TSRS_")) {
       delete env[name];
     }
   }

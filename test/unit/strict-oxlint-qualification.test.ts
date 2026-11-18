@@ -312,6 +312,10 @@ nodeTest("type-aware lint fails closed when the semantic backend is missing or i
       TSRS_BINARY: join(directory, "missing-tsrs"),
       TSRS_LIB_PATH: join(directory, "missing-tsrs-lib"),
       OXLINT_TSGOLINT_PATH: invalidPath,
+      OXLINT_TSGOLINT_TRACE: join(directory, "trace.out"),
+      OXLINT_TSGOLINT_CPU: join(directory, "cpu.out"),
+      OXLINT_TSGOLINT_HEAP: join(directory, "heap.out"),
+      OXLINT_TSGOLINT_ALLOCS: join(directory, "allocs.out"),
       OXLINT_TSGOLINT_DANGEROUSLY_SUPPRESS_PROGRAM_DIAGNOSTICS: "1",
     },
   );
