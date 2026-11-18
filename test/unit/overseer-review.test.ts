@@ -98,6 +98,16 @@ nodeTest(
 
     // Before parent receives the completion receipt, settle is not blocked.
     assert.deepEqual(unreviewedCompletedRuns({ sessionManager: parentSession }, base, owner), []);
+    const readOnlyNotice = notifications(
+      { sessionManager: parentSession },
+      base,
+      owner,
+    ).notices.find((notice) => notice.id === readOnly.id);
+    assert.equal(
+      readOnlyNotice?.message.content,
+      `Agent run readonly-run: completed. \ndone\nNative journal: ${readOnly.sessionFile}`,
+      "a read-only completion publishes without any review hint",
+    );
 
     // Record completion receipts in parent session transcript.
     parentSession.appendCustomMessageEntry("agent-completion", "done", true, {
@@ -229,17 +239,26 @@ nodeTest(
     write(path.join(runDirectory(base, launch.id), "result.json"), completedAfterPause);
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), true);
     t.after(() => release(launch.owner, launch.id));
-    const unreviewedCompletion = notifications(
-      { sessionManager: SessionManager.inMemory() },
-      base,
-      launch.owner,
-    ).notices.find((item) => item.id === launch.id);
-    const unreviewedText =
-      typeof unreviewedCompletion?.message.content === "string"
-        ? unreviewedCompletion.message.content
-        : "";
-    assert.match(unreviewedText, /Check current review status.*approved or changes_requested/u);
-    release(launch.owner, launch.id);
+    fs.writeFileSync(path.join(runDirectory(base, launch.id), "output.txt"), "The final report.\n");
+    const expectStatusNotice = (state: string): void => {
+      const completion = notifications(
+        { sessionManager: SessionManager.inMemory() },
+        base,
+        launch.owner,
+      ).notices.find((item) => item.id === launch.id);
+      assert.equal(
+        completion?.message.content,
+        [
+          "Agent run paused-run: completed. ",
+          "The final report.\n",
+          '[Check current review status with agent_runs(action="inspect", id="paused-run"). If review is still required, inspect the diff and choose approved or changes_requested.]',
+          `Native journal: ${launch.sessionFile}`,
+        ].join("\n"),
+        `${state} completion points to current status without requiring another review`,
+      );
+      release(launch.owner, launch.id);
+    };
+    expectStatusNotice("Unreviewed");
     const midRunInspect = renderInspection(base, launch);
     const inspectText = midRunInspect.content[0]?.text ?? "";
     assert.match(inspectText, /Overseer review: approved at /u);
@@ -253,7 +272,6 @@ nodeTest(
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
     // The reply to the review confirms it and says what follows. It does not repeat the run
     // record or the child's report.
-    fs.writeFileSync(path.join(runDirectory(base, launch.id), "output.txt"), "The final report.\n");
     assert.match(renderInspection(base, launch).content[0]?.text ?? "", /The final report\./u);
     assert.equal(
       renderReceipt(base, launch, undefined, {
@@ -267,17 +285,7 @@ nodeTest(
         'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.',
       ].join("\n"),
     );
-    const approvedCompletion = notifications(
-      { sessionManager: SessionManager.inMemory() },
-      base,
-      launch.owner,
-    ).notices.find((item) => item.id === launch.id);
-    const approvedText =
-      typeof approvedCompletion?.message.content === "string"
-        ? approvedCompletion.message.content
-        : "";
-    assert.doesNotMatch(approvedText, /Overseer review required:/u);
-    release(launch.owner, launch.id);
+    expectStatusNotice("Approved");
 
     // Clear review.json so the superseded-run check below exercises successor.json independently.
     fs.rmSync(path.join(runDirectory(base, launch.id), "review.json"), { force: true });
@@ -292,17 +300,7 @@ nodeTest(
     write(path.join(runDirectory(base, launch.id), "successor.json"), { id: tipB.id }, true);
     // An unapproved run does not hold up settlement once it has a successor.
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
-    const supersededCompletion = notifications(
-      { sessionManager: SessionManager.inMemory() },
-      base,
-      launch.owner,
-    ).notices.find((item) => item.id === launch.id);
-    const supersededText =
-      typeof supersededCompletion?.message.content === "string"
-        ? supersededCompletion.message.content
-        : "";
-    assert.doesNotMatch(supersededText, /Overseer review required:/u);
-    release(launch.owner, launch.id);
+    expectStatusNotice("Superseded");
     const tipWait = new EscalationPause(tipB.id).wait(
       base,
       { ...escalation, id: "esc-tip-b", runId: tipB.id, diffDigest: "tip-digest" },

@@ -61,12 +61,33 @@ export default function fixture(pi: ExtensionAPI): void {
           fail("check-selector", "echo private-arg; exit 2"),
         ]);
       }
+      const guidance = context.messages.flatMap((message) => {
+        if (message.role !== "user") {
+          return [];
+        }
+        const { content } = message;
+        const text =
+          typeof content === "string"
+            ? content
+            : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+        return text.includes("Keep x instead of replacing it.") ||
+          text.includes("REVERT_README and replace x with the greeting")
+          ? [text]
+          : [];
+      });
+      if (toolGate !== undefined) {
+        fs.writeFileSync(`${judgeInput}.model`, JSON.stringify(guidance));
+      }
       if (hasMessage(context, "REVERT_README")) {
         fs.writeFileSync(path.join(cwd, "README.md"), "committed\n");
         if (
           hasMessage(context, "REVERT_README and replace x with the greeting in src/allowed.ts.")
         ) {
-          fs.writeFileSync(path.join(cwd, "src", "allowed.ts"), "export const greeting = 'hi';\n");
+          const preserveX = guidance.at(-1)?.includes("Keep x instead of replacing it.") === true;
+          fs.writeFileSync(
+            path.join(cwd, "src", "allowed.ts"),
+            preserveX ? "export const x = 2;\n" : "export const greeting = 'hi';\n",
+          );
         }
         return fauxAssistantMessage("REVERTED");
       }

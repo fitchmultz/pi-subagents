@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
-import type {
-  AgentBeforeSettleEvent,
-  ExtensionAPI,
-  ExtensionContext,
-  TurnEndEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import type { Escalation, Launch } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { ToolErrorWindow } from "./overseer-evidence.ts";
@@ -28,12 +23,7 @@ import {
   recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
-import {
-  EscalationPause,
-  OVERSEER_CORRECTION,
-  type EscalationAnswer,
-  type SteerCommand,
-} from "./overseer-pause.ts";
+import { EscalationPause, type SteerCommand } from "./overseer-pause.ts";
 import { checkpointGuidance } from "./overseer-guidance.ts";
 
 const MUTATING_TOOLS = new Set([
@@ -108,6 +98,7 @@ interface SentinelOptions {
   /** Entries that predate this run, including any inherited fork conversation. */
   readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
+  readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
 /** Rejects when no judge answered. */
@@ -251,7 +242,7 @@ export class OverseerSentinel {
     issue: Violation,
     checkpoint: Work,
     toolErrorTurns?: Escalation["toolErrorTurns"],
-  ): Promise<EscalationAnswer> {
+  ): Promise<void> {
     const current = this.ensureState(launch);
     current.pauses += 1;
     current.toolErrors.clear();
@@ -279,6 +270,7 @@ export class OverseerSentinel {
       for (const { id, prompt } of answer.commands) {
         current.admittedCorrections.set(id, prompt);
       }
+      this.options.queueCorrections(answer.commands);
     }
     if (answer.verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
@@ -287,7 +279,6 @@ export class OverseerSentinel {
         current.approvedBranchIssues.add(issue.summary);
       }
     }
-    return answer;
   }
 
   private async inspectCheckpoint(
@@ -295,13 +286,13 @@ export class OverseerSentinel {
     ctx: ExtensionContext,
     finalSettle: boolean,
     toolErrorTurns?: Escalation["toolErrorTurns"],
-  ): Promise<EscalationAnswer | undefined> {
+  ): Promise<void> {
     if (
       launch.overseer?.enabled !== true ||
       launch.contract === undefined ||
       this.options.isStopping()
     ) {
-      return undefined;
+      return;
     }
     const current = this.ensureState(launch);
     const snapshot = captureRepoSnapshot(launch.cwd, {
@@ -339,15 +330,15 @@ export class OverseerSentinel {
     ctx: ExtensionContext,
     checkpoint: Work,
     finalSettle: boolean,
-  ): Promise<EscalationAnswer | undefined> {
+  ): Promise<void> {
     const current = this.ensureState(launch);
     const { snapshot } = checkpoint;
     if (checkpoint.changes.files.length === 0) {
       this.pass(launch, snapshot);
-      return undefined;
+      return;
     }
     if (!shouldRunJudgeCheckpoint(current, checkpoint, finalSettle)) {
-      return undefined;
+      return;
     }
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
@@ -365,21 +356,23 @@ export class OverseerSentinel {
     } catch (error) {
       if (signal?.aborted === true) {
         // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
-        return undefined;
+        return;
       }
       // No judge answered. That is no finding about the work, so the child is not paused. The
       // review point stays: a later checkpoint asks again about all the work since then, and
       // the completion notice reports a run that ends with work no judge answered for.
       recordJudgeUnavailable(this.options.base, launch.id, errorText(error));
-      return undefined;
+      return;
     }
     // A classifier answered: the work is judged, whatever the verdict.
     clearJudgeUnavailable(this.options.base, launch.id);
     if (verdict === undefined) {
       this.pass(launch, snapshot);
-      return undefined;
+      return;
     }
-    return this.options.isStopping() ? undefined : this.escalate(launch, verdict, checkpoint);
+    if (!this.options.isStopping()) {
+      await this.escalate(launch, verdict, checkpoint);
+    }
   }
 
   private async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext) {
@@ -396,10 +389,7 @@ export class OverseerSentinel {
     if (!mutated && toolErrorTurns === undefined) {
       return;
     }
-    return correctionDrafts(
-      event,
-      await this.inspectCheckpoint(launch, ctx, false, toolErrorTurns),
-    );
+    await this.inspectCheckpoint(launch, ctx, false, toolErrorTurns);
   }
 
   attach(pi: ExtensionAPI): void {
@@ -414,33 +404,7 @@ export class OverseerSentinel {
       if (event.outcome !== "completed") {
         return;
       }
-      return correctionDrafts(
-        event,
-        await this.inspectCheckpoint(this.options.activeLaunch(), ctx, true),
-      );
+      await this.inspectCheckpoint(this.options.activeLaunch(), ctx, true);
     });
   }
-}
-
-function correctionDrafts(
-  event: TurnEndEvent | AgentBeforeSettleEvent,
-  answer: EscalationAnswer | undefined,
-) {
-  if (answer?.verdict !== "steered") {
-    return;
-  }
-  // Pi commits these drafts before the next request. Ordinary steers stay in its native queue.
-  return {
-    entries: [
-      ...event.entries,
-      ...answer.commands.map(({ id, prompt }) => ({
-        type: "custom_message" as const,
-        customType: OVERSEER_CORRECTION,
-        display: true,
-        content: prompt,
-        details: { commandId: id },
-      })),
-    ],
-    continue: true,
-  };
 }

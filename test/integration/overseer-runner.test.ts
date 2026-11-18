@@ -30,6 +30,7 @@ import {
 } from "../../src/agent/storage.ts";
 import { renderReceipt } from "../../src/agent/view.ts";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
+import { record } from "../support/assertions.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const providerFixture = path.join(repo, "test/fixtures/overseer-steer-provider.ts");
@@ -320,14 +321,21 @@ for (const scenario of [
   "stop at settle",
 ] as const) {
   nodeTest(`real Actor: ${scenario}`, async (t) => {
-    const { base, dir, launch, sessionFile, toolGate } = await startChild(
+    const earlier = "Keep x instead of replacing it. Only update its value.";
+    const correction = "REVERT_README and replace x with the greeting in src/allowed.ts.";
+    const { base, dir, judgeInput, launch, sdk, sessionFile, toolGate, work } = await startChild(
       t,
       "Implement feature in src/allowed.ts",
-      { holdBash: scenario !== "stop at settle" },
+      {
+        holdBash: scenario !== "stop at settle",
+        ...(scenario === "correction at turn_end"
+          ? { judge: "overseer-choice-fixture/choice-only" }
+          : {}),
+      },
     );
     if (scenario === "correction at turn_end") {
       await until(() => fs.existsSync(`${toolGate}.ready`), "bash result at the first turn");
-      const guidance = enqueue(base, launch, { action: "steer", prompt: "EARLIER_GUIDANCE" });
+      const guidance = enqueue(base, launch, { action: "steer", prompt: earlier });
       const admission = path.join(conversation(base, launch), "admissions", `${guidance}.json`);
       await until(
         () => read(admission, admissionSchema)?.state === "accepted",
@@ -384,7 +392,7 @@ for (const scenario of [
         break;
       }
       case "correction at turn_end": {
-        enqueue(base, launch, { action: "steer", prompt: "REVERT_README" });
+        enqueue(base, launch, { action: "steer", prompt: correction });
         await until(
           () => /REVERTED|UNSTEERED/u.test(journal()),
           "first model response after the pause",
@@ -394,11 +402,48 @@ for (const scenario of [
           false,
           "the next request sees the correction",
         );
-        assert.match(journal(), /EARLIER_GUIDANCE/u, "ordinary queued guidance is preserved");
+        await until(() => {
+          const next = read(escPath, escalationSchema);
+          return next !== undefined && next.id !== esc.id;
+        }, "subsequent classifier review published");
+        const classifier = record(record(JSON.parse(fs.readFileSync(judgeInput, "utf8"))).state);
+        const model: unknown = JSON.parse(fs.readFileSync(`${judgeInput}.model`, "utf8"));
+        const messages = sdk.SessionManager.open(sessionFile)
+          .getBranch()
+          .flatMap((entry) => {
+            if (entry.type === "custom_message" && entry.customType === "overseer-correction") {
+              return [entry.content];
+            }
+            if (entry.type === "message" && entry.message.role === "user") {
+              const { content } = entry.message;
+              return typeof content === "string"
+                ? [content]
+                : content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+            }
+            return [];
+          })
+          .filter((text) => text === earlier || text === correction);
+        assert.deepEqual(
+          {
+            model,
+            journal: messages,
+            classifier: classifier.taskGuidance,
+            latest: read(escPath, escalationSchema)?.classifierReview?.instruction,
+            workerEdit: fs.readFileSync(path.join(work, "src", "allowed.ts"), "utf8"),
+          },
+          {
+            model: [earlier, correction],
+            journal: [earlier, correction],
+            classifier: [earlier, correction],
+            latest: correction,
+            workerEdit: "export const greeting = 'hi';\n",
+          },
+        );
+        resolveActiveEscalation(base, launch, "approved");
         await until(() => fs.existsSync(resultPath), "result.json written after steer");
         const result = read(resultPath, resultSchema);
         assert.equal(result?.status, "completed");
-        assert.equal(result.changedFiles, undefined);
+        assert.deepEqual(result.changedFiles, ["src/allowed.ts"]);
         assert.equal(journal().match(/REVERT_README/gu)?.length, 1, "published once");
         break;
       }

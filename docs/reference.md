@@ -694,8 +694,9 @@ Summary saved for review only. It was not sent to the child. Use `agent_runs` `a
 
 Use `continue` to send guidance without a review verdict. Use `changes_requested` to record
 a verdict and send its summary as the correction or successor prompt. When either action
-releases a pause, the child includes the correction in its next model request. Ordinary
-guidance for an active child stays queued, and the receipt does not claim the child has read it.
+releases a pause, the child's next model request includes any earlier queued steers in order,
+then the correction. Ordinary guidance for an active child stays queued, and the receipt does
+not claim the child has read it.
 
 Completion notices point to `inspect` for the current review status, because a notice can
 arrive after approval. Before the parent settles, Pi prompts for still-pending completion

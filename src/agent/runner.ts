@@ -16,6 +16,7 @@ import { captureOverseerBaseline, saveResult, saveTerminalResult } from "./run-r
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { parkedToken } from "./generation.ts";
 import { OverseerSentinel } from "./overseer-sentinel.ts";
+import { queueCorrections } from "./overseer-pause.ts";
 
 interface LiveActor {
   readonly session: AgentSession;
@@ -67,6 +68,7 @@ class Actor {
       activeLaunch: () => (this.work.kind === "running" ? this.work.launch : initial),
       activeRunBaseline: () => (this.work.kind === "running" ? this.work.baseline : undefined),
       isStopping: () => this.stopping,
+      queueCorrections: (commands) => queueCorrections(this.requireActor().session, commands),
     });
   }
   private get dir(): string {
@@ -192,9 +194,8 @@ class Actor {
           session,
           path.join(runDirectory(this.base, launch.id), "waiting.json"),
         );
-        const running = this.work;
-        if (running.kind === "running" && running.launch.id === launch.id) {
-          running.wait = wait;
+        if (this.work.kind === "running" && this.work.launch.id === launch.id) {
+          this.work.wait = wait;
         }
         await wait.settled();
       } else {

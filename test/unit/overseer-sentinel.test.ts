@@ -36,7 +36,11 @@ import {
   evaluateDecisionCheckpoint,
   type JudgeModelRegistry,
 } from "../../src/agent/overseer-judge.ts";
-import { EscalationPause, resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
+import {
+  EscalationPause,
+  resolveActiveEscalation,
+  type SteerCommand,
+} from "../../src/agent/overseer-pause.ts";
 import { OverseerSentinel } from "../../src/agent/overseer-sentinel.ts";
 import { read, runDirectory, write } from "../../src/agent/storage.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
@@ -1101,11 +1105,15 @@ async function supervisedRun(
   t.after(() => {
     ended = true;
   });
+  const submittedCorrections: SteerCommand[] = [];
   const sentinel = new OverseerSentinel({
     base,
     activeLaunch: () => launch,
     activeRunBaseline: () => baseline,
     isStopping: () => ended,
+    queueCorrections: (commands) => {
+      submittedCorrections.push(...commands);
+    },
   });
   const loader = new DefaultResourceLoader({
     cwd: repo,
@@ -1230,15 +1238,28 @@ async function supervisedRun(
     assert.equal(sentinel.steerPaused(command), true);
     return command;
   };
-  return { repo, base, launch, emit, paused, notice, judged, escPath, steer, journal };
+  return {
+    repo,
+    base,
+    launch,
+    emit,
+    paused,
+    notice,
+    judged,
+    escPath,
+    steer,
+    journal,
+    submittedCorrections,
+  };
 }
 
 nodeTest(
   "the sentinel primes baseline before turn 1 and re-judges unfixed steered drift on settle",
   async (t) => {
-    const { repo, base, launch, emit, paused, judged, steer } = await supervisedRun(t, {
-      verdict: () => "primitive_violation",
-    });
+    const { repo, base, launch, emit, paused, judged, steer, submittedCorrections } =
+      await supervisedRun(t, {
+        verdict: () => "primitive_violation",
+      });
 
     // Prime baseline BEFORE turn 1 edits anything.
     await emit("before_agent_start", {});
@@ -1255,9 +1276,10 @@ nodeTest(
     // Wait until escalation.json appears, then steer (do NOT approve).
     const firstEsc = await paused();
     assert.deepEqual([firstEsc.strikes, firstEsc.steers], [1, 0]);
-    steer();
+    const firstCorrection = steer();
     await turnPromise;
     assert.equal(judged.length, 1);
+    assert.deepEqual(submittedCorrections, [firstCorrection]);
 
     // Child tries to settle WITHOUT changing the drifted digest -> re-judged and caught!
     const settlePromise = emit("agent_before_settle", {
@@ -1268,22 +1290,9 @@ nodeTest(
     const secondEsc = await paused();
     assert.deepEqual([secondEsc.strikes, secondEsc.steers], [2, 1]);
     const correction = steer();
-    const steeredResults = await settlePromise;
+    await settlePromise;
     assert.equal(judged.length, 2);
-    assert.deepEqual(steeredResults, [
-      {
-        entries: [
-          {
-            type: "custom_message",
-            customType: "overseer-correction",
-            display: true,
-            content: "Fix the drift.",
-            details: { commandId: correction.id },
-          },
-        ],
-        continue: true,
-      },
-    ]);
+    assert.deepEqual(submittedCorrections, [firstCorrection, correction]);
     const approvePromise = emit("agent_before_settle", {
       outcome: "completed",
       entries: [],
