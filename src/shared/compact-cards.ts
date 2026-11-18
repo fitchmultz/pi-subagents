@@ -116,7 +116,7 @@ export function registerCompactMessages(pi: ExtensionAPI, types: readonly string
       const body = preview(markdown, nativeClick ? options.expanded : isExpanded, theme);
       box.addChild(
         new (class extends Container {
-          override render(width: number): string[] {
+          override render(width: number): ReturnType<Component["render"]> {
             this.clear();
             const label = theme.fg("customMessageLabel", theme.bold(`[${type}]`));
             if (markdown.render(width).length <= 4) {
