@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test as nodeTest } from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lintProbes } from "../support/lint-probes.ts";
+import { lintProbes, sanitizeLintEnv } from "../support/lint-probes.ts";
 
 function branches(count: number): string {
   return `export function branches(value: number): number {
@@ -263,3 +265,61 @@ nodeTest(
     );
   },
 );
+
+nodeTest("type-aware lint fails closed when the semantic backend is missing or invalid", (t) => {
+  const root = join(import.meta.dirname, "../..");
+  const directory = mkdtempSync(join(tmpdir(), "ps-missing-backend-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, "node_modules"));
+  symlinkSync(join(root, "node_modules/oxlint"), join(directory, "node_modules/oxlint"), "dir");
+  symlinkSync(join(root, "node_modules/@oxlint"), join(directory, "node_modules/@oxlint"), "dir");
+  for (const file of [".oxlintrc.json", "tsconfig.json"]) {
+    writeFileSync(join(directory, file), readFileSync(join(root, file)));
+  }
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}\n');
+  writeFileSync(join(directory, "probe.ts"), "export const valid = 1;\n");
+
+  const oxlintBin = join(directory, "node_modules/oxlint/bin/oxlint");
+  const baseEnv: NodeJS.ProcessEnv = { ...sanitizeLintEnv(process.env), PATH: "" };
+  const missing = spawnSync(
+    process.execPath,
+    [oxlintBin, "--type-aware", "--deny-warnings", "probe.ts"],
+    { cwd: directory, encoding: "utf8", env: baseEnv },
+  );
+  assert.equal(missing.error, undefined);
+  assert.notEqual(missing.status, 0);
+  assert.match(`${missing.stdout}${missing.stderr}`, /Failed to find type-aware linter executable/);
+
+  const invalidPath = join(directory, "missing-tsrs-lint");
+  const invalid = spawnSync(
+    process.execPath,
+    [oxlintBin, "--type-aware", "--deny-warnings", "probe.ts"],
+    {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...baseEnv, OXLINT_TSGOLINT_PATH: invalidPath },
+    },
+  );
+  assert.equal(invalid.error, undefined);
+  assert.notEqual(invalid.status, 0);
+  assert.match(`${invalid.stdout}${invalid.stderr}`, /OXLINT_TSGOLINT_PATH points to/);
+
+  const findings = lintProbes(
+    t,
+    { "probe.ts": "export const valid = 1;\n" },
+    {
+      ...process.env,
+      TSRS_BINARY: join(directory, "missing-tsrs"),
+      TSRS_LIB_PATH: join(directory, "missing-tsrs-lib"),
+      OXLINT_TSGOLINT_PATH: invalidPath,
+      OXLINT_TSGOLINT_TRACE: join(directory, "trace.out"),
+      OXLINT_TSGOLINT_CPU: join(directory, "cpu.out"),
+      OXLINT_TSGOLINT_HEAP: join(directory, "heap.out"),
+      OXLINT_TSGOLINT_ALLOCS: join(directory, "allocs.out"),
+      OXLINT_TSGOLINT_DANGEROUSLY_SUPPRESS_PROGRAM_DIAGNOSTICS: "1",
+    },
+  );
+  if (findings !== undefined) {
+    assert.deepEqual(findings, []);
+  }
+});
