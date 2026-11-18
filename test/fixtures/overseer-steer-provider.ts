@@ -61,6 +61,9 @@ export default function fixture(pi: ExtensionAPI): void {
           fail("check-selector", "echo private-arg; exit 2"),
         ]);
       }
+      if (hasMessage(context, "Report which paths were reviewed. Leave the diff unchanged.")) {
+        return fauxAssistantMessage("REPORTED");
+      }
       const guidance = context.messages.flatMap((message) => {
         if (message.role !== "user") {
           return [];

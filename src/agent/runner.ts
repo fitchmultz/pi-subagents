@@ -68,6 +68,7 @@ class Actor {
       activeLaunch: () => (this.work.kind === "running" ? this.work.launch : initial),
       activeRunBaseline: () => (this.work.kind === "running" ? this.work.baseline : undefined),
       isStopping: () => this.stopping,
+      admitPending: () => this.pending().forEach((command) => this.accept(command)),
       queueCorrections: (commands) => queueCorrections(this.requireActor().session, commands),
     });
   }
@@ -255,10 +256,9 @@ class Actor {
       },
       true,
     );
-    if (stale) {
-      return;
+    if (!stale) {
+      this.applyCommand(command, launch, session);
     }
-    this.applyCommand(command, launch, session);
   }
   private staleCommand(command: Command, launch: Launch, session: AgentSession): boolean {
     switch (command.action) {

@@ -15,8 +15,16 @@ export const OVERSEER_CORRECTION = "overseer-correction";
 export type SteerCommand = Extract<Command, { action: "steer" }>;
 
 export type EscalationAnswer =
-  | { readonly verdict: "approved" | "stopped" }
-  | { readonly verdict: "steered"; readonly commands: readonly SteerCommand[] };
+  | { readonly verdict: "stopped" }
+  | { readonly verdict: "approved" | "steered"; readonly commands: readonly SteerCommand[] };
+
+function pauseResolution(file: string, id: string): "approved" | "stopped" | undefined {
+  const resolution = read(file, escalationResolutionSchema);
+  if (resolution?.escalationId !== id || resolution.verdict === "steered") {
+    return undefined;
+  }
+  return resolution.verdict;
+}
 
 export function queueCorrections(session: AgentSession, commands: readonly SteerCommand[]): void {
   const { agent } = session;
@@ -72,33 +80,38 @@ export class EscalationPause {
     base: string,
     escalation: Escalation,
     isStopping: () => boolean,
+    admitPending?: () => void,
   ): Promise<EscalationAnswer> {
     const runDir = runDirectory(base, this.runId);
     const escalationFile = path.join(runDir, "escalation.json");
     const resolutionFile = path.join(runDir, "escalation-resolution.json");
     write(escalationFile, escalation);
     const watchRun = new DirectoryWatch(runDir, () => true, this.wake.raise);
+    let published: ReturnType<typeof pauseResolution>;
     try {
       while (!isStopping()) {
         this.wake.take();
         watchRun.ensure();
-        if (this.commands.length > 0) {
-          return { verdict: "steered", commands: this.commands };
-        }
-        const resolution = read(resolutionFile, escalationResolutionSchema);
-        if (
-          resolution?.escalationId === escalation.id &&
-          (resolution.verdict === "approved" || resolution.verdict === "stopped")
-        ) {
-          return { verdict: resolution.verdict };
+        published = pauseResolution(resolutionFile, escalation.id);
+        if (published !== undefined || this.commands.length > 0) {
+          break;
         }
         await this.wake.sleep(200);
       }
-      return { verdict: "stopped" };
+      if (!isStopping() && published !== "stopped") {
+        // The approval watcher can wake before the command watcher.
+        admitPending?.();
+      }
     } finally {
       watchRun.close();
       fs.rmSync(escalationFile, { force: true });
     }
+    // Include an approval published while the pause was still open.
+    const verdict = pauseResolution(resolutionFile, escalation.id);
+    if (isStopping() || verdict === "stopped") {
+      return { verdict: "stopped" };
+    }
+    return { verdict: verdict ?? "steered", commands: this.commands };
   }
 }
 

@@ -151,7 +151,7 @@ nodeTest(
 );
 
 nodeTest(
-  "approving a paused mid-run escalation records its digest and unpauses",
+  "approval records the pause digest and resumes with admitted guidance",
   async (t: TestContext) => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-approve-"));
     t.after(() => {
@@ -173,14 +173,23 @@ nodeTest(
       diffDigest: "approved-digest-abc",
     };
 
-    const waiting = new EscalationPause(launch.id).wait(base, escalation, () => false);
+    const pause = new EscalationPause(launch.id);
+    const waiting = pause.wait(base, escalation, () => false);
+    const command = {
+      action: "steer" as const,
+      id: "report-1",
+      runId: launch.id,
+      prompt: "Summarize the checks without changing the diff.",
+      createdAt: Date.now(),
+    };
+    assert.equal(pause.steer(command), true);
     const approval = prepareOverseerReviewAction(base, launch, {
       action: "review",
       verdict: "approved",
       summary: "Inspected diff; change is within contract.",
     });
     assert.equal(approval.released, true);
-    assert.deepEqual(await waiting, { verdict: "approved" });
+    assert.deepEqual(await waiting, { verdict: "approved", commands: [command] });
 
     // Every pause notice offers steer, approve and stop, each with its required `summary="..."`.
     // Earlier steering is context, not evidence about the worker or a reason to stop it.
@@ -314,7 +323,7 @@ nodeTest(
     });
     assert.equal(actionResult.target.id, tipB.id);
     assert.equal(actionResult.released, true);
-    assert.deepEqual(await tipWait, { verdict: "approved" });
+    assert.deepEqual(await tipWait, { verdict: "approved", commands: [] });
 
     // Unborn empty Git repo where a scope:[] child makes the first commit still populates
     // changedFiles so needsOverseerReview gates parent settlement.

@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   admissionSchema,
+  escalationResolutionSchema,
   escalationSchema,
   processSchema,
   resultSchema,
@@ -18,7 +19,7 @@ import { loadSDK } from "../../src/agent/host.ts";
 import { notifications, release } from "../../src/agent/notifications.ts";
 import { resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
 import { prepareOverseerReviewAction } from "../../src/agent/overseer-review.ts";
-import { ensureActor, ownIdentity } from "../../src/agent/process.ts";
+import { ensureActor, ownIdentity, signalProcess } from "../../src/agent/process.ts";
 import { stopRun } from "../../src/agent/shutdown.ts";
 import {
   conversation,
@@ -450,3 +451,84 @@ for (const scenario of [
     }
   });
 }
+
+nodeTest("real Actor keeps pause approval and delivers guidance submitted together", async (t) => {
+  const { base, dir, launch, sdk, sessionFile, toolGate, work } = await startChild(
+    t,
+    "Implement feature in src/allowed.ts",
+    { holdBash: true },
+  );
+  const earlier = "Include the check output in your report.";
+  const correction = "Report which paths were reviewed. Leave the diff unchanged.";
+  const admissions = path.join(conversation(base, launch), "admissions");
+  await until(() => fs.existsSync(`${toolGate}.ready`), "first bash result");
+  const first = enqueue(base, launch, { action: "steer", prompt: earlier });
+  await until(
+    () => read(path.join(admissions, `${first}.json`), admissionSchema)?.state === "accepted",
+    "ordinary guidance admitted before the pause",
+  );
+  fs.writeFileSync(toolGate, "");
+
+  const escPath = path.join(dir, "escalation.json");
+  await until(() => fs.existsSync(escPath), "scope pause");
+  const escalation = read(escPath, escalationSchema);
+  assert.equal(escalation?.kind, "scope_violation");
+  const actor = read(path.join(dir, "actor.lock", "process.json"), processSchema);
+  assert.ok(actor !== undefined);
+  assert.equal(signalProcess(actor, "SIGSTOP"), true);
+  let second: string;
+  try {
+    await until(
+      () =>
+        execFileSync("ps", ["-o", "stat=", "-p", String(actor.pid)], { encoding: "utf8" })
+          .trim()
+          .startsWith("T"),
+      "actor stopped at the open pause",
+    );
+    second = enqueue(base, launch, { action: "steer", prompt: correction });
+    const approval = prepareOverseerReviewAction(base, launch, {
+      action: "review",
+      verdict: "approved",
+      summary: "I checked the README change.",
+    });
+    assert.equal(approval.released, true);
+    const resolution = read(
+      path.join(dir, "escalation-resolution.json"),
+      escalationResolutionSchema,
+    );
+    assert.equal(resolution?.escalationId, escalation.id);
+    assert.equal(resolution.diffDigest, escalation.diffDigest);
+  } finally {
+    assert.equal(signalProcess(actor, "SIGCONT"), true);
+  }
+
+  const resultPath = path.join(dir, "result.json");
+  await until(() => {
+    const next = read(escPath, escalationSchema);
+    return fs.existsSync(resultPath) || (next !== undefined && next.id !== escalation.id);
+  }, "native completion or a second review");
+  assert.equal(read(path.join(admissions, `${second}.json`), admissionSchema)?.state, "accepted");
+  assert.equal(
+    read(resultPath, resultSchema)?.status,
+    "completed",
+    "approval prevents a repeat pause",
+  );
+  assert.equal(fs.readFileSync(path.join(work, "README.md"), "utf8"), "out-of-scope drift\n");
+  const branch = sdk.SessionManager.open(sessionFile).getBranch();
+  const delivered = branch.flatMap((entry) => {
+    if (entry.type === "custom_message") {
+      return [entry.content];
+    }
+    if (
+      entry.type === "message" &&
+      (entry.message.role === "user" || entry.message.role === "assistant")
+    ) {
+      const { content } = entry.message;
+      return typeof content === "string"
+        ? [content]
+        : content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+    }
+    return [];
+  });
+  assert.deepEqual(delivered, [launch.prompt, earlier, correction, "REPORTED"]);
+});

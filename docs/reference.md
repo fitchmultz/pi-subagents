@@ -536,9 +536,11 @@ Approving a pause accepts the paused state:
 - An approved base-branch issue is not raised again in that run.
 - Committing approved work raises nothing: the working tree did not change.
 
-Steering accepts nothing. Out-of-scope work that stays in place is flagged again at the next
-checkpoint. After the judge flags a state, it is not asked about that unchanged state again
-until the checkpoint before the run settles.
+If you approve and steer at the same pause, approval accepts the paused state and the child
+receives the admitted guidance in its next turn. Steering alone does not approve work.
+Out-of-scope work that stays in place is flagged again at the next checkpoint. After the judge
+flags a state, it is not asked about that unchanged state again until the checkpoint before
+the run settles.
 
 The judge receives the new diff, the names of previously accepted files (`acceptedFiles`), the
 task prompt (`taskPrompt`), the contract, and task-owner guidance (`taskGuidance`) recorded in

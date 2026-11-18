@@ -98,6 +98,7 @@ interface SentinelOptions {
   /** Entries that predate this run, including any inherited fork conversation. */
   readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
+  readonly admitPending?: () => void;
   readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
@@ -261,23 +262,23 @@ export class OverseerSentinel {
     const pause = new EscalationPause(launch.id);
     this.pause = pause;
     const answer = await pause
-      .wait(this.options.base, escalation, this.options.isStopping)
+      .wait(this.options.base, escalation, this.options.isStopping, this.options.admitPending)
       .finally(() => {
         this.pause = undefined;
       });
-    if (answer.verdict === "steered") {
-      current.steers += 1;
-      for (const { id, prompt } of answer.commands) {
-        current.admittedCorrections.set(id, prompt);
-      }
-      this.options.queueCorrections(answer.commands);
-    }
     if (answer.verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
       current.approved = current.reviewPoint;
       if (issue.kind === "branch_violation") {
         current.approvedBranchIssues.add(issue.summary);
       }
+    }
+    if (answer.verdict !== "stopped" && answer.commands.length > 0) {
+      current.steers += 1;
+      for (const { id, prompt } of answer.commands) {
+        current.admittedCorrections.set(id, prompt);
+      }
+      this.options.queueCorrections(answer.commands);
     }
   }
 
