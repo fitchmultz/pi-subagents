@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.51 - 2026-11-18
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- chore(lint): adopt tsrs 7.1.0-beta.tsrs2 with oxlint 1.94.0 and oxfmt 0.79.0 (#468) ([b058734](https://github.com/fitchmultz/pi-subagents/commit/b058734355059e1385d51032399ce382cf0a803a))
+
+### What's Changed
+
+- chore(lint): adopt tsrs 7.1.0-beta.tsrs2 with oxlint 1.94.0 and oxfmt 0.79.0 by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/468
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.50...v0.52.51
+
 ## 0.52.50 - 2026-11-18
 
 <!-- npm-release:unreleased:start -->
