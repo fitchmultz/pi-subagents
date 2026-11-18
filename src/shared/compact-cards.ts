@@ -2,7 +2,6 @@ import {
   getMarkdownTheme,
   truncateToVisualLines,
   type ExtensionAPI,
-  type ExtensionContext,
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -19,16 +18,20 @@ import { actionText } from "./tui-action.ts";
 
 function preview(
   content: Component,
-  expanded: boolean,
+  expanded: boolean | (() => boolean),
   theme: Theme,
   expandHint?: string,
 ): Component {
-  if (expanded) {
+  if (expanded === true) {
     return content;
   }
+  const isExpanded = typeof expanded === "function" ? expanded : () => expanded;
   let cache: { width: number; lines: string[] } | undefined;
   return {
     render(width) {
+      if (isExpanded()) {
+        return content.render(width);
+      }
       if (cache?.width !== width) {
         const { visualLines, skippedCount } = truncateToVisualLines(
           content.render(width).join("\n"),
@@ -80,16 +83,12 @@ export const renderCompactResult: NonNullable<ToolDefinition["renderResult"]> = 
   );
 
 export function registerCompactMessages(pi: ExtensionAPI, types: readonly string[]): void {
-  let ui: ExtensionContext["ui"] | undefined;
-  pi.on("session_start", (_event, ctx) => {
-    ui = ctx.mode === "tui" ? ctx.ui : undefined;
-  });
-  pi.on("session_shutdown", () => {
-    ui = undefined;
-  });
+  const expandedByMessage = new WeakMap<object, { global: boolean; expanded: boolean }>();
   for (const type of types) {
     pi.registerMessageRenderer(type, (message, options, theme) => {
-      const { expanded, outputPad } = options;
+      const { outputPad } = options;
+      const compactView: unknown = Reflect.get(options, "compactView");
+      const nativeClick = compactView !== undefined;
       const text =
         typeof message.content === "string"
           ? message.content
@@ -101,25 +100,48 @@ export function registerCompactMessages(pi: ExtensionAPI, types: readonly string
       const markdown = new Markdown(text, 0, 0, getMarkdownTheme(), {
         color: (line) => theme.fg("customMessageText", line),
       });
+      const isExpanded = (): boolean => {
+        if (nativeClick) {
+          return options.expanded;
+        }
+        const saved = expandedByMessage.get(message);
+        if (saved !== undefined) {
+          if (saved.global === options.expanded) {
+            return saved.expanded;
+          }
+          expandedByMessage.delete(message);
+        }
+        return options.expanded;
+      };
+      const body = preview(markdown, nativeClick ? options.expanded : isExpanded, theme);
       box.addChild(
         new (class extends Container {
           override render(width: number): string[] {
             this.clear();
             const label = theme.fg("customMessageLabel", theme.bold(`[${type}]`));
-            this.addChild(
-              markdown.render(width).length > 4
-                ? actionText(
-                    `${label} · ${options.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")}`,
-                    () => ui?.setToolsExpanded(!expanded),
-                  )
-                : new Text(label, 0, 0),
-            );
+            if (markdown.render(width).length <= 4) {
+              this.addChild(new Text(label, 0, 0));
+            } else {
+              const expanded = isExpanded();
+              const header = `${label} · ${options.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")}`;
+              this.addChild(
+                nativeClick
+                  ? new Text(header, 0, 0)
+                  : actionText(header, () => {
+                      expandedByMessage.set(message, {
+                        global: options.expanded,
+                        expanded: !isExpanded(),
+                      });
+                      body.invalidate();
+                    }),
+              );
+            }
             return super.render(width);
           }
         })(),
       );
       box.addChild(new Spacer(1));
-      box.addChild(preview(markdown, expanded, theme));
+      box.addChild(body);
       return box;
     });
   }

@@ -94,9 +94,9 @@ class CaptureTerminal extends ProcessTerminal {
   send(data: string): void {
     this.input?.(data);
   }
-  click(screen: TuiAltScreen, text: string): void {
+  click(screen: TuiAltScreen, text: string, rowText = text): void {
     const rows = screen.getScreenLines().map(stripTerminalSequences);
-    const y = rows.findIndex((row) => row.includes(text));
+    const y = rows.findIndex((row) => row.includes(rowText) && row.includes(text));
     assert.ok(y >= 0, `visible mouse target: ${text}\n${rows.join("\n")}`);
     const targetRow = rows[y];
     assert.ok(targetRow !== undefined, `visible mouse target row: ${text}`);
@@ -1088,19 +1088,40 @@ for (const tuiMode of ["fullscreen", "regular"] as const) {
         assert.doesNotMatch(collapsed, /CARD_END/, "long custom cards start collapsed");
         terminal.click(screen, "[intercom_message]");
         await until(
+          () =>
+            screenLines().some((line) => line.includes("CARD_END")) &&
+            screenLines().some(
+              (line) => line.includes("[intercom_message]") && line.includes("to collapse"),
+            ) &&
+            screenLines().some(
+              (line) => line.includes("[subagent-human-message]") && line.includes("to expand"),
+            ),
+          "clicking one custom card expands only that card",
+        );
+        // Click a distinct header word so rapid test clicks remain independent single clicks
+        // rather than triggering TuiAltScreen's triple-click line selection on pi-fork.
+        terminal.click(screen, "to collapse", "[intercom_message]");
+        await until(
+          () =>
+            screenLines().some((line) => line.includes("CARD_START")) &&
+            !screenLines().some((line) => line.includes("CARD_END")) &&
+            screenLines().some(
+              (line) => line.includes("[intercom_message]") && line.includes("to expand"),
+            ),
+          "clicking the expanded custom card collapses only that card",
+        );
+        terminal.click(screen, "[intercom_message]");
+        await until(
           () => screenLines().some((line) => line.includes("CARD_END")),
-          "clickable message hint uses native expansion state",
+          "clicking custom card re-expands it before global Ctrl+O",
         );
         terminal.send("\x0f");
         await until(
           () =>
-            screenLines().some((line) => line.includes("CARD_START")) &&
-            !screenLines().some((line) => line.includes("CARD_END")),
-          "keyboard and mouse share native expansion state",
-        );
-        terminal.send("\x0f");
-        await until(
-          () => screenLines().some((line) => line.includes("CARD_END")),
+            screenLines().some((line) => line.includes("CARD_END")) &&
+            screenLines().some(
+              (line) => line.includes("[subagent-human-message]") && line.includes("to collapse"),
+            ),
           "native Ctrl+O expands full card content",
         );
         terminal.send("\x0f");
