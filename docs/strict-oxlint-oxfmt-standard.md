@@ -1015,6 +1015,11 @@ runtime, tools, source mappings, acceptance path, and verification requirements.
 contract comparisons, retained protections, and revisit conditions required by
 Appendix B.
 
+Under [QX-008](quality-exceptions.md#qx-008-rust-type-aware-lint-backend-tsrs-replacing-oxlint-tsgolint),
+this repository uses `tsrs` (`7.1.0-beta.tsrs2`) as Oxlint's `typeAware` backend in
+place of `oxlint-tsgolint` (Section 5.1) while retaining `typescript@7.0.2` (`tsc`) as
+the canonical compiler gate.
+
 ## References
 
 The following primary references describe tool behavior. This standard defines the implementation requirements and exception authority.

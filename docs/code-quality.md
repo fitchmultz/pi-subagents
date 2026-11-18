@@ -29,8 +29,7 @@ integration tests. Package smokes build the actual artifacts before testing them
 The aggregate fails if any gate fails.
 
 CI qualifies official Pi on Linux and the maintained fork on Linux and macOS.
-Those are distinct runtime graphs, not interchangeable version labels. Android
-has no published oxlint-tsgolint backend; native semantic qualification runs on
+Those are distinct runtime graphs, not interchangeable version labels. Android has no published tsrs semantic backend; native semantic qualification runs on
 a supported host. A skipped local native probe is not hosted acceptance.
 
 ## Coverage and enforcement
@@ -90,10 +89,15 @@ policy and protects runtime identity. It is not a new requirement of this standa
 
 Repository: `fitchmultz/pi-subagents`. Standard: v5.2, 3 November 2026.
 Runtime: Node `>=24.22.3 <25 || >=26.13.1`, npm, committed lockfile.
-Qualified tools: Oxlint 1.91.0, oxlint-tsgolint 7.0.2006, Oxfmt 0.76.0,
-TypeScript 7.0.2, oxc-parser 0.157.0, and `@types/node` 24.19.2.
+Qualified tools: Oxlint 1.94.0, tsrs 7.1.0-beta.tsrs2 (type-aware backend under
+QX-008, targeting TypeScript 7.1.0-beta), Oxfmt 0.79.0, TypeScript 7.0.2
+(canonical compiler gate), oxc-parser 0.157.0, and `@types/node` 24.19.2.
 
-The adoption starts at `7f449e2dcc8e7e82432bea79a2709f0b49256239`.
+The initial adoption starts at `7f449e2dcc8e7e82432bea79a2709f0b49256239`.
+The `tsrs` backend rollout starts from `fe5ba3603edf97a8afac7be7bced5b3e6cbb5a32`
+(verified code revision `962cb87cb71fc3987f674364b7ce6af9abec050a`); see
+[Quality exceptions](quality-exceptions.md#qx-008-rust-type-aware-lint-backend-tsrs-replacing-oxlint-tsgolint)
+for matched local measurements, version-skew tracking, and revisit triggers.
 The adoption PR records the exact integrated head and hosted results; CI verifies
 the source SHA before qualification. Local M1 evidence uses Node 24.22.1 and
 official Pi 1.5.0; separate native fork coverage runs against its selected graph.
