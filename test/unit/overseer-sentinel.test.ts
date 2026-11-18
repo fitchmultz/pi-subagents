@@ -806,6 +806,66 @@ function initWorktrees(t: TestContext): {
   return { upstream, checkout, child, sibling };
 }
 
+nodeTest("a shared checkout fast-forward is not read-only child work without a baseBranch", (t) => {
+  const { upstream, checkout } = initWorktrees(t);
+  const contract = { scope: [], verification: ["git status --short"] };
+  const launch = launchPoint(checkout);
+  let reviewed = launch;
+  for (const content of ["first upstream update\n", "second upstream update\n"]) {
+    fs.writeFileSync(path.join(upstream, "README.md"), content);
+    git(upstream, "commit", "-am", "upstream update");
+    git(checkout, "pull", "--ff-only");
+    const current = captureRepoSnapshot(checkout);
+    assert.equal(tripwires({ cwd: checkout, contract, baseline: reviewed, current }), undefined);
+    reviewed = acceptedPoint(reviewed, current);
+  }
+  assert.deepEqual(ownChanges(checkout, launch, captureRepoSnapshot(checkout)).files, []);
+
+  fs.appendFileSync(path.join(checkout, "README.md"), "local edit\n");
+  const edited = captureRepoSnapshot(checkout);
+  assert.equal(
+    tripwires({
+      cwd: checkout,
+      contract,
+      baseline: reviewed,
+      current: edited,
+    })?.kind,
+    "scope_violation",
+  );
+  git(checkout, "commit", "-am", "local edit");
+  assert.deepEqual(ownChanges(checkout, launch, captureRepoSnapshot(checkout)).files, [
+    "README.md",
+  ]);
+});
+
+nodeTest("a remote-tracking update without a reflog stays visible for review", (t) => {
+  const upstream = initGitRepo(t);
+  const checkout = `${upstream}-checkout`;
+  t.after(() => fs.rmSync(checkout, { recursive: true, force: true }));
+  git(upstream, "clone", "--config=core.logAllRefUpdates=false", upstream, checkout);
+  const baseline = launchPoint(checkout);
+
+  fs.writeFileSync(path.join(upstream, "README.md"), "upstream refresh\n");
+  git(upstream, "commit", "-am", "upstream refresh");
+  git(checkout, "pull", "--ff-only");
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+  assert.throws(() => git(checkout, "reflog", "exists", "refs/remotes/origin/main"), {
+    status: 1,
+  });
+
+  const current = captureRepoSnapshot(checkout);
+  assert.deepEqual(ownChanges(checkout, baseline, current).files, ["README.md"]);
+  assert.equal(
+    tripwires({
+      cwd: checkout,
+      contract: { scope: [] },
+      baseline,
+      current,
+    })?.kind,
+    "scope_violation",
+  );
+});
+
 nodeTest(
   "a run's changes are its own work: sibling worktrees, upstream and existing commits stay out",
   (t) => {
