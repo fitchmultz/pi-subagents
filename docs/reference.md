@@ -416,10 +416,15 @@ retired workflow UI or remote transcript APIs.
 
 Long `delegate`, `agent_runs`, and `intercom` result cards start with a four-visual-line
 preview, including output that wraps from one long logical line. Pi's native card
-click and configured expand-tools key (Ctrl+O by default) reveal the full output.
-Child completion and Intercom message cards use the same native expansion state;
-their clickable header hints toggle the global tools-expanded view, just like
-Ctrl+O. Full saved and model-visible content is unchanged.
+click and configured expand-tools key (`app.tools.expand`, Ctrl+O by default) reveal
+the full output. Child completion, escalation, notification, and Intercom message
+cards use the same four-visual-line preview; cards with at most four visual lines
+show no expand hint. Clicking a message card toggles only that card—through the
+per-card header action on official Pi, or through native card click on the
+maintained Pi fork, where the header itself is plain text so left clicks bubble
+to the native card (including under `compactView`). Pressing `app.tools.expand`
+(Ctrl+O by default) toggles the global tools-expanded view across all cards. Full
+saved and model-visible content is unchanged.
 
 ## Installation and upgrade
 
