@@ -68,7 +68,6 @@ function tripwires(options: {
   contract: NonNullable<Launch["contract"]>;
   baseline: ReviewPoint;
   current: RepoSnapshot;
-  consecutiveErrors: number;
 }): ReturnType<typeof checkDeterministicTripwires> {
   const { baseline, ...rest } = options;
   return checkDeterministicTripwires({
@@ -159,7 +158,6 @@ nodeTest(
         contract,
         baseline,
         current: cleanSnap,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -194,7 +192,6 @@ nodeTest(
         contract,
         baseline: subBase,
         current: subClean,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -216,7 +213,6 @@ nodeTest(
         contract,
         baseline: divergedBase,
         current: divergedCurrent,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -231,19 +227,9 @@ nodeTest(
         contract: { ...contract, baseBranch: "mun" },
         baseline: divergedBase,
         current: typoSnap,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
-
-    const loopHit = tripwires({
-      cwd: repo,
-      contract,
-      baseline,
-      current: cleanSnap,
-      consecutiveErrors: 3,
-    });
-    assert.equal(loopHit?.kind, "loop_violation");
 
     fs.writeFileSync(path.join(repo, "README.md"), "new drift\n");
     const scopeSnap = captureRepoSnapshot(repo, {
@@ -254,7 +240,6 @@ nodeTest(
       contract,
       baseline,
       current: scopeSnap,
-      consecutiveErrors: 0,
     });
     assert.ok(scopeHit !== undefined);
     assert.equal(scopeHit.kind, "scope_violation");
@@ -278,7 +263,6 @@ nodeTest(
       contract,
       baseline: sneakBase,
       current: sneakAfter,
-      consecutiveErrors: 0,
     });
     assert.equal(branchHit?.kind, "branch_violation");
 
@@ -298,7 +282,6 @@ nodeTest(
         contract,
         baseline: renameBase,
         current: renameAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "scope_violation",
     );
@@ -327,7 +310,6 @@ nodeTest(
         contract,
         baseline: unbornBase,
         current: unbornAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -354,7 +336,6 @@ nodeTest(
         contract,
         baseline: unbornTaskBase,
         current: unbornTaskDirty,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -369,7 +350,6 @@ nodeTest(
         contract,
         baseline: unbornTaskBase,
         current: unbornTaskCommitted,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -406,7 +386,6 @@ nodeTest(
         contract,
         baseline: remoteBase,
         current: remoteAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -439,7 +418,6 @@ nodeTest(
         contract,
         baseline: ffBase,
         current: ffAfter,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -468,7 +446,6 @@ nodeTest(
         contract: { ...contract, baseBranch: "origin/main" },
         baseline: refFormBase,
         current: pullAfter,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -515,7 +492,6 @@ nodeTest(
         contract,
         baseline: pushBase,
         current: pushAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -526,7 +502,6 @@ nodeTest(
         contract: { scope: ["*"], verification: ["npm test"] },
         baseline: pushBase,
         current: captureRepoSnapshot(path.join(os.tmpdir(), "non-existent-git-dir")),
-        consecutiveErrors: 0,
       })?.kind,
       "loop_violation",
     );
@@ -557,7 +532,6 @@ nodeTest(
         contract,
         baseline: refloglessPushBase,
         current: refloglessPushAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -855,7 +829,6 @@ nodeTest(
         contract,
         baseline: launch,
         current: afterSibling,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -875,7 +848,6 @@ nodeTest(
         contract,
         baseline: launch,
         current: afterFastForward,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -1010,7 +982,6 @@ nodeTest(
         contract: { scope: ["*"], verification: ["npm test"] },
         baseline: unreferenced,
         current: snapshot(),
-        consecutiveErrors: 0,
       }),
       {
         kind: "loop_violation",
@@ -1192,7 +1163,7 @@ nodeTest(
     });
     // Wait until escalation.json appears, then steer (do NOT approve).
     const firstEsc = await paused();
-    assert.deepEqual([firstEsc.strikes, firstEsc.corrections], [1, 0]);
+    assert.deepEqual([firstEsc.strikes, firstEsc.steers], [1, 0]);
     resolveActiveEscalation(base, launch, "steered");
     await turnPromise;
     assert.equal(judged.length, 1);
@@ -1204,7 +1175,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const secondEsc = await paused();
-    assert.deepEqual([secondEsc.strikes, secondEsc.corrections], [2, 1]);
+    assert.deepEqual([secondEsc.strikes, secondEsc.steers], [2, 1]);
     resolveActiveEscalation(base, launch, "steered");
     const steeredResults = await settlePromise;
     assert.equal(judged.length, 2);
@@ -1218,7 +1189,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const thirdEsc = await paused();
-    assert.deepEqual([thirdEsc.strikes, thirdEsc.corrections], [3, 2]);
+    assert.deepEqual([thirdEsc.strikes, thirdEsc.steers], [3, 2]);
     resolveActiveEscalation(base, launch, "approved");
     const approvedResults = await approvePromise;
     assert.deepEqual(approvedResults, [undefined]);
@@ -1232,7 +1203,7 @@ nodeTest(
     });
     // The approval of the third pause is not a correction.
     const fourthEsc = await paused();
-    assert.deepEqual([fourthEsc.strikes, fourthEsc.corrections], [4, 2]);
+    assert.deepEqual([fourthEsc.strikes, fourthEsc.steers], [4, 2]);
     resolveActiveEscalation(base, launch, "steered");
     const fallbackResults = await fallbackPromise;
     assert.equal(flushed, 2);
@@ -1350,7 +1321,7 @@ nodeTest(
     // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
     // and says of the approved files only that their earlier changes are not shown. This is a
     // third pause after two approvals: no correction is counted, and nothing advises stopping.
-    assert.deepEqual([third.strikes, third.corrections], [3, 0]);
+    assert.deepEqual([third.strikes, third.steers], [3, 0]);
     assert.equal(
       notice(),
       [

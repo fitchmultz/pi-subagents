@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Overseer tool-error reviews show which calls failed and which succeeded, even in the same turn. The notice names known repeated calls without showing arguments or logs. Prior steers no longer prompt advice to stop a worker. (OVR-215, OVR-216)
+
 ## 0.52.51 - 2026-11-18
 
 <!-- npm-release:unreleased:start -->
