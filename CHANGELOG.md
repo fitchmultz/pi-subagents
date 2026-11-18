@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Overseer checks no longer credit a child for upstream fast-forwards on a tracking branch without `baseBranch`, or flag upstream files restored after a soft reset (OVR-211).
+
 ## 0.52.51 - 2026-11-18
 
 <!-- npm-release:unreleased:start -->

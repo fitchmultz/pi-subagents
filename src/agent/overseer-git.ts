@@ -1,14 +1,11 @@
-import { execFileSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { git, trimmed, workingTree } from "./overseer-git-commands.ts";
 import {
   excludedRepoPrefixes,
   isExcludedRepoPath,
   safeRealpath,
   shortBranchName,
 } from "./overseer-scope.ts";
-import { missing } from "./storage.ts";
 
 export interface SnapshotOptions {
   readonly baseBranch?: string | undefined;
@@ -29,8 +26,8 @@ export interface RepoSnapshot {
   readonly headMoves: number;
   readonly baseBranch: string | undefined;
   readonly localBaseHead: string | undefined;
-  /** Tip of the base branch's remote-tracking ref, unless this repository pushed it there. */
-  readonly upstreamBaseHead: string | undefined;
+  /** Tip of the base or checked-out branch's remote-tracking ref, unless pushed from here. */
+  readonly upstreamHead: string | undefined;
   readonly resolvedBaseHead: string | undefined;
   readonly baseBranchUnborn: boolean;
 }
@@ -45,6 +42,8 @@ export interface ReviewPoint {
   readonly known: readonly string[];
   /** The working tree when the run launched. */
   readonly launchTree: string | undefined;
+  /** Paths whose accepted state was attributed to the child. */
+  readonly ownedPaths: ReadonlySet<string>;
 }
 
 /** What the child itself changed between a review point and a later snapshot. */
@@ -75,7 +74,6 @@ export interface OwnChanges {
 
 const NO_BASE = {
   localBaseHead: undefined,
-  upstreamBaseHead: undefined,
   resolvedBaseHead: undefined,
   baseBranchUnborn: false,
 };
@@ -86,31 +84,9 @@ const NON_GIT_SNAPSHOT: RepoSnapshot = {
   tree: undefined,
   headMoves: 0,
   baseBranch: undefined,
+  upstreamHead: undefined,
   ...NO_BASE,
 };
-
-function git(
-  cwd: string,
-  args: readonly string[],
-  options: { readonly env?: NodeJS.ProcessEnv; readonly input?: string } = {},
-): string | undefined {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
-      maxBuffer: 67108864,
-      ...options,
-    });
-  } catch {
-    return undefined;
-  }
-}
-
-function trimmed(value: string | undefined): string | undefined {
-  const s = value?.trim();
-  return s !== undefined && s.length > 0 ? s : undefined;
-}
 
 const optional = (value: string | undefined): string[] => (value === undefined ? [] : [value]);
 
@@ -139,64 +115,39 @@ const headLog = (top: string): { commit: string; action: string }[] =>
     return { commit: line.slice(0, space), action: line.slice(space + 1) };
   });
 
-/**
- * Writes the working tree as a tree object through a copy of the index, so the real index and
- * the working tree stay untouched.
- */
-function workingTree(top: string, excluded: readonly string[]): string | undefined {
-  const index = trimmed(git(top, ["rev-parse", "--path-format=absolute", "--git-path", "index"]));
-  if (index === undefined) {
-    return undefined;
-  }
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-"));
-  try {
-    const env = { ...process.env, GIT_INDEX_FILE: path.join(directory, "index") };
-    try {
-      // Git trusts the cached size and time of a file only when the index is older than the
-      // file, and it compares whole seconds. A fresh copy would be newer than every file and
-      // hide a same-size edit made in the second the index was written, so the copy keeps the
-      // time of the real index, rounded down.
-      const written = Math.floor(fs.statSync(index).mtimeMs / 1000);
-      fs.copyFileSync(index, env.GIT_INDEX_FILE);
-      fs.utimesSync(env.GIT_INDEX_FILE, written, written);
-    } catch (error) {
-      // A repository without a first commit has no index yet.
-      if (!missing(error)) {
-        throw error;
-      }
-    }
-    const pathspec = [".", ...excluded.map((prefix) => `:(exclude,top,literal)${prefix}`)];
-    return git(top, ["add", "-A", "--", ...pathspec], { env }) === undefined
-      ? undefined
-      : trimmed(git(top, ["write-tree"], { env }));
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-}
-
 function baseState(
   top: string,
   baseBranch: string | undefined,
   head: string | undefined,
-): Omit<RepoSnapshot, "isGit" | "topLevel" | "head" | "tree" | "headMoves" | "baseBranch"> {
+): Pick<RepoSnapshot, "localBaseHead" | "resolvedBaseHead" | "baseBranchUnborn"> {
   if (baseBranch === undefined) {
     return NO_BASE;
   }
   const short = shortBranchName(baseBranch) ?? baseBranch;
-  const remoteRef = `refs/remotes/origin/${short}`;
   const localBaseHead = refCommit(top, `refs/heads/${short}`);
-  const remote = refCommit(top, remoteRef);
-  const resolvedBaseHead = localBaseHead ?? refCommit(top, baseBranch) ?? remote;
+  const resolvedBaseHead =
+    localBaseHead ?? refCommit(top, baseBranch) ?? refCommit(top, `refs/remotes/origin/${short}`);
   return {
     localBaseHead,
-    // A tip pushed from this repository is local work, not what upstream changed.
-    upstreamBaseHead: refLog(top, remoteRef).startsWith("update by push") ? undefined : remote,
     resolvedBaseHead,
     baseBranchUnborn:
       resolvedBaseHead === undefined &&
       head === undefined &&
       trimmed(git(top, ["rev-list", "-n", "1", "--all"])) === undefined,
   };
+}
+
+function upstreamHead(top: string, baseBranch: string | undefined): string | undefined {
+  const ref =
+    baseBranch === undefined
+      ? trimmed(git(top, ["rev-parse", "--symbolic-full-name", "@{upstream}"]))
+      : `refs/remotes/origin/${baseBranch}`;
+  // A local tracking branch or a tip pushed from this repository does not explain away local work.
+  if (ref?.startsWith("refs/remotes/") !== true) {
+    return undefined;
+  }
+  const head = refCommit(top, ref);
+  return head !== undefined && !refLog(top, ref).startsWith("update by push") ? head : undefined;
 }
 
 export function captureRepoSnapshot(cwd: string, options: SnapshotOptions = {}): RepoSnapshot {
@@ -209,13 +160,15 @@ export function captureRepoSnapshot(cwd: string, options: SnapshotOptions = {}):
     return NON_GIT_SNAPSHOT;
   }
   const head = trimmed(git(top, ["rev-parse", "--verify", "--quiet", "HEAD"]));
+  const baseBranch = shortBranchName(options.baseBranch);
   return {
     isGit: true,
     topLevel: top,
     head,
     tree,
     headMoves: headLog(top).length,
-    baseBranch: shortBranchName(options.baseBranch),
+    baseBranch,
+    upstreamHead: upstreamHead(top, baseBranch),
     ...baseState(top, options.baseBranch, head),
   };
 }
@@ -227,13 +180,36 @@ export function launchPoint(cwd: string, options: SnapshotOptions = {}): ReviewP
     snapshot.topLevel === undefined
       ? []
       : lines(git(snapshot.topLevel, ["for-each-ref", "--format=%(objectname)"]), "\n");
-  return acceptedPoint({ snapshot, known: refs, launchTree: snapshot.tree }, snapshot);
+  return acceptedPoint(
+    { snapshot, known: refs, launchTree: snapshot.tree, ownedPaths: new Set() },
+    snapshot,
+  );
 }
 
 /** The review point after the overseer, or a clean check, accepted `snapshot`. */
 export function acceptedPoint(prior: ReviewPoint, snapshot: RepoSnapshot): ReviewPoint {
-  const known = new Set([...prior.known, ...optional(snapshot.head)]);
-  return { snapshot, known: [...known], launchTree: prior.launchTree };
+  const known = [...new Set([...prior.known, ...optional(snapshot.head)])];
+  const next = { ...prior, snapshot, known };
+  const { tree, topLevel: top } = snapshot;
+  // A soft reset can leave the tree intact. Moving HEAD doesn't change who wrote its bytes.
+  if (top === undefined || tree === undefined || tree === prior.snapshot.tree) {
+    return next;
+  }
+  const before = prior.snapshot.tree ?? emptyTree(top) ?? tree;
+  const launch = prior.launchTree ?? before;
+  const changed = changedPaths(top, before, tree);
+  const sinceLaunch = new Set(launch === before ? changed : changedPaths(top, launch, tree));
+  const added = unexplained(
+    top,
+    tree,
+    changed.filter((file) => sinceLaunch.has(file)),
+    {
+      boundaries: knownBoundaries(top, snapshot.head, knownAt(prior, snapshot)),
+    },
+  );
+  const replaced = new Set(changed);
+  const kept = [...prior.ownedPaths].filter((file) => !replaced.has(file));
+  return { ...next, ownedPaths: new Set([...kept, ...added]) };
 }
 
 const exclusions = (commits: readonly string[]): string[] => commits.map((commit) => `^${commit}`);
@@ -242,7 +218,14 @@ const exclusions = (commits: readonly string[]): string[] => commits.map((commit
  * The known commits that the history of `head` sits on. A file whose content equals its content
  * in one of them was not written by the child.
  */
-function knownBoundaries(top: string, head: string, known: readonly string[]): string[] {
+function knownBoundaries(
+  top: string,
+  head: string | undefined,
+  known: readonly string[],
+): string[] {
+  if (head === undefined) {
+    return [];
+  }
   const walked = git(top, ["rev-list", "--boundary", head, "--stdin"], {
     input: exclusions(known).join("\n"),
   });
@@ -304,33 +287,37 @@ function leftBehindPaths(
  */
 function unexplained(
   top: string,
-  from: ReviewPoint,
-  to: { readonly tree: string; readonly grew: boolean },
+  tree: string,
+  changed: readonly string[],
   options: {
-    readonly changed: readonly string[];
     readonly boundaries: readonly string[];
-    readonly accepted: ReadonlySet<string>;
+    readonly reviewed?: ReviewPoint | undefined;
   },
 ): string[] {
-  const reviewedHead = from.snapshot.head;
-  // While the history only grew, a commit the reviewed history already contained explains a
-  // file only if the child had not changed that file before: taking accepted work back out
-  // is new work.
-  const accepted = to.grew ? options.accepted : new Set<string>();
-  let paths = [...options.changed];
+  const { reviewed } = options;
+  const reviewedHead = reviewed?.snapshot.head;
+  let paths = [...changed];
   for (const boundary of options.boundaries) {
     if (paths.length === 0) {
       break;
     }
-    const differing = new Set(changedPaths(top, boundary, to.tree));
+    const differing = new Set(changedPaths(top, boundary, tree));
     const alreadyReviewed =
-      accepted.size > 0 &&
+      reviewed !== undefined &&
+      reviewed.ownedPaths.size > 0 &&
       reviewedHead !== undefined &&
       (boundary === reviewedHead || isAncestor(top, boundary, reviewedHead));
-    paths = paths.filter((file) => differing.has(file) || (alreadyReviewed && accepted.has(file)));
+    paths = paths.filter(
+      (file) => differing.has(file) || (alreadyReviewed && reviewed.ownedPaths.has(file)),
+    );
   }
   return paths;
 }
+
+const knownAt = (point: ReviewPoint, snapshot: RepoSnapshot): string[] => [
+  ...point.known,
+  ...optional(snapshot.upstreamHead),
+];
 
 /** Whether the history at `to` only added to the history at `from`. */
 function historyGrew(top: string, from: RepoSnapshot, to: RepoSnapshot): boolean {
@@ -355,13 +342,6 @@ function relativeTo(cwd: string, top: string): (file: string) => string {
 /** Maps repository paths to sorted, distinct paths relative to the run's cwd. */
 const fromCwd = (cwd: string, top: string, files: readonly string[]): string[] =>
   [...new Set(files.map(relativeTo(cwd, top)))].sort();
-
-/** The files the child had changed when `from` was accepted. Nothing at launch is its work. */
-function acceptedPaths(top: string, from: ReviewPoint): Set<string> {
-  const { tree } = from.snapshot;
-  const none = from.launchTree === undefined || tree === undefined || from.launchTree === tree;
-  return new Set(none ? [] : changedPaths(top, from.launchTree, tree));
-}
 
 /**
  * Files whose accepted content was the child's, was in no commit, and is gone after a checkout
@@ -392,7 +372,7 @@ function treeChanges(
   top: string,
   from: ReviewPoint,
   to: RepoSnapshot & { readonly tree: string },
-  options: { readonly known: readonly string[]; readonly own: (paths: string[]) => string[] },
+  ownPaths: (paths: string[]) => string[],
 ): {
   readonly paths: string[];
   /** Accepted edits that were in no commit and that a checkout of another line dropped. */
@@ -402,16 +382,16 @@ function treeChanges(
   const { tree } = to;
   const reviewed = from.snapshot.tree ?? emptyTree(top) ?? tree;
   const differing = reviewed === tree ? [] : changedPaths(top, reviewed, tree);
-  const boundaries = to.head === undefined ? [] : knownBoundaries(top, to.head, options.known);
+  const boundaries = knownBoundaries(top, to.head, knownAt(from, to));
   const grew = historyGrew(top, from.snapshot, to);
-  const changed = options.own(differing);
-  const accepted = acceptedPaths(top, from);
-  const paths = unexplained(top, from, { tree, grew }, { changed, boundaries, accepted });
+  const changed = ownPaths(differing);
+  // Only on the same line of history, restoring a known older version can undo accepted work.
+  const paths = unexplained(top, tree, changed, { boundaries, reviewed: grew ? from : undefined });
   const dropped = droppedEdits(
     top,
     from.snapshot,
     { grew, reviewed },
-    { changed, paths, accepted },
+    { changed, paths, accepted: from.ownedPaths },
   );
   if (paths.length === 0) {
     return { paths, dropped, diff: undefined };
@@ -451,9 +431,8 @@ export function ownChanges(
   const excluded = excludedRepoPrefixes(top, excludePaths);
   const own = (paths: string[]): string[] =>
     paths.filter((file) => !isExcludedRepoPath(file, excluded));
-  const known = [...from.known, ...optional(to.upstreamBaseHead)];
-  const { paths, dropped, diff } = treeChanges(top, from, { ...to, tree }, { known, own });
-  const left = [...own(leftBehindPaths(top, from.snapshot, to, known)), ...dropped];
+  const { paths, dropped, diff } = treeChanges(top, from, { ...to, tree }, own);
+  const left = [...own(leftBehindPaths(top, from.snapshot, to, knownAt(from, to))), ...dropped];
   return {
     files: fromCwd(cwd, top, [...paths, ...left]),
     unreadable: false,

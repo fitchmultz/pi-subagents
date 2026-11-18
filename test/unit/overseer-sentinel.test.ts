@@ -832,6 +832,42 @@ function initWorktrees(t: TestContext): {
   return { upstream, checkout, child, sibling };
 }
 
+nodeTest("a shared checkout fast-forward is not read-only child work without a baseBranch", (t) => {
+  const { upstream, checkout } = initWorktrees(t);
+  const contract = { scope: [], verification: ["git status --short"] };
+  const launch = launchPoint(checkout);
+  let reviewed = launch;
+  for (const content of ["first upstream update\n", "second upstream update\n"]) {
+    fs.writeFileSync(path.join(upstream, "README.md"), content);
+    git(upstream, "commit", "-am", "upstream update");
+    git(checkout, "pull", "--ff-only");
+    const current = captureRepoSnapshot(checkout);
+    assert.equal(
+      tripwires({ cwd: checkout, contract, baseline: reviewed, current, consecutiveErrors: 0 }),
+      undefined,
+    );
+    reviewed = acceptedPoint(reviewed, current);
+  }
+  assert.deepEqual(ownChanges(checkout, launch, captureRepoSnapshot(checkout)).files, []);
+
+  fs.appendFileSync(path.join(checkout, "README.md"), "local edit\n");
+  const edited = captureRepoSnapshot(checkout);
+  assert.equal(
+    tripwires({
+      cwd: checkout,
+      contract,
+      baseline: reviewed,
+      current: edited,
+      consecutiveErrors: 0,
+    })?.kind,
+    "scope_violation",
+  );
+  git(checkout, "commit", "-am", "local edit");
+  assert.deepEqual(ownChanges(checkout, launch, captureRepoSnapshot(checkout)).files, [
+    "README.md",
+  ]);
+});
+
 nodeTest(
   "a run's changes are its own work: sibling worktrees, upstream and existing commits stay out",
   (t) => {
