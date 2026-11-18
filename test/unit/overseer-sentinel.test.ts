@@ -868,6 +868,35 @@ nodeTest("a shared checkout fast-forward is not read-only child work without a b
   ]);
 });
 
+nodeTest("a remote-tracking update without a reflog stays visible for review", (t) => {
+  const upstream = initGitRepo(t);
+  const checkout = `${upstream}-checkout`;
+  t.after(() => fs.rmSync(checkout, { recursive: true, force: true }));
+  git(upstream, "clone", "--config=core.logAllRefUpdates=false", upstream, checkout);
+  const baseline = launchPoint(checkout);
+
+  fs.writeFileSync(path.join(upstream, "README.md"), "upstream refresh\n");
+  git(upstream, "commit", "-am", "upstream refresh");
+  git(checkout, "pull", "--ff-only");
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+  assert.throws(() => git(checkout, "reflog", "exists", "refs/remotes/origin/main"), {
+    status: 1,
+  });
+
+  const current = captureRepoSnapshot(checkout);
+  assert.deepEqual(ownChanges(checkout, baseline, current).files, ["README.md"]);
+  assert.equal(
+    tripwires({
+      cwd: checkout,
+      contract: { scope: [] },
+      baseline,
+      current,
+      consecutiveErrors: 0,
+    })?.kind,
+    "scope_violation",
+  );
+});
+
 nodeTest(
   "a run's changes are its own work: sibling worktrees, upstream and existing commits stay out",
   (t) => {

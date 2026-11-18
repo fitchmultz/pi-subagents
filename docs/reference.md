@@ -495,9 +495,10 @@ the child did not write:
 
 - Commits that a ref named when the run launched are known. The tip of `origin/<baseBranch>`
   is also known, or the checked-out branch's configured remote-tracking tip if `baseBranch`
-  is omitted. Tips pushed from this repository don't count as upstream. After a merge, a
-  fast-forward, or a checkout, content that matches a known commit under the current history
-  is not listed as new work. An edit that differs from the known versions stays listed.
+  is omitted, when Git's reflog records a fetch or pull to that exact tip. Without a matching
+  entry, the remote tip doesn't exclude changes from review. After a merge, a fast-forward,
+  or a checkout, content that matches a known commit under the current history is not listed
+  as new work. An edit that differs from the known versions stays listed.
 - Other worktrees of the same repository are not read. A commit or an edit that another
   session makes there is never listed.
 - A commit that the child made and then moved away from, for example on a side branch, stays

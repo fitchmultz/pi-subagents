@@ -26,7 +26,7 @@ export interface RepoSnapshot {
   readonly headMoves: number;
   readonly baseBranch: string | undefined;
   readonly localBaseHead: string | undefined;
-  /** Tip of the base or checked-out branch's remote-tracking ref, unless pushed from here. */
+  /** Tip of the base or checked-out branch's remote-tracking ref when recorded as fetched. */
   readonly upstreamHead: string | undefined;
   readonly resolvedBaseHead: string | undefined;
   readonly baseBranchUnborn: boolean;
@@ -137,17 +137,21 @@ function baseState(
   };
 }
 
+const FETCHED_TIP = /^(?:fetch|pull)(?: .*)?: (?:fast-forward|forced-update|storing head)$/u;
+
 function upstreamHead(top: string, baseBranch: string | undefined): string | undefined {
   const ref =
     baseBranch === undefined
       ? trimmed(git(top, ["rev-parse", "--symbolic-full-name", "@{upstream}"]))
       : `refs/remotes/origin/${baseBranch}`;
-  // A local tracking branch or a tip pushed from this repository does not explain away local work.
   if (ref?.startsWith("refs/remotes/") !== true) {
     return undefined;
   }
   const head = refCommit(top, ref);
-  return head !== undefined && !refLog(top, ref).startsWith("update by push") ? head : undefined;
+  // The newest entry must describe a fetch update to this exact tip, not a prior ref value.
+  const [logged, action] =
+    git(top, ["reflog", "show", "-1", "--format=%H%x00%gs", ref])?.trimEnd().split("\0", 2) ?? [];
+  return logged === head && action !== undefined && FETCHED_TIP.test(action) ? head : undefined;
 }
 
 export function captureRepoSnapshot(cwd: string, options: SnapshotOptions = {}): RepoSnapshot {
