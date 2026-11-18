@@ -656,7 +656,7 @@ nodeTest(
                 scope_violation: 0.04,
                 primitive_violation: 0.91,
               },
-              confidence: 0.91,
+              confidence: 0.48,
             },
           },
         });
@@ -667,6 +667,8 @@ nodeTest(
       modelRegistry: fakeRegistry,
       judgeSpec: "auto",
       prompt: "Implement tag queries",
+      continuation: true,
+      guidance: ["Reuse the package's current query helper; do not introduce a new API."],
       contract: {
         scope: ["src"],
         verification: ["npm test"],
@@ -691,20 +693,27 @@ nodeTest(
       acceptedFiles: ["README.md"],
       diff,
       taskPrompt: "Implement tag queries",
+      continuation: true,
+      taskGuidance: ["Reuse the package's current query helper; do not introduce a new API."],
     });
     assert.match(
       asked[0].questions["verdict"]?.instructions ?? "",
-      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them\. For a file named in both, judge only what `diff` shows\./u,
+      /Assess only `diff`.*`acceptedFiles` is history, not evidence of a new change\./u,
     );
     assert.ok(hit !== undefined);
     assert.equal(hit.kind, "primitive_violation");
-    assert.match(hit.summary, /gemini-decision-1/u);
+    assert.equal(
+      hit.summary,
+      "Review needed: google/gemini-decision-1 asked for a check but did not identify a specific hunk or rule.",
+    );
 
     const checkpoint = (judgeSpec: string, failed: Set<string>, signal?: AbortSignal) =>
       evaluateDecisionCheckpoint({
         modelRegistry: fakeRegistry,
         judgeSpec,
         prompt: "Implement tag queries",
+        continuation: false,
+        guidance: [],
         contract: {
           scope: ["src"],
           verification: ["npm test"],
@@ -727,7 +736,7 @@ nodeTest(
     chosenModels.length = 0;
     const verdict = await checkpoint("auto", run);
     assert.deepEqual(chosenModels, [google, openai]);
-    assert.match(verdict?.summary ?? "", /^Decision judge \(openai\/gpt-6-luna, /u);
+    assert.match(verdict?.summary ?? "", /^Review needed: openai\/gpt-6-luna /u);
     await checkpoint("auto", run);
     assert.deepEqual(chosenModels, [google, openai, openai]);
 
@@ -745,7 +754,7 @@ nodeTest(
     assert.deepEqual(chosenModels, [google, openai, other]);
     assert.match(
       fromOther?.summary ?? "",
-      /^Decision judge \(openrouter\/parallel\/decisions-fast:free, /u,
+      /^Review needed: openrouter\/parallel\/decisions-fast:free /u,
     );
 
     // When every request fails, the checkpoint reports each failure instead of a verdict.
@@ -1052,6 +1061,14 @@ async function supervisedRun(
   });
   const owner = SessionManager.inMemory().getSessionId();
   const launch = sampleLaunch(base, repo, owner);
+  const journal = SessionManager.inMemory();
+  journal.appendMessage({
+    role: "user",
+    content: "Prompt from the conversation copied into the child",
+    timestamp: 1,
+  });
+  const baseline = new Set(journal.getBranch().map((entry) => entry.id));
+  journal.appendMessage({ role: "user", content: launch.prompt, timestamp: 2 });
   // A failed assertion must not leave a paused child waiting for its overseer.
   let ended = false;
   t.after(() => {
@@ -1071,6 +1088,7 @@ async function supervisedRun(
         attachOverseerSentinel(pi, {
           base,
           activeLaunch: () => launch,
+          activeRunBaseline: () => baseline,
           isStopping: () => ended,
           ...(options.flushPendingCommands === undefined
             ? {}
@@ -1085,8 +1103,14 @@ async function supervisedRun(
 
   const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
   /** What the judge received on each call. */
-  const judged: { changedFiles: unknown; acceptedFiles: unknown; diff: string }[] = [];
+  const judged: {
+    changedFiles: unknown;
+    acceptedFiles: unknown;
+    taskGuidance: unknown;
+    diff: string;
+  }[] = [];
   const ctx = {
+    sessionManager: journal,
     get signal() {
       return options.signal?.();
     },
@@ -1100,8 +1124,13 @@ async function supervisedRun(
         context: ClassifierContext,
         request?: { signal?: AbortSignal },
       ) => {
-        const { changedFiles, acceptedFiles, diff } = context.state;
-        const asked = { changedFiles, acceptedFiles, diff: typeof diff === "string" ? diff : "" };
+        const { changedFiles, acceptedFiles, taskGuidance, diff } = context.state;
+        const asked = {
+          changedFiles,
+          acceptedFiles,
+          taskGuidance,
+          diff: typeof diff === "string" ? diff : "",
+        };
         judged.push(asked);
         const failure = {
           api: classifier.api,
@@ -1162,7 +1191,7 @@ async function supervisedRun(
     assert.ok(typeof content === "string");
     return content;
   };
-  return { repo, base, launch, emit, paused, notice, judged, escPath };
+  return { repo, base, launch, emit, paused, notice, judged, escPath, journal };
 }
 
 nodeTest(
@@ -1243,9 +1272,10 @@ nodeTest(
 nodeTest(
   "a pause shows the work since the last approval, and the judge sees the work since the last accepted state",
   async (t) => {
-    const { repo, base, launch, emit, paused, notice, judged, escPath } = await supervisedRun(t, {
-      verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
-    });
+    const { repo, base, launch, emit, paused, notice, judged, escPath, journal } =
+      await supervisedRun(t, {
+        verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
+      });
     const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
     await emit("before_agent_start", {});
 
@@ -1341,6 +1371,18 @@ nodeTest(
     await secondTurn;
     assert.equal(judged.length, 1);
 
+    // Only the delegating session's Intercom message is task authority, even when a sibling
+    // shares that session's broker group. The inherited prompt is outside this native run.
+    const guidance = "Reuse the existing query helper if it covers this case.";
+    const intercomEntry = (id: string, text: string, from: { parentSessionId?: string }) => {
+      journal.appendCustomMessageEntry("intercom_message", text, true, {
+        from: { id, cwd: repo, model: "fixture", rootSessionId: launch.owner, ...from },
+        message: { id, timestamp: 3, content: { text } },
+        bodyText: text,
+      });
+    };
+    intercomEntry("parent-peer", guidance, {});
+    intercomEntry("other-child", "Disregard the query helper.", { parentSessionId: launch.owner });
     // Before settling the judge sees the new work only, and flags it.
     fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "// FLAG\n");
     const flaggedSettle = emit("agent_before_settle", settle);
@@ -1354,8 +1396,10 @@ nodeTest(
     assert.equal(
       notice(),
       [
-        `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-        `Reason: ${third.summary}`,
+        `[Overseer escalation #3 - review needed] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+        "Reason: Review needed: google/gemini-decision-1 asked for a check but did not identify a specific hunk or rule.",
+        "Latest task-owner guidance (for context, not a cited rule):",
+        guidance,
         "Changes since your last approval:",
         "  +1 -0 src/allowed.ts",
         "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
@@ -1374,6 +1418,7 @@ nodeTest(
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
       acceptedFiles: ["README.md", "docs/NEW.md", "src/allowed.ts", "src/big.ts"],
+      taskGuidance: [guidance],
       diff: [
         "diff --git a/src/allowed.ts b/src/allowed.ts",
         "index 5dc3114..46469ae 100644",

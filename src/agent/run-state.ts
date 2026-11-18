@@ -91,7 +91,8 @@ export function pauseLabel(escalation: Escalation): string {
   const corrections = escalation.corrections ?? 0;
   const corrected =
     corrections === 0 ? "" : `, ${corrections} correction${corrections === 1 ? "" : "s"}`;
-  return `${escalation.kind} #${escalation.strikes}${corrected}`;
+  const kind = escalation.classifierReview === undefined ? escalation.kind : "review needed";
+  return `${kind} #${escalation.strikes}${corrected}`;
 }
 
 /** Active unresolved mid-run overseer escalation pausing this running child, if any. */

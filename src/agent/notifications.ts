@@ -192,8 +192,11 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
       customType: "agent-escalation",
       display: true,
       content: [
-        `[Overseer escalation #${escalation.strikes} - ${escalation.kind}] Run ${label} paused in ${launch.cwd}.`,
+        `[Overseer escalation #${escalation.strikes} - ${escalation.classifierReview === undefined ? escalation.kind : "review needed"}] Run ${label} paused in ${launch.cwd}.`,
         `Reason: ${escalation.summary}`,
+        escalation.classifierReview === undefined
+          ? ""
+          : `${escalation.classifierReview.source === "guidance" ? "Latest task-owner guidance" : "Task prompt"} (for context, not a cited rule):\n${escalation.classifierReview.instruction}`,
         ...changeLines(escalation),
         corrected,
         'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.',

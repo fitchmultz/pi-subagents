@@ -14,7 +14,7 @@ import {
   type Launch,
 } from "../../src/agent/contracts.ts";
 import { loadSDK } from "../../src/agent/host.ts";
-import { release } from "../../src/agent/notifications.ts";
+import { notifications, release } from "../../src/agent/notifications.ts";
 import { resolveActiveEscalation } from "../../src/agent/overseer-sentinel.ts";
 import { ensureActor, ownIdentity } from "../../src/agent/process.ts";
 import { enqueue, ownerDirectory, read, runDirectory, write } from "../../src/agent/storage.ts";
@@ -115,7 +115,7 @@ nodeTest(
         verification: ["echo ok"],
         baseBranch: "main",
       },
-      overseer: { enabled: true, judge: "off" },
+      overseer: { enabled: true, judge: "overseer-choice-fixture/choice-only" },
       createdAt: Date.now(),
     };
     write(path.join(dir, "launch.json"), launch, true);
@@ -143,11 +143,13 @@ nodeTest(
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     });
 
+    const judgeInput = path.join(root, "judge-input.json");
     const savedEnv = { ...process.env };
     Object.assign(process.env, {
       PI_OFFLINE: "1",
       OVERSEER_TEST_REPO: work,
       OVERSEER_TEST_SIBLING: checkout,
+      OVERSEER_TEST_JUDGE_INPUT: judgeInput,
     });
     try {
       await ensureActor(base, launch);
@@ -184,16 +186,43 @@ nodeTest(
       `${recorded}\nThe run is still running and was not paused: review it again after it ends.`,
     );
 
-    enqueue(base, launch, { action: "steer", prompt: "REVERT_README" });
+    const guidance = "REVERT_README and replace x with the greeting in src/allowed.ts.";
+    enqueue(base, launch, { action: "steer", prompt: guidance });
     resolveActiveEscalation(base, launch, "steered");
+
+    await until(() => {
+      const active = read(escPath, escalationSchema);
+      return active !== undefined && active.id !== esc.id;
+    }, "choice-only result paused for review");
+    const paused = read(escPath, escalationSchema);
+    assert.ok(paused);
+    t.after(() => release(owner, `escalation:${paused.id}`));
+    const input: unknown = JSON.parse(fs.readFileSync(judgeInput, "utf8"));
+    assert.partialDeepStrictEqual(input, {
+      state: {
+        taskPrompt: launch.prompt,
+        taskGuidance: [guidance],
+        changedFiles: ["src/allowed.ts"],
+      },
+      questions: { verdict: { type: "choice" } },
+    });
+    const notice = notifications({ sessionManager: sdk.SessionManager.inMemory() }, base, owner)
+      .notices[0]?.message.content;
+    assert.ok(typeof notice === "string");
+    assert.match(notice, /\[Overseer escalation #2 - review needed\]/u);
+    assert.match(notice, /did not identify a specific hunk or rule/u);
+    assert.ok(notice.includes(guidance));
+    assert.match(notice, /^\+export const greeting = 'hi';$/mu);
+    assert.doesNotMatch(notice, /scope_violation|0\.99/u);
+    resolveActiveEscalation(base, launch, "approved");
 
     const resultPath = path.join(dir, "result.json");
     await until(() => fs.existsSync(resultPath), "result.json written after steer");
     const result = read(resultPath, resultSchema);
     assert.ok(result !== undefined);
     assert.equal(result.status, "completed");
-    // The child reverted its only edit. The other session's commit is not this run's change.
-    assert.equal(result.changedFiles, undefined);
+    // The child reverted the README edit. The other session's commit is not this run's change.
+    assert.deepEqual(result.changedFiles, ["src/allowed.ts"]);
     assert.equal(
       execFileSync("git", ["log", "-1", "--format=%s", "main"], { cwd: work, encoding: "utf8" }),
       "other session\n",

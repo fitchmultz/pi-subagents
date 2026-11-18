@@ -535,8 +535,13 @@ Steering accepts nothing. Out-of-scope work that stays in place is flagged again
 checkpoint. After the judge flags a state, it is not asked about that unchanged state again
 until the checkpoint before the run settles.
 
-The judge receives the diff of the new work, the names of the files changed earlier in the run
-(`acceptedFiles`), and the instruction to judge only the new diff.
+The judge receives the new diff, the names of previously accepted files (`acceptedFiles`), the
+task prompt and contract, and task-owner guidance recorded in this run's child session. This
+includes delivered `continue` and `changes_requested` prompts and intercom messages from the
+delegating session. Pending messages, approval summaries, and messages from other workers do not
+change the judge's instructions. Give changes to the task directly in a message; the judge does
+not open referenced notes. Later explicit guidance supersedes conflicting earlier instructions
+for the classifier. It does not change the edit-tool scope or base-branch checks.
 
 ### Which classifier judges, and when none answers
 
@@ -550,6 +555,13 @@ gives a verdict:
 
 With a configured judge (`provider/model`) it asks only that classifier, and never another one
 in its place. With the judge `off` it asks nothing and reports nothing.
+
+A choice requesting review still pauses at the same checkpoint, regardless of confidence. The
+choice does not name a hunk or rule. The notice says `review needed`, shows the changes and the
+latest guidance (or the task prompt), and leaves the decision to the overseer. The instructions
+are context, not a claimed reason for the classifier's choice. A newer parent renders this
+label when the child records `classifierReview`. An older parent can still open and resolve
+the pause, but displays the legacy choice category in the heading.
 
 A classifier gives no verdict when its request fails, for example because the provider account
 has no credit, the key is rejected or the provider cannot be reached, and when its response

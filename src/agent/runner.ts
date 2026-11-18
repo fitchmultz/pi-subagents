@@ -35,6 +35,7 @@ class Actor {
         readonly kind: "running";
         readonly launch: Launch;
         readonly task: Promise<void>;
+        readonly baseline: ReadonlySet<string>;
         /** Set once the run stays open for the session's own background work. */
         wait?: BackgroundWait | undefined;
       } = { kind: "idle" };
@@ -126,7 +127,7 @@ class Actor {
     // executeRun saves its own failures; only a failing save rejects past it. That
     // rejection stays observed here even after the work slot returns to idle.
     const observed = task.catch((error: unknown) => this.observeBrokenRun(launch, error));
-    this.work = { kind: "running", launch, task: observed };
+    this.work = { kind: "running", launch, task: observed, baseline };
     this.actor?.observation.working(true);
   }
   /** A run whose own save failed still ends with a terminal result and a recorded fault. */
@@ -412,6 +413,7 @@ class Actor {
       sentinel: {
         base: this.base,
         activeLaunch: () => (this.work.kind === "running" ? this.work.launch : this.initial),
+        activeRunBaseline: () => (this.work.kind === "running" ? this.work.baseline : undefined),
         isStopping: () => this.stopping,
         flushPendingCommands: () => {
           if (!this.stopping) {

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Overseer classifier reviews use current task-owner guidance and show the new changes without treating a choice or confidence as evidence of a violation.
+
 ## 0.52.51 - 2026-11-18
 
 <!-- npm-release:unreleased:start -->
