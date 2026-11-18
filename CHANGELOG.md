@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Overseer classifier reviews use current task-owner guidance and show the new changes without treating a choice or confidence as evidence of a violation.
+- Overseer tool-error reviews show which calls failed and which succeeded, even in the same turn. The notice names known repeated calls without showing arguments or logs. Prior steers no longer prompt advice to stop a worker. (OVR-215, OVR-216)
 
 ## 0.52.51 - 2026-11-18
 

@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isRecord } from "../shared/unknown.ts";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import {
   commandMetadataSchema,
   escalationResolutionSchema,
@@ -12,6 +11,7 @@ import {
   type Launch,
 } from "./contracts.ts";
 import { errorText } from "./host.ts";
+import { ToolErrorWindow } from "./overseer-evidence.ts";
 import {
   acceptedPoint,
   captureRepoSnapshot,
@@ -25,7 +25,6 @@ import {
   type ReviewPoint,
 } from "./overseer-git.ts";
 import {
-  CONSECUTIVE_ERROR_TURN_LIMIT,
   checkDeterministicTripwires,
   clearJudgeUnavailable,
   evaluateDecisionCheckpoint,
@@ -62,15 +61,15 @@ interface RunSentinelState {
   readonly approvedBranchIssues: Set<string>;
   readonly excludePaths: readonly string[];
   readonly seenSteerFiles: Set<string>;
-  consecutiveErrors: number;
+  readonly toolErrors: ToolErrorWindow;
   turnsSinceJudge: number;
   /** The state the judge last saw, and the size of the new work it saw then. */
   judged: { readonly tree: string | undefined; readonly lines: number };
   /** The classifiers whose request failed in this run. On `auto` the judge asks them last. */
   readonly failedJudges: Set<string>;
-  /** Pauses so far, and how many of them the overseer answered with a correction. */
+  /** Pauses so far, and how many of them the overseer answered with a steer. */
   pauses: number;
-  corrections: number;
+  steers: number;
 }
 
 /** The child's own work between an accepted state and `snapshot`. */
@@ -78,26 +77,6 @@ interface Work {
   readonly snapshot: RepoSnapshot;
   readonly changes: OwnChanges;
   readonly diff: string;
-}
-
-function turnTools(toolResults: unknown): { hadError: boolean; mutated: boolean } {
-  if (!Array.isArray(toolResults)) {
-    return { hadError: false, mutated: false };
-  }
-  let hadError = false;
-  let mutated = false;
-  for (const item of toolResults) {
-    if (!isRecord(item)) {
-      continue;
-    }
-    if (item.isError === true) {
-      hadError = true;
-    }
-    if (typeof item.toolName === "string" && MUTATING_TOOLS.has(item.toolName)) {
-      mutated = true;
-    }
-  }
-  return { hadError, mutated };
 }
 
 function jsonFiles(dir: string): Set<string> {
@@ -301,12 +280,12 @@ class SentinelRunner {
       approvedBranchIssues: new Set(),
       excludePaths,
       seenSteerFiles: jsonFiles(commandsDir),
-      consecutiveErrors: 0,
+      toolErrors: new ToolErrorWindow(),
       turnsSinceJudge: 0,
       judged: { tree: point.snapshot.tree, lines: 0 },
       failedJudges: new Set(),
       pauses: 0,
-      corrections: 0,
+      steers: 0,
     };
     return this.state;
   }
@@ -375,18 +354,20 @@ class SentinelRunner {
     launch: Launch,
     issue: Violation,
     checkpoint: Work,
+    toolErrorTurns?: Escalation["toolErrorTurns"],
   ): Promise<EscalationResolution["verdict"]> {
     const current = this.ensureState(launch);
     current.pauses += 1;
-    current.consecutiveErrors = 0;
+    current.toolErrors.clear();
     const escalation: Escalation = {
       id: randomUUID(),
       runId: launch.id,
       owner: launch.owner,
       at: Date.now(),
       strikes: current.pauses,
-      corrections: current.corrections,
+      steers: current.steers,
       ...issue,
+      ...(toolErrorTurns === undefined ? {} : { toolErrorTurns }),
       ...this.unapprovedWork(launch, checkpoint),
       diffDigest: checkpoint.snapshot.tree ?? "non-git",
     };
@@ -398,7 +379,7 @@ class SentinelRunner {
       seenSteerFiles: current.seenSteerFiles,
     });
     if (verdict === "steered") {
-      current.corrections += 1;
+      current.steers += 1;
     }
     if (verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
@@ -414,6 +395,7 @@ class SentinelRunner {
     launch: Launch,
     ctx: ExtensionContext,
     finalSettle: boolean,
+    toolErrorTurns?: Escalation["toolErrorTurns"],
   ): Promise<EscalationResolution["verdict"] | undefined> {
     if (
       launch.overseer?.enabled !== true ||
@@ -428,13 +410,23 @@ class SentinelRunner {
       excludePaths: current.excludePaths,
     });
     const checkpoint = this.workSince(launch, current.reviewPoint, snapshot);
+    if (toolErrorTurns !== undefined) {
+      return this.escalate(
+        launch,
+        {
+          kind: "loop_violation",
+          summary: `${toolErrorTurns.length} consecutive turns reported tool errors.`,
+        },
+        checkpoint,
+        toolErrorTurns,
+      );
+    }
     const issue = checkDeterministicTripwires({
       cwd: launch.cwd,
       contract: launch.contract,
       launch: current.launch.snapshot,
       current: snapshot,
       changes: checkpoint.changes,
-      consecutiveErrors: current.consecutiveErrors,
     });
     if (issue !== undefined && !current.approvedBranchIssues.has(issue.summary)) {
       return this.escalate(launch, issue, checkpoint);
@@ -488,22 +480,21 @@ class SentinelRunner {
     return this.options.isStopping() ? undefined : this.escalate(launch, verdict, checkpoint);
   }
 
-  async onTurnEnd(event: unknown, ctx: ExtensionContext): Promise<void> {
+  async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
     const launch = this.options.activeLaunch();
     if (launch.overseer?.enabled !== true || launch.contract === undefined) {
       return;
     }
     const current = this.ensureState(launch);
-    const toolResults = isRecord(event) ? event.toolResults : undefined;
-    const { hadError, mutated } = turnTools(toolResults);
-    current.consecutiveErrors = hadError ? current.consecutiveErrors + 1 : 0;
+    const toolErrorTurns = current.toolErrors.record(event);
+    const mutated = event.toolResults.some((result) => MUTATING_TOOLS.has(result.toolName));
     if (mutated) {
       current.turnsSinceJudge += 1;
     }
-    if (!mutated && current.consecutiveErrors < CONSECUTIVE_ERROR_TURN_LIMIT) {
+    if (!mutated && toolErrorTurns === undefined) {
       return;
     }
-    await this.inspectCheckpoint(launch, ctx, false);
+    await this.inspectCheckpoint(launch, ctx, false, toolErrorTurns);
   }
 }
 

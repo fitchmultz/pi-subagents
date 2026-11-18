@@ -11,6 +11,7 @@ import {
   type Result,
   type Waiting,
 } from "./contracts.ts";
+import { escalationKindLabel, escalationSteers } from "./overseer-evidence.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 
 type Admission = "pending" | "admitted";
@@ -86,13 +87,11 @@ export function runWaiting(base: string, launch: Launch, status: RunStatus): Wai
     : undefined;
 }
 
-/** What paused the run, which pause of the run it is, and how often the overseer corrected it before. */
+/** What paused the run, which pause it is, and how many earlier pauses were answered by steering. */
 export function pauseLabel(escalation: Escalation): string {
-  const corrections = escalation.corrections ?? 0;
-  const corrected =
-    corrections === 0 ? "" : `, ${corrections} correction${corrections === 1 ? "" : "s"}`;
-  const kind = escalation.classifierReview === undefined ? escalation.kind : "review needed";
-  return `${kind} #${escalation.strikes}${corrected}`;
+  const steers = escalationSteers(escalation);
+  const steered = steers === 0 ? "" : `, ${steers} steer${steers === 1 ? "" : "s"}`;
+  return `${escalationKindLabel(escalation)} #${escalation.strikes}${steered}`;
 }
 
 /** Active unresolved mid-run overseer escalation pausing this running child, if any. */

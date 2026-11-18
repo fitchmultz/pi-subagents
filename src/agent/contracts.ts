@@ -63,8 +63,26 @@ export const escalationSchema = Type.Object({
   leftBehind: Type.Optional(Type.Array(Type.String())),
   /** Files changed earlier in the run that the overseer approved. */
   approved: Type.Optional(Type.Array(Type.String())),
-  /** How many earlier pauses of the run the overseer answered with a correction. */
+  /** Old children use this name for earlier pauses answered with a steer. */
   corrections: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** How many earlier pauses the overseer answered with a steer. */
+  steers: Type.Optional(Type.Integer({ minimum: 0 })),
+  /** Finalized tool outcomes in each turn that triggered an error review. No args or output. */
+  toolErrorTurns: Type.Optional(
+    Type.Array(
+      Type.Object({
+        messageEntryId: Type.String(),
+        tools: Type.Array(
+          Type.Object({
+            toolName: Type.String(),
+            toolCallId: Type.String(),
+            isError: Type.Boolean(),
+            repeatedFrom: Type.Optional(Type.String()),
+          }),
+        ),
+      }),
+    ),
+  ),
 });
 export type Escalation = Static<typeof escalationSchema>;
 export const escalationResolutionSchema = Type.Object({
