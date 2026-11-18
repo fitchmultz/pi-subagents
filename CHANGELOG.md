@@ -2,10 +2,25 @@
 
 ## [Unreleased]
 
+## 0.52.54 - 2026-11-18
+
+<!-- npm-release:unreleased:start -->
+
 - A paused child sees the overseer's correction in its next model request (OVR-219).
 - Completion notices point to the current review status instead of asking for an approval that may already be recorded (OVR-218).
 - Approval receipts say when the summary was saved for review only and how to send instructions (OVR-208).
 - Overseer classifier reviews use current task-owner guidance and show the new changes without treating a choice or confidence as evidence of a violation.
+
+<!-- npm-release:unreleased:end -->
+
+- fix: review classifier choices against current task guidance (OVR-217) (1/2) (#470) ([4d982e4](https://github.com/fitchmultz/pi-subagents/commit/4d982e4c8b7a120eb77c130fe183dafb1054c406))
+
+### What's Changed
+
+- fix: review classifier choices against current task guidance (OVR-217) (1/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/470
+- fix: deliver overseer corrections before resuming (OVR-219, OVR-218, OVR-208) (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/472
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.53...v0.52.54
 
 ## 0.52.53 - 2026-11-18
 
