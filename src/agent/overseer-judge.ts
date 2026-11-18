@@ -17,7 +17,6 @@ import { branchIssue, type OwnChanges, type RepoSnapshot } from "./overseer-git.
 import { isPathAllowedByScope } from "./overseer-scope.ts";
 import { read, runDirectory, write } from "./storage.ts";
 
-export const CONSECUTIVE_ERROR_TURN_LIMIT = 3;
 const PREFERRED_AUTO_JUDGES = [
   ["google", "gemini-decision-1"],
   ["cloudflare-workers-ai", "@cf/cloudflare/clef"],
@@ -64,15 +63,8 @@ export function checkDeterministicTripwires(options: {
   current: RepoSnapshot;
   /** The child's own changes since the last accepted snapshot. */
   changes: OwnChanges;
-  consecutiveErrors: number;
 }): Violation | undefined {
-  const { cwd, contract, launch, current, changes, consecutiveErrors } = options;
-  if (consecutiveErrors >= CONSECUTIVE_ERROR_TURN_LIMIT) {
-    return {
-      kind: "loop_violation",
-      summary: `Child hit ${consecutiveErrors} consecutive turns with tool/command errors without clean progress.`,
-    };
-  }
+  const { cwd, contract, launch, current, changes } = options;
   if (changes.unreadable) {
     return {
       kind: "loop_violation",
