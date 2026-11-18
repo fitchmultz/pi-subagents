@@ -281,13 +281,14 @@ function projection(
  */
 function reviewReceiptText(run: RunView, review: OverseerReview, released: boolean): string {
   const label = run.name === undefined ? run.id : `${run.id} (${run.name})`;
-  const settled = `The run's status is ${run.status}; it needs no further review.`;
+  const settled = `The run's status is ${run.status}; ${run.reviewRequired === true ? "review its completed changes." : "it needs no further review."}`;
   const unsettled = released
-    ? "The paused child continues. Its next notice arrives when it pauses again or ends."
-    : "The run is still running and was not paused: review it again after it ends.";
+    ? "Pause approval recorded. Its next notice arrives when the child pauses again or ends."
+    : "The child is still running. If it finishes with changes, review the completed run.";
   return [
     `Overseer review recorded: run ${label} ${review.verdict} at ${utc(review.at)}.`,
     run.status === "running" ? unsettled : settled,
+    'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.',
   ].join("\n");
 }
 export function renderReceipt(

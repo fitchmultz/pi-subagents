@@ -15,6 +15,7 @@ import { BackgroundWait, endSession, reporting } from "./background-work.ts";
 import { captureOverseerBaseline, saveResult, saveTerminalResult } from "./run-result.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { parkedToken } from "./generation.ts";
+import { OverseerSentinel } from "./overseer-sentinel.ts";
 
 interface LiveActor {
   readonly session: AgentSession;
@@ -52,6 +53,7 @@ class Actor {
   // Actor-local validation metadata only; never retain command prompts or receipt authority.
   private readonly validated = new Map<string, { identity: string; id: string }>();
   private readonly accounting = new UsageIndex();
+  private readonly sentinel: OverseerSentinel;
   private readonly base: string;
   private readonly initial: Launch;
   private readonly token: string;
@@ -59,6 +61,11 @@ class Actor {
     this.base = base;
     this.initial = initial;
     this.token = token;
+    this.sentinel = new OverseerSentinel({
+      base,
+      activeLaunch: () => (this.work.kind === "running" ? this.work.launch : initial),
+      isStopping: () => this.stopping,
+    });
   }
   private get dir(): string {
     return runDirectory(this.base, this.initial.rootId);
@@ -257,6 +264,7 @@ class Actor {
       case "steer":
         // An idle session takes guidance only while its run waits on background work.
         return (
+          this.stopping ||
           this.work.kind !== "running" ||
           this.work.launch.id !== launch.id ||
           (session.isIdle && this.work.wait === undefined)
@@ -274,6 +282,9 @@ class Actor {
         this.run(launch);
         return;
       case "steer":
+        if (this.sentinel.steerPaused(launch.id, command.prompt)) {
+          return;
+        }
         if (session.isIdle && this.work.kind === "running" && this.work.wait) {
           this.work.wait.guide(command.prompt);
           return;
@@ -409,18 +420,7 @@ class Actor {
         started = { pi, ctx };
       },
       tool: (event) => this.actor?.observation.tool(event),
-      sentinel: {
-        base: this.base,
-        activeLaunch: () => (this.work.kind === "running" ? this.work.launch : this.initial),
-        isStopping: () => this.stopping,
-        flushPendingCommands: () => {
-          if (!this.stopping) {
-            this.pending().forEach((c) => this.accept(c));
-          }
-          const s = this.actor?.session;
-          return s !== undefined && (s.agent.hasQueuedMessages() || s.pendingMessageCount > 0);
-        },
-      },
+      sentinel: this.sentinel,
     });
     const runtime = await sdk.createAgentSessionRuntime(factory, {
       cwd: this.initial.cwd,

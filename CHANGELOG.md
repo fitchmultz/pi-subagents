@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- A paused child sees the overseer's correction in its next model request (OVR-219).
+- Completion notices point to the current review status instead of asking for an approval that may already be recorded (OVR-218).
+- Approval receipts say when the summary was saved for review only and how to send instructions (OVR-208).
+
 ## 0.52.51 - 2026-11-18
 
 <!-- npm-release:unreleased:start -->

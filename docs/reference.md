@@ -633,20 +633,21 @@ changed files and the diff excerpt, and gives no advice to stop.
 
 ### What an approval replies
 
-`agent_runs` `action="review"` with `verdict="approved"` replies with two lines: the run, the
-verdict and the time, and then what follows.
+`agent_runs` `action="review"` with `verdict="approved"` records the summary as review evidence.
+It does not send the summary to the child. The receipt reports what the approval changes.
 
 ```text
 Overseer review recorded: run 7f3a… (docs-fix) approved at 2026-11-17T17:02:11Z.
-The paused child continues. Its next notice arrives when it pauses again or ends.
+Pause approval recorded. Its next notice arrives when the child pauses again or ends.
+Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.
 ```
 
-The second line is one of three: the paused child continues; the run is still running and was
-not paused, so it needs a review again after it ends; or the run has ended and needs no further
-review. The child's report and the run record are not repeated: the completion notice and
-`inspect` have them. `changes_requested` replies as `continue` does.
+Use `continue` to send guidance without a review verdict. Use `changes_requested` to record
+a verdict and send its summary as the correction or successor prompt. When either action
+releases a pause, the child includes the correction in its next model request. Ordinary
+guidance for an active child stays queued, and the receipt does not claim the child has read it.
 
-When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
-prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`
-or a superseding continuation (`changes_requested` / `continue`) is recorded. Runs with no
-detected repository changes settle with zero extra turns.
+Completion notices point to `inspect` for the current review status, because a notice can
+arrive after approval. Before the parent settles, Pi prompts for still-pending completion
+reviews (at most twice per run). Inspect the diff, then choose `approved` or
+`changes_requested`. Runs with no detected repository changes settle with zero extra turns.

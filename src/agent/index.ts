@@ -56,7 +56,6 @@ import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
 import { OverseerController } from "./overseer.ts";
 import { prepareOverseerReviewAction, registerOverseerSettleGate } from "./overseer-review.ts";
-import { resolveActiveEscalation } from "./overseer-sentinel.ts";
 
 interface AttachmentBinding {
   readonly context: ExtensionContext;
@@ -363,7 +362,6 @@ class AgentRuntime {
     const claim = state.kind === "admitted" ? inspectActorClaim(this.base, launch) : undefined;
     if (continuationDecision(state, possiblyLive(claim)) === "guidance") {
       const command = enqueue(this.base, launch, { action: "steer", prompt: input.prompt });
-      resolveActiveEscalation(this.base, launch, "steered");
       return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",
         command,
@@ -434,12 +432,8 @@ class AgentRuntime {
     return this.continue(launch, input);
   }
   private async review(original: Launch, input: RunsInput) {
-    const { target, review, verdict, released } = prepareOverseerReviewAction(
-      this.base,
-      original,
-      input,
-    );
-    if (verdict === "changes_requested") {
+    const { target, review, released } = prepareOverseerReviewAction(this.base, original, input);
+    if (review.verdict === "changes_requested") {
       return this.continue(latest(this.base, target), { ...input, prompt: review.summary });
     }
     return renderReceipt(this.base, target, this.ctx, {

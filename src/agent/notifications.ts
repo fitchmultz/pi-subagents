@@ -11,7 +11,7 @@ import {
   type Launch,
   type Result,
 } from "./contracts.ts";
-import { needsOverseerReview } from "./overseer-review.ts";
+import { isReviewableResult } from "./overseer-review.ts";
 import { judgeUnavailable } from "./overseer-judge.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
 import { accountingState, readCanonicalResult, readResult } from "./usage.ts";
@@ -103,12 +103,11 @@ export function deliver(
     }
   }
 }
-function overseerReviewHint(base: string, launch: Launch, result: Result): string {
-  if (!needsOverseerReview(base, launch, result)) {
-    return "";
-  }
-  const files = (result.changedFiles ?? []).join(", ");
-  return `\n[Overseer review required: inspect git diff in ${launch.cwd} (${files}) and call agent_runs(action="review", id="${launch.id}", verdict="approved", summary="...") in this turn before finishing.]`;
+function overseerReviewHint(launch: Launch, result: Result): string {
+  // A queued completion may arrive after review. Only the live settle gate asks for action.
+  return isReviewableResult(launch, result)
+    ? `\n[Check current review status with agent_runs(action="inspect", id="${launch.id}"). If review is still required, inspect the diff and choose approved or changes_requested.]`
+    : "";
 }
 
 /** Says once, with the run's result, that the run ended with work no judge answered for. */
@@ -133,7 +132,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(launch, result)}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,
