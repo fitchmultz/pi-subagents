@@ -620,6 +620,7 @@ made progress. If a failed call has the same tool and submitted arguments as a f
 in an earlier turn of the same window, the notice names that earlier call. This compares
 calls, not their causes or side effects. The notice does not copy tool arguments, output, or
 logs. Use `agent_runs inspect` to find the child's native journal if you need to look up an ID.
+See the [mixed-outcome notice from a screenshot check](images/overseer-tool-error-review.png).
 
 Every notice ends with the three answers: steer, approve and stop. The number after `#` is the
 pause number. Earlier pauses answered with `continue` or `review` with `changes_requested`
