@@ -173,12 +173,14 @@ nodeTest(
     assert.equal(await waiting, "approved");
 
     // Every pause notice offers steer, approve and stop, each with its required `summary="..."`.
-    // Only corrections move a run toward "prefer stop": a third pause after two approvals does
-    // not, and neither does the pause of a child too old to report its corrections.
+    // Earlier steering is context, not evidence about the worker or a reason to stop it.
     const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
     const options =
       'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.';
-    const closing = (id: string, counts: Pick<Escalation, "strikes" | "corrections">): string => {
+    const closing = (
+      id: string,
+      counts: Pick<Escalation, "strikes" | "steers" | "corrections">,
+    ): string => {
       write(escFile, { ...escalation, id, ...counts });
       t.after(() => release(launch.owner, `escalation:${id}`));
       const [notice] = notifications(
@@ -198,22 +200,22 @@ nodeTest(
       `+// valid change\n${options}`,
     );
     assert.equal(
-      closing("esc-corrected-twice", { strikes: 3, corrections: 2 }),
-      `+// valid change\nYou corrected this run 2 times before this pause.\n${options}`,
+      closing("esc-steered-twice", { strikes: 3, steers: 2 }),
+      `+// valid change\nEarlier pauses answered with steering: 2.\n${options}`,
     );
     assert.equal(
-      closing("esc-corrected-thrice", { strikes: 5, corrections: 3 }),
-      `+// valid change\nYou corrected this run 3 times before this pause: prefer \`agent_runs\` \`action="stop"\`.\n${options}`,
+      closing("esc-legacy-steered-thrice", { strikes: 5, corrections: 3 }),
+      `+// valid change\nEarlier pauses answered with steering: 3.\n${options}`,
     );
     // The inventory, the inspection and the observer print the same two counts.
     assert.equal(pauseLabel({ ...escalation, strikes: 3 }), "scope_violation #3");
     assert.equal(
       pauseLabel({ ...escalation, strikes: 3, corrections: 1 }),
-      "scope_violation #3, 1 correction",
+      "scope_violation #3, 1 steer",
     );
     assert.equal(
       pauseLabel({ ...escalation, strikes: 5, corrections: 3 }),
-      "scope_violation #5, 3 corrections",
+      "scope_violation #5, 3 steers",
     );
 
     // Mid-run escalation approval predates final completion, so final completion still requires review.
