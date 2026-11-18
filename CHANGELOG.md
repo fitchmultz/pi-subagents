@@ -3,8 +3,24 @@
 ## [Unreleased]
 
 - Overseer classifier reviews use current task-owner guidance and show the new changes without treating a choice or confidence as evidence of a violation.
+
+## 0.52.53 - 2026-11-18
+
+<!-- npm-release:unreleased:start -->
+
 - The agent observer transcript and compact message cards type-check against Pi hosts whose `Component.render()` and `truncateToVisualLines()` lines are `readonly string[]`, as well as Pi 1.5.2 (PIF-212).
 - Overseer checks no longer credit a child for upstream fast-forwards on a tracking branch without `baseBranch`, or flag upstream files restored after a soft reset (OVR-211).
+
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): distinguish upstream movement from child work (OVR-211) (1/1) (#471) ([d4e07fe](https://github.com/fitchmultz/pi-subagents/commit/d4e07fee7f7b6429842c34b77edb46f7b8ca032f))
+
+### What's Changed
+
+- fix(overseer): distinguish upstream movement from child work (OVR-211) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/471
+- fix(tui): accept readonly component render results (PIF-212) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/474
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.52...v0.52.53
 
 ## 0.52.52 - 2026-11-18
 
