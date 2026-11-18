@@ -4,7 +4,7 @@ import { test as nodeTest } from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lintProbes } from "../support/lint-probes.ts";
+import { lintProbes, sanitizeLintEnv } from "../support/lint-probes.ts";
 
 function branches(count: number): string {
   return `export function branches(value: number): number {
@@ -280,8 +280,7 @@ nodeTest("type-aware lint fails closed when the semantic backend is missing or i
   writeFileSync(join(directory, "probe.ts"), "export const valid = 1;\n");
 
   const oxlintBin = join(directory, "node_modules/oxlint/bin/oxlint");
-  const baseEnv: NodeJS.ProcessEnv = { ...process.env, PATH: "" };
-  delete baseEnv.OXLINT_TSGOLINT_PATH;
+  const baseEnv: NodeJS.ProcessEnv = { ...sanitizeLintEnv(process.env), PATH: "" };
   const missing = spawnSync(
     process.execPath,
     [oxlintBin, "--type-aware", "--deny-warnings", "probe.ts"],
@@ -304,4 +303,19 @@ nodeTest("type-aware lint fails closed when the semantic backend is missing or i
   assert.equal(invalid.error, undefined);
   assert.notEqual(invalid.status, 0);
   assert.match(`${invalid.stdout}${invalid.stderr}`, /OXLINT_TSGOLINT_PATH points to/);
+
+  const findings = lintProbes(
+    t,
+    { "probe.ts": "export const valid = 1;\n" },
+    {
+      ...process.env,
+      TSRS_BINARY: join(directory, "missing-tsrs"),
+      TSRS_LIB_PATH: join(directory, "missing-tsrs-lib"),
+      OXLINT_TSGOLINT_PATH: invalidPath,
+      OXLINT_TSGOLINT_DANGEROUSLY_SUPPRESS_PROGRAM_DIAGNOSTICS: "1",
+    },
+  );
+  if (findings !== undefined) {
+    assert.deepEqual(findings, []);
+  }
 });

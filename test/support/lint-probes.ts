@@ -14,9 +14,27 @@ interface Finding {
   readonly message?: string;
 }
 
+const blockedBackendEnvVars = new Set([
+  "OXLINT_TSGOLINT_PATH",
+  "OXLINT_TSGOLINT_DANGEROUSLY_SUPPRESS_PROGRAM_DIAGNOSTICS",
+  "TSRS_BINARY",
+  "TSRS_LIB_PATH",
+]);
+
+export function sanitizeLintEnv(sourceEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...sourceEnv };
+  for (const name of Object.keys(env)) {
+    if (blockedBackendEnvVars.has(name.toUpperCase())) {
+      delete env[name];
+    }
+  }
+  return env;
+}
+
 export function lintProbes(
   t: TestContext,
   probes: Readonly<Record<string, string>>,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
 ): Finding[] | undefined {
   const platformPackages =
     process.platform === "linux"
@@ -40,8 +58,7 @@ export function lintProbes(
   for (const [file, source] of Object.entries(probes)) {
     writeFileSync(join(directory, file), source);
   }
-  const env = { ...process.env };
-  delete env.OXLINT_TSGOLINT_PATH;
+  const env = sanitizeLintEnv(sourceEnv);
   const result = spawnSync(
     process.execPath,
     [

@@ -247,18 +247,23 @@ repository, `tsrs` was 4.57x faster in wall time (0.37s vs 1.69s) and 3.53x
 faster in CPU time (1.86s vs 6.56s) with 2.56x / 848.95 MiB lower peak RSS
 (544.28 MiB vs 1393.23 MiB, a 60.9% reduction).
 
-Eligibility ground: maintainer-directed efficiency adoption under Section 2.1
-ground 1 (preserving efficiency under Section 1.1) and Section 1.2. Neither
+Eligibility ground: explicit maintainer-directed efficiency migration
+substituting `tsrs@7.1.0-beta.tsrs2` for `oxlint-tsgolint` across maintained
+`fitchmultz` Pi packages (aligned with `fitchmultz/.github#182` `QX-001` and
+`fitchmultz/pi-agent-skills#128`, keeping normative Section 5.1 intact and
+preserving `tsc@7.0.2` as the canonical compiler gate). Neither
 `docs/strict-oxlint-oxfmt-standard.md` nor `docs/code-quality.md` specifies a
-numeric lint time or memory budget; the exception rests on measured local
-efficiency gains without weakening any Appendix A rule, structural limit, policy
-check, or compiler gate.
+numeric lint time or memory budget; this record does not assert a Section 2.1
+ground 1 ceiling violation and rests on explicit repository-owner direction plus
+the measured local efficiency gains without weakening any Appendix A rule,
+structural limit, policy check, or compiler gate.
 
 Chosen adjustment and scope: replace `oxlint-tsgolint` with `tsrs@7.1.0-beta.tsrs2`
 in `package.json` and `package-lock.json`, retain `typescript@7.0.2` (`tsc`),
 keep `.oxlintrc.json` unchanged, update `test/support/lint-probes.ts` to probe
-`@tsrs/<platform>` and use Oxlint's default `tsrs-lint` resolution, and retain
-missing/invalid backend fail-closed tests in
+`@tsrs/<platform>`, strip `TSRS_BINARY`/`TSRS_LIB_PATH`/`OXLINT_TSGOLINT_*`
+overrides via `sanitizeLintEnv`, and use Oxlint's default `tsrs-lint` resolution,
+while retaining missing/invalid backend and env-stripping tests in
 `test/unit/strict-oxlint-qualification.test.ts`.
 
 Retained protection, lost detection, version skew, and assumptions: all Appendix A
