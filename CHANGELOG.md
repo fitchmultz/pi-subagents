@@ -5,6 +5,23 @@
 - A paused child sees the overseer's correction in its next model request (OVR-219).
 - Completion notices point to the current review status instead of asking for an approval that may already be recorded (OVR-218).
 - Approval receipts say when the summary was saved for review only and how to send instructions (OVR-208).
+- Overseer classifier reviews use current task-owner guidance and show the new changes without treating a choice or confidence as evidence of a violation.
+
+## 0.52.52 - 2026-11-18
+
+<!-- npm-release:unreleased:start -->
+
+- Overseer tool-error reviews show which calls failed and which succeeded, even in the same turn. The notice names known repeated calls without showing arguments or logs. Prior steers no longer prompt advice to stop a worker. (OVR-215, OVR-216)
+
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): show tool outcomes without recommending stop (OVR-215, OVR-216) (1/1) (#469) ([0f601f2](https://github.com/fitchmultz/pi-subagents/commit/0f601f2a07b15935504fe0a6a071cd070b556f1d))
+
+### What's Changed
+
+- fix(overseer): show tool outcomes without recommending stop (OVR-215, OVR-216) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/469
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.51...v0.52.52
 
 ## 0.52.51 - 2026-11-18
 

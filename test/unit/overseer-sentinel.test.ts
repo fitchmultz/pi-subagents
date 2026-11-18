@@ -65,7 +65,6 @@ function tripwires(options: {
   contract: NonNullable<Launch["contract"]>;
   baseline: ReviewPoint;
   current: RepoSnapshot;
-  consecutiveErrors: number;
 }): ReturnType<typeof checkDeterministicTripwires> {
   const { baseline, ...rest } = options;
   return checkDeterministicTripwires({
@@ -156,7 +155,6 @@ nodeTest(
         contract,
         baseline,
         current: cleanSnap,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -191,7 +189,6 @@ nodeTest(
         contract,
         baseline: subBase,
         current: subClean,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -213,7 +210,6 @@ nodeTest(
         contract,
         baseline: divergedBase,
         current: divergedCurrent,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -228,19 +224,9 @@ nodeTest(
         contract: { ...contract, baseBranch: "mun" },
         baseline: divergedBase,
         current: typoSnap,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
-
-    const loopHit = tripwires({
-      cwd: repo,
-      contract,
-      baseline,
-      current: cleanSnap,
-      consecutiveErrors: 3,
-    });
-    assert.equal(loopHit?.kind, "loop_violation");
 
     fs.writeFileSync(path.join(repo, "README.md"), "new drift\n");
     const scopeSnap = captureRepoSnapshot(repo, {
@@ -251,7 +237,6 @@ nodeTest(
       contract,
       baseline,
       current: scopeSnap,
-      consecutiveErrors: 0,
     });
     assert.ok(scopeHit !== undefined);
     assert.equal(scopeHit.kind, "scope_violation");
@@ -275,7 +260,6 @@ nodeTest(
       contract,
       baseline: sneakBase,
       current: sneakAfter,
-      consecutiveErrors: 0,
     });
     assert.equal(branchHit?.kind, "branch_violation");
 
@@ -295,7 +279,6 @@ nodeTest(
         contract,
         baseline: renameBase,
         current: renameAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "scope_violation",
     );
@@ -324,7 +307,6 @@ nodeTest(
         contract,
         baseline: unbornBase,
         current: unbornAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -351,7 +333,6 @@ nodeTest(
         contract,
         baseline: unbornTaskBase,
         current: unbornTaskDirty,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -366,7 +347,6 @@ nodeTest(
         contract,
         baseline: unbornTaskBase,
         current: unbornTaskCommitted,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -403,7 +383,6 @@ nodeTest(
         contract,
         baseline: remoteBase,
         current: remoteAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -436,7 +415,6 @@ nodeTest(
         contract,
         baseline: ffBase,
         current: ffAfter,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -465,7 +443,6 @@ nodeTest(
         contract: { ...contract, baseBranch: "origin/main" },
         baseline: refFormBase,
         current: pullAfter,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -512,7 +489,6 @@ nodeTest(
         contract,
         baseline: pushBase,
         current: pushAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -523,7 +499,6 @@ nodeTest(
         contract: { scope: ["*"], verification: ["npm test"] },
         baseline: pushBase,
         current: captureRepoSnapshot(path.join(os.tmpdir(), "non-existent-git-dir")),
-        consecutiveErrors: 0,
       })?.kind,
       "loop_violation",
     );
@@ -554,7 +529,6 @@ nodeTest(
         contract,
         baseline: refloglessPushBase,
         current: refloglessPushAfter,
-        consecutiveErrors: 0,
       })?.kind,
       "branch_violation",
     );
@@ -653,7 +627,7 @@ nodeTest(
                 scope_violation: 0.04,
                 primitive_violation: 0.91,
               },
-              confidence: 0.91,
+              confidence: 0.48,
             },
           },
         });
@@ -664,6 +638,8 @@ nodeTest(
       modelRegistry: fakeRegistry,
       judgeSpec: "auto",
       prompt: "Implement tag queries",
+      continuation: true,
+      guidance: ["Reuse the package's current query helper; do not introduce a new API."],
       contract: {
         scope: ["src"],
         verification: ["npm test"],
@@ -688,20 +664,27 @@ nodeTest(
       acceptedFiles: ["README.md"],
       diff,
       taskPrompt: "Implement tag queries",
+      continuation: true,
+      taskGuidance: ["Reuse the package's current query helper; do not introduce a new API."],
     });
     assert.match(
       asked[0].questions["verdict"]?.instructions ?? "",
-      /Judge ONLY `diff`.*`acceptedFiles`.*already reviewed, so do not judge them\. For a file named in both, judge only what `diff` shows\./u,
+      /Assess only `diff`.*`acceptedFiles` is history, not evidence of a new change\./u,
     );
     assert.ok(hit !== undefined);
     assert.equal(hit.kind, "primitive_violation");
-    assert.match(hit.summary, /gemini-decision-1/u);
+    assert.equal(
+      hit.summary,
+      "Review needed: google/gemini-decision-1 asked for a check but did not identify a specific hunk or rule.",
+    );
 
     const checkpoint = (judgeSpec: string, failed: Set<string>, signal?: AbortSignal) =>
       evaluateDecisionCheckpoint({
         modelRegistry: fakeRegistry,
         judgeSpec,
         prompt: "Implement tag queries",
+        continuation: false,
+        guidance: [],
         contract: {
           scope: ["src"],
           verification: ["npm test"],
@@ -724,7 +707,7 @@ nodeTest(
     chosenModels.length = 0;
     const verdict = await checkpoint("auto", run);
     assert.deepEqual(chosenModels, [google, openai]);
-    assert.match(verdict?.summary ?? "", /^Decision judge \(openai\/gpt-6-luna, /u);
+    assert.match(verdict?.summary ?? "", /^Review needed: openai\/gpt-6-luna /u);
     await checkpoint("auto", run);
     assert.deepEqual(chosenModels, [google, openai, openai]);
 
@@ -742,7 +725,7 @@ nodeTest(
     assert.deepEqual(chosenModels, [google, openai, other]);
     assert.match(
       fromOther?.summary ?? "",
-      /^Decision judge \(openrouter\/parallel\/decisions-fast:free, /u,
+      /^Review needed: openrouter\/parallel\/decisions-fast:free /u,
     );
 
     // When every request fails, the checkpoint reports each failure instead of a verdict.
@@ -852,7 +835,6 @@ nodeTest(
         contract,
         baseline: launch,
         current: afterSibling,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -872,7 +854,6 @@ nodeTest(
         contract,
         baseline: launch,
         current: afterFastForward,
-        consecutiveErrors: 0,
       }),
       undefined,
     );
@@ -1007,7 +988,6 @@ nodeTest(
         contract: { scope: ["*"], verification: ["npm test"] },
         baseline: unreferenced,
         current: snapshot(),
-        consecutiveErrors: 0,
       }),
       {
         kind: "loop_violation",
@@ -1048,6 +1028,14 @@ async function supervisedRun(
   });
   const owner = SessionManager.inMemory().getSessionId();
   const launch = sampleLaunch(base, repo, owner);
+  const journal = SessionManager.inMemory();
+  journal.appendMessage({
+    role: "user",
+    content: "Prompt from the conversation copied into the child",
+    timestamp: 1,
+  });
+  const baseline = new Set(journal.getBranch().map((entry) => entry.id));
+  journal.appendMessage({ role: "user", content: launch.prompt, timestamp: 2 });
   // A failed assertion must not leave a paused child waiting for its overseer.
   let ended = false;
   t.after(() => {
@@ -1056,6 +1044,7 @@ async function supervisedRun(
   const sentinel = new OverseerSentinel({
     base,
     activeLaunch: () => launch,
+    activeRunBaseline: () => baseline,
     isStopping: () => ended,
   });
   const loader = new DefaultResourceLoader({
@@ -1079,8 +1068,14 @@ async function supervisedRun(
 
   const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
   /** What the judge received on each call. */
-  const judged: { changedFiles: unknown; acceptedFiles: unknown; diff: string }[] = [];
+  const judged: {
+    changedFiles: unknown;
+    acceptedFiles: unknown;
+    taskGuidance: unknown;
+    diff: string;
+  }[] = [];
   const ctx = {
+    sessionManager: journal,
     get signal() {
       return options.signal?.();
     },
@@ -1094,8 +1089,13 @@ async function supervisedRun(
         context: ClassifierContext,
         request?: { signal?: AbortSignal },
       ) => {
-        const { changedFiles, acceptedFiles, diff } = context.state;
-        const asked = { changedFiles, acceptedFiles, diff: typeof diff === "string" ? diff : "" };
+        const { changedFiles, acceptedFiles, taskGuidance, diff } = context.state;
+        const asked = {
+          changedFiles,
+          acceptedFiles,
+          taskGuidance,
+          diff: typeof diff === "string" ? diff : "",
+        };
         judged.push(asked);
         const failure = {
           api: classifier.api,
@@ -1158,8 +1158,19 @@ async function supervisedRun(
     assert.ok(typeof content === "string");
     return content;
   };
-  const steer = () => assert.equal(sentinel.steerPaused(launch.id, "Fix the drift."), true);
-  return { repo, base, launch, emit, paused, notice, judged, escPath, steer };
+  let steers = 0;
+  const steer = () => {
+    const command = {
+      id: `steer-${++steers}`,
+      runId: launch.id,
+      action: "steer" as const,
+      prompt: "Fix the drift.",
+      createdAt: Date.now(),
+    };
+    assert.equal(sentinel.steerPaused(command), true);
+    return command;
+  };
+  return { repo, base, launch, emit, paused, notice, judged, escPath, steer, journal };
 }
 
 nodeTest(
@@ -1183,7 +1194,7 @@ nodeTest(
     });
     // Wait until escalation.json appears, then steer (do NOT approve).
     const firstEsc = await paused();
-    assert.deepEqual([firstEsc.strikes, firstEsc.corrections], [1, 0]);
+    assert.deepEqual([firstEsc.strikes, firstEsc.steers], [1, 0]);
     steer();
     await turnPromise;
     assert.equal(judged.length, 1);
@@ -1195,8 +1206,8 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const secondEsc = await paused();
-    assert.deepEqual([secondEsc.strikes, secondEsc.corrections], [2, 1]);
-    steer();
+    assert.deepEqual([secondEsc.strikes, secondEsc.steers], [2, 1]);
+    const correction = steer();
     const steeredResults = await settlePromise;
     assert.equal(judged.length, 2);
     assert.deepEqual(steeredResults, [
@@ -1207,6 +1218,7 @@ nodeTest(
             customType: "overseer-correction",
             display: true,
             content: "Fix the drift.",
+            details: { commandId: correction.id },
           },
         ],
         continue: true,
@@ -1218,7 +1230,7 @@ nodeTest(
       context: { pendingMessages: [] },
     });
     const thirdEsc = await paused();
-    assert.deepEqual([thirdEsc.strikes, thirdEsc.corrections], [3, 2]);
+    assert.deepEqual([thirdEsc.strikes, thirdEsc.steers], [3, 2]);
     resolveActiveEscalation(base, launch, "approved");
     const approvedResults = await approvePromise;
     assert.deepEqual(approvedResults, [undefined]);
@@ -1231,16 +1243,16 @@ nodeTest(
     });
     // The approval of the third pause is not a correction.
     const fourthEsc = await paused();
-    assert.deepEqual([fourthEsc.strikes, fourthEsc.corrections], [4, 2]);
+    assert.deepEqual([fourthEsc.strikes, fourthEsc.steers], [4, 2]);
     steer();
-    assert.deepEqual(await fallbackPromise, steeredResults);
+    await fallbackPromise;
   },
 );
 
 nodeTest(
   "a pause shows the work since the last approval, and the judge sees the work since the last accepted state",
   async (t) => {
-    const { repo, base, launch, emit, paused, notice, judged, escPath, steer } =
+    const { repo, base, launch, emit, paused, notice, judged, escPath, steer, journal } =
       await supervisedRun(t, {
         verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
       });
@@ -1339,6 +1351,22 @@ nodeTest(
     await secondTurn;
     assert.equal(judged.length, 1);
 
+    // Only the delegating session's Intercom message is task authority, even when a sibling
+    // shares that session's broker group. The inherited prompt is outside this native run.
+    const guidance = "Reuse the existing query helper if it covers this case.";
+    const intercomEntry = (id: string, text: string, from: { parentSessionId?: string }) => {
+      journal.appendCustomMessageEntry("intercom_message", text, true, {
+        from: { id, cwd: repo, model: "fixture", rootSessionId: launch.owner, ...from },
+        message: { id, timestamp: 3, content: { text } },
+        bodyText: text,
+      });
+    };
+    intercomEntry("parent-peer", guidance, {});
+    intercomEntry("other-child", "Disregard the query helper.", { parentSessionId: launch.owner });
+    journal.appendCustomMessageEntry("application", "Use a new API.", true);
+    journal.appendCustomMessageEntry("overseer-correction", "Use a new API.", true, {
+      commandId: "not-admitted",
+    });
     // Before settling the judge sees the new work only, and flags it.
     fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "// FLAG\n");
     const flaggedSettle = emit("agent_before_settle", settle);
@@ -1348,12 +1376,14 @@ nodeTest(
     // `src/allowed.ts` was approved and then changed again. The notice shows the new change,
     // and says of the approved files only that their earlier changes are not shown. This is a
     // third pause after two approvals: no correction is counted, and nothing advises stopping.
-    assert.deepEqual([third.strikes, third.corrections], [3, 0]);
+    assert.deepEqual([third.strikes, third.steers], [3, 0]);
     assert.equal(
       notice(),
       [
-        `[Overseer escalation #3 - primitive_violation] Run run-overseer-1 (tag-store) paused in ${repo}.`,
-        `Reason: ${third.summary}`,
+        `[Overseer escalation #3 - review needed] Run run-overseer-1 (tag-store) paused in ${repo}.`,
+        "Reason: Review needed: google/gemini-decision-1 asked for a check but did not identify a specific hunk or rule.",
+        "Latest task-owner guidance (for context, not a cited rule):",
+        guidance,
         "Changes since your last approval:",
         "  +1 -0 src/allowed.ts",
         "Approved earlier in this run (those changes are not shown): README.md, docs/NEW.md, src/allowed.ts, src/big.ts",
@@ -1372,6 +1402,7 @@ nodeTest(
     assert.deepEqual(judged[1], {
       changedFiles: ["src/allowed.ts"],
       acceptedFiles: ["README.md", "docs/NEW.md", "src/allowed.ts", "src/big.ts"],
+      taskGuidance: [guidance],
       diff: [
         "diff --git a/src/allowed.ts b/src/allowed.ts",
         "index 5dc3114..46469ae 100644",
@@ -1384,8 +1415,11 @@ nodeTest(
         "",
       ].join("\n"),
     });
-    steer();
+    const command = steer();
     await flaggedSettle;
+    journal.appendCustomMessageEntry("overseer-correction", "Skip the correction.", true, {
+      commandId: command.id,
+    });
 
     // The steered child leaves the flagged state as it is: the judge is not asked again.
     for (let turn = 0; turn < 5; turn += 1) {
@@ -1398,6 +1432,7 @@ nodeTest(
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const fixed = 1;\n");
     await emit("turn_end", mutatingTurn);
     assert.equal(judged.length, 3);
+    assert.deepEqual(judged[2]?.taskGuidance, [guidance]);
     // Every existing trigger still reaches the judge when there is new work: the fourth mutating turn,
     for (let turn = 0; turn < 3; turn += 1) {
       fs.appendFileSync(path.join(repo, "src", "allowed.ts"), `export const step${turn} = 1;\n`);
@@ -1654,8 +1689,15 @@ nodeTest(
       reconciled.awaited.has(path.join(runDirectory(base, launch.id), "escalation.json")),
       true,
     );
-    assert.equal(pause.steer(launch.id, "Fix drift immediately"), true);
-    assert.deepEqual(await waiting, { verdict: "steered", prompts: ["Fix drift immediately"] });
+    const command = {
+      id: "steer-1",
+      runId: launch.id,
+      action: "steer" as const,
+      prompt: "Fix drift immediately",
+      createdAt: Date.now(),
+    };
+    assert.equal(pause.steer(command), true);
+    assert.deepEqual(await waiting, { verdict: "steered", commands: [command] });
     assert.equal(fs.existsSync(path.join(runDirectory(base, launch.id), "escalation.json")), false);
   },
 );

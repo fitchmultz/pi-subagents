@@ -17,8 +17,9 @@ function hasMessage(context: TranscriptContext, needle: string): boolean {
 export default function fixture(pi: ExtensionAPI): void {
   const cwd = process.env.OVERSEER_TEST_REPO;
   const sibling = process.env.OVERSEER_TEST_SIBLING;
-  if (cwd === undefined || sibling === undefined) {
-    throw new Error("OVERSEER_TEST_REPO and OVERSEER_TEST_SIBLING required");
+  const judgeInput = process.env.OVERSEER_TEST_JUDGE_INPUT;
+  if (cwd === undefined || sibling === undefined || judgeInput === undefined) {
+    throw new Error("The overseer fixture requires both worktrees and a judge input path.");
   }
   const toolGate = process.env.OVERSEER_TEST_TOOL_GATE;
   if (toolGate !== undefined) {
@@ -36,8 +37,12 @@ export default function fixture(pi: ExtensionAPI): void {
     provider: "overseer-fixture",
     models: [{ id: "native-overseer", reasoning: false }],
   });
+  const fail = (id: string, command: string) => fauxToolCall("bash", { command }, { id });
   provider.setResponses([
-    async () => {
+    async (context) => {
+      if (hasMessage(context, "Check screenshot")) {
+        return fauxAssistantMessage([fail("check-browser", "echo private-tool-output; exit 1")]);
+      }
       fs.writeFileSync(path.join(cwd, "README.md"), "out-of-scope drift\n");
       // Another session commits in a different worktree of the same repository.
       fs.writeFileSync(path.join(sibling, "SIBLING.md"), "other session\n");
@@ -50,12 +55,65 @@ export default function fixture(pi: ExtensionAPI): void {
           });
     },
     async (context) => {
+      if (hasMessage(context, "Check screenshot")) {
+        return fauxAssistantMessage([
+          fauxToolCall("read", { path: "README.md" }, { id: "check-read" }),
+          fail("check-selector", "echo private-arg; exit 2"),
+        ]);
+      }
       if (hasMessage(context, "REVERT_README")) {
         fs.writeFileSync(path.join(cwd, "README.md"), "committed\n");
+        if (
+          hasMessage(context, "REVERT_README and replace x with the greeting in src/allowed.ts.")
+        ) {
+          fs.writeFileSync(path.join(cwd, "src", "allowed.ts"), "export const greeting = 'hi';\n");
+        }
         return fauxAssistantMessage("REVERTED");
       }
       return fauxAssistantMessage("UNSTEERED");
     },
+    fauxAssistantMessage([fail("check-assertion", "exit 3")]),
+    ...["retry-one", "retry-two", "retry-three"].map((id) =>
+      fauxAssistantMessage([fauxToolCall("read", { path: "missing.txt" }, { id })]),
+    ),
+    fauxAssistantMessage("CHECKED"),
   ]);
   pi.registerProvider(provider.provider);
+  pi.registerProvider("overseer-choice-fixture", {
+    baseUrl: "http://127.0.0.1",
+    apiKey: "fixture",
+    models: [
+      {
+        id: "choice-only",
+        name: "Choice only",
+        type: "classifier",
+        api: "overseer-choice",
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 4096,
+      },
+    ],
+    classifiers: {
+      "overseer-choice": {
+        classify: (model, context) => {
+          fs.writeFileSync(judgeInput, JSON.stringify(context));
+          return Promise.resolve({
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            timestamp: Date.now(),
+            stopReason: "stop",
+            answers: {
+              verdict: {
+                type: "choice",
+                choice: "scope_violation",
+                confidence: 0.99,
+                probabilities: { compliant: 0.01, scope_violation: 0.99 },
+              },
+            },
+          });
+        },
+      },
+    },
+  });
 }

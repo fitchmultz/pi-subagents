@@ -17,6 +17,7 @@ import {
 import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
+import { escalationEvidenceLines } from "./overseer-evidence.ts";
 import { needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
@@ -411,7 +412,8 @@ function escalationLines(escalation: Escalation | undefined): string[] {
   return escalation === undefined
     ? []
     : [
-        `Paused on overseer escalation (${pauseLabel(escalation)}) since ${utc(escalation.at)}: ${escalation.summary}`,
+        `Paused on overseer escalation (${pauseLabel(escalation)}) since ${utc(escalation.at)}.`,
+        ...escalationEvidenceLines(escalation),
         `Changed files: ${escalation.changedFiles.length > 0 ? escalation.changedFiles.join(", ") : "(none)"}`,
       ];
 }

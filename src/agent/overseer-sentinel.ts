@@ -6,9 +6,9 @@ import type {
   ExtensionContext,
   TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import { isRecord } from "../shared/unknown.ts";
 import type { Escalation, Launch } from "./contracts.ts";
 import { errorText } from "./host.ts";
+import { ToolErrorWindow } from "./overseer-evidence.ts";
 import {
   acceptedPoint,
   captureRepoSnapshot,
@@ -22,14 +22,19 @@ import {
   type ReviewPoint,
 } from "./overseer-git.ts";
 import {
-  CONSECUTIVE_ERROR_TURN_LIMIT,
   checkDeterministicTripwires,
   clearJudgeUnavailable,
   evaluateDecisionCheckpoint,
   recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
-import { EscalationPause, type EscalationAnswer } from "./overseer-pause.ts";
+import {
+  EscalationPause,
+  OVERSEER_CORRECTION,
+  type EscalationAnswer,
+  type SteerCommand,
+} from "./overseer-pause.ts";
+import { checkpointGuidance } from "./overseer-guidance.ts";
 
 const MUTATING_TOOLS = new Set([
   "edit",
@@ -56,15 +61,16 @@ interface RunSentinelState {
   /** Base-branch issues the overseer approved. An approved issue is not raised again. */
   readonly approvedBranchIssues: Set<string>;
   readonly excludePaths: readonly string[];
-  consecutiveErrors: number;
+  readonly toolErrors: ToolErrorWindow;
+  readonly admittedCorrections: Map<string, string>;
   turnsSinceJudge: number;
   /** The state the judge last saw, and the size of the new work it saw then. */
   judged: { readonly tree: string | undefined; readonly lines: number };
   /** The classifiers whose request failed in this run. On `auto` the judge asks them last. */
   readonly failedJudges: Set<string>;
-  /** Pauses so far, and how many of them the overseer answered with a correction. */
+  /** Pauses so far, and how many of them the overseer answered with a steer. */
   pauses: number;
-  corrections: number;
+  steers: number;
 }
 
 /** The child's own work between an accepted state and `snapshot`. */
@@ -72,26 +78,6 @@ interface Work {
   readonly snapshot: RepoSnapshot;
   readonly changes: OwnChanges;
   readonly diff: string;
-}
-
-function turnTools(toolResults: unknown): { hadError: boolean; mutated: boolean } {
-  if (!Array.isArray(toolResults)) {
-    return { hadError: false, mutated: false };
-  }
-  let hadError = false;
-  let mutated = false;
-  for (const item of toolResults) {
-    if (!isRecord(item)) {
-      continue;
-    }
-    if (item.isError === true) {
-      hadError = true;
-    }
-    if (typeof item.toolName === "string" && MUTATING_TOOLS.has(item.toolName)) {
-      mutated = true;
-    }
-  }
-  return { hadError, mutated };
 }
 
 function lineCount(diff: string): number {
@@ -119,6 +105,8 @@ function shouldRunJudgeCheckpoint(
 interface SentinelOptions {
   readonly base: string;
   readonly activeLaunch: () => Launch;
+  /** Entries that predate this run, including any inherited fork conversation. */
+  readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
 }
 
@@ -126,6 +114,7 @@ interface SentinelOptions {
 async function askJudge(
   launch: Launch,
   ctx: ExtensionContext,
+  guidance: readonly string[],
   work: { checkpoint: Work; acceptedFiles: readonly string[]; failed: Set<string> },
 ): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
@@ -135,6 +124,8 @@ async function askJudge(
     modelRegistry: ctx.modelRegistry,
     judgeSpec: launch.overseer?.judge,
     prompt: launch.prompt,
+    continuation: launch.predecessor !== undefined,
+    guidance,
     contract: launch.contract,
     changedFiles: work.checkpoint.changes.files,
     acceptedFiles: work.acceptedFiles,
@@ -164,8 +155,8 @@ export class OverseerSentinel {
     }
   }
 
-  steerPaused(runId: string, prompt: string): boolean {
-    return this.pause?.steer(runId, prompt) ?? false;
+  steerPaused(command: SteerCommand): boolean {
+    return this.pause?.steer(command) ?? false;
   }
 
   private ensureState(launch: Launch): RunSentinelState {
@@ -184,12 +175,13 @@ export class OverseerSentinel {
       approved: point,
       approvedBranchIssues: new Set(),
       excludePaths,
-      consecutiveErrors: 0,
+      toolErrors: new ToolErrorWindow(),
+      admittedCorrections: new Map(),
       turnsSinceJudge: 0,
       judged: { tree: point.snapshot.tree, lines: 0 },
       failedJudges: new Set(),
       pauses: 0,
-      corrections: 0,
+      steers: 0,
     };
     return this.state;
   }
@@ -258,18 +250,20 @@ export class OverseerSentinel {
     launch: Launch,
     issue: Violation,
     checkpoint: Work,
+    toolErrorTurns?: Escalation["toolErrorTurns"],
   ): Promise<EscalationAnswer> {
     const current = this.ensureState(launch);
     current.pauses += 1;
-    current.consecutiveErrors = 0;
+    current.toolErrors.clear();
     const escalation: Escalation = {
       id: randomUUID(),
       runId: launch.id,
       owner: launch.owner,
       at: Date.now(),
       strikes: current.pauses,
-      corrections: current.corrections,
+      steers: current.steers,
       ...issue,
+      ...(toolErrorTurns === undefined ? {} : { toolErrorTurns }),
       ...this.unapprovedWork(launch, checkpoint),
       diffDigest: checkpoint.snapshot.tree ?? "non-git",
     };
@@ -281,7 +275,10 @@ export class OverseerSentinel {
         this.pause = undefined;
       });
     if (answer.verdict === "steered") {
-      current.corrections += 1;
+      current.steers += 1;
+      for (const { id, prompt } of answer.commands) {
+        current.admittedCorrections.set(id, prompt);
+      }
     }
     if (answer.verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
@@ -297,6 +294,7 @@ export class OverseerSentinel {
     launch: Launch,
     ctx: ExtensionContext,
     finalSettle: boolean,
+    toolErrorTurns?: Escalation["toolErrorTurns"],
   ): Promise<EscalationAnswer | undefined> {
     if (
       launch.overseer?.enabled !== true ||
@@ -311,13 +309,23 @@ export class OverseerSentinel {
       excludePaths: current.excludePaths,
     });
     const checkpoint = this.workSince(launch, current.reviewPoint, snapshot);
+    if (toolErrorTurns !== undefined) {
+      return this.escalate(
+        launch,
+        {
+          kind: "loop_violation",
+          summary: `${toolErrorTurns.length} consecutive turns reported tool errors.`,
+        },
+        checkpoint,
+        toolErrorTurns,
+      );
+    }
     const issue = checkDeterministicTripwires({
       cwd: launch.cwd,
       contract: launch.contract,
       launch: current.launch.snapshot,
       current: snapshot,
       changes: checkpoint.changes,
-      consecutiveErrors: current.consecutiveErrors,
     });
     if (issue !== undefined && !current.approvedBranchIssues.has(issue.summary)) {
       return this.escalate(launch, issue, checkpoint);
@@ -348,8 +356,12 @@ export class OverseerSentinel {
     const { signal } = ctx;
     let verdict: Violation | undefined;
     try {
+      const guidance = checkpointGuidance(ctx.sessionManager, launch, {
+        baseline: this.options.activeRunBaseline(),
+        admittedCorrections: current.admittedCorrections,
+      });
       const failed = current.failedJudges;
-      verdict = await askJudge(launch, ctx, { checkpoint, acceptedFiles, failed });
+      verdict = await askJudge(launch, ctx, guidance, { checkpoint, acceptedFiles, failed });
     } catch (error) {
       if (signal?.aborted === true) {
         // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
@@ -376,16 +388,18 @@ export class OverseerSentinel {
       return;
     }
     const current = this.ensureState(launch);
-    const toolResults = isRecord(event) ? event.toolResults : undefined;
-    const { hadError, mutated } = turnTools(toolResults);
-    current.consecutiveErrors = hadError ? current.consecutiveErrors + 1 : 0;
+    const toolErrorTurns = current.toolErrors.record(event);
+    const mutated = event.toolResults.some((result) => MUTATING_TOOLS.has(result.toolName));
     if (mutated) {
       current.turnsSinceJudge += 1;
     }
-    if (!mutated && current.consecutiveErrors < CONSECUTIVE_ERROR_TURN_LIMIT) {
+    if (!mutated && toolErrorTurns === undefined) {
       return;
     }
-    return correctionDrafts(event, await this.inspectCheckpoint(launch, ctx, false));
+    return correctionDrafts(
+      event,
+      await this.inspectCheckpoint(launch, ctx, false, toolErrorTurns),
+    );
   }
 
   attach(pi: ExtensionAPI): void {
@@ -419,11 +433,12 @@ function correctionDrafts(
   return {
     entries: [
       ...event.entries,
-      ...answer.prompts.map((prompt) => ({
+      ...answer.commands.map(({ id, prompt }) => ({
         type: "custom_message" as const,
-        customType: "overseer-correction",
+        customType: OVERSEER_CORRECTION,
         display: true,
         content: prompt,
+        details: { commandId: id },
       })),
     ],
     continue: true,

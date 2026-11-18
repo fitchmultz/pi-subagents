@@ -479,11 +479,11 @@ When overseer mode is enabled, `delegate` requires `contract`:
 - `verification`: required when `scope` is non-empty.
 - `baseBranch`, `requiredPrimitives`, `nonGoals`: optional Git and native-API constraints.
 
-Supervised children run zero-cost tripwires on mutating/error turns (3-turn error loops,
+Supervised children run zero-cost tripwires on mutating or error turns (three consecutive turns with tool errors,
 out-of-scope changes of the child's own, and `baseBranch` ancestry/direct-commit guards) plus
 debounced decision-model checkpoints (every 4 mutating turns, 120 or more new diff lines, and
-pre-settle). On drift, the child writes `escalation.json`, pauses, and wakes the parent once with
-`[agent-escalation]`. Steering via `continue` / `changes_requested`, approving via `review`
+pre-settle). When a check requests a pause, the child writes `escalation.json`, pauses, and wakes
+the parent once with `[agent-escalation]`. Steering via `continue` / `changes_requested`, approving via `review`
 (`verdict="approved"`), or stopping via `stop` resolves the pause immediately.
 
 ### What counts as the child's change
@@ -535,8 +535,16 @@ Steering accepts nothing. Out-of-scope work that stays in place is flagged again
 checkpoint. After the judge flags a state, it is not asked about that unchanged state again
 until the checkpoint before the run settles.
 
-The judge receives the diff of the new work, the names of the files changed earlier in the run
-(`acceptedFiles`), and the instruction to judge only the new diff.
+The judge receives the new diff, the names of previously accepted files (`acceptedFiles`), the
+task prompt (`taskPrompt`), the contract, and task-owner guidance (`taskGuidance`) recorded in
+this run's child session. Guidance includes delivered `continue` and `changes_requested` prompts,
+including corrections that released a pause, and intercom messages from the delegating session.
+For a saved-run continuation (`continuation`
+is `true`), the task prompt is newer than the saved contract. Later explicit guidance supersedes
+conflicting earlier instructions for the classifier. It does not change the edit-tool scope or
+base-branch checks. Pending messages, approval summaries, messages from other workers, and
+unrelated app messages do not change the judge's instructions. Give changes to the task directly
+in a message; the judge does not open referenced notes.
 
 ### Which classifier judges, and when none answers
 
@@ -550,6 +558,10 @@ gives a verdict:
 
 With a configured judge (`provider/model`) it asks only that classifier, and never another one
 in its place. With the judge `off` it asks nothing and reports nothing.
+
+A choice requesting review still pauses at the same checkpoint, regardless of confidence. The
+choice does not name a hunk or rule. The [pause notice](#what-a-pause-notice-shows) shows the
+work for the overseer to review without claiming a violation.
 
 A classifier gives no verdict when its request fails, for example because the provider account
 has no credit, the key is rejected or the provider cannot be reached, and when its response
@@ -596,6 +608,22 @@ diff --git a/docs/NEW.md b/docs/NEW.md
 …
 ```
 
+A classifier pause has `review needed` in the heading instead of a violation category. The
+`Reason:` says the classifier asked for a check without naming a hunk or rule. Before the
+change lines, the notice shows `Latest task-owner guidance` or, if there is none, `Task prompt`.
+This is the instruction to consult during review, not a cited rule or the reason for the
+classifier's choice.
+
+```text
+[Overseer escalation #2 - review needed] Run 7f3a… (docs-fix) paused in /repo/worktree.
+Reason: Review needed: example/choice-only asked for a check but did not identify a specific hunk or rule.
+Latest task-owner guidance (for context, not a cited rule):
+Update the example to use the existing helper.
+Changes since your last approval:
+  +1 -1 docs/example.md
+…
+```
+
 - Every changed file has its added and removed line counts. The notice names files relative
   to the run's cwd, as `changedFiles` does. Only the diff itself has paths relative to the
   repository root. In the line counts, a file name with a control character, such as a line
@@ -613,23 +641,40 @@ diff --git a/docs/NEW.md b/docs/NEW.md
 - The diff is cut at 3000 characters. When it is cut, the excerpt is followed by the command that
   prints all of it: `git -C <repository> diff <accepted tree> <paused tree>`.
 
-Every notice ends with the three answers: steer, approve and stop. The number after `#` is the
-number of the pause in the run. A correction is a pause that the overseer answered with a steer
-(`continue`, or `review` with `changes_requested`). An approved pause is not a correction. After
-the first correction the notice says how many there were, and from three corrections on it
-advises stopping the run:
+After three consecutive turns with at least one finalized tool error each, the `tool errors`
+notice lists the Pi turn entry ID and each tool name, call ID, and outcome for those turns.
+A turn can contain both successes and failures. Neither outcome alone says whether the child
+made progress. If a failed call has the same tool and submitted arguments as a failed call
+in an earlier turn of the same window, the notice names that earlier call. This compares
+calls, not their causes or side effects. The notice does not copy tool arguments, output, or
+logs. Use `agent_runs inspect` to find the child's native journal if you need to look up an ID.
+See the [mixed-outcome notice from a screenshot check](images/overseer-tool-error-review.png).
 
-```text
-You corrected this run 3 times before this pause: prefer `agent_runs` `action="stop"`.
-```
+Every notice ends with the three answers: steer, approve and stop. The number after `#` is the
+pause number. Earlier pauses answered with `continue` or `review` with `changes_requested`
+count as steers. Approvals do not. The steer count describes prior decisions, not worker
+failures, and does not recommend stopping the run.
 
 `agent_runs list`, `inspect` and the `/agents` observer print both counts for a paused run, for
-example `paused: scope_violation #4, 2 corrections`.
+example `paused: scope_violation #4, 2 steers` or `paused: review needed #2, 1 steer`.
+`inspect` also shows the tool outcomes.
 
 `escalation.json` carries these facts in `strikes` (the pause number) and in the optional fields
-`since`, `stat`, `diffCommand`, `unchecked`, `leftBehind`, `approved` and `corrections`. A child
-that runs an older package version writes none of the optional fields; its notice lists the
-changed files and the diff excerpt, and gives no advice to stop.
+`since`, `stat`, `diffCommand`, `unchecked`, `leftBehind`, `approved`, `steers`,
+`toolErrorTurns`, and `classifierReview`. Tool-error reviews retain the `loop_violation` file kind
+for older parents. Older children may write `corrections` instead of `steers` and omit
+`toolErrorTurns`.
+
+A classifier pause records `classifierReview.instruction` with
+`classifierReview.source` set to `"guidance"` for the latest task-owner guidance or `"prompt"`
+for the task prompt. On these records, `kind` preserves the classifier's choice category for
+compatibility. It is not a confirmed finding.
+
+A parent that supports `classifierReview` uses `review needed` in the notice and paused status
+when the field is present. An older parent ignores the field, prints the saved category, and
+omits the instruction block. It can still resolve the pause. If the child predates
+`classifierReview`, a newer parent also uses the saved category and omits the block. Without
+`stat`, the notice shows changed files and the diff excerpt rather than line counts.
 
 ### What an approval replies
 
