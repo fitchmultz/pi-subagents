@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- The agent observer transcript and compact message cards type-check against Pi TUI hosts whose `Component.render()` returns `readonly string[]`, as well as Pi 1.5.2 (PIF-212).
+- The agent observer transcript and compact message cards type-check against Pi hosts whose `Component.render()` and `truncateToVisualLines()` lines are `readonly string[]`, as well as Pi 1.5.2 (PIF-212).
 - Overseer checks no longer credit a child for upstream fast-forwards on a tracking branch without `baseBranch`, or flag upstream files restored after a soft reset (OVR-211).
 
 ## 0.52.52 - 2026-11-18

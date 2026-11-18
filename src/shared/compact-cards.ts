@@ -26,7 +26,7 @@ function preview(
     return content;
   }
   const isExpanded = typeof expanded === "function" ? expanded : () => expanded;
-  let cache: { width: number; lines: string[] } | undefined;
+  let cache: { width: number; lines: ReturnType<Component["render"]> } | undefined;
   return {
     render(width) {
       if (isExpanded()) {
