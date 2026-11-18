@@ -112,10 +112,10 @@
     "@types/node": "24.19.2",
     "@types/sinon": "22.0.2",
     "oxc-parser": "0.157.0",
-    "oxfmt": "0.76.0",
-    "oxlint": "1.91.0",
-    "oxlint-tsgolint": "7.0.2006",
+    "oxfmt": "0.79.0",
+    "oxlint": "1.94.0",
     "sinon": "22.1.0",
+    "tsrs": "7.1.0-beta.tsrs2",
     "type-fest": "5.10.0",
     "typebox": "1.4.3",
     "typescript": "7.0.2"

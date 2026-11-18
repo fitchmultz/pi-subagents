@@ -18,12 +18,15 @@ export function lintProbes(
   t: TestContext,
   probes: Readonly<Record<string, string>>,
 ): Finding[] | undefined {
-  const backend = join(
-    root,
-    "node_modules/@oxlint-tsgolint",
-    `${process.platform}-${process.arch}`,
+  const platformPackages =
+    process.platform === "linux"
+      ? [`linux-${process.arch}-gnu`, `linux-${process.arch}-musl`]
+      : [`${process.platform}-${process.arch}`];
+  const exeName = process.platform === "win32" ? "tsrs.exe" : "tsrs";
+  const hasBackend = platformPackages.some((name) =>
+    existsSync(join(root, "node_modules/@tsrs", name, exeName)),
   );
-  if (!existsSync(backend)) {
+  if (!hasBackend) {
     t.skip(
       `No published semantic backend for ${process.platform}-${process.arch}; supported-host acceptance is required.`,
     );
@@ -37,6 +40,8 @@ export function lintProbes(
   for (const [file, source] of Object.entries(probes)) {
     writeFileSync(join(directory, file), source);
   }
+  const env = { ...process.env };
+  delete env.OXLINT_TSGOLINT_PATH;
   const result = spawnSync(
     process.execPath,
     [
@@ -48,7 +53,7 @@ export function lintProbes(
       join(root, ".oxlintrc.json"),
       ...Object.keys(probes).map((file) => join(directory, file)),
     ],
-    { cwd: directory, encoding: "utf8", env: { ...process.env, OXLINT_TSGOLINT_PATH: backend } },
+    { cwd: directory, encoding: "utf8", env },
   );
   assert.equal(result.error, undefined);
   assert.equal(result.stderr, "", "Native controls must not fail on setup or backend errors");
