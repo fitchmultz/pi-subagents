@@ -37,11 +37,12 @@ import {
   type JudgeModelRegistry,
 } from "../../src/agent/overseer-judge.ts";
 import {
-  attachOverseerSentinel,
+  EscalationPause,
   resolveActiveEscalation,
-  waitForEscalationResolution,
-} from "../../src/agent/overseer-sentinel.ts";
-import { enqueue, read, runDirectory, write } from "../../src/agent/storage.ts";
+  type SteerCommand,
+} from "../../src/agent/overseer-pause.ts";
+import { OverseerSentinel } from "../../src/agent/overseer-sentinel.ts";
+import { read, runDirectory, write } from "../../src/agent/storage.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
 function initGitRepo(t: TestContext): string {
@@ -1081,7 +1082,6 @@ async function supervisedRun(
     available?: () => boolean;
     /** The cancellation signal of the child's active run, when the test has one. */
     signal?: () => AbortSignal | undefined;
-    flushPendingCommands?: () => boolean;
   },
 ) {
   const repo = initGitRepo(t);
@@ -1105,6 +1105,16 @@ async function supervisedRun(
   t.after(() => {
     ended = true;
   });
+  const submittedCorrections: SteerCommand[] = [];
+  const sentinel = new OverseerSentinel({
+    base,
+    activeLaunch: () => launch,
+    activeRunBaseline: () => baseline,
+    isStopping: () => ended,
+    queueCorrections: (commands) => {
+      submittedCorrections.push(...commands);
+    },
+  });
   const loader = new DefaultResourceLoader({
     cwd: repo,
     agentDir: getPiAgentDir(),
@@ -1116,15 +1126,7 @@ async function supervisedRun(
     noContextFiles: true,
     extensionFactories: [
       (pi: ExtensionAPI) => {
-        attachOverseerSentinel(pi, {
-          base,
-          activeLaunch: () => launch,
-          activeRunBaseline: () => baseline,
-          isStopping: () => ended,
-          ...(options.flushPendingCommands === undefined
-            ? {}
-            : { flushPendingCommands: options.flushPendingCommands }),
-        });
+        sentinel.attach(pi);
       },
     ],
   });
@@ -1202,7 +1204,9 @@ async function supervisedRun(
   };
   const emit = async (name: string, event: Record<string, unknown>): Promise<unknown[]> =>
     Promise.all(
-      (ext.handlers.get(name) ?? []).map((handler) => handler({ type: name, ...event }, ctx)),
+      (ext.handlers.get(name) ?? []).map((handler) =>
+        handler({ type: name, entries: [], ...event }, ctx),
+      ),
     );
   const escPath = path.join(runDirectory(base, launch.id), "escalation.json");
   /** The escalation the paused child published. Released from the delivery queue after the test. */
@@ -1222,21 +1226,40 @@ async function supervisedRun(
     assert.ok(typeof content === "string");
     return content;
   };
-  return { repo, base, launch, emit, paused, notice, judged, escPath, journal };
+  let steers = 0;
+  const steer = () => {
+    const command = {
+      id: `steer-${++steers}`,
+      runId: launch.id,
+      action: "steer" as const,
+      prompt: "Fix the drift.",
+      createdAt: Date.now(),
+    };
+    assert.equal(sentinel.steerPaused(command), true);
+    return command;
+  };
+  return {
+    repo,
+    base,
+    launch,
+    emit,
+    paused,
+    notice,
+    judged,
+    escPath,
+    steer,
+    journal,
+    submittedCorrections,
+  };
 }
 
 nodeTest(
-  "attachOverseerSentinel primes baseline before turn 1 and re-judges unfixed steered drift on settle",
+  "the sentinel primes baseline before turn 1 and re-judges unfixed steered drift on settle",
   async (t) => {
-    let flushed = 0;
-    let flushHasQueued = true;
-    const { repo, base, launch, emit, paused, judged } = await supervisedRun(t, {
-      verdict: () => "primitive_violation",
-      flushPendingCommands: () => {
-        flushed += 1;
-        return flushHasQueued;
-      },
-    });
+    const { repo, base, launch, emit, paused, judged, steer, submittedCorrections } =
+      await supervisedRun(t, {
+        verdict: () => "primitive_violation",
+      });
 
     // Prime baseline BEFORE turn 1 edits anything.
     await emit("before_agent_start", {});
@@ -1253,9 +1276,10 @@ nodeTest(
     // Wait until escalation.json appears, then steer (do NOT approve).
     const firstEsc = await paused();
     assert.deepEqual([firstEsc.strikes, firstEsc.steers], [1, 0]);
-    resolveActiveEscalation(base, launch, "steered");
+    const firstCorrection = steer();
     await turnPromise;
     assert.equal(judged.length, 1);
+    assert.deepEqual(submittedCorrections, [firstCorrection]);
 
     // Child tries to settle WITHOUT changing the drifted digest -> re-judged and caught!
     const settlePromise = emit("agent_before_settle", {
@@ -1265,13 +1289,10 @@ nodeTest(
     });
     const secondEsc = await paused();
     assert.deepEqual([secondEsc.strikes, secondEsc.steers], [2, 1]);
-    resolveActiveEscalation(base, launch, "steered");
-    const steeredResults = await settlePromise;
+    const correction = steer();
+    await settlePromise;
     assert.equal(judged.length, 2);
-    assert.equal(flushed, 1);
-    assert.deepEqual(steeredResults, [{ continue: true }]);
-
-    flushHasQueued = false;
+    assert.deepEqual(submittedCorrections, [firstCorrection, correction]);
     const approvePromise = emit("agent_before_settle", {
       outcome: "completed",
       entries: [],
@@ -1283,7 +1304,6 @@ nodeTest(
     const approvedResults = await approvePromise;
     assert.deepEqual(approvedResults, [undefined]);
 
-    // Unsteered settle fallback injects overseer-sentinel only when no steer is queued.
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), `${bigViolation}\n// strike 4\n`);
     const fallbackPromise = emit("agent_before_settle", {
       outcome: "completed",
@@ -1293,17 +1313,15 @@ nodeTest(
     // The approval of the third pause is not a correction.
     const fourthEsc = await paused();
     assert.deepEqual([fourthEsc.strikes, fourthEsc.steers], [4, 2]);
-    resolveActiveEscalation(base, launch, "steered");
-    const fallbackResults = await fallbackPromise;
-    assert.equal(flushed, 2);
-    assert.match(JSON.stringify(fallbackResults), /overseer-sentinel/u);
+    steer();
+    await fallbackPromise;
   },
 );
 
 nodeTest(
   "a pause shows the work since the last approval, and the judge sees the work since the last accepted state",
   async (t) => {
-    const { repo, base, launch, emit, paused, notice, judged, escPath, journal } =
+    const { repo, base, launch, emit, paused, notice, judged, escPath, steer, journal } =
       await supervisedRun(t, {
         verdict: (diff) => (diff.includes("FLAG") ? "primitive_violation" : "compliant"),
       });
@@ -1414,6 +1432,10 @@ nodeTest(
     };
     intercomEntry("parent-peer", guidance, {});
     intercomEntry("other-child", "Disregard the query helper.", { parentSessionId: launch.owner });
+    journal.appendCustomMessageEntry("application", "Use a new API.", true);
+    journal.appendCustomMessageEntry("overseer-correction", "Use a new API.", true, {
+      commandId: "not-admitted",
+    });
     // Before settling the judge sees the new work only, and flags it.
     fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "// FLAG\n");
     const flaggedSettle = emit("agent_before_settle", settle);
@@ -1462,8 +1484,11 @@ nodeTest(
         "",
       ].join("\n"),
     });
-    resolveActiveEscalation(base, launch, "steered");
+    const command = steer();
     await flaggedSettle;
+    journal.appendCustomMessageEntry("overseer-correction", "Skip the correction.", true, {
+      commandId: command.id,
+    });
 
     // The steered child leaves the flagged state as it is: the judge is not asked again.
     for (let turn = 0; turn < 5; turn += 1) {
@@ -1476,6 +1501,7 @@ nodeTest(
     fs.writeFileSync(path.join(repo, "src", "allowed.ts"), "export const fixed = 1;\n");
     await emit("turn_end", mutatingTurn);
     assert.equal(judged.length, 3);
+    assert.deepEqual(judged[2]?.taskGuidance, [guidance]);
     // Every existing trigger still reaches the judge when there is new work: the fourth mutating turn,
     for (let turn = 0; turn < 3; turn += 1) {
       fs.appendFileSync(path.join(repo, "src", "allowed.ts"), `export const step${turn} = 1;\n`);
@@ -1525,7 +1551,7 @@ nodeTest(
     let answer: JudgeChoice | "request_failed" = "request_failed";
     let available = true;
     let runSignal: AbortSignal | undefined;
-    const { repo, base, launch, emit, paused, judged, escPath } = await supervisedRun(t, {
+    const { repo, base, launch, emit, paused, judged, escPath, steer } = await supervisedRun(t, {
       verdict: () => answer,
       available: () => available,
       signal: () => runSignal,
@@ -1592,12 +1618,12 @@ nodeTest(
     assert.equal(judged.length, 4);
     assert.match(judged[3]?.diff ?? "", /^\+export const more129 = 129;$/mu);
     assert.equal(fs.existsSync(unavailableFile), false);
-    resolveActiveEscalation(base, launch, "steered");
+    steer();
     await flagged;
 
     // The child changes the flagged work, and no classifier is available at the checkpoint
     // before the run settles: nothing can be asked. The run ends without a pause. Its completion
-    // notice still requires the review, and says once that no judge gave a verdict.
+    // notice still says once that no judge gave a verdict.
     available = false;
     fs.appendFileSync(path.join(repo, "src", "more.ts"), "export const last = 1;\n");
     assert.equal(await pauses(emit("agent_before_settle", settle)), false);
@@ -1614,7 +1640,6 @@ nodeTest(
     assert.deepEqual(
       completion[0]?.split("\n").filter((line) => line.startsWith("[Overseer ")),
       [
-        `[Overseer review required: inspect git diff in ${repo} (README.md, src/big.ts, src/later.ts, src/more.ts) and call agent_runs(action="review", id="run-overseer-1", verdict="approved", summary="...") in this turn before finishing.]`,
         "[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. No classifier model is available for the overseer judge.]",
       ],
     );
@@ -1712,16 +1737,8 @@ nodeTest(
       diffDigest: "digest-1",
     };
 
-    let resolved = false;
-    const waiting = (async () => {
-      await waitForEscalationResolution({
-        base,
-        launch,
-        escalation,
-        isStopping: () => false,
-      });
-      resolved = true;
-    })();
+    const pause = new EscalationPause(launch.id);
+    const waiting = pause.wait(base, escalation, () => false);
 
     const reconciled = notifications({ sessionManager: parentSession }, base, owner);
     assert.equal(reconciled.notices.length, 1);
@@ -1741,22 +1758,15 @@ nodeTest(
       reconciled.awaited.has(path.join(runDirectory(base, launch.id), "escalation.json")),
       true,
     );
-    assert.equal(resolved, false);
-
-    const cleared = resolveActiveEscalation(base, launch, "steered");
-    assert.equal(cleared?.id, "esc-1");
-    await waiting;
-    assert.equal(resolved, true);
+    const command = {
+      id: "steer-1",
+      runId: launch.id,
+      action: "steer" as const,
+      prompt: "Fix drift immediately",
+      createdAt: Date.now(),
+    };
+    assert.equal(pause.steer(command), true);
+    assert.deepEqual(await waiting, { verdict: "steered", commands: [command] });
     assert.equal(fs.existsSync(path.join(runDirectory(base, launch.id), "escalation.json")), false);
-
-    // Guidance enqueued before waitForEscalationResolution starts is honored without wedging.
-    enqueue(base, launch, { action: "steer", prompt: "Fix drift immediately" });
-    const preSteeredVerdict = await waitForEscalationResolution({
-      base,
-      launch,
-      escalation: { ...escalation, id: "esc-pre-steered" },
-      isStopping: () => false,
-    });
-    assert.equal(preSteeredVerdict, "steered");
   },
 );

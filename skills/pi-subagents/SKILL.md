@@ -58,9 +58,10 @@ invocation exits after its final turn and stops any remaining children.
   Both keep the child's saved effort, independent of later parent changes.
 - `stop` requests termination. Inspect actual process evidence; request acceptance
   does not prove actor or command exit.
-- `review` records an overseer `verdict` (`"approved"` or `"changes_requested"`) with
-  cited diff/check `summary` when `/overseer` mode is active, unpausing an escalated
-  child or satisfying the completion review gate.
+- `review` with `verdict:"approved"` records the diff and check evidence in
+  `summary` without sending it to the child. Approval releases a pause or
+  satisfies the completion review. To send a correction, use `continue` or
+  `review` with `verdict:"changes_requested"` and the instructions as `summary`.
 
 Use IDs returned by the tools. Runs belong to their native main session, not a
 cwd, project, name, or forked copy of its transcript. Resume the same main for

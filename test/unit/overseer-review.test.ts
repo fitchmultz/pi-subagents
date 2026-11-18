@@ -17,7 +17,7 @@ import {
   recordOverseerReview,
   unreviewedCompletedRuns,
 } from "../../src/agent/overseer-review.ts";
-import { waitForEscalationResolution } from "../../src/agent/overseer-sentinel.ts";
+import { EscalationPause } from "../../src/agent/overseer-pause.ts";
 import { captureOverseerBaseline } from "../../src/agent/run-result.ts";
 import { runDirectory, write } from "../../src/agent/storage.ts";
 import { pauseLabel } from "../../src/agent/run-state.ts";
@@ -98,6 +98,16 @@ nodeTest(
 
     // Before parent receives the completion receipt, settle is not blocked.
     assert.deepEqual(unreviewedCompletedRuns({ sessionManager: parentSession }, base, owner), []);
+    const readOnlyNotice = notifications(
+      { sessionManager: parentSession },
+      base,
+      owner,
+    ).notices.find((notice) => notice.id === readOnly.id);
+    assert.equal(
+      readOnlyNotice?.message.content,
+      `Agent run readonly-run: completed. \ndone\nNative journal: ${readOnly.sessionFile}`,
+      "a read-only completion publishes without any review hint",
+    );
 
     // Record completion receipts in parent session transcript.
     parentSession.appendCustomMessageEntry("agent-completion", "done", true, {
@@ -122,6 +132,7 @@ nodeTest(
     assert.ok(firstDraft !== undefined);
     assert.match(firstDraft.content, /mutating-run/u);
     assert.match(firstDraft.content, /summary="\.\.\."/u);
+    assert.match(firstDraft.content, /"approved".*"changes_requested"/u);
     assert.equal(buildReviewGateDraft(pending, reminders) !== undefined, true);
     // Bounded at 2 reminders per run so a misbehaving model cannot loop forever.
     assert.equal(buildReviewGateDraft(pending, reminders), undefined);
@@ -140,7 +151,7 @@ nodeTest(
 );
 
 nodeTest(
-  "approving a paused mid-run escalation via recordOverseerReview allowlists the diff digest and unpauses",
+  "approval records the pause digest and resumes with admitted guidance",
   async (t: TestContext) => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-approve-"));
     t.after(() => {
@@ -162,15 +173,23 @@ nodeTest(
       diffDigest: "approved-digest-abc",
     };
 
-    const waiting = waitForEscalationResolution({
-      base,
-      launch,
-      escalation,
-      isStopping: () => false,
+    const pause = new EscalationPause(launch.id);
+    const waiting = pause.wait(base, escalation, () => false);
+    const command = {
+      action: "steer" as const,
+      id: "report-1",
+      runId: launch.id,
+      prompt: "Summarize the checks without changing the diff.",
+      createdAt: Date.now(),
+    };
+    assert.equal(pause.steer(command), true);
+    const approval = prepareOverseerReviewAction(base, launch, {
+      action: "review",
+      verdict: "approved",
+      summary: "Inspected diff; change is within contract.",
     });
-
-    recordOverseerReview(base, launch, "approved", "Inspected diff; change is within contract.");
-    assert.equal(await waiting, "approved");
+    assert.equal(approval.released, true);
+    assert.deepEqual(await waiting, { verdict: "approved", commands: [command] });
 
     // Every pause notice offers steer, approve and stop, each with its required `summary="..."`.
     // Earlier steering is context, not evidence about the worker or a reason to stop it.
@@ -229,17 +248,26 @@ nodeTest(
     write(path.join(runDirectory(base, launch.id), "result.json"), completedAfterPause);
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), true);
     t.after(() => release(launch.owner, launch.id));
-    const unreviewedCompletion = notifications(
-      { sessionManager: SessionManager.inMemory() },
-      base,
-      launch.owner,
-    ).notices.find((item) => item.id === launch.id);
-    const unreviewedText =
-      typeof unreviewedCompletion?.message.content === "string"
-        ? unreviewedCompletion.message.content
-        : "";
-    assert.match(unreviewedText, /Overseer review required:/u);
-    release(launch.owner, launch.id);
+    fs.writeFileSync(path.join(runDirectory(base, launch.id), "output.txt"), "The final report.\n");
+    const expectStatusNotice = (state: string): void => {
+      const completion = notifications(
+        { sessionManager: SessionManager.inMemory() },
+        base,
+        launch.owner,
+      ).notices.find((item) => item.id === launch.id);
+      assert.equal(
+        completion?.message.content,
+        [
+          "Agent run paused-run: completed. ",
+          "The final report.\n",
+          '[Check current review status with agent_runs(action="inspect", id="paused-run"). If review is still required, inspect the diff and choose approved or changes_requested.]',
+          `Native journal: ${launch.sessionFile}`,
+        ].join("\n"),
+        `${state} completion points to current status without requiring another review`,
+      );
+      release(launch.owner, launch.id);
+    };
+    expectStatusNotice("Unreviewed");
     const midRunInspect = renderInspection(base, launch);
     const inspectText = midRunInspect.content[0]?.text ?? "";
     assert.match(inspectText, /Overseer review: approved at /u);
@@ -253,7 +281,6 @@ nodeTest(
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
     // The reply to the review confirms it and says what follows. It does not repeat the run
     // record or the child's report.
-    fs.writeFileSync(path.join(runDirectory(base, launch.id), "output.txt"), "The final report.\n");
     assert.match(renderInspection(base, launch).content[0]?.text ?? "", /The final report\./u);
     assert.equal(
       renderReceipt(base, launch, undefined, {
@@ -264,19 +291,10 @@ nodeTest(
       [
         `Overseer review recorded: run paused-run (paused-run) approved at ${new Date(finalReview.at).toISOString().slice(0, 19)}Z.`,
         "The run's status is completed; it needs no further review.",
+        'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.',
       ].join("\n"),
     );
-    const approvedCompletion = notifications(
-      { sessionManager: SessionManager.inMemory() },
-      base,
-      launch.owner,
-    ).notices.find((item) => item.id === launch.id);
-    const approvedText =
-      typeof approvedCompletion?.message.content === "string"
-        ? approvedCompletion.message.content
-        : "";
-    assert.doesNotMatch(approvedText, /Overseer review required:/u);
-    release(launch.owner, launch.id);
+    expectStatusNotice("Approved");
 
     // Clear review.json so the superseded-run check below exercises successor.json independently.
     fs.rmSync(path.join(runDirectory(base, launch.id), "review.json"), { force: true });
@@ -289,25 +307,14 @@ nodeTest(
     fs.mkdirSync(tipDir, { recursive: true, mode: 0o700 });
     write(path.join(tipDir, "launch.json"), tipB, true);
     write(path.join(runDirectory(base, launch.id), "successor.json"), { id: tipB.id }, true);
-    // Unapproved superseded run A omits the review hint solely because successor.json exists.
+    // An unapproved run does not hold up settlement once it has a successor.
     assert.equal(needsOverseerReview(base, launch, completedAfterPause), false);
-    const supersededCompletion = notifications(
-      { sessionManager: SessionManager.inMemory() },
+    expectStatusNotice("Superseded");
+    const tipWait = new EscalationPause(tipB.id).wait(
       base,
-      launch.owner,
-    ).notices.find((item) => item.id === launch.id);
-    const supersededText =
-      typeof supersededCompletion?.message.content === "string"
-        ? supersededCompletion.message.content
-        : "";
-    assert.doesNotMatch(supersededText, /Overseer review required:/u);
-    release(launch.owner, launch.id);
-    const tipWait = waitForEscalationResolution({
-      base,
-      launch: tipB,
-      escalation: { ...escalation, id: "esc-tip-b", runId: tipB.id, diffDigest: "tip-digest" },
-      isStopping: () => false,
-    });
+      { ...escalation, id: "esc-tip-b", runId: tipB.id, diffDigest: "tip-digest" },
+      () => false,
+    );
     const actionResult = prepareOverseerReviewAction(base, launch, {
       action: "review",
       id: launch.id,
@@ -316,7 +323,7 @@ nodeTest(
     });
     assert.equal(actionResult.target.id, tipB.id);
     assert.equal(actionResult.released, true);
-    assert.equal(await tipWait, "approved");
+    assert.deepEqual(await tipWait, { verdict: "approved", commands: [] });
 
     // Unborn empty Git repo where a scope:[] child makes the first commit still populates
     // changedFiles so needsOverseerReview gates parent settlement.

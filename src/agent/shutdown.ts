@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Launch, ProcessIdentity } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { alive, requestStop, signalProcess } from "./process.ts";
-import { resolveActiveEscalation } from "./overseer-sentinel.ts";
+import { resolveActiveEscalation } from "./overseer-pause.ts";
 import { launchAt, list } from "./storage.ts";
 import { renderReceipt } from "./view.ts";
 
@@ -13,8 +13,11 @@ export function stopRun(
   ctx: ExtensionContext | undefined,
   report: (message: string) => void,
 ): ReturnType<typeof renderReceipt> {
-  resolveActiveEscalation(base, launch, "stopped");
   const { targets: live, command: id } = requestStop(base, launch);
+  // Only the live actor releases its pause on stop, after suppressing further model work.
+  if (id === undefined) {
+    resolveActiveEscalation(base, launch, "stopped");
+  }
   if (live.length === 0) {
     return renderReceipt(base, launch, ctx, {
       stopAcknowledged: false,

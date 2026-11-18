@@ -536,19 +536,22 @@ Approving a pause accepts the paused state:
 - An approved base-branch issue is not raised again in that run.
 - Committing approved work raises nothing: the working tree did not change.
 
-Steering accepts nothing. Out-of-scope work that stays in place is flagged again at the next
-checkpoint. After the judge flags a state, it is not asked about that unchanged state again
-until the checkpoint before the run settles.
+If you approve and steer at the same pause, approval accepts the paused state and the child
+receives the admitted guidance in its next turn. Steering alone does not approve work.
+Out-of-scope work that stays in place is flagged again at the next checkpoint. After the judge
+flags a state, it is not asked about that unchanged state again until the checkpoint before
+the run settles.
 
 The judge receives the new diff, the names of previously accepted files (`acceptedFiles`), the
 task prompt (`taskPrompt`), the contract, and task-owner guidance (`taskGuidance`) recorded in
-this run's child session. Guidance includes delivered `continue` and `changes_requested` prompts
-and intercom messages from the delegating session. For a saved-run continuation (`continuation`
+this run's child session. Guidance includes delivered `continue` and `changes_requested` prompts,
+including corrections that released a pause, and intercom messages from the delegating session.
+For a saved-run continuation (`continuation`
 is `true`), the task prompt is newer than the saved contract. Later explicit guidance supersedes
 conflicting earlier instructions for the classifier. It does not change the edit-tool scope or
-base-branch checks. Pending messages, approval summaries, and messages from other workers do not
-change the judge's instructions. Give changes to the task directly in a message; the judge does
-not open referenced notes.
+base-branch checks. Pending messages, approval summaries, messages from other workers, and
+unrelated app messages do not change the judge's instructions. Give changes to the task directly
+in a message; the judge does not open referenced notes.
 
 ### Which classifier judges, and when none answers
 
@@ -682,20 +685,22 @@ omits the instruction block. It can still resolve the pause. If the child predat
 
 ### What an approval replies
 
-`agent_runs` `action="review"` with `verdict="approved"` replies with two lines: the run, the
-verdict and the time, and then what follows.
+`agent_runs` `action="review"` with `verdict="approved"` records the summary as review evidence.
+It does not send the summary to the child. The receipt reports what the approval changes.
 
 ```text
 Overseer review recorded: run 7f3a… (docs-fix) approved at 2026-11-17T17:02:11Z.
-The paused child continues. Its next notice arrives when it pauses again or ends.
+Pause approval recorded. Its next notice arrives when the child pauses again or ends.
+Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.
 ```
 
-The second line is one of three: the paused child continues; the run is still running and was
-not paused, so it needs a review again after it ends; or the run has ended and needs no further
-review. The child's report and the run record are not repeated: the completion notice and
-`inspect` have them. `changes_requested` replies as `continue` does.
+Use `continue` to send guidance without a review verdict. Use `changes_requested` to record
+a verdict and send its summary as the correction or successor prompt. When either action
+releases a pause, the child's next model request includes any earlier queued steers in order,
+then the correction. Ordinary guidance for an active child stays queued, and the receipt does
+not claim the child has read it.
 
-When a supervised run completes with repository changes (`changedFiles`), `agent_before_settle`
-prompts the parent (at most twice per run) until `agent_runs({ action: "review", id, verdict: "approved", summary })`
-or a superseding continuation (`changes_requested` / `continue`) is recorded. Runs with no
-detected repository changes settle with zero extra turns.
+Completion notices point to `inspect` for the current review status, because a notice can
+arrive after approval. Before the parent settles, Pi prompts for still-pending completion
+reviews (at most twice per run). Inspect the diff, then choose `approved` or
+`changes_requested`. Runs with no detected repository changes settle with zero extra turns.

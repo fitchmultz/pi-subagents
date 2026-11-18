@@ -12,7 +12,7 @@ import { localCwdOwner } from "./cwd.ts";
 import type { ToolEvent } from "./observation-state.ts";
 import { backgroundCommands } from "./background-work.ts";
 import { checkToolCallScope, formatContractSection } from "./overseer-scope.ts";
-import { attachOverseerSentinel, type SentinelOptions } from "./overseer-sentinel.ts";
+import type { OverseerSentinel } from "./overseer-sentinel.ts";
 import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
 function rewriteLocalBash(
@@ -95,7 +95,7 @@ interface ChildHooks {
   readonly saved: WorkingState | undefined;
   readonly started: (pi: ExtensionAPI, ctx: ExtensionContext) => void;
   readonly tool: (event: ToolEvent) => void;
-  readonly sentinel?: SentinelOptions | undefined;
+  readonly sentinel?: OverseerSentinel | undefined;
 }
 /** One native child session with this package's child policy and live-view hooks. */
 export function childRuntime(
@@ -131,9 +131,7 @@ export function childRuntime(
           ...(jobs ? [{ name: "background-command", builtin: true, factory: jobs }] : []),
           (pi) => {
             guard(pi, launch, hooks.directory, hooks.token);
-            if (hooks.sentinel !== undefined) {
-              attachOverseerSentinel(pi, hooks.sentinel);
-            }
+            hooks.sentinel?.attach(pi);
             pi.on("session_start", (_event, ctx) => {
               hooks.started(pi, ctx);
             });

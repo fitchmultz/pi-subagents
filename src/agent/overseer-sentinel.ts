@@ -1,15 +1,7 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import {
-  commandMetadataSchema,
-  escalationResolutionSchema,
-  escalationSchema,
-  type Escalation,
-  type EscalationResolution,
-  type Launch,
-} from "./contracts.ts";
+import type { Escalation, Launch } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { ToolErrorWindow } from "./overseer-evidence.ts";
 import {
@@ -31,9 +23,8 @@ import {
   recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
+import { EscalationPause, type SteerCommand } from "./overseer-pause.ts";
 import { checkpointGuidance } from "./overseer-guidance.ts";
-import { conversation, read, runDirectory, write } from "./storage.ts";
-import { DirectoryWatch, Wake } from "./wake.ts";
 
 const MUTATING_TOOLS = new Set([
   "edit",
@@ -60,8 +51,8 @@ interface RunSentinelState {
   /** Base-branch issues the overseer approved. An approved issue is not raised again. */
   readonly approvedBranchIssues: Set<string>;
   readonly excludePaths: readonly string[];
-  readonly seenSteerFiles: Set<string>;
   readonly toolErrors: ToolErrorWindow;
+  readonly admittedCorrections: Map<string, string>;
   turnsSinceJudge: number;
   /** The state the judge last saw, and the size of the new work it saw then. */
   judged: { readonly tree: string | undefined; readonly lines: number };
@@ -77,83 +68,6 @@ interface Work {
   readonly snapshot: RepoSnapshot;
   readonly changes: OwnChanges;
   readonly diff: string;
-}
-
-function jsonFiles(dir: string): Set<string> {
-  try {
-    return new Set(fs.readdirSync(dir).filter((file) => file.endsWith(".json")));
-  } catch {
-    return new Set();
-  }
-}
-
-function consumePendingSteers(
-  commandsDir: string,
-  runId: string,
-  seenSteerFiles: Set<string>,
-): boolean {
-  let found = false;
-  for (const file of jsonFiles(commandsDir)) {
-    if (seenSteerFiles.has(file)) {
-      continue;
-    }
-    const meta = read(path.join(commandsDir, file), commandMetadataSchema);
-    if (meta?.runId === runId && meta.action === "steer") {
-      seenSteerFiles.add(file);
-      found = true;
-    }
-  }
-  return found;
-}
-
-function resolutionVerdict(
-  resolutionFile: string,
-  escalationId: string,
-): EscalationResolution["verdict"] | undefined {
-  const resolution = read(resolutionFile, escalationResolutionSchema);
-  return resolution?.escalationId === escalationId ? resolution.verdict : undefined;
-}
-
-export async function waitForEscalationResolution(options: {
-  base: string;
-  launch: Launch;
-  escalation: Escalation;
-  isStopping: () => boolean;
-  seenSteerFiles?: Set<string> | undefined;
-}): Promise<EscalationResolution["verdict"]> {
-  const { base, launch, escalation, isStopping } = options;
-  const runDir = runDirectory(base, launch.id);
-  const convDir = conversation(base, launch);
-  const commandsDir = path.join(convDir, "commands");
-  const seenSteers = options.seenSteerFiles ?? jsonFiles(path.join(convDir, "admissions"));
-  const escalationFile = path.join(runDir, "escalation.json");
-  const resolutionFile = path.join(runDir, "escalation-resolution.json");
-  write(escalationFile, escalation);
-
-  const wake = new Wake();
-  const watchRun = new DirectoryWatch(runDir, () => true, wake.raise);
-  const watchCommands = new DirectoryWatch(commandsDir, () => true, wake.raise);
-  try {
-    while (!isStopping()) {
-      wake.take();
-      watchRun.ensure();
-      watchCommands.ensure();
-      const verdict = resolutionVerdict(resolutionFile, escalation.id);
-      if (verdict !== undefined) {
-        consumePendingSteers(commandsDir, launch.id, seenSteers);
-        return verdict;
-      }
-      if (consumePendingSteers(commandsDir, launch.id, seenSteers)) {
-        return "steered";
-      }
-      await wake.sleep(200);
-    }
-    return "stopped";
-  } finally {
-    watchRun.close();
-    watchCommands.close();
-    fs.rmSync(escalationFile, { force: true });
-  }
 }
 
 function lineCount(diff: string): number {
@@ -178,39 +92,21 @@ function shouldRunJudgeCheckpoint(
   );
 }
 
-export interface SentinelOptions {
+interface SentinelOptions {
   readonly base: string;
   readonly activeLaunch: () => Launch;
   /** Entries that predate this run, including any inherited fork conversation. */
   readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
-  readonly flushPendingCommands?: () => boolean;
-}
-
-export function resolveActiveEscalation(
-  base: string,
-  launch: Launch,
-  verdict: "steered" | "approved" | "stopped",
-): Escalation | undefined {
-  const dir = runDirectory(base, launch.id);
-  const active = read(path.join(dir, "escalation.json"), escalationSchema);
-  if (active === undefined) {
-    return undefined;
-  }
-  write(path.join(dir, "escalation-resolution.json"), {
-    escalationId: active.id,
-    verdict,
-    ...(verdict === "approved" ? { diffDigest: active.diffDigest } : {}),
-    at: Date.now(),
-  });
-  return active;
+  readonly admitPending?: () => void;
+  readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
 /** Rejects when no judge answered. */
 async function askJudge(
   launch: Launch,
   ctx: ExtensionContext,
-  baseline: ReadonlySet<string> | undefined,
+  guidance: readonly string[],
   work: { checkpoint: Work; acceptedFiles: readonly string[]; failed: Set<string> },
 ): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
@@ -221,7 +117,7 @@ async function askJudge(
     judgeSpec: launch.overseer?.judge,
     prompt: launch.prompt,
     continuation: launch.predecessor !== undefined,
-    guidance: checkpointGuidance(ctx.sessionManager, launch, baseline),
+    guidance,
     contract: launch.contract,
     changedFiles: work.checkpoint.changes.files,
     acceptedFiles: work.acceptedFiles,
@@ -236,30 +132,23 @@ export function harnessExcludePaths(base: string, launch: Launch): string[] {
   return [base, launch.agentDir, path.dirname(launch.sessionFile)];
 }
 
-class SentinelRunner {
+export class OverseerSentinel {
   private state: RunSentinelState | undefined;
+  private pause: EscalationPause | undefined;
   private readonly options: SentinelOptions;
 
   constructor(options: SentinelOptions) {
     this.options = options;
   }
 
-  primeBaseline(launch: Launch): void {
+  private primeBaseline(launch: Launch): void {
     if (launch.overseer?.enabled === true && launch.contract !== undefined) {
       this.ensureState(launch);
     }
   }
 
-  markTurnSteers(launch: Launch): void {
-    if (launch.overseer?.enabled !== true || launch.contract === undefined) {
-      return;
-    }
-    const current = this.ensureState(launch);
-    for (const file of jsonFiles(
-      path.join(conversation(this.options.base, launch), "admissions"),
-    )) {
-      current.seenSteerFiles.add(file);
-    }
+  steerPaused(command: SteerCommand): boolean {
+    return this.pause?.steer(command) ?? false;
   }
 
   private ensureState(launch: Launch): RunSentinelState {
@@ -271,7 +160,6 @@ class SentinelRunner {
       baseBranch: launch.contract?.baseBranch,
       excludePaths,
     });
-    const commandsDir = path.join(conversation(this.options.base, launch), "commands");
     this.state = {
       runId: launch.id,
       launch: point,
@@ -279,8 +167,8 @@ class SentinelRunner {
       approved: point,
       approvedBranchIssues: new Set(),
       excludePaths,
-      seenSteerFiles: jsonFiles(commandsDir),
       toolErrors: new ToolErrorWindow(),
+      admittedCorrections: new Map(),
       turnsSinceJudge: 0,
       judged: { tree: point.snapshot.tree, lines: 0 },
       failedJudges: new Set(),
@@ -355,7 +243,7 @@ class SentinelRunner {
     issue: Violation,
     checkpoint: Work,
     toolErrorTurns?: Escalation["toolErrorTurns"],
-  ): Promise<EscalationResolution["verdict"]> {
+  ): Promise<void> {
     const current = this.ensureState(launch);
     current.pauses += 1;
     current.toolErrors.clear();
@@ -371,38 +259,41 @@ class SentinelRunner {
       ...this.unapprovedWork(launch, checkpoint),
       diffDigest: checkpoint.snapshot.tree ?? "non-git",
     };
-    const verdict = await waitForEscalationResolution({
-      base: this.options.base,
-      launch,
-      escalation,
-      isStopping: this.options.isStopping,
-      seenSteerFiles: current.seenSteerFiles,
-    });
-    if (verdict === "steered") {
-      current.steers += 1;
-    }
-    if (verdict === "approved") {
+    const pause = new EscalationPause(launch.id);
+    this.pause = pause;
+    const answer = await pause
+      .wait(this.options.base, escalation, this.options.isStopping, this.options.admitPending)
+      .finally(() => {
+        this.pause = undefined;
+      });
+    if (answer.verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
       current.approved = current.reviewPoint;
       if (issue.kind === "branch_violation") {
         current.approvedBranchIssues.add(issue.summary);
       }
     }
-    return verdict;
+    if (answer.verdict !== "stopped" && answer.commands.length > 0) {
+      current.steers += 1;
+      for (const { id, prompt } of answer.commands) {
+        current.admittedCorrections.set(id, prompt);
+      }
+      this.options.queueCorrections(answer.commands);
+    }
   }
 
-  async inspectCheckpoint(
+  private async inspectCheckpoint(
     launch: Launch,
     ctx: ExtensionContext,
     finalSettle: boolean,
     toolErrorTurns?: Escalation["toolErrorTurns"],
-  ): Promise<EscalationResolution["verdict"] | undefined> {
+  ): Promise<void> {
     if (
       launch.overseer?.enabled !== true ||
       launch.contract === undefined ||
       this.options.isStopping()
     ) {
-      return undefined;
+      return;
     }
     const current = this.ensureState(launch);
     const snapshot = captureRepoSnapshot(launch.cwd, {
@@ -440,15 +331,15 @@ class SentinelRunner {
     ctx: ExtensionContext,
     checkpoint: Work,
     finalSettle: boolean,
-  ): Promise<EscalationResolution["verdict"] | undefined> {
+  ): Promise<void> {
     const current = this.ensureState(launch);
     const { snapshot } = checkpoint;
     if (checkpoint.changes.files.length === 0) {
       this.pass(launch, snapshot);
-      return undefined;
+      return;
     }
     if (!shouldRunJudgeCheckpoint(current, checkpoint, finalSettle)) {
-      return undefined;
+      return;
     }
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
@@ -457,30 +348,35 @@ class SentinelRunner {
     const { signal } = ctx;
     let verdict: Violation | undefined;
     try {
-      const baseline = this.options.activeRunBaseline();
+      const guidance = checkpointGuidance(ctx.sessionManager, launch, {
+        baseline: this.options.activeRunBaseline(),
+        admittedCorrections: current.admittedCorrections,
+      });
       const failed = current.failedJudges;
-      verdict = await askJudge(launch, ctx, baseline, { checkpoint, acceptedFiles, failed });
+      verdict = await askJudge(launch, ctx, guidance, { checkpoint, acceptedFiles, failed });
     } catch (error) {
       if (signal?.aborted === true) {
         // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
-        return undefined;
+        return;
       }
       // No judge answered. That is no finding about the work, so the child is not paused. The
       // review point stays: a later checkpoint asks again about all the work since then, and
       // the completion notice reports a run that ends with work no judge answered for.
       recordJudgeUnavailable(this.options.base, launch.id, errorText(error));
-      return undefined;
+      return;
     }
     // A classifier answered: the work is judged, whatever the verdict.
     clearJudgeUnavailable(this.options.base, launch.id);
     if (verdict === undefined) {
       this.pass(launch, snapshot);
-      return undefined;
+      return;
     }
-    return this.options.isStopping() ? undefined : this.escalate(launch, verdict, checkpoint);
+    if (!this.options.isStopping()) {
+      await this.escalate(launch, verdict, checkpoint);
+    }
   }
 
-  async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext): Promise<void> {
+  private async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext) {
     const launch = this.options.activeLaunch();
     if (launch.overseer?.enabled !== true || launch.contract === undefined) {
       return;
@@ -496,49 +392,20 @@ class SentinelRunner {
     }
     await this.inspectCheckpoint(launch, ctx, false, toolErrorTurns);
   }
-}
 
-export function attachOverseerSentinel(pi: ExtensionAPI, options: SentinelOptions): void {
-  const runner = new SentinelRunner(options);
-  pi.on("session_start", () => {
-    runner.primeBaseline(options.activeLaunch());
-  });
-  pi.on("before_agent_start", () => {
-    runner.primeBaseline(options.activeLaunch());
-  });
-  pi.on("turn_start", () => {
-    runner.markTurnSteers(options.activeLaunch());
-  });
-  pi.on("turn_end", async (event, ctx) => {
-    await runner.onTurnEnd(event, ctx);
-  });
-  pi.on("agent_before_settle", async (event, ctx) => {
-    if (event.outcome !== "completed") {
-      return;
-    }
-    const verdict = await runner.inspectCheckpoint(options.activeLaunch(), ctx, true);
-    if (verdict !== "steered") {
-      return;
-    }
-    if (
-      options.flushPendingCommands?.() === true ||
-      event.context.pendingMessages.length > 0 ||
-      ctx.hasPendingMessages()
-    ) {
-      return { continue: true };
-    }
-    return {
-      entries: [
-        ...event.entries,
-        {
-          type: "custom_message",
-          customType: "overseer-sentinel",
-          display: false,
-          content:
-            "Overseer steered this run before settlement. Apply the steering guidance and satisfy the delegation contract before finishing.",
-        },
-      ],
-      continue: true,
-    };
-  });
+  attach(pi: ExtensionAPI): void {
+    pi.on("session_start", () => {
+      this.primeBaseline(this.options.activeLaunch());
+    });
+    pi.on("before_agent_start", () => {
+      this.primeBaseline(this.options.activeLaunch());
+    });
+    pi.on("turn_end", (event, ctx) => this.onTurnEnd(event, ctx));
+    pi.on("agent_before_settle", async (event, ctx) => {
+      if (event.outcome !== "completed") {
+        return;
+      }
+      await this.inspectCheckpoint(this.options.activeLaunch(), ctx, true);
+    });
+  }
 }

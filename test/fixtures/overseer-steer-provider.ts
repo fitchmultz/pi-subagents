@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage,
@@ -20,6 +21,18 @@ export default function fixture(pi: ExtensionAPI): void {
   if (cwd === undefined || sibling === undefined || judgeInput === undefined) {
     throw new Error("The overseer fixture requires both worktrees and a judge input path.");
   }
+  const toolGate = process.env.OVERSEER_TEST_TOOL_GATE;
+  if (toolGate !== undefined) {
+    pi.on("tool_result", async (event, ctx) => {
+      if (event.toolName !== "bash") {
+        return;
+      }
+      fs.writeFileSync(`${toolGate}.ready`, "");
+      while (!fs.existsSync(toolGate)) {
+        await delay(20, undefined, { signal: ctx.signal });
+      }
+    });
+  }
   const provider = fauxProvider({
     provider: "overseer-fixture",
     models: [{ id: "native-overseer", reasoning: false }],
@@ -30,13 +43,16 @@ export default function fixture(pi: ExtensionAPI): void {
       if (hasMessage(context, "Check screenshot")) {
         return fauxAssistantMessage([fail("check-browser", "echo private-tool-output; exit 1")]);
       }
-      // Write out-of-scope drift without a mutating tool so agent_before_settle catches it.
       fs.writeFileSync(path.join(cwd, "README.md"), "out-of-scope drift\n");
       // Another session commits in a different worktree of the same repository.
       fs.writeFileSync(path.join(sibling, "SIBLING.md"), "other session\n");
       execFileSync("git", ["add", "SIBLING.md"], { cwd: sibling, stdio: "ignore" });
       execFileSync("git", ["commit", "-m", "other session"], { cwd: sibling, stdio: "ignore" });
-      return fauxAssistantMessage("DRIFTED");
+      return toolGate === undefined
+        ? fauxAssistantMessage("DRIFTED")
+        : fauxAssistantMessage([fauxToolCall("bash", { command: "printf checkpoint" })], {
+            stopReason: "toolUse",
+          });
     },
     async (context) => {
       if (hasMessage(context, "Check screenshot")) {
@@ -45,9 +61,37 @@ export default function fixture(pi: ExtensionAPI): void {
           fail("check-selector", "echo private-arg; exit 2"),
         ]);
       }
+      if (hasMessage(context, "Report which paths were reviewed. Leave the diff unchanged.")) {
+        return fauxAssistantMessage("REPORTED");
+      }
+      const guidance = context.messages.flatMap((message) => {
+        if (message.role !== "user") {
+          return [];
+        }
+        const { content } = message;
+        const text =
+          typeof content === "string"
+            ? content
+            : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+        return text.includes("Keep x instead of replacing it.") ||
+          text.includes("REVERT_README and replace x with the greeting")
+          ? [text]
+          : [];
+      });
+      if (toolGate !== undefined) {
+        fs.writeFileSync(`${judgeInput}.model`, JSON.stringify(guidance));
+      }
       if (hasMessage(context, "REVERT_README")) {
         fs.writeFileSync(path.join(cwd, "README.md"), "committed\n");
-        fs.writeFileSync(path.join(cwd, "src", "allowed.ts"), "export const greeting = 'hi';\n");
+        if (
+          hasMessage(context, "REVERT_README and replace x with the greeting in src/allowed.ts.")
+        ) {
+          const preserveX = guidance.at(-1)?.includes("Keep x instead of replacing it.") === true;
+          fs.writeFileSync(
+            path.join(cwd, "src", "allowed.ts"),
+            preserveX ? "export const x = 2;\n" : "export const greeting = 'hi';\n",
+          );
+        }
         return fauxAssistantMessage("REVERTED");
       }
       return fauxAssistantMessage("UNSTEERED");

@@ -63,7 +63,7 @@ export const runsSchema = Type.Object(
       Type.String({
         minLength: 1,
         description:
-          "Diff/check evidence for review approval, or corrective instructions when requesting changes.",
+          'With "approved", save review evidence without sending it to the child. With "changes_requested", use the summary as the child’s correction or next prompt.',
       }),
     ),
     offset: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -98,7 +98,7 @@ export function registerAgentTools(
     name: "agent_runs",
     label: "Agent runs",
     description:
-      "Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation.",
+      'Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation. Review with "approved" records the summary without sending it; "changes_requested" uses the summary as the new prompt.',
     parameters: runsSchema,
     outputSchema: runsOutputSchema,
     exposure: child ? "hidden" : "direct",

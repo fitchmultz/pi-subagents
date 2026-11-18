@@ -8,7 +8,7 @@ import {
   type OverseerReview,
   type Result,
 } from "./contracts.ts";
-import { resolveActiveEscalation } from "./overseer-sentinel.ts";
+import { resolveActiveEscalation } from "./overseer-pause.ts";
 import { completionReceipts } from "./receipts.ts";
 import { latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
 import type { RunsInput } from "./tool-schemas.ts";
@@ -24,16 +24,23 @@ function isApprovedAfter(base: string, runId: string, endedAt: number): boolean 
   return rev?.verdict === "approved" && rev.at >= endedAt;
 }
 
+export function isReviewableResult(
+  launch: Launch,
+  result: Result | undefined,
+): result is Result & { status: "completed"; changedFiles: string[] } {
+  return (
+    launch.overseer?.enabled === true &&
+    result?.status === "completed" &&
+    (result.changedFiles?.length ?? 0) > 0
+  );
+}
+
 export function needsOverseerReview(
   base: string,
   launch: Launch,
   result: Result | undefined,
 ): boolean {
-  if (
-    launch.overseer?.enabled !== true ||
-    result?.status !== "completed" ||
-    (result.changedFiles?.length ?? 0) === 0
-  ) {
+  if (!isReviewableResult(launch, result)) {
     return false;
   }
   if (read(path.join(runDirectory(base, launch.id), "successor.json"), successorSchema)) {
@@ -52,15 +59,13 @@ export function recordOverseerReview(
   if (s.length === 0) {
     throw new Error("review requires a non-empty summary.");
   }
-  if (verdict === "approved") {
-    resolveActiveEscalation(base, launch, "approved");
-  }
+  const at = Date.now();
   const res = readCanonicalResult(base, launch);
   const review: OverseerReview = {
     runId: launch.id,
     verdict,
     summary: s,
-    at: res ? Math.max(Date.now(), res.endedAt) : Date.now(),
+    at: res ? Math.max(at, res.endedAt) : at,
   };
   write(path.join(runDirectory(base, launch.id), "review.json"), review);
   return review;
@@ -128,7 +133,6 @@ export function prepareOverseerReviewAction(
 ): {
   target: Launch;
   review: OverseerReview;
-  verdict: "approved" | "changes_requested";
   /** The review approved a pause that was open on the target. */
   released: boolean;
 } {
@@ -139,12 +143,14 @@ export function prepareOverseerReviewAction(
   const settled = (id: string): boolean =>
     fs.existsSync(path.join(runDirectory(base, id), "result.json"));
   const target = !settled(tip.id) || !settled(original.id) ? tip : original;
-  const paused = fs.existsSync(path.join(runDirectory(base, target.id), "escalation.json"));
+  const review = recordOverseerReview(base, target, input.verdict, input.summary);
+  const released =
+    review.verdict === "approved" &&
+    resolveActiveEscalation(base, target, "approved") !== undefined;
   return {
     target,
-    review: recordOverseerReview(base, target, input.verdict, input.summary),
-    verdict: input.verdict,
-    released: paused && input.verdict === "approved",
+    review,
+    released,
   };
 }
 

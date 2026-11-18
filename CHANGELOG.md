@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- A paused child sees the overseer's correction in its next model request (OVR-219).
+- Completion notices point to the current review status instead of asking for an approval that may already be recorded (OVR-218).
+- Approval receipts say when the summary was saved for review only and how to send instructions (OVR-208).
 - Overseer classifier reviews use current task-owner guidance and show the new changes without treating a choice or confidence as evidence of a violation.
 
 ## 0.52.53 - 2026-11-18

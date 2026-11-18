@@ -8,6 +8,8 @@ import { test as nodeTest, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
+  admissionSchema,
+  escalationResolutionSchema,
   escalationSchema,
   processSchema,
   resultSchema,
@@ -15,11 +17,21 @@ import {
 } from "../../src/agent/contracts.ts";
 import { loadSDK } from "../../src/agent/host.ts";
 import { notifications, release } from "../../src/agent/notifications.ts";
-import { resolveActiveEscalation } from "../../src/agent/overseer-sentinel.ts";
-import { ensureActor, ownIdentity } from "../../src/agent/process.ts";
-import { enqueue, ownerDirectory, read, runDirectory, write } from "../../src/agent/storage.ts";
+import { resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
+import { prepareOverseerReviewAction } from "../../src/agent/overseer-review.ts";
+import { ensureActor, ownIdentity, signalProcess } from "../../src/agent/process.ts";
+import { stopRun } from "../../src/agent/shutdown.ts";
+import {
+  conversation,
+  enqueue,
+  ownerDirectory,
+  read,
+  runDirectory,
+  write,
+} from "../../src/agent/storage.ts";
 import { renderReceipt } from "../../src/agent/view.ts";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
+import { record } from "../support/assertions.ts";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const providerFixture = path.join(repo, "test/fixtures/overseer-steer-provider.ts");
@@ -43,7 +55,11 @@ async function until(check: () => boolean, reason: string, timeout = 30_000): Pr
   }
 }
 
-async function startChild(t: TestContext, prompt: string, judge = "off") {
+async function startChild(
+  t: TestContext,
+  prompt: string,
+  options: { judge?: string; holdBash?: boolean } = {},
+) {
   const root = fs.realpathSync(fs.mkdtempSync("/tmp/ovr-runner-"));
   // The run works in a linked worktree. The main checkout of the same repository stays on
   // the base branch, where the provider fixture commits as another session would.
@@ -113,7 +129,7 @@ async function startChild(t: TestContext, prompt: string, judge = "off") {
       verification: ["echo ok"],
       baseBranch: "main",
     },
-    overseer: { enabled: true, judge },
+    overseer: { enabled: true, judge: options.judge ?? "off" },
     createdAt: Date.now(),
   };
   write(path.join(dir, "launch.json"), launch, true);
@@ -142,12 +158,14 @@ async function startChild(t: TestContext, prompt: string, judge = "off") {
   });
 
   const judgeInput = path.join(root, "judge-input.json");
+  const toolGate = path.join(root, "tool-gate");
   const savedEnv = { ...process.env };
   Object.assign(process.env, {
     PI_OFFLINE: "1",
     OVERSEER_TEST_REPO: work,
     OVERSEER_TEST_SIBLING: checkout,
     OVERSEER_TEST_JUDGE_INPUT: judgeInput,
+    ...(options.holdBash === true ? { OVERSEER_TEST_TOOL_GATE: toolGate } : {}),
   });
   try {
     await ensureActor(base, launch);
@@ -161,16 +179,16 @@ async function startChild(t: TestContext, prompt: string, judge = "off") {
   }
 
   enqueue(base, launch, { action: "run" });
-  return { base, dir, id, judgeInput, launch, owner, sdk, sessionFile, work };
+  return { base, dir, judgeInput, launch, owner, sdk, sessionFile, toolGate, work };
 }
 
 nodeTest(
-  "real Actor in a linked worktree reports only its own changes, and a pre-settle steer skips the redundant overseer-sentinel turn",
+  "real Actor sees the pre-settle correction in its next request and the classifier sees the same guidance",
   async (t) => {
-    const { base, dir, id, judgeInput, launch, owner, sdk, sessionFile, work } = await startChild(
+    const { base, dir, judgeInput, launch, owner, sdk, sessionFile, work } = await startChild(
       t,
       "Implement feature in src/allowed.ts",
-      "overseer-choice-fixture/choice-only",
+      { judge: "overseer-choice-fixture/choice-only" },
     );
 
     const escPath = path.join(dir, "escalation.json");
@@ -180,24 +198,9 @@ nodeTest(
     assert.equal(esc.kind, "scope_violation");
     assert.deepEqual(esc.changedFiles, ["README.md"]);
     t.after(() => release(owner, `escalation:${esc.id}`));
-    // An approval receipt for this paused, live child is two lines: what was recorded and what
-    // follows. A running child that was not paused must be reviewed again after it ends.
-    const review = { runId: id, verdict: "approved" as const, summary: "ok", at: 1767323045000 };
-    const recorded = `Overseer review recorded: run ${id} (overseer-steer-test) approved at 2026-01-02T03:04:05Z.`;
-    assert.equal(
-      renderReceipt(base, launch, undefined, { receipt: "review", review, released: true })
-        .content[0]?.text,
-      `${recorded}\nThe paused child continues. Its next notice arrives when it pauses again or ends.`,
-    );
-    assert.equal(
-      renderReceipt(base, launch, undefined, { receipt: "review", review, released: false })
-        .content[0]?.text,
-      `${recorded}\nThe run is still running and was not paused: review it again after it ends.`,
-    );
 
     const guidance = "REVERT_README and replace x with the greeting in src/allowed.ts.";
     enqueue(base, launch, { action: "steer", prompt: guidance });
-    resolveActiveEscalation(base, launch, "steered");
 
     await until(() => {
       const active = read(escPath, escalationSchema);
@@ -206,6 +209,19 @@ nodeTest(
     const paused = read(escPath, escalationSchema);
     assert.ok(paused);
     t.after(() => release(owner, `escalation:${paused.id}`));
+    const journal = sdk.SessionManager.open(sessionFile).getBranch();
+    const correction = journal.filter(
+      (entry) => entry.type === "custom_message" && entry.customType === "overseer-correction",
+    );
+    assert.equal(correction.length, 1);
+    assert.ok(correction[0]?.type === "custom_message");
+    assert.equal(correction[0].content, guidance);
+    const assistant = journal.flatMap((entry) =>
+      entry.type === "message" && entry.message.role === "assistant"
+        ? entry.message.content.flatMap((block) => (block.type === "text" ? [block.text] : []))
+        : [],
+    );
+    assert.deepEqual(assistant, ["DRIFTED", "REVERTED"], "no uncorrected request before the judge");
     const input: unknown = JSON.parse(fs.readFileSync(judgeInput, "utf8"));
     assert.partialDeepStrictEqual(input, {
       state: {
@@ -239,13 +255,10 @@ nodeTest(
       "other session\n",
     );
 
-    const journal = fs.readFileSync(sessionFile, "utf8");
-    assert.match(journal, /REVERT_README/u);
-    assert.match(journal, /REVERTED/u);
     assert.equal(
-      journal.includes("overseer-sentinel"),
+      fs.readFileSync(sessionFile, "utf8").includes("overseer-sentinel"),
       false,
-      "Actor-flushed steer must skip redundant overseer-sentinel custom message",
+      "a correction needs no generic resume reminder",
     );
   },
 );
@@ -302,3 +315,220 @@ nodeTest(
     assert.equal(read(resultPath, resultSchema)?.status, "completed");
   },
 );
+
+for (const scenario of [
+  "correction at turn_end",
+  "approval at turn_end",
+  "stop at settle",
+] as const) {
+  nodeTest(`real Actor: ${scenario}`, async (t) => {
+    const earlier = "Keep x instead of replacing it. Only update its value.";
+    const correction = "REVERT_README and replace x with the greeting in src/allowed.ts.";
+    const { base, dir, judgeInput, launch, sdk, sessionFile, toolGate, work } = await startChild(
+      t,
+      "Implement feature in src/allowed.ts",
+      {
+        holdBash: scenario !== "stop at settle",
+        ...(scenario === "correction at turn_end"
+          ? { judge: "overseer-choice-fixture/choice-only" }
+          : {}),
+      },
+    );
+    if (scenario === "correction at turn_end") {
+      await until(() => fs.existsSync(`${toolGate}.ready`), "bash result at the first turn");
+      const guidance = enqueue(base, launch, { action: "steer", prompt: earlier });
+      const admission = path.join(conversation(base, launch), "admissions", `${guidance}.json`);
+      await until(
+        () => read(admission, admissionSchema)?.state === "accepted",
+        "earlier guidance accepted by the active actor",
+      );
+    }
+    if (scenario !== "stop at settle") {
+      fs.writeFileSync(toolGate, "");
+    }
+    const journal = () => fs.readFileSync(sessionFile, "utf8");
+    const escPath = path.join(dir, "escalation.json");
+    await until(
+      () => fs.existsSync(escPath) || journal().includes("UNSTEERED"),
+      "escalation.json for the drifted run",
+    );
+    assert.equal(
+      journal().includes("UNSTEERED"),
+      false,
+      "ordinary guidance must not release a pause",
+    );
+    const esc = read(escPath, escalationSchema);
+    assert.equal(esc?.kind, "scope_violation");
+    assert.deepEqual(esc.changedFiles, ["README.md"]);
+
+    const resultPath = path.join(dir, "result.json");
+    switch (scenario) {
+      case "stop at settle":
+        stopRun(base, launch, undefined, (error) => assert.fail(error));
+        await until(() => fs.existsSync(resultPath), "paused stop saves the native result");
+        assert.equal(read(resultPath, resultSchema)?.status, "stopped");
+        assert.match(journal(), /DRIFTED/u);
+        assert.doesNotMatch(journal(), /REVERTED|UNSTEERED/u, "stop does not start a request");
+        assert.equal(fs.existsSync(escPath), false, "stopping removes the live pause");
+        break;
+      case "approval at turn_end": {
+        const { review, released } = prepareOverseerReviewAction(base, launch, {
+          action: "review",
+          verdict: "approved",
+          summary: "REVERT_README",
+        });
+        assert.equal(released, true);
+        const receipt = renderReceipt(base, launch, undefined, {
+          receipt: "review",
+          review,
+          released,
+        });
+        assert.match(receipt.content[0]?.text ?? "", /not sent to the child.*continue/u);
+        await until(() => fs.existsSync(resultPath), "approval resumes the native run");
+        const result = read(resultPath, resultSchema);
+        assert.equal(result?.status, "completed");
+        assert.deepEqual(result.changedFiles, ["README.md"]);
+        assert.match(journal(), /UNSTEERED/u, "a model request ran after approval");
+        assert.doesNotMatch(journal(), /REVERT_README/u, "the summary never enters child context");
+        break;
+      }
+      case "correction at turn_end": {
+        enqueue(base, launch, { action: "steer", prompt: correction });
+        await until(
+          () => /REVERTED|UNSTEERED/u.test(journal()),
+          "first model response after the pause",
+        );
+        assert.equal(
+          journal().includes("UNSTEERED"),
+          false,
+          "the next request sees the correction",
+        );
+        await until(() => {
+          const next = read(escPath, escalationSchema);
+          return next !== undefined && next.id !== esc.id;
+        }, "subsequent classifier review published");
+        const classifier = record(record(JSON.parse(fs.readFileSync(judgeInput, "utf8"))).state);
+        const model: unknown = JSON.parse(fs.readFileSync(`${judgeInput}.model`, "utf8"));
+        const messages = sdk.SessionManager.open(sessionFile)
+          .getBranch()
+          .flatMap((entry) => {
+            if (entry.type === "custom_message" && entry.customType === "overseer-correction") {
+              return [entry.content];
+            }
+            if (entry.type === "message" && entry.message.role === "user") {
+              const { content } = entry.message;
+              return typeof content === "string"
+                ? [content]
+                : content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+            }
+            return [];
+          })
+          .filter((text) => text === earlier || text === correction);
+        assert.deepEqual(
+          {
+            model,
+            journal: messages,
+            classifier: classifier.taskGuidance,
+            latest: read(escPath, escalationSchema)?.classifierReview?.instruction,
+            workerEdit: fs.readFileSync(path.join(work, "src", "allowed.ts"), "utf8"),
+          },
+          {
+            model: [earlier, correction],
+            journal: [earlier, correction],
+            classifier: [earlier, correction],
+            latest: correction,
+            workerEdit: "export const greeting = 'hi';\n",
+          },
+        );
+        resolveActiveEscalation(base, launch, "approved");
+        await until(() => fs.existsSync(resultPath), "result.json written after steer");
+        const result = read(resultPath, resultSchema);
+        assert.equal(result?.status, "completed");
+        assert.deepEqual(result.changedFiles, ["src/allowed.ts"]);
+        assert.equal(journal().match(/REVERT_README/gu)?.length, 1, "published once");
+        break;
+      }
+    }
+  });
+}
+
+nodeTest("real Actor keeps pause approval and delivers guidance submitted together", async (t) => {
+  const { base, dir, launch, sdk, sessionFile, toolGate, work } = await startChild(
+    t,
+    "Implement feature in src/allowed.ts",
+    { holdBash: true },
+  );
+  const earlier = "Include the check output in your report.";
+  const correction = "Report which paths were reviewed. Leave the diff unchanged.";
+  const admissions = path.join(conversation(base, launch), "admissions");
+  await until(() => fs.existsSync(`${toolGate}.ready`), "first bash result");
+  const first = enqueue(base, launch, { action: "steer", prompt: earlier });
+  await until(
+    () => read(path.join(admissions, `${first}.json`), admissionSchema)?.state === "accepted",
+    "ordinary guidance admitted before the pause",
+  );
+  fs.writeFileSync(toolGate, "");
+
+  const escPath = path.join(dir, "escalation.json");
+  await until(() => fs.existsSync(escPath), "scope pause");
+  const escalation = read(escPath, escalationSchema);
+  assert.equal(escalation?.kind, "scope_violation");
+  const actor = read(path.join(dir, "actor.lock", "process.json"), processSchema);
+  assert.ok(actor !== undefined);
+  assert.equal(signalProcess(actor, "SIGSTOP"), true);
+  let second: string;
+  try {
+    await until(
+      () =>
+        execFileSync("ps", ["-o", "stat=", "-p", String(actor.pid)], { encoding: "utf8" })
+          .trim()
+          .startsWith("T"),
+      "actor stopped at the open pause",
+    );
+    second = enqueue(base, launch, { action: "steer", prompt: correction });
+    const approval = prepareOverseerReviewAction(base, launch, {
+      action: "review",
+      verdict: "approved",
+      summary: "I checked the README change.",
+    });
+    assert.equal(approval.released, true);
+    const resolution = read(
+      path.join(dir, "escalation-resolution.json"),
+      escalationResolutionSchema,
+    );
+    assert.equal(resolution?.escalationId, escalation.id);
+    assert.equal(resolution.diffDigest, escalation.diffDigest);
+  } finally {
+    assert.equal(signalProcess(actor, "SIGCONT"), true);
+  }
+
+  const resultPath = path.join(dir, "result.json");
+  await until(() => {
+    const next = read(escPath, escalationSchema);
+    return fs.existsSync(resultPath) || (next !== undefined && next.id !== escalation.id);
+  }, "native completion or a second review");
+  assert.equal(read(path.join(admissions, `${second}.json`), admissionSchema)?.state, "accepted");
+  assert.equal(
+    read(resultPath, resultSchema)?.status,
+    "completed",
+    "approval prevents a repeat pause",
+  );
+  assert.equal(fs.readFileSync(path.join(work, "README.md"), "utf8"), "out-of-scope drift\n");
+  const branch = sdk.SessionManager.open(sessionFile).getBranch();
+  const delivered = branch.flatMap((entry) => {
+    if (entry.type === "custom_message") {
+      return [entry.content];
+    }
+    if (
+      entry.type === "message" &&
+      (entry.message.role === "user" || entry.message.role === "assistant")
+    ) {
+      const { content } = entry.message;
+      return typeof content === "string"
+        ? [content]
+        : content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+    }
+    return [];
+  });
+  assert.deepEqual(delivered, [launch.prompt, earlier, correction, "REPORTED"]);
+});
