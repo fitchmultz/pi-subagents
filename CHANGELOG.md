@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.50 - 2026-11-18
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(cards,schemas,ci): per-card click toggle, strict intercom schema, and cached fork CI (#467) ([6a88504](https://github.com/fitchmultz/pi-subagents/commit/6a8850478107b78c89397c50d168e6bff8f58a10))
+
+### What's Changed
+
+- fix(cards,schemas,ci): per-card click toggle, strict intercom schema, and cached fork CI by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/467
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.49...v0.52.50
+
 ## 0.52.49 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->
