@@ -189,6 +189,9 @@ function escalationNotice(launch: Launch, escalation: Escalation): Completion {
       content: [
         `[Overseer escalation #${escalation.strikes} - ${escalationKindLabel(escalation)}] Run ${label} paused in ${launch.cwd}.`,
         ...escalationEvidenceLines(escalation),
+        escalation.classifierReview === undefined
+          ? ""
+          : `${escalation.classifierReview.source === "guidance" ? "Latest task-owner guidance" : "Task prompt"} (for context, not a cited rule):\n${escalation.classifierReview.instruction}`,
         ...changeLines(escalation),
         steers === 0 ? "" : `Earlier pauses answered with steering: ${steers}.`,
         'Steer (`agent_runs` `action="continue"` or `action="review"`, `verdict="changes_requested"`, `summary="..."`), approve (`action="review"`, `verdict="approved"`, `summary="..."`), or `action="stop"`.',

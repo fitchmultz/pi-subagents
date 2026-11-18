@@ -31,6 +31,7 @@ import {
   recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
+import { checkpointGuidance } from "./overseer-guidance.ts";
 import { conversation, read, runDirectory, write } from "./storage.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 
@@ -180,6 +181,8 @@ function shouldRunJudgeCheckpoint(
 export interface SentinelOptions {
   readonly base: string;
   readonly activeLaunch: () => Launch;
+  /** Entries that predate this run, including any inherited fork conversation. */
+  readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
   readonly flushPendingCommands?: () => boolean;
 }
@@ -207,6 +210,7 @@ export function resolveActiveEscalation(
 async function askJudge(
   launch: Launch,
   ctx: ExtensionContext,
+  baseline: ReadonlySet<string> | undefined,
   work: { checkpoint: Work; acceptedFiles: readonly string[]; failed: Set<string> },
 ): Promise<Violation | undefined> {
   if (launch.contract === undefined) {
@@ -216,6 +220,8 @@ async function askJudge(
     modelRegistry: ctx.modelRegistry,
     judgeSpec: launch.overseer?.judge,
     prompt: launch.prompt,
+    continuation: launch.predecessor !== undefined,
+    guidance: checkpointGuidance(ctx.sessionManager, launch, baseline),
     contract: launch.contract,
     changedFiles: work.checkpoint.changes.files,
     acceptedFiles: work.acceptedFiles,
@@ -451,8 +457,9 @@ class SentinelRunner {
     const { signal } = ctx;
     let verdict: Violation | undefined;
     try {
+      const baseline = this.options.activeRunBaseline();
       const failed = current.failedJudges;
-      verdict = await askJudge(launch, ctx, { checkpoint, acceptedFiles, failed });
+      verdict = await askJudge(launch, ctx, baseline, { checkpoint, acceptedFiles, failed });
     } catch (error) {
       if (signal?.aborted === true) {
         // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.

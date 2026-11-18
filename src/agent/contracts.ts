@@ -39,6 +39,13 @@ export const escalationSchema = Type.Object({
   strikes: Type.Integer({ minimum: 1 }),
   kind: escalationKindSchema,
   summary: Type.String(),
+  /** A choice-only judge asked for review. `kind` is its category, not a confirmed finding. */
+  classifierReview: Type.Optional(
+    Type.Object({
+      instruction: Type.String(),
+      source: Type.Union([Type.Literal("prompt"), Type.Literal("guidance")]),
+    }),
+  ),
   changedFiles: Type.Array(Type.String()),
   diffExcerpt: Type.String(),
   diffDigest: Type.String(),

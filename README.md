@@ -46,8 +46,8 @@ agent_runs({ action: "stop", id: "<run-id>" });
 
 ## Overseer mode (opt-in)
 
-Toggle `/overseer` (or pass `--overseer`) to add contract scoping, mid-run drift
-supervision, and completion diff review to `delegate` (`worker` defaults to `inherit`,
+Toggle `/overseer` (or pass `--overseer`) to add contract scoping, mid-run
+review, and completion diff review to `delegate` (`worker` defaults to `inherit`,
 preserving normal `delegate` model/effort inheritance unless configured via `/overseer-worker`
 or `subagents.overseer` in settings). When off, `delegate` and `agent_runs` behave identically
 to default mode.
@@ -56,13 +56,13 @@ When enabled:
 
 - `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
   `requiredPrimitives`, `nonGoals`); omitted `model`/`thinking` inherit normally unless an overseer worker is configured.
-- Child sessions block out-of-scope edit tool calls before writing, run zero-cost Git/loop
-  tripwires on mutating turns, and sample an available decision classifier
-  (`google/gemini-decision-1`, Cloudflare Clef, or `openai/gpt-6-luna` first, then any other
-  available one) on debounced diff checkpoints—pausing the child and waking the parent with
-  `[agent-escalation]` on drift. A classifier that gives no verdict is not drift: the next
-  classifier is asked, the child is not paused, and a run that ends unjudged says so in its
-  completion notice.
+- Child sessions block out-of-scope edit tool calls before writing. Git checks can identify
+  out-of-scope changes, and repeated tool errors have their own review notice.
+- At diff checkpoints, an available decision classifier can pause the child and ask the parent
+  to review possible drift. The `[agent-escalation]` says `review needed`: the classifier's choice
+  is not a finding. In `auto` mode, a classifier that gives no verdict is skipped for the next
+  available one. If none gives a verdict, the child continues unless another check pauses it.
+  A run that ends with unjudged changes says so in its completion notice.
 - Completed mutating overseen runs require `agent_runs({ action: "review", ... })` before
   the parent session settles (`agent_before_settle`).
 

@@ -69,6 +69,9 @@ export function escalationSteers(escalation: Escalation): number {
 }
 
 export function escalationKindLabel(escalation: Escalation): string {
+  if (escalation.classifierReview !== undefined) {
+    return "review needed";
+  }
   return escalation.toolErrorTurns !== undefined ||
     (escalation.kind === "loop_violation" && LEGACY_TOOL_ERROR.test(escalation.summary))
     ? "tool errors"
