@@ -493,10 +493,12 @@ without ignored files and the harness's own files. The index and the working tre
 touched. The child's changes are the differences between two such trees, without the content
 the child did not write:
 
-- Commits that a ref named when the run launched are known, and so is the tip of
-  `origin/<baseBranch>` unless this repository pushed it there. After a merge, a fast-forward
-  or a checkout, a file whose content equals its content in a known commit under the current
-  history is not listed. A file that both the child and upstream changed stays listed.
+- Commits that a ref named when the run launched are known. The tip of `origin/<baseBranch>`
+  is also known, or the checked-out branch's configured remote-tracking tip if `baseBranch`
+  is omitted, when Git's reflog records a fetch or pull to that exact tip. Without a matching
+  entry, the remote tip doesn't exclude changes from review. After a merge, a fast-forward,
+  or a checkout, content that matches a known commit under the current history is not listed
+  as new work. An edit that differs from the known versions stays listed.
 - Other worktrees of the same repository are not read. A commit or an edit that another
   session makes there is never listed.
 - A commit that the child made and then moved away from, for example on a side branch, stays
@@ -504,6 +506,9 @@ the child did not write:
 - An accepted edit of the child that was never committed stays listed when a checkout of
   another branch drops it, although the file then equals the commit that was checked out. An
   uncommitted edit that was there at launch is not the child's, and dropping it lists nothing.
+  A soft reset leaves the working tree unchanged. It doesn't turn upstream content already
+  in that tree into accepted child work, so restoring that content from the new upstream HEAD
+  does not trigger a scope warning.
 - When the base branch moves while another worktree has it checked out, that is not a
   `branch_violation` of this run: Git lets only that worktree commit to it.
 
