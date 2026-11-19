@@ -14,6 +14,8 @@ const PATCH_HEADERS = ["*** Add File: ", "*** Update File: ", "*** Delete File: 
 const GLOB_META = /[*?[{]/u;
 const TRAVERSAL_SEGMENT = /(?:^|[/{,])\.\.(?:$|[/},])/u;
 const ABSOLUTE_SEGMENT = /(?:^|[{,])\//u;
+const LEADING_DOT_PATH = /(^|\/)\./gu;
+const LEADING_DOT_PATTERN = /(^|[/{,])\.(?!\.?(?:$|[/},]))/gu;
 
 function trimList(values: readonly string[] | undefined): string[] | undefined {
   const out = values?.map((v) => v.trim()).filter(Boolean);
@@ -166,30 +168,73 @@ function isGlobEntry(entry: string): boolean {
   return GLOB_META.test(entry);
 }
 
-function globStaticPrefix(entry: string): { prefix: string | undefined; suffix: string } {
-  const segments = entry.split("/");
-  const firstGlob = segments.findIndex((segment) => isGlobEntry(segment));
-  if (firstGlob <= 0) {
-    return { prefix: undefined, suffix: entry };
+function matchesGlobWithDotfiles(posix: string, pattern: string): boolean {
+  if (path.posix.matchesGlob(posix, pattern)) {
+    return true;
+  }
+  // Node's matchesGlob follows minimatch dot:false; map leading dots to SOH (\u0001) so wildcards
+  // match dotfiles just like literal prefixes without turning `a*` into a match for `.a`.
+  return path.posix.matchesGlob(
+    posix.replace(LEADING_DOT_PATH, "$1\u0001"),
+    pattern.replace(LEADING_DOT_PATTERN, "$1\u0001"),
+  );
+}
+
+function existsOnDisk(candidate: string, requireDir: boolean): boolean {
+  try {
+    const lstat = fs.lstatSync(candidate, { throwIfNoEntry: false });
+    if (lstat === undefined) {
+      return false;
+    }
+    return !requireDir || fs.statSync(candidate, { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Splits an entry into a literal leading prefix and a remaining glob suffix.
+ * Segments with glob metacharacters (such as `[id]` dynamic routes) stay literal when they
+ * literally exist on disk inside `realCwd`, preventing accidental glob widening or broken `[id]/**`.
+ */
+function splitScopePrefix(
+  realCwd: string,
+  entry: string,
+): { prefix: string | undefined; suffix: string } {
+  const segments = entry.replace(/\/+$/u, "").split("/");
+  let consumed = 0;
+  let current = realCwd;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment === undefined) {
+      break;
+    }
+    const candidate = path.join(current, segment);
+    if (isGlobEntry(segment)) {
+      if (!existsOnDisk(candidate, i < segments.length - 1)) {
+        break;
+      }
+    }
+    consumed = i + 1;
+    current = candidate;
+  }
+  if (consumed === 0) {
+    return { prefix: undefined, suffix: segments.join("/") };
+  }
+  if (consumed === segments.length) {
+    return { prefix: segments.join("/"), suffix: "" };
   }
   return {
-    prefix: segments.slice(0, firstGlob).join("/"),
-    suffix: segments.slice(firstGlob).join("/"),
+    prefix: segments.slice(0, consumed).join("/"),
+    suffix: segments.slice(consumed).join("/"),
   };
 }
 
-function canonicalGlobEntry(realCwd: string, entry: string): string | undefined {
-  const trimmed = entry.replace(/\/+$/u, "");
-  const { prefix, suffix } = globStaticPrefix(trimmed);
-  if (prefix === undefined) {
-    return trimmed;
-  }
-  const canonicalPrefix = canonicalScopeEntry(realCwd, prefix);
-  return canonicalPrefix === undefined ? undefined : `${canonicalPrefix}/${suffix}`;
-}
-
-function validateGlobScopeEntry(realCwd: string, entry: string, subject: string): void {
-  const { prefix } = globStaticPrefix(entry);
+function validateGlobScopeEntry(
+  realCwd: string,
+  prefix: string | undefined,
+  subject: string,
+): void {
   if (prefix === undefined) {
     return;
   }
@@ -219,11 +264,16 @@ function validateLiteralScopeEntry(realCwd: string, entry: string, subject: stri
 }
 
 function matchesScopeEntry(realCwd: string, posix: string, entry: string): boolean {
-  if (isGlobEntry(entry)) {
-    const pattern = canonicalGlobEntry(realCwd, entry);
-    if (pattern !== undefined && path.posix.matchesGlob(posix, pattern)) {
-      return true;
+  const { prefix, suffix } = splitScopePrefix(realCwd, entry);
+  if (suffix !== "") {
+    if (prefix === undefined) {
+      return matchesGlobWithDotfiles(posix, suffix);
     }
+    const canonicalPrefix = canonicalScopeEntry(realCwd, prefix);
+    if (canonicalPrefix !== undefined && posix.startsWith(`${canonicalPrefix}/`)) {
+      return matchesGlobWithDotfiles(posix.slice(canonicalPrefix.length + 1), suffix);
+    }
+    return false;
   }
   const ce = canonicalScopeEntry(realCwd, entry);
   return ce !== undefined && (posix === ce || posix.startsWith(`${ce}/`));
@@ -236,8 +286,9 @@ export function validateDelegationScope(cwd: string, scope: readonly string[]): 
   const realCwd = fs.realpathSync.native(cwd);
   for (const entry of scope) {
     const subject = `Delegation contract scope entry ${JSON.stringify(entry)} in cwd ${JSON.stringify(cwd)}`;
-    if (isGlobEntry(entry)) {
-      validateGlobScopeEntry(realCwd, entry, subject);
+    const { prefix, suffix } = splitScopePrefix(realCwd, entry);
+    if (suffix !== "") {
+      validateGlobScopeEntry(realCwd, prefix, subject);
     } else {
       validateLiteralScopeEntry(realCwd, entry, subject);
     }

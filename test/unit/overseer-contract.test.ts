@@ -573,7 +573,40 @@ nodeTest(
     assert.equal(isPathAllowedByScope(cwd, "src/b.ts", ["src/[a-z].ts"]), true);
     assert.equal(isPathAllowedByScope(cwd, "src/1.ts", ["src/[a-z].ts"]), false);
     // Literal dynamic-route filenames with brackets still work.
+    fs.writeFileSync(path.join(cwd, "src", "[id].ts"), "");
     assert.equal(isPathAllowedByScope(cwd, "src/[id].ts", ["src/[id].ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/i.ts", ["src/[id].ts"]), false);
+
+    // Wildcard globs match dotfiles just like literal prefixes without widening non-dot prefixes.
+    assert.equal(isPathAllowedByScope(cwd, "src/.env.example", ["src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/.gitignore", ["src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/sub/.hidden/b.ts", ["src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, ".github/workflows/ci.yml", ["**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, ".github/workflows/ci.yml", [".github/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/.a.ts", ["src/a*"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/.env.example", ["src/.env*"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/env.example", ["src/.env*"]), false);
+
+    // Existing dynamic-route directories/files with brackets stay literal (no glob widening, `[id]/**` works).
+    fs.mkdirSync(path.join(cwd, "src", "app", "[id]"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "src", "app", "[...slug]"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "src", "app", "[id]", "page.tsx"), "");
+    fs.writeFileSync(path.join(cwd, "src", "app", "[...slug]", "page.tsx"), "");
+    assert.doesNotThrow(() => validateDelegationScope(cwd, ["src/app/[id]/page.tsx"]));
+    assert.doesNotThrow(() => validateDelegationScope(cwd, ["src/app/[id]/**"]));
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/app/[id]/page.tsx", ["src/app/[id]/page.tsx"]),
+      true,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "src/app/i/page.tsx", ["src/app/[id]/page.tsx"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/app/d/page.tsx", ["src/app/[id]/page.tsx"]), false);
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/app/s/page.tsx", ["src/app/[...slug]/page.tsx"]),
+      false,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "src/app/[id]/page.tsx", ["src/app/[id]/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/app/[id]/nested/b.tsx", ["src/app/[id]/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/app/i/page.tsx", ["src/app/[id]/**"]), false);
 
     // In-cwd symlink prefix works; symlink escapes outside cwd stay blocked under globs.
     assert.equal(isPathAllowedByScope(cwd, "link-src/agent/index.ts", ["link-src/**"]), true);
