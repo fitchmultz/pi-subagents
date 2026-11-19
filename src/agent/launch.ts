@@ -6,6 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { DelegationContract, Launch, OverseerLaunch } from "./contracts.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
+import { validateDelegationScope } from "./overseer-scope.ts";
 import { runDirectory, write } from "./storage.ts";
 
 export interface LaunchContext {
@@ -172,6 +173,9 @@ export async function prepareLaunch(options: {
   const cwd = path.resolve(options.executionCwd, input.cwd ?? ".");
   if (!fs.statSync(cwd).isDirectory()) {
     throw new Error("Delegation cwd is not a directory.");
+  }
+  if (options.contract !== undefined) {
+    validateDelegationScope(cwd, options.contract.scope);
   }
   const selection = selectedModel(
     {

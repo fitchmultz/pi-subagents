@@ -154,6 +154,30 @@ function canonicalScopeEntry(resolvedCwd: string, entry: string): string | undef
   return rel.split(path.sep).join("/");
 }
 
+export function validateDelegationScope(cwd: string, scope: readonly string[]): void {
+  if (scope.length === 0 || scope.includes("*")) {
+    return;
+  }
+  const realCwd = fs.realpathSync.native(cwd);
+  for (const entry of scope) {
+    const subject = `Delegation contract scope entry ${JSON.stringify(entry)} in cwd ${JSON.stringify(cwd)}`;
+    const separator = entry.indexOf("/");
+    if (separator !== -1) {
+      const root = entry.slice(0, separator);
+      if (
+        fs.statSync(path.join(realCwd, root), { throwIfNoEntry: false })?.isDirectory() !== true
+      ) {
+        throw new Error(
+          `${subject} needs an existing directory ${JSON.stringify(root)}; create it first if intended, or correct cwd or contract.scope.`,
+        );
+      }
+    }
+    if (canonicalScopeEntry(realCwd, entry) === undefined) {
+      throw new Error(`${subject} does not resolve inside cwd; correct cwd or contract.scope.`);
+    }
+  }
+}
+
 export function isPathAllowedByScope(
   cwd: string,
   candidatePath: string,
