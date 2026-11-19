@@ -2,9 +2,25 @@
 
 ## [Unreleased]
 
+## 0.52.56 - 2026-11-19
+
+<!-- npm-release:unreleased:start -->
+
 - `agent_runs` `continue` and `review` (`verdict: "changes_requested"`) accept an optional partial or full `contract` amendment to update `scope`, `verification`, `baseBranch`, `requiredPrimitives`, or `nonGoals` in place across live, paused, and successor runs, with durable amendment history in `agent_runs inspect` (OVR-207).
 - Contracted child runs receive a private per-run scratch directory outside the repo (`PI_SUBAGENT_SCRATCH_DIR`) where edit tools are allowed for temporary files and scripts even under `scope: []`, shared across continuations and surfaced in `agent_runs inspect` (OVR-209).
 - `delegate` `contract.scope` supports native POSIX glob patterns (`src/**`, `test/**/*.test.ts`, `{src,test}/**`, `*.ts`) alongside literal relative path prefixes, validating static leading directory prefixes at launch (OVR-206).
+
+<!-- npm-release:unreleased:end -->
+
+- feat: support native POSIX globs in contract.scope (OVR-206) (1/3) (#476) ([a44b186](https://github.com/fitchmultz/pi-subagents/commit/a44b18657e37d3157ff2c08a5e7ecbde9ccccfbf))
+
+### What's Changed
+
+- feat: support native POSIX globs in contract.scope (OVR-206) (1/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/476
+- feat: add per-run scratch directory outside repo for contracted children (OVR-209) (2/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/477
+- feat: allow amending delegation contracts on agent_runs continue (OVR-207) (3/3) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/478
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.55...v0.52.56
 
 ## 0.52.55 - 2026-11-19
 
