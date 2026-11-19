@@ -14,6 +14,7 @@ import type { ToolEvent } from "./observation-state.ts";
 import { backgroundCommands } from "./background-work.ts";
 import { checkToolCallScope, formatContractSection } from "./overseer-scope.ts";
 import type { OverseerSentinel } from "./overseer-sentinel.ts";
+import { ensureScratchDirectory } from "./storage.ts";
 import { recordAt, type UnknownRecord } from "../shared/unknown.ts";
 
 function rewriteLocalBash(
@@ -37,11 +38,8 @@ function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: strin
   const scratchDir =
     launch.contract === undefined
       ? undefined
-      : (launch.scratchDir ?? path.join(directory, "scratch"));
+      : ensureScratchDirectory(path.dirname(directory), launch);
   if (launch.contract !== undefined) {
-    if (scratchDir !== undefined) {
-      fs.mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
-    }
     const section = formatContractSection(launch.contract, { scratchDir });
     pi.on("before_agent_start", (event) => {
       const { sections } = event.systemPromptOptions;

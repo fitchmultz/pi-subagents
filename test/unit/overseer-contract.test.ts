@@ -618,7 +618,7 @@ nodeTest(
       false,
     );
     assert.equal(
-      checkToolCallScope(cwd, ["src/app/[slug]/page.tsx"], "write", {
+      checkToolCallScope({ cwd, scope: ["src/app/[slug]/page.tsx"] }, "write", {
         path: "src/app/[slug]/page.tsx",
       }),
       undefined,
