@@ -27,9 +27,13 @@ including prior tool results. A forked child still cannot delegate. Optional
 `cwd`, `model`, and `thinking` are explicit launch overrides; do not change global
 auth/model settings to implement an override. `thinking` accepts `off`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, or `max`. Omit it to inherit the parent's effort.
-When `/overseer` mode is active, always supply `contract`; omitted `model` and
-`thinking` follow normal `delegate` inheritance unless `/overseer-worker` (or
-`subagents.overseer.worker`) configures a default worker.
+When `/overseer` mode is active, always supply `contract`; `contract.scope`
+accepts relative literal path prefixes (`src`, `src/foo.ts`), POSIX globs
+(`src/**`, `test/**/*.test.ts`, `packages/*/src/**`, `{src,test}/**`, `*.ts`),
+`["*"]` for any path inside `cwd`, or `[]` for read-only work. Static leading
+directory prefixes must exist inside `cwd` at launch. Omitted `model` and
+`thinking` follow normal `delegate` inheritance unless `/overseer-worker`
+(or `subagents.overseer.worker`) configures a default worker.
 Pi clamps the child's effort to its model capabilities without changing the parent.
 `model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
 exports it; a literal model ID wins before suffix parsing. Without that host API,

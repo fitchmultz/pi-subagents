@@ -11,6 +11,9 @@ const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/gu;
 // POSIX _POSIX_SYMLOOP_MAX / Linux MAXSYMLINKS upper bound for symlink traversal.
 const MAX_SYMLINK_HOPS = 40;
 const PATCH_HEADERS = ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "];
+const GLOB_META = /[*?[{]/u;
+const TRAVERSAL_SEGMENT = /(?:^|[/{,])\.\.(?:$|[/},])/u;
+const ABSOLUTE_SEGMENT = /(?:^|[{,])\//u;
 
 function trimList(values: readonly string[] | undefined): string[] | undefined {
   const out = values?.map((v) => v.trim()).filter(Boolean);
@@ -23,13 +26,18 @@ function normalizeScopeEntry(raw: string): string {
     return "*";
   }
   const rel = s.replace(/^(?:\.\/)+/u, "").replace(/\/+$/u, "");
-  if (rel === "" || rel.startsWith("/")) {
+  if (rel === "" || ABSOLUTE_SEGMENT.test(rel)) {
     throw new Error(
-      "Contract scope entries must be relative paths inside the delegation cwd (or '*' / []).",
+      "Contract scope entries must be relative paths or globs inside the delegation cwd (or '*' / []).",
+    );
+  }
+  if (TRAVERSAL_SEGMENT.test(rel)) {
+    throw new Error(
+      "Contract scope entries must stay inside the delegation cwd without '..' traversal.",
     );
   }
   const norm = path.posix.normalize(rel);
-  if (norm === "." || norm === ".." || norm.startsWith("../") || norm.startsWith("/")) {
+  if (norm === "." || TRAVERSAL_SEGMENT.test(norm) || norm.startsWith("/")) {
     throw new Error(
       "Contract scope entries must stay inside the delegation cwd without '..' traversal.",
     );
@@ -154,6 +162,73 @@ function canonicalScopeEntry(resolvedCwd: string, entry: string): string | undef
   return rel.split(path.sep).join("/");
 }
 
+function isGlobEntry(entry: string): boolean {
+  return GLOB_META.test(entry);
+}
+
+function globStaticPrefix(entry: string): { prefix: string | undefined; suffix: string } {
+  const segments = entry.split("/");
+  const firstGlob = segments.findIndex((segment) => isGlobEntry(segment));
+  if (firstGlob <= 0) {
+    return { prefix: undefined, suffix: entry };
+  }
+  return {
+    prefix: segments.slice(0, firstGlob).join("/"),
+    suffix: segments.slice(firstGlob).join("/"),
+  };
+}
+
+function canonicalGlobEntry(realCwd: string, entry: string): string | undefined {
+  const trimmed = entry.replace(/\/+$/u, "");
+  const { prefix, suffix } = globStaticPrefix(trimmed);
+  if (prefix === undefined) {
+    return trimmed;
+  }
+  const canonicalPrefix = canonicalScopeEntry(realCwd, prefix);
+  return canonicalPrefix === undefined ? undefined : `${canonicalPrefix}/${suffix}`;
+}
+
+function validateGlobScopeEntry(realCwd: string, entry: string, subject: string): void {
+  const { prefix } = globStaticPrefix(entry);
+  if (prefix === undefined) {
+    return;
+  }
+  if (fs.statSync(path.join(realCwd, prefix), { throwIfNoEntry: false })?.isDirectory() !== true) {
+    throw new Error(
+      `${subject} needs an existing directory ${JSON.stringify(prefix)}; create it first if intended, or correct cwd or contract.scope.`,
+    );
+  }
+  if (canonicalScopeEntry(realCwd, prefix) === undefined) {
+    throw new Error(`${subject} does not resolve inside cwd; correct cwd or contract.scope.`);
+  }
+}
+
+function validateLiteralScopeEntry(realCwd: string, entry: string, subject: string): void {
+  const separator = entry.indexOf("/");
+  if (separator !== -1) {
+    const root = entry.slice(0, separator);
+    if (fs.statSync(path.join(realCwd, root), { throwIfNoEntry: false })?.isDirectory() !== true) {
+      throw new Error(
+        `${subject} needs an existing directory ${JSON.stringify(root)}; create it first if intended, or correct cwd or contract.scope.`,
+      );
+    }
+  }
+  if (canonicalScopeEntry(realCwd, entry) === undefined) {
+    throw new Error(`${subject} does not resolve inside cwd; correct cwd or contract.scope.`);
+  }
+}
+
+function matchesScopeEntry(realCwd: string, posix: string, entry: string): boolean {
+  if (isGlobEntry(entry)) {
+    const pattern = canonicalGlobEntry(realCwd, entry);
+    if (pattern !== undefined && path.posix.matchesGlob(posix, pattern)) {
+      return true;
+    }
+  }
+  const ce = canonicalScopeEntry(realCwd, entry);
+  return ce !== undefined && (posix === ce || posix.startsWith(`${ce}/`));
+}
+
 export function validateDelegationScope(cwd: string, scope: readonly string[]): void {
   if (scope.length === 0 || scope.includes("*")) {
     return;
@@ -161,19 +236,10 @@ export function validateDelegationScope(cwd: string, scope: readonly string[]): 
   const realCwd = fs.realpathSync.native(cwd);
   for (const entry of scope) {
     const subject = `Delegation contract scope entry ${JSON.stringify(entry)} in cwd ${JSON.stringify(cwd)}`;
-    const separator = entry.indexOf("/");
-    if (separator !== -1) {
-      const root = entry.slice(0, separator);
-      if (
-        fs.statSync(path.join(realCwd, root), { throwIfNoEntry: false })?.isDirectory() !== true
-      ) {
-        throw new Error(
-          `${subject} needs an existing directory ${JSON.stringify(root)}; create it first if intended, or correct cwd or contract.scope.`,
-        );
-      }
-    }
-    if (canonicalScopeEntry(realCwd, entry) === undefined) {
-      throw new Error(`${subject} does not resolve inside cwd; correct cwd or contract.scope.`);
+    if (isGlobEntry(entry)) {
+      validateGlobScopeEntry(realCwd, entry, subject);
+    } else {
+      validateLiteralScopeEntry(realCwd, entry, subject);
     }
   }
 }
@@ -205,10 +271,7 @@ export function isPathAllowedByScope(
     return false;
   }
   const posix = rel.split(path.sep).join("/");
-  return scope.some((entry) => {
-    const ce = canonicalScopeEntry(realCwd, entry);
-    return ce !== undefined && (posix === ce || posix.startsWith(`${ce}/`));
-  });
+  return scope.some((entry) => matchesScopeEntry(realCwd, posix, entry));
 }
 
 function patchTargetPaths(patchText: string): string[] {

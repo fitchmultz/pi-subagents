@@ -10,7 +10,7 @@ export const delegateContractSchema = Type.Object(
   {
     scope: Type.Array(Type.String({ minLength: 1 }), {
       description:
-        "Allowed relative edit-tool paths inside cwd, ['*'] for any edit path in cwd, or [] to disable edit tools (shell commands are not sandboxed).",
+        "Allowed relative edit-tool path prefixes or globs inside cwd (e.g. 'src', 'src/foo.ts', 'src/**', 'test/**/*.test.ts', '{src,test}/**', '*.ts'), ['*'] for any edit path in cwd, or [] to disable edit tools (shell commands are not sandboxed).",
     }),
     verification: Type.Optional(
       Type.Array(Type.String({ minLength: 1 }), {

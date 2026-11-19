@@ -22,6 +22,7 @@ import {
   formatContractSection,
   isPathAllowedByScope,
   normalizeDelegationContract,
+  validateDelegationScope,
 } from "../../src/agent/overseer-scope.ts";
 import { prepareLaunch } from "../../src/agent/launch.ts";
 import { read } from "../../src/agent/storage.ts";
@@ -411,5 +412,190 @@ nodeTest(
     });
     assert.equal(overridden.model, "gemini-4-hydrogen");
     assert.equal(overridden.thinking, "low");
+
+    // Invalid glob static prefix fails fast before creating a run directory.
+    const runsBefore = fs.readdirSync(base).sort();
+    await assert.rejects(
+      prepareLaunch({
+        input: { prompt: "Typo glob" },
+        context,
+        base,
+        owner: "parent-session",
+        agentDir: getPiAgentDir(),
+        thinking: "medium",
+        executionCwd: tempDir,
+        contract: normalizeDelegationContract({
+          scope: ["nonexistent/**"],
+          verification: ["npm test"],
+        }),
+        overseer: { enabled: true, judge: "auto" },
+      }),
+      /needs an existing directory "nonexistent"/u,
+    );
+    assert.deepEqual(fs.readdirSync(base).sort(), runsBefore);
+  },
+);
+
+nodeTest(
+  "contract.scope supports POSIX globs, validates static prefixes fail-fast, and blocks escapes",
+  (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-glob-scope-"));
+    t.after(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const cwd = path.join(root, "worktree");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(path.join(cwd, "src", "agent"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "test", "unit", "deep"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "packages", "api", "src"), { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(cwd, "src", "existing.ts"), "export const ok = true;\n");
+    fs.symlinkSync(outside, path.join(cwd, "src", "agent", "escaped"));
+    fs.symlinkSync(
+      path.join(outside, "missing.ts"),
+      path.join(cwd, "src", "agent", "dangling-escape.ts"),
+    );
+    fs.symlinkSync("src", path.join(cwd, "link-src"));
+
+    // Normalization handles POSIX globs, leading ./, trailing /, and backslashes.
+    const normalized = normalizeDelegationContract({
+      scope: [
+        "./src/**/",
+        "test\\**\\*.test.ts",
+        "packages/*/src/**",
+        "{src,test}/**",
+        "*.ts",
+        "src/agent/?.ts",
+      ],
+      verification: ["npm test"],
+    });
+    assert.deepEqual(normalized.scope, [
+      "src/**",
+      "test/**/*.test.ts",
+      "packages/*/src/**",
+      "{src,test}/**",
+      "*.ts",
+      "src/agent/?.ts",
+    ]);
+
+    // Traversal and absolute paths in globs (including brace expressions) fail fast.
+    for (const invalid of [
+      "../**",
+      "./../**",
+      "src/../**",
+      "src/agent/../../**",
+      "{src,../outside}/**",
+      "{../outside,src}/**",
+    ]) {
+      assert.throws(
+        () => normalizeDelegationContract({ scope: [invalid], verification: ["npm test"] }),
+        /without '\.\.' traversal/u,
+        `expected traversal rejection for ${invalid}`,
+      );
+    }
+    for (const invalid of ["", "   ", "./", "/etc/**", "{/etc,src}/**", "{src,/etc}/**"]) {
+      assert.throws(
+        () => normalizeDelegationContract({ scope: [invalid], verification: ["npm test"] }),
+        /relative paths or globs/u,
+        `expected relative-path rejection for ${JSON.stringify(invalid)}`,
+      );
+    }
+
+    // Valid globs pass launch-time static prefix validation.
+    validateDelegationScope(cwd, [
+      "src/**",
+      "test/**/*.test.ts",
+      "packages/*/src/**",
+      "{src,test}/**",
+      "*.ts",
+      "src/agent/?.ts",
+      "link-src/**",
+    ]);
+
+    // Nonexistent static prefixes, file prefixes, and escaping symlink prefixes fail fast.
+    assert.throws(
+      () => validateDelegationScope(cwd, ["nonexistent/**"]),
+      /needs an existing directory "nonexistent"/u,
+    );
+    assert.throws(
+      () => validateDelegationScope(cwd, ["src/nonexistent/**"]),
+      /needs an existing directory "src\/nonexistent"/u,
+    );
+    assert.throws(
+      () => validateDelegationScope(cwd, ["src/existing.ts/**"]),
+      /needs an existing directory "src\/existing\.ts"/u,
+    );
+    assert.throws(
+      () => validateDelegationScope(cwd, ["src/agent/escaped/**"]),
+      /does not resolve inside cwd/u,
+    );
+
+    // dir/** matches direct children and nested descendants, not sibling prefixes or other dirs.
+    assert.equal(isPathAllowedByScope(cwd, "src/file.ts", ["src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/sub/file.ts", ["src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/a/b/c.ts", ["src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src-extra/file.ts", ["src/**"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "README.md", ["src/**"]), false);
+
+    // test/**/*.test.ts matches root and nested test files, not non-test files.
+    assert.equal(isPathAllowedByScope(cwd, "test/root.test.ts", ["test/**/*.test.ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "test/unit/foo.test.ts", ["test/**/*.test.ts"]), true);
+    assert.equal(
+      isPathAllowedByScope(cwd, "test/unit/deep/bar.test.ts", ["test/**/*.test.ts"]),
+      true,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "test/unit/helper.ts", ["test/**/*.test.ts"]), false);
+
+    // packages/*/src/**, *.ts, {src,test}/**, ?, and character classes match as POSIX globs.
+    assert.equal(
+      isPathAllowedByScope(cwd, "packages/api/src/index.ts", ["packages/*/src/**"]),
+      true,
+    );
+    assert.equal(
+      isPathAllowedByScope(cwd, "packages/api/src/sub/index.ts", ["packages/*/src/**"]),
+      true,
+    );
+    assert.equal(
+      isPathAllowedByScope(cwd, "packages/api/test/index.ts", ["packages/*/src/**"]),
+      false,
+    );
+    assert.equal(
+      isPathAllowedByScope(cwd, "packages/a/b/src/index.ts", ["packages/*/src/**"]),
+      false,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "index.ts", ["*.ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/index.ts", ["*.ts"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/a.ts", ["{src,test}/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "test/unit/b.ts", ["{src,test}/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "docs/guide.md", ["{src,test}/**"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/a.ts", ["src/?.ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/ab.ts", ["src/?.ts"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/b.ts", ["src/[a-z].ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/1.ts", ["src/[a-z].ts"]), false);
+    // Literal dynamic-route filenames with brackets still work.
+    assert.equal(isPathAllowedByScope(cwd, "src/[id].ts", ["src/[id].ts"]), true);
+
+    // In-cwd symlink prefix works; symlink escapes outside cwd stay blocked under globs.
+    assert.equal(isPathAllowedByScope(cwd, "link-src/agent/index.ts", ["link-src/**"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/agent/escaped/secret.ts", ["src/**"]), false);
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/agent/dangling-escape.ts", ["src/**"], "write"),
+      false,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "../outside/secret.ts", ["**"]), false);
+    assert.equal(
+      checkToolCallScope(cwd, ["src/**", "test/**/*.test.ts"], "apply_patch", {
+        input:
+          "*** Begin Patch\n*** Update File: src/agent/overseer.ts\n*** Add File: test/unit/new.test.ts\n*** End Patch",
+      }),
+      undefined,
+    );
+    assert.match(
+      checkToolCallScope(cwd, ["src/**", "test/**/*.test.ts"], "apply_patch", {
+        input:
+          "*** Begin Patch\n*** Update File: src/agent/overseer.ts\n*** Add File: test/unit/helper.ts\n*** End Patch",
+      }) ?? "",
+      /blocks editing test\/unit\/helper\.ts/u,
+    );
   },
 );
