@@ -112,6 +112,7 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStor
     () => import("@earendil-works/pi-ai"),
   );
 const { IntercomClient } = await import("../../src/pi-intercom/broker/client.ts");
+const { RemoteDevices } = await import("../../src/pi-intercom/devices.ts");
 
 function launchBroker(
   runtime = process.env.PI_INTERCOM_RUNTIME_DIR,
@@ -4463,7 +4464,7 @@ nodeTest(
 );
 
 nodeTest(
-  "native ask of a busy main of another device steers at its next tool boundary and rejects overlapping remote sends",
+  "native ask of a busy main of another device steers while preserving legacy wire peer_busy and replace-key delivery",
   async (t) => {
     const devices = standInDevices(t);
     const release = gate(t);
@@ -4487,15 +4488,60 @@ nodeTest(
     const main = await makeSession(t, "home-asker", {
       config: { device: "home", otherDevices: ["far"] },
     });
+    const legacySender = new IntercomClient();
+    t.after(() => legacySender.disconnect());
+    await legacySender.connect({ name: "home-legacy", cwd: root, model: "legacy" }, "home-legacy");
+    const legacyRemote = new RemoteDevices(
+      { device: "home", otherDevices: ["far"], askTimeoutMs: 5000 },
+      false,
+    );
+    const farTarget = legacyRemote.address("far-busy@far");
+    assertDefined(farTarget);
     far.faux.setResponses([
       fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("intercom", { action: "reply", message: "Use blue." }), {
         stopReason: "toolUse",
       }),
       fauxAssistantMessage("Answered"),
+      fauxAssistantMessage("Read the note"),
     ]);
     const working = far.session.prompt("Work before the question");
     await waitFor(() => started, "held work on far");
+
+    // Legacy cross-device senders that omit `delivery` still get the `peer_busy` refusal on `far`.
+    await assert.rejects(
+      legacyRemote.ask(legacySender, farTarget, {
+        options: { text: "Blue or green?" },
+        onSent() {
+          assert.fail("refused legacy ask must not report acceptance");
+        },
+      }),
+      (error: unknown) => {
+        assert.equal(
+          text(property(error, "message")),
+          'Ask to "far-busy@far" was not sent: the peer is busy and not accepting blocking asks (peer_busy). Use send, or ask with delivery "steer" to reach it at its next tool boundary and wait.',
+        );
+        return true;
+      },
+    );
+    assert.equal(await noPendingAsk(far), true);
+
+    // Legacy cross-device senders that pass `delivery: "queue", queueMode: "replace", threadId`
+    // still coalesce queued notes on `far` across separate SSH invocations of the same sender.
+    const notes: string[] = [];
+    for (const textMessage of ["Old note", "New note"]) {
+      const receipt = await legacyRemote.send(legacySender, farTarget, {
+        options: {
+          text: textMessage,
+          delivery: "queue",
+          queueMode: "replace",
+          threadId: "colour",
+        },
+      });
+      assert.equal(receipt.accepted, true);
+      notes.push(receipt.id);
+    }
+    const [oldNote = "", newNote = ""] = notes;
 
     const asking = executeIntercom(main, {
       action: "ask",
@@ -4518,6 +4564,11 @@ nodeTest(
     release.resolve();
     assert.equal((await asking).content[0]?.text, "**Reply from far-busy@far:**\nUse blue.");
     await working;
+    await waitFor(
+      () => far.session.isIdle && far.visible(newNote).length === 1,
+      "the replacement note on far",
+    );
+    assert.equal(far.visible(oldNote).length, 0);
     assert.deepEqual([...main.errors, ...far.errors], []);
   },
 );
