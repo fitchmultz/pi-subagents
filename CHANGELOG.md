@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `delegate` rejects mismatched contract paths before starting a child and names the working directory and path to fix (PSA-202).
+
 ## 0.52.54 - 2026-11-18
 
 <!-- npm-release:unreleased:start -->

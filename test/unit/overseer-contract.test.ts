@@ -353,6 +353,7 @@ nodeTest(
       verification: ["npm test"],
       requiredPrimitives: ["DatabaseSync.createTagStore()"],
     });
+    fs.mkdirSync(path.join(tempDir, "src"));
     const base = path.join(tempDir, "runs");
     fs.mkdirSync(base, { recursive: true, mode: 0o700 });
     // Default worker (`inherit`) keeps normal delegate model and thinking inheritance.

@@ -247,6 +247,7 @@ for (const phase of [
   "cwd-invalid-wrong-owner",
   "cwd-invalid-wrong-directory",
   "cwd-invalid-error",
+  "delegate-contract-scope",
   "launch-pre-spawn",
   "launch-preparation-failure",
   "launch-preparation-fork-failure",
