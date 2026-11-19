@@ -15,7 +15,7 @@ import {
   type Waiting,
 } from "./contracts.ts";
 import type { RunsInput } from "./tool-schemas.ts";
-import { conversation, read, runDirectory } from "./storage.ts";
+import { conversation, read, runDirectory, scratchDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { escalationEvidenceLines } from "./overseer-evidence.ts";
 import { needsOverseerReview, readReview } from "./overseer-review.ts";
@@ -213,7 +213,7 @@ function metadata(
     predecessor: launch.predecessor,
     name: launch.name,
     cwd: launch.cwd,
-    ...(launch.scratchDir !== undefined ? { scratchDir: launch.scratchDir } : {}),
+    ...(launch.contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
     model: `${launch.provider}/${launch.model}`,
     thinking: launch.thinking,
     context: launch.context,

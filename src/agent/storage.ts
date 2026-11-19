@@ -87,7 +87,15 @@ export function launchAt(base: string, id: string, owner: string): Launch {
 /** Claims the single successor of a saved run; undefined when another caller already has. */
 export function successor(base: string, launch: Launch, prompt: string): Launch | undefined {
   const id = randomUUID();
-  const next: Launch = { ...launch, id, predecessor: launch.id, prompt, createdAt: Date.now() };
+  const { scratchDir: _persistedScratchDir, ...rest } = launch;
+  const next: Launch = {
+    ...rest,
+    id,
+    predecessor: launch.id,
+    prompt,
+    ...(launch.contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
+    createdAt: Date.now(),
+  };
   fs.mkdirSync(runDirectory(base, id), { mode: 0o700 });
   write(path.join(runDirectory(base, id), "launch.json"), next, true);
   try {
@@ -119,16 +127,10 @@ export function latest(base: string, initial: Launch): Launch {
 export function conversation(base: string, launch: Launch): string {
   return runDirectory(base, launch.rootId);
 }
-export function scratchDirectory(
-  base: string,
-  launch: Pick<Launch, "rootId" | "scratchDir">,
-): string {
-  return launch.scratchDir ?? path.join(runDirectory(base, launch.rootId), "scratch");
+export function scratchDirectory(base: string, launch: Pick<Launch, "rootId">): string {
+  return path.join(runDirectory(base, launch.rootId), "scratch");
 }
-export function ensureScratchDirectory(
-  base: string,
-  launch: Pick<Launch, "rootId" | "scratchDir">,
-): string {
+export function ensureScratchDirectory(base: string, launch: Pick<Launch, "rootId">): string {
   const dir = scratchDirectory(base, launch);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;

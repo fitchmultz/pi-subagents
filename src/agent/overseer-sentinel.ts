@@ -129,12 +129,7 @@ async function askJudge(
 }
 
 export function harnessExcludePaths(base: string, launch: Launch): string[] {
-  return [
-    base,
-    launch.agentDir,
-    path.dirname(launch.sessionFile),
-    ...(launch.scratchDir !== undefined ? [launch.scratchDir] : []),
-  ];
+  return [base, launch.agentDir, path.dirname(launch.sessionFile)];
 }
 
 export class OverseerSentinel {

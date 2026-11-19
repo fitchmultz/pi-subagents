@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import agents from "../../src/agent/index.ts";
-import { launchSchema } from "../../src/agent/contracts.ts";
+import { launchSchema, type Launch } from "../../src/agent/contracts.ts";
 import {
   DEFAULT_OVERSEER_WORKER,
   OVERSEER_ENTRY_TYPE,
@@ -25,7 +25,8 @@ import {
   validateDelegationScope,
 } from "../../src/agent/overseer-scope.ts";
 import { prepareLaunch } from "../../src/agent/launch.ts";
-import { read, successor } from "../../src/agent/storage.ts";
+import { harnessExcludePaths } from "../../src/agent/overseer-sentinel.ts";
+import { read, scratchDirectory, successor } from "../../src/agent/storage.ts";
 import { renderInspection } from "../../src/agent/view.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
@@ -818,5 +819,38 @@ nodeTest(
     const readOnlySection = formatContractSection({ scope: [] }, { scratchDir });
     assert.match(readOnlySection, /edit tools allowed only in the scratch directory below/u);
     assert.ok(readOnlySection.includes(scratchDir));
+
+    // A tampered launch.scratchDir pointing into the repo is ignored by scratchDirectory,
+    // harnessExcludePaths, and successor (always anchored under <base>/<rootId>/scratch).
+    const runsBase = path.join(root, "runs");
+    const poisonedLaunch: Launch = {
+      version: 1,
+      id: "run-1",
+      rootId: "run-1",
+      owner: "owner-1",
+      cwd,
+      agentDir: path.join(root, "agent"),
+      sdk: "/sdk",
+      entry: "/entry.js",
+      sessionFile: path.join(runDir, "session.jsonl"),
+      sessionId: "sess-1",
+      prompt: "initial",
+      context: "fresh",
+      provider: "google",
+      model: "gemini-4-hydrogen",
+      thinking: "medium",
+      trusted: true,
+      contract: { scope: [] },
+      scratchDir: path.join(cwd, "src"),
+      createdAt: Date.now(),
+    };
+    assert.equal(scratchDirectory(runsBase, poisonedLaunch), scratchDir);
+    assert.equal(
+      harnessExcludePaths(runsBase, poisonedLaunch).includes(path.join(cwd, "src")),
+      false,
+    );
+    const nextLaunch = successor(runsBase, poisonedLaunch, "follow-up");
+    assert.ok(nextLaunch !== undefined);
+    assert.equal(nextLaunch.scratchDir, scratchDir);
   },
 );
