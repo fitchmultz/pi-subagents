@@ -53,38 +53,7 @@ export function sendHint(params: IntercomToolParams): string {
   if (params.replyTo !== undefined && params.replyTo !== "") {
     return "";
   }
-  switch (params.passive === true ? "passive" : params.delivery) {
-    case "passive":
-      return " (passive; recipient model was not woken)";
-    case "steer":
-      return " (steers active recipient after the current tool call)";
-    case "queue":
-      return " (intentionally deferred behind active recipient work)";
-    case undefined:
-    default:
-      return " (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)";
-  }
-}
-export function busyAsk(to: string, result: SendResult): ToolResultLike {
-  return toolText(
-    `${result.delivered ? "Delivered" : "Queued"} ask to ${to}; peer is busy and not accepting blocking asks (peer_busy). Not waiting for a reply; delivery does not mean the question was consumed.`,
-    {
-      messageId: result.id,
-      accepted: result.accepted,
-      delivered: result.delivered,
-      queued: result.queued === true,
-      replied: false,
-      reason: "peer_busy",
-      reasonCode: "recipient_not_accepting_asks",
-      nextActions: [
-        {
-          action: "send",
-          guidance:
-            "Use default-steered send for non-blocking live coordination; queue only when delay is intentional.",
-        },
-      ],
-    },
-  );
+  return " (wakes idle recipients and steers active recipients at the next tool boundary)";
 }
 export function askFailure(
   error: unknown,

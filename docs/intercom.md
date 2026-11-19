@@ -207,7 +207,7 @@ least 8 characters. `@` with the name of this device is refused with the target
 to use instead.
 
 ```text
-Message sent to api-fix@laptop (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)
+Message sent to api-fix@laptop (wakes idle recipients and steers active recipients at the next tool boundary)
 ```
 
 ```text
@@ -225,16 +225,13 @@ The schema change is merged.
 ```
 
 - **Send.** The answer is the receipt of the other device's broker: accepted,
-  delivered or queued, as for a local send. `delivery`, `queueMode`, `threadId`
-  and attachments work as for a local target. A later queued message
-  with `queueMode:"replace"` replaces the sender's earlier one of the same
-  thread.
+  delivered or queued (for a parked child), as for a local send. Attachments
+  work as for a local target, and delivery always steers a busy recipient or
+  wakes an idle one.
 - **Ask.** The tool waits for the reply up to the asker's `askTimeoutMs`. The
   recipient answers with `reply`, or with `send` and `replyTo`, as for a local
-  ask.
-- **A busy recipient.** A default ask of a main that is not accepting asks is
-  refused and not sent. Use `send`, or ask with `delivery:"steer"` to reach the
-  recipient at its next tool boundary and wait.
+  ask. Both local and cross-device asks steer a busy recipient at its next tool
+  boundary and wait for the correlated reply.
 - **When nobody waits any more.** After the timeout, a cancelled tool call or a
   lost connection, the question is retired on the recipient's device: `pending`
   and the list stop counting it. A late `reply` then fails because no ask is
@@ -395,7 +392,7 @@ ID, name, cwd, model, project ID, status, `startedAt`, `acceptsAsks`, `pendingAs
 
 ```js
 intercom({ action: "send", to: "reviewer", message: "Check refresh-token rotation." });
-intercom({ action: "ask", to: "reviewer", delivery: "steer", message: "Which invariant fails?" });
+intercom({ action: "ask", to: "reviewer", message: "Which invariant fails?" });
 intercom({ action: "pending" });
 intercom({
   action: "reply",
@@ -404,20 +401,17 @@ intercom({
 });
 ```
 
-- Default **steer**, for both sends and incoming asks, wakes an idle recipient or
-  reaches busy work at a tool boundary. Print-mode recipients use the same rule;
-  they do not replace an ordinary ask with a canned busy reply.
-- Explicit **queue** defers delivery. Optional `queueMode:"replace"` with a nonempty
-  `threadId` coalesces still-staged updates for that thread; messages already handed
-  to Pi's native queue cannot be keyed-replaced.
-- Explicit **passive** is a non-waking breadcrumb, not a request for model work.
-  The recipient reads it at its next turn. Use it for receipts and FYI that need
-  no action.
+Every `intercom` tool `send` and `ask` uses **steer** delivery: it wakes an idle
+recipient or reaches busy work at the next tool boundary. Print-mode recipients
+use the same rule; they do not replace an ordinary ask with a canned busy reply.
+The LLM tool does not expose `delivery`, `passive`, `queueMode`, or `threadId`
+(programmatic broker/bridge clients using `@fitchmultz/pi-subagents/intercom-client`
+retain explicit wire delivery modes).
 
 Do not send acknowledgements, thanks or receipts that need no action, and do not
-reply to a message that needs none. A default send to an idle recipient costs it
-a full model request. Send only what the recipient must act on or must know to
-avoid a mistake. A sender that needs proof a message was read uses `ask`.
+reply to a message that needs none. A send to an idle recipient costs it a full
+model request. Send only what the recipient must act on or must know to avoid a
+mistake. A sender that needs proof a message was read uses `ask`.
 
 An ordinary send is non-blocking. Its response means broker acceptance, not
 recipient journal persistence, model consumption, reply, or task completion. A
@@ -433,10 +427,7 @@ the broker's `accepted` and `delivered` fields and reports `deliveryUnknown:fals
 A rejected concurrent ask that never reaches the transport is not sent.
 
 `ask` waits for a correlated reply and has a bounded timeout. Prefer `send` unless
-the sender genuinely must remain alive waiting for a decision. If an ordinary ask
-finds a peer advertising `acceptsAsks:false`, the sender still reports `peer_busy`
-without waiting; recipient steering does not claim that a reply has arrived.
-Explicit steer/queue asks retain their bounded correlated wait. `reply` uses the
+the sender genuinely must remain alive waiting for a decision. `reply` uses the
 active or sole pending ask when unambiguous; otherwise specify `replyTo` and the
 intended sender. Inspect `pending` for the exact correlation rather than guessing
 from text.

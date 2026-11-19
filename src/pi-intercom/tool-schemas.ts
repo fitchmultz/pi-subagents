@@ -30,22 +30,9 @@ export const intercomSchema = Type.Object(
       ),
     ),
     replyTo: Type.Optional(Type.String({ description: "Message ID to answer or thread" })),
-    delivery: Type.Optional(
-      StringEnum(["queue", "steer", "passive"] as const, {
-        description:
-          "steer (default) at next tool boundary; queue after active work; passive never wakes the model",
-      }),
-    ),
-    queueMode: Type.Optional(
-      StringEnum(["stack", "replace"] as const, {
-        description: "stack keeps all; replace keeps only the latest per threadId",
-      }),
-    ),
-    threadId: Type.Optional(Type.String()),
     entryId: Type.Optional(Type.String()),
     offset: Type.Optional(Type.Integer({ minimum: 0, description: "UTF-16 characters" })),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 16384 })),
-    passive: Type.Optional(Type.Boolean({ description: "Legacy alias for delivery=passive" })),
   },
   { additionalProperties: false },
 );

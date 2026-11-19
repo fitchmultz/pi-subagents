@@ -210,6 +210,16 @@ nodeDescribe("intercomSchema strict property validation", () => {
       });
     });
 
+    for (const removed of [
+      { action: "send", to: "worker", message: "Hi", delivery: "queue" },
+      { action: "send", to: "worker", message: "Hi", delivery: "passive" },
+      { action: "send", to: "worker", message: "Hi", delivery: "steer" },
+      { action: "send", to: "worker", message: "Hi", passive: true },
+      { action: "send", to: "worker", message: "Hi", queueMode: "replace", threadId: "t1" },
+    ]) {
+      assert.throws(() => Assert(intercomSchema, removed));
+    }
+
     const attachmentExtra = {
       action: "send",
       to: "worker",

@@ -1,4 +1,4 @@
-import type { Attachment, Message, MessageDelivery, QueueMode, SessionInfo } from "./types.ts";
+import type { Attachment, Message, SessionInfo } from "./types.ts";
 
 export interface InboundMessageEntry {
   readonly from: SessionInfo;
@@ -33,10 +33,6 @@ export interface IntercomToolParams {
   readonly message?: string;
   readonly attachments?: readonly Attachment[];
   readonly replyTo?: string;
-  readonly delivery?: MessageDelivery;
-  readonly queueMode?: QueueMode;
-  readonly threadId?: string;
-  readonly passive?: boolean;
   readonly entryId?: string;
   readonly offset?: number;
   readonly limit?: number;

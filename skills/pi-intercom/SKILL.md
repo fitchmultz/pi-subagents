@@ -24,13 +24,13 @@ workflow UI, or topic registry.
    acknowledgements, thanks or receipts. Send only what the peer must act on or
    must know to avoid a mistake. When a message you receive needs no action, do
    not reply and do not restate it.
-   - `send`: non-blocking guidance/corrections/blockers; default delivery steers.
-     A message to an idle peer costs it a full model request. If it needs no
-     action and must still be on record, use `delivery:"passive"`.
+   - `send`: non-blocking guidance/corrections/blockers; wakes an idle peer
+     (a full model request for it) and steers a busy peer at its next tool boundary.
    - `last`: original last completed assistant text, without waking the peer;
      unpinned reads also report `Latest turn failed (<entryId>): <error>` when a
      newer assistant turn on the active branch failed.
-   - `ask`: bounded correlated wait only when the sender must stay alive waiting.
+   - `ask`: steers/wakes the peer and waits for a correlated reply; use only
+     when the sender must stay alive waiting for the answer.
    - `reply`: answer the active/sole pending ask, or specify `replyTo` when ambiguous.
    - `pending`: unresolved inbound asks and their correlation.
    - `status`: connection, peer health and inbound queue state.
@@ -59,8 +59,7 @@ The name and the ID of a row are targets: `send` and `ask` with
 result. A message from another device shows its sender as `name@device`; use
 that as `to` for a message back, and `reply` for an ask. A failure says whether
 the message was not sent, or whether its delivery is unknown; check the
-recipient before sending an unknown one again. A default ask of a busy main is
-refused: use `send`, or `delivery:"steer"`. `last` reads only the sessions of
+recipient before sending an unknown one again. `last` reads only the sessions of
 this device.
 
 A child cannot use `device` or a `name@device` target; its main does that. If no
@@ -68,10 +67,9 @@ devices are configured, a `device` list names the file and the keys to set.
 
 ## Delivery and paging
 
-Default `send` steers at the next tool boundary or wakes an idle peer. Explicit
-`delivery:"queue"` intentionally defers. Explicit `delivery:"passive"` never wakes;
-the peer reads the message at its next turn. Use it for receipts and FYI that need
-no action. Guidance the peer must act on should not be passive.
+Every `send` and `ask` steers a busy peer at its next tool boundary or wakes an
+idle peer. There is no queued or passive delivery mode on the tool—if an agent
+sends a message, the recipient sees it promptly.
 
 `last` returns a stable entry ID and offsets. Follow its exact next-page call to
 retrieve all text; offsets are UTF-16 code units, not bytes. A read never sends a

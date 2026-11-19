@@ -1687,7 +1687,6 @@ nodeTest("native concurrent asks reserve one reply waiter after a completed ask"
         action: "ask",
         to: "sender-concurrent-asks",
         message: id,
-        delivery: "steer",
       },
       { id },
     );
@@ -2232,7 +2231,6 @@ nodeTest(
         fauxToolCall("intercom", {
           action: "ask",
           to: "busy-question-recipient",
-          delivery: "steer",
           message: "Choose the native path?",
         }),
         { stopReason: "toolUse" },
@@ -3454,7 +3452,7 @@ nodeTest(
 );
 
 nodeTest(
-  "native ordinary asks honor busy capability and explicit steer/queue without claiming consumption",
+  "native ordinary asks steer busy peers at the next tool boundary and wait for correlated replies",
   async (t) => {
     const asker = await makeSession(t, "busy-capability-asker");
     asker.sender.updatePresence({ status: "thinking", acceptsAsks: false, pendingAsks: 2 });
@@ -3473,44 +3471,25 @@ nodeTest(
       assert.match(output, /pending_asks:2/);
       assert.match(output, /self target unavailable/);
     }
-    const received = once(asker.sender, "message");
-    const busy = await executeIntercom(asker, {
+    const request = once(asker.sender, "message");
+    let settled = false;
+    const asking = executeIntercom(asker, {
       action: "ask",
       to: "sender-busy-capability-asker",
-      message: "Busy default ask",
+      message: "Steered busy ask",
+    }).finally(() => {
+      settled = true;
     });
-    assert.equal(at(array(await received)[1], "expectsReply"), true);
-    const details = record(busy.details);
-    assert.equal(details.accepted, true);
-    assert.equal(details.delivered, true);
-    assert.equal(details.replied, false);
-    assert.equal(details.reasonCode, "recipient_not_accepting_asks");
-    assert.match(JSON.stringify(busy.content), /Not waiting.*does not mean.*consumed/);
-    for (const delivery of ["steer", "queue"] as const) {
-      const request = once(asker.sender, "message");
-      let settled = false;
-      const asking = executeIntercom(asker, {
-        action: "ask",
-        to: "sender-busy-capability-asker",
-        delivery,
-        message: `Explicit ${delivery}`,
-      }).finally(() => {
-        settled = true;
-      });
-      // Observe actual delivery before replying to this ask.
-      const [from, input] = array(await request).map(record);
-      assert.ok(from !== undefined && input !== undefined, "expected a delivered ask frame");
-      assert.equal(input.delivery, delivery);
-      assert.equal(input.expectsReply, true);
-      assert.equal(settled, false);
-      // The next ask must not race this correlated reply.
-      await asker.sender.send(text(from.id), {
-        text: `Answer ${delivery}`,
-        replyTo: text(input.id),
-      });
-      // Release the sole waiter before admitting the next delivery mode.
-      assert.match(JSON.stringify((await asking).content), new RegExp(`Answer ${delivery}`));
-    }
+    const [from, input] = array(await request).map(record);
+    assert.ok(from !== undefined && input !== undefined, "expected a delivered ask frame");
+    assert.equal(input.delivery, "steer");
+    assert.equal(input.expectsReply, true);
+    assert.equal(settled, false);
+    await asker.sender.send(text(from.id), {
+      text: "Answer steer",
+      replyTo: text(input.id),
+    });
+    assert.match(JSON.stringify((await asking).content), /Answer steer/);
     assert.equal(asker.faux.state.callCount, 0);
     assert.deepEqual(asker.errors, []);
   },
@@ -4251,7 +4230,7 @@ nodeTest(
     });
     assert.equal(
       sent.content[0]?.text,
-      "Message sent to far-main@far (defaults to steer; wakes idle recipients and steers active recipients after the current tool call)",
+      "Message sent to far-main@far (wakes idle recipients and steers active recipients at the next tool boundary)",
     );
     const sentId = text(at(sent, "details", "messageId"));
     assert.deepEqual(
@@ -4280,7 +4259,7 @@ nodeTest(
           device: "far",
           from: { id: mainPeer.id, name: "home-main", cwd: mainCwd },
           to: "far-main",
-          message: { text: "Deploy finished on home.", passive: false, messageId: sentId },
+          message: { text: "Deploy finished on home.", delivery: "steer", messageId: sentId },
           timeoutMs: 120_000,
         },
       ],
@@ -4484,7 +4463,7 @@ nodeTest(
 );
 
 nodeTest(
-  "native ask of a busy main of another device is refused unless it steers, and a queued note replaces the earlier one",
+  "native ask of a busy main of another device steers at its next tool boundary and rejects overlapping remote sends",
   async (t) => {
     const devices = standInDevices(t);
     const release = gate(t);
@@ -4514,46 +4493,14 @@ nodeTest(
         stopReason: "toolUse",
       }),
       fauxAssistantMessage("Answered"),
-      fauxAssistantMessage("Read the note"),
     ]);
     const working = far.session.prompt("Work before the question");
     await waitFor(() => started, "held work on far");
-
-    // A local asker would leave the question behind and stay reachable. A command cannot.
-    const busy = await failureOf(
-      executeIntercom(main, { action: "ask", to: "far-busy@far", message: "Blue or green?" }),
-    );
-    assert.equal(
-      busy.message,
-      'Failed: Ask to "far-busy@far" was not sent: the peer is busy and not accepting blocking asks (peer_busy). Use send, or ask with delivery "steer" to reach it at its next tool boundary and wait.',
-    );
-    assert.deepEqual(
-      [busy.details.accepted, busy.details.delivered, busy.details.deliveryUnknown],
-      [false, false, false],
-    );
-    assert.equal(await noPendingAsk(far), true);
-
-    // Each ssh is a new connection of the same sender, so its later note replaces the earlier.
-    const notes: string[] = [];
-    for (const message of ["Old note", "New note"]) {
-      // The earlier note must be queued before the later one replaces it.
-      const note = await executeIntercom(main, {
-        action: "send",
-        to: "far-busy@far",
-        message,
-        delivery: "queue",
-        queueMode: "replace",
-        threadId: "colour",
-      });
-      notes.push(text(at(note, "details", "messageId")));
-    }
-    const [oldNote = "", newNote = ""] = notes;
 
     const asking = executeIntercom(main, {
       action: "ask",
       to: "far-busy@far",
       message: "Blue or green?",
-      delivery: "steer",
     });
     await waitFor(async () => !(await noPendingAsk(far)), "the steered question on far");
     const overlap = await failureOf(
@@ -4571,11 +4518,6 @@ nodeTest(
     release.resolve();
     assert.equal((await asking).content[0]?.text, "**Reply from far-busy@far:**\nUse blue.");
     await working;
-    await waitFor(
-      () => far.session.isIdle && far.visible(newNote).length === 1,
-      "the replacement note on far",
-    );
-    assert.equal(far.visible(oldNote).length, 0);
     assert.deepEqual([...main.errors, ...far.errors], []);
   },
 );
@@ -4744,42 +4686,11 @@ nodeTest(
 );
 
 nodeTest(
-  "native public tool rejects invalid delivery combinations and preserves recovery actions",
+  "native public tool rejects invalid arguments and always sends with steer delivery",
   async (t) => {
     const receiver = await makeSession(t, "invalid-options");
     const shortTarget = text(receiver.sender.sessionId).slice(0, 3);
     for (const { params, expected, reason, actions } of [
-      {
-        params: { action: "ask", delivery: "passive", to: "nobody", message: "Invalid" },
-        expected: /delivery='passive' is only valid/,
-        reason: undefined,
-      },
-      {
-        params: { action: "ask", passive: true, to: "nobody", message: "Invalid" },
-        expected: /'passive' is only valid/,
-        reason: undefined,
-      },
-      {
-        params: {
-          action: "send",
-          delivery: "queue",
-          queueMode: "replace",
-          to: "nobody",
-          message: "Invalid",
-        },
-        expected: /requires a non-empty threadId/,
-        reason: "invalid_queue_arguments",
-      },
-      {
-        params: { action: "send", queueMode: "stack", to: "nobody", message: "Invalid" },
-        expected: /only valid with delivery='queue'/,
-        reason: "invalid_queue_arguments",
-      },
-      {
-        params: { action: "pending", delivery: "queue" },
-        expected: /only valid for action='send' or action='ask'/,
-        reason: "invalid_queue_arguments",
-      },
       {
         params: { action: "status", children: true },
         expected: /'children' is only valid for action='list'/,
@@ -4842,13 +4753,17 @@ nodeTest(
         return true;
       });
     }
-    const passive = await executeIntercom(receiver, {
+    const delivered = once(receiver.sender, "message");
+    const sent = await executeIntercom(receiver, {
       action: "send",
       to: "sender-invalid-options",
-      message: "Passive alias",
-      passive: true,
+      message: "Steer only",
     });
-    assert.match(JSON.stringify(passive.content), /passive; recipient model was not woken/);
+    assert.equal(at(array(await delivered)[1], "delivery"), "steer");
+    assert.match(
+      JSON.stringify(sent.content),
+      /wakes idle recipients and steers active recipients at the next tool boundary/,
+    );
     assert.deepEqual(receiver.errors, []);
   },
 );

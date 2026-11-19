@@ -60,10 +60,7 @@ const SELF_HINT =
   "self target unavailable; choose a peer below; use pending/reply for inbound asks";
 function deliveryLegend(peers: readonly SessionInfo[]): string {
   return [
-    "**Delivery:** send steers by default: it wakes an idle peer (a full model request for it) and reaches a busy peer at its next tool boundary. ask only if you must stay alive for a required reply. queue only for intentional delay. passive never wakes: use it for receipts and FYI that need no action.",
-    ...(peers.some((peer) => peer.acceptsAsks === false)
-      ? ["A default ask to an accepts_asks:false peer sends without waiting."]
-      : []),
+    "**Delivery:** send wakes an idle peer (a full model request for it) and steers a busy peer at its next tool boundary. ask also steers/wakes and waits for a correlated reply; use ask only if you must stay alive for the answer.",
     ...(peers.some((peer) => sessionBusyState(peer) === "unknown")
       ? ["A state:unknown peer is a valid target."]
       : []),

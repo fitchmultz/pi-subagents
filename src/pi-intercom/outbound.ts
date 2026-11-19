@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SendResult } from "./broker/client.ts";
 import type { IntercomTransport } from "./transport.ts";
-import { resolveConnectedTarget, resolvePeerHealth } from "./connected-target.ts";
+import { resolveConnectedTarget } from "./connected-target.ts";
 import type { IntercomConnection } from "./connection.ts";
 import type { IntercomConfig } from "./config.ts";
 import type { IntercomLifecycle } from "./lifecycle.ts";
@@ -13,12 +13,11 @@ import {
   type IntercomToolParams,
   type ToolResultLike,
 } from "./runtime-types.ts";
-import type { Message, SessionInfo } from "./types.ts";
+import type { Message } from "./types.ts";
 import { formatAttachments } from "./message-format.ts";
-import { AskDeliveryError, failureDetails, type SendProgress } from "./tool-results.ts";
+import { failureDetails, type SendProgress } from "./tool-results.ts";
 import {
   askFailure,
-  busyAsk,
   deliveryFailure,
   replyFailure,
   replySent,
@@ -89,7 +88,7 @@ export class IntercomOutbound {
     local: boolean,
   ): ToolResultLike {
     this.owners.lifecycle.markActivity();
-    this.recordSent(to, { ...sendOptions(params), passive: params.passive === true }, result);
+    this.recordSent(to, sendOptions(params), result);
     if (local && (params.replyTo ?? "") !== "") {
       this.owners.replies.markReplied(params.replyTo ?? "");
     }
@@ -139,7 +138,7 @@ export class IntercomOutbound {
       if (!(await this.confirm(params, call.ctx))) {
         return toolText("Message cancelled by user");
       }
-      const options = { ...sendOptions(params), passive: params.passive === true };
+      const options = sendOptions(params);
       const local = typeof target === "string";
       progress = { kind: "unconfirmed" };
       const result = await (local
@@ -187,36 +186,11 @@ export class IntercomOutbound {
   private isCancelled(signal: AbortSignal | undefined): boolean {
     return signal?.aborted === true;
   }
-  private async sendBusy(
-    active: IntercomTransport,
-    request: {
-      readonly target: string;
-      readonly to: string;
-      readonly questionId: string;
-      readonly options: ReturnType<typeof sendOptions>;
-      readonly record: (result: SendResult) => void;
-    },
-  ): Promise<ToolResultLike> {
-    const result = await active.send(request.target, {
-      ...request.options,
-      messageId: request.questionId,
-      expectsReply: true,
-    });
-    if (!result.accepted) {
-      throw new AskDeliveryError(result);
-    }
-    this.markActivity();
-    request.record(result);
-    return busyAsk(request.to, result);
-  }
   private async prepareAsk(
     active: IntercomTransport,
     to: string,
     signal: AbortSignal | undefined,
-  ): Promise<
-    | { readonly target: string; readonly health: SessionInfo | null }
-    | { readonly error: ToolResultLike }
-  > {
+  ): Promise<{ readonly target: string } | { readonly error: ToolResultLike }> {
     const target = await resolveConnectedTarget(active, to);
     if (this.isCancelled(signal)) {
       return { error: toolError("Cancelled") };
@@ -239,11 +213,7 @@ export class IntercomOutbound {
     if (target === active.sessionId) {
       return { error: toolError("Cannot message the current session") };
     }
-    const health = await resolvePeerHealth(active, target);
-    if (this.isCancelled(signal)) {
-      return { error: toolError("Cancelled") };
-    }
-    return { target, health };
+    return { target };
   }
   /**
    * Asks a session of another device; undefined when `to` names a session of this one. One
@@ -310,7 +280,7 @@ export class IntercomOutbound {
       if ("error" in prepared) {
         return prepared.error;
       }
-      const { target, health } = prepared;
+      const { target } = prepared;
       questionId = randomUUID();
       const options = sendOptions(params);
       const record = (result: SendResult) => {
@@ -318,10 +288,6 @@ export class IntercomOutbound {
         this.recordSent(to, options, result);
         this.owners.connection.syncStatus();
       };
-      if (health?.acceptsAsks === false && options.delivery === undefined) {
-        progress = { kind: "unconfirmed" };
-        return await this.sendBusy(active, { target, to, questionId, options, record });
-      }
       const reply = await this.owners.wait.transact(active, {
         to: target,
         questionId,

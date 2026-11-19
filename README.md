@@ -74,7 +74,7 @@ intercom({ action: "send", to: "auth-review", message: "Focus on token rotation.
 intercom({ action: "last", to: "auth-review" });
 ```
 
-`send` steers by default. `last` reads the peer's last completed assistant response
+`send` and `ask` wake idle peers and steer busy peers at their next tool boundary. `last` reads the peer's last completed assistant response
 without waking it; large responses are paged, not silently truncated. Discovery
 works across project directories and Pi agent directories under the same OS user.
 
