@@ -50,6 +50,8 @@ interface RunSentinelState {
   reviewPoint: ReviewPoint;
   /** The last state the overseer approved, or launch. A pause shows all the work after it. */
   approved: ReviewPoint;
+  /** True only after an overseer approval verdict; survives launch-snapshot baseBranch refreshes. */
+  hasApproval: boolean;
   /** Base-branch issues the overseer approved. An approved issue is not raised again. */
   readonly approvedBranchIssues: Set<string>;
   readonly excludePaths: readonly string[];
@@ -172,6 +174,7 @@ export class OverseerSentinel {
       baseBranch,
       reviewPoint: point,
       approved: point,
+      hasApproval: false,
       approvedBranchIssues: new Set(),
       excludePaths,
       toolErrors: new ToolErrorWindow(),
@@ -251,7 +254,7 @@ export class OverseerSentinel {
       current.approved === current.reviewPoint
         ? checkpoint
         : this.workSince(launch, current.approved, checkpoint.snapshot);
-    const everApproved = current.approved !== current.launch;
+    const everApproved = current.hasApproval;
     const flagged = checkpoint.changes.files;
     const diffCommand =
       unapproved.diff.length > ESCALATION_EXCERPT_CHARS
@@ -301,6 +304,7 @@ export class OverseerSentinel {
     if (answer.verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
       current.approved = current.reviewPoint;
+      current.hasApproval = true;
       if (issue.kind === "branch_violation") {
         current.approvedBranchIssues.add(issue.summary);
       }

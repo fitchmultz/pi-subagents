@@ -1841,6 +1841,7 @@ nodeTest(
     const badBranchTurn = emit("turn_end", mutatingTurn);
     const branchPause = await paused();
     assert.equal(branchPause.kind, "branch_violation");
+    assert.equal(branchPause.since, "launch");
 
     recordContractAmendment(
       base,

@@ -96,13 +96,14 @@ export interface SuccessorOptions {
   readonly scratchDir?: string | undefined;
   readonly contractState?: ContractState | undefined;
 }
-function buildSuccessorLaunch(
-  base: string,
-  launch: Launch,
-  id: string,
-  prompt: string,
-  options: SuccessorOptions | undefined,
-): Launch {
+function buildSuccessorLaunch(input: {
+  readonly base: string;
+  readonly launch: Launch;
+  readonly id: string;
+  readonly prompt: string;
+  readonly options: SuccessorOptions | undefined;
+}): Launch {
+  const { base, launch, id, prompt, options } = input;
   const { scratchDir: _persistedScratchDir, ...rest } = launch;
   const contract = options?.contract ?? launch.contract;
   return {
@@ -123,7 +124,7 @@ export function successor(
   options?: SuccessorOptions,
 ): Launch | undefined {
   const id = randomUUID();
-  const next = buildSuccessorLaunch(base, launch, id, prompt, options);
+  const next = buildSuccessorLaunch({ base, launch, id, prompt, options });
   fs.mkdirSync(runDirectory(base, id), { mode: 0o700 });
   write(path.join(runDirectory(base, id), "launch.json"), next, true);
   if (options?.contractState !== undefined) {
