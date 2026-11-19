@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.59 - 2026-11-19
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(overseer): sync live overseer and judge toggles to running children (#482) ([4c81589](https://github.com/fitchmultz/pi-subagents/commit/4c815897fae6c8f6d00524a63476d71ee8fae2fe))
+
+### What's Changed
+
+- fix(overseer): sync live overseer and judge toggles to running children by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/482
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.58...v0.52.59
+
 ## 0.52.58 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->
