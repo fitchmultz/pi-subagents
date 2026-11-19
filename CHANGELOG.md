@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.60 - 2026-11-19
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(intercom): remove queue and passive delivery options from intercom tool (#483) ([66e5b7d](https://github.com/fitchmultz/pi-subagents/commit/66e5b7d796a594bac61aa370ee38a1f92383b939))
+
+### What's Changed
+
+- feat(intercom): remove queue and passive delivery options from intercom tool by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/483
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.59...v0.52.60
+
 ## 0.52.59 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->
