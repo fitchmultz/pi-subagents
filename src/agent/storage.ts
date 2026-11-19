@@ -14,6 +14,7 @@ import {
   type Launch,
 } from "./contracts.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
+import { notifyInventory } from "./inventory-events.ts";
 
 export function missing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -195,6 +196,9 @@ export function enqueue(
     createdAt: Date.now(),
   };
   write(path.join(conversation(base, launch), "commands", `${id}.json`), command, true);
+  if (input.action === "steer") {
+    notifyInventory(base, launch.id);
+  }
   return id;
 }
 export function list(base: string): string[] {

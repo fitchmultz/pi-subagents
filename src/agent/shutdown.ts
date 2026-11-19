@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Launch, ProcessIdentity } from "./contracts.ts";
 import { errorText } from "./host.ts";
+import { notifyInventory } from "./inventory-events.ts";
 import { alive, requestStop, signalProcess } from "./process.ts";
 import { resolveActiveEscalation } from "./overseer-pause.ts";
 import { launchAt, list } from "./storage.ts";
@@ -19,6 +20,7 @@ export function stopRun(
     resolveActiveEscalation(base, launch, "stopped");
   }
   if (live.length === 0) {
+    notifyInventory(base, launch.id);
     return renderReceipt(base, launch, ctx, {
       stopAcknowledged: false,
       note: "No matching live actor or owned shell; process exit code remains unknown.",
@@ -34,6 +36,7 @@ export function stopRun(
     }
   }, 3000);
   escalation.unref();
+  notifyInventory(base, launch.id);
   return renderReceipt(base, launch, ctx, {
     stopRequest: id,
     stopAcknowledged: false,

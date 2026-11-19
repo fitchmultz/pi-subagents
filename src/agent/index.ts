@@ -54,6 +54,7 @@ import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages } from "../shared/compact-cards.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
+import { notifyInventory } from "./inventory-events.ts";
 import { OverseerController } from "./overseer.ts";
 import {
   applyLiveContractAmendment,
@@ -172,6 +173,9 @@ class AgentRuntime {
       this.awaited = awaited;
       notices.unshift(...reconcileLegacy(context, this.reporter));
       deliver(this.pi, context, notices);
+      if (notices.length > 0) {
+        notifyInventory(this.base);
+      }
       this.reporter.recover("completion-scan");
     } catch (error) {
       reconciled = false;

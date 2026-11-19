@@ -9,6 +9,7 @@ import {
   type Result,
 } from "./contracts.ts";
 import { resolveActiveEscalation } from "./overseer-pause.ts";
+import { notifyInventory } from "./inventory-events.ts";
 import { completionReceipts } from "./receipts.ts";
 import { latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
 import type { RunsInput } from "./tool-schemas.ts";
@@ -147,6 +148,9 @@ export function prepareOverseerReviewAction(
   const released =
     review.verdict === "approved" &&
     resolveActiveEscalation(base, target, "approved") !== undefined;
+  if (released) {
+    notifyInventory(base, target.id);
+  }
   return {
     target,
     review,

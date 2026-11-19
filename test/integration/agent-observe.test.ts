@@ -1,5 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
@@ -19,9 +21,10 @@ import * as sdk from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { nativeSdkRoot } from "../support/native-sdk.ts";
 import { assertDefined, record } from "../support/assertions.ts";
-import { spy } from "sinon";
+import { spy, stub } from "sinon";
 import { usageLaunch } from "../support/agent-launch.ts";
 import { ownIdentity } from "../../src/agent/process.ts";
+import { notifyInventory } from "../../src/agent/inventory-events.ts";
 import { write } from "../../src/agent/storage.ts";
 import type { ObserverTranscript } from "../../src/agent/observe-transcript.ts";
 import type { ObservationClient } from "../../src/agent/observe-client.ts";
@@ -1769,5 +1772,166 @@ nodeTest(
       b,
       journalReads: () => opened().filter((file) => file === a.sessionFile).length,
     });
+  },
+);
+
+class SilentWatcher extends EventEmitter implements fs.FSWatcher {
+  close(): void {
+    this.removeAllListeners();
+  }
+  ref(): this {
+    return this;
+  }
+  unref(): this {
+    return this;
+  }
+}
+
+nodeTest(
+  "observer surfaces newly launched runs immediately when fs.watch is silent or launch.json races actor.lock/process.json",
+  { timeout: 30000 },
+  async (t) => {
+    const root = fs.mkdtempSync(path.join(process.env.HOME ?? "", "observer-silent-watch-"));
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    const priorAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const watchStub = stub(fs, "watch").callsFake(() => new SilentWatcher());
+    syncBuiltinESMExports();
+    t.after(() => {
+      watchStub.restore();
+      syncBuiltinESMExports();
+      if (priorAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = priorAgentDir;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const manager = sdk.SessionManager.create(root, path.join(root, "sessions"));
+    const owner = manager.getSessionId();
+    const base = path.join(agentDir, "sessions/agent-runs", owner);
+    const models = await sdk.ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const faux = fauxProvider({ provider: "observe-silent", models: [{ id: "native-observe" }] });
+    models.registerNativeProvider(faux.provider);
+    let view: TUI | undefined;
+    const services = await sdk.createAgentSessionServices({
+      cwd: root,
+      agentDir,
+      modelRuntime: models,
+      settingsManager: sdk.SettingsManager.inMemory({ quietStartup: true, theme: "dark" }),
+      resourceLoaderOptions: {
+        noExtensions: true,
+        noSkills: true,
+        noContextFiles: true,
+        noThemes: true,
+        noPromptTemplates: true,
+        additionalExtensionPaths: [path.resolve("src/agent/observe.ts")],
+        extensionFactories: [
+          (pi) => {
+            pi.on("session_start", (_event, ctx) => {
+              ctx.ui.setWidget("test-silent-watch-screen", (tui) => {
+                view = tui;
+                return new Container();
+              });
+            });
+          },
+        ],
+      },
+    });
+    const runtime = await sdk.createAgentSessionRuntime(
+      async ({ sessionManager }) => ({
+        ...(await sdk.createAgentSessionFromServices({
+          services,
+          sessionManager,
+          model: faux.getModel(),
+        })),
+        services,
+        diagnostics: services.diagnostics,
+      }),
+      { cwd: root, agentDir, sessionManager: manager },
+    );
+    const terminal = new CaptureTerminal();
+    const mode = new sdk.InteractiveMode(runtime, {
+      terminal,
+      tuiMode: "fullscreen",
+      initialThemeSetting: "dark",
+    });
+    t.after(async () => {
+      await runtime.dispose();
+      mode.stop();
+    });
+    await mode.init();
+    assert.ok(view instanceof TuiAltScreen);
+    const screen = view;
+    const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
+
+    await delay(100);
+    assert.doesNotMatch(shown(), /Agents:/, "idle session with no runs hides the strip");
+
+    const spawnDummy = () => {
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      assert.ok(child.pid !== undefined);
+      t.after(() => {
+        child.kill("SIGKILL");
+      });
+      return child.pid;
+    };
+    const makeLaunch = (id: string, name: string) => ({
+      ...usageLaunch(path.join(base, id, "session.jsonl")),
+      id,
+      rootId: id,
+      owner,
+      name,
+    });
+
+    // 1. In-process launch notification shows run-1 immediately even though fs.watch emits nothing.
+    const run1Id = "silent-run-1";
+    write(path.join(base, run1Id, "launch.json"), makeLaunch(run1Id, "audit-slice-1"), true);
+    write(path.join(base, run1Id, "actor.lock", "process.json"), {
+      ...ownIdentity(spawnDummy()),
+      token: "tok-1",
+    });
+    notifyInventory(base, run1Id);
+    await until(
+      () => shown().includes("Agents: 1 active") && shown().includes("● audit-slice-1 · running"),
+      "in-process wake shows run-1 immediately despite silent fs.watch",
+      shown,
+      3000,
+    );
+
+    // 2. When run-2's launch.json is scanned before actor.lock/process.json exists, and run-3's
+    // launch.json arrives at the same time, notifying run-2 prioritizes re-scanning run-2 so it
+    // immediately flips from interrupted to running without waiting for the periodic scan.
+    const run2Id = "silent-run-2";
+    write(path.join(base, run2Id, "launch.json"), makeLaunch(run2Id, "audit-slice-2"), true);
+    notifyInventory(base, run2Id);
+    await delay(100);
+    assert.ok(
+      !shown().includes("audit-slice-2"),
+      "run-2 stays hidden before actor.lock/process.json",
+    );
+
+    const run3Id = "silent-run-3";
+    write(path.join(base, run3Id, "launch.json"), makeLaunch(run3Id, "audit-slice-3"), true);
+    write(path.join(base, run2Id, "actor.lock", "process.json"), {
+      ...ownIdentity(spawnDummy()),
+      token: "tok-2",
+    });
+    notifyInventory(base, run2Id);
+    await until(
+      () => shown().includes("Agents: 2 active") && shown().includes("● audit-slice-2 · running"),
+      "run-2 is immediately promoted to active alongside newly created run-3",
+      shown,
+      3000,
+    );
   },
 );
