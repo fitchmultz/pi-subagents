@@ -129,6 +129,7 @@ export const launchSchema = Type.Object({
   trusted: Type.Boolean(),
   name: Type.Optional(Type.String()),
   contract: Type.Optional(delegationContractSchema),
+  scratchDir: Type.Optional(Type.String({ minLength: 1 })),
   overseer: Type.Optional(overseerLaunchSchema),
   createdAt: Type.Number(),
 });

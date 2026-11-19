@@ -474,12 +474,21 @@ When overseer mode is enabled, `delegate` requires `contract`:
 
 - `scope`: relative edit-tool path prefixes or native POSIX globs inside `cwd` (for example `src`,
   `src/foo.ts`, `src/**`, `test/**/*.test.ts`, `packages/*/src/**`, `{src,test}/**`, or `*.ts`),
-  `['*']` for any edit path in `cwd`, or `[]` to
-  disable edit tools. Pre-write scope checks constrain edit tools (`edit`, `write`, `replace_text`,
-  `write_files`, `apply_patch`); shell commands are not OS-sandboxed and are checked post-turn via
+  `['*']` for any edit path in `cwd`, or `[]` to disable repo edits (edit tools remain allowed only
+  inside the run's private scratch directory below). Pre-write scope checks constrain edit tools
+  (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`); shell commands are not
+  OS-sandboxed and are checked post-turn via
   `git status`.
 - `verification`: required when `scope` is non-empty.
 - `baseBranch`, `requiredPrimitives`, `nonGoals`: optional Git and native-API constraints.
+
+Every child run with a `contract` also receives a private per-run scratch directory outside the
+repository (`<run-base>/<rootId>/scratch`, mode `0o700`, shared across successor continuations),
+exposed via `PI_SUBAGENT_SCRATCH_DIR`, the child's delegation contract section, and
+`agent_runs inspect`. Edit tools (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`)
+may write inside that scratch directory for temporary scripts or notes—even under read-only
+`scope: []`—while repo files outside `contract.scope`, arbitrary `/tmp` paths, `..` traversal, and
+symlink escapes remain blocked. The scratch directory is excluded from overseer Git diff baselines.
 
 Whenever `delegate` receives an explicit path or glob in `contract.scope`, it checks the entry
 against the resolved child `cwd` before starting a child. New top-level files and root-level globs

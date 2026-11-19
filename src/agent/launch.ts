@@ -7,7 +7,7 @@ import type { DelegationContract, Launch, OverseerLaunch } from "./contracts.ts"
 import type { DelegateInput } from "./tool-schemas.ts";
 import { loadSDK, packageRoot, runtimeEntry } from "./host.ts";
 import { validateDelegationScope } from "./overseer-scope.ts";
-import { runDirectory, write } from "./storage.ts";
+import { ensureScratchDirectory, runDirectory, write } from "./storage.ts";
 
 export interface LaunchContext {
   readonly cwd: string;
@@ -145,11 +145,13 @@ function savedSessionHeader(
 function optionalLaunchFields(options: {
   name?: string | undefined;
   contract?: DelegationContract | undefined;
+  scratchDir?: string | undefined;
   overseer?: OverseerLaunch | undefined;
 }) {
   return {
     ...(options.name !== undefined ? { name: options.name } : {}),
     ...(options.contract !== undefined ? { contract: options.contract } : {}),
+    ...(options.scratchDir !== undefined ? { scratchDir: options.scratchDir } : {}),
     ...(options.overseer !== undefined ? { overseer: options.overseer } : {}),
   };
 }
@@ -191,6 +193,8 @@ export async function prepareLaunch(options: {
   const id = randomUUID();
   const directory = runDirectory(base, id);
   fs.mkdirSync(directory, { mode: 0o700 });
+  const scratchDir =
+    options.contract === undefined ? undefined : ensureScratchDirectory(base, { rootId: id });
   const manager = sdk.SessionManager.create(cwd, directory);
   const sessionFile = manager.getSessionFile();
   const header = manager.getHeader();
@@ -225,6 +229,7 @@ export async function prepareLaunch(options: {
     ...optionalLaunchFields({
       name: input.name,
       contract: options.contract,
+      scratchDir,
       overseer: options.overseer,
     }),
     createdAt: Date.now(),

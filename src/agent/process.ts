@@ -14,7 +14,7 @@ import {
 import { agentObservationSocketPath } from "../pi-intercom/broker/paths.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
 import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
-import { conversation, enqueue, read, write } from "./storage.ts";
+import { conversation, enqueue, ensureScratchDirectory, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 import { generation, handoffToken, parkedFile } from "./generation.ts";
 import { OwnershipLock, serializeLocalOwnership } from "./ownership-lock.ts";
@@ -125,7 +125,7 @@ export function inspectActorClaim(base: string, launch: Launch): ActorClaim {
     process: undefined,
   };
 }
-function childEnvironment(launch: Launch): NodeJS.ProcessEnv {
+function childEnvironment(base: string, launch: Launch): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (
@@ -135,11 +135,16 @@ function childEnvironment(launch: Launch): NodeJS.ProcessEnv {
       delete env[key];
     }
   }
+  const scratchDir =
+    launch.scratchDir !== undefined || launch.contract !== undefined
+      ? ensureScratchDirectory(base, launch)
+      : undefined;
   return Object.assign(env, {
     PI_PACKAGE_DIR: launch.sdk,
     PI_CODING_AGENT_DIR: launch.agentDir,
     PI_INTERCOM_ROOT_SESSION_ID: launch.owner,
     PI_INTERCOM_PARENT_SESSION_ID: launch.owner,
+    ...(scratchDir !== undefined ? { PI_SUBAGENT_SCRATCH_DIR: scratchDir } : {}),
   });
 }
 interface LaunchClaim {
@@ -179,7 +184,7 @@ function startRunner(
     );
     child = spawn(process.execPath, [runner, base, launch.rootId, token, launch.id], {
       cwd: launch.cwd,
-      env: childEnvironment(launch),
+      env: childEnvironment(base, launch),
       detached: true,
       stdio: ["ignore", log, log],
     });

@@ -15,7 +15,7 @@ import {
   type Waiting,
 } from "./contracts.ts";
 import type { RunsInput } from "./tool-schemas.ts";
-import { conversation, read, runDirectory } from "./storage.ts";
+import { conversation, read, runDirectory, scratchDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
 import { escalationEvidenceLines } from "./overseer-evidence.ts";
 import { needsOverseerReview, readReview } from "./overseer-review.ts";
@@ -51,6 +51,7 @@ interface RunSummary {
   predecessor?: string | undefined;
   name?: string | undefined;
   cwd: string;
+  scratchDir?: string | undefined;
   model: string;
   thinking: string;
   context: string;
@@ -212,6 +213,7 @@ function metadata(
     predecessor: launch.predecessor,
     name: launch.name,
     cwd: launch.cwd,
+    ...(launch.contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
     model: `${launch.provider}/${launch.model}`,
     thinking: launch.thinking,
     context: launch.context,
@@ -386,6 +388,7 @@ function identityText(details: RunView): string {
   return [
     `Name ${details.name === undefined ? "(unnamed)" : JSON.stringify(details.name)}; model ${details.model}; thinking ${details.thinking}; context ${details.context}; ${details.result ? `ended ${utc(details.result.endedAt)}` : "no result yet"}.`,
     `Cwd: ${details.cwd}`,
+    ...(details.scratchDir !== undefined ? [`Scratch directory: ${details.scratchDir}`] : []),
     `Owner ${details.owner}; root run ${details.rootId}; predecessor ${details.predecessor ?? "none"}; native session ${details.sessionId}.`,
   ].join("\n");
 }
