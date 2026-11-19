@@ -7,9 +7,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Launch, Waiting } from "./contracts.ts";
 import type { loadSDK } from "./host.ts";
-import { inspectActorClaim, possiblyLive } from "./process.ts";
+import { actor, observeAlive } from "./process.ts";
 import { completionReceipts } from "./receipts.ts";
-import { readRunState, runStatus } from "./run-state.ts";
+import { readRunState, runStatus, type RunState } from "./run-state.ts";
 import { latest, launchAt, list, write } from "./storage.ts";
 import { Wake } from "./wake.ts";
 
@@ -27,50 +27,83 @@ export interface SubagentBackgroundWorkInput {
   readonly survivesRestart: boolean;
   readonly stop: (launch: Launch) => void;
 }
+type PendingCandidate =
+  | { readonly kind: "settled"; readonly launch: Launch }
+  | {
+      readonly kind: "active";
+      readonly launch: Launch;
+      readonly state: RunState;
+      readonly claim: NonNullable<ReturnType<typeof actor>>;
+    };
+function toBackgroundWorkItem(
+  launch: Launch,
+  survivesRestart: boolean,
+  stop: (launch: Launch) => void,
+): BackgroundWork {
+  const description =
+    launch.name !== undefined && launch.name !== ""
+      ? `Subagent ${launch.name} (${launch.id})`
+      : `Subagent ${launch.id}`;
+  return {
+    id: launch.id,
+    description,
+    survivesRestart,
+    cancel: () => Promise.try(() => stop(launch)),
+  };
+}
+function collectPendingCandidates(
+  base: string,
+  owner: string,
+  ids: readonly string[],
+  receipts: ReadonlyMap<string, string | undefined>,
+): PendingCandidate[] {
+  const candidates: PendingCandidate[] = [];
+  for (const id of ids) {
+    // Skip already-published runs before touching launch.json or result.json on disk.
+    if (receipts.get(id) !== undefined) {
+      continue;
+    }
+    let launch: Launch;
+    try {
+      launch = launchAt(base, id, owner);
+    } catch {
+      continue;
+    }
+    const state = readRunState(base, launch);
+    if (state.kind === "settled") {
+      candidates.push({ kind: "settled", launch });
+      continue;
+    }
+    const claim = actor(base, launch);
+    if (claim !== undefined) {
+      candidates.push({ kind: "active", launch, state, claim });
+    }
+  }
+  return candidates;
+}
 /** Reports active or undelivered subagent runs for the fork's `background_work` event. */
-export function subagentBackgroundWork(input: SubagentBackgroundWorkInput): BackgroundWork[] {
+export async function subagentBackgroundWork(
+  input: SubagentBackgroundWorkInput,
+): Promise<BackgroundWork[]> {
   const ids = list(input.base);
   if (ids.length === 0) {
     return [];
   }
   const receipts = completionReceipts(input.sessionManager, input.owner);
+  const candidates = collectPendingCandidates(input.base, input.owner, ids, receipts);
+  const active = candidates.filter((candidate) => candidate.kind === "active");
+  const live =
+    active.length === 0 ? [] : await observeAlive(active.map((candidate) => candidate.claim));
+  let activeIndex = 0;
   const work: BackgroundWork[] = [];
-  for (const id of ids) {
-    let launch: Launch;
-    try {
-      launch = launchAt(input.base, id, input.owner);
-    } catch {
-      continue;
+  for (const candidate of candidates) {
+    const include =
+      candidate.kind === "settled" ||
+      runStatus(input.base, candidate.launch, candidate.state, live[activeIndex++] === true) ===
+        "running";
+    if (include) {
+      work.push(toBackgroundWorkItem(candidate.launch, input.survivesRestart, input.stop));
     }
-    const state = readRunState(input.base, launch);
-    if (state.kind === "settled") {
-      if (receipts.get(launch.id) !== undefined) {
-        continue;
-      }
-    } else {
-      const status = runStatus(
-        input.base,
-        launch,
-        state,
-        possiblyLive(inspectActorClaim(input.base, launch)),
-      );
-      if (status !== "running") {
-        continue;
-      }
-    }
-    const description =
-      launch.name !== undefined && launch.name !== ""
-        ? `Subagent ${launch.name} (${launch.id})`
-        : `Subagent ${launch.id}`;
-    work.push({
-      id: launch.id,
-      description,
-      survivesRestart: input.survivesRestart,
-      cancel: () => {
-        input.stop(launch);
-        return Promise.resolve();
-      },
-    });
   }
   return work;
 }
@@ -81,16 +114,17 @@ export function registerSubagentBackgroundWork(
 ): void {
   Reflect.apply(pi.on.bind(pi), undefined, [
     "background_work",
-    () => {
+    async () => {
       const input = current();
-      return input === undefined
-        ? undefined
-        : {
-            work: subagentBackgroundWork({
-              ...input,
-              stop: (launch) => input.stop(latest(input.base, launch)),
-            }),
-          };
+      if (input === undefined) {
+        return;
+      }
+      return {
+        work: await subagentBackgroundWork({
+          ...input,
+          stop: (launch) => input.stop(latest(input.base, launch)),
+        }),
+      };
     },
   ]);
 }

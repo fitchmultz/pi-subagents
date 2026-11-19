@@ -345,3 +345,37 @@ nodeTest(
     await managed.shutdown("handoff");
   },
 );
+
+nodeTest(
+  "background_work cancel() returns a rejected promise rather than throwing synchronously when stop refuses an unverified actor",
+  async (t) => {
+    const sessionId = "bg-work-unverified-cancel";
+    const base = ownerDirectory(getPiAgentDir(), sessionId);
+    const host = await worker(t, sessionId);
+    fs.writeFileSync(
+      host.sessionFile,
+      `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: process.cwd() })}\n`,
+    );
+    await host.start();
+
+    const unverified = writeLaunch(base, sessionId, "run-unverified");
+    write(path.join(conversation(base, unverified), "actor.lock", "process.json"), {
+      pid: process.pid,
+      identity: "unverified",
+      token: "tok-unverified",
+    });
+
+    const items = await host.backgroundWork();
+    assert.equal(items.length, 1);
+    const item = items[0];
+    assert.ok(item !== undefined);
+    // Must not throw synchronously out of a caller's .map(item => item.cancel()).
+    let returned: Promise<void> | undefined;
+    assert.doesNotThrow(() => {
+      returned = item.cancel();
+    });
+    assert.ok(returned instanceof Promise);
+    await assert.rejects(returned, /Cannot verify actor process identity/);
+    await host.shutdown();
+  },
+);
