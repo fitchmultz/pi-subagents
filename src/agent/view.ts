@@ -21,6 +21,7 @@ import { conversation, read, runDirectory, scratchDirectory } from "./storage.ts
 import { published } from "./notifications.ts";
 import {
   activeContract,
+  formatContractAmendmentSummary,
   formatInspectionContractLines,
   readContractAmendments,
 } from "./overseer-contract.ts";
@@ -59,7 +60,6 @@ interface RunSummary {
   name?: string | undefined;
   cwd: string;
   contract?: DelegationContract | undefined;
-  contractAmendments?: ContractAmendment[] | undefined;
   scratchDir?: string | undefined;
   model: string;
   thinking: string;
@@ -82,8 +82,14 @@ interface RunSummary {
   outputFile: string;
   guidance: Guidance[];
 }
+interface AmendmentSummary {
+  readonly at: number;
+  readonly changedFields: ContractAmendment["changedFields"];
+  readonly summary: string;
+}
 interface RunView extends Omit<RunSummary, "result"> {
   result?: Result | undefined;
+  contractAmendments?: AmendmentSummary[] | undefined;
   output: ReturnType<typeof outputView>;
 }
 type Receipt =
@@ -216,7 +222,6 @@ function metadata(
   const state = runState(result, admission);
   const status = runStatus(base, launch, state, process.live);
   const contract = activeContract(base, launch);
-  const contractAmendments = readContractAmendments(base, launch);
   const scratchDir = contract !== undefined ? scratchDirectory(base, launch) : undefined;
   return {
     id: launch.id,
@@ -226,7 +231,6 @@ function metadata(
     name: launch.name,
     cwd: launch.cwd,
     ...(contract !== undefined ? { contract } : {}),
-    ...(contractAmendments.length > 0 ? { contractAmendments } : {}),
     ...(scratchDir !== undefined ? { scratchDir } : {}),
     model: `${launch.provider}/${launch.model}`,
     thinking: launch.thinking,
@@ -443,7 +447,7 @@ function reviewLine(details: RunView): string {
     details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
   return [prior, pending].filter(Boolean).join("\n");
 }
-function resultText(details: RunView): string {
+function resultText(details: RunView, amendments?: readonly ContractAmendment[]): string {
   const page = details.output;
   const suffix =
     page?.nextOffset !== undefined
@@ -455,7 +459,7 @@ function resultText(details: RunView): string {
   return [
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     identityText(details),
-    ...formatInspectionContractLines(details.contract, details.contractAmendments, utc),
+    ...formatInspectionContractLines(details.contract, amendments, utc),
     ...waitingLines(details.waiting),
     ...escalationLines(details.escalation),
     reviewLine(details),
@@ -478,9 +482,21 @@ export function renderInspection(
   ctx?: ExtensionContext,
   input: Pick<RunsInput, "offset" | "length"> = {},
 ): ToolReply {
-  const details = projection(base, launch, ctx, input);
+  const amendments = readContractAmendments(base, launch).slice(-20);
+  const contractAmendments =
+    amendments.length > 0
+      ? amendments.map((entry) => ({
+          at: entry.at,
+          changedFields: entry.changedFields,
+          summary: formatContractAmendmentSummary(entry),
+        }))
+      : undefined;
+  const details: RunView = {
+    ...projection(base, launch, ctx, input),
+    ...(contractAmendments !== undefined ? { contractAmendments } : {}),
+  };
   return {
-    ...toolResult(details, resultText(details)),
+    ...toolResult(details, resultText(details, amendments)),
     isError: details.result?.status === "failed",
   };
 }

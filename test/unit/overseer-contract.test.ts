@@ -1,5 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1039,8 +1040,15 @@ nodeTest(
       state: "accepted",
       at: Date.now(),
     });
+    const dummyActor = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+      stdio: "ignore",
+    });
+    assert.ok(dummyActor.pid !== undefined);
+    t.after(() => {
+      dummyActor.kill("SIGKILL");
+    });
     write(path.join(dir, "actor.lock", "process.json"), {
-      ...ownIdentity(),
+      ...ownIdentity(dummyActor.pid),
       token: "live-token",
     });
 
@@ -1103,6 +1111,7 @@ nodeTest(
       nonGoals: ["No custom shims"],
     });
     assert.deepEqual(steered.contract, activeContract(base, launch));
+    assert.equal("contractAmendments" in steered, false);
     const queued = read(path.join(dir, "commands", `${steered.command}.json`), commandSchema);
     assert.equal(queued?.action, "steer");
     assert.match(
@@ -1232,7 +1241,6 @@ nodeTest(
     let currentLaunch = launch1;
     const seenEvents: string[] = [];
     const factory = childRuntime(sdk, launch1, {
-      base,
       directory: run1Dir,
       token: "reload-token",
       activeLaunch: () => currentLaunch,

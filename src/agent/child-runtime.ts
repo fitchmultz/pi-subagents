@@ -39,34 +39,6 @@ function rewriteLocalBash(
   }
 }
 
-<<<<<<< HEAD
-function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: string): void {
-  const scratchDir =
-    launch.contract === undefined
-      ? undefined
-      : ensureScratchDirectory(path.dirname(directory), launch);
-  if (launch.contract !== undefined) {
-    const section = formatContractSection(launch.contract, { scratchDir });
-    pi.on("before_agent_start", (event) => {
-      const { sections } = event.systemPromptOptions;
-      sections.delegation_contract = section;
-    });
-||||||| parent of f0676a0f (feat: allow amending delegation contracts on agent_runs continue (OVR-207))
-function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: string): void {
-  const scratchDir =
-    launch.contract === undefined
-      ? undefined
-      : (launch.scratchDir ?? path.join(directory, "scratch"));
-  if (launch.contract !== undefined) {
-    if (scratchDir !== undefined) {
-      fs.mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
-    }
-    const section = formatContractSection(launch.contract, { scratchDir });
-    pi.on("before_agent_start", (event) => {
-      const { sections } = event.systemPromptOptions;
-      sections.delegation_contract = section;
-    });
-=======
 interface GuardOptions {
   readonly base: string;
   readonly activeLaunch: () => Launch;
@@ -74,14 +46,12 @@ interface GuardOptions {
   readonly token: string;
 }
 
-function resolveActiveContract(base: string, launch: Launch, directory: string) {
+function resolveActiveContract(base: string, launch: Launch) {
   const contract = activeContract(base, launch);
   if (contract === undefined) {
     return;
->>>>>>> f0676a0f (feat: allow amending delegation contracts on agent_runs continue (OVR-207))
   }
-  const scratchDir = launch.scratchDir ?? path.join(directory, "scratch");
-  fs.mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
+  const scratchDir = ensureScratchDirectory(base, launch);
   const latest = readContractAmendments(base, launch).at(-1);
   const latestAmendmentSummary =
     latest === undefined ? undefined : formatContractAmendmentSummary(latest);
@@ -91,7 +61,7 @@ function resolveActiveContract(base: string, launch: Launch, directory: string) 
 function guard(pi: ExtensionAPI, options: GuardOptions): void {
   const { base, activeLaunch, directory, token } = options;
   pi.on("before_agent_start", (event) => {
-    const resolved = resolveActiveContract(base, activeLaunch(), directory);
+    const resolved = resolveActiveContract(base, activeLaunch());
     const { sections } = event.systemPromptOptions;
     if (resolved === undefined) {
       delete sections.delegation_contract;
@@ -107,7 +77,7 @@ function guard(pi: ExtensionAPI, options: GuardOptions): void {
       return { block: true, reason: "Only a main session may delegate or control children." };
     }
     const launch = activeLaunch();
-    const resolved = resolveActiveContract(base, launch, directory);
+    const resolved = resolveActiveContract(base, launch);
     if (resolved !== undefined) {
       const scopeViolation = checkToolCallScope(
         { cwd: launch.cwd, scope: resolved.contract.scope, scratchDir: resolved.scratchDir },
@@ -152,7 +122,6 @@ function exposeChildTools(settings: SettingsManager): void {
   }
 }
 interface ChildHooks {
-  readonly base?: string | undefined;
   readonly directory: string;
   readonly token: string;
   readonly activeLaunch?: (() => Launch) | undefined;
@@ -196,7 +165,7 @@ export function childRuntime(
           ...(jobs ? [{ name: "background-command", builtin: true, factory: jobs }] : []),
           (pi) => {
             guard(pi, {
-              base: hooks.base ?? path.dirname(hooks.directory),
+              base: path.dirname(hooks.directory),
               activeLaunch: hooks.activeLaunch ?? (() => launch),
               directory: hooks.directory,
               token: hooks.token,
