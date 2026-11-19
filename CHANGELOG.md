@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Contracted child runs receive a private per-run scratch directory outside the repo (`PI_SUBAGENT_SCRATCH_DIR`) where edit tools are allowed for temporary files and scripts even under `scope: []`, shared across continuations and surfaced in `agent_runs inspect` (OVR-209).
 - `delegate` `contract.scope` supports native POSIX glob patterns (`src/**`, `test/**/*.test.ts`, `{src,test}/**`, `*.ts`) alongside literal relative path prefixes, validating static leading directory prefixes at launch (OVR-206).
 
 ## 0.52.55 - 2026-11-19
