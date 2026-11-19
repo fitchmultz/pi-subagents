@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.57 - 2026-11-19
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- fix(observe): wake TUI observer immediately on in-process run lifecycle updates (#480) ([9b4488d](https://github.com/fitchmultz/pi-subagents/commit/9b4488ddd5f6bd6538551eb268d0d4c89ec0bbaf))
+
+### What's Changed
+
+- fix(observe): wake TUI observer immediately on in-process run lifecycle updates by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/480
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.56...v0.52.57
+
 ## 0.52.56 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->
