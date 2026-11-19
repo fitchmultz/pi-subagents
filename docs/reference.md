@@ -474,9 +474,10 @@ When overseer mode is enabled, `delegate` requires `contract`:
 
 - `scope`: relative edit-tool path prefixes or native POSIX globs inside `cwd` (for example `src`,
   `src/foo.ts`, `src/**`, `test/**/*.test.ts`, `packages/*/src/**`, `{src,test}/**`, or `*.ts`),
-  `['*']` for any edit path in `cwd`, or `[]` to
-  disable edit tools. Pre-write scope checks constrain edit tools (`edit`, `write`, `replace_text`,
-  `write_files`, `apply_patch`); shell commands are not OS-sandboxed and are checked post-turn via
+  `['*']` for any edit path in `cwd`, or `[]` to disable repo edits (edit tools remain allowed only
+  inside the run's private scratch directory below). Pre-write scope checks constrain edit tools
+  (`edit`, `write`, `replace_text`, `write_files`, `apply_patch`); shell commands are not
+  OS-sandboxed and are checked post-turn via
   `git status`.
 - `verification`: required when `scope` is non-empty.
 - `baseBranch`, `requiredPrimitives`, `nonGoals`: optional Git and native-API constraints.

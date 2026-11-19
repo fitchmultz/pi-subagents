@@ -60,7 +60,7 @@ export function normalizeDelegationContract(raw: DelegationContract): Delegation
   const verification = trimList(raw.verification);
   if (scope.length > 0 && verification === undefined) {
     throw new Error(
-      "Mutating delegation contract requires at least one verification check (or use scope: [] to disable edit tools).",
+      "Mutating delegation contract requires at least one verification check (or use scope: [] to disable repo edits; edit tools remain allowed only inside the run's scratch directory).",
     );
   }
   const baseBranch = raw.baseBranch?.trim();
