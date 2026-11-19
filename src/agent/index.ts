@@ -11,23 +11,15 @@ import {
   parkFailure,
 } from "./process.ts";
 import { stopChildren, stopRun } from "./shutdown.ts";
-import { publishAttachment } from "./attachment.ts";
 import {
-  isChild,
-  errorText,
-  managedHost,
-  rememberSDK,
-  retainsChildren,
-  type ManagedHost,
-} from "./host.ts";
+  publishAttachment,
+  releasesAttachment,
+  type AttachmentBinding,
+  type AttachmentState,
+} from "./attachment.ts";
+import { isChild, errorText, managedHost, rememberSDK, retainsChildren } from "./host.ts";
 import { serveParked } from "./parking.ts";
-import {
-  attachmentSchema,
-  commandSchema,
-  type Attachment,
-  type Launch,
-  type ProcessIdentity,
-} from "./contracts.ts";
+import { attachmentSchema, commandSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
 import { registerAgentTools, type DelegateInput, type RunsInput } from "./tool-schemas.ts";
 import {
   enqueue,
@@ -49,6 +41,7 @@ import { pathStamp } from "./wake.ts";
 import { CompletionWatches } from "./completion-watches.ts";
 import { savedContinuation } from "./saved.ts";
 import { continuationDecision, readRunState } from "./run-state.ts";
+import { registerSubagentBackgroundWork } from "./background-work.ts";
 import { executionCwd } from "./cwd.ts";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { registerCompactMessages } from "../shared/compact-cards.ts";
@@ -66,20 +59,6 @@ import {
 } from "./overseer-contract.ts";
 import { prepareOverseerReviewAction, registerOverseerSettleGate } from "./overseer-review.ts";
 
-interface AttachmentBinding {
-  readonly context: ExtensionContext;
-  readonly owner: string;
-  readonly base: string;
-  readonly host: ManagedHost | undefined;
-}
-type AttachmentState =
-  | { readonly kind: "detached" }
-  | { readonly kind: "waiting"; readonly binding: AttachmentBinding }
-  | {
-      readonly kind: "attaching" | "attached" | "failed";
-      readonly binding: AttachmentBinding;
-      readonly generation: string;
-    };
 /** Legacy results are optional; their reconciliation reports an invalid configured root. */
 function legacyInput(): string[] {
   try {
@@ -275,7 +254,7 @@ class AgentRuntime {
       if (!retain && !this.child && this.attachment.kind !== "detached") {
         const file = path.join(this.base, "attachment.json");
         const attachment = read(file, attachmentSchema);
-        if (attachment !== undefined && this.releases(attachment)) {
+        if (attachment !== undefined && releasesAttachment(this.attachment, attachment)) {
           write(file, {
             ...this.ownerIdentity(),
             generation: attachment.generation,
@@ -288,20 +267,6 @@ class AgentRuntime {
       }
     } finally {
       this.attachment = { kind: "detached" };
-    }
-  }
-  private releases(attachment: Attachment): boolean {
-    const state = this.attachment;
-    switch (state.kind) {
-      case "detached":
-        return false;
-      case "waiting":
-        // An unready replacement can release the launcher's existing generation on quit.
-        return attachment.attached && attachment.pid === state.binding.host?.owner.pid;
-      case "attaching":
-      case "attached":
-      case "failed":
-        return attachment.generation === state.generation;
     }
   }
   private stop(launch: Launch) {
@@ -500,6 +465,28 @@ class AgentRuntime {
     this.pi.on("session_shutdown", (event) =>
       this.dispose(event.reason === "reload" || retainsChildren(event)),
     );
+    registerSubagentBackgroundWork(this.pi, () => {
+      if (
+        this.child ||
+        this.stopping ||
+        this.attachment.kind === "detached" ||
+        this.attachment.kind === "failed"
+      ) {
+        return;
+      }
+      const { base, owner, context, host } = this.attachment.binding;
+      return {
+        base,
+        owner,
+        sessionManager: context.sessionManager,
+        survivesRestart: host !== undefined,
+        stop: (launch) => {
+          if (!this.stopping && this.attachment.kind !== "detached") {
+            this.stop(launch);
+          }
+        },
+      };
+    });
     if (this.child) {
       this.pi.on("tool_call", (event) => {
         if (event.toolName === "delegate" || event.toolName === "agent_runs") {

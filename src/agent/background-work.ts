@@ -1,15 +1,98 @@
 import * as fs from "node:fs";
-import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import type { Waiting } from "./contracts.ts";
+import type {
+  AgentSession,
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
+import type { Launch, Waiting } from "./contracts.ts";
 import type { loadSDK } from "./host.ts";
-import { write } from "./storage.ts";
+import { inspectActorClaim, possiblyLive } from "./process.ts";
+import { completionReceipts } from "./receipts.ts";
+import { readRunState, runStatus } from "./run-state.ts";
+import { latest, launchAt, list, write } from "./storage.ts";
 import { Wake } from "./wake.ts";
 
 /** Unfinished work that will message its session when it ends, as the session lists it. */
-interface BackgroundWork {
+export interface BackgroundWork {
   readonly id: string;
   readonly description: string;
   readonly cancel: () => Promise<void>;
+  readonly survivesRestart?: boolean;
+}
+export interface SubagentBackgroundWorkInput {
+  readonly base: string;
+  readonly owner: string;
+  readonly sessionManager: ExtensionContext["sessionManager"];
+  readonly survivesRestart: boolean;
+  readonly stop: (launch: Launch) => void;
+}
+/** Reports active or undelivered subagent runs for the fork's `background_work` event. */
+export function subagentBackgroundWork(input: SubagentBackgroundWorkInput): BackgroundWork[] {
+  const ids = list(input.base);
+  if (ids.length === 0) {
+    return [];
+  }
+  const receipts = completionReceipts(input.sessionManager, input.owner);
+  const work: BackgroundWork[] = [];
+  for (const id of ids) {
+    let launch: Launch;
+    try {
+      launch = launchAt(input.base, id, input.owner);
+    } catch {
+      continue;
+    }
+    const state = readRunState(input.base, launch);
+    if (state.kind === "settled") {
+      if (receipts.get(launch.id) !== undefined) {
+        continue;
+      }
+    } else {
+      const status = runStatus(
+        input.base,
+        launch,
+        state,
+        possiblyLive(inspectActorClaim(input.base, launch)),
+      );
+      if (status !== "running") {
+        continue;
+      }
+    }
+    const description =
+      launch.name !== undefined && launch.name !== ""
+        ? `Subagent ${launch.name} (${launch.id})`
+        : `Subagent ${launch.id}`;
+    work.push({
+      id: launch.id,
+      description,
+      survivesRestart: input.survivesRestart,
+      cancel: () => {
+        input.stop(launch);
+        return Promise.resolve();
+      },
+    });
+  }
+  return work;
+}
+/** Registers the fork-only `background_work` query for main-session subagent runs. */
+export function registerSubagentBackgroundWork(
+  pi: ExtensionAPI,
+  current: () => SubagentBackgroundWorkInput | undefined,
+): void {
+  Reflect.apply(pi.on.bind(pi), undefined, [
+    "background_work",
+    () => {
+      const input = current();
+      return input === undefined
+        ? undefined
+        : {
+            work: subagentBackgroundWork({
+              ...input,
+              stop: (launch) => input.stop(latest(input.base, launch)),
+            }),
+          };
+    },
+  ]);
 }
 /**
  * Fork-only: the session lists the work that can still wake it. Official Pi cannot, so its

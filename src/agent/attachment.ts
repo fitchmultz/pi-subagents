@@ -1,8 +1,39 @@
 import * as path from "node:path";
-import { attachmentSchema, type ProcessIdentity } from "./contracts.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { attachmentSchema, type Attachment, type ProcessIdentity } from "./contracts.ts";
+import type { ManagedHost } from "./host.ts";
 import { alive, published } from "./process.ts";
 import { read, write } from "./storage.ts";
 import { OwnershipLock } from "./ownership-lock.ts";
+
+export interface AttachmentBinding {
+  readonly context: ExtensionContext;
+  readonly owner: string;
+  readonly base: string;
+  readonly host: ManagedHost | undefined;
+}
+export type AttachmentState =
+  | { readonly kind: "detached" }
+  | { readonly kind: "waiting"; readonly binding: AttachmentBinding }
+  | {
+      readonly kind: "attaching" | "attached" | "failed";
+      readonly binding: AttachmentBinding;
+      readonly generation: string;
+    };
+
+export function releasesAttachment(state: AttachmentState, attachment: Attachment): boolean {
+  switch (state.kind) {
+    case "detached":
+      return false;
+    case "waiting":
+      // An unready replacement can release the launcher's existing generation on quit.
+      return attachment.attached && attachment.pid === state.binding.host?.owner.pid;
+    case "attaching":
+    case "attached":
+    case "failed":
+      return attachment.generation === state.generation;
+  }
+}
 
 /** Refuse a foreign live main before publishing this attachment's generation. */
 export function publishAttachment(
