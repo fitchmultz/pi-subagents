@@ -10,13 +10,47 @@ import {
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
+import { OVERSEER_STATE_FILE } from "./overseer.ts";
 
 export const OVERSEER_CORRECTION = "overseer-correction";
 export type SteerCommand = Extract<Command, { action: "steer" }>;
 
 export type EscalationAnswer =
   | { readonly verdict: "stopped" }
+  | { readonly verdict: "released" }
   | { readonly verdict: "approved" | "steered"; readonly commands: readonly SteerCommand[] };
+
+export interface EscalationWaitOptions {
+  readonly admitPending?: (() => void) | undefined;
+  readonly shouldRelease?: (() => boolean) | undefined;
+}
+
+function watchLiveState(
+  base: string,
+  shouldRelease: (() => boolean) | undefined,
+  raise: () => void,
+): DirectoryWatch | undefined {
+  return shouldRelease === undefined
+    ? undefined
+    : new DirectoryWatch(base, (file) => file === null || file === OVERSEER_STATE_FILE, raise);
+}
+
+function resolveWaitAnswer(input: {
+  readonly resolutionFile: string;
+  readonly escalationId: string;
+  readonly isStopping: () => boolean;
+  readonly shouldRelease?: (() => boolean) | undefined;
+  readonly commands: readonly SteerCommand[];
+}): EscalationAnswer {
+  const verdict = pauseResolution(input.resolutionFile, input.escalationId);
+  if (input.isStopping() || verdict === "stopped") {
+    return { verdict: "stopped" };
+  }
+  if (verdict === undefined && input.commands.length === 0 && input.shouldRelease?.() === true) {
+    return { verdict: "released" };
+  }
+  return { verdict: verdict ?? "steered", commands: input.commands };
+}
 
 function pauseResolution(file: string, id: string): "approved" | "stopped" | undefined {
   const resolution = read(file, escalationResolutionSchema);
@@ -80,38 +114,62 @@ export class EscalationPause {
     base: string,
     escalation: Escalation,
     isStopping: () => boolean,
-    admitPending?: () => void,
+    options?: EscalationWaitOptions,
   ): Promise<EscalationAnswer> {
     const runDir = runDirectory(base, this.runId);
     const escalationFile = path.join(runDir, "escalation.json");
     const resolutionFile = path.join(runDir, "escalation-resolution.json");
+    const { admitPending, shouldRelease } = options ?? {};
     write(escalationFile, escalation);
     const watchRun = new DirectoryWatch(runDir, () => true, this.wake.raise);
-    let published: ReturnType<typeof pauseResolution>;
+    const watchBase = watchLiveState(base, shouldRelease, this.wake.raise);
     try {
-      while (!isStopping()) {
-        this.wake.take();
-        watchRun.ensure();
-        published = pauseResolution(resolutionFile, escalation.id);
-        if (published !== undefined || this.commands.length > 0) {
-          break;
-        }
-        await this.wake.sleep(200);
-      }
-      if (!isStopping() && published !== "stopped") {
+      const published = await this.waitForSignal({
+        watchRun,
+        watchBase,
+        resolutionFile,
+        escalationId: escalation.id,
+        isStopping,
+        shouldRelease,
+      });
+      if (!isStopping() && published !== "stopped" && shouldRelease?.() !== true) {
         // The approval watcher can wake before the command watcher.
         admitPending?.();
       }
     } finally {
       watchRun.close();
+      watchBase?.close();
       fs.rmSync(escalationFile, { force: true });
     }
     // Include an approval published while the pause was still open.
-    const verdict = pauseResolution(resolutionFile, escalation.id);
-    if (isStopping() || verdict === "stopped") {
-      return { verdict: "stopped" };
+    return resolveWaitAnswer({
+      resolutionFile,
+      escalationId: escalation.id,
+      isStopping,
+      shouldRelease,
+      commands: this.commands,
+    });
+  }
+
+  private async waitForSignal(input: {
+    readonly watchRun: DirectoryWatch;
+    readonly watchBase: DirectoryWatch | undefined;
+    readonly resolutionFile: string;
+    readonly escalationId: string;
+    readonly isStopping: () => boolean;
+    readonly shouldRelease: (() => boolean) | undefined;
+  }): Promise<ReturnType<typeof pauseResolution>> {
+    while (!input.isStopping()) {
+      this.wake.take();
+      input.watchRun.ensure();
+      input.watchBase?.ensure();
+      const published = pauseResolution(input.resolutionFile, input.escalationId);
+      if (published !== undefined || this.commands.length > 0 || input.shouldRelease?.() === true) {
+        return published;
+      }
+      await this.wake.sleep(200);
     }
-    return { verdict: verdict ?? "steered", commands: this.commands };
+    return undefined;
   }
 }
 

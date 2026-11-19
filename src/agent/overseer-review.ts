@@ -8,6 +8,7 @@ import {
   type OverseerReview,
   type Result,
 } from "./contracts.ts";
+import { activeOverseer } from "./overseer.ts";
 import { resolveActiveEscalation } from "./overseer-pause.ts";
 import { notifyInventory } from "./inventory-events.ts";
 import { completionReceipts } from "./receipts.ts";
@@ -28,12 +29,11 @@ function isApprovedAfter(base: string, runId: string, endedAt: number): boolean 
 export function isReviewableResult(
   launch: Launch,
   result: Result | undefined,
+  base?: string,
 ): result is Result & { status: "completed"; changedFiles: string[] } {
-  return (
-    launch.overseer?.enabled === true &&
-    result?.status === "completed" &&
-    (result.changedFiles?.length ?? 0) > 0
-  );
+  const enabled =
+    base === undefined ? launch.overseer?.enabled === true : activeOverseer(base, launch).enabled;
+  return enabled && result?.status === "completed" && (result.changedFiles?.length ?? 0) > 0;
 }
 
 export function needsOverseerReview(
@@ -41,7 +41,7 @@ export function needsOverseerReview(
   launch: Launch,
   result: Result | undefined,
 ): boolean {
-  if (!isReviewableResult(launch, result)) {
+  if (!isReviewableResult(launch, result, base)) {
     return false;
   }
   if (read(path.join(runDirectory(base, launch.id), "successor.json"), successorSchema)) {

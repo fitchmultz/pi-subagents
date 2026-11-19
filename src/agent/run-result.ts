@@ -5,6 +5,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AccountingState, Launch, Result } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { activeContract } from "./overseer-contract.ts";
+import { activeOverseer } from "./overseer.ts";
 import { captureRepoSnapshot, launchPoint, ownChanges, type ReviewPoint } from "./overseer-git.ts";
 import { harnessExcludePaths } from "./overseer-sentinel.ts";
 import { runDirectory, write } from "./storage.ts";
@@ -62,9 +63,10 @@ export interface EndedRun {
   readonly repoBaseline?: ReviewPoint | undefined;
 }
 export function captureOverseerBaseline(base: string, launch: Launch): ReviewPoint | undefined {
-  return launch.overseer?.enabled === true
+  const contract = activeContract(base, launch);
+  return activeOverseer(base, launch).enabled || contract !== undefined
     ? launchPoint(launch.cwd, {
-        baseBranch: activeContract(base, launch)?.baseBranch,
+        baseBranch: contract?.baseBranch,
         excludePaths: harnessExcludePaths(base, launch),
       })
     : undefined;

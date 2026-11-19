@@ -46,6 +46,8 @@ import {
   recordContractAmendment,
 } from "../../src/agent/overseer-contract.ts";
 import { OverseerSentinel } from "../../src/agent/overseer-sentinel.ts";
+import { writeLiveOverseer } from "../../src/agent/overseer.ts";
+import { needsOverseerReview } from "../../src/agent/overseer-review.ts";
 import { read, runDirectory, write } from "../../src/agent/storage.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
@@ -1086,6 +1088,10 @@ async function supervisedRun(
     available?: () => boolean;
     /** The cancellation signal of the child's active run, when the test has one. */
     signal?: () => AbortSignal | undefined;
+    /** Optional launch-time overseer override (pass `null` for a contracted run launched with overseer off). */
+    overseer?: Launch["overseer"] | null;
+    /** Hook run inside classify before answering, for testing mid-request aborts. */
+    onClassify?: (signal: AbortSignal | undefined) => Promise<void> | void;
   },
 ) {
   const repo = initGitRepo(t);
@@ -1095,7 +1101,14 @@ async function supervisedRun(
     fs.rmSync(base, { recursive: true, force: true });
   });
   const owner = SessionManager.inMemory().getSessionId();
-  const launch = sampleLaunch(base, repo, owner);
+  const baseLaunch = sampleLaunch(base, repo, owner);
+  let launch: Launch = baseLaunch;
+  if (options.overseer === null) {
+    const { overseer: _removed, ...rest } = baseLaunch;
+    launch = rest;
+  } else if (options.overseer !== undefined) {
+    launch = { ...baseLaunch, overseer: options.overseer };
+  }
   const journal = SessionManager.inMemory();
   journal.appendMessage({
     role: "user",
@@ -1157,7 +1170,7 @@ async function supervisedRun(
       getAvailableOfType: () =>
         Promise.resolve(options.available?.() === false ? [] : [classifier]),
       getModelOfType: () => classifier,
-      classify: (
+      classify: async (
         _model: unknown,
         context: ClassifierContext,
         request?: { signal?: AbortSignal },
@@ -1171,6 +1184,7 @@ async function supervisedRun(
         };
         judged.push(asked);
         judgedContracts.push(contract);
+        await options.onClassify?.(request?.signal);
         const failure = {
           api: classifier.api,
           provider: classifier.provider,
@@ -1180,17 +1194,17 @@ async function supervisedRun(
         };
         // As the registry reports a request that its caller's signal cancelled.
         if (request?.signal?.aborted === true) {
-          return Promise.resolve({ ...failure, stopReason: "aborted", errorMessage: "aborted" });
+          return { ...failure, stopReason: "aborted", errorMessage: "aborted" };
         }
         const choice = options.verdict(asked.diff);
         if (choice === "request_failed") {
-          return Promise.resolve({
+          return {
             ...failure,
             stopReason: "error",
             errorMessage: "credits depleted",
-          });
+          };
         }
-        return Promise.resolve({
+        return {
           api: classifier.api,
           provider: classifier.provider,
           model: classifier.id,
@@ -1204,7 +1218,7 @@ async function supervisedRun(
               confidence: 0.9,
             },
           },
-        });
+        };
       },
     },
   };
@@ -1863,5 +1877,143 @@ nodeTest(
     // Resuming with repaired baseBranch passes cleanly.
     assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
     assert.equal(fs.existsSync(escPath), false);
+  },
+);
+
+nodeTest(
+  "disabling the judge mid-run aborts in-flight judge calls and releases judge pauses while keeping deterministic tripwires active",
+  async (t) => {
+    let hangJudge = false;
+    let releaseHang: (() => void) | undefined;
+    let signalStarted!: (signal: AbortSignal | undefined) => void;
+    const firstSignal = new Promise<AbortSignal | undefined>((resolve) => {
+      signalStarted = resolve;
+    });
+    const { repo, base, launch, emit, paused, judged, escPath, steer } = await supervisedRun(t, {
+      verdict: () => "primitive_violation",
+      onClassify: async (signal) => {
+        if (!hangJudge) {
+          return;
+        }
+        signalStarted(signal);
+        await new Promise<void>((resolve) => {
+          releaseHang = resolve;
+          signal?.addEventListener(
+            "abort",
+            () => {
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
+    await emit("before_agent_start", {});
+
+    // 1. Disabling the judge while a judge call is in flight aborts it without recording judge-unavailable or pausing.
+    hangJudge = true;
+    fs.writeFileSync(path.join(repo, "src", "allowed.ts"), manyLines("inflight"));
+    const inFlightTurn = emit("turn_end", mutatingTurn);
+    const seenSignal = await firstSignal;
+    assert.ok(seenSignal !== undefined);
+    writeLiveOverseer(base, { enabled: true, judge: "off" });
+    await inFlightTurn;
+    releaseHang?.();
+    assert.equal(seenSignal.aborted, true);
+    assert.equal(fs.existsSync(escPath), false);
+    assert.equal(
+      fs.existsSync(path.join(runDirectory(base, launch.id), "judge-unavailable.json")),
+      false,
+    );
+
+    // 2. While judge is off, deterministic scope violations still pause and are NOT released by judge=off.
+    fs.writeFileSync(path.join(repo, "outside.txt"), "outside scope while judge is off\n");
+    const scopeTurn = emit("turn_end", mutatingTurn);
+    const scopePause = await paused();
+    assert.equal(scopePause.kind, "scope_violation");
+    assert.equal(scopePause.classifierReview, undefined);
+    writeLiveOverseer(base, { enabled: true, judge: "off" });
+    await delay(80);
+    assert.equal(fs.existsSync(escPath), true);
+    fs.unlinkSync(path.join(repo, "outside.txt"));
+    steer();
+    await scopeTurn;
+
+    // 3. Re-enabling judge pauses on a judge finding; toggling judge=off releases that pause without marking changes approved.
+    hangJudge = false;
+    writeLiveOverseer(base, { enabled: true, judge: "auto" });
+    const judgedBefore = judged.length;
+    const judgeTurn = emit("agent_before_settle", settle);
+    const judgePause = await paused();
+    assert.equal(judgePause.kind, "primitive_violation");
+    assert.ok(judgePause.classifierReview !== undefined);
+    assert.equal(judged.length, judgedBefore + 1);
+
+    writeLiveOverseer(base, { enabled: true, judge: "off" });
+    await judgeTurn;
+    assert.equal(fs.existsSync(escPath), false);
+
+    // Re-enabling judge still sees those unapproved changes (since="launch", not "last_approval").
+    writeLiveOverseer(base, { enabled: true, judge: "auto" });
+    const secondJudge = emit("agent_before_settle", settle);
+    const secondPause = await paused();
+    assert.equal(secondPause.since, "launch");
+    writeLiveOverseer(base, { enabled: false, judge: "auto" });
+    await secondJudge;
+    assert.equal(fs.existsSync(escPath), false);
+  },
+);
+
+nodeTest(
+  "toggling overseer off and on mid-run immediately releases pauses, stops checks, and supervises existing contracted children on re-enable",
+  async (t) => {
+    const { repo, base, launch, emit, paused, judged, escPath } = await supervisedRun(t, {
+      verdict: () => "compliant",
+      overseer: null,
+    });
+    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
+    writeLiveOverseer(base, { enabled: false, judge: "auto" });
+    await emit("before_agent_start", {});
+
+    // With overseer off, out-of-scope edits neither pause nor invoke the judge.
+    fs.writeFileSync(path.join(repo, "README.md"), "edited while overseer off\n");
+    await emit("turn_end", mutatingTurn);
+    assert.equal(fs.existsSync(escPath), false);
+    assert.equal(judged.length, 0);
+
+    // Turning overseer on mid-run supervises the already-running contracted child using its launch baseline.
+    writeLiveOverseer(base, { enabled: true, judge: "auto" });
+    const pausedTurn = emit("turn_end", mutatingTurn);
+    const scopePause = await paused();
+    assert.equal(scopePause.kind, "scope_violation");
+    assert.deepEqual(scopePause.changedFiles, ["README.md"]);
+
+    // Turning overseer off releases the deterministic pause cleanly and suppresses review requirements.
+    writeLiveOverseer(base, { enabled: false, judge: "auto" });
+    await pausedTurn;
+    assert.equal(fs.existsSync(escPath), false);
+    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
+    assert.equal(
+      needsOverseerReview(base, launch, {
+        id: launch.id,
+        owner: launch.owner,
+        status: "completed",
+        endedAt: Date.now(),
+        changedFiles: ["src/allowed.ts"],
+      }),
+      false,
+    );
+    writeLiveOverseer(base, { enabled: true, judge: "auto" });
+    assert.equal(
+      needsOverseerReview(base, launch, {
+        id: launch.id,
+        owner: launch.owner,
+        status: "completed",
+        endedAt: Date.now(),
+        changedFiles: ["src/allowed.ts"],
+      }),
+      true,
+    );
   },
 );

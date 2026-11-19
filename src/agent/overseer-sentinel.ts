@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import type { DelegationContract, Escalation, Launch } from "./contracts.ts";
-import { errorText } from "./host.ts";
 import { activeContract } from "./overseer-contract.ts";
 import { ToolErrorWindow } from "./overseer-evidence.ts";
 import {
@@ -20,12 +19,15 @@ import {
 import {
   checkDeterministicTripwires,
   clearJudgeUnavailable,
-  evaluateDecisionCheckpoint,
+  evaluateLiveDecisionCheckpoint,
+  isEscalationReleased,
+  isJudgeDisabled,
   recordJudgeUnavailable,
   type Violation,
 } from "./overseer-judge.ts";
-import { EscalationPause, type SteerCommand } from "./overseer-pause.ts";
+import { EscalationPause, type EscalationAnswer, type SteerCommand } from "./overseer-pause.ts";
 import { checkpointGuidance } from "./overseer-guidance.ts";
+import { activeOverseer } from "./overseer.ts";
 
 const MUTATING_TOOLS = new Set([
   "edit",
@@ -106,34 +108,6 @@ interface SentinelOptions {
   readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
-/** Rejects when no judge answered. */
-async function askJudge(
-  launch: Launch,
-  contract: DelegationContract,
-  ctx: ExtensionContext,
-  work: {
-    guidance: readonly string[];
-    checkpoint: Work;
-    acceptedFiles: readonly string[];
-    failed: Set<string>;
-  },
-): Promise<Violation | undefined> {
-  return evaluateDecisionCheckpoint({
-    modelRegistry: ctx.modelRegistry,
-    judgeSpec: launch.overseer?.judge,
-    prompt: launch.prompt,
-    continuation: launch.predecessor !== undefined,
-    guidance: work.guidance,
-    contract,
-    changedFiles: work.checkpoint.changes.files,
-    acceptedFiles: work.acceptedFiles,
-    diff: work.checkpoint.diff,
-    failed: work.failed,
-    // Cancelling the child's run cancels its judge request.
-    signal: ctx.signal,
-  });
-}
-
 export function harnessExcludePaths(base: string, launch: Launch): string[] {
   return [base, launch.agentDir, path.dirname(launch.sessionFile)];
 }
@@ -149,7 +123,7 @@ export class OverseerSentinel {
 
   private primeBaseline(launch: Launch): void {
     const contract = activeContract(this.options.base, launch);
-    if (launch.overseer?.enabled === true && contract !== undefined) {
+    if (contract !== undefined) {
       this.ensureState(launch, contract);
     }
   }
@@ -297,10 +271,36 @@ export class OverseerSentinel {
     const pause = new EscalationPause(launch.id);
     this.pause = pause;
     const answer = await pause
-      .wait(this.options.base, escalation, this.options.isStopping, this.options.admitPending)
+      .wait(this.options.base, escalation, this.options.isStopping, {
+        admitPending: this.options.admitPending,
+        shouldRelease: () => isEscalationReleased(this.options.base, launch, escalation),
+      })
       .finally(() => {
         this.pause = undefined;
       });
+    this.applyEscalationAnswer({ launch, issue, checkpoint, answer });
+  }
+
+  private applyEscalationAnswer(input: {
+    readonly launch: Launch;
+    readonly issue: Violation;
+    readonly checkpoint: Work;
+    readonly answer: EscalationAnswer;
+  }): void {
+    const { launch, issue, checkpoint, answer } = input;
+    if (answer.verdict === "released") {
+      if (isJudgeDisabled(this.options.base, launch)) {
+        clearJudgeUnavailable(this.options.base, launch.id);
+      }
+      if (this.state !== undefined) {
+        this.state.judged = { tree: "", lines: 0 };
+      }
+      return;
+    }
+    const current = this.state;
+    if (answer.verdict === "stopped" || current === undefined) {
+      return;
+    }
     if (answer.verdict === "approved") {
       this.pass(launch, checkpoint.snapshot);
       current.approved = current.reviewPoint;
@@ -309,7 +309,7 @@ export class OverseerSentinel {
         current.approvedBranchIssues.add(issue.summary);
       }
     }
-    if (answer.verdict !== "stopped" && answer.commands.length > 0) {
+    if (answer.commands.length > 0) {
       current.steers += 1;
       for (const { id, prompt } of answer.commands) {
         current.admittedCorrections.set(id, prompt);
@@ -325,7 +325,11 @@ export class OverseerSentinel {
     toolErrorTurns?: Escalation["toolErrorTurns"],
   ): Promise<void> {
     const contract = activeContract(this.options.base, launch);
-    if (launch.overseer?.enabled !== true || contract === undefined || this.options.isStopping()) {
+    if (
+      !activeOverseer(this.options.base, launch).enabled ||
+      contract === undefined ||
+      this.options.isStopping()
+    ) {
       return;
     }
     const current = this.ensureState(launch, contract);
@@ -366,6 +370,11 @@ export class OverseerSentinel {
     ctx: ExtensionContext,
     options: { readonly checkpoint: Work; readonly finalSettle: boolean },
   ): Promise<void> {
+    const initialLive = activeOverseer(this.options.base, launch);
+    if (!initialLive.enabled) {
+      clearJudgeUnavailable(this.options.base, launch.id);
+      return;
+    }
     const { checkpoint, finalSettle } = options;
     const current = this.ensureState(launch, contract);
     const { snapshot } = checkpoint;
@@ -376,50 +385,64 @@ export class OverseerSentinel {
     if (!shouldRunJudgeCheckpoint(current, checkpoint, finalSettle)) {
       return;
     }
+    if (initialLive.judge === "off") {
+      current.turnsSinceJudge = 0;
+      current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
+      clearJudgeUnavailable(this.options.base, launch.id);
+      this.pass(launch, snapshot);
+      return;
+    }
+    const acceptedFiles = this.changedBefore(launch, current.reviewPoint);
+    const guidance = checkpointGuidance(ctx.sessionManager, launch, {
+      baseline: this.options.activeRunBaseline(),
+      admittedCorrections: current.admittedCorrections,
+    });
+    const outcome = await evaluateLiveDecisionCheckpoint(this.options.base, launch, {
+      modelRegistry: ctx.modelRegistry,
+      judgeSpec: initialLive.judge,
+      prompt: launch.prompt,
+      continuation: launch.predecessor !== undefined,
+      guidance,
+      contract,
+      changedFiles: checkpoint.changes.files,
+      acceptedFiles,
+      diff: checkpoint.diff,
+      failed: current.failedJudges,
+      // Cancelling the child's run or disabling the judge mid-run cancels its judge request.
+      signal: ctx.signal,
+    });
+    if (outcome.kind === "disabled") {
+      clearJudgeUnavailable(this.options.base, launch.id);
+      return;
+    }
+    if (outcome.kind === "aborted") {
+      // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
+      return;
+    }
     current.turnsSinceJudge = 0;
     current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
-    const acceptedFiles = this.changedBefore(launch, current.reviewPoint);
-    // The signal of the run that is active now. `ctx.signal` is gone when that run ends.
-    const { signal } = ctx;
-    let verdict: Violation | undefined;
-    try {
-      const guidance = checkpointGuidance(ctx.sessionManager, launch, {
-        baseline: this.options.activeRunBaseline(),
-        admittedCorrections: current.admittedCorrections,
-      });
-      const failed = current.failedJudges;
-      verdict = await askJudge(launch, contract, ctx, {
-        guidance,
-        checkpoint,
-        acceptedFiles,
-        failed,
-      });
-    } catch (error) {
-      if (signal?.aborted === true) {
-        // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
-        return;
-      }
+    if (outcome.kind === "unavailable") {
       // No judge answered. That is no finding about the work, so the child is not paused. The
       // review point stays: a later checkpoint asks again about all the work since then, and
       // the completion notice reports a run that ends with work no judge answered for.
-      recordJudgeUnavailable(this.options.base, launch.id, errorText(error));
+      recordJudgeUnavailable(this.options.base, launch.id, outcome.error);
       return;
     }
     // A classifier answered: the work is judged, whatever the verdict.
     clearJudgeUnavailable(this.options.base, launch.id);
-    if (verdict === undefined) {
+    if (outcome.verdict === undefined) {
       this.pass(launch, snapshot);
       return;
     }
     if (!this.options.isStopping()) {
-      await this.escalate(launch, verdict, checkpoint);
+      await this.escalate(launch, outcome.verdict, checkpoint);
     }
   }
 
   private async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext) {
     const launch = this.options.activeLaunch();
     const contract = activeContract(this.options.base, launch);
-    if (launch.overseer?.enabled !== true || contract === undefined) {
+    if (!activeOverseer(this.options.base, launch).enabled || contract === undefined) {
       return;
     }
     const current = this.ensureState(launch, contract);

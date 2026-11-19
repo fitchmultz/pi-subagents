@@ -12,6 +12,7 @@ import {
   type Result,
 } from "./contracts.ts";
 import { isReviewableResult } from "./overseer-review.ts";
+import { activeOverseer } from "./overseer.ts";
 import {
   escalationEvidenceLines,
   escalationKindLabel,
@@ -108,17 +109,18 @@ export function deliver(
     }
   }
 }
-function overseerReviewHint(launch: Launch, result: Result): string {
+function overseerReviewHint(base: string, launch: Launch, result: Result): string {
   // A queued completion may arrive after review. Only the live settle gate asks for action.
-  return isReviewableResult(launch, result)
+  return isReviewableResult(launch, result, base)
     ? `\n[Check current review status with agent_runs(action="inspect", id="${launch.id}"). If review is still required, inspect the diff and choose approved or changes_requested.]`
     : "";
 }
 
 /** Says once, with the run's result, that the run ended with work no judge answered for. */
 function judgeUnavailableHint(base: string, launch: Launch): string {
+  const live = activeOverseer(base, launch);
   const unavailable =
-    launch.overseer?.enabled === true ? judgeUnavailable(base, launch.id) : undefined;
+    live.enabled && live.judge !== "off" ? judgeUnavailable(base, launch.id) : undefined;
   return unavailable === undefined
     ? ""
     : `\n[Overseer judge unavailable: no classifier judged the last changes of this run against its contract. The scope, branch and error-loop checks ran. ${unavailable.summary}]`;
@@ -137,7 +139,7 @@ function notification(base: string, launch: Launch, result: Result): Completion 
     message: {
       customType: "agent-completion",
       display: true,
-      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(launch, result)}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
+      content: `Agent run ${launch.id}: ${result.status}. ${result.error ?? ""}\n${page?.text ?? ""}${more}${overseerReviewHint(base, launch, result)}${judgeUnavailableHint(base, launch)}\nNative journal: ${launch.sessionFile}`,
       details: {
         owner: launch.owner,
         id: launch.id,
@@ -214,7 +216,8 @@ function inspectRunEscalation(
   awaited: Set<string>,
 ): { launch: Launch; escalation: Escalation } | undefined {
   const launch = launchAt(base, id, owner);
-  if (launch.overseer?.enabled !== true) {
+  const live = activeOverseer(base, launch);
+  if (!live.enabled) {
     return undefined;
   }
   const dir = runDirectory(base, id);
@@ -222,6 +225,9 @@ function inspectRunEscalation(
   awaited.add(escFile);
   const escalation = read(escFile, escalationSchema);
   if (escalation === undefined) {
+    return undefined;
+  }
+  if (escalation.classifierReview !== undefined && live.judge === "off") {
     return undefined;
   }
   const resolution = read(path.join(dir, "escalation-resolution.json"), escalationResolutionSchema);

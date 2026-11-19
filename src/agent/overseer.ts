@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
   ExtensionAPI,
@@ -5,13 +7,58 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { isRecord, recordAt, type UnknownRecord } from "../shared/unknown.ts";
-import { THINKING_LEVELS, type DelegationContract, type OverseerLaunch } from "./contracts.ts";
+import {
+  overseerLiveStateSchema,
+  THINKING_LEVELS,
+  type DelegationContract,
+  type Launch,
+  type OverseerLaunch,
+} from "./contracts.ts";
+import { notifyInventory } from "./inventory-events.ts";
 import { normalizeDelegationContract } from "./overseer-scope.ts";
+import { read, write } from "./storage.ts";
 import type { DelegateInput } from "./tool-schemas.ts";
 
 export const OVERSEER_ENTRY_TYPE = "subagents-overseer";
+export const OVERSEER_STATE_FILE = "overseer.json";
 export const DEFAULT_OVERSEER_WORKER = "inherit";
 export const DEFAULT_OVERSEER_JUDGE = "auto";
+
+/** Live parent overseer state, shared with running children via `<base>/overseer.json`. */
+export interface ActiveOverseer {
+  readonly enabled: boolean;
+  readonly judge: string;
+}
+
+export function writeLiveOverseer(
+  base: string,
+  state: Pick<OverseerState, "enabled" | "judge">,
+): void {
+  if (!fs.existsSync(base)) {
+    return;
+  }
+  write(path.join(base, OVERSEER_STATE_FILE), {
+    version: 1 as const,
+    enabled: state.enabled,
+    judge: state.judge,
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * Effective overseer config for a run: live owner state in `<base>/overseer.json` when present,
+ * falling back to the launch-time snapshot for older parents or standalone tests.
+ */
+export function activeOverseer(base: string, launch: Pick<Launch, "overseer">): ActiveOverseer {
+  const live = read(path.join(base, OVERSEER_STATE_FILE), overseerLiveStateSchema);
+  if (live !== undefined) {
+    return { enabled: live.enabled, judge: live.judge };
+  }
+  return {
+    enabled: launch.overseer?.enabled === true,
+    judge: launch.overseer?.judge ?? DEFAULT_OVERSEER_JUDGE,
+  };
+}
 
 const PROMPT_SECTION = [
   "Overseer mode is active. Discuss architecture, verify existing language and package primitives before delegating, and keep direct edits to small scripts or surgical fixes.",
@@ -129,13 +176,45 @@ export class OverseerController {
     judge: DEFAULT_OVERSEER_JUDGE,
   };
   private readonly pi: ExtensionAPI;
+  private readonly attachedBase: (() => string | undefined) | undefined;
 
-  constructor(pi: ExtensionAPI) {
+  constructor(pi: ExtensionAPI, attachedBase?: () => string | undefined) {
     this.pi = pi;
+    this.attachedBase = attachedBase;
   }
 
   get current(): OverseerState {
     return this.state;
+  }
+
+  /** Publishes current overseer state to `<base>/overseer.json` for running children. */
+  publishLive(base: string): void {
+    if (!this.shouldPublishOnSync(base)) {
+      return;
+    }
+    writeLiveOverseer(base, this.state);
+  }
+
+  private shouldPublishOnSync(base: string): boolean {
+    return (
+      this.state.enabled ||
+      this.state.judge !== DEFAULT_OVERSEER_JUDGE ||
+      fs.existsSync(path.join(base, OVERSEER_STATE_FILE))
+    );
+  }
+
+  private publishIfAttached(options: { readonly force: boolean; readonly notify: boolean }): void {
+    const base = this.attachedBase?.();
+    if (base === undefined) {
+      return;
+    }
+    if (!options.force && !this.shouldPublishOnSync(base)) {
+      return;
+    }
+    writeLiveOverseer(base, this.state);
+    if (options.notify) {
+      notifyInventory(base);
+    }
   }
 
   private render(ctx: ExtensionContext): void {
@@ -151,16 +230,20 @@ export class OverseerController {
   private sync(ctx: ExtensionContext): void {
     this.state = branchState(this.pi, ctx);
     this.render(ctx);
+    this.publishIfAttached({ force: false, notify: false });
   }
 
   private save(next: OverseerState, ctx: ExtensionContext): void {
     this.state = next;
     this.pi.appendEntry(OVERSEER_ENTRY_TYPE, { version: 1 as const, ...next });
     this.render(ctx);
+    this.publishIfAttached({ force: true, notify: true });
   }
 
   private line(): string {
-    return `Overseer mode: ${this.state.enabled ? "on" : "off"} (worker: ${this.state.worker}, judge: ${this.state.judge})`;
+    return this.state.enabled
+      ? `Overseer mode: on (worker: ${this.state.worker}, judge: ${this.state.judge})`
+      : `Overseer mode: off (configured worker: ${this.state.worker}, judge: ${this.state.judge})`;
   }
 
   private onToggle(args: string, ctx: ExtensionCommandContext): void {
