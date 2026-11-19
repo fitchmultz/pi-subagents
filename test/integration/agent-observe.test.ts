@@ -1871,9 +1871,6 @@ nodeTest(
     const screen = view;
     const shown = () => screen.getScreenLines().map(stripTerminalSequences).join("\n");
 
-    await delay(100);
-    assert.doesNotMatch(shown(), /Agents:/, "idle session with no runs hides the strip");
-
     const spawnDummy = () => {
       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
         detached: true,
@@ -1908,17 +1905,51 @@ nodeTest(
       3000,
     );
 
+    // Finish run-1 so no live runs or pending ids remain and the observer stops its 1 s timer.
+    write(path.join(base, run1Id, "result.json"), {
+      id: run1Id,
+      owner,
+      status: "completed",
+      endedAt: 1,
+    });
+    notifyInventory(base, run1Id);
+    await until(
+      () => !shown().includes("Agents:") && !shown().includes("audit-slice-1"),
+      "completing run-1 clears the active strip and stops periodic refresh",
+      shown,
+      3000,
+    );
+
     // 2. When run-2's launch.json is scanned before actor.lock/process.json exists, and run-3's
-    // launch.json arrives at the same time, notifying run-2 prioritizes re-scanning run-2 so it
-    // immediately flips from interrupted to running without waiting for the periodic scan.
+    // launch.json arrives at the same time while no periodic interval is running, notifying run-2
+    // prioritizes re-scanning run-2 so it flips from interrupted to running immediately.
+    const opening = mode.getUserInput().then((text) => runtime.session.prompt(text));
+    terminal.send("/agents");
+    terminal.send("\r");
+    await until(
+      () => shown().includes("Agents · read-only"),
+      "/agents opens to observe run-2 readiness",
+      shown,
+      3000,
+    );
     const run2Id = "silent-run-2";
     write(path.join(base, run2Id, "launch.json"), makeLaunch(run2Id, "audit-slice-2"), true);
     notifyInventory(base, run2Id);
-    await delay(100);
-    assert.ok(
-      !shown().includes("audit-slice-2"),
-      "run-2 stays hidden before actor.lock/process.json",
+    await until(
+      () => shown().includes("interrupted · audit-slice-2"),
+      "observer caches run-2 as interrupted before actor.lock/process.json exist",
+      shown,
+      3000,
     );
+    terminal.send("\x1b");
+    await opening;
+    await until(
+      () => !shown().includes("Agents · read-only"),
+      "/agents closes back to the editor",
+      shown,
+      3000,
+    );
+    assert.doesNotMatch(shown(), /Agents:/, "interrupted run-2 stays hidden from the active strip");
 
     const run3Id = "silent-run-3";
     write(path.join(base, run3Id, "launch.json"), makeLaunch(run3Id, "audit-slice-3"), true);
@@ -1928,8 +1959,8 @@ nodeTest(
     });
     notifyInventory(base, run2Id);
     await until(
-      () => shown().includes("Agents: 2 active") && shown().includes("● audit-slice-2 · running"),
-      "run-2 is immediately promoted to active alongside newly created run-3",
+      () => shown().includes("Agents: 1 active") && shown().includes("● audit-slice-2 · running"),
+      "wake prioritizes run-2 ahead of newly arrived run-3 with no periodic timer",
       shown,
       3000,
     );
