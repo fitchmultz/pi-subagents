@@ -5,8 +5,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Container, TruncatedText } from "@earendil-works/pi-tui";
-import { actionText } from "../shared/tui-action.ts";
+import { Container } from "@earendil-works/pi-tui";
 import { getPiAgentDir } from "../pi-intercom/agent-dir.ts";
 import { isChild, errorText } from "./host.ts";
 import { launchAt, list, ownerDirectory, runDirectory, read } from "./storage.ts";
@@ -17,12 +16,13 @@ import { plainText } from "./journal-tail.ts";
 import { pauseLabel, runEscalation, runStatusOf } from "./run-state.ts";
 import { ObservationClient, type Watch } from "./observe-client.ts";
 import { adoptedJournal } from "./saved.ts";
+import { subscribeInventory } from "./inventory-events.ts";
 import type { ObserverRow } from "./observe-chrome.ts";
+import { populateStrip, type WidgetSnapshot } from "./observe-strip.ts";
 
 const STATUS_KEY = "agent-observer";
 type Roots = Map<string, ReturnType<typeof actor>>;
 type Commit = (live: ReadonlyMap<string, boolean>) => void;
-type WidgetSnapshot = { status: string; rows: readonly ObserverRow[]; more: number; error: string };
 
 type InventoryPhase =
   | { readonly kind: "checking" | "ready" | "disposed" }
@@ -40,6 +40,7 @@ class Observer {
   private screen?: { readonly close: () => void; readonly refresh: () => void } | undefined;
   private readonly rows = new Map<string, ObserverRow>();
   private readonly peers = new Map<string, { token: string; client: ObservationClient }>();
+  private readonly unsubscribeInventory: () => void;
   private watcher?: fs.FSWatcher | undefined;
   private widgetCache?:
     | {
@@ -56,6 +57,7 @@ class Observer {
     this.owner = ctx.sessionManager.getSessionId();
     this.base = ownerDirectory(path.resolve(getPiAgentDir()), this.owner);
     fs.mkdirSync(this.base, { recursive: true, mode: 0o700 });
+    this.unsubscribeInventory = subscribeInventory(this.base, (runId) => this.wake(runId));
     try {
       const watcher = fs.watch(this.base, { recursive: true }, (_event, file) => {
         if (
@@ -88,6 +90,7 @@ class Observer {
       return;
     }
     this.phase = { kind: "disposed" };
+    this.unsubscribeInventory();
     clearInterval(this.timer);
     this.timer = undefined;
     this.scanning = { kind: "idle" };
@@ -177,6 +180,15 @@ class Observer {
       this.phase = { kind: "error", message: plainText(errorText(error)) };
       return [];
     }
+  }
+  private wake(runId?: string): void {
+    if (this.phase.kind === "disposed") {
+      return;
+    }
+    if (runId !== undefined && !this.finished.has(runId) && !this.pending.includes(runId)) {
+      this.pending.unshift(runId);
+    }
+    this.scan();
   }
   /** One scan at a time; triggers during a scan coalesce into one follow-up. */
   private scan(): void {
@@ -319,26 +331,7 @@ class Observer {
           });
         };
         const build = () => {
-          content.clear();
-          content.addChild(actionText(theme.fg("accent", shown.status), () => open("")));
-          for (const row of shown.rows) {
-            const glyph = row.live && row.paused === undefined ? "●" : "○";
-            const color = row.live && row.paused === undefined ? "accent" : "warning";
-            const detail = row.paused ?? row.activity ?? row.status;
-            content.addChild(
-              actionText(`${theme.fg(color, glyph)} ${theme.bold(row.name)} · ${detail}`, () =>
-                open(row.id),
-              ),
-            );
-          }
-          if (shown.more > 0) {
-            content.addChild(
-              actionText(theme.fg("dim", `+${shown.more} more · /agents`), () => open("")),
-            );
-          }
-          if (shown.error.length > 0) {
-            content.addChild(new TruncatedText(theme.fg("warning", shown.error), 0, 0));
-          }
+          populateStrip(content, theme, shown, open);
         };
         build();
         this.widgetCache = {
@@ -469,7 +462,7 @@ class Observer {
     );
   }
   toolEnded(name: string): void {
-    if (this.watcher === undefined && (name === "delegate" || name === "agent_runs")) {
+    if (name === "delegate" || name === "agent_runs") {
       this.scan();
     }
   }

@@ -17,6 +17,7 @@ import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts
 import { conversation, enqueue, ensureScratchDirectory, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 import { generation, handoffToken, parkedFile } from "./generation.ts";
+import { notifyInventory } from "./inventory-events.ts";
 import { activeContract } from "./overseer-contract.ts";
 import { OwnershipLock, serializeLocalOwnership } from "./ownership-lock.ts";
 
@@ -334,6 +335,7 @@ export async function ensureActor(
       ownership.close();
     }
   });
+  notifyInventory(base, launch.id);
 }
 async function ensureClaimedActor(base: string, launch: Launch): Promise<void> {
   const dir = conversation(base, launch);
