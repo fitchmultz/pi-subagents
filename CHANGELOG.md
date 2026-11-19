@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `delegate` `contract.scope` supports native POSIX glob patterns (`src/**`, `test/**/*.test.ts`, `{src,test}/**`, `*.ts`) alongside literal relative path prefixes, validating static leading directory prefixes at launch (OVR-206).
+
 ## 0.52.55 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->
