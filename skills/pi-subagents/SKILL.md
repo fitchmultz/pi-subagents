@@ -31,7 +31,10 @@ When `/overseer` mode is active, always supply `contract`; `contract.scope`
 accepts relative literal path prefixes (`src`, `src/foo.ts`), POSIX globs
 (`src/**`, `test/**/*.test.ts`, `packages/*/src/**`, `{src,test}/**`, `*.ts`),
 `["*"]` for any path inside `cwd`, or `[]` for read-only work. Static leading
-directory prefixes must exist inside `cwd` at launch. Omitted `model` and
+directory prefixes must exist inside `cwd` at launch. Runs with a `contract`
+also receive a private per-run scratch directory outside the repo (shown in the
+child's delegation contract and `PI_SUBAGENT_SCRATCH_DIR`) where edit tools are
+allowed for temporary scripts and notes, even under `scope: []`. Omitted `model` and
 `thinking` follow normal `delegate` inheritance unless `/overseer-worker`
 (or `subagents.overseer.worker`) configures a default worker.
 Pi clamps the child's effort to its model capabilities without changing the parent.

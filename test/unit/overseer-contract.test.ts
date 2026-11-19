@@ -25,7 +25,8 @@ import {
   validateDelegationScope,
 } from "../../src/agent/overseer-scope.ts";
 import { prepareLaunch } from "../../src/agent/launch.ts";
-import { read } from "../../src/agent/storage.ts";
+import { read, successor } from "../../src/agent/storage.ts";
+import { renderInspection } from "../../src/agent/view.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
 interface BranchEntry {
@@ -272,13 +273,13 @@ nodeTest(
     assert.equal(isPathAllowedByScope(cwd, "src/agent/a", ["*"], "write"), false);
     // Batch edit tools follow symlinks before '..' (src/agent/b/../secrets.txt -> outside/secrets.txt).
     assert.match(
-      checkToolCallScope(cwd, ["src/agent"], "write_files", {
+      checkToolCallScope({ cwd, scope: ["src/agent"] }, "write_files", {
         files: [{ path: "src/agent/b/../secrets.txt" }],
       }) ?? "",
       /blocks editing/u,
     );
     assert.match(
-      checkToolCallScope(cwd, ["*"], "apply_patch", {
+      checkToolCallScope({ cwd, scope: ["*"] }, "apply_patch", {
         input: "*** Begin Patch\n*** Add File: src/agent/b/../patched.txt\n*** End Patch",
       }) ?? "",
       /blocks editing/u,
@@ -295,17 +296,17 @@ nodeTest(
     assert.equal(isPathAllowedByScope(cwd, "@src/agent/index.ts", ["src/agent"], "edit"), true);
 
     assert.match(
-      checkToolCallScope(cwd, [], "edit", { path: "src/agent/index.ts" }) ?? "",
+      checkToolCallScope({ cwd, scope: [] }, "edit", { path: "src/agent/index.ts" }) ?? "",
       /disables file-edit tools/u,
     );
     assert.equal(
-      checkToolCallScope(cwd, ["src/agent"], "write_files", {
+      checkToolCallScope({ cwd, scope: ["src/agent"] }, "write_files", {
         files: [{ path: "src/agent/overseer.ts" }],
       }),
       undefined,
     );
     assert.match(
-      checkToolCallScope(cwd, ["src/agent"], "apply_patch", {
+      checkToolCallScope({ cwd, scope: ["src/agent"] }, "apply_patch", {
         input:
           "*** Begin Patch\n*** Update File: src/agent/overseer.ts\n*** Add File: README.md\n*** End Patch",
       }) ?? "",
@@ -375,10 +376,42 @@ nodeTest(
     assert.equal(inherited.thinking, "medium");
     assert.deepEqual(inherited.overseer, { enabled: true, judge: "auto" });
     assert.deepEqual(inherited.contract?.scope, ["src/db.ts"]);
+    assert.equal(inherited.scratchDir, path.join(base, inherited.id, "scratch"));
+    assert.equal(fs.statSync(inherited.scratchDir).isDirectory(), true);
     assert.deepEqual(
       read(path.join(base, inherited.id, "launch.json"), launchSchema)?.contract,
       contract,
     );
+    assert.equal(
+      read(path.join(base, inherited.id, "launch.json"), launchSchema)?.scratchDir,
+      inherited.scratchDir,
+    );
+    assert.match(
+      renderInspection(base, inherited).content[0]?.text ?? "",
+      new RegExp(
+        `Scratch directory: ${inherited.scratchDir.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`,
+        "u",
+      ),
+    );
+
+    // Successor continuations inherit the exact same per-conversation scratchDir.
+    const continued = successor(base, inherited, "Continue implementation");
+    assert.ok(continued !== undefined);
+    assert.equal(continued.rootId, inherited.rootId);
+    assert.equal(continued.scratchDir, inherited.scratchDir);
+
+    // Launches without a contract do not allocate a scratch directory.
+    const unconstrained = await prepareLaunch({
+      input: { prompt: "Unconstrained run" },
+      context,
+      base,
+      owner: "parent-session",
+      agentDir: getPiAgentDir(),
+      thinking: "medium",
+      executionCwd: tempDir,
+    });
+    assert.equal(unconstrained.scratchDir, undefined);
+    assert.equal(fs.existsSync(path.join(base, unconstrained.id, "scratch")), false);
 
     // Configuring an explicit overseer worker (`provider/model:thinking`) overrides omitted model/thinking.
     const launch = await prepareLaunch({
@@ -640,18 +673,150 @@ nodeTest(
     );
     assert.equal(isPathAllowedByScope(cwd, "../outside/secret.ts", ["**"]), false);
     assert.equal(
-      checkToolCallScope(cwd, ["src/**", "test/**/*.test.ts"], "apply_patch", {
+      checkToolCallScope({ cwd, scope: ["src/**", "test/**/*.test.ts"] }, "apply_patch", {
         input:
           "*** Begin Patch\n*** Update File: src/agent/overseer.ts\n*** Add File: test/unit/new.test.ts\n*** End Patch",
       }),
       undefined,
     );
     assert.match(
-      checkToolCallScope(cwd, ["src/**", "test/**/*.test.ts"], "apply_patch", {
+      checkToolCallScope({ cwd, scope: ["src/**", "test/**/*.test.ts"] }, "apply_patch", {
         input:
           "*** Begin Patch\n*** Update File: src/agent/overseer.ts\n*** Add File: test/unit/helper.ts\n*** End Patch",
       }) ?? "",
       /blocks editing test\/unit\/helper\.ts/u,
     );
+  },
+);
+
+nodeTest(
+  "per-run scratch directory allows edit tools inside scratchDir while blocking escapes and keeping repo scope strict",
+  (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-scratch-"));
+    t.after(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const cwd = path.join(root, "worktree");
+    const runDir = path.join(root, "runs", "run-1");
+    const scratchDir = path.join(runDir, "scratch");
+    const siblingDir = path.join(runDir, "scratch-evil");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+    fs.mkdirSync(scratchDir, { recursive: true });
+    fs.mkdirSync(siblingDir, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(cwd, "README.md"), "repo readme\n");
+    fs.symlinkSync(outside, path.join(scratchDir, "escaped"));
+    fs.symlinkSync(path.join(cwd, "README.md"), path.join(scratchDir, "readme-link.md"));
+    fs.symlinkSync(
+      path.join(outside, "dangling.txt"),
+      path.join(scratchDir, "dangling-escape.txt"),
+    );
+
+    const scope = ["src/**"];
+    const mutatingCtx = { cwd, scope, scratchDir };
+    const readOnlyCtx = { cwd, scope: [] as const, scratchDir };
+
+    // All edit tools succeed inside scratchDir (direct and nested) for both mutating and scope: [] runs.
+    for (const ctx of [mutatingCtx, readOnlyCtx]) {
+      assert.equal(
+        checkToolCallScope(ctx, "write", { path: path.join(scratchDir, "probe.mjs") }),
+        undefined,
+      );
+      assert.equal(
+        checkToolCallScope(ctx, "edit", { path: path.join(scratchDir, "nested", "notes.md") }),
+        undefined,
+      );
+      assert.equal(
+        checkToolCallScope(ctx, "replace_text", {
+          files: [{ path: path.join(scratchDir, "probe.mjs") }],
+        }),
+        undefined,
+      );
+      assert.equal(
+        checkToolCallScope(ctx, "write_files", {
+          files: [
+            { path: path.join(scratchDir, "a.ts") },
+            { path: path.join(scratchDir, "sub", "b.ts") },
+          ],
+        }),
+        undefined,
+      );
+      assert.equal(
+        checkToolCallScope(ctx, "apply_patch", {
+          input: `*** Begin Patch\n*** Add File: ${path.join(scratchDir, "script.mjs")}\n*** End Patch`,
+        }),
+        undefined,
+      );
+    }
+
+    // Escapes out of scratchDir (.., sibling prefix, symlinks, arbitrary /tmp) are all blocked.
+    for (const ctx of [mutatingCtx, readOnlyCtx]) {
+      for (const badPath of [
+        scratchDir,
+        path.join(scratchDir, "..", "escape.txt"),
+        path.join(scratchDir, "..", "launch.json"),
+        path.join(scratchDir, "sub", "..", "..", "escape.txt"),
+        path.join(siblingDir, "evil.txt"),
+        path.join(outside, "arbitrary.txt"),
+        path.join(os.tmpdir(), "arbitrary-outside.txt"),
+        path.join(scratchDir, "escaped", "secret.txt"),
+        path.join(scratchDir, "readme-link.md"),
+        path.join(scratchDir, "dangling-escape.txt"),
+      ]) {
+        assert.equal(
+          isPathAllowedByScope(cwd, badPath, ctx.scope, { toolName: "write", scratchDir }),
+          false,
+          `expected ${badPath} to be blocked`,
+        );
+        assert.ok(
+          checkToolCallScope(ctx, "write", { path: badPath }) !== undefined,
+          `expected write to ${badPath} to be blocked`,
+        );
+      }
+      assert.ok(
+        checkToolCallScope(ctx, "apply_patch", {
+          input: `*** Begin Patch\n*** Add File: ${path.join(scratchDir, "..", "escape.txt")}\n*** End Patch`,
+        }) !== undefined,
+      );
+    }
+
+    // Mixed batch/patch with one scratch file and one out-of-scope repo file is blocked.
+    assert.match(
+      checkToolCallScope(mutatingCtx, "apply_patch", {
+        input: `*** Begin Patch\n*** Add File: ${path.join(scratchDir, "ok.mjs")}\n*** Update File: README.md\n*** End Patch`,
+      }) ?? "",
+      /blocks editing README\.md/u,
+    );
+    // Mixed batch with one scratch file and one in-scope repo file succeeds.
+    assert.equal(
+      checkToolCallScope(mutatingCtx, "write_files", {
+        files: [{ path: path.join(scratchDir, "ok.mjs") }, { path: "src/allowed.ts" }],
+      }),
+      undefined,
+    );
+
+    // Repo edits remain strictly governed by scope; scope: [] keeps its disables file-edit tools message.
+    assert.equal(checkToolCallScope(mutatingCtx, "edit", { path: "src/allowed.ts" }), undefined);
+    assert.match(
+      checkToolCallScope(mutatingCtx, "edit", { path: "README.md" }) ?? "",
+      /blocks editing README\.md/u,
+    );
+    assert.match(
+      checkToolCallScope(readOnlyCtx, "edit", { path: "src/allowed.ts" }) ?? "",
+      /disables file-edit tools/u,
+    );
+    assert.match(checkToolCallScope(readOnlyCtx, "write", {}) ?? "", /disables file-edit tools/u);
+
+    // formatContractSection surfaces scratchDir for both mutating and read-only contracts.
+    const mutatingSection = formatContractSection(
+      { scope: ["src/**"], verification: ["npm test"] },
+      { scratchDir },
+    );
+    assert.match(mutatingSection, /Scratch directory for temporary files\/scripts/u);
+    assert.ok(mutatingSection.includes(scratchDir));
+    const readOnlySection = formatContractSection({ scope: [] }, { scratchDir });
+    assert.match(readOnlySection, /edit tools allowed only in the scratch directory below/u);
+    assert.ok(readOnlySection.includes(scratchDir));
   },
 );

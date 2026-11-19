@@ -119,6 +119,20 @@ export function latest(base: string, initial: Launch): Launch {
 export function conversation(base: string, launch: Launch): string {
   return runDirectory(base, launch.rootId);
 }
+export function scratchDirectory(
+  base: string,
+  launch: Pick<Launch, "rootId" | "scratchDir">,
+): string {
+  return launch.scratchDir ?? path.join(runDirectory(base, launch.rootId), "scratch");
+}
+export function ensureScratchDirectory(
+  base: string,
+  launch: Pick<Launch, "rootId" | "scratchDir">,
+): string {
+  const dir = scratchDirectory(base, launch);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
 /** Metadata only: replacing command bytes invalidates the actor's parsed-command cache. */
 export function commandIdentity(file: string): string | undefined {
   try {

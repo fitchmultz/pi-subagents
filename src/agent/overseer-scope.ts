@@ -269,20 +269,40 @@ export function validateDelegationScope(cwd: string, scope: readonly string[]): 
   }
 }
 
-export function isPathAllowedByScope(
-  cwd: string,
-  candidatePath: string,
-  scope: readonly string[],
-  toolName?: string,
-): boolean {
-  if (scope.length === 0) {
+export interface ScopeCheckOptions {
+  readonly toolName?: string | undefined;
+  readonly scratchDir?: string | undefined;
+}
+
+export interface ToolCallScopeContext {
+  readonly cwd: string;
+  readonly scope: readonly string[];
+  readonly scratchDir?: string | undefined;
+}
+
+function resolveScopeOptions(options: string | ScopeCheckOptions | undefined): ScopeCheckOptions {
+  return typeof options === "string" ? { toolName: options } : (options ?? {});
+}
+
+function isInsideScratchDir(scratchDir: string | undefined, realTarget: string): boolean {
+  if (scratchDir === undefined || scratchDir.trim() === "") {
     return false;
   }
-  const absCwd = path.resolve(cwd);
-  const realCwd = kernelCanonicalPath(path.parse(absCwd).root, absCwd);
-  const realTarget =
-    realCwd === undefined ? undefined : resolveTargetPath(cwd, realCwd, candidatePath, toolName);
-  if (realCwd === undefined || realTarget === undefined) {
+  const absDir = path.resolve(scratchDir);
+  const realDir = kernelCanonicalPath(path.parse(absDir).root, absDir);
+  if (realDir === undefined) {
+    return false;
+  }
+  const rel = path.relative(realDir, realTarget);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function isPathAllowedInCwd(
+  realCwd: string,
+  realTarget: string,
+  scope: readonly string[],
+): boolean {
+  if (scope.length === 0) {
     return false;
   }
   const rel = path.relative(realCwd, realTarget);
@@ -297,6 +317,26 @@ export function isPathAllowedByScope(
   }
   const posix = rel.split(path.sep).join("/");
   return scope.some((entry) => matchesScopeEntry(realCwd, posix, entry));
+}
+
+export function isPathAllowedByScope(
+  cwd: string,
+  candidatePath: string,
+  scope: readonly string[],
+  options?: string | ScopeCheckOptions,
+): boolean {
+  const { toolName, scratchDir } = resolveScopeOptions(options);
+  const absCwd = path.resolve(cwd);
+  const realCwd = kernelCanonicalPath(path.parse(absCwd).root, absCwd);
+  const realTarget =
+    realCwd === undefined ? undefined : resolveTargetPath(cwd, realCwd, candidatePath, toolName);
+  if (realCwd === undefined || realTarget === undefined) {
+    return false;
+  }
+  if (isInsideScratchDir(scratchDir, realTarget)) {
+    return true;
+  }
+  return isPathAllowedInCwd(realCwd, realTarget, scope);
 }
 
 function patchTargetPaths(patchText: string): string[] {
@@ -335,35 +375,69 @@ function extractTargetPaths(toolName: string, input: UnknownRecord): string[] {
   return [];
 }
 
-export function checkToolCallScope(
-  cwd: string,
+function blockedScopeMessage(
   scope: readonly string[],
+  target: string,
+  scratchDir: string | undefined,
+): string {
+  if (scope.length === 0) {
+    return scratchDir === undefined
+      ? "Delegation contract (scope: []) disables file-edit tools."
+      : `Delegation contract (scope: []) disables file-edit tools outside the scratch directory ${scratchDir} (blocked ${target}).`;
+  }
+  return `Delegation contract scope blocks editing ${target} (allowed scope: ${scope.join(", ")}).`;
+}
+
+export function checkToolCallScope(
+  context: ToolCallScopeContext,
   toolName: string,
   input: UnknownRecord,
 ): string | undefined {
   if (!EDIT_TOOLS.has(toolName)) {
     return undefined;
   }
+  const { cwd, scope, scratchDir } = context;
+  const targets = extractTargetPaths(toolName, input);
   if (scope.length === 0) {
-    return "Delegation contract (scope: []) disables file-edit tools.";
+    if (scratchDir === undefined) {
+      return "Delegation contract (scope: []) disables file-edit tools.";
+    }
+    if (targets.length === 0) {
+      return `Delegation contract (scope: []) disables file-edit tools outside the scratch directory ${scratchDir}.`;
+    }
   }
-  for (const target of extractTargetPaths(toolName, input)) {
-    if (!isPathAllowedByScope(cwd, target, scope, toolName)) {
-      return `Delegation contract scope blocks editing ${target} (allowed scope: ${scope.join(", ")}).`;
+  for (const target of targets) {
+    if (!isPathAllowedByScope(cwd, target, scope, { toolName, scratchDir })) {
+      return blockedScopeMessage(scope, target, scratchDir);
     }
   }
   return undefined;
 }
 
-export function formatContractSection(contract: DelegationContract): string {
-  const scopeText =
-    contract.scope.length === 0
-      ? "no file edits (edit tools disabled; do not modify files via shell commands)"
-      : contract.scope.join(", ");
+function formatScopeText(scope: readonly string[], scratchDir: string | undefined): string {
+  if (scope.length > 0) {
+    return scope.join(", ");
+  }
+  if (scratchDir !== undefined) {
+    return "no repo file edits (edit tools allowed only in the scratch directory below; do not modify repo files via shell commands)";
+  }
+  return "no file edits (edit tools disabled; do not modify files via shell commands)";
+}
+
+export function formatContractSection(
+  contract: DelegationContract,
+  options?: { readonly scratchDir?: string | undefined },
+): string {
+  const scratchDir = options?.scratchDir;
   const lines = [
     "Follow this delegation contract strictly. Stay inside the allowed scope and stop rather than inventing workarounds outside it.",
-    `- Allowed edit scope: ${scopeText}`,
+    `- Allowed edit scope: ${formatScopeText(contract.scope, scratchDir)}`,
   ];
+  if (scratchDir !== undefined) {
+    lines.push(
+      `- Scratch directory for temporary files/scripts (outside repo, allowed for edit tools): ${scratchDir}`,
+    );
+  }
   if (contract.baseBranch !== undefined) {
     lines.push(`- Expected base branch: ${contract.baseBranch}`);
   }

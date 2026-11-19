@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type {
   CreateAgentSessionRuntimeFactory,
   ExtensionAPI,
@@ -33,8 +34,15 @@ function rewriteLocalBash(
 }
 
 function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: string): void {
+  const scratchDir =
+    launch.contract === undefined
+      ? undefined
+      : (launch.scratchDir ?? path.join(directory, "scratch"));
   if (launch.contract !== undefined) {
-    const section = formatContractSection(launch.contract);
+    if (scratchDir !== undefined) {
+      fs.mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
+    }
+    const section = formatContractSection(launch.contract, { scratchDir });
     pi.on("before_agent_start", (event) => {
       const { sections } = event.systemPromptOptions;
       sections.delegation_contract = section;
@@ -46,8 +54,7 @@ function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: strin
     }
     if (launch.contract !== undefined) {
       const scopeViolation = checkToolCallScope(
-        launch.cwd,
-        launch.contract.scope,
+        { cwd: launch.cwd, scope: launch.contract.scope, scratchDir },
         event.toolName,
         event.input,
       );
