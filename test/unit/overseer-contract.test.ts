@@ -1358,8 +1358,17 @@ nodeTest(
       rootId: unconstrainedId,
     };
     write(path.join(unconstrainedDir, "launch.json"), unconstrainedLaunch, true);
+    const priorScratchEnv = process.env.PI_SUBAGENT_SCRATCH_DIR;
+    t.after(() => {
+      if (priorScratchEnv === undefined) {
+        delete process.env.PI_SUBAGENT_SCRATCH_DIR;
+      } else {
+        process.env.PI_SUBAGENT_SCRATCH_DIR = priorScratchEnv;
+      }
+    });
     currentLaunch = unconstrainedLaunch;
     assert.equal((await runBeforeStart()).delegation_contract, undefined);
+    assert.equal(process.env.PI_SUBAGENT_SCRATCH_DIR, undefined);
     assert.equal(await runToolCall("write", { path: "README.md" }), undefined);
 
     recordContractAmendment(
@@ -1368,10 +1377,26 @@ nodeTest(
       prepareContractAmendment(undefined, { scope: ["src/**"], verification: ["npm test"] }, cwd),
     );
     assert.equal((await runToolCall("write", { path: "README.md" }))?.block, true);
+    assert.equal(process.env.PI_SUBAGENT_SCRATCH_DIR, scratchDirectory(base, unconstrainedLaunch));
     assert.equal(await runToolCall("write", { path: "src/ok.ts" }), undefined);
     assert.match(
       (await runBeforeStart()).delegation_contract ?? "",
       /Allowed edit scope: src\/\*\*/u,
     );
+
+    // Inspect reports latest 20 of total when amendment history exceeds 20 entries.
+    for (let i = 0; i < 21; i += 1) {
+      recordContractAmendment(
+        base,
+        unconstrainedId,
+        prepareContractAmendment(
+          activeContract(base, unconstrainedLaunch),
+          { nonGoals: [`No shortcut ${i}`] },
+          cwd,
+        ),
+      );
+    }
+    const manyInspect = renderInspection(base, unconstrainedLaunch);
+    assert.match(replyText(manyInspect), /Contract amendments \(latest 20 of 22\):/u);
   },
 );

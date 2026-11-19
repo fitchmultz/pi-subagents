@@ -49,9 +49,11 @@ interface GuardOptions {
 function resolveActiveContract(base: string, launch: Launch) {
   const contract = activeContract(base, launch);
   if (contract === undefined) {
+    delete process.env.PI_SUBAGENT_SCRATCH_DIR;
     return;
   }
   const scratchDir = ensureScratchDirectory(base, launch);
+  process.env.PI_SUBAGENT_SCRATCH_DIR = scratchDir;
   const latest = readContractAmendments(base, launch).at(-1);
   const latestAmendmentSummary =
     latest === undefined ? undefined : formatContractAmendmentSummary(latest);

@@ -268,10 +268,31 @@ export function formatAmendedSteerPrompt(
   return `[Delegation contract updated: ${formatContractAmendmentSummary(amendment)}]\n\n${prompt}`;
 }
 
+function formatAmendmentHistoryLines(
+  amendments: readonly ContractAmendment[] | undefined,
+  formatTime: (at: number) => string,
+  totalAmendments: number,
+): string[] {
+  if (amendments === undefined || amendments.length === 0) {
+    return [];
+  }
+  const countLabel =
+    totalAmendments > amendments.length
+      ? `latest ${amendments.length} of ${totalAmendments}`
+      : String(amendments.length);
+  return [
+    `Contract amendments (${countLabel}):`,
+    ...amendments.map(
+      (entry) => `  ${formatTime(entry.at)}: ${formatContractAmendmentSummary(entry)}`,
+    ),
+  ];
+}
+
 export function formatInspectionContractLines(
   contract: DelegationContract | undefined,
   amendments: readonly ContractAmendment[] | undefined,
   formatTime: (at: number) => string,
+  totalAmendments = amendments?.length ?? 0,
 ): string[] {
   if (contract === undefined) {
     return [];
@@ -287,14 +308,8 @@ export function formatInspectionContractLines(
       : []),
     ...(contract.nonGoals !== undefined ? [`nonGoals=${contract.nonGoals.join("; ")}`] : []),
   ];
-  const lines = [`Contract: ${fields.join(" | ")}`];
-  if (amendments !== undefined && amendments.length > 0) {
-    lines.push(
-      `Contract amendments (${amendments.length}):`,
-      ...amendments.map(
-        (entry) => `  ${formatTime(entry.at)}: ${formatContractAmendmentSummary(entry)}`,
-      ),
-    );
-  }
-  return lines;
+  return [
+    `Contract: ${fields.join(" | ")}`,
+    ...formatAmendmentHistoryLines(amendments, formatTime, totalAmendments),
+  ];
 }

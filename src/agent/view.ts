@@ -447,7 +447,11 @@ function reviewLine(details: RunView): string {
     details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
   return [prior, pending].filter(Boolean).join("\n");
 }
-function resultText(details: RunView, amendments?: readonly ContractAmendment[]): string {
+function resultText(
+  details: RunView,
+  amendments?: readonly ContractAmendment[],
+  totalAmendments?: number,
+): string {
   const page = details.output;
   const suffix =
     page?.nextOffset !== undefined
@@ -459,7 +463,7 @@ function resultText(details: RunView, amendments?: readonly ContractAmendment[])
   return [
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     identityText(details),
-    ...formatInspectionContractLines(details.contract, amendments, utc),
+    ...formatInspectionContractLines(details.contract, amendments, utc, totalAmendments),
     ...waitingLines(details.waiting),
     ...escalationLines(details.escalation),
     reviewLine(details),
@@ -482,7 +486,8 @@ export function renderInspection(
   ctx?: ExtensionContext,
   input: Pick<RunsInput, "offset" | "length"> = {},
 ): ToolReply {
-  const amendments = readContractAmendments(base, launch).slice(-20);
+  const allAmendments = readContractAmendments(base, launch);
+  const amendments = allAmendments.slice(-20);
   const contractAmendments =
     amendments.length > 0
       ? amendments.map((entry) => ({
@@ -496,7 +501,7 @@ export function renderInspection(
     ...(contractAmendments !== undefined ? { contractAmendments } : {}),
   };
   return {
-    ...toolResult(details, resultText(details, amendments)),
+    ...toolResult(details, resultText(details, amendments, allAmendments.length)),
     isError: details.result?.status === "failed",
   };
 }
