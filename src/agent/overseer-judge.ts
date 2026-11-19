@@ -12,10 +12,14 @@ import {
   type DelegationContract,
   type Escalation,
   type JudgeUnavailable,
+  type Launch,
 } from "./contracts.ts";
+import { errorText } from "./host.ts";
 import { branchIssue, type OwnChanges, type RepoSnapshot } from "./overseer-git.ts";
 import { isPathAllowedByScope } from "./overseer-scope.ts";
+import { activeOverseer, OVERSEER_STATE_FILE } from "./overseer.ts";
 import { read, runDirectory, write } from "./storage.ts";
+import { DirectoryWatch } from "./wake.ts";
 
 const PREFERRED_AUTO_JUDGES = [
   ["google", "gemini-decision-1"],
@@ -285,4 +289,75 @@ export function recordJudgeUnavailable(base: string, runId: string, summary: str
 /** The latest work of the run has a verdict, was approved, or is gone. */
 export function clearJudgeUnavailable(base: string, runId: string): void {
   fs.rmSync(judgeUnavailableFile(base, runId), { force: true });
+}
+
+export type LiveJudgeOutcome =
+  | { readonly kind: "disabled" }
+  | { readonly kind: "aborted" }
+  | { readonly kind: "unavailable"; readonly error: string }
+  | { readonly kind: "verdict"; readonly verdict: Violation | undefined };
+
+export function isJudgeDisabled(base: string, launch: Pick<Launch, "overseer">): boolean {
+  const live = activeOverseer(base, launch);
+  return !live.enabled || live.judge === "off";
+}
+
+export function isEscalationReleased(
+  base: string,
+  launch: Pick<Launch, "overseer">,
+  escalation: Pick<Escalation, "classifierReview">,
+): boolean {
+  const live = activeOverseer(base, launch);
+  if (!live.enabled) {
+    return true;
+  }
+  return escalation.classifierReview !== undefined && live.judge === "off";
+}
+
+/**
+ * Evaluates one decision checkpoint while watching `<base>/overseer.json` so toggling overseer or
+ * its judge off aborts an in-flight classifier request immediately without recording a failure.
+ */
+export async function evaluateLiveDecisionCheckpoint(
+  base: string,
+  launch: Pick<Launch, "overseer">,
+  options: Parameters<typeof evaluateDecisionCheckpoint>[0],
+): Promise<LiveJudgeOutcome> {
+  const runSignal = options.signal;
+  const liveAbort = new AbortController();
+  const abortIfDisabled = (): void => {
+    if (isJudgeDisabled(base, launch)) {
+      liveAbort.abort();
+    }
+  };
+  const watchBase = new DirectoryWatch(
+    base,
+    (file) => file === null || file === OVERSEER_STATE_FILE,
+    abortIfDisabled,
+  );
+  watchBase.ensure();
+  if (isJudgeDisabled(base, launch)) {
+    watchBase.close();
+    return { kind: "disabled" };
+  }
+  // Match EscalationPause's polling fallback when OS directory watches coalesce or drop rename hints.
+  const poll = setInterval(abortIfDisabled, 200);
+  poll.unref();
+  const signal =
+    runSignal === undefined ? liveAbort.signal : AbortSignal.any([runSignal, liveAbort.signal]);
+  try {
+    const verdict = await evaluateDecisionCheckpoint({ ...options, signal });
+    return isJudgeDisabled(base, launch) ? { kind: "disabled" } : { kind: "verdict", verdict };
+  } catch (error) {
+    if (liveAbort.signal.aborted || isJudgeDisabled(base, launch)) {
+      return { kind: "disabled" };
+    }
+    if (runSignal?.aborted === true) {
+      return { kind: "aborted" };
+    }
+    return { kind: "unavailable", error: errorText(error) };
+  } finally {
+    clearInterval(poll);
+    watchBase.close();
+  }
 }

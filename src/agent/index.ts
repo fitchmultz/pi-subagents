@@ -90,7 +90,9 @@ class AgentRuntime {
   constructor(pi: ExtensionAPI) {
     this.pi = pi;
     this.watches = new CompletionWatches(this.reporter, this.wake);
-    this.overseer = new OverseerController(pi);
+    this.overseer = new OverseerController(pi, () =>
+      this.attachment.kind === "attached" ? this.base : undefined,
+    );
   }
   private get binding(): AttachmentBinding {
     if (this.attachment.kind === "detached") {
@@ -237,6 +239,7 @@ class AgentRuntime {
         return;
       }
       this.attachment = { ...attaching, kind: "attached" };
+      this.overseer.publishLive(binding.base);
       // Recovery and watch setup stay off the awaited startup path.
       this.schedule.pollIn(200);
       this.schedule.probeIn(1000);
@@ -351,7 +354,12 @@ class AgentRuntime {
       });
     }
     parkFailure(this.base, launch);
-    const options = successorContractOptions(this.base, launch, existing, amendment);
+    const options = {
+      ...successorContractOptions(this.base, launch, existing, amendment),
+      overseer: this.overseer.current.enabled
+        ? { enabled: true as const, judge: this.overseer.current.judge }
+        : null,
+    };
     const next = successor(this.base, launch, input.prompt, options);
     if (!next) {
       return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
@@ -371,6 +379,9 @@ class AgentRuntime {
       id: input.id,
       prompt: input.prompt,
       contract: input.contract,
+      overseer: this.overseer.current.enabled
+        ? { enabled: true as const, judge: this.overseer.current.judge }
+        : undefined,
       context,
       base: this.base,
       agentDir: this.agentDir,

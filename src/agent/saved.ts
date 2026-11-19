@@ -6,7 +6,7 @@ import type { Static } from "typebox";
 import { NativeJournal } from "../shared/native-journal.ts";
 import { isRecord } from "../shared/unknown.ts";
 import { Assert, Type } from "./typebox.ts";
-import { thinkingSchema, successorSchema, type Launch } from "./contracts.ts";
+import { thinkingSchema, successorSchema, type Launch, type OverseerLaunch } from "./contracts.ts";
 import { packageRoot, runtimeEntry } from "./host.ts";
 import { prepareContractAmendment, type ContractAmendmentInput } from "./overseer-contract.ts";
 import {
@@ -222,11 +222,18 @@ function publishSavedRun(
   }
 }
 
+function savedOverseerFields(
+  overseer: OverseerLaunch | undefined,
+): Partial<Pick<Launch, "overseer">> {
+  return overseer === undefined ? {} : { overseer };
+}
+
 /** Only frozen single-native-child snapshots cross the retired runtime boundary. */
 export function savedContinuation(options: {
   id: string;
   prompt: string;
   contract?: ContractAmendmentInput | undefined;
+  overseer?: OverseerLaunch | undefined;
   context: ExtensionContext;
   base: string;
   agentDir: string;
@@ -263,6 +270,7 @@ export function savedContinuation(options: {
     entry: runtimeEntry(),
     prompt,
     ...fields,
+    ...savedOverseerFields(options.overseer),
     ...snapshot,
     createdAt: Date.now(),
   };

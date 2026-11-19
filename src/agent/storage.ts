@@ -12,6 +12,7 @@ import {
   type ContractState,
   type DelegationContract,
   type Launch,
+  type OverseerLaunch,
 } from "./contracts.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
 import { notifyInventory } from "./inventory-events.ts";
@@ -96,6 +97,8 @@ export interface SuccessorOptions {
   readonly contract?: DelegationContract | undefined;
   readonly scratchDir?: string | undefined;
   readonly contractState?: ContractState | undefined;
+  /** Overrides inherited overseer config on the successor (`null` clears it). */
+  readonly overseer?: OverseerLaunch | null | undefined;
 }
 function buildSuccessorLaunch(input: {
   readonly base: string;
@@ -105,8 +108,10 @@ function buildSuccessorLaunch(input: {
   readonly options: SuccessorOptions | undefined;
 }): Launch {
   const { base, launch, id, prompt, options } = input;
-  const { scratchDir: _persistedScratchDir, ...rest } = launch;
+  const { scratchDir: _persistedScratchDir, overseer: inheritedOverseer, ...rest } = launch;
   const contract = options?.contract ?? launch.contract;
+  const overseer =
+    options?.overseer === undefined ? inheritedOverseer : (options.overseer ?? undefined);
   return {
     ...rest,
     id,
@@ -114,6 +119,7 @@ function buildSuccessorLaunch(input: {
     prompt,
     ...(contract !== undefined ? { contract } : {}),
     ...(contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
+    ...(overseer !== undefined ? { overseer } : {}),
     createdAt: Date.now(),
   };
 }

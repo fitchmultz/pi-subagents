@@ -44,6 +44,13 @@ export const overseerLaunchSchema = Type.Object({
   judge: Type.Optional(Type.String({ minLength: 1 })),
 });
 export type OverseerLaunch = Static<typeof overseerLaunchSchema>;
+export const overseerLiveStateSchema = Type.Object({
+  version: Type.Literal(1),
+  enabled: Type.Boolean(),
+  judge: Type.String({ minLength: 1 }),
+  updatedAt: Type.Number(),
+});
+export type OverseerLiveState = Static<typeof overseerLiveStateSchema>;
 export const escalationKindSchema = Type.Union([
   Type.Literal("scope_violation"),
   Type.Literal("branch_violation"),

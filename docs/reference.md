@@ -469,6 +469,11 @@ or configure defaults under `subagents.overseer` (`{ enabled, worker, judge }`) 
 `/overseer-worker` sets an optional default worker (`inherit` by default, keeping normal `delegate` model/effort inheritance unless a `provider/model[:thinking]` worker is configured);
 `/overseer-judge` sets the classifier judge (`auto`, `off`, or `provider/model`). Main-session
 tools remain unrestricted so the overseer can run scripts or apply small surgical edits directly.
+Changes from `/overseer`, `/overseer-judge`, or `/tree` sync immediately to `<run-base>/overseer.json`
+so running subagents and `agent_runs continue` / `changes_requested` successors pick up the live state:
+`/overseer off` stops new checkpoints and releases open escalations without marking changes approved,
+and `/overseer-judge off` aborts/skips decision-judge checkpoints and releases open judge pauses while
+keeping deterministic tripwires active.
 
 When overseer mode is enabled, `delegate` requires `contract`:
 

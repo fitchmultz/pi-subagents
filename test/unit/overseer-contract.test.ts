@@ -12,12 +12,19 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import agents from "../../src/agent/index.ts";
-import { commandSchema, launchSchema, type Launch } from "../../src/agent/contracts.ts";
+import {
+  commandSchema,
+  launchSchema,
+  overseerLiveStateSchema,
+  type Launch,
+} from "../../src/agent/contracts.ts";
 import { childRuntime } from "../../src/agent/child-runtime.ts";
 import { loadSDK, packageRoot } from "../../src/agent/host.ts";
 import {
+  activeOverseer,
   DEFAULT_OVERSEER_WORKER,
   OVERSEER_ENTRY_TYPE,
+  OVERSEER_STATE_FILE,
   splitWorkerSpec,
 } from "../../src/agent/overseer.ts";
 import {
@@ -1398,5 +1405,66 @@ nodeTest(
     }
     const manyInspect = renderInspection(base, unconstrainedLaunch);
     assert.match(replyText(manyInspect), /Contract amendments \(latest 20 of 22\):/u);
+  },
+);
+
+nodeTest(
+  "overseer live state file syncs on /overseer, /overseer-judge, /tree, and successor(overseer: null) strips launch.overseer",
+  async (t) => {
+    const harness = await createHarness(t, "overseer-live-sync");
+    await harness.start();
+    const base = ownerDirectory(getPiAgentDir(), "overseer-live-sync");
+    const liveFile = path.join(base, OVERSEER_STATE_FILE);
+
+    // Default inert startup (overseer off, judge auto) leaves the run directory untouched.
+    assert.equal(fs.existsSync(liveFile), false);
+
+    await harness.runCommand("overseer", "on");
+    assert.equal(read(liveFile, overseerLiveStateSchema)?.enabled, true);
+    await harness.runCommand("overseer-judge", "off");
+    assert.equal(read(liveFile, overseerLiveStateSchema)?.judge, "off");
+
+    // Turning overseer off updates overseer.json immediately and successor(overseer: null) strips launch.overseer.
+    await harness.runCommand("overseer", "off");
+    assert.equal(read(liveFile, overseerLiveStateSchema)?.enabled, false);
+    const dummyLaunch: Launch = {
+      version: 1,
+      id: "live-sync-r1",
+      rootId: "live-sync-r1",
+      owner: "overseer-live-sync",
+      agentDir: getPiAgentDir(),
+      sdk: packageRoot(),
+      entry: path.join(packageRoot(), "dist", "agent", "runner.js"),
+      cwd: process.cwd(),
+      prompt: "Do work",
+      context: "fresh",
+      sessionId: "child-session",
+      sessionFile: path.join(base, "child.jsonl"),
+      provider: "openai",
+      model: "openai/gpt-5",
+      thinking: "medium",
+      trusted: true,
+      overseer: { enabled: true, judge: "auto" },
+      createdAt: Date.now(),
+    };
+    fs.mkdirSync(runDirectory(base, dummyLaunch.id), { recursive: true, mode: 0o700 });
+    write(path.join(runDirectory(base, dummyLaunch.id), "launch.json"), dummyLaunch, true);
+    assert.deepEqual(activeOverseer(base, dummyLaunch), { enabled: false, judge: "off" });
+
+    const stripped = successor(base, dummyLaunch, "Continue without overseer", { overseer: null });
+    assert.ok(stripped !== undefined);
+    assert.equal(stripped.overseer, undefined);
+
+    // Navigating /tree back to an earlier branch entry where overseer was on updates overseer.json immediately.
+    harness.setBranch([
+      {
+        type: "custom",
+        customType: OVERSEER_ENTRY_TYPE,
+        data: { version: 1, enabled: true, worker: DEFAULT_OVERSEER_WORKER, judge: "auto" },
+      },
+    ]);
+    await harness.tree();
+    assert.equal(read(liveFile, overseerLiveStateSchema)?.enabled, true);
+    assert.equal(read(liveFile, overseerLiveStateSchema)?.judge, "auto");
   },
 );
