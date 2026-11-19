@@ -53,6 +53,43 @@ export const delegateSchema = Type.Object(
   { additionalProperties: false },
 );
 export type DelegateInput = Static<typeof delegateSchema>;
+export const runContractSchema = Type.Object(
+  {
+    scope: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        description:
+          "Replace allowed relative edit-tool path prefixes or globs inside cwd, ['*'], or []. Required when adding a contract to a run that had none.",
+      }),
+    ),
+    verification: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        description:
+          "Replace required verification checks (required when resulting scope is non-empty; pass [] with scope: [] to clear).",
+      }),
+    ),
+    baseBranch: Type.Optional(
+      Type.String({
+        description: "Replace expected Git base branch or ref (pass '' to clear).",
+      }),
+    ),
+    requiredPrimitives: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        description: "Replace required native/package APIs (pass [] to clear).",
+      }),
+    ),
+    nonGoals: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        description: "Replace out-of-scope edits or forbidden workarounds (pass [] to clear).",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      'Optional delegation contract amendment for action="continue" or action="review" with verdict="changes_requested". Omitted fields keep their current values when amending an existing contract.',
+  },
+);
+export type RunContractInput = Static<typeof runContractSchema>;
 export const runsSchema = Type.Object(
   {
     action: StringEnum(["list", "inspect", "continue", "stop", "review"] as const),
@@ -66,6 +103,7 @@ export const runsSchema = Type.Object(
           'With "approved", save review evidence without sending it to the child. With "changes_requested", use the summary as the child’s correction or next prompt.',
       }),
     ),
+    contract: Type.Optional(runContractSchema),
     offset: Type.Optional(Type.Integer({ minimum: 0 })),
     length: Type.Optional(Type.Integer({ minimum: 4, maximum: 262144 })),
   },
@@ -98,7 +136,7 @@ export function registerAgentTools(
     name: "agent_runs",
     label: "Agent runs",
     description:
-      'Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt: it steers a live child or resumes the saved conversation. Review with "approved" records the summary without sending it; "changes_requested" uses the summary as the new prompt.',
+      'Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt (and optional contract amendment): it steers a live/paused child or resumes the saved conversation. Review with "approved" records the summary without sending it; "changes_requested" uses the summary as the new prompt and also accepts an optional contract amendment.',
     parameters: runsSchema,
     outputSchema: runsOutputSchema,
     exposure: child ? "hidden" : "direct",

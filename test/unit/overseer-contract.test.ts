@@ -11,12 +11,21 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import agents from "../../src/agent/index.ts";
-import { launchSchema, type Launch } from "../../src/agent/contracts.ts";
+import { commandSchema, launchSchema, type Launch } from "../../src/agent/contracts.ts";
+import { childRuntime } from "../../src/agent/child-runtime.ts";
+import { loadSDK, packageRoot } from "../../src/agent/host.ts";
 import {
   DEFAULT_OVERSEER_WORKER,
   OVERSEER_ENTRY_TYPE,
   splitWorkerSpec,
 } from "../../src/agent/overseer.ts";
+import {
+  activeContract,
+  prepareContractAmendment,
+  readContractAmendments,
+  recordContractAmendment,
+  successorContractOptions,
+} from "../../src/agent/overseer-contract.ts";
 import {
   checkToolCallScope,
   formatContractSection,
@@ -25,10 +34,20 @@ import {
   validateDelegationScope,
 } from "../../src/agent/overseer-scope.ts";
 import { prepareLaunch } from "../../src/agent/launch.ts";
+import { ownIdentity } from "../../src/agent/process.ts";
+import { readReview } from "../../src/agent/overseer-review.ts";
 import { harnessExcludePaths } from "../../src/agent/overseer-sentinel.ts";
-import { read, scratchDirectory, successor } from "../../src/agent/storage.ts";
+import {
+  ownerDirectory,
+  read,
+  runDirectory,
+  scratchDirectory,
+  successor,
+  write,
+} from "../../src/agent/storage.ts";
 import { renderInspection } from "../../src/agent/view.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
+import { isRecord } from "../../src/shared/unknown.ts";
 
 interface BranchEntry {
   readonly type: "custom";
@@ -127,6 +146,12 @@ async function createHarness(
       const cmd = extension.commands.get(name);
       assert.ok(cmd !== undefined, `missing command /${name}`);
       await Reflect.apply(cmd.handler, cmd, [args, ctx]);
+    },
+    callTool: async (name: string, params: Record<string, unknown>): Promise<unknown> => {
+      const tool = extension.tools.get(name);
+      assert.ok(tool !== undefined, `missing tool ${name}`);
+      const execute = tool.definition.execute.bind(tool.definition);
+      return Reflect.apply(execute, tool.definition, ["call-1", params, undefined, undefined, ctx]);
     },
   };
 }
@@ -852,5 +877,493 @@ nodeTest(
     const nextLaunch = successor(runsBase, poisonedLaunch, "follow-up");
     assert.ok(nextLaunch !== undefined);
     assert.equal(nextLaunch.scratchDir, scratchDir);
+  },
+);
+
+nodeTest(
+  "prepareContractAmendment merges partial updates, clears optional fields, and validates fail-fast",
+  (t) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-amend-"));
+    t.after(() => {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    });
+    fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "test", "unit"), { recursive: true });
+
+    const initial = normalizeDelegationContract({
+      scope: ["src"],
+      verification: ["npm run test:unit"],
+      baseBranch: "main",
+      requiredPrimitives: ["OldApi"],
+      nonGoals: ["No custom shims"],
+    });
+
+    // Partial scope widening preserves all unspecified fields.
+    const widened = prepareContractAmendment(
+      initial,
+      { scope: ["src/**", "test/**/*.test.ts"] },
+      cwd,
+    );
+    assert.deepEqual(widened.changedFields, ["scope"]);
+    assert.deepEqual(widened.contract, {
+      scope: ["src/**", "test/**/*.test.ts"],
+      verification: ["npm run test:unit"],
+      baseBranch: "main",
+      requiredPrimitives: ["OldApi"],
+      nonGoals: ["No custom shims"],
+    });
+
+    // Explicit empty arrays/strings clear optional fields cleanly.
+    const cleared = prepareContractAmendment(
+      widened.contract,
+      { baseBranch: "", requiredPrimitives: [], nonGoals: [] },
+      cwd,
+    );
+    assert.deepEqual(cleared.changedFields, ["baseBranch", "requiredPrimitives", "nonGoals"]);
+    assert.deepEqual(cleared.contract, {
+      scope: ["src/**", "test/**/*.test.ts"],
+      verification: ["npm run test:unit"],
+    });
+
+    // Transitioning to read-only and back to mutating enforces verification.
+    const readOnly = prepareContractAmendment(
+      cleared.contract,
+      { scope: [], verification: [] },
+      cwd,
+    );
+    assert.deepEqual(readOnly.contract, { scope: [] });
+    assert.throws(
+      () => prepareContractAmendment(readOnly.contract, { scope: ["src/**"] }, cwd),
+      /requires at least one verification check/u,
+    );
+    const mutatingAgain = prepareContractAmendment(
+      readOnly.contract,
+      { scope: ["src/**"], verification: ["npm test"] },
+      cwd,
+    );
+    assert.deepEqual(mutatingAgain.contract, { scope: ["src/**"], verification: ["npm test"] });
+
+    // Adding a contract to a run with no contract requires scope (and verification if mutating).
+    assert.throws(
+      () => prepareContractAmendment(undefined, { verification: ["npm test"] }, cwd),
+      /requires scope/u,
+    );
+    const added = prepareContractAmendment(
+      undefined,
+      { scope: ["src/**"], verification: ["npm test"] },
+      cwd,
+    );
+    assert.equal(added.previous, undefined);
+    assert.deepEqual(added.contract, { scope: ["src/**"], verification: ["npm test"] });
+
+    // Empty amendments and invalid scopes fail fast.
+    assert.throws(() => prepareContractAmendment(initial, {}, cwd), /at least one field/u);
+    assert.throws(
+      () => prepareContractAmendment(initial, { scope: ["nonexistent/**"] }, cwd),
+      /needs an existing directory "nonexistent"/u,
+    );
+    assert.throws(
+      () => prepareContractAmendment(initial, { scope: ["../escape/**"] }, cwd),
+      /without '\.\.' traversal/u,
+    );
+  },
+);
+
+function replyDetails(reply: unknown): Record<string, unknown> {
+  assert.ok(isRecord(reply) && isRecord(reply.details));
+  return reply.details;
+}
+
+function replyText(reply: unknown): string {
+  assert.ok(isRecord(reply) && Array.isArray(reply.content));
+  const first: unknown = reply.content[0];
+  assert.ok(isRecord(first) && typeof first.text === "string");
+  return first.text;
+}
+
+nodeTest(
+  "agent_runs continue and review amend live contracts durably, fail fast on invalid scopes, and propagate to successors",
+  async (t) => {
+    const sessionId = "overseer-amend-parent";
+    const harness = await createHarness(t, sessionId);
+    await harness.start();
+
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-amend-run-"));
+    t.after(() => {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    });
+    fs.mkdirSync(path.join(workdir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(workdir, "test", "unit"), { recursive: true });
+
+    const base = ownerDirectory(getPiAgentDir(), sessionId);
+    const runId = "run-live-amend";
+    const dir = runDirectory(base, runId);
+    const scratchDir = path.join(dir, "scratch");
+    const sessionFile = path.join(dir, "child.jsonl");
+    fs.mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(sessionFile, '{"type":"session","id":"child-1"}\n', { mode: 0o600 });
+    const launch: Launch = {
+      version: 1,
+      id: runId,
+      rootId: runId,
+      owner: sessionId,
+      cwd: workdir,
+      agentDir: getPiAgentDir(),
+      sdk: packageRoot(),
+      entry: path.join(process.cwd(), "src/agent/index.ts"),
+      sessionFile,
+      sessionId: "child-1",
+      prompt: "Initial task",
+      context: "fresh",
+      provider: "google",
+      model: "gemini-4-hydrogen",
+      thinking: "medium",
+      trusted: true,
+      name: "amend-worker",
+      contract: {
+        scope: ["src"],
+        verification: ["npm run test:unit"],
+        baseBranch: "main",
+        requiredPrimitives: ["OldApi"],
+        nonGoals: ["No custom shims"],
+      },
+      scratchDir,
+      overseer: { enabled: true, judge: "auto" },
+      createdAt: Date.now(),
+    };
+    write(path.join(dir, "launch.json"), launch, true);
+    write(path.join(dir, "admissions", `${runId}.json`), {
+      id: runId,
+      runId,
+      action: "run",
+      state: "accepted",
+      at: Date.now(),
+    });
+    write(path.join(dir, "actor.lock", "process.json"), {
+      ...ownIdentity(),
+      token: "live-token",
+    });
+
+    // Unsupported actions reject contract fail-fast before touching disk.
+    await assert.rejects(
+      harness.callTool("agent_runs", { action: "list", contract: { scope: ["src"] } }),
+      /only supported with action="continue"/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: runId,
+        verdict: "approved",
+        summary: "Looks good",
+        contract: { scope: ["src"] },
+      }),
+      /only supported with action="continue"/u,
+    );
+    assert.equal(readReview(base, runId), undefined);
+
+    // Invalid amended scope fails fast before writing contract.json, review.json, or commands.
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "continue",
+        id: runId,
+        prompt: "Widen to nonexistent",
+        contract: { scope: ["nonexistent/**"] },
+      }),
+      /needs an existing directory "nonexistent"/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: runId,
+        verdict: "changes_requested",
+        summary: "Widen to nonexistent",
+        contract: { scope: ["nonexistent/**"] },
+      }),
+      /needs an existing directory "nonexistent"/u,
+    );
+    assert.equal(fs.existsSync(path.join(dir, "contract.json")), false);
+    assert.equal(readReview(base, runId), undefined);
+    assert.equal(fs.existsSync(path.join(dir, "commands")), false);
+
+    // Valid live continue amends contract durably and notifies the child in the steer prompt.
+    const steered = replyDetails(
+      await harness.callTool("agent_runs", {
+        action: "continue",
+        id: runId,
+        prompt: "Also add unit tests in test/unit.",
+        contract: { scope: ["src/**", "test/**/*.test.ts"] },
+      }),
+    );
+    assert.ok(typeof steered.command === "string");
+    assert.deepEqual(activeContract(base, launch), {
+      scope: ["src/**", "test/**/*.test.ts"],
+      verification: ["npm run test:unit"],
+      baseBranch: "main",
+      requiredPrimitives: ["OldApi"],
+      nonGoals: ["No custom shims"],
+    });
+    assert.deepEqual(steered.contract, activeContract(base, launch));
+    const queued = read(path.join(dir, "commands", `${steered.command}.json`), commandSchema);
+    assert.equal(queued?.action, "steer");
+    assert.match(
+      queued.prompt,
+      /^\[Delegation contract updated: scope: src\/\*\*, test\/\*\*\/\*\.test\.ts\]\n\nAlso add unit tests in test\/unit\.$/u,
+    );
+
+    // review(verdict="changes_requested") also supports amending the contract in the same step.
+    const reviewed = replyDetails(
+      await harness.callTool("agent_runs", {
+        action: "review",
+        id: runId,
+        verdict: "changes_requested",
+        summary: "Switch to path.posix.matchesGlob.",
+        contract: { requiredPrimitives: ["path.posix.matchesGlob"] },
+      }),
+    );
+    assert.ok(typeof reviewed.command === "string");
+    assert.equal(readReview(base, runId)?.verdict, "changes_requested");
+    assert.deepEqual(activeContract(base, launch)?.requiredPrimitives, ["path.posix.matchesGlob"]);
+    assert.equal(readContractAmendments(base, launch).length, 2);
+    const reviewSteer = read(path.join(dir, "commands", `${reviewed.command}.json`), commandSchema);
+    assert.equal(reviewSteer?.action, "steer");
+    assert.match(
+      reviewSteer.prompt,
+      /^\[Delegation contract updated: requiredPrimitives: path\.posix\.matchesGlob\]\n\nSwitch to path\.posix\.matchesGlob\.$/u,
+    );
+
+    // inspect displays the active amended contract and full amendment history.
+    const inspectText = replyText(
+      await harness.callTool("agent_runs", {
+        action: "inspect",
+        id: runId,
+      }),
+    );
+    assert.match(inspectText, /Contract: scope=src\/\*\*, test\/\*\*\/\*\.test\.ts/u);
+    assert.match(inspectText, /requiredPrimitives=path\.posix\.matchesGlob/u);
+    assert.match(inspectText, /Contract amendments \(2\):/u);
+
+    // Successor without a new contract inherits the run's latest amended contract (not stale launch.json).
+    const inheritedNext = successor(
+      base,
+      launch,
+      "Finish up",
+      successorContractOptions(base, launch, activeContract(base, launch)),
+    );
+    assert.ok(inheritedNext !== undefined);
+    assert.deepEqual(inheritedNext.contract, activeContract(base, launch));
+    assert.equal(inheritedNext.scratchDir, scratchDir);
+
+    // Successor with a new amendment persists both launch.json and contract.json history.
+    const nextAmendment = prepareContractAmendment(
+      activeContract(base, inheritedNext),
+      { nonGoals: [] },
+      workdir,
+    );
+    const amendedNext = successor(
+      base,
+      inheritedNext,
+      "Clear non-goals and continue",
+      successorContractOptions(
+        base,
+        inheritedNext,
+        activeContract(base, inheritedNext),
+        nextAmendment,
+      ),
+    );
+    assert.ok(amendedNext !== undefined);
+    assert.equal(amendedNext.contract?.nonGoals, undefined);
+    assert.deepEqual(amendedNext.contract?.scope, ["src/**", "test/**/*.test.ts"]);
+    assert.equal(readContractAmendments(base, amendedNext).length, 1);
+    assert.match(
+      renderInspection(base, amendedNext).content[0]?.text ?? "",
+      /Contract amendments \(1\):.*nonGoals: \(cleared\)/su,
+    );
+  },
+);
+
+nodeTest(
+  "childRuntime dynamically reloads amended contracts on tool_call and before_agent_start without restart",
+  async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-child-reload-"));
+    t.after(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const cwd = path.join(root, "repo");
+    const base = path.join(root, "runs");
+    fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "test", "unit"), { recursive: true });
+
+    const sdkRoot = packageRoot();
+    const sdk = await loadSDK(sdkRoot);
+    const run1Id = "child-reload-1";
+    const run1Dir = runDirectory(base, run1Id);
+    const scratchDir = path.join(run1Dir, "scratch");
+    fs.mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
+    const sessionManager = sdk.SessionManager.create(cwd, run1Dir);
+    const sessionFile = sessionManager.getSessionFile();
+    assert.ok(sessionFile !== undefined);
+    fs.writeFileSync(sessionFile, `${JSON.stringify(sessionManager.getHeader())}\n`, {
+      mode: 0o600,
+    });
+
+    const launch1: Launch = {
+      version: 1,
+      id: run1Id,
+      rootId: run1Id,
+      owner: "parent-1",
+      cwd,
+      agentDir: getPiAgentDir(),
+      sdk: sdkRoot,
+      entry: path.join(process.cwd(), "src/agent/index.ts"),
+      sessionFile,
+      sessionId: sessionManager.getSessionId(),
+      prompt: "Implement feature",
+      context: "fresh",
+      provider: "openai",
+      model: "gpt-5.4",
+      thinking: "low",
+      trusted: true,
+      contract: { scope: ["src"], verification: ["npm test"] },
+      scratchDir,
+      createdAt: Date.now(),
+    };
+    write(path.join(run1Dir, "launch.json"), launch1, true);
+
+    let currentLaunch = launch1;
+    const seenEvents: string[] = [];
+    const factory = childRuntime(sdk, launch1, {
+      base,
+      directory: run1Dir,
+      token: "reload-token",
+      activeLaunch: () => currentLaunch,
+      saved: undefined,
+      started: () => {
+        seenEvents.push("started");
+      },
+      tool: (event) => {
+        seenEvents.push(event.toolName);
+      },
+    });
+    const runtime = await sdk.createAgentSessionRuntime(factory, {
+      sessionManager,
+      cwd,
+      agentDir: getPiAgentDir(),
+    });
+    t.after(async () => {
+      await runtime.dispose();
+    });
+    const guardExt = runtime.services.resourceLoader
+      .getExtensions()
+      .extensions.find(
+        (ext) =>
+          ext.handlers.has("tool_execution_start") &&
+          ext.handlers.has("before_agent_start") &&
+          ext.handlers.has("tool_call"),
+      );
+    assert.ok(guardExt !== undefined);
+
+    const runBeforeStart = async () => {
+      const sections: Record<string, string> = {};
+      for (const handler of guardExt.handlers.get("before_agent_start") ?? []) {
+        await handler({ type: "before_agent_start", systemPromptOptions: { sections } }, {});
+      }
+      return sections;
+    };
+    const runToolCall = async (toolName: string, input: Record<string, unknown>) => {
+      for (const handler of guardExt.handlers.get("tool_call") ?? []) {
+        const res: unknown = await handler({ type: "tool_call", toolName, input }, {});
+        if (isRecord(res)) {
+          return res;
+        }
+      }
+      return;
+    };
+
+    // Before amendment: src/ and scratchDir are allowed; test/ is blocked.
+    const initialSections = await runBeforeStart();
+    assert.match(initialSections.delegation_contract ?? "", /Allowed edit scope: src$/mu);
+    assert.equal(await runToolCall("write", { path: "src/a.ts" }), undefined);
+    assert.equal(
+      await runToolCall("write", { path: path.join(scratchDir, "probe.mjs") }),
+      undefined,
+    );
+    assert.equal((await runToolCall("write", { path: "test/unit/a.test.ts" }))?.block, true);
+
+    // Amend R1 durably on disk while the child runtime stays live.
+    recordContractAmendment(
+      base,
+      run1Id,
+      prepareContractAmendment(
+        launch1.contract,
+        {
+          scope: ["src/**", "test/**/*.test.ts"],
+          requiredPrimitives: ["path.posix.matchesGlob"],
+        },
+        cwd,
+      ),
+    );
+
+    // Without restarting the child runtime, tool_call and before_agent_start honor the new contract immediately.
+    assert.equal(await runToolCall("write", { path: "test/unit/a.test.ts" }), undefined);
+    assert.equal((await runToolCall("write", { path: "README.md" }))?.block, true);
+    const amendedSections = await runBeforeStart();
+    assert.match(
+      amendedSections.delegation_contract ?? "",
+      /Allowed edit scope: src\/\*\*, test\/\*\*\/\*\.test\.ts/u,
+    );
+    assert.match(amendedSections.delegation_contract ?? "", /path\.posix\.matchesGlob/u);
+    assert.match(amendedSections.delegation_contract ?? "", /Latest contract amendment:/u);
+
+    // Resident actor switching to a successor launch picks up the successor's contract immediately.
+    const launch2 = successor(
+      base,
+      launch1,
+      "Switch to read-only analysis",
+      successorContractOptions(
+        base,
+        launch1,
+        activeContract(base, launch1),
+        prepareContractAmendment(activeContract(base, launch1), { scope: [] }, cwd),
+      ),
+    );
+    assert.ok(launch2 !== undefined);
+    currentLaunch = launch2;
+    assert.equal((await runToolCall("write", { path: "src/a.ts" }))?.block, true);
+    assert.equal(
+      await runToolCall("write", { path: path.join(scratchDir, "notes.md") }),
+      undefined,
+    );
+    const successorSections = await runBeforeStart();
+    assert.match(
+      successorSections.delegation_contract ?? "",
+      /edit tools allowed only in the scratch directory below/u,
+    );
+
+    // A run that started with no contract also enforces a newly added contract immediately.
+    const unconstrainedId = "child-reload-unconstrained";
+    const unconstrainedDir = runDirectory(base, unconstrainedId);
+    fs.mkdirSync(unconstrainedDir, { recursive: true, mode: 0o700 });
+    const { contract: _contract, scratchDir: _scratchDir, ...baseLaunch } = launch1;
+    const unconstrainedLaunch: Launch = {
+      ...baseLaunch,
+      id: unconstrainedId,
+      rootId: unconstrainedId,
+    };
+    write(path.join(unconstrainedDir, "launch.json"), unconstrainedLaunch, true);
+    currentLaunch = unconstrainedLaunch;
+    assert.equal((await runBeforeStart()).delegation_contract, undefined);
+    assert.equal(await runToolCall("write", { path: "README.md" }), undefined);
+
+    recordContractAmendment(
+      base,
+      unconstrainedId,
+      prepareContractAmendment(undefined, { scope: ["src/**"], verification: ["npm test"] }, cwd),
+    );
+    assert.equal((await runToolCall("write", { path: "README.md" }))?.block, true);
+    assert.equal(await runToolCall("write", { path: "src/ok.ts" }), undefined);
+    assert.match(
+      (await runBeforeStart()).delegation_contract ?? "",
+      /Allowed edit scope: src\/\*\*/u,
+    );
   },
 );

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import type { Escalation, Launch } from "./contracts.ts";
+import type { DelegationContract, Escalation, Launch } from "./contracts.ts";
 import { errorText } from "./host.ts";
+import { activeContract } from "./overseer-contract.ts";
 import { ToolErrorWindow } from "./overseer-evidence.ts";
 import {
   acceptedPoint,
@@ -40,7 +41,8 @@ const ESCALATION_EXCERPT_CHARS = 3000;
 
 interface RunSentinelState {
   readonly runId: string;
-  readonly launch: ReviewPoint;
+  launch: ReviewPoint;
+  baseBranch: string | undefined;
   /**
    * The last state that passed: approved by the overseer, unchanged, or cleared by the judge.
    * The scope check and the judge see only the work after it.
@@ -105,20 +107,22 @@ interface SentinelOptions {
 /** Rejects when no judge answered. */
 async function askJudge(
   launch: Launch,
+  contract: DelegationContract,
   ctx: ExtensionContext,
-  guidance: readonly string[],
-  work: { checkpoint: Work; acceptedFiles: readonly string[]; failed: Set<string> },
+  work: {
+    guidance: readonly string[];
+    checkpoint: Work;
+    acceptedFiles: readonly string[];
+    failed: Set<string>;
+  },
 ): Promise<Violation | undefined> {
-  if (launch.contract === undefined) {
-    return undefined;
-  }
   return evaluateDecisionCheckpoint({
     modelRegistry: ctx.modelRegistry,
     judgeSpec: launch.overseer?.judge,
     prompt: launch.prompt,
     continuation: launch.predecessor !== undefined,
-    guidance,
-    contract: launch.contract,
+    guidance: work.guidance,
+    contract,
     changedFiles: work.checkpoint.changes.files,
     acceptedFiles: work.acceptedFiles,
     diff: work.checkpoint.diff,
@@ -142,8 +146,9 @@ export class OverseerSentinel {
   }
 
   private primeBaseline(launch: Launch): void {
-    if (launch.overseer?.enabled === true && launch.contract !== undefined) {
-      this.ensureState(launch);
+    const contract = activeContract(this.options.base, launch);
+    if (launch.overseer?.enabled === true && contract !== undefined) {
+      this.ensureState(launch, contract);
     }
   }
 
@@ -151,18 +156,20 @@ export class OverseerSentinel {
     return this.pause?.steer(command) ?? false;
   }
 
-  private ensureState(launch: Launch): RunSentinelState {
+  private ensureState(launch: Launch, contract?: DelegationContract): RunSentinelState {
     if (this.state?.runId === launch.id) {
       return this.state;
     }
+    const baseBranch = (contract ?? activeContract(this.options.base, launch))?.baseBranch;
     const excludePaths = harnessExcludePaths(this.options.base, launch);
     const point = launchPoint(launch.cwd, {
-      baseBranch: launch.contract?.baseBranch,
+      baseBranch,
       excludePaths,
     });
     this.state = {
       runId: launch.id,
       launch: point,
+      baseBranch,
       reviewPoint: point,
       approved: point,
       approvedBranchIssues: new Set(),
@@ -176,6 +183,31 @@ export class OverseerSentinel {
       steers: 0,
     };
     return this.state;
+  }
+
+  /** Refreshes the launch snapshot's base-branch refs when baseBranch is amended mid-run. */
+  private syncBaseBranch(launch: Launch, baseBranch: string | undefined): void {
+    const state = this.state;
+    if (state === undefined || state.baseBranch === baseBranch) {
+      return;
+    }
+    state.baseBranch = baseBranch;
+    state.approvedBranchIssues.clear();
+    const refreshed = captureRepoSnapshot(launch.cwd, {
+      baseBranch,
+      excludePaths: state.excludePaths,
+    });
+    state.launch = {
+      ...state.launch,
+      snapshot: {
+        ...state.launch.snapshot,
+        baseBranch: refreshed.baseBranch,
+        localBaseHead: refreshed.localBaseHead,
+        upstreamHead: refreshed.upstreamHead,
+        resolvedBaseHead: refreshed.resolvedBaseHead,
+        baseBranchUnborn: refreshed.baseBranchUnborn,
+      },
+    };
   }
 
   private workSince(launch: Launch, point: ReviewPoint, snapshot: RepoSnapshot): Work {
@@ -288,16 +320,14 @@ export class OverseerSentinel {
     finalSettle: boolean,
     toolErrorTurns?: Escalation["toolErrorTurns"],
   ): Promise<void> {
-    if (
-      launch.overseer?.enabled !== true ||
-      launch.contract === undefined ||
-      this.options.isStopping()
-    ) {
+    const contract = activeContract(this.options.base, launch);
+    if (launch.overseer?.enabled !== true || contract === undefined || this.options.isStopping()) {
       return;
     }
-    const current = this.ensureState(launch);
+    const current = this.ensureState(launch, contract);
+    this.syncBaseBranch(launch, contract.baseBranch);
     const snapshot = captureRepoSnapshot(launch.cwd, {
-      baseBranch: launch.contract.baseBranch,
+      baseBranch: contract.baseBranch,
       excludePaths: current.excludePaths,
     });
     const checkpoint = this.workSince(launch, current.reviewPoint, snapshot);
@@ -314,7 +344,7 @@ export class OverseerSentinel {
     }
     const issue = checkDeterministicTripwires({
       cwd: launch.cwd,
-      contract: launch.contract,
+      contract,
       launch: current.launch.snapshot,
       current: snapshot,
       changes: checkpoint.changes,
@@ -322,17 +352,18 @@ export class OverseerSentinel {
     if (issue !== undefined && !current.approvedBranchIssues.has(issue.summary)) {
       return this.escalate(launch, issue, checkpoint);
     }
-    return this.judge(launch, ctx, checkpoint, finalSettle);
+    return this.judge(launch, contract, ctx, { checkpoint, finalSettle });
   }
 
   /** Asks the judge about the new work when a trigger holds; a clean answer moves the review point. */
   private async judge(
     launch: Launch,
+    contract: DelegationContract,
     ctx: ExtensionContext,
-    checkpoint: Work,
-    finalSettle: boolean,
+    options: { readonly checkpoint: Work; readonly finalSettle: boolean },
   ): Promise<void> {
-    const current = this.ensureState(launch);
+    const { checkpoint, finalSettle } = options;
+    const current = this.ensureState(launch, contract);
     const { snapshot } = checkpoint;
     if (checkpoint.changes.files.length === 0) {
       this.pass(launch, snapshot);
@@ -353,7 +384,12 @@ export class OverseerSentinel {
         admittedCorrections: current.admittedCorrections,
       });
       const failed = current.failedJudges;
-      verdict = await askJudge(launch, ctx, guidance, { checkpoint, acceptedFiles, failed });
+      verdict = await askJudge(launch, contract, ctx, {
+        guidance,
+        checkpoint,
+        acceptedFiles,
+        failed,
+      });
     } catch (error) {
       if (signal?.aborted === true) {
         // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
@@ -378,10 +414,11 @@ export class OverseerSentinel {
 
   private async onTurnEnd(event: TurnEndEvent, ctx: ExtensionContext) {
     const launch = this.options.activeLaunch();
-    if (launch.overseer?.enabled !== true || launch.contract === undefined) {
+    const contract = activeContract(this.options.base, launch);
+    if (launch.overseer?.enabled !== true || contract === undefined) {
       return;
     }
-    const current = this.ensureState(launch);
+    const current = this.ensureState(launch, contract);
     const toolErrorTurns = current.toolErrors.record(event);
     const mutated = event.toolResults.some((result) => MUTATING_TOOLS.has(result.toolName));
     if (mutated) {

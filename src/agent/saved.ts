@@ -8,7 +8,8 @@ import { isRecord } from "../shared/unknown.ts";
 import { Assert, Type } from "./typebox.ts";
 import { thinkingSchema, successorSchema, type Launch } from "./contracts.ts";
 import { packageRoot, runtimeEntry } from "./host.ts";
-import { launchAt, read, runDirectory, safeId, write } from "./storage.ts";
+import { prepareContractAmendment, type ContractAmendmentInput } from "./overseer-contract.ts";
+import { ensureScratchDirectory, launchAt, read, runDirectory, safeId, write } from "./storage.ts";
 
 const configuration = Type.Object({
   model: Type.Optional(Type.String()),
@@ -173,10 +174,26 @@ export function adoptedJournal(base: string, launch: Launch): boolean {
   );
 }
 
+/** Validates and builds optional contract/scratch fields for an adopted legacy continuation. */
+function savedContractFields(
+  base: string,
+  nextId: string,
+  cwd: string,
+  contract: ContractAmendmentInput | undefined,
+) {
+  if (contract === undefined) {
+    return { fields: {}, amendment: undefined };
+  }
+  const amendment = prepareContractAmendment(undefined, contract, cwd);
+  const scratchDir = ensureScratchDirectory(base, { rootId: nextId });
+  return { fields: { contract: amendment.contract, scratchDir }, amendment };
+}
+
 /** Only frozen single-native-child snapshots cross the retired runtime boundary. */
 export function savedContinuation(options: {
   id: string;
   prompt: string;
+  contract?: ContractAmendmentInput | undefined;
   context: ExtensionContext;
   base: string;
   agentDir: string;
@@ -196,6 +213,7 @@ export function savedContinuation(options: {
   }
   const snapshot = frozenSnapshot(source, context, owned);
   const nextId = randomUUID();
+  const { fields, amendment } = savedContractFields(base, nextId, snapshot.cwd, options.contract);
   const launch: Launch = {
     version: 1,
     id: nextId,
@@ -206,11 +224,19 @@ export function savedContinuation(options: {
     sdk: packageRoot(),
     entry: runtimeEntry(),
     prompt,
+    ...fields,
     ...snapshot,
     createdAt: Date.now(),
   };
   fs.mkdirSync(runDirectory(base, nextId), { mode: 0o700 });
   write(path.join(runDirectory(base, nextId), "launch.json"), launch, true);
+  if (amendment !== undefined) {
+    write(
+      path.join(runDirectory(base, nextId), "contract.json"),
+      { current: amendment.contract, history: [{ at: Date.now(), ...amendment }] },
+      true,
+    );
+  }
   try {
     write(mapping, { id: nextId }, true);
   } catch (error) {

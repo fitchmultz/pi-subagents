@@ -41,6 +41,10 @@ import {
   resolveActiveEscalation,
   type SteerCommand,
 } from "../../src/agent/overseer-pause.ts";
+import {
+  prepareContractAmendment,
+  recordContractAmendment,
+} from "../../src/agent/overseer-contract.ts";
 import { OverseerSentinel } from "../../src/agent/overseer-sentinel.ts";
 import { read, runDirectory, write } from "../../src/agent/storage.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
@@ -1142,6 +1146,7 @@ async function supervisedRun(
     taskGuidance: unknown;
     diff: string;
   }[] = [];
+  const judgedContracts: unknown[] = [];
   const ctx = {
     sessionManager: journal,
     get signal() {
@@ -1157,7 +1162,7 @@ async function supervisedRun(
         context: ClassifierContext,
         request?: { signal?: AbortSignal },
       ) => {
-        const { changedFiles, acceptedFiles, taskGuidance, diff } = context.state;
+        const { contract, changedFiles, acceptedFiles, taskGuidance, diff } = context.state;
         const asked = {
           changedFiles,
           acceptedFiles,
@@ -1165,6 +1170,7 @@ async function supervisedRun(
           diff: typeof diff === "string" ? diff : "",
         };
         judged.push(asked);
+        judgedContracts.push(contract);
         const failure = {
           api: classifier.api,
           provider: classifier.provider,
@@ -1246,6 +1252,7 @@ async function supervisedRun(
     paused,
     notice,
     judged,
+    judgedContracts,
     escPath,
     steer,
     journal,
@@ -1768,5 +1775,92 @@ nodeTest(
     assert.equal(pause.steer(command), true);
     assert.deepEqual(await waiting, { verdict: "steered", commands: [command] });
     assert.equal(fs.existsSync(path.join(runDirectory(base, launch.id), "escalation.json")), false);
+  },
+);
+
+nodeTest(
+  "sentinel tripwires and classifier judge read amended contracts dynamically on live and paused runs",
+  async (t) => {
+    const { repo, base, launch, emit, paused, judgedContracts, escPath, steer } =
+      await supervisedRun(t, {
+        verdict: () => "compliant",
+      });
+    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
+    fs.mkdirSync(path.join(repo, "test", "unit"), { recursive: true });
+    await emit("before_agent_start", {});
+
+    // Out-of-scope edit under initial scope ["src"] pauses with scope_violation.
+    fs.writeFileSync(path.join(repo, "test", "unit", "new.test.ts"), "export const ok = 1;\n");
+    const pausedTurn = emit("turn_end", mutatingTurn);
+    const firstPause = await paused();
+    assert.equal(firstPause.kind, "scope_violation");
+
+    // While paused, amend contract to allow test/**/*.test.ts and update requiredPrimitives, then steer.
+    recordContractAmendment(
+      base,
+      launch.id,
+      prepareContractAmendment(
+        launch.contract,
+        {
+          scope: ["src/**", "test/**/*.test.ts"],
+          requiredPrimitives: ["path.posix.matchesGlob"],
+        },
+        repo,
+      ),
+    );
+    steer();
+    await pausedTurn;
+
+    // On resume and settle, sentinel uses the amended scope (no violation) and passes the amended contract to the judge.
+    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
+    assert.equal(fs.existsSync(escPath), false);
+    assert.equal(judgedContracts.length, 1);
+    assert.deepEqual(judgedContracts[0], {
+      scope: ["src/**", "test/**/*.test.ts"],
+      verification: ["npm test"],
+      baseBranch: "main",
+      requiredPrimitives: ["path.posix.matchesGlob"],
+    });
+
+    // Amending baseBranch from an unresolvable typo to "main" clears branch_violation without false main-mutation errors.
+    recordContractAmendment(
+      base,
+      launch.id,
+      prepareContractAmendment(
+        {
+          scope: ["src/**", "test/**/*.test.ts"],
+          verification: ["npm test"],
+          baseBranch: "main",
+          requiredPrimitives: ["path.posix.matchesGlob"],
+        },
+        { baseBranch: "nonexistent-branch" },
+        repo,
+      ),
+    );
+    fs.appendFileSync(path.join(repo, "src", "allowed.ts"), "export const amended = 1;\n");
+    const badBranchTurn = emit("turn_end", mutatingTurn);
+    const branchPause = await paused();
+    assert.equal(branchPause.kind, "branch_violation");
+
+    recordContractAmendment(
+      base,
+      launch.id,
+      prepareContractAmendment(
+        {
+          scope: ["src/**", "test/**/*.test.ts"],
+          verification: ["npm test"],
+          baseBranch: "nonexistent-branch",
+          requiredPrimitives: ["path.posix.matchesGlob"],
+        },
+        { baseBranch: "main" },
+        repo,
+      ),
+    );
+    steer();
+    await badBranchTurn;
+
+    // Resuming with repaired baseBranch passes cleanly.
+    assert.deepEqual(await emit("agent_before_settle", settle), [undefined]);
+    assert.equal(fs.existsSync(escPath), false);
   },
 );

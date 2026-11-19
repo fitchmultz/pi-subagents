@@ -4,6 +4,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AccountingState, Launch, Result } from "./contracts.ts";
 import { errorText } from "./host.ts";
+import { activeContract } from "./overseer-contract.ts";
 import { captureRepoSnapshot, launchPoint, ownChanges, type ReviewPoint } from "./overseer-git.ts";
 import { harnessExcludePaths } from "./overseer-sentinel.ts";
 import { runDirectory, write } from "./storage.ts";
@@ -63,7 +64,7 @@ export interface EndedRun {
 export function captureOverseerBaseline(base: string, launch: Launch): ReviewPoint | undefined {
   return launch.overseer?.enabled === true
     ? launchPoint(launch.cwd, {
-        baseBranch: launch.contract?.baseBranch,
+        baseBranch: activeContract(base, launch)?.baseBranch,
         excludePaths: harnessExcludePaths(base, launch),
       })
     : undefined;
@@ -78,7 +79,7 @@ function detectedChanges(
   }
   const excludePaths = harnessExcludePaths(base, launch);
   const current = captureRepoSnapshot(launch.cwd, {
-    baseBranch: launch.contract?.baseBranch,
+    baseBranch: activeContract(base, launch)?.baseBranch,
     excludePaths,
   });
   const changed = ownChanges(launch.cwd, baseline, current, excludePaths).files;

@@ -426,7 +426,10 @@ function formatScopeText(scope: readonly string[], scratchDir: string | undefine
 
 export function formatContractSection(
   contract: DelegationContract,
-  options?: { readonly scratchDir?: string | undefined },
+  options?: {
+    readonly scratchDir?: string | undefined;
+    readonly latestAmendmentSummary?: string | undefined;
+  },
 ): string {
   const scratchDir = options?.scratchDir;
   const lines = [
@@ -451,6 +454,9 @@ export function formatContractSection(
   }
   if (contract.verification !== undefined) {
     lines.push(`- Required verification before completion: ${contract.verification.join("; ")}`);
+  }
+  if (options?.latestAmendmentSummary !== undefined) {
+    lines.push(`- Latest contract amendment: ${options.latestAmendmentSummary}`);
   }
   return lines.join("\n");
 }
