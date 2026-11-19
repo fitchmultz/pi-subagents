@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.58 - 2026-11-19
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(agent): report active subagent runs via background_work (#481) ([9e08778](https://github.com/fitchmultz/pi-subagents/commit/9e08778bbd5764ce0c73ac1ccb9968db419a76a4))
+
+### What's Changed
+
+- feat(agent): report active subagent runs via background_work by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/481
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.57...v0.52.58
+
 ## 0.52.57 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->
