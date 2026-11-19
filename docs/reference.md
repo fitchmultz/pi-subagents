@@ -482,7 +482,8 @@ When overseer mode is enabled, `delegate` requires `contract`:
 Whenever `delegate` receives an explicit path in `contract.scope`, it checks the path against the
 resolved child `cwd` before starting a child. New top-level files are allowed. A path with more
 than one segment needs an existing first directory, so `src/new-dir/new.ts` is valid if `src/`
-exists. The call rejects paths that resolve outside `cwd`, including through symlinks.
+exists. If the first directory is new, create it before calling `delegate` with a path under it.
+The call rejects paths that resolve outside `cwd`, including through symlinks.
 
 Supervised children run zero-cost tripwires on mutating or error turns (three consecutive turns with tool errors,
 out-of-scope changes of the child's own, and `baseBranch` ancestry/direct-commit guards) plus

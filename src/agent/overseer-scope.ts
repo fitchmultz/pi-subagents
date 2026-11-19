@@ -168,7 +168,7 @@ export function validateDelegationScope(cwd: string, scope: readonly string[]): 
         fs.statSync(path.join(realCwd, root), { throwIfNoEntry: false })?.isDirectory() !== true
       ) {
         throw new Error(
-          `${subject} needs an existing directory ${JSON.stringify(root)}; correct cwd or contract.scope.`,
+          `${subject} needs an existing directory ${JSON.stringify(root)}; create it first if intended, or correct cwd or contract.scope.`,
         );
       }
     }
