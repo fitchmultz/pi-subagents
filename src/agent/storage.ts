@@ -5,7 +5,14 @@ import { readJsonProjection } from "../shared/journal-frames.ts";
 import type { Projection } from "../shared/json-projection.ts";
 import { Assert } from "./typebox.ts";
 import type { Static, TSchema } from "typebox";
-import { launchSchema, successorSchema, type Launch, type Command } from "./contracts.ts";
+import {
+  launchSchema,
+  successorSchema,
+  type Command,
+  type ContractState,
+  type DelegationContract,
+  type Launch,
+} from "./contracts.ts";
 import { hasErrorCode } from "../shared/unknown.ts";
 
 export function missing(error: unknown): boolean {
@@ -84,20 +91,45 @@ export function launchAt(base: string, id: string, owner: string): Launch {
   }
   return launch;
 }
-/** Claims the single successor of a saved run; undefined when another caller already has. */
-export function successor(base: string, launch: Launch, prompt: string): Launch | undefined {
-  const id = randomUUID();
+export interface SuccessorOptions {
+  readonly contract?: DelegationContract | undefined;
+  readonly scratchDir?: string | undefined;
+  readonly contractState?: ContractState | undefined;
+}
+function buildSuccessorLaunch(input: {
+  readonly base: string;
+  readonly launch: Launch;
+  readonly id: string;
+  readonly prompt: string;
+  readonly options: SuccessorOptions | undefined;
+}): Launch {
+  const { base, launch, id, prompt, options } = input;
   const { scratchDir: _persistedScratchDir, ...rest } = launch;
-  const next: Launch = {
+  const contract = options?.contract ?? launch.contract;
+  return {
     ...rest,
     id,
     predecessor: launch.id,
     prompt,
-    ...(launch.contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
+    ...(contract !== undefined ? { contract } : {}),
+    ...(contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
     createdAt: Date.now(),
   };
+}
+/** Claims the single successor of a saved run; undefined when another caller already has. */
+export function successor(
+  base: string,
+  launch: Launch,
+  prompt: string,
+  options?: SuccessorOptions,
+): Launch | undefined {
+  const id = randomUUID();
+  const next = buildSuccessorLaunch({ base, launch, id, prompt, options });
   fs.mkdirSync(runDirectory(base, id), { mode: 0o700 });
   write(path.join(runDirectory(base, id), "launch.json"), next, true);
+  if (options?.contractState !== undefined) {
+    write(path.join(runDirectory(base, id), "contract.json"), options.contractState, true);
+  }
   try {
     write(path.join(runDirectory(base, launch.id), "successor.json"), { id }, true);
   } catch (error) {

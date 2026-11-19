@@ -62,13 +62,19 @@ invocation exits after its final turn and stops any remaining children.
   and `inspect` show what it waits on, and `stop` cancels that work.
 - `continue` takes a complete follow-up `prompt` and keeps the saved child chat.
   Active work receives guidance; completed work gets an immutable successor.
-  Both keep the child's saved effort, independent of later parent changes.
+  Both keep the child's saved effort, independent of later parent changes. Pass
+  optional `contract` to amend `scope`, `verification`, `baseBranch`,
+  `requiredPrimitives`, or `nonGoals` in place (omitted fields keep their
+  current values; empty `[]`/`""` clears optional fields; invalid scopes fail
+  fast). Live, paused, and successor runs apply the amended contract immediately
+  and `inspect` records the amendment history.
 - `stop` requests termination. Inspect actual process evidence; request acceptance
   does not prove actor or command exit.
 - `review` with `verdict:"approved"` records the diff and check evidence in
   `summary` without sending it to the child. Approval releases a pause or
   satisfies the completion review. To send a correction, use `continue` or
-  `review` with `verdict:"changes_requested"` and the instructions as `summary`.
+  `review` with `verdict:"changes_requested"` and the instructions as `summary`
+  (optionally with `contract` to amend the contract in the same step).
 
 Use IDs returned by the tools. Runs belong to their native main session, not a
 cwd, project, name, or forked copy of its transcript. Resume the same main for

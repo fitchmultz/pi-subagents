@@ -82,13 +82,13 @@ project, display name, or a different session forked from its history.
 Live guidance and saved-run successors keep the child's saved effort even if the
 parent's effort has changed.
 
-| Action     | Purpose                                                                              |
-| ---------- | ------------------------------------------------------------------------------------ |
-| `list`     | Page through the current native owner's saved-run metadata, without output previews. |
-| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting. |
-| `continue` | Supply a complete follow-up prompt using the saved child conversation.               |
-| `stop`     | Request termination; inspect the actual process outcome afterward.                   |
-| `review`   | Record overseer `approved` or `changes_requested` verdict (unpausing or steering).   |
+| Action     | Purpose                                                                                                                                       |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`     | Page through the current native owner's saved-run metadata, without output previews.                                                          |
+| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting.                                                          |
+| `continue` | Supply a complete follow-up prompt (and optional `contract` amendment) using the saved child conversation.                                    |
+| `stop`     | Request termination; inspect the actual process outcome afterward.                                                                            |
+| `review`   | Record overseer `approved` or `changes_requested` verdict (unpausing or steering, with optional `contract` amendment on `changes_requested`). |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
 infer them from display names. `list` returns at most 50 runs per page: running
@@ -509,6 +509,17 @@ debounced decision-model checkpoints (every 4 mutating turns, 120 or more new di
 pre-settle). When a check requests a pause, the child writes `escalation.json`, pauses, and wakes
 the parent once with `[agent-escalation]`. Steering via `continue` / `changes_requested`, approving via `review`
 (`verdict="approved"`), or stopping via `stop` resolves the pause immediately.
+
+To amend a delegation contract mid-run or on continuation without stopping the child and losing
+context, pass an optional `contract` object to `agent_runs` with `action="continue"` or
+`action="review"` (`verdict="changes_requested"`). Specified fields (`scope`, `verification`,
+`baseBranch`, `requiredPrimitives`, `nonGoals`) replace their previous values while omitted fields
+keep their current values; pass `[]` or `""` to clear optional fields, and supply `scope` (plus
+`verification` when non-empty) when attaching a contract to a run that had none. Invalid scopes or
+actions fail fast before modifying run state. Amendments are persisted in `<runDir>/contract.json`,
+reloaded dynamically by child edit-tool guards, system-prompt updates, deterministic tripwires
+(including live `baseBranch` updates), and decision checkpoints, carried onto successor launches,
+and shown with amendment history in `agent_runs inspect`.
 
 ### What counts as the child's change
 

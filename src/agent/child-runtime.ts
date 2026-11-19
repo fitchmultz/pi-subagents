@@ -12,6 +12,11 @@ import { shellCommand } from "./process.ts";
 import { localCwdOwner } from "./cwd.ts";
 import type { ToolEvent } from "./observation-state.ts";
 import { backgroundCommands } from "./background-work.ts";
+import {
+  activeContract,
+  formatContractAmendmentSummary,
+  readContractAmendments,
+} from "./overseer-contract.ts";
 import { checkToolCallScope, formatContractSection } from "./overseer-scope.ts";
 import type { OverseerSentinel } from "./overseer-sentinel.ts";
 import { ensureScratchDirectory } from "./storage.ts";
@@ -34,25 +39,50 @@ function rewriteLocalBash(
   }
 }
 
-function guard(pi: ExtensionAPI, launch: Launch, directory: string, token: string): void {
-  const scratchDir =
-    launch.contract === undefined
-      ? undefined
-      : ensureScratchDirectory(path.dirname(directory), launch);
-  if (launch.contract !== undefined) {
-    const section = formatContractSection(launch.contract, { scratchDir });
-    pi.on("before_agent_start", (event) => {
-      const { sections } = event.systemPromptOptions;
-      sections.delegation_contract = section;
-    });
+interface GuardOptions {
+  readonly base: string;
+  readonly activeLaunch: () => Launch;
+  readonly directory: string;
+  readonly token: string;
+}
+
+function resolveActiveContract(base: string, launch: Launch) {
+  const contract = activeContract(base, launch);
+  if (contract === undefined) {
+    delete process.env.PI_SUBAGENT_SCRATCH_DIR;
+    return;
   }
+  const scratchDir = ensureScratchDirectory(base, launch);
+  process.env.PI_SUBAGENT_SCRATCH_DIR = scratchDir;
+  const latest = readContractAmendments(base, launch).at(-1);
+  const latestAmendmentSummary =
+    latest === undefined ? undefined : formatContractAmendmentSummary(latest);
+  return { contract, scratchDir, latestAmendmentSummary };
+}
+
+function guard(pi: ExtensionAPI, options: GuardOptions): void {
+  const { base, activeLaunch, directory, token } = options;
+  pi.on("before_agent_start", (event) => {
+    const resolved = resolveActiveContract(base, activeLaunch());
+    const { sections } = event.systemPromptOptions;
+    if (resolved === undefined) {
+      delete sections.delegation_contract;
+      return;
+    }
+    sections.delegation_contract = formatContractSection(resolved.contract, {
+      scratchDir: resolved.scratchDir,
+      latestAmendmentSummary: resolved.latestAmendmentSummary,
+    });
+  });
   pi.on("tool_call", (event) => {
     if (event.toolName === "delegate" || event.toolName === "agent_runs") {
       return { block: true, reason: "Only a main session may delegate or control children." };
     }
-    if (launch.contract !== undefined) {
+    const launch = activeLaunch();
+    const resolved = resolveActiveContract(base, launch);
+    if (resolved !== undefined) {
       const scopeViolation = checkToolCallScope(
-        { cwd: launch.cwd, scope: launch.contract.scope, scratchDir },
+        { cwd: launch.cwd, scope: resolved.contract.scope, scratchDir: resolved.scratchDir },
         event.toolName,
         event.input,
       );
@@ -96,6 +126,7 @@ function exposeChildTools(settings: SettingsManager): void {
 interface ChildHooks {
   readonly directory: string;
   readonly token: string;
+  readonly activeLaunch?: (() => Launch) | undefined;
   /** Exact parked working state; absent means the saved journal alone. */
   readonly saved: WorkingState | undefined;
   readonly started: (pi: ExtensionAPI, ctx: ExtensionContext) => void;
@@ -135,7 +166,12 @@ export function childRuntime(
           { name: "mcp", builtin: true, factory: sdk.createMcpExtension() },
           ...(jobs ? [{ name: "background-command", builtin: true, factory: jobs }] : []),
           (pi) => {
-            guard(pi, launch, hooks.directory, hooks.token);
+            guard(pi, {
+              base: path.dirname(hooks.directory),
+              activeLaunch: hooks.activeLaunch ?? (() => launch),
+              directory: hooks.directory,
+              token: hooks.token,
+            });
             hooks.sentinel?.attach(pi);
             pi.on("session_start", (_event, ctx) => {
               hooks.started(pi, ctx);

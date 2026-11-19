@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- `agent_runs` `continue` and `review` (`verdict: "changes_requested"`) accept an optional partial or full `contract` amendment to update `scope`, `verification`, `baseBranch`, `requiredPrimitives`, or `nonGoals` in place across live, paused, and successor runs, with durable amendment history in `agent_runs inspect` (OVR-207).
 - Contracted child runs receive a private per-run scratch directory outside the repo (`PI_SUBAGENT_SCRATCH_DIR`) where edit tools are allowed for temporary files and scripts even under `scope: []`, shared across continuations and surfaced in `agent_runs inspect` (OVR-209).
 - `delegate` `contract.scope` supports native POSIX glob patterns (`src/**`, `test/**/*.test.ts`, `{src,test}/**`, `*.ts`) alongside literal relative path prefixes, validating static leading directory prefixes at launch (OVR-206).
 

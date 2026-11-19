@@ -55,6 +55,14 @@ import { registerCompactMessages } from "../shared/compact-cards.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
 import { OverseerController } from "./overseer.ts";
+import {
+  applyLiveContractAmendment,
+  assertContractActionAllowed,
+  assertUnadmittedContract,
+  prepareContinuationContract,
+  successorContractOptions,
+  validateReviewContract,
+} from "./overseer-contract.ts";
 import { prepareOverseerReviewAction, registerOverseerSettleGate } from "./overseer-review.ts";
 
 interface AttachmentBinding {
@@ -328,6 +336,7 @@ class AgentRuntime {
     });
   }
   private async retryContinuation(launch: Launch, input: RunsInput) {
+    assertUnadmittedContract(launch.id, input.contract);
     const claim = inspectActorClaim(this.base, launch);
     const command = read(
       path.join(conversation(this.base, launch), "commands", `${launch.id}.json`),
@@ -359,9 +368,13 @@ class AgentRuntime {
     if (state.kind === "saved-unadmitted") {
       return this.retryContinuation(launch, input);
     }
+    const { existing, amendment } = prepareContinuationContract(this.base, launch, input.contract);
     const claim = state.kind === "admitted" ? inspectActorClaim(this.base, launch) : undefined;
     if (continuationDecision(state, possiblyLive(claim)) === "guidance") {
-      const command = enqueue(this.base, launch, { action: "steer", prompt: input.prompt });
+      const command = enqueue(this.base, launch, {
+        action: "steer",
+        prompt: applyLiveContractAmendment(this.base, launch, input.prompt, amendment),
+      });
       return renderReceipt(this.base, launch, this.ctx, {
         receipt: "guidance",
         command,
@@ -369,7 +382,8 @@ class AgentRuntime {
       });
     }
     parkFailure(this.base, launch);
-    const next = successor(this.base, launch, input.prompt);
+    const options = successorContractOptions(this.base, launch, existing, amendment);
+    const next = successor(this.base, launch, input.prompt, options);
     if (!next) {
       return renderReceipt(this.base, latest(this.base, launch), this.ctx, {
         receipt: "existing-successor",
@@ -387,6 +401,7 @@ class AgentRuntime {
     const { launch, kind } = savedContinuation({
       id: input.id,
       prompt: input.prompt,
+      contract: input.contract,
       context,
       base: this.base,
       agentDir: this.agentDir,
@@ -404,6 +419,7 @@ class AgentRuntime {
     this.checkMain();
     await this.attachmentTail;
     this.checkMain();
+    assertContractActionAllowed(input);
     if (input.action === "list") {
       const all = list(this.base).map((id) => launchAt(this.base, id, this.owner));
       return renderInventory(this.base, all, this.ctx, input);
@@ -432,6 +448,7 @@ class AgentRuntime {
     return this.continue(launch, input);
   }
   private async review(original: Launch, input: RunsInput) {
+    validateReviewContract(this.base, original, input);
     const { target, review, released } = prepareOverseerReviewAction(this.base, original, input);
     if (review.verdict === "changes_requested") {
       return this.continue(latest(this.base, target), { ...input, prompt: review.summary });

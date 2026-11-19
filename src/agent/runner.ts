@@ -415,21 +415,20 @@ class Actor {
   private async start(sdk: Awaited<ReturnType<typeof loadSDK>>, parked: Parking): Promise<Runtime> {
     const sessionManager = parked.open();
     let started: LiveActor["context"] | undefined;
-    const factory = childRuntime(sdk, this.initial, {
-      directory: this.dir,
-      token: this.token,
-      saved: parked.saved,
-      started: (pi, ctx) => {
-        started = { pi, ctx };
-      },
-      tool: (event) => this.actor?.observation.tool(event),
-      sentinel: this.sentinel,
-    });
-    const runtime = await sdk.createAgentSessionRuntime(factory, {
-      cwd: this.initial.cwd,
-      agentDir: this.initial.agentDir,
-      sessionManager,
-    });
+    const runtime = await sdk.createAgentSessionRuntime(
+      childRuntime(sdk, this.initial, {
+        directory: this.dir,
+        token: this.token,
+        activeLaunch: () => (this.work.kind === "running" ? this.work.launch : this.initial),
+        saved: parked.saved,
+        started: (pi, ctx) => {
+          started = { pi, ctx };
+        },
+        tool: (event) => this.actor?.observation.tool(event),
+        sentinel: this.sentinel,
+      }),
+      { cwd: this.initial.cwd, agentDir: this.initial.agentDir, sessionManager },
+    );
     try {
       // `session_start` fires during bindExtensions, after this call starts.
       await this.ready(runtime, parked, () => started);

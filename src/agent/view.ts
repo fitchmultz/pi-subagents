@@ -8,6 +8,8 @@ import {
   commandMetadataSchema,
   exitSchema,
   wakeFailureSchema,
+  type ContractAmendment,
+  type DelegationContract,
   type Escalation,
   type Launch,
   type OverseerReview,
@@ -17,6 +19,12 @@ import {
 import type { RunsInput } from "./tool-schemas.ts";
 import { conversation, read, runDirectory, scratchDirectory } from "./storage.ts";
 import { published } from "./notifications.ts";
+import {
+  activeContract,
+  formatContractAmendmentSummary,
+  formatInspectionContractLines,
+  readContractAmendments,
+} from "./overseer-contract.ts";
 import { escalationEvidenceLines } from "./overseer-evidence.ts";
 import { needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
@@ -51,6 +59,7 @@ interface RunSummary {
   predecessor?: string | undefined;
   name?: string | undefined;
   cwd: string;
+  contract?: DelegationContract | undefined;
   scratchDir?: string | undefined;
   model: string;
   thinking: string;
@@ -73,8 +82,14 @@ interface RunSummary {
   outputFile: string;
   guidance: Guidance[];
 }
+interface AmendmentSummary {
+  readonly at: number;
+  readonly changedFields: ContractAmendment["changedFields"];
+  readonly summary: string;
+}
 interface RunView extends Omit<RunSummary, "result"> {
   result?: Result | undefined;
+  contractAmendments?: AmendmentSummary[] | undefined;
   output: ReturnType<typeof outputView>;
 }
 type Receipt =
@@ -206,6 +221,8 @@ function metadata(
   const admission = runAdmission(base, launch);
   const state = runState(result, admission);
   const status = runStatus(base, launch, state, process.live);
+  const contract = activeContract(base, launch);
+  const scratchDir = contract !== undefined ? scratchDirectory(base, launch) : undefined;
   return {
     id: launch.id,
     owner: launch.owner,
@@ -213,7 +230,8 @@ function metadata(
     predecessor: launch.predecessor,
     name: launch.name,
     cwd: launch.cwd,
-    ...(launch.contract !== undefined ? { scratchDir: scratchDirectory(base, launch) } : {}),
+    ...(contract !== undefined ? { contract } : {}),
+    ...(scratchDir !== undefined ? { scratchDir } : {}),
     model: `${launch.provider}/${launch.model}`,
     thinking: launch.thinking,
     context: launch.context,
@@ -429,7 +447,11 @@ function reviewLine(details: RunView): string {
     details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
   return [prior, pending].filter(Boolean).join("\n");
 }
-function resultText(details: RunView): string {
+function resultText(
+  details: RunView,
+  amendments?: readonly ContractAmendment[],
+  totalAmendments?: number,
+): string {
   const page = details.output;
   const suffix =
     page?.nextOffset !== undefined
@@ -441,6 +463,7 @@ function resultText(details: RunView): string {
   return [
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     identityText(details),
+    ...formatInspectionContractLines(details.contract, amendments, utc, totalAmendments),
     ...waitingLines(details.waiting),
     ...escalationLines(details.escalation),
     reviewLine(details),
@@ -463,9 +486,22 @@ export function renderInspection(
   ctx?: ExtensionContext,
   input: Pick<RunsInput, "offset" | "length"> = {},
 ): ToolReply {
-  const details = projection(base, launch, ctx, input);
+  const allAmendments = readContractAmendments(base, launch);
+  const amendments = allAmendments.slice(-20);
+  const contractAmendments =
+    amendments.length > 0
+      ? amendments.map((entry) => ({
+          at: entry.at,
+          changedFields: entry.changedFields,
+          summary: formatContractAmendmentSummary(entry),
+        }))
+      : undefined;
+  const details: RunView = {
+    ...projection(base, launch, ctx, input),
+    ...(contractAmendments !== undefined ? { contractAmendments } : {}),
+  };
   return {
-    ...toolResult(details, resultText(details)),
+    ...toolResult(details, resultText(details, amendments, allAmendments.length)),
     isError: details.result?.status === "failed",
   };
 }

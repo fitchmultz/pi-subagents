@@ -19,6 +19,26 @@ export const delegationContractSchema = Type.Object({
   nonGoals: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 });
 export type DelegationContract = Static<typeof delegationContractSchema>;
+export const contractFieldSchema = Type.Union([
+  Type.Literal("scope"),
+  Type.Literal("verification"),
+  Type.Literal("baseBranch"),
+  Type.Literal("requiredPrimitives"),
+  Type.Literal("nonGoals"),
+]);
+export type ContractField = Static<typeof contractFieldSchema>;
+export const contractAmendmentSchema = Type.Object({
+  at: Type.Number(),
+  contract: delegationContractSchema,
+  changedFields: Type.Array(contractFieldSchema, { minItems: 1 }),
+  previous: Type.Optional(delegationContractSchema),
+});
+export type ContractAmendment = Static<typeof contractAmendmentSchema>;
+export const contractStateSchema = Type.Object({
+  current: delegationContractSchema,
+  history: Type.Array(contractAmendmentSchema, { minItems: 1 }),
+});
+export type ContractState = Static<typeof contractStateSchema>;
 export const overseerLaunchSchema = Type.Object({
   enabled: Type.Literal(true),
   judge: Type.Optional(Type.String({ minLength: 1 })),

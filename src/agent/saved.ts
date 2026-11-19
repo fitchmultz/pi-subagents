@@ -8,7 +8,16 @@ import { isRecord } from "../shared/unknown.ts";
 import { Assert, Type } from "./typebox.ts";
 import { thinkingSchema, successorSchema, type Launch } from "./contracts.ts";
 import { packageRoot, runtimeEntry } from "./host.ts";
-import { launchAt, read, runDirectory, safeId, write } from "./storage.ts";
+import { prepareContractAmendment, type ContractAmendmentInput } from "./overseer-contract.ts";
+import {
+  ensureScratchDirectory,
+  launchAt,
+  read,
+  runDirectory,
+  safeId,
+  scratchDirectory,
+  write,
+} from "./storage.ts";
 
 const configuration = Type.Object({
   model: Type.Optional(Type.String()),
@@ -173,10 +182,51 @@ export function adoptedJournal(base: string, launch: Launch): boolean {
   );
 }
 
+/** Validates and computes optional contract/scratch fields without touching disk. */
+function savedContractFields(
+  base: string,
+  nextId: string,
+  cwd: string,
+  contract: ContractAmendmentInput | undefined,
+) {
+  if (contract === undefined) {
+    return { fields: {}, amendment: undefined };
+  }
+  const amendment = prepareContractAmendment(undefined, contract, cwd);
+  const scratchDir = scratchDirectory(base, { rootId: nextId });
+  return { fields: { contract: amendment.contract, scratchDir }, amendment };
+}
+
+function publishSavedRun(
+  base: string,
+  launch: Launch,
+  amendment: ReturnType<typeof prepareContractAmendment> | undefined,
+): void {
+  const dir = runDirectory(base, launch.id);
+  fs.mkdirSync(dir, { mode: 0o700 });
+  try {
+    if (amendment !== undefined) {
+      ensureScratchDirectory(base, launch);
+    }
+    write(path.join(dir, "launch.json"), launch, true);
+    if (amendment !== undefined) {
+      write(
+        path.join(dir, "contract.json"),
+        { current: amendment.contract, history: [{ at: Date.now(), ...amendment }] },
+        true,
+      );
+    }
+  } catch (error) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 /** Only frozen single-native-child snapshots cross the retired runtime boundary. */
 export function savedContinuation(options: {
   id: string;
   prompt: string;
+  contract?: ContractAmendmentInput | undefined;
   context: ExtensionContext;
   base: string;
   agentDir: string;
@@ -192,10 +242,16 @@ export function savedContinuation(options: {
   const mapping = path.join(base, `legacy-${id}.json`);
   const adopted = read(mapping, successorSchema);
   if (adopted) {
+    if (options.contract !== undefined) {
+      throw new Error(
+        `Legacy run ${id} was already adopted as ${adopted.id}; pass id=${adopted.id} to amend its contract.`,
+      );
+    }
     return { launch: launchAt(base, adopted.id, owner), kind: "existing" };
   }
   const snapshot = frozenSnapshot(source, context, owned);
   const nextId = randomUUID();
+  const { fields, amendment } = savedContractFields(base, nextId, snapshot.cwd, options.contract);
   const launch: Launch = {
     version: 1,
     id: nextId,
@@ -206,11 +262,11 @@ export function savedContinuation(options: {
     sdk: packageRoot(),
     entry: runtimeEntry(),
     prompt,
+    ...fields,
     ...snapshot,
     createdAt: Date.now(),
   };
-  fs.mkdirSync(runDirectory(base, nextId), { mode: 0o700 });
-  write(path.join(runDirectory(base, nextId), "launch.json"), launch, true);
+  publishSavedRun(base, launch, amendment);
   try {
     write(mapping, { id: nextId }, true);
   } catch (error) {

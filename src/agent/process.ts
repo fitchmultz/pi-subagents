@@ -17,6 +17,7 @@ import { processSchema, type Launch, type ProcessIdentity } from "./contracts.ts
 import { conversation, enqueue, ensureScratchDirectory, read, write } from "./storage.ts";
 import { errorText } from "./host.ts";
 import { generation, handoffToken, parkedFile } from "./generation.ts";
+import { activeContract } from "./overseer-contract.ts";
 import { OwnershipLock, serializeLocalOwnership } from "./ownership-lock.ts";
 
 /** Darwin's in-memory publication bound; Android records carry their own native clock. */
@@ -136,7 +137,7 @@ function childEnvironment(base: string, launch: Launch): NodeJS.ProcessEnv {
     }
   }
   const scratchDir =
-    launch.scratchDir !== undefined || launch.contract !== undefined
+    launch.scratchDir !== undefined || activeContract(base, launch) !== undefined
       ? ensureScratchDirectory(base, launch)
       : undefined;
   return Object.assign(env, {
