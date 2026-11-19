@@ -489,9 +489,10 @@ such as `*.ts` are allowed. A multi-segment literal path needs an existing first
 `cwd`. If a required leading directory is new, create it before calling `delegate`. Entries using
 absolute paths, `..` traversal (including inside brace expressions), or symlinks resolving outside
 `cwd` are rejected; edit-tool target paths are canonicalized inside `cwd` before matching. Wildcard
-globs match leading-dot files and directories (such as `src/.env.example` under `src/**`), and
-existing path segments containing glob metacharacters (such as `src/app/[id]/page.tsx` or
-`src/app/[id]/**`) stay literal rather than acting as character classes.
+globs (`*`, `**`, `?`, `{a,b}`) match leading-dot files and directories (such as `src/.env.example`
+under `src/**`), and bracketed path segments (such as `src/app/[id]/page.tsx` or `src/app/[id]/**`,
+whether existing or not yet created) are treated as literal path characters rather than glob
+character classes.
 
 Supervised children run zero-cost tripwires on mutating or error turns (three consecutive turns with tool errors,
 out-of-scope changes of the child's own, and `baseBranch` ancestry/direct-commit guards) plus

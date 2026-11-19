@@ -546,7 +546,7 @@ nodeTest(
     );
     assert.equal(isPathAllowedByScope(cwd, "test/unit/helper.ts", ["test/**/*.test.ts"]), false);
 
-    // packages/*/src/**, *.ts, {src,test}/**, ?, and character classes match as POSIX globs.
+    // packages/*/src/**, *.ts, {src,test}/**, and ? match as POSIX globs.
     assert.equal(
       isPathAllowedByScope(cwd, "packages/api/src/index.ts", ["packages/*/src/**"]),
       true,
@@ -570,12 +570,35 @@ nodeTest(
     assert.equal(isPathAllowedByScope(cwd, "docs/guide.md", ["{src,test}/**"]), false);
     assert.equal(isPathAllowedByScope(cwd, "src/a.ts", ["src/?.ts"]), true);
     assert.equal(isPathAllowedByScope(cwd, "src/ab.ts", ["src/?.ts"]), false);
-    assert.equal(isPathAllowedByScope(cwd, "src/b.ts", ["src/[a-z].ts"]), true);
-    assert.equal(isPathAllowedByScope(cwd, "src/1.ts", ["src/[a-z].ts"]), false);
-    // Literal dynamic-route filenames with brackets still work.
-    fs.writeFileSync(path.join(cwd, "src", "[id].ts"), "");
-    assert.equal(isPathAllowedByScope(cwd, "src/[id].ts", ["src/[id].ts"]), true);
-    assert.equal(isPathAllowedByScope(cwd, "src/i.ts", ["src/[id].ts"]), false);
+    // Non-existent literal dynamic-route paths with brackets stay literal without widening.
+    assert.doesNotThrow(() => validateDelegationScope(cwd, ["[id].ts", "src/app/[slug]/page.tsx"]));
+    assert.equal(isPathAllowedByScope(cwd, "[id].ts", ["[id].ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "i.ts", ["[id].ts"]), false);
+    assert.equal(isPathAllowedByScope(cwd, "src/[slug].ts", ["src/[slug].ts"]), true);
+    assert.equal(isPathAllowedByScope(cwd, "src/s.ts", ["src/[slug].ts"]), false);
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/app/[slug]/page.tsx", ["src/app/[slug]/page.tsx"]),
+      true,
+    );
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/app/s/page.tsx", ["src/app/[slug]/page.tsx"]),
+      false,
+    );
+    assert.equal(
+      checkToolCallScope(cwd, ["src/app/[slug]/page.tsx"], "write", {
+        path: "src/app/[slug]/page.tsx",
+      }),
+      undefined,
+    );
+    assert.equal(
+      isPathAllowedByScope(cwd, "src/app/[slug]/page.tsx", ["src/*/[slug]/page.tsx"]),
+      true,
+    );
+    assert.equal(isPathAllowedByScope(cwd, "src/app/s/page.tsx", ["src/*/[slug]/page.tsx"]), false);
+    assert.throws(
+      () => validateDelegationScope(cwd, ["src/app/[new-slug]/**"]),
+      /needs an existing directory "src\/app\/\[new-slug\]"/u,
+    );
 
     // Wildcard globs match dotfiles just like literal prefixes without widening non-dot prefixes.
     assert.equal(isPathAllowedByScope(cwd, "src/.env.example", ["src/**"]), true);
