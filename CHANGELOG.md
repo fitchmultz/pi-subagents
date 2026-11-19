@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.55 - 2026-11-19
+
+<!-- npm-release:unreleased:start -->
+
 - `delegate` rejects mismatched contract paths before starting a child and names the working directory and path to fix (PSA-202).
+
+<!-- npm-release:unreleased:end -->
+
+- fix: reject mismatched delegation scopes before launch (PSA-202) (#475) ([ca1dd1a](https://github.com/fitchmultz/pi-subagents/commit/ca1dd1aedab012f9d96b9efa83f21a52b15514f7))
+
+### What's Changed
+
+- fix: reject mismatched delegation scopes before launch (PSA-202) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/475
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.54...v0.52.55
 
 ## 0.52.54 - 2026-11-18
 
