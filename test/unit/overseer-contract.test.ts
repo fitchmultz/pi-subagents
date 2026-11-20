@@ -1845,6 +1845,43 @@ nodeTest(
     assert.equal(successorReply.isError, false);
     assert.equal(activeContract(base, nextRun)?.baseBranch, "main");
     assert.equal(activeContract(base, launch)?.baseBranch, undefined);
+
+    // 5. If transport.send throws AFTER contract.json is persisted, the error discloses the persisted amendment.
+    replies.recordIncomingMessage(
+      {
+        id: childPeerId,
+        name: "scope-asker",
+        cwd: workdir,
+        model: "google/gemini-4-hydrogen",
+        rootSessionId: sessionId,
+        parentSessionId: sessionId,
+      },
+      {
+        id: "ask-before-timeout",
+        timestamp: Date.now(),
+        expectsReply: true,
+        content: { text: "Need nonGoals updated too." },
+      },
+    );
+    const throwingTransport: IntercomTransport = {
+      ...transport,
+      send: async () => {
+        throw new Error("Send timeout");
+      },
+    };
+    const timeoutReply = await outbound.reply(throwingTransport, {
+      action: "reply",
+      replyTo: "ask-before-timeout",
+      message: "Updated nonGoals.",
+      contract: { nonGoals: ["no docs"] },
+    });
+    assert.equal(timeoutReply.isError, true);
+    assert.match(
+      replyText(timeoutReply),
+      /Failed to reply: Send timeout Delegation contract amendment was persisted for run /u,
+    );
+    assert.deepEqual(activeContract(base, nextRun)?.nonGoals, ["no docs"]);
+    assert.equal(replies.listPending().length, 1);
   },
 );
 

@@ -345,13 +345,14 @@ export class IntercomOutbound {
       return toolError("Missing 'message' parameter");
     }
     let progress: SendProgress = { kind: "not-sent" };
+    let amended: ChildContractAmendmentResult | undefined;
     try {
       const target = this.owners.replies.resolveReplyTarget({ to, replyTo });
       if (target.from.id === active.sessionId) {
         return toolError("Cannot message the current session");
       }
       // Persist any contract amendment before sending so the waking child observes it immediately.
-      const amended = await this.amendForReply(target.from, contract);
+      amended = await this.amendForReply(target.from, contract);
       const text = amended === undefined ? body : formatAmendedSteerPrompt(body, amended.amendment);
       progress = { kind: "unconfirmed" };
       const result = await active.send(target.from.id, {
@@ -369,7 +370,7 @@ export class IntercomOutbound {
       this.recordSent(sender, { text, replyTo: target.message.id }, result);
       return replySent(sender, target.message.id, result, amended);
     } catch (error) {
-      return replyFailure(error, replyTo, progress);
+      return replyFailure(error, replyTo, progress, amended);
     }
   }
 }

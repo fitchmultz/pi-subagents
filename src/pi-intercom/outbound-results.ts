@@ -177,6 +177,7 @@ export function replyFailure(
   error: unknown,
   replyTo: string | undefined,
   progress: SendProgress,
+  amended?: ChildContractAmendmentResult,
 ): ToolResultLike {
   const reason = recoveryCode(error, "reply_failed");
   const actions: readonly RecoveryAction[] =
@@ -190,12 +191,17 @@ export function replyFailure(
           },
         ]
       : [{ action: "pending" }, { action: "list" }];
+  const suffix =
+    amended === undefined
+      ? ""
+      : ` Delegation contract amendment was persisted for run ${runLabel(amended)}: ${amended.summary}.`;
   return toolError(
-    `Failed to reply: ${errorMessage(error)}`,
+    `Failed to reply: ${errorMessage(error)}${suffix}`,
     failureDetails(reason, actions, {
       error: true,
       ...((replyTo ?? "") !== "" ? { replyTo } : {}),
       ...sendErrorFacts(error, progress),
+      ...(amended !== undefined ? amendmentDetails(amended) : {}),
     }),
   );
 }
