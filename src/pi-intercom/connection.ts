@@ -159,6 +159,8 @@ export class IntercomConnection {
       ...health,
       lastTurnError: health.lastTurnError ?? null,
       workingOn: this.lifecycle.workingOn ?? null,
+      gitRepo: this.lifecycle.gitContext.gitRepo ?? null,
+      gitBranch: this.lifecycle.gitContext.gitBranch ?? null,
     };
   }
   syncIdentity(sessionId: string): void {
