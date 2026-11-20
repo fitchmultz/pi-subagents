@@ -20,6 +20,7 @@
 - feat(intercom): expose peer git repo/branch and non-waking workingOn claims (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/485
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.60...v0.52.61
+
 ## 0.52.60 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->
