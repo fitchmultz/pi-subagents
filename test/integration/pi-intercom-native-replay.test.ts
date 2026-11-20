@@ -1,6 +1,6 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -270,6 +270,7 @@ async function makeSession(
   t: TestContext,
   name: string,
   options: {
+    readonly cwd?: string;
     readonly configure?: (pi: ExtensionAPI) => void;
     readonly hasUI?: boolean;
     readonly lineage?: { readonly rootSessionId: string; readonly parentSessionId: string };
@@ -277,8 +278,10 @@ async function makeSession(
     readonly waitForRegistration?: boolean;
   } = {},
 ) {
-  const cwd = path.join(root, name);
-  mkdirSync(cwd);
+  const cwd = options.cwd ?? path.join(root, name);
+  if (options.cwd === undefined) {
+    mkdirSync(cwd);
+  }
   const faux = fauxProvider({ provider: `fixture-${name}` });
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
@@ -5201,3 +5204,133 @@ for (const foreground of [false, true]) {
     },
   );
 }
+
+nodeTest(
+  "native list shows git repo/branch context and claim updates/clears workingOn without waking peers",
+  async (t) => {
+    const gitRoot = mkdtempSync(path.join(tmpdir(), "pi-intercom-visibility-"));
+    t.after(() => {
+      rmSync(gitRoot, { recursive: true, force: true });
+    });
+    const gitRepoDir = path.join(gitRoot, "alpha-repo");
+    const detachedWorktree = path.join(gitRoot, "alpha-detached");
+    const nonGitDir = path.join(gitRoot, "plain-workspace");
+    mkdirSync(gitRepoDir, { recursive: true });
+    mkdirSync(nonGitDir, { recursive: true });
+    writeFileSync(path.join(gitRepoDir, "README.md"), "visibility test\n");
+    execFileSync("git", ["init", "-q", "-b", "main", gitRepoDir], { stdio: "ignore" });
+    execFileSync("git", ["-C", gitRepoDir, "add", "."], { stdio: "ignore" });
+    execFileSync(
+      "git",
+      [
+        "-C",
+        gitRepoDir,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-qm",
+        "initial",
+      ],
+      { stdio: "ignore" },
+    );
+    execFileSync(
+      "git",
+      ["-C", gitRepoDir, "worktree", "add", "-q", "--detach", detachedWorktree, "HEAD"],
+      { stdio: "ignore" },
+    );
+    const shortSha = execFileSync("git", ["-C", gitRepoDir, "rev-parse", "--short", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    const branchPeer = await makeSession(t, "git-branch-peer", { cwd: gitRepoDir });
+    const detachedPeer = await makeSession(t, "git-detached-peer", { cwd: detachedWorktree });
+    const plainPeer = await makeSession(t, "plain-nongit-peer", { cwd: nonGitDir });
+    const listAsPlain = async () =>
+      (await executeIntercom(plainPeer, { action: "list" })).content[0]?.text ?? "";
+
+    const initial = await listAsPlain();
+    assert.match(initial, /• git-branch-peer \([^\n]+ · git: alpha-repo \(main\) \[/);
+    assert.match(
+      initial,
+      new RegExp(`• git-detached-peer \\([^\\n]+ · git: alpha-repo \\(${shortSha}\\) \\[`),
+    );
+    assert.doesNotMatch(initial, /• plain-nongit-peer[^\n]* · git:/);
+
+    // Set, update, and clear workingOn via claim without waking idle peers.
+    const claimed = await executeIntercom(branchPeer, {
+      action: "claim",
+      message: "  PSA-203\n  session visibility  ",
+    });
+    assert.equal(claimed.content[0]?.text, "Updated workingOn claim: PSA-203 session visibility");
+    assert.equal(at(claimed, "details", "workingOn"), "PSA-203 session visibility");
+    await waitFor(
+      async () => (await listAsPlain()).includes("working_on:PSA-203 session visibility,"),
+      "claimed workingOn visible in peer list",
+    );
+    assert.equal(plainPeer.faux.state.callCount, 0, "claim must not wake idle peers");
+    assert.equal(detachedPeer.faux.state.callCount, 0, "claim must not wake idle peers");
+
+    const updated = await executeIntercom(branchPeer, {
+      action: "claim",
+      message: "Reviewing PR 2",
+    });
+    assert.equal(updated.content[0]?.text, "Updated workingOn claim: Reviewing PR 2");
+    await waitFor(
+      async () => (await listAsPlain()).includes("working_on:Reviewing PR 2,"),
+      "updated workingOn visible in peer list",
+    );
+
+    const cleared = await executeIntercom(branchPeer, { action: "claim", message: "" });
+    assert.equal(cleared.content[0]?.text, "Cleared workingOn claim.");
+    assert.equal(at(cleared, "details", "workingOn"), null);
+    await waitFor(
+      async () => !(await listAsPlain()).includes("working_on:"),
+      "cleared workingOn omitted from peer list",
+    );
+    assert.equal(plainPeer.faux.state.callCount, 0);
+
+    // Disconnecting a peer clears its presence and workingOn claim automatically.
+    await executeIntercom(detachedPeer, {
+      action: "claim",
+      message: "Temporary detached task",
+    });
+    await waitFor(
+      async () => (await listAsPlain()).includes("working_on:Temporary detached task,"),
+      "detached peer workingOn visible before disconnect",
+    );
+    await detachedPeer.dispose();
+    await waitFor(
+      async () => !/• git-detached-peer \(/.test(await listAsPlain()),
+      "disconnected peer and its workingOn claim removed from list",
+    );
+    assert.doesNotMatch(await listAsPlain(), /Temporary detached task/);
+
+    // Branch switch refreshes gitBranch asynchronously when a turn settles.
+    execFileSync("git", ["-C", gitRepoDir, "checkout", "-qb", "feat/switched"], {
+      stdio: "ignore",
+    });
+    branchPeer.faux.setResponses([fauxAssistantMessage("Switched branches")]);
+    await branchPeer.session.prompt("Acknowledge branch switch");
+    await waitFor(
+      async () => (await listAsPlain()).includes("· git: alpha-repo (feat/switched) ["),
+      "refreshed gitBranch visible after agent_settled",
+    );
+
+    // Strict argument validation on claim.
+    await assert.rejects(
+      executeIntercom(branchPeer, { action: "claim" }),
+      /Missing 'message' parameter for action='claim'/,
+    );
+    await assert.rejects(
+      executeIntercom(branchPeer, { action: "claim", to: "plain-nongit-peer", message: "nope" }),
+      /'to', 'attachments', and 'replyTo' are not valid for action='claim'/,
+    );
+    await assert.rejects(
+      executeIntercom(branchPeer, { action: "claim", scope: "project", message: "nope" }),
+      /'scope' is only valid for action='list' or action='status'/,
+    );
+    assert.deepEqual([...branchPeer.errors, ...detachedPeer.errors, ...plainPeer.errors], []);
+  },
+);

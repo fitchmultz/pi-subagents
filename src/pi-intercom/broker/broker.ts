@@ -366,6 +366,9 @@ class IntercomBroker {
       "acceptsAsks",
       "lastIntercomActivity",
       "lastTurnError",
+      "gitRepo",
+      "gitBranch",
+      "workingOn",
       "subscriptions",
       "topics",
       "applicationGuard",
@@ -374,11 +377,10 @@ class IntercomBroker {
         update[key] = msg[key];
       }
     }
-    if (msg.applicationGuard === null) {
-      delete update.applicationGuard;
-    }
-    if (msg.lastTurnError === null) {
-      delete update.lastTurnError;
+    for (const key of ["applicationGuard", "lastTurnError", "gitRepo", "gitBranch", "workingOn"]) {
+      if (msg[key] === null) {
+        delete update[key];
+      }
     }
     const nextInfo = normalizeSessionInfo(update);
     if (!nextInfo) {

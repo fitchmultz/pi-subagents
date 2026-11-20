@@ -8,6 +8,7 @@ import path from "node:path";
 import {
   filterProjectSessions,
   formatSessionTarget,
+  resolveSessionGitContext,
   resolveSessionProjectId,
   resolveSessionTarget,
   targetDisplayName,
@@ -63,10 +64,11 @@ nodeTest("resolveSessionProjectId matches a repository and linked worktree", asy
   const root = mkdtempSync(path.join(tmpdir(), "pi-intercom-project-"));
   try {
     const repo = path.join(root, "repo");
-    const worktree = path.join(root, "feature-worktree");
+    const branchWorktree = path.join(root, "branch-worktree");
+    const detachedWorktree = path.join(root, "feature-worktree");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "README.md"), "test\n");
-    execFileSync("git", ["init", "-q", repo], { stdio: "ignore" });
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "ignore" });
     execFileSync("git", ["-C", repo, "add", "."], { stdio: "ignore" });
     execFileSync(
       "git",
@@ -83,19 +85,47 @@ nodeTest("resolveSessionProjectId matches a repository and linked worktree", asy
       ],
       { stdio: "ignore" },
     );
-    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "--detach", worktree, "HEAD"], {
-      stdio: "ignore",
-    });
-    mkdirSync(path.join(worktree, "src"), { recursive: true });
+    execFileSync(
+      "git",
+      ["-C", repo, "worktree", "add", "-q", "-b", "feat/visibility", branchWorktree, "HEAD"],
+      {
+        stdio: "ignore",
+      },
+    );
+    execFileSync(
+      "git",
+      ["-C", repo, "worktree", "add", "-q", "--detach", detachedWorktree, "HEAD"],
+      { stdio: "ignore" },
+    );
+    mkdirSync(path.join(branchWorktree, "src"), { recursive: true });
+    mkdirSync(path.join(detachedWorktree, "src"), { recursive: true });
+    const headSha = execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    const unrelated = path.join(root, "unrelated");
+    mkdirSync(unrelated, { recursive: true });
 
     assert.equal(
       await resolveSessionProjectId(path.join(repo, "src")),
-      await resolveSessionProjectId(path.join(worktree, "src")),
+      await resolveSessionProjectId(path.join(detachedWorktree, "src")),
     );
-    assert.notEqual(
-      await resolveSessionProjectId(repo),
-      await resolveSessionProjectId(path.join(root, "unrelated")),
-    );
+    assert.notEqual(await resolveSessionProjectId(repo), await resolveSessionProjectId(unrelated));
+
+    const mainContext = await resolveSessionGitContext(path.join(repo, "src"));
+    const branchContext = await resolveSessionGitContext(path.join(branchWorktree, "src"));
+    const detachedContext = await resolveSessionGitContext(path.join(detachedWorktree, "src"));
+    const nonGitContext = await resolveSessionGitContext(unrelated);
+
+    assert.equal(mainContext.projectId, branchContext.projectId);
+    assert.equal(mainContext.projectId, detachedContext.projectId);
+    assert.equal(mainContext.gitRepo, "repo");
+    assert.equal(mainContext.gitBranch, "main");
+    assert.equal(branchContext.gitRepo, "repo");
+    assert.equal(branchContext.gitBranch, "feat/visibility");
+    assert.equal(detachedContext.gitRepo, "repo");
+    assert.equal(detachedContext.gitBranch, headSha);
+    assert.equal(nonGitContext.gitRepo, undefined);
+    assert.equal(nonGitContext.gitBranch, undefined);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -328,6 +358,69 @@ nodeTest(
     );
     assert.doesNotMatch(listing, /• legacy-peer[^\n]*worker_started:/);
     assert.doesNotMatch(listing, /• restarted-main[^\n]*last_turn_error:/);
+  },
+);
+
+nodeTest(
+  "formatSessionListSections renders git repo/branch and working_on claims when present and omits them when absent",
+  (t) => {
+    const now = 1_000_000_000;
+    t.mock.timers.enable({ apis: ["Date"], now });
+    const listing = formatSessionListSections(
+      [
+        {
+          id: "aaaaaaaa-1111",
+          name: "branch-peer",
+          cwd: "/worktrees/psa-203",
+          model: "fixture",
+          gitRepo: "pi-subagents",
+          gitBranch: "feat/psa-203",
+          workingOn: "PSA-203 session visibility",
+          status: "idle",
+          acceptsAsks: true,
+          pendingAsks: 0,
+          lastSeen: now - 2_000,
+          lastIntercomActivity: 0,
+        },
+        {
+          id: "bbbbbbbb-1111",
+          name: "detached-peer",
+          cwd: "/worktrees/detached",
+          model: "fixture",
+          gitRepo: "pi-subagents",
+          gitBranch: "a1b2c3d",
+          status: "idle",
+          acceptsAsks: true,
+          pendingAsks: 0,
+          lastSeen: now - 3_000,
+          lastIntercomActivity: 0,
+        },
+        {
+          id: "cccccccc-1111",
+          name: "plain-peer",
+          cwd: "/tmp/scratch",
+          model: "fixture",
+          status: "idle",
+          acceptsAsks: true,
+          pendingAsks: 0,
+          lastSeen: now - 4_000,
+          lastIntercomActivity: 0,
+        },
+      ],
+      "aaaaaaaa-1111",
+    );
+
+    assert.match(
+      listing,
+      /• branch-peer \(aaaaaaaa\) — Native session cwd: \/worktrees\/psa-203 \(fixture\) · git: pi-subagents \(feat\/psa-203\) \[self, idle, working_on:PSA-203 session visibility, state:idle/,
+    );
+    assert.match(
+      listing,
+      /• detached-peer \(bbbbbbbb\) — Native session cwd: \/worktrees\/detached \(fixture\) · git: pi-subagents \(a1b2c3d\) \[idle, state:idle/,
+    );
+    assert.doesNotMatch(listing, /• detached-peer[^\n]*working_on:/);
+    assert.doesNotMatch(listing, /• plain-peer[^\n]*git:/);
+    assert.doesNotMatch(listing, /• plain-peer[^\n]*working_on:/);
   },
 );
 

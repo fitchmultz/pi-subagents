@@ -41,6 +41,9 @@ export type RemoteSession = Pick<
   | "cwd"
   | "model"
   | "projectId"
+  | "gitRepo"
+  | "gitBranch"
+  | "workingOn"
   | "status"
   | "startedAt"
   | "lastSeen"
@@ -104,6 +107,9 @@ function listed(session: SessionInfo): RemoteSession {
     cwd: session.cwd,
     model: session.model,
     projectId: session.projectId,
+    gitRepo: session.gitRepo,
+    gitBranch: session.gitBranch,
+    workingOn: session.workingOn,
     status: session.status,
     startedAt: session.startedAt,
     lastSeen: session.lastSeen,

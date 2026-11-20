@@ -8,7 +8,7 @@ import type { Message, SessionInfo, ReceiptQuery, ReceiptResult } from "./types.
 import type { NativeReadQuery } from "./broker/last.ts";
 import { readLastMessage, type NativeHistory } from "./last-message.ts";
 import { asError } from "./validation.ts";
-import { nativePeerId } from "./session-targets.ts";
+import { nativePeerId, resolveSessionGitContext } from "./session-targets.ts";
 import type { WakeResult } from "../shared/parking.ts";
 import type { BackgroundReporter } from "../shared/background-reporting.ts";
 
@@ -16,14 +16,16 @@ type Lifecycle = Pick<
   Readonly<IntercomLifecycle>,
   | "currentSessionId"
   | "generation"
+  | "gitContext"
   | "health"
   | "identity"
   | "lastTurnError"
   | "live"
   | "registration"
   | "status"
+  | "workingOn"
 > &
-  Pick<Readonly<IntercomLifecycle>, "snapshot" | "transport">;
+  Pick<Readonly<IntercomLifecycle>, "setWorkingOn" | "snapshot" | "transport" | "updateGitContext">;
 
 interface ConnectionHooks {
   readonly restoring: () => Promise<void> | undefined;
@@ -65,6 +67,7 @@ export class IntercomConnection {
   private readonly config: IntercomConfig;
   private readonly hooks: ConnectionHooks;
   private readonly wakes = new Map<string, AbortController>();
+  private gitRefresh: AbortController | null = null;
   private readonly reporter: BackgroundReporter;
   constructor(
     lifecycle: Lifecycle,
@@ -155,6 +158,9 @@ export class IntercomConnection {
       status: this.lifecycle.status(),
       ...health,
       lastTurnError: health.lastTurnError ?? null,
+      workingOn: this.lifecycle.workingOn ?? null,
+      gitRepo: this.lifecycle.gitContext.gitRepo ?? null,
+      gitBranch: this.lifecycle.gitContext.gitBranch ?? null,
     };
   }
   syncIdentity(sessionId: string): void {
@@ -173,12 +179,51 @@ export class IntercomConnection {
       });
     }
   }
+  setWorkingOn(value: string | undefined): void {
+    this.lifecycle.setWorkingOn(value);
+    if (this.client && this.lifecycle.live()) {
+      this.client.updatePresence({ workingOn: value ?? null });
+    }
+  }
+  refreshGitContext(): void {
+    const ctx = this.lifecycle.live();
+    if (!this.client || !ctx || this.gitRefresh !== null) {
+      return;
+    }
+    const generation = this.lifecycle.generation;
+    const controller = new AbortController();
+    this.gitRefresh = controller;
+    void resolveSessionGitContext(ctx.cwd, controller.signal)
+      .then((git) => {
+        if (
+          this.gitRefresh !== controller ||
+          !this.lifecycle.live(ctx, generation) ||
+          !this.lifecycle.updateGitContext(git)
+        ) {
+          return;
+        }
+        this.client?.updatePresence({
+          gitRepo: git.gitRepo ?? null,
+          gitBranch: git.gitBranch ?? null,
+        });
+      })
+      .catch(() => {
+        /* Git context refresh is best-effort and never interrupts session work. */
+      })
+      .finally(() => {
+        if (this.gitRefresh === controller) {
+          this.gitRefresh = null;
+        }
+      });
+  }
   private liveSession(id: string, ctx: ExtensionContext): SessionInfo {
     return {
       id,
       ...this.lifecycle.identity(ctx.sessionManager.getSessionId()),
       cwd: ctx.cwd,
       model: ctx.model?.id ?? "unknown",
+      ...this.lifecycle.gitContext,
+      ...(this.lifecycle.workingOn !== undefined ? { workingOn: this.lifecycle.workingOn } : {}),
       status: this.lifecycle.status(),
       ...(this.lifecycle.lastTurnError !== undefined
         ? { lastTurnError: this.lifecycle.lastTurnError }
@@ -410,6 +455,8 @@ export class IntercomConnection {
   async shutdown(): Promise<void> {
     this.clearTimers();
     this.cancelWakes();
+    this.gitRefresh?.abort();
+    this.gitRefresh = null;
     const task =
       this.acquisition.kind === "connecting" || this.acquisition.kind === "shutdown"
         ? this.acquisition.task

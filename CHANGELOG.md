@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Enrich `intercom` `list` rows with each peer's Git repository and branch (or detached short SHA) when inside a Git repository or worktree, and add a non-waking `intercom` `claim` action to set or clear a 1-line `workingOn` presence note (PSA-203).
+
 ## 0.52.60 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->

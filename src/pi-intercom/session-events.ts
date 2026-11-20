@@ -31,7 +31,13 @@ type Lifecycle = Readonly<
 type Connection = Readonly<
   Pick<
     IntercomConnection,
-    "active" | "clearTimers" | "shutdown" | "start" | "syncIdentity" | "syncStatus"
+    | "active"
+    | "clearTimers"
+    | "refreshGitContext"
+    | "shutdown"
+    | "start"
+    | "syncIdentity"
+    | "syncStatus"
   >
 >;
 type Journal = Readonly<
@@ -203,6 +209,7 @@ export class IntercomSessionEvents {
       lifecycle.agentSettled();
       replies.endAgent();
       connection.syncStatus();
+      connection.refreshGitContext();
       await delivery.redeliver(ctx, generation);
       if (lifecycle.live(ctx, generation)) {
         delivery.schedule(0);

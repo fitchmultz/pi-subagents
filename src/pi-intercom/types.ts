@@ -7,6 +7,7 @@ import {
   optionalFiniteNumber,
   optionalLabel,
   optionalTurnError,
+  optionalWorkingOn,
   safeLabel,
   safeText,
 } from "./validation.ts";
@@ -22,6 +23,9 @@ export interface SessionInfo {
   readonly model: string;
   /** Opaque same-repository/worktree identity used for ambient peer awareness. */
   readonly projectId?: string | undefined;
+  readonly gitRepo?: string | undefined;
+  readonly gitBranch?: string | undefined;
+  readonly workingOn?: string | undefined;
   readonly rootSessionId?: string | undefined;
   readonly parentSessionId?: string | undefined;
   readonly incarnation?: string | undefined;
@@ -333,7 +337,8 @@ export function isSessionRegistration(value: unknown): value is Omit<SessionInfo
     return false;
   }
   return (
-    [value.name, value.status].every(optionalLabel) &&
+    [value.name, value.status, value.gitRepo, value.gitBranch].every(optionalLabel) &&
+    optionalWorkingOn(value.workingOn) &&
     validSessionLineage(value) &&
     validSessionProject(value.projectId) &&
     validSessionHealth(value) &&

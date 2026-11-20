@@ -25,7 +25,7 @@ export interface ToolResultLike {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 export interface IntercomToolParams {
-  readonly action: "list" | "send" | "ask" | "reply" | "pending" | "status" | "last";
+  readonly action: "list" | "send" | "ask" | "reply" | "pending" | "status" | "last" | "claim";
   readonly scope?: IntercomSessionScope;
   readonly children?: boolean;
   readonly device?: string;

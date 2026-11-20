@@ -42,6 +42,7 @@ const UNSAFE_TEXT_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u00
 // Protocol labels are single-line fields and reject every C0/C1 control.
 const UNSAFE_LABEL_CONTROLS = /[\u0000-\u001f\u007f-\u009f]/;
 export const MAX_TURN_ERROR_LENGTH = 256;
+export const MAX_WORKING_ON_LENGTH = 256;
 
 export function safeText(value: unknown): boolean {
   return typeof value === "string" && !UNSAFE_TEXT_CONTROLS.test(value);
@@ -61,6 +62,14 @@ export function validTurnError(value: unknown): value is string {
 
 export function optionalTurnError(value: unknown): boolean {
   return value === undefined || validTurnError(value);
+}
+
+export function validWorkingOn(value: unknown): value is string {
+  return typeof value === "string" && safeLabel(value) && value.length <= MAX_WORKING_ON_LENGTH;
+}
+
+export function optionalWorkingOn(value: unknown): boolean {
+  return value === undefined || validWorkingOn(value);
 }
 
 export function isLatestTurnError(

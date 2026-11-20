@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { hash } from "node:crypto";
 import path from "node:path";
+import { safeLabel } from "./validation.ts";
 
 export interface TargetIdentity {
   readonly id: string;
@@ -10,6 +11,12 @@ export interface TargetIdentity {
 export interface ProjectSessionIdentity extends TargetIdentity {
   readonly cwd: string;
   readonly projectId?: string | undefined;
+}
+
+export interface SessionGitContext {
+  readonly projectId: string;
+  readonly gitRepo?: string | undefined;
+  readonly gitBranch?: string | undefined;
 }
 
 export const MIN_SESSION_TARGET_PREFIX_LENGTH = 8;
@@ -32,41 +39,93 @@ function normalizedPath(value: string): string {
   return path.resolve(value);
 }
 
-function resolveGitCommonDirectory(cwd: string): Promise<string | undefined> {
+function sanitizedGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.GIT_DIR;
   delete env.GIT_COMMON_DIR;
   delete env.GIT_WORK_TREE;
+  return env;
+}
+
+function runGit(
+  cwd: string,
+  args: readonly string[],
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   return new Promise((resolve) => {
     execFile(
       "git",
-      ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      ["-C", cwd, ...args],
       {
         cwd: path.dirname(process.execPath),
         encoding: "utf8",
-        env,
+        env: sanitizedGitEnv(),
         maxBuffer: 4096,
         timeout: 500,
+        ...(signal ? { signal } : {}),
       },
       (error, stdout) => {
-        const gitDirectory = error ? "" : stdout.trim();
-        resolve(
-          gitDirectory !== "" && !/[\0\r\n]/.test(gitDirectory)
-            ? normalizedPath(path.resolve(cwd, gitDirectory))
-            : undefined,
-        );
+        const output = error ? "" : stdout.trim();
+        resolve(output !== "" && !/[\0\r\n]/.test(output) ? output : undefined);
       },
     );
   });
 }
 
-export async function resolveSessionProjectId(cwd: string): Promise<string> {
-  const gitDirectory = await resolveGitCommonDirectory(cwd);
+async function resolveGitCommonDirectory(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const gitDirectory = await runGit(
+    cwd,
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    signal,
+  );
+  return gitDirectory === undefined ? undefined : normalizedPath(path.resolve(cwd, gitDirectory));
+}
+
+function repoNameFromGitCommonDirectory(gitDirectory: string): string | undefined {
+  const base = path.basename(gitDirectory);
+  const raw = base === ".git" ? path.basename(path.dirname(gitDirectory)) : base;
+  const name = raw.endsWith(".git") && raw.length > 4 ? raw.slice(0, -4) : raw;
+  return safeLabel(name) ? name : undefined;
+}
+
+async function resolveGitBranch(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+  const branch =
+    (await runGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal)) ??
+    (await runGit(cwd, ["rev-parse", "--short", "HEAD"], signal));
+  return branch !== undefined && safeLabel(branch) ? branch : undefined;
+}
+
+function projectIdFromGitCommonDirectory(cwd: string, gitDirectory: string | undefined): string {
   const identity =
     gitDirectory !== undefined && gitDirectory !== ""
       ? `git:${gitDirectory}`
       : `cwd:${normalizedPath(cwd)}`;
   return hash("sha256", identity, "hex");
+}
+
+export async function resolveSessionProjectId(cwd: string): Promise<string> {
+  return projectIdFromGitCommonDirectory(cwd, await resolveGitCommonDirectory(cwd));
+}
+
+export async function resolveSessionGitContext(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<SessionGitContext> {
+  const gitDirectory = await resolveGitCommonDirectory(cwd, signal);
+  const projectId = projectIdFromGitCommonDirectory(cwd, gitDirectory);
+  if (gitDirectory === undefined) {
+    return { projectId };
+  }
+  const gitRepo = repoNameFromGitCommonDirectory(gitDirectory);
+  const gitBranch = await resolveGitBranch(cwd, signal);
+  return {
+    projectId,
+    ...(gitRepo !== undefined ? { gitRepo } : {}),
+    ...(gitBranch !== undefined ? { gitBranch } : {}),
+  };
 }
 
 function normalizedNames(sessions: readonly TargetIdentity[]): Set<string> {
