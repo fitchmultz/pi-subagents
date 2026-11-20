@@ -1,4 +1,4 @@
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import { recordAt, errorMessage } from "../shared/unknown.ts";
 import { actionText, actionHints } from "../shared/tui-action.ts";
 import { ConversationJournal, plainText, type ConversationPage } from "./journal-tail.ts";
@@ -428,7 +428,7 @@ export class ObserverTranscript extends Container {
     const position = this.positions.find((item) => item.id === anchor.id);
     return (anchor.end === true ? (position?.end ?? 0) : (position?.start ?? 0)) + anchor.offset;
   }
-  override render(width: number): ReturnType<Component["render"]> {
+  override render(width: number): readonly string[] {
     this.positions.length = 0;
     let start = 0;
     for (const child of this.children) {
