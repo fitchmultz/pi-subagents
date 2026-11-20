@@ -191,16 +191,21 @@ export function enqueue(
   launch: Launch,
   input:
     | { readonly action: "run" }
-    | { readonly action: "steer"; readonly prompt: string }
+    | { readonly action: "steer"; readonly prompt: string; readonly id?: string | undefined }
     | { readonly action: "stop"; readonly actorToken: string },
 ): string {
-  const id = input.action === "run" ? launch.id : randomUUID();
-  const command: Command = {
-    id,
-    runId: launch.id,
-    ...input,
-    createdAt: Date.now(),
-  };
+  let id: string;
+  if (input.action === "run") {
+    id = launch.id;
+  } else if (input.action === "steer") {
+    id = input.id ?? randomUUID();
+  } else {
+    id = randomUUID();
+  }
+  const command: Command =
+    input.action === "steer"
+      ? { id, runId: launch.id, action: "steer", prompt: input.prompt, createdAt: Date.now() }
+      : { id, runId: launch.id, ...input, createdAt: Date.now() };
   write(path.join(conversation(base, launch), "commands", `${id}.json`), command, true);
   if (input.action === "steer") {
     notifyInventory(base, launch.id);

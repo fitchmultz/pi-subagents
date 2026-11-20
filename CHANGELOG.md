@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- `intercom` `action="reply"` accepts an optional `contract` amendment when a main session answers an owned child run's ask, validating ownership and persisting the contract update atomically before delivering the reply (PSA-203).
+- `agent_runs` `action="review"` (`verdict="approved"`) accepts an optional `note` on running or paused children to record approval and queue a follow-up steering note atomically in one call while keeping `summary` review-only (PSA-203).
+
 ## 0.52.61 - 2026-11-20
 
 <!-- npm-release:unreleased:start -->
@@ -17,7 +20,6 @@
 - feat(intercom): expose peer git repo/branch and non-waking workingOn claims (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/485
 
 **Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.60...v0.52.61
-
 ## 0.52.60 - 2026-11-19
 
 <!-- npm-release:unreleased:start -->

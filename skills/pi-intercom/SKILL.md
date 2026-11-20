@@ -34,6 +34,10 @@ workflow UI, or topic registry.
    - `ask`: steers/wakes the peer and waits for a correlated reply; use only
      when the sender must stay alive waiting for the answer.
    - `reply`: answer the active/sole pending ask, or specify `replyTo` when ambiguous.
+     When a main answers a scope or contract question from one of its owned child runs,
+     pass optional `contract` to validate and persist the contract amendment atomically
+     before delivering the reply (rejected for non-reply actions, non-owned senders,
+     or invalid contracts without sending the reply).
    - `pending`: unresolved inbound asks and their correlation.
    - `status`: connection, peer health and inbound queue state.
    - `claim`: set or clear (`message:""`) a short 1-line `workingOn` note on

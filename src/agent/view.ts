@@ -26,7 +26,7 @@ import {
   readContractAmendments,
 } from "./overseer-contract.ts";
 import { escalationEvidenceLines } from "./overseer-evidence.ts";
-import { needsOverseerReview, readReview } from "./overseer-review.ts";
+import { formatReviewReceiptText, needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
   pauseLabel,
@@ -101,6 +101,8 @@ type Receipt =
       readonly review: OverseerReview;
       /** The approval released a pause of the running child. */
       readonly released: boolean;
+      /** Steer command ID queued when `note` was provided with `verdict="approved"`. */
+      readonly command?: string | undefined;
     }
   | {
       readonly stopRequest?: string | undefined;
@@ -296,22 +298,6 @@ function projection(
     output: outputView(view.outputFile, input),
   };
 }
-/**
- * Confirms a recorded approval and says what it changes. The run's record and the child's report
- * are not repeated: the completion notice and `inspect` own them.
- */
-function reviewReceiptText(run: RunView, review: OverseerReview, released: boolean): string {
-  const label = run.name === undefined ? run.id : `${run.id} (${run.name})`;
-  const settled = `The run's status is ${run.status}; ${run.reviewRequired === true ? "review its completed changes." : "it needs no further review."}`;
-  const unsettled = released
-    ? "Pause approval recorded. Its next notice arrives when the child pauses again or ends."
-    : "The child is still running. If it finishes with changes, review the completed run.";
-  return [
-    `Overseer review recorded: run ${label} ${review.verdict} at ${utc(review.at)}.`,
-    run.status === "running" ? unsettled : settled,
-    'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.',
-  ].join("\n");
-}
 export function renderReceipt(
   base: string,
   launch: Launch,
@@ -320,7 +306,19 @@ export function renderReceipt(
 ): ToolReply {
   const details = { ...projection(base, launch, ctx), ...receipt };
   if ("receipt" in receipt && receipt.receipt === "review") {
-    return toolResult(details, reviewReceiptText(details, receipt.review, receipt.released));
+    return toolResult(
+      details,
+      formatReviewReceiptText({
+        id: details.id,
+        name: details.name,
+        status: details.status,
+        reviewRequired: details.reviewRequired,
+        review: receipt.review,
+        released: receipt.released,
+        command: receipt.command,
+        formatTime: utc,
+      }),
+    );
   }
   const model = { ...details, result: receiptResult(details.result) };
   return toolResult(details, JSON.stringify(model, null, 2));

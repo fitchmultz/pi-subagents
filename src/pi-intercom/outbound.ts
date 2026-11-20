@@ -13,12 +13,13 @@ import {
   type IntercomToolParams,
   type ToolResultLike,
 } from "./runtime-types.ts";
-import type { Message } from "./types.ts";
+import type { Message, SessionInfo } from "./types.ts";
 import { formatAttachments } from "./message-format.ts";
 import { failureDetails, type SendProgress } from "./tool-results.ts";
 import {
   askFailure,
   deliveryFailure,
+  replyDeliveryFailure,
   replyFailure,
   replySent,
   sendFailure,
@@ -26,12 +27,22 @@ import {
 } from "./outbound-results.ts";
 import type { DeviceTarget, RemoteDevices } from "./devices.ts";
 import { sendOptions, toolError, toolText } from "./tool-arguments.ts";
+import { formatAmendedSteerPrompt } from "../agent/overseer-contract.ts";
+import type {
+  ChildContractAmendmentResult,
+  ChildContractTarget,
+  ContractAmendmentInput,
+} from "../shared/child-contract.ts";
 
 type Lifecycle = Readonly<Pick<IntercomLifecycle, "markActivity">>;
 type Connection = Readonly<Pick<IntercomConnection, "syncStatus">>;
 type ReplyWaitHandle = Readonly<Pick<ReplyWait, "transact" | "waiting">>;
 type Replies = Readonly<Pick<ReplyTracker, "markReplied" | "resolveReplyTarget">>;
 type Devices = Readonly<Pick<RemoteDevices, "address" | "send" | "ask">>;
+type ContractAmender = (
+  target: ChildContractTarget,
+  contract: ContractAmendmentInput,
+) => Promise<ChildContractAmendmentResult>;
 
 interface OutboundOwners {
   readonly pi: ExtensionAPI;
@@ -40,6 +51,7 @@ interface OutboundOwners {
   readonly replies: Replies;
   readonly wait: ReplyWaitHandle;
   readonly devices: Devices;
+  readonly amendChildContract?: ContractAmender | undefined;
 }
 export class IntercomOutbound {
   private readonly owners: OutboundOwners;
@@ -307,8 +319,27 @@ export class IntercomOutbound {
       });
     }
   }
+  private async amendForReply(
+    from: Readonly<Pick<SessionInfo, "id" | "rootSessionId" | "parentSessionId">>,
+    contract: ContractAmendmentInput | undefined,
+  ): Promise<ChildContractAmendmentResult | undefined> {
+    if (contract === undefined) {
+      return undefined;
+    }
+    if (this.owners.amendChildContract === undefined) {
+      throw new Error("No agent runtime is available to amend a child delegation contract.");
+    }
+    return await this.owners.amendChildContract(
+      {
+        peerId: from.id,
+        rootSessionId: from.rootSessionId,
+        parentSessionId: from.parentSessionId,
+      },
+      contract,
+    );
+  }
   async reply(active: IntercomTransport, params: IntercomToolParams): Promise<ToolResultLike> {
-    const { to, replyTo, attachments } = params;
+    const { to, replyTo, attachments, contract } = params;
     const body = params.message ?? "";
     if (body === "") {
       return toolError("Missing 'message' parameter");
@@ -319,41 +350,24 @@ export class IntercomOutbound {
       if (target.from.id === active.sessionId) {
         return toolError("Cannot message the current session");
       }
+      // Persist any contract amendment before sending so the waking child observes it immediately.
+      const amended = await this.amendForReply(target.from, contract);
+      const text = amended === undefined ? body : formatAmendedSteerPrompt(body, amended.amendment);
       progress = { kind: "unconfirmed" };
       const result = await active.send(target.from.id, {
-        text: body,
+        text,
         attachments,
         replyTo: target.message.id,
       });
       progress = { kind: "acknowledged", result };
       const sender = target.from.name ?? target.from.id;
       if (!result.accepted) {
-        return toolError(
-          `Reply to "${sender}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}`,
-          failureDetails(
-            "delivery_failed",
-            [
-              { action: "pending" },
-              {
-                action: "send",
-                guidance: "Send a new message if the original sender is no longer available.",
-              },
-            ],
-            {
-              messageId: result.id,
-              accepted: result.accepted,
-              delivered: false,
-              queued: result.queued === true,
-              reason: result.reason,
-              replyTo: target.message.id,
-            },
-          ),
-        );
+        return replyDeliveryFailure(sender, target.message.id, result, amended);
       }
       this.owners.replies.markReplied(target.message.id);
       this.markActivity();
-      this.recordSent(sender, { text: body, replyTo: target.message.id }, result);
-      return replySent(sender, target.message.id, result);
+      this.recordSent(sender, { text, replyTo: target.message.id }, result);
+      return replySent(sender, target.message.id, result, amended);
     } catch (error) {
       return replyFailure(error, replyTo, progress);
     }

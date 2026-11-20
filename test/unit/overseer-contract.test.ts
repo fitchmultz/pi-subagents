@@ -9,11 +9,13 @@ import {
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
+  type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import agents from "../../src/agent/index.ts";
 import {
   commandSchema,
+  escalationResolutionSchema,
   launchSchema,
   overseerLiveStateSchema,
   type Launch,
@@ -55,6 +57,18 @@ import {
 } from "../../src/agent/storage.ts";
 import { renderInspection } from "../../src/agent/view.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
+import { loadConfig } from "../../src/pi-intercom/config.ts";
+import { IntercomOutbound } from "../../src/pi-intercom/outbound.ts";
+import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
+import { nativePeerId } from "../../src/pi-intercom/session-targets.ts";
+import { validateIntercomArguments } from "../../src/pi-intercom/tool-arguments.ts";
+import type { IntercomTransport } from "../../src/pi-intercom/transport.ts";
+import {
+  AMEND_CHILD_CONTRACT,
+  type ChildContractAmendmentResult,
+  type ChildContractTarget,
+  type ContractAmendmentInput,
+} from "../../src/shared/child-contract.ts";
 import { isRecord } from "../../src/shared/unknown.ts";
 
 interface BranchEntry {
@@ -68,6 +82,7 @@ async function createHarness(
   sessionId: string,
   settings: Record<string, unknown> = {},
 ) {
+  let capturedPi: ExtensionAPI | undefined;
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getPiAgentDir(),
@@ -77,13 +92,19 @@ async function createHarness(
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    extensionFactories: [agents],
+    extensionFactories: [
+      agents,
+      (pi) => {
+        capturedPi = pi;
+      },
+    ],
   });
   await loader.reload();
   const loaded = loader.getExtensions();
   assert.deepEqual(loaded.errors, []);
   const extension = loaded.extensions.at(0);
   assert.ok(extension !== undefined);
+  assert.ok(capturedPi !== undefined);
 
   let branch: BranchEntry[] = [];
   loaded.runtime.appendEntry = (customType: string, data: unknown) => {
@@ -133,6 +154,7 @@ async function createHarness(
 
   return {
     extension,
+    pi: capturedPi,
     ctx,
     notices,
     statuses,
@@ -1466,5 +1488,614 @@ nodeTest(
     await harness.tree();
     assert.equal(read(liveFile, overseerLiveStateSchema)?.enabled, true);
     assert.equal(read(liveFile, overseerLiveStateSchema)?.judge, "auto");
+  },
+);
+
+function withChildLineageEnv<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prevRoot = process.env.PI_INTERCOM_ROOT_SESSION_ID;
+  const prevParent = process.env.PI_INTERCOM_PARENT_SESSION_ID;
+  process.env.PI_INTERCOM_ROOT_SESSION_ID = sessionId;
+  process.env.PI_INTERCOM_PARENT_SESSION_ID = sessionId;
+  return fn().finally(() => {
+    if (prevRoot === undefined) {
+      delete process.env.PI_INTERCOM_ROOT_SESSION_ID;
+    } else {
+      process.env.PI_INTERCOM_ROOT_SESSION_ID = prevRoot;
+    }
+    if (prevParent === undefined) {
+      delete process.env.PI_INTERCOM_PARENT_SESSION_ID;
+    } else {
+      process.env.PI_INTERCOM_PARENT_SESSION_ID = prevParent;
+    }
+  });
+}
+
+function createIntercomReplyFixture(
+  pi: ExtensionAPI,
+  sessionId: string,
+  base: string,
+  launch: Launch,
+) {
+  const replies = new ReplyTracker();
+  const sent: Array<{ to: string; text: string; contractAtSend: readonly string[] | undefined }> =
+    [];
+  const transport: IntercomTransport = {
+    sessionId: nativePeerId(sessionId),
+    isConnected: () => true,
+    listSessions: async () => [],
+    send: async (to, options) => {
+      sent.push({
+        to,
+        text: options.text,
+        contractAtSend: activeContract(base, launch)?.scope,
+      });
+      return { id: `sent-${sent.length}`, accepted: true, delivered: true };
+    },
+    last: async () => ({ error: "unused" }),
+    updatePresence: () => {
+      // no-op
+    },
+    supportsTopics: false,
+    updateTopics: async () => {
+      throw new Error("unused");
+    },
+  };
+  const amendChildContract = (
+    target: ChildContractTarget,
+    contract: ContractAmendmentInput,
+  ): Promise<ChildContractAmendmentResult> => {
+    let outcome: Promise<ChildContractAmendmentResult> | undefined;
+    pi.events.emit(AMEND_CHILD_CONTRACT, {
+      target,
+      contract,
+      reply: (result: Promise<ChildContractAmendmentResult>) => {
+        outcome = result;
+      },
+    });
+    assert.ok(outcome !== undefined);
+    return outcome;
+  };
+  const outbound = new IntercomOutbound(
+    {
+      pi,
+      lifecycle: {
+        markActivity: () => {
+          // no-op
+        },
+      },
+      connection: {
+        syncStatus: () => {
+          // no-op
+        },
+      },
+      replies,
+      wait: {
+        waiting: false,
+        transact: async () => {
+          throw new Error("unused");
+        },
+      },
+      devices: {
+        address: () => {
+          return;
+        },
+        send: async () => {
+          throw new Error("unused");
+        },
+        ask: async () => {
+          throw new Error("unused");
+        },
+      },
+      amendChildContract,
+    },
+    loadConfig(),
+  );
+  return { replies, sent, transport, outbound };
+}
+
+nodeTest(
+  "intercom reply with contract atomically amends owned child before send and rejects non-owned, non-reply, child, or invalid contracts",
+  async (t) => {
+    // Reject contract on every non-reply action before touching transport or disk.
+    for (const action of ["list", "send", "ask", "pending", "status", "last"] as const) {
+      const invalid = validateIntercomArguments({ action, contract: { scope: ["src"] } });
+      assert.ok(invalid !== undefined);
+      assert.equal(invalid.isError, true);
+      assert.match(replyText(invalid), /only valid for action='reply'/u);
+    }
+    assert.equal(
+      validateIntercomArguments({ action: "reply", message: "ok", contract: { scope: ["src"] } }),
+      undefined,
+    );
+
+    const sessionId = "intercom-contract-parent";
+    const harness = await createHarness(t, sessionId);
+    await harness.start();
+
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), "intercom-contract-work-"));
+    t.after(() => {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    });
+    fs.mkdirSync(path.join(workdir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(workdir, "test", "unit"), { recursive: true });
+
+    const base = ownerDirectory(getPiAgentDir(), sessionId);
+    const runId = "run-intercom-child-1";
+    const childSessionId = "child-intercom-sess-1";
+    const childPeerId = nativePeerId(childSessionId);
+    const dir = runDirectory(base, runId);
+    fs.mkdirSync(path.join(dir, "scratch"), { recursive: true, mode: 0o700 });
+    const launch: Launch = {
+      version: 1,
+      id: runId,
+      rootId: runId,
+      owner: sessionId,
+      cwd: workdir,
+      agentDir: getPiAgentDir(),
+      sdk: packageRoot(),
+      entry: path.join(process.cwd(), "src/agent/index.ts"),
+      sessionFile: path.join(dir, "child.jsonl"),
+      sessionId: childSessionId,
+      prompt: "Implement feature",
+      context: "fresh",
+      provider: "google",
+      model: "gemini-4-hydrogen",
+      thinking: "medium",
+      trusted: true,
+      name: "scope-asker",
+      contract: { scope: ["src"], verification: ["npm test"] },
+      scratchDir: path.join(dir, "scratch"),
+      overseer: { enabled: true, judge: "auto" },
+      createdAt: Date.now(),
+    };
+    write(path.join(dir, "launch.json"), launch, true);
+    write(path.join(dir, "admissions", `${runId}.json`), {
+      id: runId,
+      runId,
+      action: "run",
+      state: "accepted",
+      at: Date.now(),
+    });
+
+    const { replies, sent, transport, outbound } = createIntercomReplyFixture(
+      harness.pi,
+      sessionId,
+      base,
+      launch,
+    );
+
+    // 1. Non-owned main peer ask is rejected without sending reply or writing contract.json.
+    replies.recordIncomingMessage(
+      {
+        id: nativePeerId("other-main"),
+        name: "other-main",
+        cwd: workdir,
+        model: "google/gemini-4-hydrogen",
+        rootSessionId: "other-main",
+      },
+      {
+        id: "ask-from-main",
+        timestamp: Date.now(),
+        expectsReply: true,
+        content: { text: "Can you change scope?" },
+      },
+    );
+    const mainReject = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-main",
+      message: "Sure",
+      contract: { scope: ["src/**", "test/**/*.test.ts"] },
+    });
+    assert.equal(mainReject.isError, true);
+    assert.match(replyText(mainReject), /owned child run/u);
+    assert.equal(sent.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, "contract.json")), false);
+    // Pending ask remains pending when amendment fails.
+    assert.equal(replies.listPending().length, 1);
+    replies.markReplied("ask-from-main");
+
+    // 2. Peer claiming matching parentSessionId without an owned run record is rejected.
+    replies.recordIncomingMessage(
+      {
+        id: nativePeerId("unowned-child-sess"),
+        name: "ghost-child",
+        cwd: workdir,
+        model: "google/gemini-4-hydrogen",
+        rootSessionId: sessionId,
+        parentSessionId: sessionId,
+      },
+      {
+        id: "ask-from-ghost",
+        timestamp: Date.now(),
+        expectsReply: true,
+        content: { text: "Amend me?" },
+      },
+    );
+    const ghostReject = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-ghost",
+      message: "Sure",
+      contract: { scope: ["src/**"] },
+    });
+    assert.equal(ghostReject.isError, true);
+    assert.match(replyText(ghostReject), /does not match an owned child run/u);
+    assert.equal(sent.length, 0);
+    replies.markReplied("ask-from-ghost");
+
+    // 3. Owned child asks for scope widening.
+    replies.recordIncomingMessage(
+      {
+        id: childPeerId,
+        name: "scope-asker",
+        cwd: workdir,
+        model: "google/gemini-4-hydrogen",
+        rootSessionId: sessionId,
+        parentSessionId: sessionId,
+      },
+      {
+        id: "ask-from-child",
+        timestamp: Date.now(),
+        expectsReply: true,
+        content: { text: "Need to add a unit test under test/unit." },
+      },
+    );
+
+    // Invalid contracts fail cleanly WITHOUT sending reply or mutating contract.json.
+    const emptyPatch = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-child",
+      message: "Go ahead",
+      contract: {},
+    });
+    assert.equal(emptyPatch.isError, true);
+    assert.match(replyText(emptyPatch), /at least one field/u);
+    assert.equal(sent.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, "contract.json")), false);
+
+    const badScope = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-child",
+      message: "Go ahead",
+      contract: { scope: ["nonexistent/**"] },
+    });
+    assert.equal(badScope.isError, true);
+    assert.match(replyText(badScope), /needs an existing directory "nonexistent"/u);
+    assert.equal(sent.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, "contract.json")), false);
+    assert.equal(replies.listPending().length, 1);
+
+    // Child sessions are rejected even if they invoke reply with contract.
+    const childCallerReject = await withChildLineageEnv(sessionId, () =>
+      outbound.reply(transport, {
+        action: "reply",
+        replyTo: "ask-from-child",
+        message: "Self-amend",
+        contract: { scope: ["src/**", "test/**/*.test.ts"] },
+      }),
+    );
+    assert.equal(childCallerReject.isError, true);
+    assert.match(replyText(childCallerReject), /owning main session/u);
+    assert.equal(sent.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, "contract.json")), false);
+
+    // Valid contract amendment persists BEFORE transport.send() runs and updates receipt + text.
+    const okReply = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-child",
+      message: "Yes, add the unit test in test/unit.",
+      contract: { scope: ["src/**", "test/**/*.test.ts"] },
+    });
+    assert.equal(okReply.isError, false);
+    assert.equal(sent.length, 1);
+    const [firstSent] = sent;
+    assert.ok(firstSent !== undefined);
+    assert.equal(firstSent.to, childPeerId);
+    assert.deepEqual(firstSent.contractAtSend, ["src/**", "test/**/*.test.ts"]);
+    assert.match(
+      firstSent.text,
+      /^\[Delegation contract updated: scope: src\/\*\*, test\/\*\*\/\*\.test\.ts\]\n\nYes, add the unit test in test\/unit\.$/u,
+    );
+    assert.match(
+      replyText(okReply),
+      /Reply sent to scope-asker\nDelegation contract amended for run run-intercom-child-1 \(scope-asker\): scope: src\/\*\*, test\/\*\*\/\*\.test\.ts/u,
+    );
+    assert.deepEqual(activeContract(base, launch), {
+      scope: ["src/**", "test/**/*.test.ts"],
+      verification: ["npm test"],
+    });
+    assert.equal(replies.listPending().length, 0);
+
+    // 4. Successor run receives amendment when conversation has advanced R1 -> R2.
+    const nextRun = successor(
+      base,
+      launch,
+      "Second phase",
+      successorContractOptions(base, launch, activeContract(base, launch)),
+    );
+    assert.ok(nextRun !== undefined);
+    write(path.join(dir, "admissions", `${nextRun.id}.json`), {
+      id: nextRun.id,
+      runId: nextRun.id,
+      action: "run",
+      state: "accepted",
+      at: Date.now(),
+    });
+    replies.recordIncomingMessage(
+      {
+        id: childPeerId,
+        name: "scope-asker",
+        cwd: workdir,
+        model: "google/gemini-4-hydrogen",
+        rootSessionId: sessionId,
+        parentSessionId: sessionId,
+      },
+      {
+        id: "ask-from-successor",
+        timestamp: Date.now(),
+        expectsReply: true,
+        content: { text: "Can we clear non-goals?" },
+      },
+    );
+    const successorReply = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-successor",
+      message: "Cleared baseBranch.",
+      contract: { baseBranch: "main" },
+    });
+    assert.equal(successorReply.isError, false);
+    assert.equal(activeContract(base, nextRun)?.baseBranch, "main");
+    assert.equal(activeContract(base, launch)?.baseBranch, undefined);
+  },
+);
+
+nodeTest(
+  "agent_runs review(verdict='approved', note=...) steers paused/running children atomically and rejects invalid/settled calls",
+  async (t) => {
+    const sessionId = "overseer-review-note-parent";
+    const harness = await createHarness(t, sessionId);
+    await harness.start();
+
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-review-note-"));
+    t.after(() => {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    });
+    fs.mkdirSync(path.join(workdir, "src"), { recursive: true });
+
+    const base = ownerDirectory(getPiAgentDir(), sessionId);
+    const dummyActor = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+      stdio: "ignore",
+    });
+    assert.ok(dummyActor.pid !== undefined);
+    t.after(() => {
+      dummyActor.kill("SIGKILL");
+    });
+
+    const setupRun = (
+      runId: string,
+      options: { admitted?: boolean; live?: boolean; completed?: boolean; paused?: boolean },
+    ): Launch => {
+      const dir = runDirectory(base, runId);
+      const sessionFile = path.join(dir, "child.jsonl");
+      fs.mkdirSync(path.join(dir, "scratch"), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(sessionFile, `{"type":"session","id":"sess-${runId}"}\n`, { mode: 0o600 });
+      const launch: Launch = {
+        version: 1,
+        id: runId,
+        rootId: runId,
+        owner: sessionId,
+        cwd: workdir,
+        agentDir: getPiAgentDir(),
+        sdk: packageRoot(),
+        entry: path.join(process.cwd(), "src/agent/index.ts"),
+        sessionFile,
+        sessionId: `sess-${runId}`,
+        prompt: "Task",
+        context: "fresh",
+        provider: "google",
+        model: "gemini-4-hydrogen",
+        thinking: "medium",
+        trusted: true,
+        name: runId,
+        contract: { scope: ["src"], verification: ["npm test"] },
+        scratchDir: path.join(dir, "scratch"),
+        overseer: { enabled: true, judge: "auto" },
+        createdAt: Date.now(),
+      };
+      write(path.join(dir, "launch.json"), launch, true);
+      if (options.admitted !== false) {
+        write(path.join(dir, "admissions", `${runId}.json`), {
+          id: runId,
+          runId,
+          action: "run",
+          state: "accepted",
+          at: Date.now(),
+        });
+      }
+      if (options.live === true) {
+        write(path.join(dir, "actor.lock", "process.json"), {
+          ...ownIdentity(dummyActor.pid),
+          token: `token-${runId}`,
+        });
+      }
+      if (options.completed === true) {
+        write(path.join(dir, "result.json"), {
+          id: runId,
+          owner: sessionId,
+          status: "completed",
+          endedAt: Date.now(),
+          changedFiles: ["src/a.ts"],
+        });
+      }
+      if (options.paused === true) {
+        write(path.join(dir, "escalation.json"), {
+          id: `esc-${runId}`,
+          runId,
+          owner: sessionId,
+          at: Date.now(),
+          strikes: 1,
+          kind: "scope_violation",
+          summary: "Pause for review",
+          changedFiles: ["src/a.ts"],
+          diffExcerpt: "+const a = 1;",
+          diffDigest: "digest-1",
+        });
+      }
+      return launch;
+    };
+
+    const pausedRun = setupRun("run-paused", { live: true, paused: true });
+    const runningRun = setupRun("run-running", { live: true });
+    const silentRun = setupRun("run-silent", { live: true, paused: true });
+    const completedRun = setupRun("run-completed", { completed: true });
+    const interruptedRun = setupRun("run-interrupted", { live: false });
+    const unadmittedRun = setupRun("run-unadmitted", { admitted: false });
+
+    // Reject note on non-review actions, non-approved verdicts, and whitespace-only notes.
+    await assert.rejects(
+      harness.callTool("agent_runs", { action: "list", note: "hint" }),
+      /only supported with action="review" and verdict="approved"/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "continue",
+        id: runningRun.id,
+        prompt: "Next",
+        note: "hint",
+      }),
+      /only supported with action="review" and verdict="approved"/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: pausedRun.id,
+        verdict: "changes_requested",
+        summary: "Fix bug",
+        note: "Extra hint",
+      }),
+      /only supported with action="review" and verdict="approved"/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: pausedRun.id,
+        verdict: "approved",
+        summary: "Looks good",
+        note: "   ",
+      }),
+      /note must be non-empty/u,
+    );
+    assert.equal(readReview(base, pausedRun.id), undefined);
+
+    // Reject note on completed, interrupted, and unadmitted runs without recording review or commands.
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: completedRun.id,
+        verdict: "approved",
+        summary: "Looks good",
+        note: "Also clean up foo",
+      }),
+      /run run-completed is completed/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: interruptedRun.id,
+        verdict: "approved",
+        summary: "Looks good",
+        note: "Also clean up foo",
+      }),
+      /run run-interrupted is interrupted/u,
+    );
+    await assert.rejects(
+      harness.callTool("agent_runs", {
+        action: "review",
+        id: unadmittedRun.id,
+        verdict: "approved",
+        summary: "Looks good",
+        note: "Also clean up foo",
+      }),
+      /awaiting native admission/u,
+    );
+    for (const untouched of [completedRun, interruptedRun, unadmittedRun]) {
+      assert.equal(readReview(base, untouched.id), undefined);
+      assert.equal(fs.existsSync(path.join(runDirectory(base, untouched.id), "commands")), false);
+    }
+
+    // Paused child: approval + note records review, resolves escalation with inline steer, and queues command.
+    const pausedReply = await harness.callTool("agent_runs", {
+      action: "review",
+      id: pausedRun.id,
+      verdict: "approved",
+      summary: "Inspected diff; scope expansion is acceptable.",
+      note: "Add a quick comment explaining the lock order.",
+    });
+    const pausedDetails = replyDetails(pausedReply);
+    assert.equal(pausedDetails.released, true);
+    assert.ok(typeof pausedDetails.command === "string");
+    assert.equal(readReview(base, pausedRun.id)?.verdict, "approved");
+    assert.equal(
+      readReview(base, pausedRun.id)?.summary,
+      "Inspected diff; scope expansion is acceptable.",
+    );
+    const resolution = read(
+      path.join(runDirectory(base, pausedRun.id), "escalation-resolution.json"),
+      escalationResolutionSchema,
+    );
+    assert.ok(resolution !== undefined);
+    assert.equal(resolution.verdict, "approved");
+    assert.deepEqual(resolution.steer, {
+      id: pausedDetails.command,
+      prompt: "Add a quick comment explaining the lock order.",
+    });
+    const queuedCmd = read(
+      path.join(runDirectory(base, pausedRun.id), "commands", `${pausedDetails.command}.json`),
+      commandSchema,
+    );
+    assert.equal(queuedCmd?.action, "steer");
+    assert.equal(queuedCmd.prompt, "Add a quick comment explaining the lock order.");
+    assert.match(
+      replyText(pausedReply),
+      new RegExp(
+        `Pause approval recorded\\.[\\s\\S]*Summary saved for review only\\. Steering note queued for the child \\(command ${pausedDetails.command};`,
+        "u",
+      ),
+    );
+
+    // Running (unpaused) child: approval + note records review and queues steer command.
+    const runningReply = await harness.callTool("agent_runs", {
+      action: "review",
+      id: runningRun.id,
+      verdict: "approved",
+      summary: "Mid-run check approved.",
+      note: "Prefer strict equality in the parser.",
+    });
+    const runningDetails = replyDetails(runningReply);
+    assert.equal(runningDetails.released, false);
+    assert.ok(typeof runningDetails.command === "string");
+    const runningCmd = read(
+      path.join(runDirectory(base, runningRun.id), "commands", `${runningDetails.command}.json`),
+      commandSchema,
+    );
+    assert.equal(runningCmd?.action, "steer");
+    assert.equal(runningCmd.prompt, "Prefer strict equality in the parser.");
+    assert.match(replyText(runningReply), /The child is still running\./u);
+    assert.match(replyText(runningReply), /Steering note queued for the child/u);
+
+    // Omitting note preserves exact backward-compatible silent approval without queueing a command.
+    const silentReply = await harness.callTool("agent_runs", {
+      action: "review",
+      id: silentRun.id,
+      verdict: "approved",
+      summary: "Silent approval.",
+    });
+    const silentDetails = replyDetails(silentReply);
+    assert.equal(silentDetails.released, true);
+    assert.equal("command" in silentDetails, false);
+    assert.equal(fs.existsSync(path.join(runDirectory(base, silentRun.id), "commands")), false);
+    assert.match(
+      replyText(silentReply),
+      /Summary saved for review only\. It was not sent to the child\. Use `agent_runs` `action="continue"` to send instructions\./u,
+    );
   },
 );

@@ -1,5 +1,6 @@
 import type { SendResult } from "./types.ts";
 import type { IntercomToolParams, ToolResultLike } from "./runtime-types.ts";
+import type { ChildContractAmendmentResult } from "../shared/child-contract.ts";
 import { errorMessage } from "./validation.ts";
 import {
   failureDetails,
@@ -97,20 +98,79 @@ export function askFailure(
     ),
   );
 }
-export function replySent(sender: string, replyTo: string, result: SendResult): ToolResultLike {
-  const queued = result.queued === true;
-  return toolText(
-    queued
-      ? `Reply queued for ${sender} (${result.reason ?? "queued"})`
-      : `Reply sent to ${sender}`,
-    {
-      messageId: result.id,
-      accepted: result.accepted,
-      delivered: result.delivered,
-      queued,
-      replyTo,
-      reasonCode: queued ? "message_queued" : "reply_sent",
+function runLabel(amended: ChildContractAmendmentResult): string {
+  return amended.name === undefined ? amended.runId : `${amended.runId} (${amended.name})`;
+}
+
+function amendmentDetails(
+  amended: ChildContractAmendmentResult,
+): Readonly<Record<string, unknown>> {
+  return {
+    contractAmended: {
+      runId: amended.runId,
+      changedFields: amended.amendment.changedFields,
+      contract: amended.amendment.contract,
+      summary: amended.summary,
     },
+  };
+}
+
+export function replySent(
+  sender: string,
+  replyTo: string,
+  result: SendResult,
+  amended?: ChildContractAmendmentResult,
+): ToolResultLike {
+  const queued = result.queued === true;
+  const base = queued
+    ? `Reply queued for ${sender} (${result.reason ?? "queued"})`
+    : `Reply sent to ${sender}`;
+  const suffix =
+    amended === undefined
+      ? ""
+      : `\nDelegation contract amended for run ${runLabel(amended)}: ${amended.summary}`;
+  return toolText(`${base}${suffix}`, {
+    messageId: result.id,
+    accepted: result.accepted,
+    delivered: result.delivered,
+    queued,
+    replyTo,
+    reasonCode: queued ? "message_queued" : "reply_sent",
+    ...(amended !== undefined ? amendmentDetails(amended) : {}),
+  });
+}
+
+export function replyDeliveryFailure(
+  sender: string,
+  replyTo: string,
+  result: SendResult,
+  amended?: ChildContractAmendmentResult,
+): ToolResultLike {
+  const suffix =
+    amended === undefined
+      ? ""
+      : ` Delegation contract amendment was persisted for run ${runLabel(amended)}: ${amended.summary}.`;
+  return toolError(
+    `Reply to "${sender}" was not delivered: ${result.reason ?? "Session may not exist or has disconnected."}${suffix}`,
+    failureDetails(
+      "delivery_failed",
+      [
+        { action: "pending" },
+        {
+          action: "send",
+          guidance: "Send a new message if the original sender is no longer available.",
+        },
+      ],
+      {
+        messageId: result.id,
+        accepted: result.accepted,
+        delivered: false,
+        queued: result.queued === true,
+        reason: result.reason,
+        replyTo,
+        ...(amended !== undefined ? amendmentDetails(amended) : {}),
+      },
+    ),
   );
 }
 export function replyFailure(

@@ -72,9 +72,15 @@ invocation exits after its final turn and stops any remaining children.
   does not prove actor or command exit.
 - `review` with `verdict:"approved"` records the diff and check evidence in
   `summary` without sending it to the child. Approval releases a pause or
-  satisfies the completion review. To send a correction, use `continue` or
-  `review` with `verdict:"changes_requested"` and the instructions as `summary`
-  (optionally with `contract` to amend the contract in the same step).
+  satisfies the completion review. On a running or paused child, pass optional
+  `note` with `verdict:"approved"` to record the approval and queue a short
+  steering note for the child in one call (while keeping `summary` review-only;
+  `note` is rejected on settled runs or other actions/verdicts). To send a
+  correction, use `continue` or `review` with `verdict:"changes_requested"` and
+  the instructions as `summary` (optionally with `contract` to amend the contract
+  in the same step). When an owned child asks a scope or contract question over
+  `intercom`, reply with `intercom({action:"reply", ..., contract:{...}})` to
+  persist the amended contract atomically before the reply wakes the child.
 
 Use IDs returned by the tools. Runs belong to their native main session, not a
 cwd, project, name, or forked copy of its transcript. Resume the same main for

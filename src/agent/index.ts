@@ -19,7 +19,7 @@ import {
 } from "./attachment.ts";
 import { isChild, errorText, managedHost, rememberSDK, retainsChildren } from "./host.ts";
 import { serveParked } from "./parking.ts";
-import { attachmentSchema, commandSchema, type Launch, type ProcessIdentity } from "./contracts.ts";
+import { attachmentSchema, commandSchema, type Launch } from "./contracts.ts";
 import { registerAgentTools, type DelegateInput, type RunsInput } from "./tool-schemas.ts";
 import {
   enqueue,
@@ -36,7 +36,7 @@ import {
 import { notifications, deliver, settle } from "./notifications.ts";
 import { prepareLaunch } from "./launch.ts";
 import { renderReceipt, renderInventory, renderInspection } from "./view.ts";
-import { legacyDirectory, reconcileLegacy } from "./legacy.ts";
+import { legacyInputDirectories, reconcileLegacy } from "./legacy.ts";
 import { pathStamp } from "./wake.ts";
 import { CompletionWatches } from "./completion-watches.ts";
 import { savedContinuation } from "./saved.ts";
@@ -51,22 +51,17 @@ import { notifyInventory } from "./inventory-events.ts";
 import { OverseerController } from "./overseer.ts";
 import {
   applyLiveContractAmendment,
-  assertContractActionAllowed,
   assertUnadmittedContract,
   prepareContinuationContract,
+  serveChildContractAmendments,
   successorContractOptions,
-  validateReviewContract,
 } from "./overseer-contract.ts";
-import { prepareOverseerReviewAction, registerOverseerSettleGate } from "./overseer-review.ts";
-
-/** Legacy results are optional; their reconciliation reports an invalid configured root. */
-function legacyInput(): string[] {
-  try {
-    return [legacyDirectory()];
-  } catch {
-    return [];
-  }
-}
+import {
+  assertRunActionOptionsAllowed,
+  prepareOverseerReviewAction,
+  registerOverseerSettleGate,
+  validateReviewInput,
+} from "./overseer-review.ts";
 
 class AgentRuntime {
   private attachment: AttachmentState = { kind: "detached" };
@@ -125,6 +120,12 @@ class AgentRuntime {
       throw new Error("Agent runtime is not attached.");
     }
   }
+  private async attachedOwner(): Promise<{ readonly base: string; readonly owner: string }> {
+    this.checkMain();
+    await this.attachmentTail;
+    this.checkMain();
+    return { base: this.base, owner: this.owner };
+  }
   /** Rechecked after every await: an external abort() is invisible to narrowing. */
   private refuseIfAborted(signal: AbortSignal | undefined, message: string): void {
     if (signal?.aborted === true) {
@@ -146,7 +147,7 @@ class AgentRuntime {
       return;
     }
     const { context } = this.attachment.binding;
-    const inputs = () => [this.base, ...legacyInput(), ...this.awaited];
+    const inputs = () => [this.base, ...legacyInputDirectories(), ...this.awaited];
     const before = new Map(inputs().map((file) => [file, pathStamp(file)]));
     let reconciled = true;
     try {
@@ -167,7 +168,7 @@ class AgentRuntime {
     }
     // Newly awaited files were absent when read, or are rechecked once by the probe.
     this.observed = new Map(inputs().map((file) => [file, before.get(file) ?? ""]));
-    const next = this.watches.update(this.base, legacyInput(), this.awaited);
+    const next = this.watches.update(this.base, legacyInputDirectories(), this.awaited);
     if (!reconciled || next === "poll") {
       this.schedule.pollIn(200);
     } else if (next === "rescan") {
@@ -214,9 +215,6 @@ class AgentRuntime {
       });
     return undefined;
   }
-  private ownerIdentity(): Omit<ProcessIdentity, "token"> {
-    return ownIdentity(this.binding.host?.owner.pid);
-  }
   private queueAttachment(binding: AttachmentBinding): Promise<void> {
     const attempt = this.attachmentTail.then(() => this.attach(binding));
     this.attachmentTail = attempt.catch(() => {
@@ -259,7 +257,7 @@ class AgentRuntime {
         const attachment = read(file, attachmentSchema);
         if (attachment !== undefined && releasesAttachment(this.attachment, attachment)) {
           write(file, {
-            ...this.ownerIdentity(),
+            ...ownIdentity(this.binding.host?.owner.pid),
             generation: attachment.generation,
             attached: false,
           });
@@ -273,18 +271,16 @@ class AgentRuntime {
     }
   }
   private stop(launch: Launch) {
-    return stopRun(this.base, launch, this.ctx, (message) => {
-      this.reporter.report(undefined, message);
-    });
+    return stopRun(this.base, launch, this.ctx, (message) =>
+      this.reporter.report(undefined, message),
+    );
   }
   private async delegate(
     input: DelegateInput,
     signal: AbortSignal | undefined,
     context: ExtensionContext,
   ) {
-    this.checkMain();
-    await this.attachmentTail;
-    this.checkMain();
+    await this.attachedOwner();
     this.refuseIfAborted(signal, "Delegation cancelled before launch.");
     const prepared = this.overseer.prepareDelegation(input);
     const launch = await prepareLaunch({
@@ -329,6 +325,11 @@ class AgentRuntime {
     await ensureActor(this.base, launch, this.shutdown.signal);
     return renderReceipt(this.base, launch, this.ctx, { receipt: "continuation" });
   }
+  private activeOverseerLaunch() {
+    return this.overseer.current.enabled
+      ? { enabled: true as const, judge: this.overseer.current.judge }
+      : undefined;
+  }
   private async continue(launch: Launch, input: RunsInput) {
     if (input.prompt === undefined) {
       throw new Error("continue requires the entire new prompt.");
@@ -356,9 +357,7 @@ class AgentRuntime {
     parkFailure(this.base, launch);
     const options = {
       ...successorContractOptions(this.base, launch, existing, amendment),
-      overseer: this.overseer.current.enabled
-        ? { enabled: true as const, judge: this.overseer.current.judge }
-        : null,
+      overseer: this.activeOverseerLaunch() ?? null,
     };
     const next = successor(this.base, launch, input.prompt, options);
     if (!next) {
@@ -379,9 +378,7 @@ class AgentRuntime {
       id: input.id,
       prompt: input.prompt,
       contract: input.contract,
-      overseer: this.overseer.current.enabled
-        ? { enabled: true as const, judge: this.overseer.current.judge }
-        : undefined,
+      overseer: this.activeOverseerLaunch(),
       context,
       base: this.base,
       agentDir: this.agentDir,
@@ -396,10 +393,8 @@ class AgentRuntime {
     });
   }
   private async runs(input: RunsInput, context: ExtensionContext) {
-    this.checkMain();
-    await this.attachmentTail;
-    this.checkMain();
-    assertContractActionAllowed(input);
+    await this.attachedOwner();
+    assertRunActionOptionsAllowed(input);
     if (input.action === "list") {
       const all = list(this.base).map((id) => launchAt(this.base, id, this.owner));
       return renderInventory(this.base, all, this.ctx, input);
@@ -428,8 +423,12 @@ class AgentRuntime {
     return this.continue(launch, input);
   }
   private async review(original: Launch, input: RunsInput) {
-    validateReviewContract(this.base, original, input);
-    const { target, review, released } = prepareOverseerReviewAction(this.base, original, input);
+    validateReviewInput(this.base, original, input);
+    const { target, review, released, command } = prepareOverseerReviewAction(
+      this.base,
+      original,
+      input,
+    );
     if (review.verdict === "changes_requested") {
       return this.continue(latest(this.base, target), { ...input, prompt: review.summary });
     }
@@ -437,6 +436,7 @@ class AgentRuntime {
       receipt: "review",
       review,
       released,
+      ...(command !== undefined ? { command } : {}),
     });
   }
   register(): void {
@@ -459,6 +459,7 @@ class AgentRuntime {
       () => (this.child || !this.ctx ? undefined : { base: this.base, owner: this.owner }),
       this.shutdown.signal,
     );
+    serveChildContractAmendments(this.pi, () => this.attachedOwner());
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("turn_end", (event, context) => {
       // The public pending flag covers user input; the preview also includes custom messages.
@@ -470,9 +471,7 @@ class AgentRuntime {
         this.wake();
       }
     });
-    this.pi.on("agent_settled", () => {
-      this.scan();
-    });
+    this.pi.on("agent_settled", () => this.scan());
     this.pi.on("session_shutdown", (event) =>
       this.dispose(event.reason === "reload" || retainsChildren(event)),
     );

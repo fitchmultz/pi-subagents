@@ -1,4 +1,5 @@
 import type { Attachment, Message, SessionInfo } from "./types.ts";
+import type { ContractAmendmentInput } from "../shared/child-contract.ts";
 
 export interface InboundMessageEntry {
   readonly from: SessionInfo;
@@ -33,6 +34,7 @@ export interface IntercomToolParams {
   readonly message?: string;
   readonly attachments?: readonly Attachment[];
   readonly replyTo?: string;
+  readonly contract?: ContractAmendmentInput | undefined;
   readonly entryId?: string;
   readonly offset?: number;
   readonly limit?: number;
