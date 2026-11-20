@@ -47,7 +47,9 @@ With `device`, `list` prints the main sessions of the owner's
 Use `intercom({ action: "claim", message: "..." })` to advertise a short 1-line
 `workingOn` note on your broker presence record without waking any peer. Pass an
 empty `message` (`""`) to clear it; disconnecting or starting a fresh session
-also clears it automatically.
+also clears it automatically. Whitespace and control characters collapse to spaces,
+and surrounding spaces are trimmed. If the result exceeds 256 UTF-16 code units,
+the claim fails and the previous note stays in place.
 
 Every child is a valid target by name or ID whether or not its row is printed.
 With `to`, `list` keeps the sessions whose name or ID contains that text, ignoring

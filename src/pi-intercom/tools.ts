@@ -6,7 +6,7 @@ import type { IntercomOutbound } from "./outbound.ts";
 import type { IntercomInspection } from "./inspection.ts";
 import type { IntercomToolParams, ToolResultLike } from "./runtime-types.ts";
 import { validateIntercomArguments, toolError, toolText } from "./tool-arguments.ts";
-import { previewText } from "./message-format.ts";
+import { normalizeLine } from "./message-format.ts";
 import { errorMessage, MAX_WORKING_ON_LENGTH } from "./validation.ts";
 import type { LastMessageResult } from "./types.ts";
 
@@ -51,7 +51,10 @@ export class IntercomTools {
     this.owners = owners;
   }
   private claim(params: IntercomToolParams): ToolResultLike {
-    const normalized = previewText(params.message ?? "", MAX_WORKING_ON_LENGTH);
+    const normalized = normalizeLine(params.message);
+    if (normalized !== undefined && normalized.length > MAX_WORKING_ON_LENGTH) {
+      return toolError(`Shorten the claim to ${MAX_WORKING_ON_LENGTH} UTF-16 code units or fewer.`);
+    }
     this.owners.connection.setWorkingOn(normalized);
     if (normalized === undefined) {
       return toolText("Cleared workingOn claim.", { workingOn: null });
