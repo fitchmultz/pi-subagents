@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.61 - 2026-11-20
+
+<!-- npm-release:unreleased:start -->
+
 - Enrich `intercom` `list` rows with each peer's Git repository and branch (or detached short SHA) when inside a Git repository or worktree, and add a non-waking `intercom` `claim` action to set or clear a 1-line `workingOn` presence note (PSA-203).
+
+<!-- npm-release:unreleased:end -->
+
+- feat(intercom): expose peer git repo/branch and non-waking workingOn claims (2/2) (#485) ([dfbacbb](https://github.com/fitchmultz/pi-subagents/commit/dfbacbb89efc8ead1cf4ec160f796d9d7b05f861))
+
+### What's Changed
+
+- feat(intercom): expose peer git repo/branch and non-waking workingOn claims (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/485
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.60...v0.52.61
 
 ## 0.52.60 - 2026-11-19
 
