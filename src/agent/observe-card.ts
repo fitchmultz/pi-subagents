@@ -146,7 +146,7 @@ export class Card implements Component {
   selected = false;
   expanded = false;
   private state: CardContent = { kind: "loading" };
-  private cache?: { width: number; lines: string[] } | undefined;
+  private cache?: { width: number; lines: readonly string[] } | undefined;
   constructor(id: string) {
     this.id = id;
     this.content.addChild(new Text("Loading published content…", 0, 0));
@@ -354,7 +354,7 @@ export class Card implements Component {
     this.content.invalidate();
     this.footer.invalidate();
   }
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     if (this.cache?.width !== width) {
       const lines = [...this.content.render(width), ...this.footer.render(width)];
       if (this.selected && this.tool && lines.length > 0) {
