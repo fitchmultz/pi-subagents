@@ -121,7 +121,7 @@ brands, overloads, generics, or return contracts. `packageRoot` validates SDK
 package identity; companion resolution starts at that root. Build/package smokes
 compare exact SDK/TypeBox identities and exercise actual emitted consumers.
 The CI automation interfaces match the workflow's immutable automation revision
-`3e744f52412c3669bd781ed5ea3e21567798352e`; its actual host qualification exercises
+`cad44b229af2d6fae39b516548de9eaf8ae91e07`; its actual host qualification exercises
 both imported APIs.
 
 The native qualification requires accepted annotated imports to pass and the
