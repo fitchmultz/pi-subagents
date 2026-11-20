@@ -28,7 +28,8 @@ export const intercomSchema = Type.Object(
     to: Type.Optional(Type.String({ description: "Session name or ID" })),
     message: Type.Optional(
       Type.String({
-        description: "Text for send/ask/reply, or 1-line workingOn note for claim (empty clears)",
+        description:
+          "Text for send/ask/reply, or workingOn note for claim (one line, max 256 UTF-16 code units after normalization; empty clears)",
       }),
     ),
     attachments: Type.Optional(

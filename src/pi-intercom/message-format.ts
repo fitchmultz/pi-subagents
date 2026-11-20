@@ -35,12 +35,16 @@ export function getSanitizedAssistantError(message: unknown): string | undefined
     ? undefined
     : (previewText(error, MAX_TURN_ERROR_LENGTH) ?? "assistant turn failed");
 }
-export function previewText(value: unknown, maxLength = 72): string | undefined {
+export function normalizeLine(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return;
   }
   const normalized = value.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim();
-  if (normalized === "") {
+  return normalized === "" ? undefined : normalized;
+}
+export function previewText(value: unknown, maxLength = 72): string | undefined {
+  const normalized = normalizeLine(value);
+  if (normalized === undefined) {
     return;
   }
   if (normalized.length <= maxLength) {
