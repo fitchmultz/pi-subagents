@@ -27,10 +27,14 @@ import { nativePeerId } from "../pi-intercom/session-targets.ts";
 import {
   AMEND_CHILD_CONTRACT,
   isAmendChildContractRequest,
+  isTarget,
   type ChildContractAmendmentResult,
   type ChildContractTarget,
   type ContractAmendmentInput,
 } from "../shared/child-contract.ts";
+
+import { compile } from "@earendil-works/pi-schema";
+import { runContractSchema } from "../shared/amendment-schema.ts";
 
 export type { ContractAmendmentInput } from "../shared/child-contract.ts";
 
@@ -247,6 +251,8 @@ export function amendOwnedChildContract(
   };
 }
 
+const amendmentValidator = compile(runContractSchema);
+
 /** Handles intercom-initiated contract amendments for this owner's child runs. */
 export function serveChildContractAmendments(
   pi: ExtensionAPI,
@@ -257,18 +263,22 @@ export function serveChildContractAmendments(
       return;
     }
     request.reply(
-      Promise.resolve()
-        .then(() => {
-          if (isChild()) {
-            throw new Error(
-              "Only the owning main session may amend a child's delegation contract.",
-            );
-          }
-          return resolveOwner();
-        })
-        .then(({ base, owner }) =>
-          amendOwnedChildContract(base, owner, request.target, request.contract),
-        ),
+      Promise.resolve().then(async () => {
+        if (isChild()) {
+          throw new Error("Only the owning main session may amend a child's delegation contract.");
+        }
+        if (!isTarget(request.target)) {
+          throw new Error("Invalid child contract target.");
+        }
+        const contract = amendmentValidator.validate(request.contract);
+        if (!contract.ok) {
+          throw new Error(
+            `Invalid contract amendment: ${contract.errors.map((error) => `${error.path}: ${error.message}`).join("; ")}`,
+          );
+        }
+        const { base, owner } = await resolveOwner();
+        return amendOwnedChildContract(base, owner, request.target, contract.value);
+      }),
     );
   });
 }

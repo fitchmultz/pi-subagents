@@ -1741,6 +1741,30 @@ nodeTest(
     );
 
     // Invalid contracts fail cleanly WITHOUT sending reply or mutating contract.json.
+    let rejectedAmendment: Promise<ChildContractAmendmentResult> | undefined;
+    harness.pi.events.emit(AMEND_CHILD_CONTRACT, {
+      target: { peerId: childPeerId, parentSessionId: sessionId, rootSessionId: sessionId },
+      contract: null,
+      reply: (outcome: Promise<ChildContractAmendmentResult>) => {
+        rejectedAmendment = outcome;
+      },
+    });
+    assert.ok(rejectedAmendment);
+    await assert.rejects(rejectedAmendment, /invalid contract amendment/iu);
+
+    const unknownField = { scope: ["src"], typo: true };
+    const malformed = await outbound.reply(transport, {
+      action: "reply",
+      replyTo: "ask-from-child",
+      message: "Go ahead",
+      contract: unknownField,
+    });
+    assert.equal(malformed.isError, true);
+    assert.match(replyText(malformed), /invalid contract amendment/iu);
+    assert.equal(sent.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, "contract.json")), false);
+    assert.equal(replies.listPending().length, 1);
+
     const emptyPatch = await outbound.reply(transport, {
       action: "reply",
       replyTo: "ask-from-child",

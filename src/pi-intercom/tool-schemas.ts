@@ -1,12 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "../agent/typebox.ts";
-import { runContractSchema } from "../agent/tool-schemas.ts";
-
-const intercomContractSchema = Type.Object(runContractSchema.properties, {
-  additionalProperties: false,
-  description:
-    'Optional delegation contract amendment for action="reply" when answering an owned child run. Validated and persisted before the reply wakes the child; rejected for other actions or non-owned senders.',
-});
+import { runContractSchema } from "../shared/amendment-schema.ts";
 
 export const intercomSchema = Type.Object(
   {
@@ -52,7 +46,7 @@ export const intercomSchema = Type.Object(
       ),
     ),
     replyTo: Type.Optional(Type.String({ description: "Message ID to answer or thread" })),
-    contract: Type.Optional(intercomContractSchema),
+    contract: Type.Optional(runContractSchema),
     entryId: Type.Optional(Type.String()),
     offset: Type.Optional(Type.Integer({ minimum: 0, description: "UTF-16 characters" })),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 16384 })),
