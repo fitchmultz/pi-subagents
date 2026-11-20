@@ -41,7 +41,8 @@ workflow UI, or topic registry.
    - `pending`: unresolved inbound asks and their correlation.
    - `status`: connection, peer health and inbound queue state.
    - `claim`: set or clear (`message:""`) a short 1-line `workingOn` note on
-     your presence record in `list` without waking any peer.
+     your presence record in `list` without waking any peer. Notes over 256 UTF-16
+     code units after normalization are rejected; the previous note stays visible.
 4. Handle the actual outcome. Broker acceptance is not recipient persistence,
    model consumption, a reply, completion, or process exit. Do not replay an
    uncertain side effect merely because its response was lost.

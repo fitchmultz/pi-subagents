@@ -5272,15 +5272,22 @@ nodeTest(
     assert.equal(plainPeer.faux.state.callCount, 0, "claim must not wake idle peers");
     assert.equal(detachedPeer.faux.state.callCount, 0, "claim must not wake idle peers");
 
+    const boundary = "😀".repeat(128);
     const updated = await executeIntercom(branchPeer, {
       action: "claim",
-      message: "Reviewing PR 2",
+      message: `  ${boundary}\n`,
     });
-    assert.equal(updated.content[0]?.text, "Updated workingOn claim: Reviewing PR 2");
+    assert.equal(updated.content[0]?.text, `Updated workingOn claim: ${boundary}`);
     await waitFor(
-      async () => (await listAsPlain()).includes("working_on:Reviewing PR 2,"),
+      async () => (await listAsPlain()).includes(`working_on:${boundary},`),
       "updated workingOn visible in peer list",
     );
+
+    await assert.rejects(
+      executeIntercom(branchPeer, { action: "claim", message: `x${boundary}` }),
+      /shorten.*256 UTF-16/i,
+    );
+    assert.ok((await listAsPlain()).includes(`working_on:${boundary},`));
 
     const cleared = await executeIntercom(branchPeer, { action: "claim", message: "" });
     assert.equal(cleared.content[0]?.text, "Cleared workingOn claim.");
