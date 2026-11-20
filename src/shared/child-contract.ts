@@ -1,13 +1,12 @@
+import type { Static } from "typebox";
 import type { ContractAmendment } from "../agent/contracts.ts";
+import type { runContractSchema } from "./amendment-schema.ts";
 import { isRecord } from "./unknown.ts";
 
-export interface ContractAmendmentInput {
-  readonly scope?: readonly string[] | undefined;
-  readonly verification?: readonly string[] | undefined;
-  readonly baseBranch?: string | undefined;
-  readonly requiredPrimitives?: readonly string[] | undefined;
-  readonly nonGoals?: readonly string[] | undefined;
-}
+type AmendmentFields = Static<typeof runContractSchema>;
+export type ContractAmendmentInput = {
+  readonly [Field in keyof AmendmentFields]: Readonly<AmendmentFields[Field]> | undefined;
+};
 
 export interface ChildContractTarget {
   readonly peerId: string;
