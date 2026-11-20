@@ -103,6 +103,13 @@ export const runsSchema = Type.Object(
           'With "approved", save review evidence without sending it to the child. With "changes_requested", use the summary as the child’s correction or next prompt.',
       }),
     ),
+    note: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          'With action="review" and verdict="approved" on a running or paused child, queue this follow-up steering note for the child in the same call while keeping summary review-only. Rejected for other actions, other verdicts, or settled runs.',
+      }),
+    ),
     contract: Type.Optional(runContractSchema),
     offset: Type.Optional(Type.Integer({ minimum: 0 })),
     length: Type.Optional(Type.Integer({ minimum: 4, maximum: 262144 })),
@@ -136,7 +143,7 @@ export function registerAgentTools(
     name: "agent_runs",
     label: "Agent runs",
     description:
-      'Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt (and optional contract amendment): it steers a live/paused child or resumes the saved conversation. Review with "approved" records the summary without sending it; "changes_requested" uses the summary as the new prompt and also accepts an optional contract amendment.',
+      'Manage your child runs without waiting; completions are notified. Inspect pages by byte offset, never interrupting. Continue takes the complete new prompt (and optional contract amendment): it steers a live/paused child or resumes the saved conversation. Review with "approved" records the summary without sending it (and accepts an optional steering note for a running or paused child); "changes_requested" uses the summary as the new prompt and also accepts an optional contract amendment.',
     parameters: runsSchema,
     outputSchema: runsOutputSchema,
     exposure: child ? "hidden" : "direct",

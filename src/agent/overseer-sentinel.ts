@@ -105,6 +105,7 @@ interface SentinelOptions {
   readonly activeRunBaseline: () => ReadonlySet<string> | undefined;
   readonly isStopping: () => boolean;
   readonly admitPending?: () => void;
+  readonly admitInlineSteer?: ((command: SteerCommand) => void) | undefined;
   readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
@@ -273,6 +274,7 @@ export class OverseerSentinel {
     const answer = await pause
       .wait(this.options.base, escalation, this.options.isStopping, {
         admitPending: this.options.admitPending,
+        admitInlineSteer: this.options.admitInlineSteer,
         shouldRelease: () => isEscalationReleased(this.options.base, launch, escalation),
       })
       .finally(() => {

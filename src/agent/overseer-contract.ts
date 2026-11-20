@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   contractStateSchema,
   type ContractAmendment,
@@ -7,24 +8,31 @@ import {
   type DelegationContract,
   type Launch,
 } from "./contracts.ts";
+import { isChild } from "./host.ts";
+import { notifyInventory } from "./inventory-events.ts";
 import { normalizeDelegationContract, validateDelegationScope } from "./overseer-scope.ts";
+import { readRunState } from "./run-state.ts";
 import {
   ensureScratchDirectory,
   latest,
+  launchAt,
+  list,
   read,
   runDirectory,
   write,
   type SuccessorOptions,
 } from "./storage.ts";
 import type { RunsInput } from "./tool-schemas.ts";
+import { nativePeerId } from "../pi-intercom/session-targets.ts";
+import {
+  AMEND_CHILD_CONTRACT,
+  isAmendChildContractRequest,
+  type ChildContractAmendmentResult,
+  type ChildContractTarget,
+  type ContractAmendmentInput,
+} from "../shared/child-contract.ts";
 
-export interface ContractAmendmentInput {
-  readonly scope?: readonly string[] | undefined;
-  readonly verification?: readonly string[] | undefined;
-  readonly baseBranch?: string | undefined;
-  readonly requiredPrimitives?: readonly string[] | undefined;
-  readonly nonGoals?: readonly string[] | undefined;
-}
+export type { ContractAmendmentInput } from "../shared/child-contract.ts";
 
 export interface PreparedContractAmendment {
   readonly contract: DelegationContract;
@@ -202,6 +210,67 @@ export function applyLiveContractAmendment(
     recordContractAmendment(base, launch.id, amendment);
   }
   return formatAmendedSteerPrompt(prompt, amendment);
+}
+
+/** Validates ownership and atomically persists a contract amendment for an owned child peer. */
+export function amendOwnedChildContract(
+  base: string,
+  owner: string,
+  target: ChildContractTarget,
+  patch: ContractAmendmentInput,
+): ChildContractAmendmentResult {
+  if (target.parentSessionId !== owner || target.rootSessionId !== owner) {
+    throw new Error(
+      "Contract amendment on intercom reply requires the ask sender to be an owned child run of this session.",
+    );
+  }
+  const matched = list(base)
+    .map((id) => launchAt(base, id, owner))
+    .find((candidate) => nativePeerId(candidate.sessionId) === target.peerId);
+  if (matched === undefined) {
+    throw new Error(`Peer "${target.peerId}" does not match an owned child run of this session.`);
+  }
+  const launch = latest(base, matched);
+  const state = readRunState(base, launch);
+  if (state.kind === "saved-unadmitted") {
+    assertUnadmittedContract(launch.id, patch);
+  }
+  const amendment = prepareContractAmendment(activeContract(base, launch), patch, launch.cwd);
+  ensureScratchDirectory(base, launch);
+  const entry = recordContractAmendment(base, launch.id, amendment);
+  notifyInventory(base, launch.id);
+  return {
+    runId: launch.id,
+    ...(launch.name !== undefined ? { name: launch.name } : {}),
+    amendment: entry,
+    summary: formatContractAmendmentSummary(entry),
+  };
+}
+
+/** Handles intercom-initiated contract amendments for this owner's child runs. */
+export function serveChildContractAmendments(
+  pi: ExtensionAPI,
+  resolveOwner: () => Promise<{ readonly base: string; readonly owner: string }>,
+): void {
+  pi.events.on(AMEND_CHILD_CONTRACT, (request) => {
+    if (!isAmendChildContractRequest(request)) {
+      return;
+    }
+    request.reply(
+      Promise.resolve()
+        .then(() => {
+          if (isChild()) {
+            throw new Error(
+              "Only the owning main session may amend a child's delegation contract.",
+            );
+          }
+          return resolveOwner();
+        })
+        .then(({ base, owner }) =>
+          amendOwnedChildContract(base, owner, request.target, request.contract),
+        ),
+    );
+  });
 }
 
 /** Builds successor launch options carrying the active or newly amended contract and scratch dir. */

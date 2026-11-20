@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -9,10 +10,13 @@ import {
   type Result,
 } from "./contracts.ts";
 import { activeOverseer } from "./overseer.ts";
+import { assertContractActionAllowed, validateReviewContract } from "./overseer-contract.ts";
 import { resolveActiveEscalation } from "./overseer-pause.ts";
+import { inspectActorClaim, possiblyLive } from "./process.ts";
 import { notifyInventory } from "./inventory-events.ts";
 import { completionReceipts } from "./receipts.ts";
-import { latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
+import { readRunState } from "./run-state.ts";
+import { enqueue, latest, launchAt, list, read, runDirectory, write } from "./storage.ts";
 import type { RunsInput } from "./tool-schemas.ts";
 import { readCanonicalResult } from "./usage.ts";
 
@@ -127,6 +131,80 @@ export function buildReviewGateDraft(
   };
 }
 
+export function reviewTarget(base: string, original: Launch): Launch {
+  const tip = latest(base, original);
+  const settled = (id: string): boolean =>
+    fs.existsSync(path.join(runDirectory(base, id), "result.json"));
+  return !settled(tip.id) || !settled(original.id) ? tip : original;
+}
+
+export function assertReviewNoteActionAllowed(input: RunsInput): void {
+  if (input.note === undefined) {
+    return;
+  }
+  if (input.action === "review" && input.verdict === "approved") {
+    if (input.note.trim().length === 0) {
+      throw new Error("note must be non-empty when provided.");
+    }
+    return;
+  }
+  throw new Error(
+    'note is only supported with action="review" and verdict="approved" (for verdict="changes_requested", put the instructions in summary).',
+  );
+}
+
+/** Validates action-scoped optional fields (`contract`, `note`) before dispatching `agent_runs`. */
+export function assertRunActionOptionsAllowed(input: RunsInput): void {
+  assertContractActionAllowed(input);
+  assertReviewNoteActionAllowed(input);
+}
+
+export function assertReviewNoteTargetLive(base: string, original: Launch, input: RunsInput): void {
+  if (input.note === undefined) {
+    return;
+  }
+  const target = reviewTarget(base, original);
+  const state = readRunState(base, target);
+  if (state.kind === "settled") {
+    throw new Error(
+      `Cannot send a steering note on review approval: run ${target.id} is ${state.result.status}. Omit note to record approval, or use action="continue" to resume the saved conversation.`,
+    );
+  }
+  if (state.kind === "saved-unadmitted") {
+    throw new Error(
+      `Cannot send a steering note on review approval: run ${target.id} is awaiting native admission.`,
+    );
+  }
+  if (!possiblyLive(inspectActorClaim(base, target))) {
+    throw new Error(
+      `Cannot send a steering note on review approval: run ${target.id} is interrupted (not running). Omit note to record approval, or use action="continue" to resume the saved conversation.`,
+    );
+  }
+}
+
+/** Validates contract amendment and live-target requirements before recording a review. */
+export function validateReviewInput(base: string, original: Launch, input: RunsInput): void {
+  validateReviewContract(base, original, input);
+  assertReviewNoteTargetLive(base, original, input);
+}
+
+function resolveReviewNote(
+  base: string,
+  target: Launch,
+  note: string | undefined,
+): { readonly id: string; readonly prompt: string } | undefined {
+  const trimmed = note?.trim();
+  if (trimmed === undefined) {
+    return undefined;
+  }
+  if (fs.existsSync(path.join(runDirectory(base, target.id), "result.json"))) {
+    throw new Error(
+      `Cannot send a steering note on review approval: run ${target.id} has already settled. Omit note to record approval, or use action="continue" to resume the saved conversation.`,
+    );
+  }
+  return { id: randomUUID(), prompt: trimmed };
+}
+
 export function prepareOverseerReviewAction(
   base: string,
   original: Launch,
@@ -136,18 +214,22 @@ export function prepareOverseerReviewAction(
   review: OverseerReview;
   /** The review approved a pause that was open on the target. */
   released: boolean;
+  /** Steer command ID queued when `note` was provided with `verdict="approved"`. */
+  command?: string | undefined;
 } {
   if (input.verdict === undefined || input.summary === undefined) {
     throw new Error("review requires verdict ('approved' | 'changes_requested') and summary.");
   }
-  const tip = latest(base, original);
-  const settled = (id: string): boolean =>
-    fs.existsSync(path.join(runDirectory(base, id), "result.json"));
-  const target = !settled(tip.id) || !settled(original.id) ? tip : original;
+  assertReviewNoteActionAllowed({ ...input, action: "review" });
+  const target = reviewTarget(base, original);
+  const steer = resolveReviewNote(base, target, input.note);
   const review = recordOverseerReview(base, target, input.verdict, input.summary);
   const released =
     review.verdict === "approved" &&
-    resolveActiveEscalation(base, target, "approved") !== undefined;
+    resolveActiveEscalation(base, target, "approved", steer) !== undefined;
+  if (steer !== undefined) {
+    enqueue(base, target, { action: "steer", prompt: steer.prompt, id: steer.id });
+  }
   if (released) {
     notifyInventory(base, target.id);
   }
@@ -155,6 +237,7 @@ export function prepareOverseerReviewAction(
     target,
     review,
     released,
+    ...(steer !== undefined ? { command: steer.id } : {}),
   };
 }
 

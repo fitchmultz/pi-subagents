@@ -442,6 +442,15 @@ active or sole pending ask when unambiguous; otherwise specify `replyTo` and the
 intended sender. Inspect `pending` for the exact correlation rather than guessing
 from text.
 
+When a main session replies to a pending ask from one of its own child runs,
+`reply` also accepts an optional `contract` amendment (`scope`, `verification`,
+`baseBranch`, `requiredPrimitives`, `nonGoals`, matching `agent_runs` `continue`).
+Ownership and contract rules are validated and persisted to the child's run
+directory before the reply is sent so the child wakes with the amended contract
+already active; the delivered reply text and tool receipt both report the applied
+amendment. Passing `contract` with any action other than `reply`, from a child
+session, for a non-owned peer, or with an invalid contract fails cleanly without
+sending the reply or retiring the pending ask.
 Messages accepted for a parked child remain queued until it returns. If its
 owner reports a failed wake, a waiting ask returns the failure and says that the
 accepted question may still arrive later. Check the child before resending to

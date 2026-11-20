@@ -16,7 +16,7 @@ import { captureOverseerBaseline, saveResult, saveTerminalResult } from "./run-r
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { parkedToken } from "./generation.ts";
 import { OverseerSentinel } from "./overseer-sentinel.ts";
-import { queueCorrections } from "./overseer-pause.ts";
+import { admitInlineSteer, queueCorrections } from "./overseer-pause.ts";
 
 interface LiveActor {
   readonly session: AgentSession;
@@ -69,6 +69,7 @@ class Actor {
       activeRunBaseline: () => (this.work.kind === "running" ? this.work.baseline : undefined),
       isStopping: () => this.stopping,
       admitPending: () => this.pending().forEach((command) => this.accept(command)),
+      admitInlineSteer: (command) => admitInlineSteer(this.dir, this.started, command),
       queueCorrections: (commands) => queueCorrections(this.requireActor().session, commands),
     });
   }

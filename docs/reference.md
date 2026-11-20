@@ -82,13 +82,13 @@ project, display name, or a different session forked from its history.
 Live guidance and saved-run successors keep the child's saved effort even if the
 parent's effort has changed.
 
-| Action     | Purpose                                                                                                                                       |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`     | Page through the current native owner's saved-run metadata, without output previews.                                                          |
-| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting.                                                          |
-| `continue` | Supply a complete follow-up prompt (and optional `contract` amendment) using the saved child conversation.                                    |
-| `stop`     | Request termination; inspect the actual process outcome afterward.                                                                            |
-| `review`   | Record overseer `approved` or `changes_requested` verdict (unpausing or steering, with optional `contract` amendment on `changes_requested`). |
+| Action     | Purpose                                                                                                                                                   |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`     | Page through the current native owner's saved-run metadata, without output previews.                                                                      |
+| `inspect`  | Read one run's result and process/publication facts without waiting or interrupting.                                                                      |
+| `continue` | Supply a complete follow-up prompt (and optional `contract` amendment) using the saved child conversation.                                                |
+| `stop`     | Request termination; inspect the actual process outcome afterward.                                                                                        |
+| `review`   | Record overseer `approved` (with optional steering `note` on a running/paused child) or `changes_requested` verdict (with optional `contract` amendment). |
 
 All actions except `list` require `id`. Use IDs returned by the tools rather than
 infer them from display names. `list` returns at most 50 runs per page: running
@@ -303,9 +303,11 @@ clock bound remains usable when its original process identity is verifiable.
 ## `intercom`
 
 Use `list`, `claim`, `send`, and `last` for normal coordination. `ask`, `reply`,
-`pending`, and `status` support request/reply and diagnosis. `list` rows include
-Git repo/branch context when in a repository, optional `working_on` claims (set
-or cleared via `claim` without waking peers), and `worker_started` /
+`pending`, and `status` support request/reply and diagnosis; a main answering an
+owned child run's ask may pass optional `contract` on `reply` to amend the
+child's delegation contract atomically before the reply wakes it. `list` rows
+include Git repo/branch context when in a repository, optional `working_on`
+claims (set or cleared via `claim` without waking peers), and `worker_started` /
 `last_turn_error` health tags locally and across devices. Unpinned `last` reads
 warn when a newer assistant turn failed after or
 without a completed response. See [local messaging](intercom.md)
@@ -519,11 +521,12 @@ the parent once with `[agent-escalation]`. Steering via `continue` / `changes_re
 
 To amend a delegation contract mid-run or on continuation without stopping the child and losing
 context, pass an optional `contract` object to `agent_runs` with `action="continue"` or
-`action="review"` (`verdict="changes_requested"`). Specified fields (`scope`, `verification`,
+`action="review"` (`verdict="changes_requested"`), or to `intercom` with `action="reply"` when
+answering an owned child run's ask. Specified fields (`scope`, `verification`,
 `baseBranch`, `requiredPrimitives`, `nonGoals`) replace their previous values while omitted fields
 keep their current values; pass `[]` or `""` to clear optional fields, and supply `scope` (plus
 `verification` when non-empty) when attaching a contract to a run that had none. Invalid scopes or
-actions fail fast before modifying run state. Amendments are persisted in `<runDir>/contract.json`,
+actions fail fast before modifying run state (and before sending an `intercom` reply). Amendments are persisted in `<runDir>/contract.json`,
 reloaded dynamically by child edit-tool guards, system-prompt updates, deterministic tripwires
 (including live `baseBranch` updates), and decision checkpoints, carried onto successor launches,
 and shown with amendment history in `agent_runs inspect`.
@@ -735,6 +738,14 @@ Overseer review recorded: run 7f3a… (docs-fix) approved at 2026-11-17T17:02:11
 Pause approval recorded. Its next notice arrives when the child pauses again or ends.
 Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.
 ```
+
+To approve a running or paused child and send a short follow-up steering note in one call, pass
+optional `note` with `action="review"` and `verdict="approved"`. `summary` remains review-only;
+the approval and `note` are persisted atomically (including inline on `escalation-resolution.json`
+for paused children so the child wakes with both the approval and the note without a race or
+duplicate delivery), and the receipt reports the queued steering command ID. Passing `note` with
+another action, another verdict, whitespace-only text, or a settled/interrupted/unadmitted run
+fails fast without recording a review or queueing a command.
 
 Use `continue` to send guidance without a review verdict. Use `changes_requested` to record
 a verdict and send its summary as the correction or successor prompt. When either action

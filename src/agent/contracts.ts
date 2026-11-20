@@ -116,6 +116,12 @@ export const escalationResolutionSchema = Type.Object({
   escalationId: Type.String(),
   verdict: Type.Union([Type.Literal("steered"), Type.Literal("approved"), Type.Literal("stopped")]),
   diffDigest: Type.Optional(Type.String()),
+  steer: Type.Optional(
+    Type.Object({
+      id: Type.String(),
+      prompt: Type.String(),
+    }),
+  ),
   at: Type.Number(),
 });
 export type EscalationResolution = Static<typeof escalationResolutionSchema>;

@@ -6,7 +6,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test as nodeTest, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { Escalation, Launch, Result } from "../../src/agent/contracts.ts";
+import {
+  admissionSchema,
+  commandSchema,
+  escalationResolutionSchema,
+  type Escalation,
+  type Launch,
+  type Result,
+} from "../../src/agent/contracts.ts";
 import { notifications, release } from "../../src/agent/notifications.ts";
 import { captureRepoSnapshot, ownChanges } from "../../src/agent/overseer-git.ts";
 import {
@@ -17,9 +24,9 @@ import {
   recordOverseerReview,
   unreviewedCompletedRuns,
 } from "../../src/agent/overseer-review.ts";
-import { EscalationPause } from "../../src/agent/overseer-pause.ts";
+import { admitInlineSteer, EscalationPause } from "../../src/agent/overseer-pause.ts";
 import { captureOverseerBaseline } from "../../src/agent/run-result.ts";
-import { runDirectory, write } from "../../src/agent/storage.ts";
+import { conversation, read, runDirectory, write } from "../../src/agent/storage.ts";
 import { pauseLabel } from "../../src/agent/run-state.ts";
 import { renderInspection, renderReceipt } from "../../src/agent/view.ts";
 
@@ -435,5 +442,101 @@ nodeTest(
       }),
       true,
     );
+  },
+);
+
+nodeTest(
+  "approval with steering note wakes EscalationPause atomically without duplicating commands",
+  async (t: TestContext) => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-approve-note-"));
+    t.after(() => {
+      fs.rmSync(temp, { recursive: true, force: true });
+    });
+
+    const base = path.join(temp, "runs");
+    const launch = makeLaunch(base, "paused-note-run", "owner-note");
+    const escalation: Escalation = {
+      id: "esc-note-1",
+      runId: launch.id,
+      owner: launch.owner,
+      at: Date.now(),
+      strikes: 1,
+      kind: "scope_violation",
+      summary: "Review needed",
+      changedFiles: ["src/db.ts"],
+      diffExcerpt: "+// valid change",
+      diffDigest: "digest-note-1",
+    };
+
+    // Case 1: approval watcher wakes before command watcher sees commands/<id>.json.
+    const started = new Set<string>();
+    const pause = new EscalationPause(launch.id);
+    const convDir = conversation(base, launch);
+    const waiting = pause.wait(base, escalation, () => false, {
+      admitInlineSteer: (command) => admitInlineSteer(convDir, started, command),
+    });
+    const action = prepareOverseerReviewAction(base, launch, {
+      action: "review",
+      verdict: "approved",
+      summary: "Diff is clean and within contract.",
+      note: "Keep the helper private in your next edit.",
+    });
+    assert.equal(action.released, true);
+    assert.ok(action.command !== undefined);
+    const answer = await waiting;
+    assert.equal(answer.verdict, "approved");
+    assert.equal(answer.commands.length, 1);
+    const [firstCommand] = answer.commands;
+    assert.ok(firstCommand !== undefined);
+    assert.equal(firstCommand.id, action.command);
+    assert.equal(firstCommand.prompt, "Keep the helper private in your next edit.");
+    // Admission receipt was recorded inline so the actor will not replay commands/<id>.json.
+    assert.equal(started.has(action.command), true);
+    assert.equal(
+      read(path.join(convDir, "admissions", `${action.command}.json`), admissionSchema)?.state,
+      "accepted",
+    );
+    assert.equal(
+      read(path.join(convDir, "commands", `${action.command}.json`), commandSchema)?.action,
+      "steer",
+    );
+    assert.deepEqual(
+      read(
+        path.join(runDirectory(base, launch.id), "escalation-resolution.json"),
+        escalationResolutionSchema,
+      )?.steer,
+      { id: action.command, prompt: "Keep the helper private in your next edit." },
+    );
+
+    // Case 2: admitPending also reads commands/<id>.json — inline steer still yields exactly one command.
+    const pause2 = new EscalationPause(launch.id);
+    const started2 = new Set<string>();
+    const waiting2 = pause2.wait(base, { ...escalation, id: "esc-note-2" }, () => false, {
+      admitPending: () => {
+        const cmdDir = path.join(convDir, "commands");
+        for (const file of fs.readdirSync(cmdDir)) {
+          const cmd = read(path.join(cmdDir, file), commandSchema);
+          if (cmd?.action === "steer" && !started.has(cmd.id) && !started2.has(cmd.id)) {
+            started2.add(cmd.id);
+            pause2.steer(cmd);
+          }
+        }
+      },
+      admitInlineSteer: (command) => admitInlineSteer(convDir, started2, command),
+    });
+    const action2 = prepareOverseerReviewAction(base, launch, {
+      action: "review",
+      verdict: "approved",
+      summary: "Second pause approved.",
+      note: "Add one edge-case assertion.",
+    });
+    assert.ok(action2.command !== undefined);
+    const answer2 = await waiting2;
+    assert.equal(answer2.verdict, "approved");
+    assert.equal(answer2.commands.length, 1);
+    const [secondCommand] = answer2.commands;
+    assert.ok(secondCommand !== undefined);
+    assert.equal(secondCommand.id, action2.command);
+    assert.equal(secondCommand.prompt, "Add one edge-case assertion.");
   },
 );

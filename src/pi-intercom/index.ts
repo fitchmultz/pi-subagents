@@ -15,6 +15,12 @@ import { IntercomTools } from "./tools.ts";
 import { IntercomSessionEvents } from "./session-events.ts";
 import { registerIntercomTools } from "./tool-registration.ts";
 import { isParkRequest, PARK, PARKED_HISTORY, WAKE, type WakeResult } from "../shared/parking.ts";
+import {
+  AMEND_CHILD_CONTRACT,
+  type ChildContractAmendmentResult,
+  type ChildContractTarget,
+  type ContractAmendmentInput,
+} from "../shared/child-contract.ts";
 import type { NativeHistory } from "./last-message.ts";
 import { BackgroundReporter } from "../shared/background-reporting.ts";
 
@@ -45,6 +51,25 @@ function wakeParked(pi: ExtensionAPI, peer: string, signal?: AbortSignal): Promi
   );
 }
 
+function amendChildContract(
+  pi: ExtensionAPI,
+  target: ChildContractTarget,
+  contract: ContractAmendmentInput,
+): Promise<ChildContractAmendmentResult> {
+  let result: Promise<ChildContractAmendmentResult> | undefined;
+  pi.events.emit(AMEND_CHILD_CONTRACT, {
+    target,
+    contract,
+    reply: (outcome: Promise<ChildContractAmendmentResult>) => {
+      result = outcome;
+    },
+  });
+  return (
+    result ??
+    Promise.reject(new Error("No agent runtime is available to amend a child delegation contract."))
+  );
+}
+
 function setupReporting(pi: ExtensionAPI) {
   let configError: string | undefined;
   const config = loadConfig((message) => {
@@ -67,6 +92,43 @@ function setupReporting(pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", () => reporter.shutdown());
   return { config, lifecycle, reporter, child: lineage !== undefined };
+}
+
+function registerParkingHooks(
+  pi: ExtensionAPI,
+  owners: {
+    readonly connection: IntercomConnection;
+    readonly inbound: IntercomInbound;
+    readonly journal: InboundJournal;
+    readonly replies: ReplyTracker;
+    readonly wait: ReplyWait;
+    readonly delivery: InboundDeliveryOwner;
+  },
+): void {
+  const { connection, inbound, journal, replies, wait, delivery } = owners;
+  pi.events.on(PARK, (request) => {
+    if (isParkRequest(request)) {
+      request.reply(request.park ? connection.park() : connection.unpark());
+    }
+  });
+  // Native fork sleep readiness; it vetoes only this package's own parking, never other saves.
+  Reflect.apply(pi.on.bind(pi), undefined, [
+    "working_session_save",
+    () =>
+      !connection.parking
+        ? undefined
+        : {
+            blockers: [
+              inbound.receiving > 0 && "intercom is receiving a message",
+              journal.size > 0 && "intercom inbound messages await delivery",
+              replies.listPending().length > 0 && "intercom asks await replies",
+              wait.waiting && "intercom is waiting for a reply",
+              (delivery.restoring !== undefined || delivery.batching) &&
+                "intercom delivery is restoring",
+              connection.reconnectedWhileParking && "intercom reconnected while parking",
+            ].filter((blocker) => typeof blocker === "string"),
+          },
+  ]);
 }
 
 export default function piIntercomExtension(pi: ExtensionAPI): void {
@@ -114,7 +176,15 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
   });
   const devices = new RemoteDevices(config, child);
   const outbound = new IntercomOutbound(
-    { pi, lifecycle, connection, replies, wait, devices },
+    {
+      pi,
+      lifecycle,
+      connection,
+      replies,
+      wait,
+      devices,
+      amendChildContract: (target, contract) => amendChildContract(pi, target, contract),
+    },
     config,
   );
   const inspection = new IntercomInspection(journal, replies, devices);
@@ -127,27 +197,5 @@ export default function piIntercomExtension(pi: ExtensionAPI): void {
     wait,
   }).register();
   registerIntercomTools(pi, new IntercomTools({ connection, outbound, inspection }));
-  pi.events.on(PARK, (request) => {
-    if (isParkRequest(request)) {
-      request.reply(request.park ? connection.park() : connection.unpark());
-    }
-  });
-  // Native fork sleep readiness; it vetoes only this package's own parking, never other saves.
-  Reflect.apply(pi.on.bind(pi), undefined, [
-    "working_session_save",
-    () =>
-      !connection.parking
-        ? undefined
-        : {
-            blockers: [
-              inbound.receiving > 0 && "intercom is receiving a message",
-              journal.size > 0 && "intercom inbound messages await delivery",
-              replies.listPending().length > 0 && "intercom asks await replies",
-              wait.waiting && "intercom is waiting for a reply",
-              (delivery.restoring !== undefined || delivery.batching) &&
-                "intercom delivery is restoring",
-              connection.reconnectedWhileParking && "intercom reconnected while parking",
-            ].filter((blocker) => typeof blocker === "string"),
-          },
-  ]);
+  registerParkingHooks(pi, { connection, inbound, journal, replies, wait, delivery });
 }

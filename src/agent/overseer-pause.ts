@@ -6,11 +6,13 @@ import {
   escalationSchema,
   type Command,
   type Escalation,
+  type EscalationResolution,
   type Launch,
 } from "./contracts.ts";
 import { read, runDirectory, write } from "./storage.ts";
 import { DirectoryWatch, Wake } from "./wake.ts";
 import { OVERSEER_STATE_FILE } from "./overseer.ts";
+import { hasErrorCode } from "../shared/unknown.ts";
 
 export const OVERSEER_CORRECTION = "overseer-correction";
 export type SteerCommand = Extract<Command, { action: "steer" }>;
@@ -22,7 +24,35 @@ export type EscalationAnswer =
 
 export interface EscalationWaitOptions {
   readonly admitPending?: (() => void) | undefined;
+  readonly admitInlineSteer?: ((command: SteerCommand) => void) | undefined;
   readonly shouldRelease?: (() => boolean) | undefined;
+}
+
+/** Records admission for a steering note embedded in an approval resolution so commands/<id>.json is not replayed. */
+export function admitInlineSteer(
+  conversationDir: string,
+  started: Set<string>,
+  command: SteerCommand,
+): void {
+  if (started.has(command.id)) {
+    return;
+  }
+  const receipt = path.join(conversationDir, "admissions", `${command.id}.json`);
+  started.add(command.id);
+  if (fs.existsSync(receipt)) {
+    return;
+  }
+  try {
+    write(
+      receipt,
+      { id: command.id, runId: command.runId, action: "steer", state: "accepted", at: Date.now() },
+      true,
+    );
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) {
+      throw error;
+    }
+  }
 }
 
 function watchLiveState(
@@ -35,29 +65,59 @@ function watchLiveState(
     : new DirectoryWatch(base, (file) => file === null || file === OVERSEER_STATE_FILE, raise);
 }
 
+function mergeInlineSteer(
+  resolution: EscalationResolution | undefined,
+  runId: string,
+  commands: readonly SteerCommand[],
+  onInlineSteer?: (command: SteerCommand) => void,
+): readonly SteerCommand[] {
+  const steer = resolution?.verdict === "approved" ? resolution.steer : undefined;
+  if (steer === undefined || commands.some((command) => command.id === steer.id)) {
+    return commands;
+  }
+  const inline: SteerCommand = {
+    id: steer.id,
+    runId,
+    action: "steer",
+    prompt: steer.prompt,
+    createdAt: resolution?.at ?? Date.now(),
+  };
+  onInlineSteer?.(inline);
+  return [...commands, inline];
+}
+
 function resolveWaitAnswer(input: {
+  readonly runId: string;
   readonly resolutionFile: string;
   readonly escalationId: string;
   readonly isStopping: () => boolean;
   readonly shouldRelease?: (() => boolean) | undefined;
+  readonly admitInlineSteer?: ((command: SteerCommand) => void) | undefined;
   readonly commands: readonly SteerCommand[];
 }): EscalationAnswer {
-  const verdict = pauseResolution(input.resolutionFile, input.escalationId);
+  const resolution = pauseResolution(input.resolutionFile, input.escalationId);
+  const verdict = resolution?.verdict;
   if (input.isStopping() || verdict === "stopped") {
     return { verdict: "stopped" };
   }
   if (verdict === undefined && input.commands.length === 0 && input.shouldRelease?.() === true) {
     return { verdict: "released" };
   }
-  return { verdict: verdict ?? "steered", commands: input.commands };
+  const commands = mergeInlineSteer(
+    resolution,
+    input.runId,
+    input.commands,
+    input.admitInlineSteer,
+  );
+  return { verdict: verdict === "approved" ? "approved" : "steered", commands };
 }
 
-function pauseResolution(file: string, id: string): "approved" | "stopped" | undefined {
+function pauseResolution(file: string, id: string): EscalationResolution | undefined {
   const resolution = read(file, escalationResolutionSchema);
   if (resolution?.escalationId !== id || resolution.verdict === "steered") {
     return undefined;
   }
-  return resolution.verdict;
+  return resolution;
 }
 
 export function queueCorrections(session: AgentSession, commands: readonly SteerCommand[]): void {
@@ -119,7 +179,7 @@ export class EscalationPause {
     const runDir = runDirectory(base, this.runId);
     const escalationFile = path.join(runDir, "escalation.json");
     const resolutionFile = path.join(runDir, "escalation-resolution.json");
-    const { admitPending, shouldRelease } = options ?? {};
+    const { admitPending, admitInlineSteer: onInlineSteer, shouldRelease } = options ?? {};
     write(escalationFile, escalation);
     const watchRun = new DirectoryWatch(runDir, () => true, this.wake.raise);
     const watchBase = watchLiveState(base, shouldRelease, this.wake.raise);
@@ -132,7 +192,7 @@ export class EscalationPause {
         isStopping,
         shouldRelease,
       });
-      if (!isStopping() && published !== "stopped" && shouldRelease?.() !== true) {
+      if (!isStopping() && published?.verdict !== "stopped" && shouldRelease?.() !== true) {
         // The approval watcher can wake before the command watcher.
         admitPending?.();
       }
@@ -143,10 +203,12 @@ export class EscalationPause {
     }
     // Include an approval published while the pause was still open.
     return resolveWaitAnswer({
+      runId: this.runId,
       resolutionFile,
       escalationId: escalation.id,
       isStopping,
       shouldRelease,
+      admitInlineSteer: onInlineSteer,
       commands: this.commands,
     });
   }
@@ -177,6 +239,7 @@ export function resolveActiveEscalation(
   base: string,
   launch: Launch,
   verdict: "approved" | "stopped",
+  steer?: { readonly id: string; readonly prompt: string },
 ): Escalation | undefined {
   const dir = runDirectory(base, launch.id);
   const active = read(path.join(dir, "escalation.json"), escalationSchema);
@@ -192,6 +255,7 @@ export function resolveActiveEscalation(
     escalationId: active.id,
     verdict,
     ...(verdict === "approved" ? { diffDigest: active.diffDigest } : {}),
+    ...(verdict === "approved" && steer !== undefined ? { steer } : {}),
     at: Date.now(),
   });
   return active;

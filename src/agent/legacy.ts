@@ -251,3 +251,12 @@ export function reconcileLegacy(ctx: ExtensionContext, reporter: BackgroundRepor
     return [];
   }
 }
+
+/** Legacy results are optional; their reconciliation reports an invalid configured root. */
+export function legacyInputDirectories(): string[] {
+  try {
+    return [legacyDirectory()];
+  } catch {
+    return [];
+  }
+}
