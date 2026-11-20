@@ -2,8 +2,22 @@
 
 ## [Unreleased]
 
+## 0.52.62 - 2026-11-20
+
+<!-- npm-release:unreleased:start -->
+
 - `intercom` `action="reply"` accepts an optional `contract` amendment when a main session answers an owned child run's ask, validating ownership and persisting the contract update atomically before delivering the reply (PSA-203).
 - `agent_runs` `action="review"` (`verdict="approved"`) accepts an optional `note` on running or paused children to record approval and queue a follow-up steering note atomically in one call while keeping `summary` review-only (PSA-203).
+
+<!-- npm-release:unreleased:end -->
+
+- feat: atomic contract amendment on intercom reply and approval steering note (1/2) (#484) ([6c1bf45](https://github.com/fitchmultz/pi-subagents/commit/6c1bf456a0acf01c94335e70f2290cca24c52f92))
+
+### What's Changed
+
+- feat: atomic contract amendment on intercom reply and approval steering note (1/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/484
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.61...v0.52.62
 
 ## 0.52.61 - 2026-11-20
 
