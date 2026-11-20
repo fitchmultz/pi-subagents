@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## 0.52.63 - 2026-11-20
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+<!-- npm-release:carried:start -->
+
+- `intercom` `action="reply"` accepts an optional `contract` amendment when a main session answers an owned child run's ask, validating ownership and persisting the contract update atomically before delivering the reply (PSA-203).
+- `agent_runs` `action="review"` (`verdict="approved"`) accepts an optional `note` on running or paused children to record approval and queue a follow-up steering note atomically in one call while keeping `summary` review-only (PSA-203).
+
+<!-- npm-release:carried:end -->
+
+- Supersedes unpublished 0.52.62 from c72faff4cab91238d31fddf31efa9b6cd411dfc5. Includes all changes since v0.52.61; the original release records remain unchanged.
+
+- ci: use release App for npm release tags (#490) ([f082cb4](https://github.com/fitchmultz/pi-subagents/commit/f082cb4c3a88bf5bf049a9bbdd71a481ba0040e0))
+
+### What's Changed
+
+- feat: atomic contract amendment on intercom reply and approval steering note (1/2) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/484
+- chore: bump Pi floor to 1.6.0 and remove pre-1.6.0 render shims (PEA-222) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/486
+- ci: refresh the shared automation pin to 1f78bd6 (PEA-225) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/487
+- Reject oversized Intercom claims without replacing the previous note by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/488
+- Validate child contract amendments before replying by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/489
+- Use the release App for npm release tags by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/490
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.61...v0.52.63
+
 ## 0.52.62 - 2026-11-20
 
 <!-- npm-release:unreleased:start -->
