@@ -26,7 +26,7 @@ import {
   readContractAmendments,
 } from "./overseer-contract.ts";
 import { escalationEvidenceLines } from "./overseer-evidence.ts";
-import { formatReviewReceiptText, needsOverseerReview, readReview } from "./overseer-review.ts";
+import { needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
   pauseLabel,
@@ -298,6 +298,24 @@ function projection(
     output: outputView(view.outputFile, input),
   };
 }
+function reviewReceiptText(
+  run: Pick<RunView, "id" | "name" | "status" | "reviewRequired">,
+  receipt: Extract<Receipt, { receipt: "review" }>,
+): string {
+  const { review, released, command } = receipt;
+  const label = run.name === undefined ? run.id : `${run.id} (${run.name})`;
+  let state = `The run's status is ${run.status}; ${run.reviewRequired === true ? "review its completed changes." : "it needs no further review."}`;
+  if (run.status === "running") {
+    state = released
+      ? "Pause approval recorded. Its next notice arrives when the child pauses again or ends."
+      : "The child is still running. If it finishes with changes, review the completed run.";
+  }
+  const delivery =
+    command === undefined
+      ? 'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.'
+      : `Summary saved for review only. Steering note queued for the child (command ${command}; queue acceptance is not actual completion or model consumption).`;
+  return `Overseer review recorded: run ${label} ${review.verdict} at ${utc(review.at)}.\n${state}\n${delivery}`;
+}
 export function renderReceipt(
   base: string,
   launch: Launch,
@@ -306,19 +324,7 @@ export function renderReceipt(
 ): ToolReply {
   const details = { ...projection(base, launch, ctx), ...receipt };
   if ("receipt" in receipt && receipt.receipt === "review") {
-    return toolResult(
-      details,
-      formatReviewReceiptText({
-        id: details.id,
-        name: details.name,
-        status: details.status,
-        reviewRequired: details.reviewRequired,
-        review: receipt.review,
-        released: receipt.released,
-        command: receipt.command,
-        formatTime: utc,
-      }),
-    );
+    return toolResult(details, reviewReceiptText(details, receipt));
   }
   const model = { ...details, result: receiptResult(details.result) };
   return toolResult(details, JSON.stringify(model, null, 2));
@@ -486,17 +492,14 @@ export function renderInspection(
 ): ToolReply {
   const allAmendments = readContractAmendments(base, launch);
   const amendments = allAmendments.slice(-20);
-  const contractAmendments =
-    amendments.length > 0
-      ? amendments.map((entry) => ({
-          at: entry.at,
-          changedFields: entry.changedFields,
-          summary: formatContractAmendmentSummary(entry),
-        }))
-      : undefined;
+  const mapEntry = (entry: ContractAmendment) => ({
+    at: entry.at,
+    changedFields: entry.changedFields,
+    summary: formatContractAmendmentSummary(entry),
+  });
   const details: RunView = {
     ...projection(base, launch, ctx, input),
-    ...(contractAmendments !== undefined ? { contractAmendments } : {}),
+    ...(amendments.length > 0 ? { contractAmendments: amendments.map(mapEntry) } : {}),
   };
   return {
     ...toolResult(details, resultText(details, amendments, allAmendments.length)),

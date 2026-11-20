@@ -205,32 +205,6 @@ function resolveReviewNote(
   return { id: randomUUID(), prompt: trimmed };
 }
 
-export function formatReviewReceiptText(input: {
-  readonly id: string;
-  readonly name?: string | undefined;
-  readonly status: string;
-  readonly reviewRequired?: true | undefined;
-  readonly review: OverseerReview;
-  readonly released: boolean;
-  readonly command?: string | undefined;
-  readonly formatTime: (at: number) => string;
-}): string {
-  const label = input.name === undefined ? input.id : `${input.id} (${input.name})`;
-  const settled = `The run's status is ${input.status}; ${input.reviewRequired === true ? "review its completed changes." : "it needs no further review."}`;
-  const unsettled = input.released
-    ? "Pause approval recorded. Its next notice arrives when the child pauses again or ends."
-    : "The child is still running. If it finishes with changes, review the completed run.";
-  const delivery =
-    input.command === undefined
-      ? 'Summary saved for review only. It was not sent to the child. Use `agent_runs` `action="continue"` to send instructions.'
-      : `Summary saved for review only. Steering note queued for the child (command ${input.command}; queue acceptance is not actual completion or model consumption).`;
-  return [
-    `Overseer review recorded: run ${label} ${input.review.verdict} at ${input.formatTime(input.review.at)}.`,
-    input.status === "running" ? unsettled : settled,
-    delivery,
-  ].join("\n");
-}
-
 export function prepareOverseerReviewAction(
   base: string,
   original: Launch,
