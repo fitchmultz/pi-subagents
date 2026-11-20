@@ -26,12 +26,12 @@ export interface ChildContractAmendmentResult {
 export const AMEND_CHILD_CONTRACT = "pi-subagents:amend-child-contract";
 
 export interface AmendChildContractRequest {
-  readonly target: ChildContractTarget;
-  readonly contract: ContractAmendmentInput;
+  readonly target?: unknown;
+  readonly contract?: unknown;
   readonly reply: (result: Promise<ChildContractAmendmentResult>) => void;
 }
 
-function isTarget(value: unknown): value is ChildContractTarget {
+export function isTarget(value: unknown): value is ChildContractTarget {
   return (
     isRecord(value) &&
     typeof value.peerId === "string" &&
@@ -41,10 +41,5 @@ function isTarget(value: unknown): value is ChildContractTarget {
 }
 
 export function isAmendChildContractRequest(value: unknown): value is AmendChildContractRequest {
-  return (
-    isRecord(value) &&
-    isTarget(value.target) &&
-    isRecord(value.contract) &&
-    typeof value.reply === "function"
-  );
+  return isRecord(value) && typeof value.reply === "function";
 }
