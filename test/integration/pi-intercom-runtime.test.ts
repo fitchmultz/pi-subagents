@@ -221,6 +221,26 @@ nodeTest("invalid presence updates cannot poison peer session lists", async (t) 
       (await bad.listSessions()).find((peer) => peer.name === "healthy-presence-peer")
         ?.lastTurnError === undefined,
   );
+  healthy.updatePresence({
+    gitRepo: "pi-subagents",
+    gitBranch: "feat/psa-203",
+    workingOn: "PSA-203 session visibility",
+  });
+  await waitFor(async () => {
+    const peer = (await bad.listSessions()).find((entry) => entry.name === "healthy-presence-peer");
+    return (
+      peer?.gitRepo === "pi-subagents" &&
+      peer.gitBranch === "feat/psa-203" &&
+      peer.workingOn === "PSA-203 session visibility"
+    );
+  });
+  healthy.updatePresence({ gitRepo: null, gitBranch: null, workingOn: null });
+  await waitFor(async () => {
+    const peer = (await bad.listSessions()).find((entry) => entry.name === "healthy-presence-peer");
+    return (
+      peer?.gitRepo === undefined && peer?.gitBranch === undefined && peer?.workingOn === undefined
+    );
+  });
   const disconnected = once(bad, "disconnected");
   bad.updatePresence({ name: "bad\u0001name", pendingAsks: 0.5 });
   await disconnected;

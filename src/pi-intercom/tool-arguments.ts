@@ -28,6 +28,20 @@ function listingError(params: IntercomToolParams): ToolResultLike | undefined {
   }
   return;
 }
+function claimError(params: IntercomToolParams): ToolResultLike | undefined {
+  if (params.action !== "claim") {
+    return;
+  }
+  if (params.to !== undefined || params.attachments !== undefined || params.replyTo !== undefined) {
+    return toolError("'to', 'attachments', and 'replyTo' are not valid for action='claim'");
+  }
+  if (params.message === undefined) {
+    return toolError(
+      "Missing 'message' parameter for action='claim' (pass an empty string to clear)",
+    );
+  }
+  return;
+}
 export function validateIntercomArguments(params: IntercomToolParams): ToolResultLike | undefined {
   if (
     (params.entryId !== undefined || params.offset !== undefined || params.limit !== undefined) &&
@@ -35,7 +49,7 @@ export function validateIntercomArguments(params: IntercomToolParams): ToolResul
   ) {
     return toolError("'entryId', 'offset', and 'limit' are only valid for action='last'");
   }
-  return listingError(params);
+  return listingError(params) ?? claimError(params);
 }
 export function sendOptions(params: IntercomToolParams): {
   readonly text: string;

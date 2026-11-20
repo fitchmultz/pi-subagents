@@ -100,6 +100,24 @@ function location(session: SessionInfo, options: RowOptions): string | undefined
   }
   return session.cwd === options.currentCwd ? "same native session cwd" : undefined;
 }
+function gitContext(session: SessionInfo): string {
+  const repo =
+    session.gitRepo !== undefined && session.gitRepo !== "" ? session.gitRepo : undefined;
+  const branch =
+    session.gitBranch !== undefined && session.gitBranch !== "" ? session.gitBranch : undefined;
+  if (repo !== undefined && branch !== undefined) {
+    return ` · git: ${repo} (${branch})`;
+  }
+  if (repo !== undefined) {
+    return ` · git: ${repo}`;
+  }
+  return branch !== undefined ? ` · git: branch:${branch}` : "";
+}
+function workingOnTag(session: SessionInfo): string | undefined {
+  return session.workingOn !== undefined && session.workingOn !== ""
+    ? `working_on:${session.workingOn}`
+    : undefined;
+}
 function row(session: SessionInfo, options: RowOptions): string {
   const at = options.device === undefined ? "" : `@${options.device}`;
   const name = session.name === undefined || session.name === "" ? "Unnamed session" : session.name;
@@ -112,10 +130,11 @@ function row(session: SessionInfo, options: RowOptions): string {
     location(session, options),
     session.status,
     duplicate ? `target:${target}` : undefined,
+    workingOnTag(session),
     ...healthTags(session, options.now),
   ].filter((tag): tag is string => tag !== undefined && tag !== "");
   const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
-  return `• ${name}${at} (${target}) — Native session cwd: ${session.cwd} (${session.model})${suffix}${options.self ? `\n  ↳ ${SELF_HINT}` : ""}`;
+  return `• ${name}${at} (${target}) — Native session cwd: ${session.cwd} (${session.model})${gitContext(session)}${suffix}${options.self ? `\n  ↳ ${SELF_HINT}` : ""}`;
 }
 export function sessionsForScope(
   sessions: readonly SessionInfo[],

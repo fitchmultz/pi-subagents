@@ -5,8 +5,9 @@ import type { IntercomConnection } from "./connection.ts";
 import type { IntercomOutbound } from "./outbound.ts";
 import type { IntercomInspection } from "./inspection.ts";
 import type { IntercomToolParams, ToolResultLike } from "./runtime-types.ts";
-import { validateIntercomArguments, toolError } from "./tool-arguments.ts";
-import { errorMessage } from "./validation.ts";
+import { validateIntercomArguments, toolError, toolText } from "./tool-arguments.ts";
+import { previewText } from "./message-format.ts";
+import { errorMessage, MAX_WORKING_ON_LENGTH } from "./validation.ts";
 import type { LastMessageResult } from "./types.ts";
 
 function lastPage(result: Exclude<LastMessageResult, { readonly error: string }>): ToolResultLike {
@@ -36,7 +37,9 @@ function lastPage(result: Exclude<LastMessageResult, { readonly error: string }>
 }
 
 interface ToolOwners {
-  readonly connection: Readonly<Pick<IntercomConnection, "ensure" | "syncIdentity">>;
+  readonly connection: Readonly<
+    Pick<IntercomConnection, "ensure" | "setWorkingOn" | "syncIdentity">
+  >;
   readonly outbound: Readonly<Pick<IntercomOutbound, "send" | "ask" | "reply">>;
   readonly inspection: Readonly<
     Pick<IntercomInspection, "list" | "listDevices" | "status" | "pending">
@@ -46,6 +49,14 @@ export class IntercomTools {
   private readonly owners: ToolOwners;
   constructor(owners: ToolOwners) {
     this.owners = owners;
+  }
+  private claim(params: IntercomToolParams): ToolResultLike {
+    const normalized = previewText(params.message ?? "", MAX_WORKING_ON_LENGTH);
+    this.owners.connection.setWorkingOn(normalized);
+    if (normalized === undefined) {
+      return toolText("Cleared workingOn claim.", { workingOn: null });
+    }
+    return toolText(`Updated workingOn claim: ${normalized}`, { workingOn: normalized });
   }
   private async list(
     active: IntercomTransport,
@@ -110,6 +121,8 @@ export class IntercomTools {
         return await this.owners.outbound.ask(active, params, signal);
       case "reply":
         return await this.owners.outbound.reply(active, params);
+      case "claim":
+        return this.claim(params);
     }
   }
 }

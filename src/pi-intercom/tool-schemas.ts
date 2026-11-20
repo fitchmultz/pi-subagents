@@ -2,7 +2,16 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "../agent/typebox.ts";
 export const intercomSchema = Type.Object(
   {
-    action: StringEnum(["list", "send", "ask", "reply", "pending", "status", "last"] as const),
+    action: StringEnum([
+      "list",
+      "send",
+      "ask",
+      "reply",
+      "pending",
+      "status",
+      "last",
+      "claim",
+    ] as const),
     scope: Type.Optional(
       StringEnum(["project", "all"] as const, {
         description: "all (default) or project (repo and worktrees)",
@@ -15,7 +24,11 @@ export const intercomSchema = Type.Object(
       Type.String({ description: "list: mains on another device (alias) or all" }),
     ),
     to: Type.Optional(Type.String({ description: "Session name or ID" })),
-    message: Type.Optional(Type.String()),
+    message: Type.Optional(
+      Type.String({
+        description: "Text for send/ask/reply, or 1-line workingOn note for claim (empty clears)",
+      }),
+    ),
     attachments: Type.Optional(
       Type.Array(
         Type.Object(

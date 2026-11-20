@@ -19,6 +19,8 @@ intercom({ action: "list", children: true });
 intercom({ action: "list", scope: "project" });
 intercom({ action: "list", to: "reviewer" });
 intercom({ action: "list", device: "all" });
+intercom({ action: "claim", message: "PSA-203 session visibility" });
+intercom({ action: "claim", message: "" });
 intercom({ action: "status" });
 ```
 
@@ -32,13 +34,20 @@ With `device`, `list` prints the main sessions of the owner's
 `list` and `status` print the current session and then two blocks:
 
 1. **Main sessions.** One line per main with its name, target, cwd, model and
-   state, including `worker_started:<age>` for its current worker process and
-   `last_turn_error:<error>` when its latest assistant turn on the active branch
-   failed. Sessions of one repository and its worktrees sit together: the block is
-   sorted by project, then by name.
+   state, including `git: <repo> (<branch>)` when the peer is in a Git repository
+   (branch name or detached short SHA; omitted outside Git repos),
+   `working_on:<note>` when the peer advertised a claim, `worker_started:<age>`
+   for its current worker process, and `last_turn_error:<error>` when its latest
+   assistant turn on the active branch failed. Sessions of one repository and its
+   worktrees sit together: the block is sorted by project, then by name.
 2. **Child sessions of the caller's group.** One line in total: how many there
    are, counted by state, and the call that prints their rows.
    `list` with `children: true` prints one line per child instead.
+
+Use `intercom({ action: "claim", message: "..." })` to advertise a short 1-line
+`workingOn` note on your broker presence record without waking any peer. Pass an
+empty `message` (`""`) to clear it; disconnecting or starting a fresh session
+also clears it automatically.
 
 Every child is a valid target by name or ID whether or not its row is printed.
 With `to`, `list` keeps the sessions whose name or ID contains that text, ignoring
@@ -385,8 +394,9 @@ listener, service or port is added on any device.
   the recipient retires the question.
 
 For each listed main, these fields leave its device, inside the SSH connection:
-ID, name, cwd, model, project ID, status, `startedAt`, `acceptsAsks`, `pendingAsks`,
-`lastSeen`, `lastIntercomActivity` and `lastTurnError`.
+ID, name, cwd, model, project ID, `gitRepo`, `gitBranch`, `workingOn`, status,
+`startedAt`, `acceptsAsks`, `pendingAsks`, `lastSeen`, `lastIntercomActivity`
+and `lastTurnError`.
 
 ## Send, ask, and reply
 

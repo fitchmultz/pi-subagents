@@ -11,8 +11,10 @@ workflow UI, or topic registry.
 1. Use `intercom({action:"list"})` before choosing a peer. It prints the main
    sessions first, then the child sessions of your group as one count line. A
    child is a valid target by name or ID without its row; `children:true` prints
-   the rows. Rows include `worker_started:<age>` (the current worker process age,
-   refreshed on `pi restart`) and `last_turn_error:<error>` when the peer's most
+   the rows. Rows include `git: <repo> (<branch>)` when the peer is inside a Git
+   repository (branch name or detached short SHA), `working_on:<note>` when the
+   peer set a claim, `worker_started:<age>` (the current worker process age,
+   refreshed on `pi restart`), and `last_turn_error:<error>` when the peer's most
    recent assistant turn failed. Default discovery spans projects and agent
    directories under the
    same OS user; optional `scope:"project"` filters to this repository and its
@@ -34,6 +36,8 @@ workflow UI, or topic registry.
    - `reply`: answer the active/sole pending ask, or specify `replyTo` when ambiguous.
    - `pending`: unresolved inbound asks and their correlation.
    - `status`: connection, peer health and inbound queue state.
+   - `claim`: set or clear (`message:""`) a short 1-line `workingOn` note on
+     your presence record in `list` without waking any peer.
 4. Handle the actual outcome. Broker acceptance is not recipient persistence,
    model consumption, a reply, completion, or process exit. Do not replay an
    uncertain side effect merely because its response was lost.

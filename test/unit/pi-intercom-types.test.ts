@@ -12,7 +12,7 @@ import {
   isSessionRegistration,
   normalizeSessionInfo,
 } from "../../src/pi-intercom/types.ts";
-import { MAX_TURN_ERROR_LENGTH } from "../../src/pi-intercom/validation.ts";
+import { MAX_TURN_ERROR_LENGTH, MAX_WORKING_ON_LENGTH } from "../../src/pi-intercom/validation.ts";
 
 const message = { id: "m1", timestamp: 1, content: { text: "hello" } };
 
@@ -23,6 +23,9 @@ nodeDescribe("pi-intercom wire validation", () => {
         cwd: "/repo",
         model: "model",
         projectId: "a".repeat(64),
+        gitRepo: "pi-subagents",
+        gitBranch: "feat/psa-203",
+        workingOn: "PSA-203 session visibility",
         startedAt: 1,
         lastSeen: 1,
         lastIntercomActivity: 2,
@@ -98,6 +101,29 @@ nodeDescribe("pi-intercom wire validation", () => {
         cwd: "/tmp",
         model: "test",
         lastTurnError: "x".repeat(MAX_TURN_ERROR_LENGTH + 1),
+      }),
+      false,
+    );
+    assert.equal(isSessionRegistration({ cwd: "/tmp", model: "test", gitRepo: "" }), false);
+    assert.equal(
+      isSessionRegistration({ cwd: "/tmp", model: "test", gitRepo: "bad\nrepo" }),
+      false,
+    );
+    assert.equal(isSessionRegistration({ cwd: "/tmp", model: "test", gitBranch: "" }), false);
+    assert.equal(
+      isSessionRegistration({ cwd: "/tmp", model: "test", gitBranch: "bad\nbranch" }),
+      false,
+    );
+    assert.equal(isSessionRegistration({ cwd: "/tmp", model: "test", workingOn: "" }), false);
+    assert.equal(
+      isSessionRegistration({ cwd: "/tmp", model: "test", workingOn: "bad\nline" }),
+      false,
+    );
+    assert.equal(
+      isSessionRegistration({
+        cwd: "/tmp",
+        model: "test",
+        workingOn: "x".repeat(MAX_WORKING_ON_LENGTH + 1),
       }),
       false,
     );
@@ -196,6 +222,18 @@ nodeDescribe("intercomSchema strict property validation", () => {
       name: "intercom",
       arguments: valid,
     });
+    for (const claim of [
+      { action: "claim", message: "PSA-203 session visibility" },
+      { action: "claim", message: "" },
+    ]) {
+      Assert(intercomSchema, claim);
+      validateToolArguments(tool, {
+        type: "toolCall",
+        id: "call-claim",
+        name: "intercom",
+        arguments: claim,
+      });
+    }
   });
 
   nodeIt("rejects unexpected properties on the root schema and attachment items", () => {

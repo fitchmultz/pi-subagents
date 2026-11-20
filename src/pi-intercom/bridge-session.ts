@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { IntercomClient } from "./broker/client.ts";
-import { resolveSessionProjectId } from "./session-targets.ts";
+import { resolveSessionGitContext } from "./session-targets.ts";
 import type { Message, SendResult, SessionInfo } from "./types.ts";
 import type { Identity } from "./bridge-config.ts";
 import { Fault, cancelled, log, wait } from "./bridge-protocol.ts";
@@ -134,7 +134,7 @@ export class Session {
   }
 
   private async establish(): Promise<void> {
-    const projectId = await resolveSessionProjectId(this.identity.cwd);
+    const git = await resolveSessionGitContext(this.identity.cwd);
     this.guard();
     const id = `remote-${this.identity.fingerprint256.toLowerCase()}`;
     await this.client.connect(
@@ -142,7 +142,7 @@ export class Session {
         name: this.identity.name,
         cwd: this.identity.cwd,
         model: "remote-bridge",
-        projectId,
+        ...git,
         status: "idle",
         acceptsAsks: true,
         pendingAsks: 0,

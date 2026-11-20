@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { IntercomConfig } from "./config.ts";
 import { buildPresenceIdentity, WORKER_STARTED_AT, type IntercomLineage } from "./identity.ts";
 import { getSanitizedAssistantError } from "./message-format.ts";
-import { resolveSessionProjectId } from "./session-targets.ts";
+import { resolveSessionGitContext, type SessionGitContext } from "./session-targets.ts";
 import {
   isContextTarget,
   type ContextTarget,
@@ -48,6 +48,8 @@ export class IntercomLifecycle {
   private transportPeer?: TransportState | undefined;
   private applicationGuard: string | undefined;
   private turnError: string | undefined;
+  private workingOnText: string | undefined;
+  private git: Pick<SessionGitContext, "gitRepo" | "gitBranch"> = {};
   private running = false;
   private activity = 0;
   private readonly tools = new Map<string, string>();
@@ -70,6 +72,25 @@ export class IntercomLifecycle {
   }
   get lastTurnError(): string | undefined {
     return this.turnError;
+  }
+  get workingOn(): string | undefined {
+    return this.workingOnText;
+  }
+  setWorkingOn(value: string | undefined): void {
+    this.workingOnText = value;
+  }
+  get gitContext(): Pick<SessionGitContext, "gitRepo" | "gitBranch"> {
+    return this.git;
+  }
+  updateGitContext(next: Pick<SessionGitContext, "gitRepo" | "gitBranch">): boolean {
+    if (this.git.gitRepo === next.gitRepo && this.git.gitBranch === next.gitBranch) {
+      return false;
+    }
+    this.git = {
+      ...(next.gitRepo !== undefined ? { gitRepo: next.gitRepo } : {}),
+      ...(next.gitBranch !== undefined ? { gitBranch: next.gitBranch } : {}),
+    };
+    return true;
   }
   registerContextEvents(sync: () => void): void {
     this.pi.events.on("pi-intercom:context-query", (request) => this.contextRequest(request));
@@ -158,6 +179,8 @@ export class IntercomLifecycle {
       incarnation: randomUUID(),
     };
     this.applicationGuard = undefined;
+    this.workingOnText = undefined;
+    this.git = {};
     this.model = ctx.model?.id ?? "unknown";
     this.syncTurnError(ctx);
     this.running = false;
@@ -197,6 +220,8 @@ export class IntercomLifecycle {
   clear(): void {
     this.state = { kind: "inactive", epoch: this.state.epoch };
     this.turnError = undefined;
+    this.workingOnText = undefined;
+    this.git = {};
   }
   live(
     ctx: ExtensionContext | null = this.state.kind === "live" ? this.state.context : null,
@@ -287,6 +312,11 @@ export class IntercomLifecycle {
     if (!live || this.state.kind !== "live") {
       throw new Error("Intercom runtime not initialized");
     }
+    const generation = this.state.epoch;
+    const git = await resolveSessionGitContext(live.cwd);
+    if (this.live(live, generation)) {
+      this.updateGitContext(git);
+    }
     return {
       ...this.identity(this.state.sessionId),
       incarnation: this.state.incarnation,
@@ -294,7 +324,10 @@ export class IntercomLifecycle {
       applicationGuard: this.applicationGuard,
       cwd: live.cwd,
       model: this.model,
-      projectId: await resolveSessionProjectId(live.cwd),
+      projectId: git.projectId,
+      ...(git.gitRepo !== undefined ? { gitRepo: git.gitRepo } : {}),
+      ...(git.gitBranch !== undefined ? { gitBranch: git.gitBranch } : {}),
+      ...(this.workingOnText !== undefined ? { workingOn: this.workingOnText } : {}),
       lastSeen: Date.now(),
       status: this.status(),
       ...this.health(pendingAsks),

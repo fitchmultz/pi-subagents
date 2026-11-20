@@ -516,6 +516,9 @@ export class IntercomClient extends EventEmitter {
     readonly acceptsAsks?: boolean | undefined;
     readonly lastIntercomActivity?: number | undefined;
     readonly lastTurnError?: string | null | undefined;
+    readonly gitRepo?: string | null | undefined;
+    readonly gitBranch?: string | null | undefined;
+    readonly workingOn?: string | null | undefined;
     readonly subscriptions?: SessionInfo["subscriptions"] | undefined;
     readonly topics?: readonly TopicUpdate[] | undefined;
   }): void {
