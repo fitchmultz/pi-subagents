@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Overseer judge: record each evaluated judge checkpoint (`compliant`, `scope_violation`, `primitive_violation`, or `unavailable`) in `<run-dir>/judge-checkpoints.json` with the answering classifier and any failed candidate classifiers and reasons, and surface the latest 20 checkpoints in `agent_runs inspect`.
+
 ## 0.52.65 - 2026-11-21
 
 <!-- npm-release:unreleased:start -->

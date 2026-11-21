@@ -16,7 +16,9 @@ import {
 import {
   escalationResolutionSchema,
   escalationSchema,
+  judgeCheckpointsSchema,
   type Escalation,
+  type JudgeCheckpoint,
   type Launch,
 } from "../../src/agent/contracts.ts";
 import { notifications, release } from "../../src/agent/notifications.ts";
@@ -34,6 +36,7 @@ import {
 import {
   checkDeterministicTripwires,
   evaluateDecisionCheckpoint,
+  readJudgeCheckpoints,
   type JudgeModelRegistry,
 } from "../../src/agent/overseer-judge.ts";
 import {
@@ -49,6 +52,7 @@ import { OverseerSentinel } from "../../src/agent/overseer-sentinel.ts";
 import { writeLiveOverseer } from "../../src/agent/overseer.ts";
 import { needsOverseerReview } from "../../src/agent/overseer-review.ts";
 import { read, runDirectory, write } from "../../src/agent/storage.ts";
+import { renderInspection } from "../../src/agent/view.ts";
 import { getPiAgentDir } from "../../src/pi-intercom/agent-dir.ts";
 
 function initGitRepo(t: TestContext): string {
@@ -1084,15 +1088,23 @@ const mutatingTurn = { toolResults: [{ toolName: "bash", isError: false }] };
 const manyLines = (name: string): string =>
   `${Array.from({ length: 130 }, (_, i) => `export const ${name}${i} = ${i};`).join("\n")}\n`;
 
+type JudgeResponse =
+  | JudgeChoice
+  | "request_failed"
+  | { readonly error: string }
+  | { readonly noVerdict: true };
+
 /**
  * A supervised run on `feat/work` of a real repository, with the sentinel attached through the
- * native extension loader and a classifier that answers what `verdict` returns. Its request
- * fails when `verdict` returns `request_failed`.
+ * native extension loader and classifiers that answer what `verdict` returns. A request fails
+ * when `verdict` returns `request_failed` or `{ error }`, and omits a verdict for `{ noVerdict }`.
  */
 async function supervisedRun(
   t: TestContext,
   options: {
-    verdict: (diff: string) => JudgeChoice | "request_failed";
+    verdict: (diff: string, classifier: string) => JudgeResponse;
+    /** Classifiers exposed by the registry. Defaults to `google/gemini-decision-1`. */
+    classifiers?: readonly ClassifierModel<ClassifierApi>[];
     /** Whether the classifier is available. It is, unless this says otherwise. */
     available?: () => boolean;
     /** The cancellation signal of the child's active run, when the test has one. */
@@ -1160,7 +1172,7 @@ async function supervisedRun(
   const ext = loader.getExtensions().extensions[0];
   assert.ok(ext !== undefined);
 
-  const classifier = makeClassifierModel("google", "gemini-decision-1", 0.03);
+  const catalog = options.classifiers ?? [makeClassifierModel("google", "gemini-decision-1", 0.03)];
   /** What the judge received on each call. */
   const judged: {
     changedFiles: unknown;
@@ -1176,11 +1188,11 @@ async function supervisedRun(
     },
     hasPendingMessages: () => false,
     modelRegistry: {
-      getAvailableOfType: () =>
-        Promise.resolve(options.available?.() === false ? [] : [classifier]),
-      getModelOfType: () => classifier,
+      getAvailableOfType: () => Promise.resolve(options.available?.() === false ? [] : catalog),
+      getModelOfType: (_type: "classifier", provider: string, id: string) =>
+        catalog.find((model) => model.provider === provider && model.id === id),
       classify: async (
-        _model: unknown,
+        model: ClassifierModel<ClassifierApi>,
         context: ClassifierContext,
         request?: { signal?: AbortSignal },
       ) => {
@@ -1195,9 +1207,9 @@ async function supervisedRun(
         judgedContracts.push(contract);
         await options.onClassify?.(request?.signal);
         const failure = {
-          api: classifier.api,
-          provider: classifier.provider,
-          model: classifier.id,
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
           timestamp: Date.now(),
           answers: {},
         };
@@ -1205,24 +1217,30 @@ async function supervisedRun(
         if (request?.signal?.aborted === true) {
           return { ...failure, stopReason: "aborted", errorMessage: "aborted" };
         }
-        const choice = options.verdict(asked.diff);
-        if (choice === "request_failed") {
+        const reply = options.verdict(asked.diff, `${model.provider}/${model.id}`);
+        if (reply === "request_failed") {
           return {
             ...failure,
             stopReason: "error",
             errorMessage: "credits depleted",
           };
         }
+        if (typeof reply !== "string") {
+          if ("error" in reply) {
+            return { ...failure, stopReason: "error", errorMessage: reply.error };
+          }
+          return { ...failure, stopReason: "stop" };
+        }
         return {
-          api: classifier.api,
-          provider: classifier.provider,
-          model: classifier.id,
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
           stopReason: "stop",
           timestamp: Date.now(),
           answers: {
             verdict: {
               type: "choice",
-              choice,
+              choice: reply,
               probabilities: {},
               confidence: 0.9,
             },
@@ -2024,5 +2042,169 @@ nodeTest(
       }),
       true,
     );
+  },
+);
+
+nodeTest(
+  "sentinel records judge checkpoints in the run directory for direct, fallback, escalation, and unavailable outcomes",
+  async (t) => {
+    const google = makeClassifierModel("google", "gemini-decision-1", 0.03);
+    const gatewayLuna = makeClassifierModel("cloudflare-ai-gateway", "gpt-6-luna", 0.25);
+    let replies: Record<string, JudgeResponse> = {
+      "google/gemini-decision-1": "compliant",
+      "cloudflare-ai-gateway/gpt-6-luna": "compliant",
+    };
+    let available = true;
+    let runSignal: AbortSignal | undefined;
+    const { repo, base, launch, emit, paused, steer } = await supervisedRun(t, {
+      classifiers: [gatewayLuna, google],
+      verdict: (_diff, classifier) => replies[classifier] ?? "compliant",
+      available: () => available,
+      signal: () => runSignal,
+    });
+    const checkpointsFile = path.join(runDirectory(base, launch.id), "judge-checkpoints.json");
+    const unavailableFile = path.join(runDirectory(base, launch.id), "judge-unavailable.json");
+    const readRecordedCheckpoints = (): JudgeCheckpoint[] => {
+      const saved = read(checkpointsFile, judgeCheckpointsSchema);
+      assert.ok(saved !== undefined, "judge-checkpoints.json should exist");
+      assert.equal(saved.version, 1);
+      assert.deepEqual(readJudgeCheckpoints(base, launch.id), saved.checkpoints);
+      return saved.checkpoints;
+    };
+    const stripAt = (entries: readonly JudgeCheckpoint[]) =>
+      entries.map(({ at, ...rest }) => {
+        assert.equal(typeof at, "number");
+        return rest;
+      });
+    const settle = { outcome: "completed", entries: [], context: { pendingMessages: [] } };
+    await emit("before_agent_start", {});
+
+    // 1. Direct compliant verdict records the answering classifier with no failed candidates.
+    fs.writeFileSync(path.join(repo, "src", "direct.ts"), manyLines("direct"));
+    await emit("turn_end", mutatingTurn);
+    assert.equal(fs.existsSync(unavailableFile), false);
+    assert.deepEqual(stripAt(readRecordedCheckpoints()), [
+      {
+        judge: "auto",
+        outcome: "compliant",
+        classifier: "google/gemini-decision-1",
+      },
+    ]);
+
+    // 2. Fallback compliant verdict (Google 429 -> Luna compliant) records both the answering
+    // classifier and the failed candidate with its concise reason, without writing judge-unavailable.
+    replies = {
+      "google/gemini-decision-1": { error: "Google Decisions error (429): spending cap reached" },
+      "cloudflare-ai-gateway/gpt-6-luna": "compliant",
+    };
+    fs.writeFileSync(path.join(repo, "src", "fallback.ts"), manyLines("fallback"));
+    await emit("turn_end", mutatingTurn);
+    assert.equal(fs.existsSync(unavailableFile), false);
+    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(1), [
+      {
+        judge: "auto",
+        outcome: "compliant",
+        classifier: "cloudflare-ai-gateway/gpt-6-luna",
+        failed: [
+          {
+            classifier: "google/gemini-decision-1",
+            reason: "Google Decisions error (429): spending cap reached",
+          },
+        ],
+      },
+    ]);
+
+    // 3. Subsequent checkpoint in the same run asks Luna first (Google already failed) and records
+    // the direct Luna verdict with no failed attempts.
+    fs.writeFileSync(path.join(repo, "src", "luna-next.ts"), manyLines("lunaNext"));
+    await emit("turn_end", mutatingTurn);
+    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(2), [
+      {
+        judge: "auto",
+        outcome: "compliant",
+        classifier: "cloudflare-ai-gateway/gpt-6-luna",
+      },
+    ]);
+
+    // 4. Escalation verdict after a silent candidate records the answering classifier, outcome,
+    // and the failed silent attempt.
+    replies = {
+      "cloudflare-ai-gateway/gpt-6-luna": { noVerdict: true },
+      "google/gemini-decision-1": "primitive_violation",
+    };
+    fs.writeFileSync(path.join(repo, "src", "flagged.ts"), manyLines("flagged"));
+    const flaggedTurn = emit("turn_end", mutatingTurn);
+    assert.equal((await paused()).kind, "primitive_violation");
+    steer();
+    await flaggedTurn;
+    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(3), [
+      {
+        judge: "auto",
+        outcome: "primitive_violation",
+        classifier: "google/gemini-decision-1",
+        failed: [
+          {
+            classifier: "cloudflare-ai-gateway/gpt-6-luna",
+            reason: "the response has no verdict",
+          },
+        ],
+      },
+    ]);
+
+    // 5. Cancelled checkpoint is not recorded.
+    fs.writeFileSync(path.join(repo, "src", "cancelled.ts"), manyLines("cancelled"));
+    runSignal = AbortSignal.abort();
+    await emit("turn_end", mutatingTurn);
+    runSignal = undefined;
+    assert.equal(readRecordedCheckpoints().length, 4);
+
+    // 6. Unavailable checkpoint when every candidate fails records all failed candidates.
+    replies = {
+      "google/gemini-decision-1": { error: "credits depleted" },
+      "cloudflare-ai-gateway/gpt-6-luna": { error: "upstream timeout" },
+    };
+    await emit("agent_before_settle", settle);
+    assert.equal(fs.existsSync(unavailableFile), true);
+    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(4), [
+      {
+        judge: "auto",
+        outcome: "unavailable",
+        failed: [
+          { classifier: "google/gemini-decision-1", reason: "credits depleted" },
+          { classifier: "cloudflare-ai-gateway/gpt-6-luna", reason: "upstream timeout" },
+        ],
+      },
+    ]);
+
+    // 7. Unavailable checkpoint when no classifier is available records the error reason.
+    available = false;
+    fs.appendFileSync(path.join(repo, "src", "cancelled.ts"), "export const extra = 1;\n");
+    await emit("agent_before_settle", settle);
+    assert.deepEqual(stripAt(readRecordedCheckpoints()).slice(5), [
+      {
+        judge: "auto",
+        outcome: "unavailable",
+        error: "No classifier model is available for the overseer judge.",
+      },
+    ]);
+
+    // 8. agent_runs inspect surfaces the recorded checkpoints concisely.
+    const inspection = renderInspection(base, launch);
+    const inspectText = inspection.content[0]?.text ?? "";
+    assert.match(inspectText, /Judge checkpoints \(6\):/u);
+    assert.match(
+      inspectText,
+      /compliant via cloudflare-ai-gateway\/gpt-6-luna \(failed: google\/gemini-decision-1: Google Decisions error \(429\): spending cap reached\)/u,
+    );
+    assert.match(
+      inspectText,
+      /unavailable \(No classifier model is available for the overseer judge\.\)/u,
+    );
+    assert.ok(
+      typeof inspection.details === "object" &&
+        inspection.details !== null &&
+        "judgeCheckpoints" in inspection.details,
+    );
+    assert.deepEqual(inspection.details.judgeCheckpoints, readRecordedCheckpoints());
   },
 );

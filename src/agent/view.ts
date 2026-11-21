@@ -8,9 +8,9 @@ import {
   commandMetadataSchema,
   exitSchema,
   wakeFailureSchema,
-  type ContractAmendment,
   type DelegationContract,
   type Escalation,
+  type JudgeCheckpoint,
   type Launch,
   type OverseerReview,
   type Result,
@@ -21,11 +21,11 @@ import { conversation, read, runDirectory, scratchDirectory } from "./storage.ts
 import { published } from "./notifications.ts";
 import {
   activeContract,
-  formatContractAmendmentSummary,
-  formatInspectionContractLines,
-  readContractAmendments,
+  inspectContract,
+  type ContractAmendmentSummary,
 } from "./overseer-contract.ts";
 import { escalationEvidenceLines } from "./overseer-evidence.ts";
+import { inspectJudgeCheckpoints } from "./overseer-judge.ts";
 import { needsOverseerReview, readReview } from "./overseer-review.ts";
 import { accountingFields, accountingState, readCanonicalResult, readResult } from "./usage.ts";
 import {
@@ -82,14 +82,10 @@ interface RunSummary {
   outputFile: string;
   guidance: Guidance[];
 }
-interface AmendmentSummary {
-  readonly at: number;
-  readonly changedFields: ContractAmendment["changedFields"];
-  readonly summary: string;
-}
 interface RunView extends Omit<RunSummary, "result"> {
   result?: Result | undefined;
-  contractAmendments?: AmendmentSummary[] | undefined;
+  contractAmendments?: ContractAmendmentSummary[] | undefined;
+  judgeCheckpoints?: JudgeCheckpoint[] | undefined;
   output: ReturnType<typeof outputView>;
 }
 type Receipt =
@@ -451,11 +447,7 @@ function reviewLine(details: RunView): string {
     details.reviewRequired === true ? "Overseer review: required before parent settles." : "";
   return [prior, pending].filter(Boolean).join("\n");
 }
-function resultText(
-  details: RunView,
-  amendments?: readonly ContractAmendment[],
-  totalAmendments?: number,
-): string {
+function resultText(details: RunView, sectionLines: readonly string[]): string {
   const page = details.output;
   const suffix =
     page?.nextOffset !== undefined
@@ -467,7 +459,7 @@ function resultText(
   return [
     `Agent run ${details.id}: ${details.status}; admission ${details.admission}; process ${details.process.live ? "live" : "not observed live"}.`,
     identityText(details),
-    ...formatInspectionContractLines(details.contract, amendments, utc, totalAmendments),
+    ...sectionLines,
     ...waitingLines(details.waiting),
     ...escalationLines(details.escalation),
     reviewLine(details),
@@ -490,19 +482,16 @@ export function renderInspection(
   ctx?: ExtensionContext,
   input: Pick<RunsInput, "offset" | "length"> = {},
 ): ToolReply {
-  const allAmendments = readContractAmendments(base, launch);
-  const amendments = allAmendments.slice(-20);
-  const mapEntry = (entry: ContractAmendment) => ({
-    at: entry.at,
-    changedFields: entry.changedFields,
-    summary: formatContractAmendmentSummary(entry),
-  });
+  const view = projection(base, launch, ctx, input);
+  const contract = inspectContract(base, launch, view.contract, utc);
+  const judge = inspectJudgeCheckpoints(base, launch.id, utc);
   const details: RunView = {
-    ...projection(base, launch, ctx, input),
-    ...(amendments.length > 0 ? { contractAmendments: amendments.map(mapEntry) } : {}),
+    ...view,
+    ...(contract.amendments !== undefined ? { contractAmendments: contract.amendments } : {}),
+    ...(judge.checkpoints !== undefined ? { judgeCheckpoints: judge.checkpoints } : {}),
   };
   return {
-    ...toolResult(details, resultText(details, amendments, allAmendments.length)),
+    ...toolResult(details, resultText(details, [...contract.lines, ...judge.lines])),
     isError: details.result?.status === "failed",
   };
 }

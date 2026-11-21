@@ -135,6 +135,41 @@ export const judgeUnavailableSchema = Type.Object({
   summary: Type.String(),
 });
 export type JudgeUnavailable = Static<typeof judgeUnavailableSchema>;
+export const judgeFailureSchema = Type.Object({
+  classifier: Type.String({ minLength: 1 }),
+  reason: Type.String({ minLength: 1 }),
+});
+export type JudgeFailure = Static<typeof judgeFailureSchema>;
+export const judgeVerdictSchema = Type.Union([
+  Type.Literal("compliant"),
+  Type.Literal("scope_violation"),
+  Type.Literal("primitive_violation"),
+]);
+export type JudgeVerdict = Static<typeof judgeVerdictSchema>;
+const judgeCheckpointFields = {
+  at: Type.Number(),
+  judge: Type.String({ minLength: 1 }),
+  failed: Type.Optional(Type.Array(judgeFailureSchema, { minItems: 1 })),
+};
+export const judgeCheckpointSchema = Type.Union([
+  Type.Object({
+    ...judgeCheckpointFields,
+    outcome: judgeVerdictSchema,
+    classifier: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ...judgeCheckpointFields,
+    outcome: Type.Literal("unavailable"),
+    error: Type.Optional(Type.String({ minLength: 1 })),
+  }),
+]);
+export type JudgeCheckpoint = Static<typeof judgeCheckpointSchema>;
+/** Recorded judge checkpoint evaluations for a run, oldest first. */
+export const judgeCheckpointsSchema = Type.Object({
+  version: Type.Literal(1),
+  checkpoints: Type.Array(judgeCheckpointSchema, { minItems: 1 }),
+});
+export type JudgeCheckpoints = Static<typeof judgeCheckpointsSchema>;
 export const overseerReviewSchema = Type.Object({
   runId: Type.String(),
   verdict: Type.Union([Type.Literal("approved"), Type.Literal("changes_requested")]),

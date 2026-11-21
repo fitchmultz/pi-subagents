@@ -646,6 +646,14 @@ The child removes it when a classifier gives a verdict on that work, clean or no
 overseer approves a pause, or when the work is gone. A parent that runs an older package
 version does not read the file, and its completion notice does not have the line.
 
+Every evaluated judge checkpoint—whether `compliant`, `scope_violation`, `primitive_violation`,
+or `unavailable`—is also appended atomically to `judge-checkpoints.json` in the run directory
+(`version: 1`, `checkpoints`: oldest-first entries with `at`, `judge`, `outcome`, `classifier`
+when a classifier answered, optional `failed` candidates with `{ classifier, reason }`, and
+optional `error` when no candidate could be asked). Skipped (`off` or empty diff) and cancelled
+checkpoints are not recorded. `agent_runs inspect` surfaces the latest 20 recorded checkpoints
+when present.
+
 ### What a pause notice shows
 
 The `[agent-escalation]` notice describes the work since the overseer's last approval, or since
