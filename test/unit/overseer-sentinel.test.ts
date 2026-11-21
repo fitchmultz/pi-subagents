@@ -586,17 +586,21 @@ nodeTest(
     const geminiDecision = makeClassifierModel("google", "gemini-decision-1", 0.03);
     const freeOpenRouter = makeClassifierModel("openrouter", "parallel/decisions-fast:free", 0);
     const luna = makeClassifierModel("openai", "gpt-6-luna", 0.25);
+    const gatewayLuna = makeClassifierModel("cloudflare-ai-gateway", "gpt-6-luna", 0.25);
+    const clef = makeClassifierModel("cloudflare-workers-ai", "@cf/cloudflare/clef", 0.24);
+    // In registry order `clef` comes before both Luna routes, and OpenAI's before the gateway's.
+    const catalog = [freeOpenRouter, clef, luna, gatewayLuna, geminiDecision];
     const chosenModels: string[] = [];
     const asked: ClassifierContext[] = [];
     /** The classifiers whose requests fail, as with a provider account that is out of credits. */
     const down = new Set<string>();
     /** The classifiers whose responses carry no verdict. */
     const silent = new Set<string>();
-    let available = [freeOpenRouter, luna, geminiDecision];
+    let available = catalog;
     const fakeRegistry: JudgeModelRegistry = {
       getAvailableOfType: () => Promise.resolve(available),
       getModelOfType: (_type, provider, id) =>
-        [freeOpenRouter, luna, geminiDecision].find((m) => m.provider === provider && m.id === id),
+        catalog.find((m) => m.provider === provider && m.id === id),
       classify: (model, context, options) => {
         const name = `${model.provider}/${model.id}`;
         chosenModels.push(name);
@@ -707,19 +711,23 @@ nodeTest(
         signal,
       });
     const google = "google/gemini-decision-1";
+    const gateway = "cloudflare-ai-gateway/gpt-6-luna";
     const openai = "openai/gpt-6-luna";
+    const workersAi = "cloudflare-workers-ai/@cf/cloudflare/clef";
     const other = "openrouter/parallel/decisions-fast:free";
 
-    // On `auto`, a failed request is no verdict: the next preferred classifier gives it. At the
-    // next checkpoint of the same run the classifier that failed is not asked first again.
+    // On `auto`, a failed request is no verdict: the next preferred classifier gives it. With
+    // Google failing, GPT-6 Luna through Cloudflare AI Gateway is asked before Cloudflare's
+    // `clef`. At the next checkpoint of the same run the classifier that failed is not asked
+    // first again.
     down.add(google);
     const run = new Set<string>();
     chosenModels.length = 0;
     const verdict = await checkpoint("auto", run);
-    assert.deepEqual(chosenModels, [google, openai]);
-    assert.match(verdict?.summary ?? "", /^Review needed: openai\/gpt-6-luna /u);
+    assert.deepEqual(chosenModels, [google, gateway]);
+    assert.match(verdict?.summary ?? "", /^Review needed: cloudflare-ai-gateway\/gpt-6-luna /u);
     await checkpoint("auto", run);
-    assert.deepEqual(chosenModels, [google, openai, openai]);
+    assert.deepEqual(chosenModels, [google, gateway, gateway]);
 
     // A configured judge is not replaced by a classifier that would answer.
     chosenModels.length = 0;
@@ -728,11 +736,12 @@ nodeTest(
     });
     assert.deepEqual(chosenModels, [google]);
 
-    // When the preferred classifiers fail, `auto` asks the other available classifiers.
-    down.add(openai);
+    // When the preferred classifiers fail, `auto` asks each of them in its preferred order, and
+    // then the other available classifiers.
+    down.add(gateway).add(openai).add(workersAi);
     chosenModels.length = 0;
     const fromOther = await checkpoint("auto", new Set());
-    assert.deepEqual(chosenModels, [google, openai, other]);
+    assert.deepEqual(chosenModels, [google, gateway, openai, workersAi, other]);
     assert.match(
       fromOther?.summary ?? "",
       /^Review needed: openrouter\/parallel\/decisions-fast:free /u,
@@ -743,9 +752,9 @@ nodeTest(
     chosenModels.length = 0;
     await assert.rejects(checkpoint("auto", new Set()), {
       message:
-        "Overseer judge 'google/gemini-decision-1' failed: credits depleted. Overseer judge 'openai/gpt-6-luna' failed: credits depleted. Overseer judge 'openrouter/parallel/decisions-fast:free' failed: credits depleted.",
+        "Overseer judge 'google/gemini-decision-1' failed: credits depleted. Overseer judge 'cloudflare-ai-gateway/gpt-6-luna' failed: credits depleted. Overseer judge 'openai/gpt-6-luna' failed: credits depleted. Overseer judge 'cloudflare-workers-ai/@cf/cloudflare/clef' failed: credits depleted. Overseer judge 'openrouter/parallel/decisions-fast:free' failed: credits depleted.",
     });
-    assert.deepEqual(chosenModels, [google, openai, other]);
+    assert.deepEqual(chosenModels, [google, gateway, openai, workersAi, other]);
 
     // A response without a verdict does not say that the work complies: the next classifier is
     // asked, and the silent one counts as failed.
@@ -754,7 +763,7 @@ nodeTest(
     const afterSilence = new Set<string>();
     chosenModels.length = 0;
     const spoken = await checkpoint("auto", afterSilence);
-    assert.deepEqual(chosenModels, [google, openai]);
+    assert.deepEqual(chosenModels, [google, gateway]);
     assert.equal(spoken?.kind, "primitive_violation");
     assert.deepEqual([...afterSilence], [google]);
     await assert.rejects(checkpoint(google, new Set()), {

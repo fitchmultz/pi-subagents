@@ -23,8 +23,10 @@ import { DirectoryWatch } from "./wake.ts";
 
 const PREFERRED_AUTO_JUDGES = [
   ["google", "gemini-decision-1"],
-  ["cloudflare-workers-ai", "@cf/cloudflare/clef"],
+  // GPT-6 Luna on OpenAI's Decisions API, through Cloudflare AI Gateway and then directly.
+  ["cloudflare-ai-gateway", "gpt-6-luna"],
   ["openai", "gpt-6-luna"],
+  ["cloudflare-workers-ai", "@cf/cloudflare/clef"],
   ["cloudflare-workers-ai", "@cf/cloudflare/clef-flash"],
 ] as const;
 

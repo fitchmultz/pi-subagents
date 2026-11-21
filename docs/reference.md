@@ -603,8 +603,10 @@ in a message; the judge does not open referenced notes.
 With the judge on `auto`, a checkpoint asks the available classifiers in this order, until one
 gives a verdict:
 
-1. `google/gemini-decision-1`, `cloudflare-workers-ai/@cf/cloudflare/clef`,
-   `openai/gpt-6-luna`, `cloudflare-workers-ai/@cf/cloudflare/clef-flash`.
+1. `google/gemini-decision-1`, `cloudflare-ai-gateway/gpt-6-luna`, `openai/gpt-6-luna`,
+   `cloudflare-workers-ai/@cf/cloudflare/clef`,
+   `cloudflare-workers-ai/@cf/cloudflare/clef-flash`. The two `gpt-6-luna` classifiers are
+   GPT-6 Luna on OpenAI's Decisions API, through Cloudflare AI Gateway and directly from OpenAI.
 2. Every other available classifier, in the order of the model registry. The judge sends text
    and one choice question, which every classifier model accepts.
 
