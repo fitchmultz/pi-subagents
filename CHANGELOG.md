@@ -2,8 +2,22 @@
 
 ## [Unreleased]
 
+## 0.52.64 - 2026-11-21
+
+<!-- npm-release:unreleased:start -->
+
 - Intercom bridge: a rejected connection records its remote address, a reason, and the presented certificate's fingerprint and pinned name when there are any. A client without a valid pinned certificate now completes the TLS handshake and is disconnected before any request. A TCP connection that closes without sending a byte, such as a port health probe, is no longer recorded as a TLS authentication failure (PSA-204).
 - Intercom bridge: `--audit PATH` writes the JSONL audit to an owned 0600 file that moves to `PATH.1` before it would pass 32 MiB. The per-connection `connected` line is gone; each `request` line already names the authenticated identity (PSA-204).
+
+<!-- npm-release:unreleased:end -->
+
+- Attribute rejected bridge connections and bound the bridge audit log (#491) ([ca7ebdd](https://github.com/fitchmultz/pi-subagents/commit/ca7ebdddd261caac9ca8f1a33fc5e18eca5e2505))
+
+### What's Changed
+
+- Attribute rejected bridge connections and bound the bridge audit log by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/491
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.63...v0.52.64
 
 ## 0.52.63 - 2026-11-20
 
