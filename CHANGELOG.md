@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.66 - 2026-11-21
+
+<!-- npm-release:unreleased:start -->
+
 - Overseer judge: record each evaluated judge checkpoint (`compliant`, `scope_violation`, `primitive_violation`, or `unavailable`) in `<run-dir>/judge-checkpoints.json` with the answering classifier and any failed candidate classifiers and reasons, and surface the latest 20 checkpoints in `agent_runs inspect`.
+
+<!-- npm-release:unreleased:end -->
+
+- Record overseer judge checkpoint evaluations in run directory (#493) ([c793ba8](https://github.com/fitchmultz/pi-subagents/commit/c793ba861e3fa266caba558ce12a62b18e93469b))
+
+### What's Changed
+
+- Record overseer judge checkpoint evaluations in run directory by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/493
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.65...v0.52.66
 
 ## 0.52.65 - 2026-11-21
 
