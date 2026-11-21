@@ -22,7 +22,9 @@ import {
   evaluateLiveDecisionCheckpoint,
   isEscalationReleased,
   isJudgeDisabled,
+  recordJudgeCheckpoint,
   recordJudgeUnavailable,
+  type LiveJudgeOutcome,
   type Violation,
 } from "./overseer-judge.ts";
 import { EscalationPause, type EscalationAnswer, type SteerCommand } from "./overseer-pause.ts";
@@ -413,6 +415,14 @@ export class OverseerSentinel {
       // Cancelling the child's run or disabling the judge mid-run cancels its judge request.
       signal: ctx.signal,
     });
+    await this.applyJudgeOutcome(launch, checkpoint, outcome);
+  }
+
+  private async applyJudgeOutcome(
+    launch: Launch,
+    checkpoint: Work,
+    outcome: LiveJudgeOutcome,
+  ): Promise<void> {
     if (outcome.kind === "disabled") {
       clearJudgeUnavailable(this.options.base, launch.id);
       return;
@@ -421,8 +431,15 @@ export class OverseerSentinel {
       // Neither a verdict nor a fault of the judge: the work waits for the next checkpoint.
       return;
     }
+    const current = this.ensureState(launch);
     current.turnsSinceJudge = 0;
-    current.judged = { tree: snapshot.tree, lines: lineCount(checkpoint.diff) };
+    current.judged = { tree: checkpoint.snapshot.tree, lines: lineCount(checkpoint.diff) };
+    if (outcome.kind === "skipped") {
+      clearJudgeUnavailable(this.options.base, launch.id);
+      this.pass(launch, checkpoint.snapshot);
+      return;
+    }
+    recordJudgeCheckpoint(this.options.base, launch.id, outcome.checkpoint);
     if (outcome.kind === "unavailable") {
       // No judge answered. That is no finding about the work, so the child is not paused. The
       // review point stays: a later checkpoint asks again about all the work since then, and
@@ -433,7 +450,7 @@ export class OverseerSentinel {
     // A classifier answered: the work is judged, whatever the verdict.
     clearJudgeUnavailable(this.options.base, launch.id);
     if (outcome.verdict === undefined) {
-      this.pass(launch, snapshot);
+      this.pass(launch, checkpoint.snapshot);
       return;
     }
     if (!this.options.isStopping()) {

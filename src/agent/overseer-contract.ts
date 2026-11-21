@@ -367,6 +367,34 @@ function formatAmendmentHistoryLines(
   ];
 }
 
+export interface ContractAmendmentSummary {
+  readonly at: number;
+  readonly changedFields: ContractAmendment["changedFields"];
+  readonly summary: string;
+}
+
+export function inspectContract(
+  base: string,
+  launch: Pick<Launch, "id">,
+  contract: DelegationContract | undefined,
+  formatTime: (at: number) => string,
+): { readonly amendments?: ContractAmendmentSummary[]; readonly lines: string[] } {
+  const all = readContractAmendments(base, launch);
+  const recent = all.slice(-20);
+  const amendments =
+    recent.length === 0
+      ? undefined
+      : recent.map((entry) => ({
+          at: entry.at,
+          changedFields: entry.changedFields,
+          summary: formatContractAmendmentSummary(entry),
+        }));
+  return {
+    ...(amendments !== undefined ? { amendments } : {}),
+    lines: formatInspectionContractLines(contract, recent, formatTime, all.length),
+  };
+}
+
 export function formatInspectionContractLines(
   contract: DelegationContract | undefined,
   amendments: readonly ContractAmendment[] | undefined,

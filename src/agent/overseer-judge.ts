@@ -8,10 +8,15 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  judgeCheckpointsSchema,
   judgeUnavailableSchema,
   type DelegationContract,
   type Escalation,
+  type JudgeCheckpoint,
+  type JudgeCheckpoints,
+  type JudgeFailure,
   type JudgeUnavailable,
+  type JudgeVerdict,
   type Launch,
 } from "./contracts.ts";
 import { errorText } from "./host.ts";
@@ -92,6 +97,29 @@ export function checkDeterministicTripwires(options: {
 const classifierName = (model: ClassifierModel<ClassifierApi>): string =>
   `${model.provider}/${model.id}`;
 
+class JudgeUnavailableError extends Error {
+  readonly failed: readonly JudgeFailure[];
+  readonly reason: string | undefined;
+
+  constructor(message: string, failed: readonly JudgeFailure[], reason?: string) {
+    super(message);
+    this.failed = failed;
+    this.reason = reason;
+  }
+}
+
+const nonEmpty = (text: string | undefined, fallback: string): string => {
+  const trimmed = text?.trim();
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : fallback;
+};
+
+const formatFailure = ({ classifier, reason }: JudgeFailure): string =>
+  `Overseer judge '${classifier}' failed: ${reason}.`;
+
+function isJudgeVerdict(value: string): value is JudgeVerdict {
+  return value === "compliant" || value === "scope_violation" || value === "primitive_violation";
+}
+
 /**
  * The classifiers a checkpoint may ask, in the order it asks them. A configured judge is the
  * owner's choice and has no substitute. `auto` asks the preferred classifiers first and then
@@ -112,7 +140,8 @@ async function judgeCandidates(
       available.find((m) => m.provider === provider && m.id === id) ??
       registry.getModelOfType("classifier", provider, id);
     if (matched === undefined) {
-      throw new Error(`Configured overseer judge '${spec}' is not an available classifier model.`);
+      const reason = `Configured overseer judge '${spec}' is not an available classifier model.`;
+      throw new JudgeUnavailableError(reason, [], reason);
     }
     return [matched];
   }
@@ -199,7 +228,20 @@ function classifierReview(
   };
 }
 
-type Asked = { readonly verdict: ClassifierChoiceAnswer } | { readonly failure: string };
+type Asked =
+  | { readonly verdict: ClassifierChoiceAnswer; readonly outcome: JudgeVerdict }
+  | { readonly failure: JudgeFailure };
+
+type VerdictCheckpoint = Extract<JudgeCheckpoint, { outcome: JudgeVerdict }>;
+type UnavailableCheckpoint = Extract<JudgeCheckpoint, { outcome: "unavailable" }>;
+
+type CheckpointRun =
+  | { readonly kind: "skipped" }
+  | {
+      readonly kind: "verdict";
+      readonly verdict: Violation | undefined;
+      readonly checkpoint: VerdictCheckpoint;
+    };
 
 /**
  * Asks one classifier. A request that failed, and a response without one of the verdicts that
@@ -222,13 +264,49 @@ async function askClassifier(
   }
   if (result.stopReason === "error") {
     return {
-      failure: `Overseer judge '${name}' failed: ${result.errorMessage ?? "classifier error"}.`,
+      failure: { classifier: name, reason: nonEmpty(result.errorMessage, "classifier error") },
     };
   }
   const { verdict } = result.answers;
-  return verdict?.type === "choice" && Object.hasOwn(criteria, verdict.choice)
-    ? { verdict }
-    : { failure: `Overseer judge '${name}' failed: the response has no verdict.` };
+  return verdict?.type === "choice" &&
+    isJudgeVerdict(verdict.choice) &&
+    Object.hasOwn(criteria, verdict.choice)
+    ? { verdict, outcome: verdict.choice }
+    : { failure: { classifier: name, reason: "the response has no verdict" } };
+}
+
+async function runDecisionCheckpoint(
+  options: Parameters<typeof evaluateDecisionCheckpoint>[0],
+): Promise<CheckpointRun> {
+  const spec = options.judgeSpec ?? "auto";
+  if (spec === "off" || options.changedFiles.length === 0 || options.diff === "") {
+    return { kind: "skipped" };
+  }
+  const criteria = judgeCriteria(options.contract);
+  const failures: JudgeFailure[] = [];
+  for (const classifier of await judgeCandidates(options.modelRegistry, spec, options.failed)) {
+    const asked = await askClassifier(classifier, criteria, options);
+    if ("verdict" in asked) {
+      return {
+        kind: "verdict",
+        verdict: classifierReview(classifier, asked.verdict, options),
+        checkpoint: {
+          at: Date.now(),
+          judge: spec,
+          outcome: asked.outcome,
+          classifier: classifierName(classifier),
+          ...(failures.length > 0 ? { failed: failures } : {}),
+        },
+      };
+    }
+    options.failed.add(asked.failure.classifier);
+    failures.push(asked.failure);
+  }
+  if (failures.length > 0) {
+    throw new JudgeUnavailableError(failures.map(formatFailure).join(" "), failures);
+  }
+  const reason = "No classifier model is available for the overseer judge.";
+  throw new JudgeUnavailableError(reason, [], reason);
 }
 
 /**
@@ -254,29 +332,15 @@ export async function evaluateDecisionCheckpoint(options: {
   failed: Set<string>;
   signal: AbortSignal | undefined;
 }): Promise<Violation | undefined> {
-  const spec = options.judgeSpec ?? "auto";
-  if (spec === "off" || options.changedFiles.length === 0 || options.diff === "") {
-    return undefined;
-  }
-  const criteria = judgeCriteria(options.contract);
-  const failures: string[] = [];
-  for (const classifier of await judgeCandidates(options.modelRegistry, spec, options.failed)) {
-    const asked = await askClassifier(classifier, criteria, options);
-    if ("verdict" in asked) {
-      return classifierReview(classifier, asked.verdict, options);
-    }
-    options.failed.add(classifierName(classifier));
-    failures.push(asked.failure);
-  }
-  throw new Error(
-    failures.length > 0
-      ? failures.join(" ")
-      : "No classifier model is available for the overseer judge.",
-  );
+  const evaluated = await runDecisionCheckpoint(options);
+  return evaluated.kind === "verdict" ? evaluated.verdict : undefined;
 }
 
 const judgeUnavailableFile = (base: string, runId: string): string =>
   path.join(runDirectory(base, runId), "judge-unavailable.json");
+
+const judgeCheckpointsFile = (base: string, runId: string): string =>
+  path.join(runDirectory(base, runId), "judge-checkpoints.json");
 
 /** Why no judge has given a verdict on the latest work of a run, when that is so. */
 export const judgeUnavailable = (base: string, runId: string): JudgeUnavailable | undefined =>
@@ -293,11 +357,86 @@ export function clearJudgeUnavailable(base: string, runId: string): void {
   fs.rmSync(judgeUnavailableFile(base, runId), { force: true });
 }
 
+/** Recorded judge checkpoint evaluations for a run, oldest first. */
+export function readJudgeCheckpoints(base: string, runId: string): JudgeCheckpoint[] {
+  return read(judgeCheckpointsFile(base, runId), judgeCheckpointsSchema)?.checkpoints ?? [];
+}
+
+/** Atomically appends one judge checkpoint evaluation to the run directory. */
+export function recordJudgeCheckpoint(
+  base: string,
+  runId: string,
+  checkpoint: JudgeCheckpoint,
+): JudgeCheckpoint {
+  const next: JudgeCheckpoints = {
+    version: 1,
+    checkpoints: [...readJudgeCheckpoints(base, runId), checkpoint],
+  };
+  write(judgeCheckpointsFile(base, runId), next);
+  return checkpoint;
+}
+
+const singleLine = (text: string): string => text.replaceAll(/\s+/gu, " ").trim();
+
+function formatFailedCandidates(failed: readonly JudgeFailure[] | undefined): string {
+  if (failed === undefined || failed.length === 0) {
+    return "";
+  }
+  return `failed: ${failed.map((item) => `${item.classifier}: ${singleLine(item.reason)}`).join("; ")}`;
+}
+
+function formatJudgeCheckpointSummary(entry: JudgeCheckpoint): string {
+  const failed = formatFailedCandidates(entry.failed);
+  if (entry.outcome !== "unavailable") {
+    return failed === ""
+      ? `${entry.outcome} via ${entry.classifier}`
+      : `${entry.outcome} via ${entry.classifier} (${failed})`;
+  }
+  const detail = [entry.error === undefined ? "" : singleLine(entry.error), failed]
+    .filter(Boolean)
+    .join("; ");
+  return detail === "" ? "unavailable" : `unavailable (${detail})`;
+}
+
+export function inspectJudgeCheckpoints(
+  base: string,
+  runId: string,
+  formatTime: (at: number) => string,
+): { readonly checkpoints?: JudgeCheckpoint[]; readonly lines: string[] } {
+  const all = readJudgeCheckpoints(base, runId);
+  if (all.length === 0) {
+    return { lines: [] };
+  }
+  const checkpoints = all.slice(-20);
+  const countLabel =
+    all.length > checkpoints.length
+      ? `latest ${checkpoints.length} of ${all.length}`
+      : String(checkpoints.length);
+  return {
+    checkpoints,
+    lines: [
+      `Judge checkpoints (${countLabel}):`,
+      ...checkpoints.map(
+        (entry) => `  ${formatTime(entry.at)}: ${formatJudgeCheckpointSummary(entry)}`,
+      ),
+    ],
+  };
+}
+
 export type LiveJudgeOutcome =
   | { readonly kind: "disabled" }
   | { readonly kind: "aborted" }
-  | { readonly kind: "unavailable"; readonly error: string }
-  | { readonly kind: "verdict"; readonly verdict: Violation | undefined };
+  | { readonly kind: "skipped" }
+  | {
+      readonly kind: "unavailable";
+      readonly error: string;
+      readonly checkpoint: UnavailableCheckpoint;
+    }
+  | {
+      readonly kind: "verdict";
+      readonly verdict: Violation | undefined;
+      readonly checkpoint: VerdictCheckpoint;
+    };
 
 export function isJudgeDisabled(base: string, launch: Pick<Launch, "overseer">): boolean {
   const live = activeOverseer(base, launch);
@@ -316,6 +455,36 @@ export function isEscalationReleased(
   return escalation.classifierReview !== undefined && live.judge === "off";
 }
 
+function unavailableOutcome(
+  spec: string,
+  error: unknown,
+): Extract<LiveJudgeOutcome, { kind: "unavailable" }> {
+  if (error instanceof JudgeUnavailableError) {
+    return {
+      kind: "unavailable",
+      error: error.message,
+      checkpoint: {
+        at: Date.now(),
+        judge: spec,
+        outcome: "unavailable",
+        ...(error.failed.length > 0 ? { failed: [...error.failed] } : {}),
+        ...(error.reason !== undefined ? { error: error.reason } : {}),
+      },
+    };
+  }
+  const message = nonEmpty(errorText(error), "classifier error");
+  return {
+    kind: "unavailable",
+    error: message,
+    checkpoint: {
+      at: Date.now(),
+      judge: spec,
+      outcome: "unavailable",
+      error: message,
+    },
+  };
+}
+
 /**
  * Evaluates one decision checkpoint while watching `<base>/overseer.json` so toggling overseer or
  * its judge off aborts an in-flight classifier request immediately without recording a failure.
@@ -325,6 +494,7 @@ export async function evaluateLiveDecisionCheckpoint(
   launch: Pick<Launch, "overseer">,
   options: Parameters<typeof evaluateDecisionCheckpoint>[0],
 ): Promise<LiveJudgeOutcome> {
+  const spec = options.judgeSpec ?? "auto";
   const runSignal = options.signal;
   const liveAbort = new AbortController();
   const abortIfDisabled = (): void => {
@@ -348,8 +518,8 @@ export async function evaluateLiveDecisionCheckpoint(
   const signal =
     runSignal === undefined ? liveAbort.signal : AbortSignal.any([runSignal, liveAbort.signal]);
   try {
-    const verdict = await evaluateDecisionCheckpoint({ ...options, signal });
-    return isJudgeDisabled(base, launch) ? { kind: "disabled" } : { kind: "verdict", verdict };
+    const evaluated = await runDecisionCheckpoint({ ...options, signal });
+    return isJudgeDisabled(base, launch) ? { kind: "disabled" } : evaluated;
   } catch (error) {
     if (liveAbort.signal.aborted || isJudgeDisabled(base, launch)) {
       return { kind: "disabled" };
@@ -357,7 +527,7 @@ export async function evaluateLiveDecisionCheckpoint(
     if (runSignal?.aborted === true) {
       return { kind: "aborted" };
     }
-    return { kind: "unavailable", error: errorText(error) };
+    return unavailableOutcome(spec, error);
   } finally {
     clearInterval(poll);
     watchBase.close();
