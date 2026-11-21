@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   renameSync,
   symlinkSync,
@@ -13,17 +14,37 @@ import {
   writeFileSync,
   rmSync,
   statSync,
+  truncateSync,
   watch,
 } from "node:fs";
+import { connect as connectTcp, type Socket } from "node:net";
 import { join, resolve } from "node:path";
+import { connect as connectTls, type ConnectionOptions } from "node:tls";
 import { DatabaseSync } from "node:sqlite";
 import { X509Certificate } from "node:crypto";
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { getBrokerSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { normalizeMessage, normalizeSessionInfo } from "../../src/pi-intercom/types.ts";
 import { hasErrorCode, errorMessage, type UnknownRecord } from "../../src/shared/unknown.ts";
-import { exec, start, stop, parseCredential, bridgeApi } from "../support/intercom-bridge.ts";
-import { assertDefined, json, readJson, record, records, text } from "../support/assertions.ts";
+import {
+  exec,
+  start,
+  stop,
+  parseCredential,
+  bridgeApi,
+  bridgeRequest,
+  type Credential,
+} from "../support/intercom-bridge.ts";
+import {
+  assertDefined,
+  json,
+  numberValue,
+  readJson,
+  record,
+  records,
+  text,
+} from "../support/assertions.ts";
+import { waitFor } from "../support/native-readiness.ts";
 
 function envelope(value: unknown) {
   const input = record(value);
@@ -47,6 +68,26 @@ function nextMessage(client: Readonly<IntercomClient>) {
   return once(client, "message").then((args: readonly unknown[]) =>
     envelope({ from: args[0], message: args[1] }),
   );
+}
+
+/** Resolves with the client's local port once its connection to the bridge has closed. */
+function closedFrom(socket: Socket): Promise<number> {
+  return new Promise((resolveClosed, reject) => {
+    let localPort: number | undefined;
+    socket.once("connect", () => {
+      localPort = socket.localPort;
+    });
+    socket.on("error", () => {
+      /* The bridge refusing the connection is the expected outcome. */
+    });
+    socket.once("close", () => {
+      if (localPort === undefined) {
+        reject(new Error("The connection never opened."));
+      } else {
+        resolveClosed(localPort);
+      }
+    });
+  });
 }
 
 nodeTest(
@@ -158,6 +199,77 @@ nodeTest(
             key: readFileSync(unpinned.key),
           }),
         );
+        // Every refused client is attributed to its connection; a TCP probe that sends nothing
+        // made no authentication attempt.
+        const bridgePort = Number(new URL(url).port);
+        const stranger = parseCredential(
+          await runTool("init", join(root, "stranger-ca"), "stranger", "--cwd", project),
+        );
+        const tlsAttempt = (options: ConnectionOptions) =>
+          closedFrom(
+            connectTls({
+              host: "127.0.0.1",
+              port: bridgePort,
+              ca: readFileSync(credential.ca),
+              ...options,
+            }),
+          );
+        const tcpAttempt = (bytes: Buffer) => {
+          const socket = connectTcp(bridgePort, "127.0.0.1", () => {
+            socket.end(bytes);
+          });
+          return closedFrom(socket);
+        };
+        const pin = (value: Credential) => value.fingerprint256.replaceAll(":", "").toUpperCase();
+        const auditFrom = activeBridge.output().length;
+        const expected = new Map<string, UnknownRecord>();
+        const refused = async (attempt: Promise<number>, fields: UnknownRecord) => {
+          const remote = `127.0.0.1:${await attempt}`;
+          expected.set(remote, { event: "connection_rejected", remote, ...fields });
+        };
+        await refused(tlsAttempt({}), { result: "unauthorized", reason: "no_client_certificate" });
+        await refused(
+          tlsAttempt({ cert: readFileSync(unpinned.cert), key: readFileSync(unpinned.key) }),
+          { fingerprint: pin(unpinned), result: "unauthorized", reason: "not_pinned" },
+        );
+        // The tool names every CA alike, so this is what a certificate from a replaced CA sees.
+        // A certificate issued by OpenSSL 3 names its CA's key, which rules the bridge CA out as
+        // the issuer; without that, OpenSSL tries the bridge CA and the signature check fails.
+        const strangerCert = readFileSync(stranger.cert);
+        const bridgeCaMatches = new X509Certificate(strangerCert).checkIssued(
+          new X509Certificate(readFileSync(credential.ca)),
+        );
+        await refused(tlsAttempt({ cert: strangerCert, key: readFileSync(stranger.key) }), {
+          fingerprint: pin(stranger),
+          result: "unauthorized",
+          reason: bridgeCaMatches ? "CERT_SIGNATURE_FAILURE" : "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        });
+        await refused(tcpAttempt(Buffer.from("GET / HTTP/1.1\r\n\r\n")), {
+          result: "tls_authentication_failed",
+          reason: "ERR_SSL_HTTP_REQUEST",
+        });
+        // A TLS handshake record header, then a hang-up before the rest of the record.
+        await refused(tcpAttempt(Buffer.from([0x16, 0x03, 0x01, 0x00, 0xff])), {
+          result: "tls_authentication_failed",
+          reason: "client_closed_during_handshake",
+        });
+        const probe = `127.0.0.1:${await tcpAttempt(Buffer.alloc(0))}`;
+        // Every attempt, including the probe, closed before this request connected.
+        const listed = await api("list");
+        await activeBridge.wait(
+          new RegExp(`"requestId":"${text(listed.body.requestId)}"`),
+          auditFrom,
+        );
+        const rejections = new Map<string, UnknownRecord>();
+        for (const row of activeBridge.output().slice(auditFrom).trim().split("\n").map(json)) {
+          if (row.event === "connection_rejected") {
+            const { timestamp, ...fields } = row;
+            assert.equal(typeof timestamp, "string");
+            rejections.set(text(fields.remote), fields);
+          }
+        }
+        assert.ok(!rejections.has(probe), "a probe that sent nothing is not a rejected client");
+        assert.deepEqual(rejections, expected);
         const registered = await api("register", {});
         assert.equal(registered.body.name, "grok-bot");
         const remoteId = text(registered.body.sessionId);
@@ -610,6 +722,81 @@ nodeTest(
         delete process.env.TMPDIR;
       } else {
         process.env.TMPDIR = previousTmp;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+nodeTest(
+  "an audit file starts a new generation before passing 32 MiB and keeps the previous one",
+  { timeout: 30000 },
+  async () => {
+    const root = mkdtempSync("/tmp/pib-audit-");
+    const env = {
+      ...process.env,
+      HOME: root,
+      TMPDIR: root,
+      TMP: root,
+      TEMP: root,
+      PI_CODING_AGENT_DIR: join(root, "agent"),
+    };
+    let bridge: ReturnType<typeof start> | undefined;
+    try {
+      const credential = parseCredential(
+        json(
+          (
+            await exec(
+              process.execPath,
+              [
+                join(repo, "scripts/intercom-bridge-credentials.mjs"),
+                "init",
+                join(root, "keys"),
+                "--cwd",
+                root,
+                "--port",
+                "0",
+              ],
+              { env },
+            )
+          ).stdout,
+        ),
+      );
+      const audit = join(root, "audit.jsonl");
+      const previous = `${audit}.1`;
+      const generation = 32 * 1024 * 1024;
+      writeFileSync(audit, "", { mode: 0o600 });
+      truncateSync(audit, generation);
+      bridge = start(
+        "src/pi-intercom/bridge.ts",
+        ["--config", join(root, "keys/config.json"), "--audit", audit],
+        env,
+      );
+      const current = () =>
+        existsSync(previous)
+          ? readFileSync(audit, "utf8").trim().split("\n").filter(Boolean).map(json)
+          : [];
+      await waitFor(
+        () => current().some((row) => row.event === "listening"),
+        "the listening event in a new audit generation",
+        15000,
+      );
+      assert.equal(statSync(previous).size, generation, "the full generation is kept whole");
+      assert.equal(statSync(audit).mode & 0o777, 0o600);
+      const ready = current().find((row) => row.event === "listening");
+      assertDefined(ready);
+      const api = bridgeRequest(`https://127.0.0.1:${numberValue(ready.port)}`, credential);
+      const { requestId } = (await api("list")).body;
+      await waitFor(
+        () => current().some((row) => row.event === "request" && row.requestId === requestId),
+        "the next request in the same generation",
+        15000,
+      );
+      assert.equal(statSync(previous).size, generation, "the new generation keeps appending");
+      assert.ok(!bridge.output().includes('"event":'), "audit events never reach stdout");
+    } finally {
+      if (bridge) {
+        await stop(bridge.child);
       }
       rmSync(root, { recursive: true, force: true });
     }

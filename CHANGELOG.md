@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Intercom bridge: a rejected connection records its remote address, a reason, and the presented certificate's fingerprint and pinned name when there are any. A client without a valid pinned certificate now completes the TLS handshake and is disconnected before any request. A TCP connection that closes without sending a byte, such as a port health probe, is no longer recorded as a TLS authentication failure (PSA-204).
+- Intercom bridge: `--audit PATH` writes the JSONL audit to an owned 0600 file that moves to `PATH.1` before it would pass 32 MiB. The per-connection `connected` line is gone; each `request` line already names the authenticated identity (PSA-204).
+
 ## 0.52.63 - 2026-11-20
 
 <!-- npm-release:unreleased:start -->

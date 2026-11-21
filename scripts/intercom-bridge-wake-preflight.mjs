@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { AUDIT_GENERATION_BYTES } from "../src/pi-intercom/bridge-audit.ts";
 import { readBridgeFile, writeBridgeJson } from "../src/pi-intercom/bridge-files.ts";
 import { stateDirectory } from "../src/pi-intercom/bridge-storage.ts";
 import { isRecord } from "../src/shared/unknown.ts";
@@ -60,7 +61,7 @@ try {
   }
   const attempts = [];
   const outcomes = new Set(["accepted", "http_rejected", "transport_unconfirmed"]);
-  const audit = readBridgeFile(values.audit, true, 32 * 1024 * 1024).toString("utf8");
+  const audit = readBridgeFile(values.audit, true, AUDIT_GENERATION_BYTES).toString("utf8");
   for (const line of audit.split("\n")) {
     if (line.trim() === "") {
       continue;
