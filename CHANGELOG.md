@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Overseer judge: when Google's decisions model fails, for example over a spending cap, the `auto` judge now asks GPT-6 Luna next, before Cloudflare Workers AI's `clef` models. It tries Luna through Cloudflare AI Gateway (`cloudflare-ai-gateway/gpt-6-luna`) first and then directly from OpenAI (`openai/gpt-6-luna`), and skips either one that Pi does not list as an available classifier (PSA-210).
+
 ## 0.52.64 - 2026-11-21
 
 <!-- npm-release:unreleased:start -->
