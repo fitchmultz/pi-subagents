@@ -30,10 +30,21 @@ main coordinates any remote exchange.
 - The Mac must be awake, logged in and online. Mail waits durably while Grok is
   away; the helper cannot reach Pi while its Mac is asleep/offline.
 
-stdout contains JSONL metadata only: identities, message/peer IDs and outcomes,
-not message text or secrets. Keep logs private. Connections are capped at 128,
-concurrent operations per identity at eight, request bodies at 64 KiB and ordinary
-HTTP deadlines at 15 seconds. Browser-origin/fetch-metadata requests are denied.
+The audit log is JSONL metadata only: identities, connection addresses,
+message/peer IDs and outcomes, not message text or secrets. It goes to stdout
+unless `--audit PATH` names an owned 0600 file. That file moves to `PATH.1`,
+replacing any older one, before it would pass 32 MiB, so the two files stay
+under 64 MiB together. Keep logs private.
+
+A rejected connection records its `remote` TCP address and port, a `reason`, and
+the presented certificate's `fingerprint` and pinned `name` when there are any.
+Behind Tailscale Serve the remote end is the forwarder's loopback address. A TCP
+connection that closes without sending a byte, such as a port health probe, is
+not an authentication attempt and is not recorded.
+
+Connections are capped at 128, concurrent operations per identity at eight,
+request bodies at 64 KiB and ordinary HTTP deadlines at 15 seconds.
+Browser-origin/fetch-metadata requests are denied.
 
 ## Configuration
 
@@ -91,14 +102,16 @@ or configuration files are automatically rewritten.
 Run with the same per-user broker environment as local Pi:
 
 ```sh
-PI_CODING_AGENT_DIR=/home/you/.pi/agent node dist/pi-intercom/bridge.js --config /absolute/private/bridge/config.json
+PI_CODING_AGENT_DIR=/home/you/.pi/agent node dist/pi-intercom/bridge.js --config /absolute/private/bridge/config.json --audit /absolute/private/bridge/audit.jsonl
 ```
 
 On macOS preserve the user's native `TMPDIR` for old-namespace detection (see
 `getconf DARWIN_USER_TEMP_DIR`); it does not select the new shared broker.
 Observe `listening` before requests. A per-user LaunchAgent can supervise this
-command with private logs, RunAtLoad and KeepAlive. SIGTERM/SIGINT drain helper
-requests and disconnect its own peers; they never stop the shared broker.
+command with RunAtLoad and KeepAlive. launchd never rotates its
+`StandardOutPath` file, so pass `--audit` and point `StandardOutPath` elsewhere.
+SIGTERM/SIGINT drain helper requests and disconnect its own peers; they never
+stop the shared broker.
 SIGHUP reloads client/wake policy. Listener/TLS/stateDir changes require restart.
 KeepAlive restarts a terminated helper; boot out the service to stay stopped.
 

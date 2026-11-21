@@ -4,9 +4,11 @@ import type { Socket } from "node:net";
 import { resolve } from "node:path";
 import { TLSSocket } from "node:tls";
 import { randomUUID } from "node:crypto";
+import { parseArgs } from "node:util";
 import { getBrokerSocketPath } from "./broker/paths.ts";
+import { Handshakes, verdict } from "./bridge-admission.ts";
 import { loadConfig, sameListener, type Config, type Identity } from "./bridge-config.ts";
-import { Fault, fingerprint, log } from "./bridge-protocol.ts";
+import { Fault, auditTo, log } from "./bridge-protocol.ts";
 import { Session } from "./bridge-session.ts";
 import { cancellationScopeFor, operationFor, routeFor } from "./bridge-routes.ts";
 import { reply, replyFault } from "./bridge-http.ts";
@@ -15,15 +17,6 @@ import { WakeDeliveries } from "./bridge-wake.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 
 const MAX_CONNECTIONS = 128;
-
-function validCertificateDates(starts: number, expires: number): boolean {
-  return (
-    Number.isFinite(starts) &&
-    Number.isFinite(expires) &&
-    starts <= Date.now() &&
-    expires > Date.now()
-  );
-}
 
 interface Connection {
   readonly fingerprint: string;
@@ -80,6 +73,7 @@ class Bridge {
   private readonly sessions = new Map<string, Session>();
   private readonly losses = new Map<string, number>();
   private readonly sockets = new Set<Socket>();
+  private readonly handshakes = new Handshakes();
   private readonly connections = new Map<TLSSocket, Connection>();
   private readonly server: Server;
   private stopping = false;
@@ -116,7 +110,9 @@ class Bridge {
         ...config.tls,
         minVersion: "TLSv1.2",
         requestCert: true,
-        rejectUnauthorized: true,
+        // Node exposes a presented certificate only after a completed handshake.
+        // authenticate() rejects and records unauthorized ones; admission() re-checks requests.
+        rejectUnauthorized: false,
         handshakeTimeout: 10000,
       },
       (req, res) => {
@@ -147,13 +143,15 @@ class Bridge {
         return;
       }
       this.sockets.add(socket);
+      this.handshakes.opened(socket);
       socket.once("close", () => {
         this.sockets.delete(socket);
       });
     });
     this.server.on("secureConnection", (socket: TLSSocket) => this.authenticate(socket));
-    this.server.on("tlsClientError", () =>
-      log("connection_rejected", { result: "tls_authentication_failed" }),
+    // Runs before node:https turns the error into `clientError`, while the remote end is readable.
+    this.server.prependListener("tlsClientError", (error, socket) =>
+      this.handshakes.failed(error, socket),
     );
     this.server.on("clientError", (_error, socket) => {
       socket.destroy();
@@ -204,31 +202,30 @@ class Bridge {
     return session;
   }
   private authenticate(socket: TLSSocket): void {
-    const cert = socket.getPeerCertificate();
-    let fp: string;
-    try {
-      fp = fingerprint(cert.fingerprint256);
-    } catch {
+    const remote = this.handshakes.decided(socket);
+    const decision = verdict(socket, this.config.clients, this.stopping);
+    if ("reason" in decision) {
+      log("connection_rejected", {
+        remote,
+        name: decision.name,
+        fingerprint: decision.fingerprint,
+        result: "unauthorized",
+        reason: decision.reason,
+      });
       socket.destroy();
       return;
     }
-    const identity = this.config.clients.get(fp);
-    const expires = Date.parse(cert.valid_to);
-    const starts = Date.parse(cert.valid_from);
-    if (
-      !socket.authorized ||
-      !identity ||
-      this.stopping ||
-      !validCertificateDates(starts, expires)
-    ) {
-      log("connection_rejected", { fingerprint: fp, result: "unauthorized" });
-      socket.destroy();
-      return;
-    }
+    const { identity, expires } = decision;
+    const fp = identity.fingerprint256;
     try {
       this.presence?.authenticated(identity, expires);
     } catch {
-      log("connection_rejected", { fingerprint: fp, result: "presence_storage_failed" });
+      log("connection_rejected", {
+        remote,
+        name: identity.name,
+        fingerprint: fp,
+        result: "presence_storage_failed",
+      });
       socket.destroy();
       return;
     }
@@ -250,7 +247,6 @@ class Bridge {
       clearTimeout(connection.timer);
       this.connections.delete(socket);
     });
-    log("connected", { name: identity.name, fingerprint: fp, result: "authenticated" });
   }
   private drop(fp: string, error: Readonly<Fault>): void {
     this.deliveries.drop(fp);
@@ -302,6 +298,7 @@ class Bridge {
           ),
         );
       }
+      this.handshakes.clear();
       for (const socket of this.sockets) {
         socket.destroy();
       }
@@ -349,6 +346,7 @@ class Bridge {
     for (const session of sessions) {
       session.close(new Fault(503, "shutting_down", "Bridge is shutting down."));
     }
+    this.handshakes.clear();
     for (const socket of this.sockets) {
       socket.destroy();
     }
@@ -441,29 +439,57 @@ class Bridge {
   }
 }
 
+type Command =
+  | { readonly help: true }
+  | { readonly config: string; readonly audit: string | undefined };
+
+function command(): Command | undefined {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      options: {
+        config: { type: "string" },
+        audit: { type: "string" },
+        help: { type: "boolean", short: "h" },
+      },
+    });
+  } catch {
+    return;
+  }
+  const { config, audit, help } = parsed.values;
+  if (help === true) {
+    return config === undefined && audit === undefined ? { help } : undefined;
+  }
+  return config === undefined || config === "" || audit === "" ? undefined : { config, audit };
+}
+
 function main(): void {
-  const args = process.argv.slice(2);
-  const [flag, configPath] = args;
-  if (args.length === 1 && (flag === "-h" || flag === "--help")) {
+  const args = command();
+  if (args !== undefined && "help" in args) {
     process.stdout.write(
-      "Usage: node dist/pi-intercom/bridge.js --config PATH\n\nOptional loopback HTTPS/mTLS bridge for the local pi-intercom broker.\nConfig and TLS key must be owned by you with mode 0600.\nWithout stateDir, messaging never starts the broker. Durable presence safely starts\none only when none is running; it never restarts or replaces a live broker.\nSIGHUP reloads the client allowlist (invalid reload denies all clients).\nRestart this helper for TLS/listener rotation. SIGINT/SIGTERM disconnect peers.\n\nExample: node dist/pi-intercom/bridge.js --config ~/.pi/agent/intercom/bridge.json\n",
+      "Usage: node dist/pi-intercom/bridge.js --config PATH [--audit PATH]\n\nOptional loopback HTTPS/mTLS bridge for the local pi-intercom broker.\nConfig and TLS key must be owned by you with mode 0600.\nJSONL metadata goes to stdout, or with --audit to that owned 0600 file, which\nmoves to PATH.1 before it would pass 32 MiB.\nWithout stateDir, messaging never starts the broker. Durable presence safely starts\none only when none is running; it never restarts or replaces a live broker.\nSIGHUP reloads the client allowlist (invalid reload denies all clients).\nRestart this helper for TLS/listener rotation. SIGINT/SIGTERM disconnect peers.\n\nExample: node dist/pi-intercom/bridge.js --config ~/.pi/agent/intercom/bridge.json\n",
     );
     return;
   }
-  if (args.length !== 2 || flag !== "--config" || configPath === undefined || configPath === "") {
-    process.stderr.write("Usage: node dist/pi-intercom/bridge.js --config PATH (or --help)\n");
+  if (args === undefined) {
+    process.stderr.write(
+      "Usage: node dist/pi-intercom/bridge.js --config PATH [--audit PATH] (or --help)\n",
+    );
     process.exitCode = 2;
     return;
   }
   try {
-    const path = resolve(configPath);
+    if (args.audit !== undefined) {
+      auditTo(resolve(args.audit));
+    }
+    const path = resolve(args.config);
     new Bridge(loadConfig(path), path).start();
   } catch (error) {
     if (error instanceof Fault) {
       process.stderr.write(`${error.message}\n`);
     }
     process.stderr.write(
-      "Bridge startup failed: check config schema, file ownership/mode 0600, absolute TLS/cwd paths, TLS credentials, and stateDir (owned 0700 directory).\n",
+      "Bridge startup failed: check config schema, file ownership/mode 0600 (config, TLS key, audit file), absolute TLS/cwd paths, TLS credentials, and stateDir (owned 0700 directory).\n",
     );
     process.exitCode = 1;
   }

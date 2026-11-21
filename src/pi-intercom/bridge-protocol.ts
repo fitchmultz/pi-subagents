@@ -1,4 +1,5 @@
 import { errorMessage, isRecord, type UnknownRecord } from "../shared/unknown.ts";
+import { AuditFile } from "./bridge-audit.ts";
 
 export const BODY_LIMIT = 64 * 1024;
 export const INBOX_COUNT = 256;
@@ -106,14 +107,30 @@ type LogSink =
   | { readonly kind: "writable" }
   | { readonly kind: "backpressured"; readonly lost: number };
 let logSink: LogSink = { kind: "writable" };
+let audit: { readonly file: AuditFile; lost: number } | undefined;
+
+/** Sends every later audit event to a private, size-rotated file instead of stdout. */
+export function auditTo(path: string): void {
+  audit = { file: new AuditFile(path), lost: 0 };
+}
+
 export function log(event: string, fields: UnknownRecord = {}): void {
+  const line = `${JSON.stringify({ timestamp: new Date().toISOString(), event, ...fields })}\n`;
+  if (audit !== undefined) {
+    if (!audit.file.write(line)) {
+      audit.lost = Math.min(Number.MAX_SAFE_INTEGER, audit.lost + 1);
+    } else if (audit.lost > 0) {
+      const lostEvents = audit.lost;
+      audit.lost = 0;
+      log("log_overflow", { result: "metadata_lost", lostEvents });
+    }
+    return;
+  }
   if (logSink.kind === "backpressured") {
     logSink = { kind: "backpressured", lost: Math.min(Number.MAX_SAFE_INTEGER, logSink.lost + 1) };
     return;
   }
-  const writable = process.stdout.write(
-    `${JSON.stringify({ timestamp: new Date().toISOString(), event, ...fields })}\n`,
-  );
+  const writable = process.stdout.write(line);
   if (!writable) {
     logSink = { kind: "backpressured", lost: 0 };
     process.stdout.once("drain", () => {
