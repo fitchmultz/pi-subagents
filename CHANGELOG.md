@@ -2,7 +2,21 @@
 
 ## [Unreleased]
 
+## 0.52.65 - 2026-11-21
+
+<!-- npm-release:unreleased:start -->
+
 - Overseer judge: when Google's decisions model fails, for example over a spending cap, the `auto` judge now asks GPT-6 Luna next, before Cloudflare Workers AI's `clef` models. It tries Luna through Cloudflare AI Gateway (`cloudflare-ai-gateway/gpt-6-luna`) first and then directly from OpenAI (`openai/gpt-6-luna`), and skips either one that Pi does not list as an available classifier (PSA-210).
+
+<!-- npm-release:unreleased:end -->
+
+- Ask GPT-6 Luna next when the overseer judge's Google model fails (#492) ([197b8d9](https://github.com/fitchmultz/pi-subagents/commit/197b8d9fcf8f692bb545cc885608fc9063001507))
+
+### What's Changed
+
+- Ask GPT-6 Luna next when the overseer judge's Google model fails by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/492
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.64...v0.52.65
 
 ## 0.52.64 - 2026-11-21
 
