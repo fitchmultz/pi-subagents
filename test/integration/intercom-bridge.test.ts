@@ -233,14 +233,17 @@ nodeTest(
           { fingerprint: pin(unpinned), result: "unauthorized", reason: "not_pinned" },
         );
         // The tool names every CA alike, so this is what a certificate from a replaced CA sees.
-        await refused(
-          tlsAttempt({ cert: readFileSync(stranger.cert), key: readFileSync(stranger.key) }),
-          {
-            fingerprint: pin(stranger),
-            result: "unauthorized",
-            reason: "CERT_SIGNATURE_FAILURE",
-          },
+        // A certificate issued by OpenSSL 3 names its CA's key, which rules the bridge CA out as
+        // the issuer; without that, OpenSSL tries the bridge CA and the signature check fails.
+        const strangerCert = readFileSync(stranger.cert);
+        const bridgeCaMatches = new X509Certificate(strangerCert).checkIssued(
+          new X509Certificate(readFileSync(credential.ca)),
         );
+        await refused(tlsAttempt({ cert: strangerCert, key: readFileSync(stranger.key) }), {
+          fingerprint: pin(stranger),
+          result: "unauthorized",
+          reason: bridgeCaMatches ? "CERT_SIGNATURE_FAILURE" : "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        });
         await refused(tcpAttempt(Buffer.from("GET / HTTP/1.1\r\n\r\n")), {
           result: "tls_authentication_failed",
           reason: "ERR_SSL_HTTP_REQUEST",
