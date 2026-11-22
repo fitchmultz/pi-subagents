@@ -123,7 +123,7 @@ function defaults(pi: Pick<ExtensionAPI, "getFlag" | "getSettings">): OverseerSt
   const cfg = recordAt(recordAt(hostSettings(pi), "subagents"), "overseer");
   return {
     enabled: typeof cfg?.enabled === "boolean" ? cfg.enabled : pi.getFlag("overseer") === true,
-    model: normModel(cfg?.model, DEFAULT_OVERSEER_MODEL),
+    model: normModel(cfg?.model ?? cfg?.worker, DEFAULT_OVERSEER_MODEL),
     judge: strOr(cfg?.judge, DEFAULT_OVERSEER_JUDGE),
   };
 }

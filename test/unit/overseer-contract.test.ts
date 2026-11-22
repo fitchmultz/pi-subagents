@@ -270,6 +270,17 @@ nodeTest(
       message: "Overseer model: openai/gpt-6-sol:low",
       level: "info",
     });
+
+    // Legacy `subagents.overseer.worker` settings continue to load onto `model` on upgrade.
+    const legacySettings = await createHarness(t, "overseer-legacy-settings", {
+      subagents: { overseer: { enabled: true, worker: "openai/gpt-6-sol:medium" } },
+    });
+    await legacySettings.start();
+    await legacySettings.runCommand("overseer-model", "status");
+    assert.deepEqual(legacySettings.notices.at(-1), {
+      message: "Overseer model: openai/gpt-6-sol:medium",
+      level: "info",
+    });
   },
 );
 
