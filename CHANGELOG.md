@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.67 - 2026-11-22
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat: add child role framing, scratch-dir /tmp rule, and strict delegate schema (PSA-211) (#494) ([0e0b388](https://github.com/fitchmultz/pi-subagents/commit/0e0b3882caa64b61480080e7b97b83b7bb822b65))
+
+### What's Changed
+
+- feat: add child role framing, scratch-dir /tmp rule, and strict delegate schema (PSA-211) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/494
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.66...v0.52.67
+
 ## 0.52.66 - 2026-11-21
 
 <!-- npm-release:unreleased:start -->
