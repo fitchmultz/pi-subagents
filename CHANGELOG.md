@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.68 - 2026-11-22
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor: rename /overseer-worker to /overseer-model (PSA-212) (#495) ([321e5c8](https://github.com/fitchmultz/pi-subagents/commit/321e5c80a6ef0a51bef671897c8b4391f5df1fa8))
+
+### What's Changed
+
+- refactor: rename /overseer-worker to /overseer-model (PSA-212) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/495
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.67...v0.52.68
+
 ## 0.52.67 - 2026-11-22
 
 <!-- npm-release:unreleased:start -->
