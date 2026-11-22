@@ -11,7 +11,7 @@ import {
   SettingsManager,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { validateToolArguments, type Api, type Model } from "@earendil-works/pi-ai";
 import agents from "../../src/agent/index.ts";
 import {
   commandSchema,
@@ -864,16 +864,26 @@ nodeTest(
     );
     assert.match(checkToolCallScope(readOnlyCtx, "write", {}) ?? "", /disables file-edit tools/u);
 
-    // formatContractSection surfaces scratchDir for both mutating and read-only contracts.
+    // formatContractSection surfaces scratchDir and the no-/tmp rule for both mutating and read-only contracts.
     const mutatingSection = formatContractSection(
       { scope: ["src/**"], verification: ["npm test"] },
       { scratchDir },
     );
     assert.match(mutatingSection, /Scratch directory for temporary files\/scripts/u);
     assert.ok(mutatingSection.includes(scratchDir));
+    assert.match(mutatingSection, /\$PI_SUBAGENT_SCRATCH_DIR/u);
+    assert.match(mutatingSection, /rather than \/tmp/u);
+    assert.match(mutatingSection, /edit tools block paths outside allowed scope/u);
     const readOnlySection = formatContractSection({ scope: [] }, { scratchDir });
     assert.match(readOnlySection, /edit tools allowed only in the scratch directory below/u);
     assert.ok(readOnlySection.includes(scratchDir));
+    assert.match(readOnlySection, /\$PI_SUBAGENT_SCRATCH_DIR/u);
+    assert.match(readOnlySection, /rather than \/tmp/u);
+    const noScratchSection = formatContractSection({
+      scope: ["src/**"],
+      verification: ["npm test"],
+    });
+    assert.doesNotMatch(noScratchSection, /\$PI_SUBAGENT_SCRATCH_DIR|\/tmp/u);
 
     // A tampered launch.scratchDir pointing into the repo is ignored by scratchDirectory,
     // harnessExcludePaths, and successor (always anchored under <base>/<rootId>/scratch).
@@ -1318,6 +1328,15 @@ nodeTest(
 
     // Before amendment: src/ and scratchDir are allowed; test/ is blocked.
     const initialSections = await runBeforeStart();
+    const roleSection = initialSections.delegation_role;
+    assert.ok(roleSection !== undefined);
+    assert.match(roleSection, /delegated subagent reporting results to your parent session/u);
+    assert.match(roleSection, /not speaking directly to the user/u);
+    assert.match(roleSection, /Do not merge PRs, deploy, push/u);
+    assert.ok(
+      Object.keys(initialSections).indexOf("delegation_role") <
+        Object.keys(initialSections).indexOf("delegation_contract"),
+    );
     assert.match(initialSections.delegation_contract ?? "", /Allowed edit scope: src$/mu);
     assert.equal(await runToolCall("write", { path: "src/a.ts" }), undefined);
     assert.equal(
@@ -1344,6 +1363,7 @@ nodeTest(
     assert.equal(await runToolCall("write", { path: "test/unit/a.test.ts" }), undefined);
     assert.equal((await runToolCall("write", { path: "README.md" }))?.block, true);
     const amendedSections = await runBeforeStart();
+    assert.equal(amendedSections.delegation_role, roleSection);
     assert.match(
       amendedSections.delegation_contract ?? "",
       /Allowed edit scope: src\/\*\*, test\/\*\*\/\*\.test\.ts/u,
@@ -1371,12 +1391,13 @@ nodeTest(
       undefined,
     );
     const successorSections = await runBeforeStart();
+    assert.equal(successorSections.delegation_role, roleSection);
     assert.match(
       successorSections.delegation_contract ?? "",
       /edit tools allowed only in the scratch directory below/u,
     );
 
-    // A run that started with no contract also enforces a newly added contract immediately.
+    // A run that started with no contract still gets the cache-stable child role framing and enforces a newly added contract immediately.
     const unconstrainedId = "child-reload-unconstrained";
     const unconstrainedDir = runDirectory(base, unconstrainedId);
     fs.mkdirSync(unconstrainedDir, { recursive: true, mode: 0o700 });
@@ -1396,7 +1417,9 @@ nodeTest(
       }
     });
     currentLaunch = unconstrainedLaunch;
-    assert.equal((await runBeforeStart()).delegation_contract, undefined);
+    const unconstrainedSections = await runBeforeStart();
+    assert.equal(unconstrainedSections.delegation_role, roleSection);
+    assert.equal(unconstrainedSections.delegation_contract, undefined);
     assert.equal(process.env.PI_SUBAGENT_SCRATCH_DIR, undefined);
     assert.equal(await runToolCall("write", { path: "README.md" }), undefined);
 
@@ -1408,10 +1431,13 @@ nodeTest(
     assert.equal((await runToolCall("write", { path: "README.md" }))?.block, true);
     assert.equal(process.env.PI_SUBAGENT_SCRATCH_DIR, scratchDirectory(base, unconstrainedLaunch));
     assert.equal(await runToolCall("write", { path: "src/ok.ts" }), undefined);
+    const attachedContractSections = await runBeforeStart();
+    assert.equal(attachedContractSections.delegation_role, roleSection);
     assert.match(
-      (await runBeforeStart()).delegation_contract ?? "",
+      attachedContractSections.delegation_contract ?? "",
       /Allowed edit scope: src\/\*\*/u,
     );
+    assert.match(attachedContractSections.delegation_contract ?? "", /rather than \/tmp/u);
 
     // Inspect reports latest 20 of total when amendment history exceeds 20 entries.
     for (let i = 0; i < 21; i += 1) {
@@ -2158,5 +2184,84 @@ nodeTest(
       replyText(silentReply),
       /Summary saved for review only\. It was not sent to the child\. Use `agent_runs` `action="continue"` to send instructions\./u,
     );
+  },
+);
+
+nodeTest(
+  "delegate tool describes prompt requirements, requests preferred strict JSON schema, and coerces strict nullable optionals",
+  async (t) => {
+    const harness = await createHarness(t, "delegate-schema-strict");
+    const delegateTool = harness.extension.tools.get("delegate");
+    assert.ok(delegateTool !== undefined);
+    const { definition } = delegateTool;
+
+    assert.deepEqual(definition.constrainedSampling, { type: "json_schema", strict: "prefer" });
+    assert.ok(isRecord(definition.parameters));
+    assert.deepEqual(definition.parameters.required, ["prompt"]);
+    const promptSchema = isRecord(definition.parameters.properties)
+      ? definition.parameters.properties.prompt
+      : undefined;
+    assert.ok(isRecord(promptSchema) && typeof promptSchema.description === "string");
+    assert.match(promptSchema.description, /settled product decisions/u);
+    assert.match(promptSchema.description, /non-goals/u);
+
+    const toolSpec = {
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+      constrainedSampling: definition.constrainedSampling,
+    };
+
+    assert.throws(
+      () =>
+        validateToolArguments(toolSpec, {
+          type: "toolCall",
+          id: "missing-prompt",
+          name: "delegate",
+          arguments: { name: "worker" },
+        }),
+      /prompt/u,
+    );
+
+    const coercedMinimal: unknown = validateToolArguments(toolSpec, {
+      type: "toolCall",
+      id: "strict-nulls",
+      name: "delegate",
+      arguments: {
+        prompt: "Implement feature",
+        name: null,
+        cwd: null,
+        model: null,
+        thinking: null,
+        context: null,
+        contract: null,
+      },
+    });
+    assert.deepEqual(coercedMinimal, { prompt: "Implement feature" });
+
+    const coercedContract: unknown = validateToolArguments(toolSpec, {
+      type: "toolCall",
+      id: "strict-contract-nulls",
+      name: "delegate",
+      arguments: {
+        prompt: "Implement feature",
+        name: null,
+        cwd: null,
+        model: null,
+        thinking: null,
+        context: null,
+        contract: {
+          scope: ["src"],
+          verification: ["npm test"],
+          baseBranch: null,
+          requiredPrimitives: null,
+          nonGoals: null,
+        },
+      },
+    });
+    assert.deepEqual(coercedContract, {
+      prompt: "Implement feature",
+      contract: { scope: ["src"], verification: ["npm test"] },
+    });
   },
 );

@@ -37,7 +37,11 @@ export const delegateContractSchema = Type.Object(
 );
 export const delegateSchema = Type.Object(
   {
-    prompt: Type.String({ minLength: 1 }),
+    prompt: Type.String({
+      minLength: 1,
+      description:
+        "Required complete assignment for the child: what to accomplish, settled product decisions, non-goals, and stop boundary so the child does not invent design choices or extra scope.",
+    }),
     name: Type.Optional(Type.String({ minLength: 1 })),
     cwd: Type.Optional(Type.String({ minLength: 1 })),
     model: Type.Optional(
@@ -100,6 +104,7 @@ export function registerAgentTools(
     description:
       "Run a child on exactly this prompt; main sessions only. Fork copies the full conversation; default is fresh. Optional thinking overrides inherited effort for this child. Returns a receipt; completion is notified later: do other work or end the turn, don't poll.",
     parameters: delegateSchema,
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
     exposure: child ? "hidden" : "direct",
     renderResult: renderCompactResult,
     execute: executeDelegate,

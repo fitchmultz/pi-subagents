@@ -60,11 +60,17 @@ function resolveActiveContract(base: string, launch: Launch) {
   return { contract, scratchDir, latestAmendmentSummary };
 }
 
+const CHILD_ROLE_SECTION = [
+  "You are a delegated subagent reporting results to your parent session, not speaking directly to the user.",
+  "Execute only the assigned task within its stated scope and stop boundary. Do not merge PRs, deploy, push, modify unrelated files, or mutate shared state unless explicitly tasked.",
+].join("\n");
+
 function guard(pi: ExtensionAPI, options: GuardOptions): void {
   const { base, activeLaunch, directory, token } = options;
   pi.on("before_agent_start", (event) => {
     const resolved = resolveActiveContract(base, activeLaunch());
     const { sections } = event.systemPromptOptions;
+    sections.delegation_role = CHILD_ROLE_SECTION;
     if (resolved === undefined) {
       delete sections.delegation_contract;
       return;
