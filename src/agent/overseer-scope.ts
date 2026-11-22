@@ -438,7 +438,8 @@ export function formatContractSection(
   ];
   if (scratchDir !== undefined) {
     lines.push(
-      `- Scratch directory for temporary files/scripts (outside repo, allowed for edit tools): ${scratchDir}`,
+      `- Scratch directory for temporary files/scripts (outside repo, allowed for edit tools; also set in $PI_SUBAGENT_SCRATCH_DIR): ${scratchDir}`,
+      "  Put temporary files and helper scripts in this private scratch directory ($PI_SUBAGENT_SCRATCH_DIR) rather than /tmp, because edit tools block paths outside allowed scope.",
     );
   }
   if (contract.baseBranch !== undefined) {
