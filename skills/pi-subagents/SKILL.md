@@ -35,8 +35,8 @@ directory prefixes must exist inside `cwd` at launch. Runs with a `contract`
 also receive a private per-run scratch directory outside the repo (shown in the
 child's delegation contract and `PI_SUBAGENT_SCRATCH_DIR`) where edit tools are
 allowed for temporary scripts and notes, even under `scope: []`. Omitted `model` and
-`thinking` follow normal `delegate` inheritance unless `/overseer-worker`
-(or `subagents.overseer.worker`) configures a default worker.
+`thinking` follow normal `delegate` inheritance unless `/overseer-model`
+(or `subagents.overseer.model`) configures a default child model.
 Pi clamps the child's effort to its model capabilities without changing the parent.
 `model:"provider/model:thinking"` uses Pi's native suffix resolver when the host
 exports it; a literal model ID wins before suffix parsing. Without that host API,

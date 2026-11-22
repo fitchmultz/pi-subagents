@@ -21,7 +21,7 @@ import type { DelegateInput } from "./tool-schemas.ts";
 
 export const OVERSEER_ENTRY_TYPE = "subagents-overseer";
 export const OVERSEER_STATE_FILE = "overseer.json";
-export const DEFAULT_OVERSEER_WORKER = "inherit";
+export const DEFAULT_OVERSEER_MODEL = "inherit";
 export const DEFAULT_OVERSEER_JUDGE = "auto";
 
 /** Live parent overseer state, shared with running children via `<base>/overseer.json`. */
@@ -68,7 +68,7 @@ const PROMPT_SECTION = [
 
 export interface OverseerState {
   readonly enabled: boolean;
-  readonly worker: string;
+  readonly model: string;
   readonly judge: string;
 }
 
@@ -82,7 +82,7 @@ export interface PreparedOverseerDelegation {
 const strOr = (v: unknown, fb: string): string =>
   typeof v === "string" && v.trim().length > 0 ? v.trim() : fb;
 
-const normWorker = (v: unknown, fb: string): string => {
+const normModel = (v: unknown, fb: string): string => {
   const s = strOr(v, fb);
   return s.toLowerCase() === "inherit" ? "inherit" : s;
 };
@@ -90,22 +90,22 @@ const normWorker = (v: unknown, fb: string): string => {
 const isThinking = (v: string): v is ThinkingLevel =>
   (THINKING_LEVELS as readonly string[]).includes(v);
 
-export function splitWorkerSpec(worker: string): {
+export function splitModelSpec(model: string): {
   readonly defaultModel?: string;
   readonly defaultThinking?: ThinkingLevel;
 } {
-  if (worker.toLowerCase() === "inherit") {
+  if (model.toLowerCase() === "inherit") {
     return {};
   }
-  const slash = worker.indexOf("/");
-  const colon = worker.lastIndexOf(":");
+  const slash = model.indexOf("/");
+  const colon = model.lastIndexOf(":");
   if (slash > 0 && colon > slash + 1) {
-    const suffix = worker.slice(colon + 1);
+    const suffix = model.slice(colon + 1);
     if (isThinking(suffix)) {
-      return { defaultModel: worker.slice(0, colon), defaultThinking: suffix };
+      return { defaultModel: model.slice(0, colon), defaultThinking: suffix };
     }
   }
-  return { defaultModel: worker };
+  return { defaultModel: model };
 }
 
 function hostSettings(
@@ -123,7 +123,7 @@ function defaults(pi: Pick<ExtensionAPI, "getFlag" | "getSettings">): OverseerSt
   const cfg = recordAt(recordAt(hostSettings(pi), "subagents"), "overseer");
   return {
     enabled: typeof cfg?.enabled === "boolean" ? cfg.enabled : pi.getFlag("overseer") === true,
-    worker: normWorker(cfg?.worker, DEFAULT_OVERSEER_WORKER),
+    model: normModel(cfg?.model, DEFAULT_OVERSEER_MODEL),
     judge: strOr(cfg?.judge, DEFAULT_OVERSEER_JUDGE),
   };
 }
@@ -144,7 +144,7 @@ function branchState(
       if (isRecord(d) && typeof d.enabled === "boolean") {
         cur = {
           enabled: d.enabled,
-          worker: normWorker(d.worker, cur.worker),
+          model: normModel(d.model ?? d.worker, cur.model),
           judge: strOr(d.judge, cur.judge),
         };
       }
@@ -172,7 +172,7 @@ const validSpec = (s: string): boolean => {
 export class OverseerController {
   private state: OverseerState = {
     enabled: false,
-    worker: DEFAULT_OVERSEER_WORKER,
+    model: DEFAULT_OVERSEER_MODEL,
     judge: DEFAULT_OVERSEER_JUDGE,
   };
   private readonly pi: ExtensionAPI;
@@ -242,8 +242,8 @@ export class OverseerController {
 
   private line(): string {
     return this.state.enabled
-      ? `Overseer mode: on (worker: ${this.state.worker}, judge: ${this.state.judge})`
-      : `Overseer mode: off (configured worker: ${this.state.worker}, judge: ${this.state.judge})`;
+      ? `Overseer mode: on (model: ${this.state.model}, judge: ${this.state.judge})`
+      : `Overseer mode: off (configured model: ${this.state.model}, judge: ${this.state.judge})`;
   }
 
   private onToggle(args: string, ctx: ExtensionCommandContext): void {
@@ -260,33 +260,33 @@ export class OverseerController {
     ctx.ui.notify(this.line(), "info");
   }
 
-  private onWorker(args: string, ctx: ExtensionCommandContext): void {
+  private onModel(args: string, ctx: ExtensionCommandContext): void {
     const s = args.trim();
     const low = s.toLowerCase();
     if (s === "" || low === "status") {
-      ctx.ui.notify(`Overseer worker: ${this.state.worker}`, "info");
+      ctx.ui.notify(`Overseer model: ${this.state.model}`, "info");
       return;
     }
     if (low === "reset") {
-      const worker = defaults(this.pi).worker;
-      this.save({ ...this.state, worker }, ctx);
-      ctx.ui.notify(`Overseer worker reset to ${worker}`, "info");
+      const model = defaults(this.pi).model;
+      this.save({ ...this.state, model }, ctx);
+      ctx.ui.notify(`Overseer model reset to ${model}`, "info");
       return;
     }
     if (low === "inherit") {
-      this.save({ ...this.state, worker: "inherit" }, ctx);
-      ctx.ui.notify("Overseer worker set to inherit", "info");
+      this.save({ ...this.state, model: "inherit" }, ctx);
+      ctx.ui.notify("Overseer model set to inherit", "info");
       return;
     }
     if (!validSpec(s)) {
       ctx.ui.notify(
-        "Worker must be 'inherit', provider/model[:thinking], 'reset', or 'status'.",
+        "Model must be 'inherit', provider/model[:thinking], 'reset', or 'status'.",
         "warning",
       );
       return;
     }
-    this.save({ ...this.state, worker: s }, ctx);
-    ctx.ui.notify(`Overseer worker set to ${s}`, "info");
+    this.save({ ...this.state, model: s }, ctx);
+    ctx.ui.notify(`Overseer model set to ${s}`, "info");
   }
 
   private onJudge(args: string, ctx: ExtensionCommandContext): void {
@@ -326,7 +326,7 @@ export class OverseerController {
       );
     }
     return {
-      ...splitWorkerSpec(this.state.worker),
+      ...splitModelSpec(this.state.model),
       contract,
       overseer: { enabled: true, judge: this.state.judge },
     };
@@ -356,12 +356,12 @@ export class OverseerController {
         return Promise.resolve();
       },
     });
-    this.pi.registerCommand("overseer-worker", {
+    this.pi.registerCommand("overseer-model", {
       description:
-        "Set or inspect the default overseer worker model (/overseer-worker <inherit|provider/model[:thinking]|reset|status>)",
+        "Set or inspect the default overseer child model (/overseer-model <inherit|provider/model[:thinking]|reset|status>)",
       getArgumentCompletions: (p) => completions(p, ["inherit", "status", "reset"]),
       handler: (args, ctx) => {
-        this.onWorker(args, ctx);
+        this.onModel(args, ctx);
         return Promise.resolve();
       },
     });

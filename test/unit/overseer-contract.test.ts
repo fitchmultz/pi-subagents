@@ -24,10 +24,10 @@ import { childRuntime } from "../../src/agent/child-runtime.ts";
 import { loadSDK, packageRoot } from "../../src/agent/host.ts";
 import {
   activeOverseer,
-  DEFAULT_OVERSEER_WORKER,
+  DEFAULT_OVERSEER_MODEL,
   OVERSEER_ENTRY_TYPE,
   OVERSEER_STATE_FILE,
-  splitWorkerSpec,
+  splitModelSpec,
 } from "../../src/agent/overseer.ts";
 import {
   activeContract,
@@ -187,7 +187,7 @@ async function createHarness(
 }
 
 nodeTest(
-  "overseer mode stays inert when off and persists branch-scoped toggle, worker, and judge state",
+  "overseer mode stays inert when off and persists branch-scoped toggle, model, and judge state",
   async (t) => {
     const harness = await createHarness(t, "overseer-branch");
     await harness.start();
@@ -210,25 +210,25 @@ nodeTest(
     await harness.runCommand("overseer", "on");
     assert.equal(harness.statuses.get("overseer"), "overseer");
 
-    await harness.runCommand("overseer-worker", "openai/gpt-6-sol:medium");
-    // Footer stays a clean `overseer` label even when a custom worker is set.
+    await harness.runCommand("overseer-model", "openai/gpt-6-sol:medium");
+    // Footer stays a clean `overseer` label even when a custom model is set.
     assert.equal(harness.statuses.get("overseer"), "overseer");
     assert.deepEqual(harness.getBranch().at(-1)?.data, {
       version: 1,
       enabled: true,
-      worker: "openai/gpt-6-sol:medium",
+      model: "openai/gpt-6-sol:medium",
       judge: "auto",
     });
-    await harness.runCommand("overseer-worker", "inherit");
+    await harness.runCommand("overseer-model", "inherit");
     assert.equal(harness.statuses.get("overseer"), "overseer");
     assert.deepEqual(harness.getBranch().at(-1)?.data, {
       version: 1,
       enabled: true,
-      worker: "inherit",
+      model: "inherit",
       judge: "auto",
     });
     assert.deepEqual(harness.notices.at(-1), {
-      message: "Overseer worker set to inherit",
+      message: "Overseer model set to inherit",
       level: "info",
     });
     await harness.runCommand("overseer-judge", "google/gemini-decision-1");
@@ -244,17 +244,32 @@ nodeTest(
     await harness.tree();
     assert.equal(harness.statuses.get("overseer"), "overseer");
 
-    // Settings `subagents.overseer.worker: "INHERIT"` normalizes to `inherit` and splitWorkerSpec omits defaultModel/defaultThinking.
+    // Settings `subagents.overseer.model: "INHERIT"` normalizes to `inherit` and splitModelSpec omits defaultModel/defaultThinking.
     const configured = await createHarness(t, "overseer-settings", {
-      subagents: { overseer: { enabled: true, worker: "INHERIT" } },
+      subagents: { overseer: { enabled: true, model: "INHERIT" } },
     });
     await configured.start();
-    await configured.runCommand("overseer-worker", "status");
+    await configured.runCommand("overseer-model", "status");
     assert.deepEqual(configured.notices.at(-1), {
-      message: "Overseer worker: inherit",
+      message: "Overseer model: inherit",
       level: "info",
     });
-    assert.deepEqual(splitWorkerSpec("INHERIT"), {});
+    assert.deepEqual(splitModelSpec("INHERIT"), {});
+
+    // Historical branch entries with `worker` still replay cleanly onto `model`.
+    configured.setBranch([
+      {
+        type: "custom",
+        customType: OVERSEER_ENTRY_TYPE,
+        data: { version: 1, enabled: true, worker: "openai/gpt-6-sol:low", judge: "auto" },
+      },
+    ]);
+    await configured.tree();
+    await configured.runCommand("overseer-model", "status");
+    assert.deepEqual(configured.notices.at(-1), {
+      message: "Overseer model: openai/gpt-6-sol:low",
+      level: "info",
+    });
   },
 );
 
@@ -372,7 +387,7 @@ nodeTest(
 );
 
 nodeTest(
-  "prepareLaunch resolves overseer default worker with thinking suffix and persists contract",
+  "prepareLaunch resolves overseer default model with thinking suffix and persists contract",
   async (t) => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "overseer-launch-"));
     t.after(() => {
@@ -423,7 +438,7 @@ nodeTest(
       agentDir: getPiAgentDir(),
       thinking: "medium",
       executionCwd: tempDir,
-      ...splitWorkerSpec(DEFAULT_OVERSEER_WORKER),
+      ...splitModelSpec(DEFAULT_OVERSEER_MODEL),
       contract,
       overseer: { enabled: true, judge: "auto" },
     });
@@ -469,16 +484,16 @@ nodeTest(
     assert.equal(unconstrained.scratchDir, undefined);
     assert.equal(fs.existsSync(path.join(base, unconstrained.id, "scratch")), false);
 
-    // Configuring an explicit overseer worker (`provider/model:thinking`) overrides omitted model/thinking.
+    // Configuring an explicit overseer model (`provider/model:thinking`) overrides omitted model/thinking.
     const launch = await prepareLaunch({
-      input: { prompt: "Implement tag store query on worker" },
+      input: { prompt: "Implement tag store query" },
       context,
       base,
       owner: "parent-session",
       agentDir: getPiAgentDir(),
       thinking: "medium",
       executionCwd: tempDir,
-      ...splitWorkerSpec("google/gemini-4-hydrogen:xhigh"),
+      ...splitModelSpec("google/gemini-4-hydrogen:xhigh"),
       contract,
       overseer: { enabled: true, judge: "auto" },
     });
@@ -486,7 +501,7 @@ nodeTest(
     assert.equal(launch.model, "gemini-4-hydrogen");
     assert.equal(launch.thinking, "xhigh");
 
-    // Explicit per-call thinking overrides a configured worker's :xhigh suffix without conflict.
+    // Explicit per-call thinking overrides a configured model's :xhigh suffix without conflict.
     const overridden = await prepareLaunch({
       input: { prompt: "Quick tweak", thinking: "low" },
       context,
@@ -495,7 +510,7 @@ nodeTest(
       agentDir: getPiAgentDir(),
       thinking: "medium",
       executionCwd: tempDir,
-      ...splitWorkerSpec("google/gemini-4-hydrogen:xhigh"),
+      ...splitModelSpec("google/gemini-4-hydrogen:xhigh"),
       contract,
       overseer: { enabled: true, judge: "auto" },
     });
@@ -1508,7 +1523,7 @@ nodeTest(
       {
         type: "custom",
         customType: OVERSEER_ENTRY_TYPE,
-        data: { version: 1, enabled: true, worker: DEFAULT_OVERSEER_WORKER, judge: "auto" },
+        data: { version: 1, enabled: true, model: DEFAULT_OVERSEER_MODEL, judge: "auto" },
       },
     ]);
     await harness.tree();

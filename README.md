@@ -47,15 +47,15 @@ agent_runs({ action: "stop", id: "<run-id>" });
 ## Overseer mode (opt-in)
 
 Toggle `/overseer` (or pass `--overseer`) to add contract scoping, mid-run
-review, and completion diff review to `delegate` (`worker` defaults to `inherit`,
-preserving normal `delegate` model/effort inheritance unless configured via `/overseer-worker`
+review, and completion diff review to `delegate` (`model` defaults to `inherit`,
+preserving normal `delegate` model/thinking inheritance unless configured via `/overseer-model`
 or `subagents.overseer` in settings). When off, `delegate` and `agent_runs` behave identically
 to default mode.
 
 When enabled:
 
 - `delegate` requires `contract` (`scope`, `verification`, and optional `baseBranch`,
-  `requiredPrimitives`, `nonGoals`); omitted `model`/`thinking` inherit normally unless an overseer worker is configured.
+  `requiredPrimitives`, `nonGoals`); omitted `model`/`thinking` inherit normally unless an overseer model is configured.
 - Child sessions block out-of-scope edit tool calls before writing. Git checks can identify
   out-of-scope changes, and repeated tool errors have their own review notice.
 - At diff checkpoints, an available decision classifier can pause the child and ask the parent
