@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.70 - 2026-11-23
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(overseer): replace contracts with checkpoints and grounded skeptic (PSA-209) (#497) ([5c05204](https://github.com/fitchmultz/pi-subagents/commit/5c05204ac0c0235406395573455eb92035265e85))
+
+### What's Changed
+
+- feat(overseer): replace contracts with checkpoints and grounded skeptic (PSA-209) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/497
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.69...v0.52.70
+
 ## 0.52.69 - 2026-11-23
 
 <!-- npm-release:unreleased:start -->
