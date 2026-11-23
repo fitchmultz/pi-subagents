@@ -109,6 +109,15 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
       "if git push; then echo ok; fi",
       "git status # owner's note — don't push\ngit push",
       "cat > notes.md <<'EOF'\nWe won't merge yet.\nEOF\ngh pr merge 12 --squash",
+      "cat > f <<END-OF-FILE\nbody\nEND-OF-FILE\ngh pr merge 1",
+      'read -r out <<< "$state"\ngit push',
+      "cat <<<note\ngh pr merge 42",
+      "echo '<<EOF'\ngit push",
+      "grep -n '<<EOF' docs/reference.md\ngit push",
+      "echo $((1<<shift))\ngit push",
+      "bash <<'EOF'\ncd repo\ngit push\nEOF",
+      "sh <<'EOF'\ncd repo\ngh pr merge 1\nEOF",
+      "sudo bash -s <<EOF\ngit push\nEOF",
     ]) {
       assert.equal(isHighImpactBash(cmd), true, cmd);
     }
@@ -118,6 +127,9 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
       "gh -R owner/repo pr view 42",
       "git status --short",
       "git commit -m 'local work'",
+      'git commit -m "feat: gate bash\n\ngit push and gh pr merge now need approval."',
+      'gh pr create --body "Before:\n\ngh pr merge 12\n\nAfter: gated"',
+      "git commit -m 'subject\n\nnpm publish is gated'",
       "npm run test:unit",
       "npm run publish",
       "rg -n foo src/",

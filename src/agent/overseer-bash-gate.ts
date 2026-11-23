@@ -167,7 +167,7 @@ function isHighImpactSegment(rawSegment: string, depth: number): boolean {
 }
 
 const LINE_SEPARATORS = new Set([";", "|", "&"]);
-const HEREDOC_START = /<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/gu;
+const HEREDOC_AT_POS = /^<<(-)?[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"]+))/u;
 
 type QuoteChar = "'" | '"' | null;
 
@@ -175,6 +175,24 @@ interface LineScanState {
   readonly quote: QuoteChar;
   readonly escaped: boolean;
   readonly inside: boolean;
+}
+
+interface HeredocOpener {
+  readonly delimiter: string;
+  readonly stripTabs: boolean;
+  readonly end: number;
+}
+
+interface PendingHeredoc {
+  readonly delimiter: string;
+  readonly stripTabs: boolean;
+  readonly isShellBody: boolean;
+  readonly bodyLines: string[];
+}
+
+interface ShellScanResult {
+  readonly segments: readonly string[];
+  readonly shellBodies: readonly string[];
 }
 
 function nextQuoteState(ch: string, quote: QuoteChar): QuoteChar {
@@ -205,67 +223,164 @@ function isCommentStart(line: string, index: number): boolean {
   return index === 0 || /[\s;|&()]/u.test(line[index - 1] ?? "");
 }
 
-function collectHeredocDelimiters(line: string, pending: string[]): void {
-  for (const match of line.matchAll(HEREDOC_START)) {
-    const delimiter = match[1] ?? match[2] ?? match[3];
-    if (delimiter !== undefined) {
-      pending.push(delimiter);
-    }
+function updateArithDepth(line: string, index: number, depth: number): number {
+  if (line.startsWith("$((", index)) {
+    return depth + 1;
   }
+  if (depth > 0 && line.startsWith("))", index)) {
+    return depth - 1;
+  }
+  return depth;
 }
 
-/** Splits one non-heredoc shell line on unquoted `;`, `|`, `&`, stopping at word-start `#` comments. */
-function splitLineSegments(line: string): string[] {
-  const segments: string[] = [];
-  let start = 0;
-  let state: LineScanState = { quote: null, escaped: false, inside: false };
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i] ?? "";
-    state = advanceScanState(ch, state);
-    if (state.inside) {
-      continue;
-    }
-    if (isCommentStart(line, i)) {
-      segments.push(line.slice(start, i));
-      return segments;
-    }
-    if (LINE_SEPARATORS.has(ch)) {
-      segments.push(line.slice(start, i));
-      start = i + 1;
-    }
+function parseHeredocOpener(line: string, index: number): HeredocOpener | undefined {
+  if (!line.startsWith("<<", index) || line[index - 1] === "<" || line[index + 2] === "<") {
+    return undefined;
   }
-  segments.push(line.slice(start));
-  return segments;
+  const match = HEREDOC_AT_POS.exec(line.slice(index));
+  if (match === null) {
+    return undefined;
+  }
+  const delimiter = match[2] ?? match[3] ?? match[4];
+  if (delimiter === undefined) {
+    return undefined;
+  }
+  return { delimiter, stripTabs: match[1] === "-", end: index + match[0].length };
+}
+
+function segmentIsShell(rawSegment: string): boolean {
+  const rawCmd = unwrapCommandTokens(tokenizeSegment(rawSegment))[0];
+  return rawCmd !== undefined && SHELL_COMMANDS.has(path.posix.basename(rawCmd));
+}
+
+function isHeredocClosingLine(rawLine: string, heredoc: PendingHeredoc): boolean {
+  const candidate = heredoc.stripTabs ? rawLine.replace(/^\t+/u, "") : rawLine;
+  return candidate === heredoc.delimiter;
 }
 
 /**
- * Linear quote-, comment-, and heredoc-aware segment splitter:
- * - ignores heredoc data bodies until their closing delimiter
- * - stops at unquoted `#` comments at end of line
- * - keeps intra-line quotes intact so `bash -c 'a && git push'` stays together and `echo 'a; git push'` stays echo.
+ * Linear quote-, comment-, and heredoc-aware segment scanner:
+ * - carries open quotes across newlines so multi-line quoted arguments stay one segment
+ * - stops at unquoted word-start `#` comments so comment apostrophes never affect later lines
+ * - detects unquoted heredocs (excluding `<<<` and `$((...))`), skipping data bodies while
+ *   collecting heredoc scripts fed to a shell (`bash <<'EOF'`, `sh <<'EOF'`, etc.) for scanning.
  */
-function splitShellSegments(command: string): string[] {
-  const segments: string[] = [];
-  const pendingHeredocs: string[] = [];
-  for (const rawLine of command.split(/\r?\n/u)) {
-    const activeDelimiter = pendingHeredocs[0];
-    if (activeDelimiter !== undefined) {
-      if (rawLine.trim() === activeDelimiter) {
-        pendingHeredocs.shift();
+class ShellLineScanner {
+  private scanState: LineScanState = { quote: null, escaped: false, inside: false };
+  private arithDepth = 0;
+  private current = "";
+  private segmentOpeners: HeredocOpener[] = [];
+  private readonly segments: string[] = [];
+  private readonly pendingHeredocs: PendingHeredoc[] = [];
+  private readonly shellBodies: string[] = [];
+
+  scan(command: string): ShellScanResult {
+    for (const rawLine of command.split(/\r?\n/u)) {
+      if (this.pendingHeredocs.length > 0) {
+        this.consumeHeredocLine(rawLine);
+      } else {
+        this.scanLine(rawLine);
       }
-      continue;
     }
-    const lineSegments = splitLineSegments(rawLine);
-    for (const seg of lineSegments) {
-      collectHeredocDelimiters(seg, pendingHeredocs);
-      segments.push(seg);
+    this.flushSegment();
+    for (const heredoc of this.pendingHeredocs) {
+      if (heredoc.isShellBody && heredoc.bodyLines.length > 0) {
+        this.shellBodies.push(heredoc.bodyLines.join("\n"));
+      }
+    }
+    return { segments: this.segments, shellBodies: this.shellBodies };
+  }
+
+  private consumeHeredocLine(rawLine: string): void {
+    const active = this.pendingHeredocs[0];
+    if (active === undefined) {
+      return;
+    }
+    if (isHeredocClosingLine(rawLine, active)) {
+      this.pendingHeredocs.shift();
+      if (active.isShellBody && active.bodyLines.length > 0) {
+        this.shellBodies.push(active.bodyLines.join("\n"));
+      }
+      return;
+    }
+    if (active.isShellBody) {
+      active.bodyLines.push(rawLine);
     }
   }
-  return segments;
+
+  private flushSegment(): void {
+    const seg = this.current;
+    this.current = "";
+    if (this.segmentOpeners.length > 0) {
+      const isShellBody = segmentIsShell(seg);
+      for (const opener of this.segmentOpeners) {
+        this.pendingHeredocs.push({
+          delimiter: opener.delimiter,
+          stripTabs: opener.stripTabs,
+          isShellBody,
+          bodyLines: [],
+        });
+      }
+      this.segmentOpeners = [];
+    }
+    if (seg.length > 0) {
+      this.segments.push(seg);
+    }
+  }
+
+  private scanLine(line: string): void {
+    let i = 0;
+    while (i < line.length) {
+      const next = this.stepChar(line, i);
+      if (next < 0) {
+        return;
+      }
+      i = next;
+    }
+    const continued = this.scanState.escaped;
+    this.scanState = { quote: this.scanState.quote, escaped: false, inside: false };
+    if (this.scanState.quote !== null || continued) {
+      this.current += "\n";
+    } else {
+      this.flushSegment();
+    }
+  }
+
+  private stepChar(line: string, i: number): number {
+    const ch = line[i] ?? "";
+    this.scanState = advanceScanState(ch, this.scanState);
+    if (this.scanState.inside) {
+      this.current += ch;
+      return i + 1;
+    }
+    if (isCommentStart(line, i)) {
+      this.flushSegment();
+      return -1;
+    }
+    this.arithDepth = updateArithDepth(line, i, this.arithDepth);
+    const opener = this.arithDepth === 0 ? parseHeredocOpener(line, i) : undefined;
+    if (opener !== undefined) {
+      this.segmentOpeners.push(opener);
+      this.current += line.slice(i, opener.end);
+      return opener.end;
+    }
+    if (LINE_SEPARATORS.has(ch)) {
+      this.flushSegment();
+      return i + 1;
+    }
+    this.current += ch;
+    return i + 1;
+  }
 }
 
 function scanHighImpactBash(command: string, depth: number): boolean {
-  return splitShellSegments(command).some((segment) => isHighImpactSegment(segment, depth));
+  const { segments, shellBodies } = new ShellLineScanner().scan(command);
+  if (segments.some((segment) => isHighImpactSegment(segment, depth))) {
+    return true;
+  }
+  return (
+    depth < MAX_SHELL_NESTING && shellBodies.some((body) => scanHighImpactBash(body, depth + 1))
+  );
 }
 
 export function isHighImpactBash(command: string): boolean {
