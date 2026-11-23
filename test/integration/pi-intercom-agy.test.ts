@@ -22,6 +22,7 @@ import { agyPeerId, agyWakeDir, agyWakeFilePath } from "../../src/pi-intercom/ag
 import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 import { agyControlSocketPath } from "../../src/pi-intercom/broker/paths.ts";
 import { RECIPIENT_TURN_FAILED_ATTACHMENT } from "../../src/pi-intercom/runtime-types.ts";
+import { intercomSchema } from "../../src/pi-intercom/tool-schemas.ts";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 import { json, record, text } from "../support/assertions.ts";
 
@@ -165,7 +166,22 @@ nodeTest(
     const toolsList = await mcp.call("tools/list");
     const tools = record(toolsList.result).tools;
     assert.ok(Array.isArray(tools) && tools.length === 1);
-    assert.equal(record(tools[0]).name, "intercom");
+    const tool = record(tools[0]);
+    assert.equal(tool.name, "intercom");
+    const wireSchema = record(tool.inputSchema);
+    const wireProps = record(wireSchema.properties);
+    const piKeys = Object.keys(intercomSchema.properties)
+      .filter((key) => key !== "contract")
+      .sort();
+    assert.deepEqual(Object.keys(wireProps).sort(), piKeys);
+    assert.deepEqual(wireSchema.required, intercomSchema.required);
+    assert.equal(wireSchema.additionalProperties, false);
+    assert.equal(
+      record(wireProps.offset).minimum,
+      record(intercomSchema.properties.offset).minimum,
+    );
+    assert.equal(record(wireProps.limit).minimum, record(intercomSchema.properties.limit).minimum);
+    assert.equal(record(wireProps.limit).maximum, record(intercomSchema.properties.limit).maximum);
 
     const convId = "conv-main-11112222";
     const peerId = agyPeerId(convId);

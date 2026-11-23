@@ -10,7 +10,7 @@ const SUPPORTED_MCP_PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024
 const DEFAULT_MCP_PROTOCOL = SUPPORTED_MCP_PROTOCOLS[0];
 const SERVER_NAME = "pi-intercom";
 
-export const AGY_INTERCOM_INPUT_SCHEMA = obj({
+const AGY_INTERCOM_INPUT_SCHEMA = obj({
   action: union([
     lit("list"),
     lit("send"),
