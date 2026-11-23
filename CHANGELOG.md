@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.69 - 2026-11-23
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(intercom): add Antigravity (agy) peer adapter (PSA-213) (#496) ([e85e792](https://github.com/fitchmultz/pi-subagents/commit/e85e792740751b7ba8354ad394c18edc96abd486))
+
+### What's Changed
+
+- feat(intercom): add Antigravity (agy) peer adapter (PSA-213) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/496
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.68...v0.52.69
+
 ## 0.52.68 - 2026-11-22
 
 <!-- npm-release:unreleased:start -->
