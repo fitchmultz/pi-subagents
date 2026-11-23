@@ -110,6 +110,8 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
       "git status # owner's note — don't push\ngit push",
       "cat > notes.md <<'EOF'\nWe won't merge yet.\nEOF\ngh pr merge 12 --squash",
       "cat > f <<END-OF-FILE\nbody\nEND-OF-FILE\ngh pr merge 1",
+      "cat > main.cpp <<C++\nint main() { return 0; }\nC++\ngit push origin main",
+      "cat > f <<EOF[1]\nbody\nEOF[1]\ngit push",
       'read -r out <<< "$state"\ngit push',
       "cat <<<note\ngh pr merge 42",
       "echo '<<EOF'\ngit push",

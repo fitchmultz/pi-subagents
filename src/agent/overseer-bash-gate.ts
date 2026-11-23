@@ -167,7 +167,7 @@ function isHighImpactSegment(rawSegment: string, depth: number): boolean {
 }
 
 const LINE_SEPARATORS = new Set([";", "|", "&"]);
-const HEREDOC_AT_POS = /^<<(-)?[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_.-]*))/u;
+const HEREDOC_AT_POS = /^<<(-)?[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"=][^\s;|&()<>'"]*))/u;
 
 type QuoteChar = "'" | '"' | null;
 
