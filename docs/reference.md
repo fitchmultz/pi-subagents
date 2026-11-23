@@ -536,6 +536,25 @@ finding is dropped automatically so content-free pauses cannot happen.
   If all candidates fail, `judge-unavailable.json` is recorded and the child continues normally so
   structural checkpoints still run.
 
+### Parent-side skeptic
+
+When `/overseer` is enabled and `/overseer-judge` is not `off`, the main session also runs a
+grounded skeptic `tool_call` check before:
+
+- `delegate` calls,
+- `agent_runs` `action="continue"` calls that carry a `prompt`, and
+- high-impact `bash` commands (`gh pr merge`, `gh release create|delete`, `git push`,
+  `git reset --hard`, `git clean -f`, `git branch -D`, `npm|pnpm|yarn publish`,
+  `wrangler deploy`, `chezmoi apply`).
+
+Ordinary local commands (reads, tests, searches, local commits) skip the check. Every finding must
+quote verbatim both an `ownerExcerpt` (>= 6 chars) from the active parent branch's user messages
+and an `actionExcerpt` (>= 6 chars) from the proposed tool input (`validateParentFindings`);
+ungrounded findings are dropped automatically. Grounded `blocking: true` findings block the tool
+call with the quoted contradiction; non-blocking findings append an `[overseer-note]` without
+blocking; model unavailability fails open with a warning notification so the main session is never
+deadlocked.
+
 ### Answering a checkpoint pause
 
 Answer any pause with `agent_runs`:

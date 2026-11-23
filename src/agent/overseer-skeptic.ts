@@ -108,17 +108,17 @@ const SKEPTIC_SYSTEM_PROMPT = [
   'Submit your verdict by calling the `report_findings` tool (or if unavailable, respond ONLY with valid JSON: {"action":"ok"|"flag","findings":[...]}).',
 ].join("\n");
 
-const modelLabel = (model: Model<Api>, thinking?: ThinkingLevel): string =>
+export const modelLabel = (model: Model<Api>, thinking?: ThinkingLevel): string =>
   thinking === undefined
     ? `${model.provider}/${model.id}`
     : `${model.provider}/${model.id}:${thinking}`;
 
-const nonEmpty = (text: string | undefined, fallback: string): string => {
+export const nonEmpty = (text: string | undefined, fallback: string): string => {
   const trimmed = text?.trim();
   return trimmed !== undefined && trimmed.length > 0 ? trimmed : fallback;
 };
 
-class SkepticUnavailableError extends Error {
+export class SkepticUnavailableError extends Error {
   readonly failed: readonly JudgeFailure[];
   readonly reason: string | undefined;
 
@@ -146,7 +146,7 @@ function buildSkepticUserMessage(input: SkepticEvaluationInput): string {
   return sections.join("\n\n");
 }
 
-function extractJsonObject(text: string): unknown {
+export function extractJsonObject(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/iu.exec(trimmed);
   const candidate = fenced?.[1]?.trim() ?? trimmed;
@@ -238,14 +238,14 @@ export function validateGroundedFindings(
   return { ok: true, blocking, notes, droppedUngrounded };
 }
 
-function assistantText(message: AssistantMessage): string {
+export function assistantText(message: AssistantMessage): string {
   return message.content
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
 }
 
-function resolveCandidates(
+export function resolveCandidates(
   registry: SkepticModelRegistry,
   spec: string,
   failed: ReadonlySet<string>,

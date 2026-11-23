@@ -49,6 +49,7 @@ import { BackgroundReporter } from "../shared/background-reporting.ts";
 import { CompletionSchedule } from "./completion-schedule.ts";
 import { notifyInventory } from "./inventory-events.ts";
 import { OverseerController } from "./overseer.ts";
+import { attachParentSkeptic } from "./overseer-parent-skeptic.ts";
 import { resolveActiveEscalation } from "./overseer-pause.ts";
 
 class AgentRuntime {
@@ -435,6 +436,7 @@ class AgentRuntime {
     ]);
     if (!this.child) {
       this.overseer.register();
+      attachParentSkeptic(this.pi, () => this.overseer.current);
     }
     serveParked(
       this.pi,
