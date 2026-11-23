@@ -77,8 +77,15 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
   nodeIt("targets only delegate, continue-with-prompt, and high-impact bash commands", () => {
     assert.equal(isHighImpactBash("gh-personal pr merge 497 --squash"), true);
     assert.equal(isHighImpactBash("git push -u origin main"), true);
+    assert.equal(isHighImpactBash("git -C wt push origin feat"), true);
     assert.equal(isHighImpactBash("git reset --hard HEAD~1"), true);
+    assert.equal(isHighImpactBash("git reset HEAD~1 --hard"), true);
+    assert.equal(isHighImpactBash("git clean -fd"), true);
+    assert.equal(isHighImpactBash("git clean -fdx"), true);
+    assert.equal(isHighImpactBash("git clean --force"), true);
     assert.equal(isHighImpactBash("npm publish"), true);
+    assert.equal(isHighImpactBash("pnpm -r publish"), true);
+    assert.equal(isHighImpactBash("npm --workspace pkg publish"), true);
     assert.equal(isHighImpactBash("wrangler deploy"), true);
     assert.equal(isHighImpactBash("chezmoi apply"), true);
 
@@ -87,15 +94,24 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
     assert.equal(isHighImpactBash("npm run test:unit"), false);
     assert.equal(isHighImpactBash("rg -n foo src/"), false);
 
-    assert.equal(
-      extractParentAction("delegate", { prompt: "Implement X", name: "x" })?.kind,
-      "delegate",
-    );
-    assert.equal(
-      extractParentAction("agent_runs", { action: "continue", id: "r1", prompt: "Merge now" })
-        ?.kind,
-      "continue",
-    );
+    const delegated = extractParentAction("delegate", {
+      prompt: "Implement X",
+      name: "x",
+      cwd: "/repo/main",
+      readOnly: false,
+    });
+    assert.ok(delegated !== undefined);
+    assert.equal(delegated.kind, "delegate");
+    assert.match(delegated.text, /"cwd":"\/repo\/main"/u);
+    assert.match(delegated.text, /"readOnly":false/u);
+    const continued = extractParentAction("agent_runs", {
+      action: "continue",
+      id: "r1",
+      prompt: "Merge now",
+    });
+    assert.ok(continued !== undefined);
+    assert.equal(continued.kind, "continue");
+    assert.match(continued.text, /"id":"r1"/u);
     assert.equal(extractParentAction("agent_runs", { action: "continue", id: "r1" }), undefined);
     assert.equal(extractParentAction("agent_runs", { action: "list" }), undefined);
     assert.equal(extractParentAction("read", { path: "README.md" }), undefined);
@@ -318,6 +334,49 @@ nodeDescribe("overseer parent-side skeptic tool_call gate", () => {
       );
       assert.equal(skipped, undefined);
       assert.equal(calls, beforeOff);
+
+      // 6. Launch arguments (cwd, readOnly) are grounded even when the prompt itself is benign.
+      state = { enabled: true, model: "inherit", judge: "auto" };
+      manager.appendMessage({
+        role: "user",
+        content: "Keep children out of /repo/main and read-only.",
+        timestamp: 3,
+      });
+      const argRegistry = makeRegistry([haiku], async () =>
+        fakeAssistant([
+          {
+            type: "toolCall",
+            id: "tc-args",
+            name: "report_parent_findings",
+            arguments: {
+              action: "block",
+              findings: [
+                {
+                  kind: "contradicts_owner",
+                  ownerExcerpt: "Keep children out of /repo/main and read-only.",
+                  actionExcerpt: '"cwd":"/repo/main","readOnly":false',
+                  why: "Launches an editing child in /repo/main despite owner hold.",
+                  blocking: true,
+                },
+              ],
+            },
+          },
+        ]),
+      );
+      Object.assign(native.context.modelRegistry, argRegistry);
+      const blockedArgs = record(
+        await toolCall(
+          {
+            type: "tool_call",
+            toolCallId: "c6",
+            toolName: "delegate",
+            input: { prompt: "Investigate the flaky test", cwd: "/repo/main", readOnly: false },
+          },
+          native.context,
+        ),
+      );
+      assert.equal(blockedArgs.block, true);
+      assert.match(String(blockedArgs.reason), /"cwd":"\/repo\/main","readOnly":false/u);
     },
   );
 

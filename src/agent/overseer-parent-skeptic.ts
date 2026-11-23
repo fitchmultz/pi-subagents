@@ -21,12 +21,18 @@ import { Type } from "./typebox.ts";
 
 const MIN_EXCERPT_CHARS = 6;
 
+const GIT_GLOBAL_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree)(?:=|\s+)\S+))*`;
+const CLI_OPTS = String.raw`(?:\s+(?:-[a-zA-Z]+|--[\w-]+(?:=\S+|\s+\S+)?))*`;
+
 const HIGH_IMPACT_BASH_PATTERNS: readonly RegExp[] = [
   /\bgh(?:-[\w-]+)?\s+(?:pr\s+merge|release\s+(?:create|delete))\b/u,
-  /\bgit\s+(?:push|reset\s+--hard|clean\s+-[a-z]*f|branch\s+-D)\b/u,
-  /\b(?:npm|pnpm|yarn)\s+publish\b/u,
-  /\bwrangler\s+deploy\b/u,
-  /\bchezmoi\s+apply\b/u,
+  new RegExp(
+    String.raw`\bgit${GIT_GLOBAL_OPTS}\s+(?:push\b|reset\b[^\n;&|]*--hard\b|clean\b[^\n;&|]*(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\b|branch\b[^\n;&|]*(?:-D\b|--delete\b[^\n;&|]*--force\b|--force\b[^\n;&|]*--delete\b))`,
+    "u",
+  ),
+  new RegExp(String.raw`\b(?:npm|pnpm|yarn)${CLI_OPTS}\s+publish\b`, "u"),
+  new RegExp(String.raw`\bwrangler${CLI_OPTS}\s+deploy\b`, "u"),
+  new RegExp(String.raw`\bchezmoi${CLI_OPTS}\s+apply\b`, "u"),
 ];
 
 export const parentFindingKindSchema = Type.Union([
@@ -104,17 +110,32 @@ function readString(record: Record<string, unknown>, key: string): string | unde
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+const ACTION_META_KEYS = ["id", "name", "cwd", "readOnly", "context", "model", "thinking"] as const;
+
+function formatActionInput(input: Record<string, unknown>, prompt: string): string {
+  const meta: Record<string, unknown> = {};
+  for (const key of ACTION_META_KEYS) {
+    if (input[key] !== undefined) {
+      meta[key] = input[key];
+    }
+  }
+  return Object.keys(meta).length === 0
+    ? prompt
+    : `Arguments: ${JSON.stringify(meta)}\nPrompt:\n${prompt}`;
+}
+
 function promptAction(
   kind: "delegate" | "continue",
   baseLabel: string,
   suffix: string | undefined,
-  prompt: string | undefined,
+  input: Record<string, unknown>,
 ): ParentAction | undefined {
+  const prompt = readString(input, "prompt");
   if (prompt === undefined) {
     return undefined;
   }
   const label = suffix === undefined ? baseLabel : `${baseLabel} (${suffix})`;
-  return { kind, label, text: prompt };
+  return { kind, label, text: formatActionInput(input, prompt) };
 }
 
 export function extractParentAction(
@@ -122,20 +143,10 @@ export function extractParentAction(
   input: Record<string, unknown>,
 ): ParentAction | undefined {
   if (toolName === "delegate") {
-    return promptAction(
-      "delegate",
-      "delegate",
-      readString(input, "name"),
-      readString(input, "prompt"),
-    );
+    return promptAction("delegate", "delegate", readString(input, "name"), input);
   }
   if (toolName === "agent_runs" && input.action === "continue") {
-    return promptAction(
-      "continue",
-      "agent_runs continue",
-      readString(input, "id"),
-      readString(input, "prompt"),
-    );
+    return promptAction("continue", "agent_runs continue", readString(input, "id"), input);
   }
   if (toolName === "bash") {
     const command = readString(input, "command");
