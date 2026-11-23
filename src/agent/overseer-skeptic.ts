@@ -35,7 +35,7 @@ const PREFERRED_AUTO_SKEPTICS: readonly (readonly [string, string, ThinkingLevel
   ["google", "gemini-3.8-flash", "medium"],
 ];
 
-const MIN_EXCERPT_CHARS = 6;
+export const MIN_EXCERPT_CHARS = 6;
 
 const skepticResponseSchema = Type.Object({
   action: Type.Union([Type.Literal("ok"), Type.Literal("flag")]),

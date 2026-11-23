@@ -1,6 +1,7 @@
 import * as path from "node:path";
 
 const GIT_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
+const GH_VALUE_FLAGS = new Set(["-R", "--repo", "-H", "--hostname"]);
 const SHELL_PREFIX_WORDS = new Set(["if", "then", "elif", "else", "do", "!"]);
 const COMMAND_WRAPPERS = new Set([
   "sudo",
@@ -25,14 +26,18 @@ const CLI_GATED_SUBCOMMANDS = new Map<string, string>([
   ["chezmoi", "apply"],
 ]);
 
-function nextGitSubcommand(tokens: readonly string[]): number {
-  let i = 1;
+function nextSubcommand(
+  tokens: readonly string[],
+  start: number,
+  valueFlags: ReadonlySet<string>,
+): number {
+  let i = start;
   while (i < tokens.length) {
     const token = tokens[i];
     if (token === undefined || !token.startsWith("-")) {
       return i;
     }
-    i += GIT_VALUE_FLAGS.has(token) ? 2 : 1;
+    i += valueFlags.has(token) ? 2 : 1;
   }
   return tokens.length;
 }
@@ -60,7 +65,7 @@ function hasGatedSubcommand(tokens: readonly string[], target: string): boolean 
 }
 
 function isHighImpactGit(tokens: readonly string[]): boolean {
-  const index = nextGitSubcommand(tokens);
+  const index = nextSubcommand(tokens, 1, GIT_VALUE_FLAGS);
   const sub = tokens[index];
   const rest = tokens.slice(index + 1);
   if (sub === "push") {
@@ -82,7 +87,9 @@ function isHighImpactGit(tokens: readonly string[]): boolean {
 }
 
 function isHighImpactGh(tokens: readonly string[]): boolean {
-  const [, sub, action] = tokens;
+  const subIndex = nextSubcommand(tokens, 1, GH_VALUE_FLAGS);
+  const sub = tokens[subIndex];
+  const action = tokens[nextSubcommand(tokens, subIndex + 1, GH_VALUE_FLAGS)];
   return (
     (sub === "pr" && action === "merge") ||
     (sub === "release" && (action === "create" || action === "delete"))

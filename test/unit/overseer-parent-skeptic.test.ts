@@ -75,47 +75,58 @@ function makeRegistry(
 
 nodeDescribe("overseer parent-side skeptic classification and grounding", () => {
   nodeIt("targets only delegate, continue-with-prompt, and high-impact bash commands", () => {
-    assert.equal(isHighImpactBash("gh-personal pr merge 497 --squash"), true);
-    assert.equal(isHighImpactBash("git push -u origin main"), true);
-    assert.equal(isHighImpactBash("git -C wt push origin feat"), true);
-    assert.equal(isHighImpactBash("git reset --hard HEAD~1"), true);
-    assert.equal(isHighImpactBash("git reset HEAD~1 --hard"), true);
-    assert.equal(isHighImpactBash("git clean -fd"), true);
-    assert.equal(isHighImpactBash("git clean -fdx"), true);
-    assert.equal(isHighImpactBash("git clean --force"), true);
-    assert.equal(isHighImpactBash("npm publish"), true);
-    assert.equal(isHighImpactBash("pnpm -r publish"), true);
-    assert.equal(isHighImpactBash("npm --workspace pkg publish"), true);
-    assert.equal(isHighImpactBash("npm --prefix packages/a publish"), true);
-    assert.equal(isHighImpactBash("yarn --cwd packages/a publish"), true);
-    assert.equal(isHighImpactBash("wrangler deploy"), true);
-    assert.equal(isHighImpactBash("npx wrangler deploy"), true);
-    assert.equal(isHighImpactBash("chezmoi apply"), true);
-    assert.equal(isHighImpactBash("chezmoi --source ~/.dotfiles apply"), true);
-    assert.equal(isHighImpactBash("chezmoi -S ~/.dotfiles apply"), true);
-    assert.equal(isHighImpactBash("sudo git push origin main"), true);
-    assert.equal(isHighImpactBash("/usr/bin/git push origin main"), true);
-    assert.equal(isHighImpactBash("/usr/local/bin/gh pr merge 42"), true);
-    assert.equal(isHighImpactBash("bash -c 'git push origin main'"), true);
-    assert.equal(isHighImpactBash("bash -lc 'cd repo && git push origin main'"), true);
-    assert.equal(isHighImpactBash("(cd repo && git push)"), true);
-    assert.equal(isHighImpactBash("env FOO=1 git push"), true);
-    assert.equal(isHighImpactBash("if git push; then echo ok; fi"), true);
-    assert.equal(isHighImpactBash("git status # owner's note — don't push\ngit push"), true);
-    assert.equal(
-      isHighImpactBash("cat > notes.md <<'EOF'\nWe won't merge yet.\nEOF\ngh pr merge 12 --squash"),
-      true,
-    );
-    assert.equal(isHighImpactBash("cat > notes.md <<EOF\ngit push\nEOF\ngit status"), false);
+    for (const cmd of [
+      "gh-personal pr merge 497 --squash",
+      "gh -R owner/repo pr merge 42",
+      "gh --repo o/r pr merge",
+      "gh-personal -R fitchmultz/x pr merge 3",
+      "gh -R a/b release create v1",
+      "gh pr -R owner/repo merge 42",
+      "git push -u origin main",
+      "git -C wt push origin feat",
+      "git reset --hard HEAD~1",
+      "git reset HEAD~1 --hard",
+      "git clean -fd",
+      "git clean -fdx",
+      "git clean --force",
+      "npm publish",
+      "pnpm -r publish",
+      "npm --workspace pkg publish",
+      "npm --prefix packages/a publish",
+      "yarn --cwd packages/a publish",
+      "wrangler deploy",
+      "npx wrangler deploy",
+      "chezmoi apply",
+      "chezmoi --source ~/.dotfiles apply",
+      "chezmoi -S ~/.dotfiles apply",
+      "sudo git push origin main",
+      "/usr/bin/git push origin main",
+      "/usr/local/bin/gh pr merge 42",
+      "bash -c 'git push origin main'",
+      "bash -lc 'cd repo && git push origin main'",
+      "(cd repo && git push)",
+      "env FOO=1 git push",
+      "if git push; then echo ok; fi",
+      "git status # owner's note — don't push\ngit push",
+      "cat > notes.md <<'EOF'\nWe won't merge yet.\nEOF\ngh pr merge 12 --squash",
+    ]) {
+      assert.equal(isHighImpactBash(cmd), true, cmd);
+    }
 
-    assert.equal(isHighImpactBash("git status --short"), false);
-    assert.equal(isHighImpactBash("git commit -m 'local work'"), false);
-    assert.equal(isHighImpactBash("npm run test:unit"), false);
-    assert.equal(isHighImpactBash("npm run publish"), false);
-    assert.equal(isHighImpactBash("rg -n foo src/"), false);
-    assert.equal(isHighImpactBash("echo 'git push'"), false);
-    assert.equal(isHighImpactBash("echo 'foo; git push'"), false);
-    assert.equal(isHighImpactBash("# git push"), false);
+    for (const cmd of [
+      "cat > notes.md <<EOF\ngit push\nEOF\ngit status",
+      "gh -R owner/repo pr view 42",
+      "git status --short",
+      "git commit -m 'local work'",
+      "npm run test:unit",
+      "npm run publish",
+      "rg -n foo src/",
+      "echo 'git push'",
+      "echo 'foo; git push'",
+      "# git push",
+    ]) {
+      assert.equal(isHighImpactBash(cmd), false, cmd);
+    }
     // Linear time on long option chains (regression against regex backtracking).
     const start = performance.now();
     assert.equal(isHighImpactBash(`npm ${"--flag ".repeat(500)}run`), false);

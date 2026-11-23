@@ -12,6 +12,7 @@ import { isHighImpactBash } from "./overseer-bash-gate.ts";
 import {
   assistantText,
   extractJsonObject,
+  MIN_EXCERPT_CHARS,
   modelLabel,
   nonEmpty,
   resolveCandidates,
@@ -19,8 +20,6 @@ import {
   type SkepticModelRegistry,
 } from "./overseer-skeptic.ts";
 import { Type } from "./typebox.ts";
-
-const MIN_EXCERPT_CHARS = 6;
 
 export const parentFindingKindSchema = Type.Union([
   Type.Literal("contradicts_owner"),
