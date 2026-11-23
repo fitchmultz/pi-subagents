@@ -94,6 +94,12 @@ pinned last-response pages and original-message receipts. The
 [supported client API](docs/intercom.md#supported-non-model-client) connects only
 to an existing broker; it loads no Pi SDK, model, TUI or conversation journal.
 
+Antigravity (`agy`) sessions can also join the same local Intercom broker as
+standalone main peers via the bundled stdio MCP server
+(`dist/pi-intercom/agy/mcp-server.js`) and lifecycle hook helper
+(`dist/pi-intercom/agy/hook-cli.js`); see
+[Antigravity (`agy`) peer adapter](docs/intercom.md#antigravity-agy-peer-adapter).
+
 ## Bundled skills
 
 The package ships two skills that match tool availability.

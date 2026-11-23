@@ -74,6 +74,15 @@ export function agentObservationSocketPath(token: string): string {
   return join(runtimeDirectory(name, "-agents"), name);
 }
 
+/** Private control socket for one Antigravity Language Server process. */
+export function agyControlSocketPath(lsPid: number): string {
+  if (!Number.isInteger(lsPid) || lsPid <= 0) {
+    throw new Error("Invalid Antigravity Language Server PID.");
+  }
+  const name = `ls-${lsPid}.sock`;
+  return join(runtimeDirectory(name, "-agy"), name);
+}
+
 export function getBrokerSocketPath(): string {
   return join(getBrokerRuntimeDir(), "broker.sock");
 }

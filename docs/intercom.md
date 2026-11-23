@@ -731,3 +731,42 @@ only the socket inode it bound and the PID inode it published; a successor's
 endpoint files remain intact.
 
 Remote authenticated mail is separate: see [bridge setup](intercom-bridge.md).
+
+## Antigravity (`agy`) peer adapter
+
+Main Antigravity CLI sessions can join the same local `pi-intercom` broker as
+standalone main peers (`agy-<conversationId>`) without adding Pi subagent
+delegation to `agy`.
+
+- **MCP server (`dist/pi-intercom/agy/mcp-server.js`)**: Runs over stdio under
+  the Antigravity Language Server, exposes the `intercom` tool (`list`,
+  `status`, `pending`, `send`, `ask`, `reply`, `last`, `claim`, including
+  cross-device `device` and `name@device`), identifies the caller from
+  Antigravity's `_meta["antigravity.google/conversation_id"]`, and unregisters
+  cleanly when `agy` exits.
+- **Lifecycle hooks (`dist/pi-intercom/agy/hook-cli.js`)**: Connects over a
+  private per-Language-Server Unix socket (`ls-<ppid>.sock` under the
+  `-agy` sibling of the Intercom runtime directory) to auto-register on
+  `SessionStart`, keep presence updated (`working` / `idle`), drain fallback
+  queued messages on `PreInvocation`/`PostInvocation`/`Stop`, and skip internal
+  `agy` subagents. Control sockets and conversation index files are
+  inode-owned: startup never steals a live owner's socket, and shutdown removes
+  only the exact `(dev, ino)` it created.
+- **Inbound wake (`agentapi`)**: When a wake environment file exists at
+  `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/agy-wake/<conversationId>.env`
+  (containing loopback `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, and
+  optional `ANTIGRAVITY_AGENTAPI_EXE` from a shell `run_command`), inbound
+  `send` and `ask` messages call `agentapi send-message` to wake idle `agy`
+  sessions and steer active ones at the next tool boundary. The wake file is
+  owned by the shell session, not the MCP server, so MCP restarts leave live
+  wake credentials intact. Without wake
+  credentials, active turns still receive messages via hooks, and an `ask`
+  sent to an idle unwakeable session fast-fails with
+  `pi-intercom-recipient-turn-failure` instead of hanging until timeout.
+- **Zero-turn `last`**: Answers `intercom({ action: "last", to: "<agy>" })`
+  directly from `transcript.jsonl` (falling back to sibling
+  `transcript_full.jsonl` when `truncated_fields` includes `"content"`), with
+  the same UTF-16 offset/limit pagination as Pi sessions.
+- **Title sync**: Passing `agy`'s `title` hook JSON into
+  `node dist/pi-intercom/agy/hook-cli.js title` updates the peer's Intercom
+  display name when Antigravity generates a title or the user runs `/rename`.
