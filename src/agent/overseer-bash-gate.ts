@@ -258,6 +258,7 @@ class ShellLineScanner {
   private scanState: LineScanState = { quote: null, escaped: false, inside: false };
   private arithParen = 0;
   private arithBracket = 0;
+  private allowHeredocs = true;
   private current = "";
   private segmentOpeners: HeredocOpener[] = [];
   private readonly segments: string[] = [];
@@ -273,11 +274,7 @@ class ShellLineScanner {
       }
     }
     this.flushSegment();
-    for (const heredoc of this.pendingHeredocs) {
-      if (heredoc.isShellBody && heredoc.bodyLines.length > 0) {
-        this.shellBodies.push(heredoc.bodyLines.join("\n"));
-      }
-    }
+    this.drainUnterminatedHeredocs();
     return { segments: this.segments, shellBodies: this.shellBodies };
   }
 
@@ -293,9 +290,27 @@ class ShellLineScanner {
       }
       return;
     }
-    if (active.isShellBody) {
-      active.bodyLines.push(rawLine);
+    active.bodyLines.push(rawLine);
+  }
+
+  /** Fail safe: if a heredoc never closes, scan its retained lines as ordinary commands. */
+  private drainUnterminatedHeredocs(): void {
+    const fallbackLines: string[] = [];
+    for (const heredoc of this.pendingHeredocs) {
+      fallbackLines.push(...heredoc.bodyLines);
     }
+    this.pendingHeredocs.length = 0;
+    if (fallbackLines.length === 0) {
+      return;
+    }
+    this.allowHeredocs = false;
+    this.scanState = { quote: null, escaped: false, inside: false };
+    this.arithParen = 0;
+    this.arithBracket = 0;
+    for (const line of fallbackLines) {
+      this.scanLine(line);
+    }
+    this.flushSegment();
   }
 
   private flushSegment(): void {
@@ -360,6 +375,10 @@ class ShellLineScanner {
     return -1;
   }
 
+  private canOpenHeredoc(): boolean {
+    return this.allowHeredocs && this.arithParen === 0 && this.arithBracket === 0;
+  }
+
   private stepChar(line: string, i: number): number {
     const ch = line[i] ?? "";
     this.scanState = advanceScanState(ch, this.scanState);
@@ -375,8 +394,7 @@ class ShellLineScanner {
     if (arithNext >= 0) {
       return arithNext;
     }
-    const inArith = this.arithParen > 0 || this.arithBracket > 0;
-    const opener = inArith ? undefined : parseHeredocOpener(line, i);
+    const opener = this.canOpenHeredoc() ? parseHeredocOpener(line, i) : undefined;
     if (opener !== undefined) {
       this.segmentOpeners.push(opener);
       this.current += line.slice(i, opener.end);
