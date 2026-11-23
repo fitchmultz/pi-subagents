@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.52.71 - 2026-11-23
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- feat(overseer): add parent-side grounded skeptic for delegations and high-impact shell commands (PSA-207) (#498) ([f79cde9](https://github.com/fitchmultz/pi-subagents/commit/f79cde9680375f23b0b68e2877350070fbb3becc))
+
+### What's Changed
+
+- feat(overseer): add parent-side grounded skeptic for delegations and high-impact shell commands (PSA-207) by @fitchmultz in https://github.com/fitchmultz/pi-subagents/pull/498
+
+**Full Changelog**: https://github.com/fitchmultz/pi-subagents/compare/v0.52.70...v0.52.71
+
 ## 0.52.70 - 2026-11-23
 
 <!-- npm-release:unreleased:start -->
