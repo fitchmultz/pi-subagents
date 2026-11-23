@@ -6,7 +6,6 @@ import { readOutputPage } from "../shared/output-page.ts";
 import { journalStamp } from "../shared/native-journal.ts";
 import {
   escalationResolutionSchema,
-  escalationSchema,
   type Escalation,
   type Launch,
   type OverseerNote,
@@ -18,6 +17,7 @@ import {
   checkpointKindLabel,
   formatFindingsLines,
 } from "./overseer-evidence.ts";
+import { readEscalation } from "./overseer-pause.ts";
 import { judgeUnavailable } from "./overseer-skeptic.ts";
 import { readOverseerNotes } from "./overseer-sentinel.ts";
 import { launchAt, list, read, runDirectory } from "./storage.ts";
@@ -102,11 +102,11 @@ export function deliver(
   for (const [index, notice] of notices.entries()) {
     hold(notice.owner, notice.id);
     try {
-      const shouldWake = notice.wake !== false && (!idle || index === lastWake);
-      pi.sendMessage(notice.message, {
-        triggerTurn: shouldWake,
-        deliverAs: notice.wake === false ? "nextTurn" : "steer",
-      });
+      const options =
+        notice.wake === false
+          ? { triggerTurn: false }
+          : { triggerTurn: !idle || index === lastWake, deliverAs: "steer" as const };
+      pi.sendMessage(notice.message, options);
     } catch (error) {
       release(notice.owner, notice.id);
       throw error;
@@ -229,7 +229,7 @@ function inspectRunEscalation(
   const dir = runDirectory(base, id);
   const escFile = path.join(dir, "escalation.json");
   awaited.add(escFile);
-  const escalation = read(escFile, escalationSchema);
+  const escalation = readEscalation(escFile);
   if (escalation === undefined) {
     return undefined;
   }

@@ -89,7 +89,14 @@ nodeTest(
     assert.equal(first.notices[0]?.wake, false);
     deliver(h.pi, h.context, first.notices);
     assert.equal(h.context.isIdle(), true, "non-blocking note must not wake an idle parent");
-    // Second scan while queued does not re-emit the note.
+    assert.ok(
+      h.manager
+        .getEntries()
+        .some((entry) => entry.type === "custom_message" && entry.customType === "overseer-note"),
+      "non-blocking note journals immediately when idle so it is durable and not re-sent",
+    );
+    // Releasing admissions at turn end must not duplicate the note on the next scan.
+    settle(launch.owner, false);
     const second = notifications(h.context, base, launch.owner);
     assert.equal(second.notices.length, 0);
 

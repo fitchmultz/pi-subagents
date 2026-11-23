@@ -27,6 +27,8 @@ const NON_GIT: TreeSnapshot = {
   unreadable: false,
 };
 
+export const UNREADABLE_DIFF_MARKER = "(git-diff-unavailable)";
+
 const EMPTY_DELTA: TreeDelta = {
   files: [],
   diff: "",
@@ -34,6 +36,15 @@ const EMPTY_DELTA: TreeDelta = {
   diffCommand: undefined,
   lineCount: 0,
   unreadable: false,
+};
+
+const UNREADABLE_DELTA: TreeDelta = {
+  files: [UNREADABLE_DIFF_MARKER],
+  diff: "",
+  stat: "",
+  diffCommand: undefined,
+  lineCount: 0,
+  unreadable: true,
 };
 
 function git(cwd: string, args: readonly string[], env?: NodeJS.ProcessEnv): string | undefined {
@@ -168,7 +179,7 @@ function runTreeDiff(input: {
   const diff = git(top, ["diff", "--no-color", fromTree, toTree]);
   const stat = git(top, ["diff", "--numstat", fromTree, toTree]);
   if (names === undefined || diff === undefined || stat === undefined) {
-    return { ...EMPTY_DELTA, unreadable: true };
+    return UNREADABLE_DELTA;
   }
   return {
     files: repoRelativeFiles(cwd, top, names),
@@ -190,7 +201,7 @@ export function diffSnapshots(
     return EMPTY_DELTA;
   }
   if (isUnreadableDelta(from, to)) {
-    return { ...EMPTY_DELTA, unreadable: true };
+    return UNREADABLE_DELTA;
   }
   const fromTree = from.tree ?? "";
   const toTree = to.tree ?? "";

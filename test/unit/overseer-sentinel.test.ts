@@ -14,13 +14,17 @@ import {
   type Escalation,
   type Launch,
 } from "../../src/agent/contracts.ts";
-import { captureSnapshot, diffSnapshots } from "../../src/agent/overseer-diff.ts";
+import {
+  captureSnapshot,
+  diffSnapshots,
+  UNREADABLE_DIFF_MARKER,
+} from "../../src/agent/overseer-diff.ts";
 import {
   checkpointEvidenceLines,
   checkpointKindLabel,
   inspectJudgeCheckpoints,
 } from "../../src/agent/overseer-evidence.ts";
-import { resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
+import { readEscalation, resolveActiveEscalation } from "../../src/agent/overseer-pause.ts";
 import {
   evaluateLiveSkeptic,
   judgeUnavailable,
@@ -482,11 +486,15 @@ nodeDescribe("overseer sentinel checkpoints", () => {
       t.after(() => fs.rmSync(base, { recursive: true, force: true }));
       const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "auto" } });
       const corrections: unknown[] = [];
+      let stopping = false;
+      t.after(() => {
+        stopping = true;
+      });
       const sentinel = new OverseerSentinel({
         base,
         activeLaunch: () => launch,
         activeRunBaseline: () => new Set<string>(),
-        isStopping: () => false,
+        isStopping: () => stopping,
         queueCorrections: (cmds) => {
           corrections.push(...cmds);
         },
@@ -618,5 +626,87 @@ nodeDescribe("overseer sentinel checkpoints", () => {
     assert.equal(await beforeSettle(settleEvent, native.context), undefined);
     assert.equal(corrections.length, 0);
     assert.equal(fs.existsSync(path.join(runDirectory(base, launch.id), "escalation.json")), false);
+  });
+
+  nodeIt(
+    "fails closed when a snapshot tree is pruned and recovers once the parent approves",
+    async (t) => {
+      const repo = initGitRepo(t);
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-prune-"));
+      t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+      // Dirty working tree before session_start so baseline write-tree creates an unreferenced tree object.
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 2;\n");
+      const launch = makeLaunch(base, repo, { overseer: { enabled: true, judge: "off" } });
+      let stopping = false;
+      t.after(() => {
+        stopping = true;
+      });
+      const sentinel = new OverseerSentinel({
+        base,
+        activeLaunch: () => launch,
+        activeRunBaseline: () => new Set<string>(),
+        isStopping: () => stopping,
+        queueCorrections: () => {
+          throw new Error("no corrections expected");
+        },
+      });
+      const native = await createNativeSessionFixture({
+        cwd: repo,
+        agentDir: base,
+        configure: (pi) => {
+          sentinel.attach(pi);
+        },
+      });
+      t.after(async () => {
+        await native.dispose();
+      });
+
+      const beforeSettle = native.extensions[0]?.handlers.get("agent_before_settle")?.[0];
+      assert.ok(beforeSettle !== undefined);
+
+      // Edit file and prune the unreferenced baseline tree object written at session_start.
+      fs.writeFileSync(path.join(repo, "src", "app.ts"), "export const a = 42;\n");
+      execFileSync("git", ["prune", "--expire=now"], { cwd: repo });
+
+      const settlePromise = Promise.resolve(beforeSettle(settleEvent, native.context));
+      const escFile = path.join(runDirectory(base, launch.id), "escalation.json");
+      const esc = await waitForEscalation(escFile);
+      assert.equal(esc.kind, "final_diff");
+      assert.deepEqual(esc.changedFiles, [UNREADABLE_DIFF_MARKER]);
+      assert.match(esc.summary, /diff is unavailable/u);
+
+      resolveActiveEscalation(base, launch, "approved");
+      assert.equal(await settlePromise, undefined);
+      // After approval advances lastSeen to the fresh readable tree, an unchanged settle does not pause again.
+      assert.equal(await beforeSettle(settleEvent, native.context), undefined);
+    },
+  );
+
+  nodeIt("normalizes legacy pre-V2 escalation payloads without throwing across upgrades", (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-overseer-legacy-esc-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const file = path.join(dir, "escalation.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        id: "esc-legacy-1",
+        runId: "run-old",
+        owner: "owner-1",
+        at: 123,
+        strikes: 2,
+        kind: "scope_violation",
+        summary: "Edited README.md outside scope",
+        changedFiles: ["README.md"],
+        diffExcerpt: "+change",
+        diffDigest: "abc123",
+        since: "approval",
+      }),
+    );
+    const parsed = readEscalation(file);
+    assert.ok(parsed !== undefined);
+    assert.equal(parsed.pauseNumber, 2);
+    assert.equal(parsed.kind, "skeptic");
+    assert.equal(parsed.since, "checkpoint");
+    assert.deepEqual(parsed.changedFiles, ["README.md"]);
   });
 });

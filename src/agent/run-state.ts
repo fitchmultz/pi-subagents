@@ -2,7 +2,6 @@ import * as path from "node:path";
 import {
   admissionSchema,
   escalationResolutionSchema,
-  escalationSchema,
   resultSchema,
   successorSchema,
   waitingSchema,
@@ -12,6 +11,7 @@ import {
   type Waiting,
 } from "./contracts.ts";
 import { checkpointKindLabel } from "./overseer-evidence.ts";
+import { readEscalation } from "./overseer-pause.ts";
 import { conversation, read, runDirectory } from "./storage.ts";
 
 type Admission = "pending" | "admitted";
@@ -103,7 +103,7 @@ export function runEscalation(
     return undefined;
   }
   const dir = runDirectory(base, launch.id);
-  const active = read(path.join(dir, "escalation.json"), escalationSchema);
+  const active = readEscalation(path.join(dir, "escalation.json"));
   if (active === undefined) {
     return undefined;
   }

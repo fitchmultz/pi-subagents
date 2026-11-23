@@ -86,33 +86,28 @@ interface SentinelOptions {
   readonly queueCorrections: (commands: readonly SteerCommand[]) => void;
 }
 
-export function harnessExcludePaths(base: string, launch: Launch): string[] {
-  return [base, launch.agentDir, path.dirname(launch.sessionFile)];
-}
+export const harnessExcludePaths = (base: string, launch: Launch): string[] => [
+  base,
+  launch.agentDir,
+  path.dirname(launch.sessionFile),
+];
 
-export function readOverseerNotes(base: string, runId: string): OverseerNote[] {
-  return (
-    read(path.join(runDirectory(base, runId), "overseer-notes.json"), overseerNotesSchema)?.notes ??
-    []
-  );
-}
+export const readOverseerNotes = (base: string, runId: string): OverseerNote[] =>
+  read(path.join(runDirectory(base, runId), "overseer-notes.json"), overseerNotesSchema)?.notes ??
+  [];
 
 function appendOverseerNote(base: string, note: OverseerNote): void {
   const file = path.join(runDirectory(base, note.runId), "overseer-notes.json");
-  const next: OverseerNotes = {
-    version: 1,
-    notes: [...readOverseerNotes(base, note.runId), note],
-  };
+  const next: OverseerNotes = { version: 1, notes: [...readOverseerNotes(base, note.runId), note] };
   write(file, next);
   notifyInventory(base, note.runId);
 }
 
-function shouldTriggerShapeCheck(state: RunSentinelState, delta: TreeDelta): boolean {
-  if (state.shapeChecked || delta.files.length === 0) {
-    return false;
-  }
-  return delta.lineCount >= SHAPE_CHECK_LINES || delta.files.length >= SHAPE_CHECK_FILES;
-}
+const shouldTriggerShapeCheck = (state: RunSentinelState, delta: TreeDelta): boolean =>
+  !state.shapeChecked &&
+  !delta.unreadable &&
+  delta.files.length > 0 &&
+  (delta.lineCount >= SHAPE_CHECK_LINES || delta.files.length >= SHAPE_CHECK_FILES);
 
 function shouldRunSkeptic(
   state: RunSentinelState,
@@ -120,19 +115,38 @@ function shouldRunSkeptic(
   delta: TreeDelta,
   finalSettle: boolean,
 ): boolean {
-  if (delta.files.length === 0 || delta.diff === "") {
+  if (delta.unreadable || delta.files.length === 0 || delta.diff === "") {
     return false;
   }
   if (snapshot.tree !== undefined && snapshot.tree === state.lastSkeptic.tree) {
     return false;
   }
-  if (finalSettle) {
-    return true;
-  }
   return (
+    finalSettle ||
     state.turnsSinceSkeptic >= SKEPTIC_TURN_INTERVAL ||
     Math.abs(delta.lineCount - state.lastSkeptic.lines) >= SKEPTIC_DIFF_DELTA
   );
+}
+
+function structuralTurnPayload(
+  current: RunSentinelState,
+  delta: TreeDelta,
+): PausePayload | undefined {
+  if (delta.unreadable) {
+    return {
+      kind: current.shapeChecked ? "final_diff" : "shape_check",
+      summary:
+        "Working-tree diff is unavailable (git snapshot unreadable or pruned); inspect changes before continuing.",
+    };
+  }
+  if (!shouldTriggerShapeCheck(current, delta)) {
+    return undefined;
+  }
+  const plural = delta.files.length === 1 ? "" : "s";
+  return {
+    kind: "shape_check",
+    summary: `Early shape check: first substantive edits (${delta.files.length} file${plural}, ${delta.lineCount} diff lines).`,
+  };
 }
 
 export class OverseerSentinel {
@@ -341,17 +355,9 @@ export class OverseerSentinel {
       return;
     }
     const current = this.ensureState(launch);
-    if (shouldTriggerShapeCheck(current, delta)) {
-      const plural = delta.files.length === 1 ? "" : "s";
-      await this.pauseForParent(
-        launch,
-        {
-          kind: "shape_check",
-          summary: `Early shape check: first substantive edits (${delta.files.length} file${plural}, ${delta.lineCount} diff lines).`,
-        },
-        snapshot,
-        delta,
-      );
+    const structural = structuralTurnPayload(current, delta);
+    if (structural !== undefined) {
+      await this.pauseForParent(launch, structural, snapshot, delta);
       return;
     }
     if (!shouldRunSkeptic(current, snapshot, delta, false)) {
@@ -421,6 +427,13 @@ export class OverseerSentinel {
         model: skeptic.model,
         findings: skeptic.findings,
         summary: `Pre-ship check: ${skeptic.model} flagged ${count} grounded concern${count === 1 ? "" : "s"} before completion.`,
+      };
+    }
+    if (delta.unreadable) {
+      return {
+        kind: "final_diff",
+        summary:
+          "Final diff check: working-tree diff is unavailable (git snapshot unreadable or pruned); inspect changes before completion.",
       };
     }
     const plural = delta.files.length === 1 ? "" : "s";
