@@ -8,6 +8,7 @@ import { compile, type Static } from "@earendil-works/pi-schema";
 import type { JudgeFailure } from "./contracts.ts";
 import { errorText } from "./host.ts";
 import { captureOwnerContext, type OverseerState } from "./overseer.ts";
+import { isHighImpactBash } from "./overseer-bash-gate.ts";
 import {
   assistantText,
   extractJsonObject,
@@ -19,87 +20,9 @@ import {
 } from "./overseer-skeptic.ts";
 import { Type } from "./typebox.ts";
 
+export { isHighImpactBash } from "./overseer-bash-gate.ts";
+
 const MIN_EXCERPT_CHARS = 6;
-
-const GIT_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
-const CLI_VALUE_FLAGS = new Set(["--workspace", "--filter", "-C", "--dir", "--config", "-c"]);
-const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/u;
-
-function nextSubcommand(tokens: readonly string[], valueFlags: ReadonlySet<string>): number {
-  let i = 1;
-  while (i < tokens.length) {
-    const token = tokens[i];
-    if (token === undefined || !token.startsWith("-")) {
-      return i;
-    }
-    i += valueFlags.has(token) ? 2 : 1;
-  }
-  return tokens.length;
-}
-
-function isHighImpactGit(tokens: readonly string[]): boolean {
-  const index = nextSubcommand(tokens, GIT_VALUE_FLAGS);
-  const sub = tokens[index];
-  const rest = tokens.slice(index + 1);
-  if (sub === "push") {
-    return true;
-  }
-  if (sub === "reset") {
-    return rest.includes("--hard");
-  }
-  if (sub === "clean") {
-    return rest.some(
-      (arg) =>
-        arg === "--force" || (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("f")),
-    );
-  }
-  if (sub === "branch") {
-    return rest.includes("-D") || (rest.includes("--delete") && rest.includes("--force"));
-  }
-  return false;
-}
-
-const CLI_GATED_SUBCOMMANDS = new Map<string, string>([
-  ["npm", "publish"],
-  ["pnpm", "publish"],
-  ["yarn", "publish"],
-  ["wrangler", "deploy"],
-  ["chezmoi", "apply"],
-]);
-
-function isHighImpactGh(tokens: readonly string[]): boolean {
-  const [, sub, action] = tokens;
-  return (
-    (sub === "pr" && action === "merge") ||
-    (sub === "release" && (action === "create" || action === "delete"))
-  );
-}
-
-function stripLeadingEnv(tokens: readonly string[]): readonly string[] {
-  let start = 0;
-  while (start < tokens.length && ENV_ASSIGNMENT.test(tokens[start] ?? "")) {
-    start += 1;
-  }
-  return start === 0 ? tokens : tokens.slice(start);
-}
-
-function isHighImpactSegment(rawSegment: string): boolean {
-  const cmdTokens = stripLeadingEnv(rawSegment.trim().split(/\s+/u).filter(Boolean));
-  const cmd = cmdTokens[0];
-  if (cmd === undefined) {
-    return false;
-  }
-  if (cmd === "git") {
-    return isHighImpactGit(cmdTokens);
-  }
-  if (cmd === "gh" || cmd.startsWith("gh-")) {
-    return isHighImpactGh(cmdTokens);
-  }
-  const gatedSub = CLI_GATED_SUBCOMMANDS.get(cmd);
-  return (
-    gatedSub !== undefined && cmdTokens[nextSubcommand(cmdTokens, CLI_VALUE_FLAGS)] === gatedSub
-  );
-}
 
 export const parentFindingKindSchema = Type.Union([
   Type.Literal("contradicts_owner"),
@@ -166,10 +89,6 @@ const PARENT_SKEPTIC_SYSTEM_PROMPT = [
   "Use blocking=true only when the action should be stopped before execution; use blocking=false for a minor heads-up.",
   'Submit your verdict by calling the `report_parent_findings` tool (or if unavailable, respond ONLY with valid JSON: {"action":"ok"|"block","findings":[...]}).',
 ].join("\n");
-
-export function isHighImpactBash(command: string): boolean {
-  return command.split(/[;\n|&]+/u).some((segment) => isHighImpactSegment(segment));
-}
 
 function readString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];

@@ -86,13 +86,30 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
     assert.equal(isHighImpactBash("npm publish"), true);
     assert.equal(isHighImpactBash("pnpm -r publish"), true);
     assert.equal(isHighImpactBash("npm --workspace pkg publish"), true);
+    assert.equal(isHighImpactBash("npm --prefix packages/a publish"), true);
+    assert.equal(isHighImpactBash("yarn --cwd packages/a publish"), true);
     assert.equal(isHighImpactBash("wrangler deploy"), true);
+    assert.equal(isHighImpactBash("npx wrangler deploy"), true);
     assert.equal(isHighImpactBash("chezmoi apply"), true);
+    assert.equal(isHighImpactBash("chezmoi --source ~/.dotfiles apply"), true);
+    assert.equal(isHighImpactBash("chezmoi -S ~/.dotfiles apply"), true);
+    assert.equal(isHighImpactBash("sudo git push origin main"), true);
+    assert.equal(isHighImpactBash("/usr/bin/git push origin main"), true);
+    assert.equal(isHighImpactBash("/usr/local/bin/gh pr merge 42"), true);
+    assert.equal(isHighImpactBash("bash -c 'git push origin main'"), true);
+    assert.equal(isHighImpactBash("bash -lc 'cd repo && git push origin main'"), true);
+    assert.equal(isHighImpactBash("(cd repo && git push)"), true);
+    assert.equal(isHighImpactBash("env FOO=1 git push"), true);
+    assert.equal(isHighImpactBash("if git push; then echo ok; fi"), true);
 
     assert.equal(isHighImpactBash("git status --short"), false);
     assert.equal(isHighImpactBash("git commit -m 'local work'"), false);
     assert.equal(isHighImpactBash("npm run test:unit"), false);
+    assert.equal(isHighImpactBash("npm run publish"), false);
     assert.equal(isHighImpactBash("rg -n foo src/"), false);
+    assert.equal(isHighImpactBash("echo 'git push'"), false);
+    assert.equal(isHighImpactBash("echo 'foo; git push'"), false);
+    assert.equal(isHighImpactBash("# git push"), false);
     // Linear time on long option chains (regression against regex backtracking).
     const start = performance.now();
     assert.equal(isHighImpactBash(`npm ${"--flag ".repeat(500)}run`), false);
