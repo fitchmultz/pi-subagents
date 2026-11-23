@@ -21,6 +21,7 @@ import { AgyPeer, type AgyHookInput, type AgyHookResponse } from "./peer.ts";
 
 const MAX_CONTROL_LINE_BYTES = 256 * 1024;
 const SOCKET_PROBE_TIMEOUT_MS = 250;
+const CONTROL_RECLAIM_INTERVAL_MS = 150;
 const SUBAGENT_TRIGGER_TOOLS = new Set(["invoke_subagent", "swarm", "run_workflow"]);
 
 function isControlSocketLive(socketPath: string): Promise<boolean> {
@@ -131,6 +132,8 @@ export class AgyBridgeHub {
   private server: net.Server | null = null;
   private ownedSocket: OwnedEndpoint | null = null;
   private socketPath: string | null = null;
+  private reclaimTimer: NodeJS.Timeout | null = null;
+  private reclaiming = false;
   private closed = false;
 
   constructor(
@@ -149,6 +152,50 @@ export class AgyBridgeHub {
 
   async start(): Promise<string | null> {
     preparePrivateDir(agyWakeDir());
+    const bound = await this.tryBindControlSocket();
+    if (bound === null && !this.closed) {
+      this.scheduleControlReclaim();
+    }
+    return bound;
+  }
+
+  private clearReclaimTimer(): void {
+    if (this.reclaimTimer !== null) {
+      clearTimeout(this.reclaimTimer);
+      this.reclaimTimer = null;
+    }
+  }
+
+  private scheduleControlReclaim(): void {
+    if (this.closed || this.server !== null || this.reclaimTimer !== null) {
+      return;
+    }
+    this.reclaimTimer = setTimeout(() => {
+      this.reclaimTimer = null;
+      if (this.closed || this.server !== null || this.reclaiming) {
+        return;
+      }
+      this.reclaiming = true;
+      void this.tryBindControlSocket()
+        .catch(() => null)
+        .finally(() => {
+          this.reclaiming = false;
+          if (!this.closed && this.server === null) {
+            this.scheduleControlReclaim();
+          }
+        });
+    }, CONTROL_RECLAIM_INTERVAL_MS);
+    this.reclaimTimer.unref();
+  }
+
+  private isClosed(): boolean {
+    return this.closed;
+  }
+
+  private async tryBindControlSocket(): Promise<string | null> {
+    if (this.isClosed() || this.server !== null) {
+      return this.socketPath;
+    }
     const socketPath = prepareAgyControlSocketPath(this.lsPid);
     const existing = captureEndpointIdentity(socketPath);
     if (existing) {
@@ -177,9 +224,18 @@ export class AgyBridgeHub {
       }
       throw error;
     }
+    if (this.isClosed()) {
+      const owned = captureEndpointIdentity(socketPath);
+      removeOwnedEndpoint(owned);
+      server.close();
+      return null;
+    }
     this.server = server;
     this.ownedSocket = captureEndpointIdentity(socketPath) ?? null;
     this.socketPath = socketPath;
+    for (const conversationId of this.peers.keys()) {
+      this.publishIndex(conversationId);
+    }
     return socketPath;
   }
 
@@ -409,6 +465,7 @@ export class AgyBridgeHub {
       return;
     }
     this.closed = true;
+    this.clearReclaimTimer();
     const peers = [...this.peers.values()];
     this.peers.clear();
     this.activeMainId = null;

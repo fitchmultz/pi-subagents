@@ -396,10 +396,11 @@ nodeTest(
 );
 
 nodeTest(
-  "AgyBridgeHub preserves an existing live control socket and only unlinks its own socket inode",
+  "AgyBridgeHub preserves a live control socket, reclaims it after the owner closes, and only unlinks its own inode",
   async (t) => {
     isolatedAgent(t);
     const sharedLsPid = process.pid + 100_000;
+    const socketPath = agyControlSocketPath(sharedLsPid);
     const hubA = new AgyBridgeHub(sharedLsPid);
     const hubB = new AgyBridgeHub(sharedLsPid);
     t.after(async () => {
@@ -408,22 +409,44 @@ nodeTest(
     });
 
     const socketA = await hubA.start();
-    assert.equal(socketA, agyControlSocketPath(sharedLsPid));
+    assert.equal(socketA, socketPath);
 
     // A second hub for the same Language Server must not steal or unlink the live socket.
     const socketB = await hubB.start();
     assert.equal(socketB, null);
     assert.equal(hubB.controlSocketPath, null);
-    await hubB.close();
 
-    // Hub A's control socket remains live and reachable after Hub B closes.
-    assert.equal(existsSync(agyControlSocketPath(sharedLsPid)), true);
-    const probe = net.createConnection(agyControlSocketPath(sharedLsPid));
-    t.after(() => probe.destroy());
-    await once(probe, "connect");
-    probe.end();
+    // Hub A's control socket remains live while Hub B waits to reclaim.
+    assert.equal(existsSync(socketPath), true);
+    const probeA = net.createConnection(socketPath);
+    t.after(() => probeA.destroy());
+    await once(probeA, "connect");
+    probeA.end();
 
-    // If a successor binds a fresh inode at the path after an external replace, Hub A's close must not remove it.
+    // Once Hub A closes, surviving Hub B automatically reclaims the shared socket and serves hooks.
+    await hubA.close();
+    await waitFor(() => (hubB.controlSocketPath === socketPath ? true : undefined));
+    const reply = await new Promise<string>((resolve, reject) => {
+      const client = net.createConnection(socketPath);
+      client.setEncoding("utf8");
+      let buf = "";
+      client.once("error", reject);
+      client.once("connect", () => {
+        client.write(
+          `${JSON.stringify({ type: "hook", payload: { hookEventName: "PreToolUse" } })}\n`,
+        );
+      });
+      client.on("data", (chunk: string) => {
+        buf += chunk;
+        if (buf.includes("\n")) {
+          client.end();
+          resolve(buf.trim());
+        }
+      });
+    });
+    assert.deepEqual(json(reply), { decision: "allow" });
+
+    // If a successor binds a fresh inode at the path after an external replace, Hub B's close must not remove it.
     const successor = net.createServer();
     t.after(
       () =>
@@ -431,15 +454,15 @@ nodeTest(
           successor.close(() => resolve());
         }),
     );
-    rmSync(agyControlSocketPath(sharedLsPid), { force: true });
+    rmSync(socketPath, { force: true });
     await new Promise<void>((resolve, reject) => {
       successor.once("error", reject);
-      successor.listen(agyControlSocketPath(sharedLsPid), () => resolve());
+      successor.listen(socketPath, () => resolve());
     });
 
-    await hubA.close();
-    assert.equal(existsSync(agyControlSocketPath(sharedLsPid)), true);
-    const probeSuccessor = net.createConnection(agyControlSocketPath(sharedLsPid));
+    await hubB.close();
+    assert.equal(existsSync(socketPath), true);
+    const probeSuccessor = net.createConnection(socketPath);
     t.after(() => probeSuccessor.destroy());
     await once(probeSuccessor, "connect");
     probeSuccessor.end();
