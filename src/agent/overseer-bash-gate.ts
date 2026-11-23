@@ -14,7 +14,6 @@ const COMMAND_WRAPPERS = new Set([
   "bunx",
 ]);
 const SHELL_COMMANDS = new Set(["sh", "bash", "zsh"]);
-const SHELL_SEPARATORS = new Set([";", "\n", "|", "&"]);
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/u;
 const MAX_SHELL_NESTING = 2;
 
@@ -160,38 +159,101 @@ function isHighImpactSegment(rawSegment: string, depth: number): boolean {
   return matchHighImpactCommand(cmd, cmdTokens);
 }
 
-function nextQuoteState(ch: string, quote: "'" | '"' | undefined): "'" | '"' | undefined {
+const LINE_SEPARATORS = new Set([";", "|", "&"]);
+const HEREDOC_START = /<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/gu;
+
+type QuoteChar = "'" | '"' | null;
+
+interface LineScanState {
+  readonly quote: QuoteChar;
+  readonly escaped: boolean;
+  readonly inside: boolean;
+}
+
+function nextQuoteState(ch: string, quote: QuoteChar): QuoteChar {
   if (ch !== "'" && ch !== '"') {
     return quote;
   }
-  return quote === ch ? undefined : (quote ?? ch);
+  return quote === ch ? null : (quote ?? ch);
 }
 
-/** Linear quote-aware segment splitter so `bash -c 'a && git push'` stays intact and `echo 'a; git push'` stays echo. */
-function splitShellSegments(command: string): string[] {
+function advanceScanState(ch: string, state: LineScanState): LineScanState {
+  if (state.escaped) {
+    return { quote: state.quote, escaped: false, inside: true };
+  }
+  if (ch === "\\" && state.quote !== "'") {
+    return { quote: state.quote, escaped: true, inside: true };
+  }
+  const updated = nextQuoteState(ch, state.quote);
+  if (updated !== state.quote) {
+    return { quote: updated, escaped: false, inside: true };
+  }
+  return { quote: state.quote, escaped: false, inside: state.quote !== null };
+}
+
+function isCommentStart(line: string, index: number): boolean {
+  if (line[index] !== "#") {
+    return false;
+  }
+  return index === 0 || /[\s;|&()]/u.test(line[index - 1] ?? "");
+}
+
+function collectHeredocDelimiters(line: string, pending: string[]): void {
+  for (const match of line.matchAll(HEREDOC_START)) {
+    const delimiter = match[1] ?? match[2] ?? match[3];
+    if (delimiter !== undefined) {
+      pending.push(delimiter);
+    }
+  }
+}
+
+/** Splits one non-heredoc shell line on unquoted `;`, `|`, `&`, stopping at word-start `#` comments. */
+function splitLineSegments(line: string): string[] {
   const segments: string[] = [];
   let start = 0;
-  let quote: "'" | '"' | undefined;
-  let escaped = false;
-  for (let i = 0; i < command.length; i += 1) {
-    const ch = command[i] ?? "";
-    if (escaped) {
-      escaped = false;
+  let state: LineScanState = { quote: null, escaped: false, inside: false };
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i] ?? "";
+    state = advanceScanState(ch, state);
+    if (state.inside) {
       continue;
     }
-    if (ch === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
+    if (isCommentStart(line, i)) {
+      segments.push(line.slice(start, i));
+      return segments;
     }
-    const updated = nextQuoteState(ch, quote);
-    if (updated !== quote) {
-      quote = updated;
-    } else if (quote === undefined && SHELL_SEPARATORS.has(ch)) {
-      segments.push(command.slice(start, i));
+    if (LINE_SEPARATORS.has(ch)) {
+      segments.push(line.slice(start, i));
       start = i + 1;
     }
   }
-  segments.push(command.slice(start));
+  segments.push(line.slice(start));
+  return segments;
+}
+
+/**
+ * Linear quote-, comment-, and heredoc-aware segment splitter:
+ * - ignores heredoc data bodies until their closing delimiter
+ * - stops at unquoted `#` comments at end of line
+ * - keeps intra-line quotes intact so `bash -c 'a && git push'` stays together and `echo 'a; git push'` stays echo.
+ */
+function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  const pendingHeredocs: string[] = [];
+  for (const rawLine of command.split(/\r?\n/u)) {
+    const activeDelimiter = pendingHeredocs[0];
+    if (activeDelimiter !== undefined) {
+      if (rawLine.trim() === activeDelimiter) {
+        pendingHeredocs.shift();
+      }
+      continue;
+    }
+    const lineSegments = splitLineSegments(rawLine);
+    for (const seg of lineSegments) {
+      collectHeredocDelimiters(seg, pendingHeredocs);
+      segments.push(seg);
+    }
+  }
   return segments;
 }
 

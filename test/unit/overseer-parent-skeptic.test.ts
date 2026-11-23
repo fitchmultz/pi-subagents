@@ -6,10 +6,10 @@ import * as path from "node:path";
 import { describe as nodeDescribe, it as nodeIt } from "node:test";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { isHighImpactBash } from "../../src/agent/overseer-bash-gate.ts";
 import {
   attachParentSkeptic,
   extractParentAction,
-  isHighImpactBash,
   validateParentFindings,
 } from "../../src/agent/overseer-parent-skeptic.ts";
 import type { SkepticModelRegistry } from "../../src/agent/overseer-skeptic.ts";
@@ -101,6 +101,12 @@ nodeDescribe("overseer parent-side skeptic classification and grounding", () => 
     assert.equal(isHighImpactBash("(cd repo && git push)"), true);
     assert.equal(isHighImpactBash("env FOO=1 git push"), true);
     assert.equal(isHighImpactBash("if git push; then echo ok; fi"), true);
+    assert.equal(isHighImpactBash("git status # owner's note — don't push\ngit push"), true);
+    assert.equal(
+      isHighImpactBash("cat > notes.md <<'EOF'\nWe won't merge yet.\nEOF\ngh pr merge 12 --squash"),
+      true,
+    );
+    assert.equal(isHighImpactBash("cat > notes.md <<EOF\ngit push\nEOF\ngit status"), false);
 
     assert.equal(isHighImpactBash("git status --short"), false);
     assert.equal(isHighImpactBash("git commit -m 'local work'"), false);

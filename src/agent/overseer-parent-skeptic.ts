@@ -20,8 +20,6 @@ import {
 } from "./overseer-skeptic.ts";
 import { Type } from "./typebox.ts";
 
-export { isHighImpactBash } from "./overseer-bash-gate.ts";
-
 const MIN_EXCERPT_CHARS = 6;
 
 export const parentFindingKindSchema = Type.Union([
